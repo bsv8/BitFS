@@ -1,0 +1,67 @@
+﻿# client_id will be overridden by local libp2p public key hex at runtime (kept for compatibility)
+client_id: ""
+
+keys:
+  # priority: CLI -privkey_hex > keys.privkey_hex
+  privkey_hex: "REPLACE_LIBP2P_PRIVKEY_HEX"
+
+# BSV 链后端配置（bsv）
+# 说明：client 在费用池协议里需要查询 UTXO / tip height；
+# 默认走本地 woc-guard（由主程序自动托管）。
+bsv:
+  # 链网络："test" 或 "main"
+  network: "test"
+
+network:
+  gateways:
+    - enabled: true
+      addr: "/ip4/127.0.0.1/tcp/19090/p2p/12D3KooWREPLACE_GATEWAY_PEER_ID"
+      pubkey: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  arbiters:
+    - addr: "/ip4/127.0.0.1/tcp/19091/p2p/12D3KooWREPLACE_ARBITER_PEER_ID"
+      pubkey: "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+
+storage:
+  workspace_dir: "/data/bitcast/workspace"
+  data_dir: "/data/bitcast/client-data"
+  min_free_bytes: 134217728
+
+seller:
+  enabled: true
+  pricing:
+    floor_price_sat_per_64k: 10
+    resale_discount_bps: 8000
+
+listen:
+  # enable listen pool lifecycle (bootstrap/connect/pool create).
+  enabled: true
+  # billing_cycle_seconds / single_cycle_fee_satoshi / renew_notify_before_seconds
+  # are returned by gateway bootstrap/state, not configured here.
+  # client uses single-pool rotation for auto renew (no parallel dual-pool consumption).
+  # tick_seconds controls how often client sends listen tick.
+  # smaller -> more realtime, higher request cost; larger -> lower cost, slower refresh.
+  renew_threshold_seconds: 120
+  max_auto_renew_amount: 100000
+  tick_seconds: 5
+
+scan:
+  startup_full_scan: true
+  fs_watch_enabled: false
+  rescan_interval_seconds: 300
+
+index:
+  backend: "sqlite"
+  sqlite_path: "db/client-index.sqlite"
+
+http:
+  enabled: true
+  # Web UI + API unified port. Static frontend + /api/* backend routes.
+  listen_addr: "127.0.0.1:18080"
+  # empty means no auth; production should set and pass Authorization: Bearer <token>
+  auth_token: ""
+
+log:
+  # explicit log file path for persistent business tracing
+  file: "/data/bitcast/client-data/logs/bitcast-client.log"
+  # debug|info|business|important|error
+  console_min_level: "business"
