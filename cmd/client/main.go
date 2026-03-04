@@ -23,6 +23,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/woc"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/pelletier/go-toml/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -61,16 +62,25 @@ func main() {
 		}
 	}
 	cfgPath = filepath.Clean(cfgPath)
+	dbPath, err := defaultConfigDBPath(appName)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	act, seedHex, err := resolveAction(opts)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	cfg, raw, cfgExists, err := loadConfigOrDefaults(cfgPath, appName)
+	keyCfg, keyCfgExists, err := loadKeyConfigOrEmpty(cfgPath)
 	if err != nil {
 		log.Fatal(err)
 	}
+	cfg, err := loadRuntimeConfigOrInit(appName, dbPath)
+	if err != nil {
+		log.Fatal(err)
+	}
+	cfg.Keys.PrivkeyHex = keyCfg.Keys.PrivkeyHex
 
 	hasKey := strings.TrimSpace(cfg.Keys.PrivkeyHex) != ""
 	switch act {
@@ -82,8 +92,8 @@ func main() {
 		if err != nil {
 			log.Fatalf(msg("err_import_invalid")+": %v", err)
 		}
-		cfg.Keys.PrivkeyHex = norm
-		if err := writeConfig(cfgPath, cfg); err != nil {
+		keyCfg.Keys.PrivkeyHex = norm
+		if err := writeKeyConfig(cfgPath, keyCfg); err != nil {
 			log.Fatal(err)
 		}
 		pubHex, _ := pubHexFromPrivHex(norm)
@@ -97,8 +107,8 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		cfg.Keys.PrivkeyHex = gen
-		if err := writeConfig(cfgPath, cfg); err != nil {
+		keyCfg.Keys.PrivkeyHex = gen
+		if err := writeKeyConfig(cfgPath, keyCfg); err != nil {
 			log.Fatal(err)
 		}
 		pubHex, _ := pubHexFromPrivHex(gen)
@@ -108,8 +118,8 @@ func main() {
 		if !hasKey {
 			log.Fatal(msg("err_no_key_to_delete"))
 		}
-		cfg.Keys.PrivkeyHex = ""
-		if err := writeConfig(cfgPath, cfg); err != nil {
+		keyCfg.Keys.PrivkeyHex = ""
+		if err := writeKeyConfig(cfgPath, keyCfg); err != nil {
 			log.Fatal(err)
 		}
 		fmt.Printf(msg("del_done")+"\nappname: %s\nconfig: %s\n", appName, cfgPath)
@@ -117,10 +127,13 @@ func main() {
 	}
 
 	if !hasKey {
-		if !cfgExists {
+		if !keyCfgExists {
 			fmt.Printf(msg("config_not_found")+": %s\n", cfgPath)
 		}
 		log.Fatal(msg("err_missing_key"))
+	}
+	if err := clientapp.ValidateConfig(&cfg); err != nil {
+		log.Fatal(err)
 	}
 
 	switch act {
@@ -129,16 +142,11 @@ func main() {
 			log.Fatal(err)
 		}
 	case "daemon":
-		if !cfgExists {
-			if err := writeConfig(cfgPath, cfg); err != nil {
-				log.Fatal(err)
-			}
-		}
-		if err := runDaemon(cfgPath, cfg, raw); err != nil {
+		if err := runDaemon(cfg); err != nil {
 			log.Fatal(err)
 		}
 	case "download":
-		if err := runDownload(cfgPath, cfg, raw, seedHex); err != nil {
+		if err := runDownload(cfg, seedHex); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -183,18 +191,18 @@ func resolveAction(opts cliOptions) (string, string, error) {
 		actions++
 	}
 	if actions > 1 {
-		return "", "", fmt.Errorf(msg("err_actions_mutually_exclusive"))
+		return "", "", errors.New(msg("err_actions_mutually_exclusive"))
 	}
 	if len(args) > 1 {
-		return "", "", fmt.Errorf(msg("err_only_one_hex"))
+		return "", "", errors.New(msg("err_only_one_hex"))
 	}
 	if len(args) == 1 {
 		if actions > 0 {
-			return "", "", fmt.Errorf(msg("err_action_hex_conflict"))
+			return "", "", errors.New(msg("err_action_hex_conflict"))
 		}
 		h := strings.ToLower(strings.TrimSpace(args[0]))
 		if h == "" {
-			return "", "", fmt.Errorf(msg("err_hex_empty"))
+			return "", "", errors.New(msg("err_hex_empty"))
 		}
 		if _, err := hex.DecodeString(h); err != nil {
 			return "", "", fmt.Errorf(msg("err_hex_invalid")+": %w", err)
@@ -216,52 +224,42 @@ func resolveAction(opts cliOptions) (string, string, error) {
 	return "status", "", nil
 }
 
-func loadConfigOrDefaults(configPath, appName string) (clientapp.Config, []byte, bool, error) {
-	if _, err := os.Stat(configPath); err == nil {
-		cfg, raw, err := clientapp.LoadConfig(configPath)
-		if err != nil {
-			return clientapp.Config{}, nil, true, err
-		}
-		if err := fillPathDefaults(&cfg, appName); err != nil {
-			return clientapp.Config{}, nil, true, err
-		}
-		if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
-			return clientapp.Config{}, nil, true, err
-		}
-		return cfg, raw, true, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return clientapp.Config{}, nil, false, err
-	}
-
-	cfg, err := newDefaultConfig(appName, "test")
-	if err != nil {
-		return clientapp.Config{}, nil, false, err
-	}
-	return cfg, nil, false, nil
+type keyFileConfig struct {
+	Keys struct {
+		PrivkeyHex string `toml:"privkey_hex"`
+	} `toml:"keys"`
 }
 
-func fillPathDefaults(cfg *clientapp.Config, appName string) error {
-	if cfg == nil {
-		return fmt.Errorf("config is nil")
+func loadKeyConfigOrEmpty(configPath string) (keyFileConfig, bool, error) {
+	if _, err := os.Stat(configPath); err == nil {
+		b, err := os.ReadFile(configPath)
+		if err != nil {
+			return keyFileConfig{}, true, err
+		}
+		var cfg keyFileConfig
+		dec := toml.NewDecoder(strings.NewReader(string(b)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&cfg); err != nil {
+			return keyFileConfig{}, true, err
+		}
+		cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(cfg.Keys.PrivkeyHex))
+		return cfg, true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return keyFileConfig{}, false, err
 	}
-	network := strings.ToLower(strings.TrimSpace(cfg.BSV.Network))
-	if network == "" {
-		network = "test"
-	}
-	paths, err := defaultPaths(appName, network)
+	return keyFileConfig{}, false, nil
+}
+
+func writeKeyConfig(path string, cfg keyFileConfig) error {
+	cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(cfg.Keys.PrivkeyHex))
+	data, err := toml.Marshal(cfg)
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(cfg.Storage.DataDir) == "" {
-		cfg.Storage.DataDir = paths.DataDir
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	if strings.TrimSpace(cfg.Storage.WorkspaceDir) == "" {
-		cfg.Storage.WorkspaceDir = paths.WorkspaceDir
-	}
-	if strings.TrimSpace(cfg.Log.File) == "" {
-		cfg.Log.File = filepath.Join(paths.LogDir, "bitfs.log")
-	}
-	return nil
+	return os.WriteFile(path, data, 0o644)
 }
 
 func newDefaultConfig(appName, network string) (clientapp.Config, error) {
@@ -281,18 +279,22 @@ func newDefaultConfig(appName, network string) (clientapp.Config, error) {
 	return cfg, nil
 }
 
-func writeConfig(path string, cfg clientapp.Config) error {
-	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
-		return err
-	}
-	data, err := clientapp.EncodeConfigTOML(cfg)
+func loadRuntimeConfigOrInit(appName, dbPath string) (clientapp.Config, error) {
+	defaultCfg, err := newDefaultConfig(appName, "test")
 	if err != nil {
-		return err
+		return clientapp.Config{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	defaultCfg.Index.Backend = "sqlite"
+	defaultCfg.Index.SQLitePath = dbPath
+
+	cfg, _, err := clientapp.LoadOrInitConfigInDB(dbPath, defaultCfg)
+	if err != nil {
+		return clientapp.Config{}, err
 	}
-	return os.WriteFile(path, data, 0o644)
+	// DB 路径按 appname 推导，配置项不可覆盖。
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = dbPath
+	return cfg, nil
 }
 
 func printStatus(configPath, appName string, cfg clientapp.Config) error {
@@ -322,7 +324,7 @@ func printStatus(configPath, appName string, cfg clientapp.Config) error {
 	return nil
 }
 
-func runDaemon(cfgPath string, cfg clientapp.Config, raw []byte) error {
+func runDaemon(cfg clientapp.Config) error {
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
 	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
 		return err
@@ -338,10 +340,8 @@ func runDaemon(cfgPath string, cfg clientapp.Config, raw []byte) error {
 	defer stopGuard()
 
 	rt, err := clientapp.Run(ctx, cfg, clientapp.RunOptions{
-		ConfigRaw:  raw,
-		WebAssets:  webAssets,
-		Chain:      woc.NewGuardClient(guardURL),
-		ConfigPath: cfgPath,
+		WebAssets: webAssets,
+		Chain:     woc.NewGuardClient(guardURL),
 	})
 	if err != nil {
 		return err
@@ -352,7 +352,7 @@ func runDaemon(cfgPath string, cfg clientapp.Config, raw []byte) error {
 	return nil
 }
 
-func runDownload(cfgPath string, cfg clientapp.Config, raw []byte, seedHash string) error {
+func runDownload(cfg clientapp.Config, seedHash string) error {
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
 	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
 		return err
@@ -374,10 +374,8 @@ func runDownload(cfgPath string, cfg clientapp.Config, raw []byte, seedHash stri
 	downloadCfg.Scan.StartupFullScan = false
 
 	rt, err := clientapp.Run(ctx, downloadCfg, clientapp.RunOptions{
-		ConfigRaw:  raw,
-		WebAssets:  webAssets,
-		Chain:      woc.NewGuardClient(guardURL),
-		ConfigPath: cfgPath,
+		WebAssets: webAssets,
+		Chain:     woc.NewGuardClient(guardURL),
 	})
 	if err != nil {
 		return err
@@ -555,6 +553,7 @@ func queryFeePoolSummary(cfg clientapp.Config) (uint64, uint64, error) {
 
 type appPaths struct {
 	ConfigPath   string
+	ConfigDBPath string
 	DataDir      string
 	WorkspaceDir string
 	LogDir       string
@@ -566,6 +565,14 @@ func defaultConfigPath(appName string) (string, error) {
 		return "", err
 	}
 	return paths.ConfigPath, nil
+}
+
+func defaultConfigDBPath(appName string) (string, error) {
+	paths, err := defaultPaths(appName, "test")
+	if err != nil {
+		return "", err
+	}
+	return paths.ConfigDBPath, nil
 }
 
 func defaultPaths(appName, network string) (appPaths, error) {
@@ -587,6 +594,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		local := firstNonEmpty(os.Getenv("LOCALAPPDATA"), appData)
 		return appPaths{
 			ConfigPath:   filepath.Join(appData, appName, "config.toml"),
+			ConfigDBPath: filepath.Join(local, appName, "config", "runtime-config.sqlite"),
 			DataDir:      filepath.Join(local, appName, network),
 			WorkspaceDir: filepath.Join(local, appName, "workspace"),
 			LogDir:       filepath.Join(local, appName, network, "Logs"),
@@ -599,6 +607,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		appSupport := filepath.Join(home, "Library", "Application Support")
 		return appPaths{
 			ConfigPath:   filepath.Join(appSupport, appName, "config.toml"),
+			ConfigDBPath: filepath.Join(appSupport, appName, "config", "runtime-config.sqlite"),
 			DataDir:      filepath.Join(appSupport, appName, network),
 			WorkspaceDir: filepath.Join(appSupport, appName, "workspace"),
 			LogDir:       filepath.Join(home, "Library", "Logs", appName, network),
@@ -614,6 +623,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		}
 		return appPaths{
 			ConfigPath:   filepath.Join(cfgBase, appName, "config.toml"),
+			ConfigDBPath: filepath.Join(home, ".local", "state", appName, "runtime-config.sqlite"),
 			DataDir:      filepath.Join(home, ".local", "share", appName, network),
 			WorkspaceDir: filepath.Join(home, ".local", "share", appName, "workspace"),
 			LogDir:       filepath.Join(home, ".local", "state", appName, network),
@@ -687,7 +697,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs version %s",
 		"usage_line":                     "Usage: bitfs [flags] [seed_hex]",
 		"flag_appname":                   "app instance name used to derive config/data/log directories",
-		"flag_config":                    "config file path (derived from appname by default)",
+		"flag_config":                    "private key config file path (derived from appname by default)",
 		"flag_import":                    "import private key hex",
 		"flag_new":                       "create new private key",
 		"flag_del":                       "delete current private key",
@@ -716,7 +726,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags] [seed_hex]",
 		"flag_appname":                   "应用实例名，用于计算配置/数据/日志目录",
-		"flag_config":                    "配置文件路径（默认按 appname 计算）",
+		"flag_config":                    "私钥配置文件路径（默认按 appname 计算）",
 		"flag_import":                    "导入私钥 hex",
 		"flag_new":                       "创建新私钥",
 		"flag_del":                       "删除当前私钥",
@@ -745,7 +755,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags] [seed_hex]",
 		"flag_appname":                   "應用實例名，用於計算配置/資料/日誌目錄",
-		"flag_config":                    "配置檔路徑（預設按 appname 計算）",
+		"flag_config":                    "私鑰配置檔路徑（預設按 appname 計算）",
 		"flag_import":                    "匯入私鑰 hex",
 		"flag_new":                       "建立新私鑰",
 		"flag_del":                       "刪除目前私鑰",
@@ -774,7 +784,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs バージョン %s",
 		"usage_line":                     "使い方: bitfs [flags] [seed_hex]",
 		"flag_appname":                   "設定/データ/ログ ディレクトリ計算に使うアプリ名",
-		"flag_config":                    "設定ファイルのパス（既定は appname から計算）",
+		"flag_config":                    "秘密鍵設定ファイルのパス（既定は appname から計算）",
 		"flag_import":                    "秘密鍵 hex をインポート",
 		"flag_new":                       "新しい秘密鍵を作成",
 		"flag_del":                       "現在の秘密鍵を削除",

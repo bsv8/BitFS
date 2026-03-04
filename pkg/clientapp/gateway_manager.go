@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 	"sync"
 
@@ -252,27 +251,16 @@ func (gm *gatewayManager) GetMasterGateway() peer.ID {
 	return gm.rt.masterGW
 }
 
-// SaveConfig 保存配置到 TOML 文件
+// SaveConfig 保存配置到 DB（不落地业务配置文件）。
 func (gm *gatewayManager) SaveConfig() error {
-	if gm.rt.configPath == "" {
-		return fmt.Errorf("config path not set")
-	}
-
 	gm.mu.RLock()
 	cfg := gm.rt.Config
 	gm.mu.RUnlock()
 
-	// 清理敏感字段后保存
-	data, err := EncodeConfigTOML(cfg)
-	if err != nil {
-		return fmt.Errorf("marshal config failed: %w", err)
+	if err := SaveConfigInDB(gm.rt.DB, cfg); err != nil {
+		return fmt.Errorf("save config to db failed: %w", err)
 	}
-
-	if err := os.WriteFile(gm.rt.configPath, data, 0644); err != nil {
-		return fmt.Errorf("write config file failed: %w", err)
-	}
-
-	obs.Business("bitcast-client", "config_saved", map[string]any{"path": gm.rt.configPath})
+	obs.Business("bitcast-client", "config_saved_to_db", map[string]any{})
 	return nil
 }
 

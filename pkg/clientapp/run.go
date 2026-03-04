@@ -244,7 +244,6 @@ type sellerCatalog struct {
 
 type RunOptions struct {
 	PrivKeyHexOverride string
-	ConfigRaw          []byte
 	ObsSink            obs.Sink
 	WebAssets          fs.FS
 
@@ -255,9 +254,6 @@ type RunOptions struct {
 	// RPCTrace 仅用于集成测试：记录 client 自己的 p2prpc 收发报文（JSONL）。
 	// 正常运行默认不启用（nil）。
 	RPCTrace p2prpc.TraceSink
-
-	// ConfigPath 配置文件路径，用于 HTTP API 修改后保存
-	ConfigPath string
 }
 
 type Runtime struct {
@@ -289,7 +285,6 @@ type Runtime struct {
 	rpcTrace p2prpc.TraceSink
 
 	// 运行时状态
-	configPath string
 	gwManager  *gatewayManager
 	masterGW   peer.ID
 	masterGWMu sync.RWMutex
@@ -340,13 +335,6 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	if err := writeConfigSnapshot(&cfg, opt.ConfigRaw); err != nil {
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-
 	dbPath := cfg.Index.SQLitePath
 	if !filepath.IsAbs(dbPath) {
 		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
@@ -512,7 +500,6 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		triplePool:               map[string]*triplePoolSession{},
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 trace,
-		configPath:               opt.ConfigPath,
 	}
 	if rt.Chain == nil {
 		// 设计约束：业务组件不直连 WOC，上链调用统一走 guard。
@@ -584,6 +571,71 @@ func LoadConfig(path string) (Config, []byte, error) {
 		return Config{}, nil, err
 	}
 	return cfg, b, nil
+}
+
+// LoadOrInitConfigInDB 读取 DB 中配置；若不存在则写入默认配置并返回。
+// 设计约束：运行期有效配置全部来自 DB；配置文件不承载业务配置。
+func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error) {
+	dbPath = filepath.Clean(strings.TrimSpace(dbPath))
+	if dbPath == "" {
+		return Config{}, false, fmt.Errorf("db path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return Config{}, false, err
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return Config{}, false, err
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		return Config{}, false, err
+	}
+	if err := ensureAppConfigTable(db); err != nil {
+		return Config{}, false, err
+	}
+
+	var raw string
+	err = db.QueryRow(`SELECT config_toml FROM app_config WHERE id=1`).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		cfg := defaultCfg
+		// 私钥仅允许保留在配置文件，不写入 DB。
+		cfg.Keys.PrivkeyHex = ""
+		if err := SaveConfigInDB(db, cfg); err != nil {
+			return Config{}, false, err
+		}
+		return cfg, true, nil
+	}
+	if err != nil {
+		return Config{}, false, err
+	}
+	cfg, err := ParseConfigTOML([]byte(raw))
+	if err != nil {
+		return Config{}, false, err
+	}
+	return cfg, false, nil
+}
+
+// SaveConfigInDB 将运行配置写回 DB（会强制清空私钥字段）。
+func SaveConfigInDB(db *sql.DB, cfg Config) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if err := ensureAppConfigTable(db); err != nil {
+		return err
+	}
+	cfg.Keys.PrivkeyHex = ""
+	data, err := EncodeConfigTOML(cfg)
+	if err != nil {
+		return err
+	}
+	_, err = db.Exec(
+		`INSERT INTO app_config(id,config_toml,updated_at_unix) VALUES(1,?,?)
+		 ON CONFLICT(id) DO UPDATE SET config_toml=excluded.config_toml,updated_at_unix=excluded.updated_at_unix`,
+		string(data),
+		time.Now().Unix(),
+	)
+	return err
 }
 
 func ApplyConfigDefaults(cfg *Config) error {
@@ -661,6 +713,12 @@ func ResolveLogConfig(cfg *Config) (string, string) {
 }
 
 func validateConfig(cfg *Config) error {
+	n := strings.ToLower(strings.TrimSpace(cfg.BSV.Network))
+	if n != "test" && n != "main" {
+		return errors.New("bsv.network must be test or main")
+	}
+	cfg.BSV.Network = n
+
 	cfg.Storage.WorkspaceDir = filepath.Clean(strings.TrimSpace(cfg.Storage.WorkspaceDir))
 	cfg.Storage.DataDir = filepath.Clean(strings.TrimSpace(cfg.Storage.DataDir))
 	if cfg.Storage.WorkspaceDir == "" || cfg.Storage.DataDir == "" {
@@ -687,10 +745,19 @@ func validateConfig(cfg *Config) error {
 	if cfg.Index.Backend != "sqlite" {
 		return errors.New("index.backend must be sqlite in phase1")
 	}
+	cfg.Index.SQLitePath = filepath.Clean(strings.TrimSpace(cfg.Index.SQLitePath))
+	if cfg.Index.SQLitePath == "" {
+		return errors.New("index.sqlite_path is required")
+	}
 	if cfg.Seller.Pricing.ResaleDiscountBPS > 10000 {
 		return errors.New("seller.pricing.resale_discount_bps must be <= 10000")
 	}
 	return nil
+}
+
+// ValidateConfig 对外提供启动前配置校验，失败即中止启动。
+func ValidateConfig(cfg *Config) error {
+	return validateConfig(cfg)
 }
 
 func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {
@@ -785,18 +852,6 @@ func ensureMinFreeSpace(path string, minBytes uint64) error {
 	return nil
 }
 
-func writeConfigSnapshot(cfg *Config, raw []byte) error {
-	cfgPath := filepath.Join(cfg.Storage.DataDir, "config", "effective-config.toml")
-	if len(raw) == 0 {
-		b, err := EncodeConfigTOML(*cfg)
-		if err != nil {
-			return err
-		}
-		raw = b
-	}
-	return os.WriteFile(cfgPath, raw, 0o644)
-}
-
 func applySQLitePragmas(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -812,6 +867,11 @@ func applySQLitePragmas(db *sql.DB) error {
 
 func initIndexDB(db *sql.DB) error {
 	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS app_config(
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			config_toml TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, updated_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, created_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS seed_price_state(seed_hash TEXT PRIMARY KEY, last_buy_unit_price_sat_per_64k INTEGER, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, unit_price_sat_per_64k INTEGER, updated_at_unix INTEGER)`,
@@ -942,7 +1002,22 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureDirectQuotesSchema(db); err != nil {
 		return err
 	}
+	if err := ensureAppConfigTable(db); err != nil {
+		return err
+	}
 	return nil
+}
+
+func ensureAppConfigTable(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS app_config(
+		id INTEGER PRIMARY KEY CHECK(id=1),
+		config_toml TEXT NOT NULL,
+		updated_at_unix INTEGER NOT NULL
+	)`)
+	return err
 }
 
 func ensureDirectQuotesSchema(db *sql.DB) error {
