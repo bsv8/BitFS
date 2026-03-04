@@ -27,6 +27,7 @@ import (
 )
 
 var version = "dev"
+var cliLang = detectCLILanguage()
 
 type cliOptions struct {
 	appName    string
@@ -42,13 +43,13 @@ type cliOptions struct {
 func main() {
 	opts := parseFlags()
 	if opts.showVer {
-		fmt.Printf("bitfs version %s\n", version)
+		fmt.Printf(msg("version_line")+"\n", version)
 		return
 	}
 
 	appName := strings.TrimSpace(opts.appName)
 	if appName == "" {
-		log.Fatal("-appname 不能为空")
+		log.Fatal(msg("err_appname_empty"))
 	}
 
 	cfgPath := strings.TrimSpace(opts.configPath)
@@ -75,22 +76,22 @@ func main() {
 	switch act {
 	case "import":
 		if hasKey {
-			log.Fatal("当前实例已存在私钥，请先执行 -del")
+			log.Fatal(msg("err_key_exists_delete_first"))
 		}
 		norm, err := normalizePrivateKeyHex(opts.importHex)
 		if err != nil {
-			log.Fatalf("-import 私钥非法: %v", err)
+			log.Fatalf(msg("err_import_invalid")+": %v", err)
 		}
 		cfg.Keys.PrivkeyHex = norm
 		if err := writeConfig(cfgPath, cfg); err != nil {
 			log.Fatal(err)
 		}
 		pubHex, _ := pubHexFromPrivHex(norm)
-		fmt.Printf("已导入私钥\nappname: %s\nconfig: %s\npubkey: %s\n", appName, cfgPath, pubHex)
+		fmt.Printf(msg("import_done")+"\nappname: %s\nconfig: %s\npubkey: %s\n", appName, cfgPath, pubHex)
 		return
 	case "new":
 		if hasKey {
-			log.Fatal("当前实例已存在私钥，请先执行 -del")
+			log.Fatal(msg("err_key_exists_delete_first"))
 		}
 		gen, err := generatePrivateKeyHex()
 		if err != nil {
@@ -101,25 +102,25 @@ func main() {
 			log.Fatal(err)
 		}
 		pubHex, _ := pubHexFromPrivHex(gen)
-		fmt.Printf("已新建私钥\nappname: %s\nconfig: %s\npubkey: %s\n", appName, cfgPath, pubHex)
+		fmt.Printf(msg("new_done")+"\nappname: %s\nconfig: %s\npubkey: %s\n", appName, cfgPath, pubHex)
 		return
 	case "del":
 		if !hasKey {
-			log.Fatal("当前没有可删除的私钥")
+			log.Fatal(msg("err_no_key_to_delete"))
 		}
 		cfg.Keys.PrivkeyHex = ""
 		if err := writeConfig(cfgPath, cfg); err != nil {
 			log.Fatal(err)
 		}
-		fmt.Printf("已删除私钥\nappname: %s\nconfig: %s\n", appName, cfgPath)
+		fmt.Printf(msg("del_done")+"\nappname: %s\nconfig: %s\n", appName, cfgPath)
 		return
 	}
 
 	if !hasKey {
 		if !cfgExists {
-			fmt.Printf("未检测到配置文件: %s\n", cfgPath)
+			fmt.Printf(msg("config_not_found")+": %s\n", cfgPath)
 		}
-		log.Fatal("未配置私钥，请先执行 -new 或 -import <hex>")
+		log.Fatal(msg("err_missing_key"))
 	}
 
 	switch act {
@@ -147,16 +148,16 @@ func main() {
 
 func parseFlags() cliOptions {
 	var opts cliOptions
-	flag.StringVar(&opts.appName, "appname", "bitfs", "应用实例名，用于计算配置/数据/日志目录")
-	flag.StringVar(&opts.configPath, "config", "", "配置文件路径（默认按 appname 计算）")
-	flag.StringVar(&opts.importHex, "import", "", "导入私钥 hex")
-	flag.BoolVar(&opts.newKey, "new", false, "创建新私钥")
-	flag.BoolVar(&opts.delKey, "del", false, "删除当前私钥")
-	flag.BoolVar(&opts.status, "status", false, "显示状态（默认动作）")
-	flag.BoolVar(&opts.daemon, "d", false, "后台服务模式")
-	flag.BoolVar(&opts.showVer, "version", false, "显示版本")
+	flag.StringVar(&opts.appName, "appname", "bitfs", msg("flag_appname"))
+	flag.StringVar(&opts.configPath, "config", "", msg("flag_config"))
+	flag.StringVar(&opts.importHex, "import", "", msg("flag_import"))
+	flag.BoolVar(&opts.newKey, "new", false, msg("flag_new"))
+	flag.BoolVar(&opts.delKey, "del", false, msg("flag_del"))
+	flag.BoolVar(&opts.status, "status", false, msg("flag_status"))
+	flag.BoolVar(&opts.daemon, "d", false, msg("flag_daemon"))
+	flag.BoolVar(&opts.showVer, "version", false, msg("flag_version"))
 	flag.Usage = func() {
-		_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Usage: bitfs [flags] [seed_hex]")
+		_, _ = fmt.Fprintln(flag.CommandLine.Output(), msg("usage_line"))
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -182,21 +183,21 @@ func resolveAction(opts cliOptions) (string, string, error) {
 		actions++
 	}
 	if actions > 1 {
-		return "", "", fmt.Errorf("动作命令互斥：-import/-new/-del/-status/-d 只能选一个")
+		return "", "", fmt.Errorf(msg("err_actions_mutually_exclusive"))
 	}
 	if len(args) > 1 {
-		return "", "", fmt.Errorf("只能提供一个 hex 参数")
+		return "", "", fmt.Errorf(msg("err_only_one_hex"))
 	}
 	if len(args) == 1 {
 		if actions > 0 {
-			return "", "", fmt.Errorf("动作命令与 hex 参数互斥")
+			return "", "", fmt.Errorf(msg("err_action_hex_conflict"))
 		}
 		h := strings.ToLower(strings.TrimSpace(args[0]))
 		if h == "" {
-			return "", "", fmt.Errorf("hex 参数不能为空")
+			return "", "", fmt.Errorf(msg("err_hex_empty"))
 		}
 		if _, err := hex.DecodeString(h); err != nil {
-			return "", "", fmt.Errorf("hex 参数非法: %w", err)
+			return "", "", fmt.Errorf(msg("err_hex_invalid")+": %w", err)
 		}
 		return "download", h, nil
 	}
@@ -307,13 +308,13 @@ func printStatus(configPath, appName string, cfg clientapp.Config) error {
 	fmt.Printf("network: %s\n", cfg.BSV.Network)
 	fmt.Printf("pubkey: %s\n", pubHex)
 	if balErr != nil {
-		fmt.Printf("balance: unavailable (%v)\n", balErr)
+		fmt.Printf(msg("status_balance_unavailable")+": %v\n", balErr)
 	} else {
 		fmt.Printf("address: %s\n", addr)
 		fmt.Printf("balance_satoshi: %d\n", bal)
 	}
 	if feeErr != nil {
-		fmt.Printf("fee_pool: unavailable (%v)\n", feeErr)
+		fmt.Printf(msg("status_feepool_unavailable")+": %v\n", feeErr)
 	} else {
 		fmt.Printf("fee_pool_in_satoshi: %d\n", feeIn)
 		fmt.Printf("fee_pool_out_satoshi: %d\n", feeOut)
@@ -438,7 +439,7 @@ func runDownload(cfgPath string, cfg clientapp.Config, raw []byte, seedHash stri
 	if err := os.WriteFile(fileName, transfer.Data, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf("下载完成\ndemand_id: %s\nsession_id: %s\nchunk_count: %d\nseed_file: %s\nfile: %s\nbytes: %d\nsha256: %s\n",
+	fmt.Printf(msg("download_done")+"\ndemand_id: %s\nsession_id: %s\nchunk_count: %d\nseed_file: %s\nfile: %s\nbytes: %d\nsha256: %s\n",
 		pub.DemandID, transfer.SessionID, chunkCount, seedPath, fileName, len(transfer.Data), transfer.SHA256)
 	return nil
 }
@@ -571,7 +572,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 	appName = strings.TrimSpace(appName)
 	network = strings.ToLower(strings.TrimSpace(network))
 	if appName == "" {
-		return appPaths{}, fmt.Errorf("appname 不能为空")
+		return appPaths{}, fmt.Errorf("appname cannot be empty")
 	}
 	if network == "" {
 		network = "test"
@@ -581,7 +582,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 	case "windows":
 		appData := firstNonEmpty(os.Getenv("APPDATA"), os.Getenv("USERPROFILE"))
 		if appData == "" {
-			return appPaths{}, fmt.Errorf("无法解析 APPDATA")
+			return appPaths{}, fmt.Errorf("APPDATA is not set")
 		}
 		local := firstNonEmpty(os.Getenv("LOCALAPPDATA"), appData)
 		return appPaths{
@@ -618,6 +619,186 @@ func defaultPaths(appName, network string) (appPaths, error) {
 			LogDir:       filepath.Join(home, ".local", "state", appName, network),
 		}, nil
 	}
+}
+
+func detectCLILanguage() string {
+	raw := detectSystemLocale()
+	return normalizeLocale(raw)
+}
+
+func detectSystemLocale() string {
+	if runtime.GOOS == "windows" {
+		if v := strings.TrimSpace(detectWindowsLocale()); v != "" {
+			return v
+		}
+	}
+	for _, key := range []string{"LC_ALL", "LC_MESSAGES", "LANG"} {
+		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func normalizeLocale(raw string) string {
+	s := strings.ToLower(strings.TrimSpace(raw))
+	if s == "" {
+		return "en"
+	}
+	if idx := strings.IndexByte(s, '.'); idx >= 0 {
+		s = s[:idx]
+	}
+	if idx := strings.IndexByte(s, '@'); idx >= 0 {
+		s = s[:idx]
+	}
+	s = strings.ReplaceAll(s, "_", "-")
+
+	if strings.HasPrefix(s, "ja") {
+		return "ja"
+	}
+	if strings.HasPrefix(s, "zh") {
+		if strings.Contains(s, "hant") || strings.Contains(s, "-tw") || strings.Contains(s, "-hk") || strings.Contains(s, "-mo") {
+			return "zh-TW"
+		}
+		return "zh-CN"
+	}
+	if strings.HasPrefix(s, "en") {
+		return "en"
+	}
+	return "en"
+}
+
+func msg(key string) string {
+	langTable, ok := cliMessages[cliLang]
+	if !ok {
+		langTable = cliMessages["en"]
+	}
+	if v, ok := langTable[key]; ok {
+		return v
+	}
+	if v, ok := cliMessages["en"][key]; ok {
+		return v
+	}
+	return key
+}
+
+var cliMessages = map[string]map[string]string{
+	"en": {
+		"version_line":                   "bitfs version %s",
+		"usage_line":                     "Usage: bitfs [flags] [seed_hex]",
+		"flag_appname":                   "app instance name used to derive config/data/log directories",
+		"flag_config":                    "config file path (derived from appname by default)",
+		"flag_import":                    "import private key hex",
+		"flag_new":                       "create new private key",
+		"flag_del":                       "delete current private key",
+		"flag_status":                    "show status (default action)",
+		"flag_daemon":                    "run in daemon mode",
+		"flag_version":                   "show version",
+		"err_appname_empty":              "-appname cannot be empty",
+		"err_key_exists_delete_first":    "private key already exists in current instance, run -del first",
+		"err_import_invalid":             "invalid private key for -import",
+		"err_no_key_to_delete":           "no private key to delete",
+		"config_not_found":               "config file not found",
+		"err_missing_key":                "private key is not configured, run -new or -import <hex> first",
+		"err_actions_mutually_exclusive": "action flags are mutually exclusive: choose one of -import/-new/-del/-status/-d",
+		"err_only_one_hex":               "only one hex argument is allowed",
+		"err_action_hex_conflict":        "action flags and seed hex argument are mutually exclusive",
+		"err_hex_empty":                  "hex argument cannot be empty",
+		"err_hex_invalid":                "invalid hex argument",
+		"import_done":                    "Private key imported",
+		"new_done":                       "Private key created",
+		"del_done":                       "Private key deleted",
+		"status_balance_unavailable":     "balance unavailable",
+		"status_feepool_unavailable":     "fee pool unavailable",
+		"download_done":                  "Download completed",
+	},
+	"zh-CN": {
+		"version_line":                   "bitfs 版本 %s",
+		"usage_line":                     "用法: bitfs [flags] [seed_hex]",
+		"flag_appname":                   "应用实例名，用于计算配置/数据/日志目录",
+		"flag_config":                    "配置文件路径（默认按 appname 计算）",
+		"flag_import":                    "导入私钥 hex",
+		"flag_new":                       "创建新私钥",
+		"flag_del":                       "删除当前私钥",
+		"flag_status":                    "显示状态（默认动作）",
+		"flag_daemon":                    "后台服务模式",
+		"flag_version":                   "显示版本",
+		"err_appname_empty":              "-appname 不能为空",
+		"err_key_exists_delete_first":    "当前实例已存在私钥，请先执行 -del",
+		"err_import_invalid":             "-import 私钥非法",
+		"err_no_key_to_delete":           "当前没有可删除的私钥",
+		"config_not_found":               "未检测到配置文件",
+		"err_missing_key":                "未配置私钥，请先执行 -new 或 -import <hex>",
+		"err_actions_mutually_exclusive": "动作命令互斥：-import/-new/-del/-status/-d 只能选一个",
+		"err_only_one_hex":               "只能提供一个 hex 参数",
+		"err_action_hex_conflict":        "动作命令与 hex 参数互斥",
+		"err_hex_empty":                  "hex 参数不能为空",
+		"err_hex_invalid":                "hex 参数非法",
+		"import_done":                    "已导入私钥",
+		"new_done":                       "已新建私钥",
+		"del_done":                       "已删除私钥",
+		"status_balance_unavailable":     "余额不可用",
+		"status_feepool_unavailable":     "费用池不可用",
+		"download_done":                  "下载完成",
+	},
+	"zh-TW": {
+		"version_line":                   "bitfs 版本 %s",
+		"usage_line":                     "用法: bitfs [flags] [seed_hex]",
+		"flag_appname":                   "應用實例名，用於計算配置/資料/日誌目錄",
+		"flag_config":                    "配置檔路徑（預設按 appname 計算）",
+		"flag_import":                    "匯入私鑰 hex",
+		"flag_new":                       "建立新私鑰",
+		"flag_del":                       "刪除目前私鑰",
+		"flag_status":                    "顯示狀態（預設動作）",
+		"flag_daemon":                    "背景服務模式",
+		"flag_version":                   "顯示版本",
+		"err_appname_empty":              "-appname 不能為空",
+		"err_key_exists_delete_first":    "目前實例已存在私鑰，請先執行 -del",
+		"err_import_invalid":             "-import 私鑰不合法",
+		"err_no_key_to_delete":           "目前沒有可刪除的私鑰",
+		"config_not_found":               "未偵測到配置檔",
+		"err_missing_key":                "未配置私鑰，請先執行 -new 或 -import <hex>",
+		"err_actions_mutually_exclusive": "動作命令互斥：-import/-new/-del/-status/-d 只能選一個",
+		"err_only_one_hex":               "只能提供一個 hex 參數",
+		"err_action_hex_conflict":        "動作命令與 hex 參數互斥",
+		"err_hex_empty":                  "hex 參數不能為空",
+		"err_hex_invalid":                "hex 參數不合法",
+		"import_done":                    "已匯入私鑰",
+		"new_done":                       "已建立私鑰",
+		"del_done":                       "已刪除私鑰",
+		"status_balance_unavailable":     "餘額不可用",
+		"status_feepool_unavailable":     "費用池不可用",
+		"download_done":                  "下載完成",
+	},
+	"ja": {
+		"version_line":                   "bitfs バージョン %s",
+		"usage_line":                     "使い方: bitfs [flags] [seed_hex]",
+		"flag_appname":                   "設定/データ/ログ ディレクトリ計算に使うアプリ名",
+		"flag_config":                    "設定ファイルのパス（既定は appname から計算）",
+		"flag_import":                    "秘密鍵 hex をインポート",
+		"flag_new":                       "新しい秘密鍵を作成",
+		"flag_del":                       "現在の秘密鍵を削除",
+		"flag_status":                    "状態を表示（デフォルト動作）",
+		"flag_daemon":                    "デーモンモードで起動",
+		"flag_version":                   "バージョンを表示",
+		"err_appname_empty":              "-appname は空にできません",
+		"err_key_exists_delete_first":    "このインスタンスには既に秘密鍵があります。先に -del を実行してください",
+		"err_import_invalid":             "-import の秘密鍵が不正です",
+		"err_no_key_to_delete":           "削除できる秘密鍵がありません",
+		"config_not_found":               "設定ファイルが見つかりません",
+		"err_missing_key":                "秘密鍵が未設定です。先に -new または -import <hex> を実行してください",
+		"err_actions_mutually_exclusive": "アクションフラグは排他です: -import/-new/-del/-status/-d のいずれか1つのみ",
+		"err_only_one_hex":               "hex 引数は1つだけ指定できます",
+		"err_action_hex_conflict":        "アクションフラグと seed hex 引数は同時指定できません",
+		"err_hex_empty":                  "hex 引数は空にできません",
+		"err_hex_invalid":                "hex 引数が不正です",
+		"import_done":                    "秘密鍵をインポートしました",
+		"new_done":                       "秘密鍵を作成しました",
+		"del_done":                       "秘密鍵を削除しました",
+		"status_balance_unavailable":     "残高を取得できません",
+		"status_feepool_unavailable":     "手数料プール情報を取得できません",
+		"download_done":                  "ダウンロード完了",
+	},
 }
 
 func firstNonEmpty(vals ...string) string {
