@@ -1,0 +1,50 @@
+# client_id will be overridden by local libp2p public key hex at runtime (kept for compatibility)
+client_id = ""
+
+[keys]
+# supports libp2p MarshalPrivateKey hex or raw 32-byte secp256k1 hex
+privkey_hex = "REPLACE_LIBP2P_PRIVKEY_HEX"
+
+[bsv]
+# "test" or "main"
+network = "test"
+
+[network]
+gateways = []
+arbiters = []
+
+[storage]
+workspace_dir = "/data/bitfs/workspace"
+data_dir = "/data/bitfs/client-data/test"
+min_free_bytes = 134217728
+
+[seller]
+enabled = true
+
+[seller.pricing]
+floor_price_sat_per_64k = 10
+resale_discount_bps = 8000
+
+[listen]
+enabled = true
+renew_threshold_seconds = 120
+max_auto_renew_amount = 100000
+tick_seconds = 5
+
+[scan]
+startup_full_scan = true
+fs_watch_enabled = false
+rescan_interval_seconds = 300
+
+[index]
+backend = "sqlite"
+sqlite_path = "db/client-index.sqlite"
+
+[http]
+enabled = true
+listen_addr = "127.0.0.1:18080"
+auth_token = ""
+
+[log]
+file = "/data/bitfs/client-data/test/logs/bitfs.log"
+console_min_level = "business"

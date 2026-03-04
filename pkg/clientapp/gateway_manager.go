@@ -11,7 +11,6 @@ import (
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"gopkg.in/yaml.v3"
 )
 
 // gatewayManager 管理运行时网关连接和主网关选举
@@ -253,7 +252,7 @@ func (gm *gatewayManager) GetMasterGateway() peer.ID {
 	return gm.rt.masterGW
 }
 
-// SaveConfig 保存配置到 YAML 文件
+// SaveConfig 保存配置到 TOML 文件
 func (gm *gatewayManager) SaveConfig() error {
 	if gm.rt.configPath == "" {
 		return fmt.Errorf("config path not set")
@@ -264,7 +263,7 @@ func (gm *gatewayManager) SaveConfig() error {
 	gm.mu.RUnlock()
 
 	// 清理敏感字段后保存
-	data, err := yaml.Marshal(&cfg)
+	data, err := EncodeConfigTOML(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config failed: %w", err)
 	}

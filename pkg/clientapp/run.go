@@ -31,7 +31,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/protocol"
 	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/multiformats/go-multiaddr"
-	"gopkg.in/yaml.v3"
+	"github.com/pelletier/go-toml/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -175,59 +175,59 @@ type directTransferPoolCloseResp struct {
 }
 
 type Config struct {
-	ClientID string `yaml:"client_id"`
+	ClientID string `yaml:"client_id" toml:"client_id"`
 	Keys     struct {
-		PrivkeyHex string `yaml:"privkey_hex"`
-	} `yaml:"keys"`
+		PrivkeyHex string `yaml:"privkey_hex" toml:"privkey_hex"`
+	} `yaml:"keys" toml:"keys"`
 	BSV struct {
-		Network string `yaml:"network"` // "test" 或 "main"（默认 "test"）
-	} `yaml:"bsv"`
+		Network string `yaml:"network" toml:"network"` // "test" 或 "main"（默认 "test"）
+	} `yaml:"bsv" toml:"bsv"`
 	Network struct {
-		Gateways []PeerNode `yaml:"gateways"`
-		Arbiters []PeerNode `yaml:"arbiters"`
-	} `yaml:"network"`
+		Gateways []PeerNode `yaml:"gateways" toml:"gateways"`
+		Arbiters []PeerNode `yaml:"arbiters" toml:"arbiters"`
+	} `yaml:"network" toml:"network"`
 	Storage struct {
-		WorkspaceDir string `yaml:"workspace_dir"`
-		DataDir      string `yaml:"data_dir"`
-		MinFreeBytes uint64 `yaml:"min_free_bytes"`
-	} `yaml:"storage"`
+		WorkspaceDir string `yaml:"workspace_dir" toml:"workspace_dir"`
+		DataDir      string `yaml:"data_dir" toml:"data_dir"`
+		MinFreeBytes uint64 `yaml:"min_free_bytes" toml:"min_free_bytes"`
+	} `yaml:"storage" toml:"storage"`
 	Seller struct {
-		Enabled bool `yaml:"enabled"`
+		Enabled bool `yaml:"enabled" toml:"enabled"`
 		Pricing struct {
-			FloorPriceSatPer64K uint64 `yaml:"floor_price_sat_per_64k"`
-			ResaleDiscountBPS   uint64 `yaml:"resale_discount_bps"`
-		} `yaml:"pricing"`
-	} `yaml:"seller"`
+			FloorPriceSatPer64K uint64 `yaml:"floor_price_sat_per_64k" toml:"floor_price_sat_per_64k"`
+			ResaleDiscountBPS   uint64 `yaml:"resale_discount_bps" toml:"resale_discount_bps"`
+		} `yaml:"pricing" toml:"pricing"`
+	} `yaml:"seller" toml:"seller"`
 	Listen struct {
-		Enabled               *bool  `yaml:"enabled"`
-		RenewThresholdSeconds uint32 `yaml:"renew_threshold_seconds"`
-		MaxAutoRenewAmount    uint64 `yaml:"max_auto_renew_amount"`
-		TickSeconds           uint32 `yaml:"tick_seconds"`
-	} `yaml:"listen"`
+		Enabled               *bool  `yaml:"enabled" toml:"enabled"`
+		RenewThresholdSeconds uint32 `yaml:"renew_threshold_seconds" toml:"renew_threshold_seconds"`
+		MaxAutoRenewAmount    uint64 `yaml:"max_auto_renew_amount" toml:"max_auto_renew_amount"`
+		TickSeconds           uint32 `yaml:"tick_seconds" toml:"tick_seconds"`
+	} `yaml:"listen" toml:"listen"`
 	Scan struct {
-		StartupFullScan       bool   `yaml:"startup_full_scan"`
-		FSWatchEnabled        bool   `yaml:"fs_watch_enabled"`
-		RescanIntervalSeconds uint32 `yaml:"rescan_interval_seconds"`
-	} `yaml:"scan"`
+		StartupFullScan       bool   `yaml:"startup_full_scan" toml:"startup_full_scan"`
+		FSWatchEnabled        bool   `yaml:"fs_watch_enabled" toml:"fs_watch_enabled"`
+		RescanIntervalSeconds uint32 `yaml:"rescan_interval_seconds" toml:"rescan_interval_seconds"`
+	} `yaml:"scan" toml:"scan"`
 	Index struct {
-		Backend    string `yaml:"backend"`
-		SQLitePath string `yaml:"sqlite_path"`
-	} `yaml:"index"`
+		Backend    string `yaml:"backend" toml:"backend"`
+		SQLitePath string `yaml:"sqlite_path" toml:"sqlite_path"`
+	} `yaml:"index" toml:"index"`
 	HTTP struct {
-		Enabled    bool   `yaml:"enabled"`
-		ListenAddr string `yaml:"listen_addr"`
-		AuthToken  string `yaml:"auth_token"`
-	} `yaml:"http"`
+		Enabled    bool   `yaml:"enabled" toml:"enabled"`
+		ListenAddr string `yaml:"listen_addr" toml:"listen_addr"`
+		AuthToken  string `yaml:"auth_token" toml:"auth_token"`
+	} `yaml:"http" toml:"http"`
 	Log struct {
-		File            string `yaml:"file"`
-		ConsoleMinLevel string `yaml:"console_min_level"`
-	} `yaml:"log"`
+		File            string `yaml:"file" toml:"file"`
+		ConsoleMinLevel string `yaml:"console_min_level" toml:"console_min_level"`
+	} `yaml:"log" toml:"log"`
 }
 
 type PeerNode struct {
-	Enabled bool   `yaml:"enabled"`
-	Addr    string `yaml:"addr"`
-	Pubkey  string `yaml:"pubkey"`
+	Enabled bool   `yaml:"enabled" toml:"enabled"`
+	Addr    string `yaml:"addr" toml:"addr"`
+	Pubkey  string `yaml:"pubkey" toml:"pubkey"`
 }
 
 type sellerSeed struct {
@@ -576,11 +576,19 @@ func LoadConfig(path string) (Config, []byte, error) {
 	if err != nil {
 		return Config{}, nil, err
 	}
-	var cfg Config
-	dec := yaml.NewDecoder(bytes.NewReader(b))
-	dec.KnownFields(true)
-	if err := dec.Decode(&cfg); err != nil {
+	cfg, err := ParseConfigTOML(b)
+	if err != nil {
 		return Config{}, nil, err
+	}
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		return Config{}, nil, err
+	}
+	return cfg, b, nil
+}
+
+func ApplyConfigDefaults(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
 	}
 	// BSV：仅支持 test/main 两种网络；默认 test。
 	{
@@ -592,7 +600,7 @@ func LoadConfig(path string) (Config, []byte, error) {
 			n = "main"
 		}
 		if n != "test" && n != "main" {
-			return Config{}, nil, fmt.Errorf("bsv.network must be test or main")
+			return fmt.Errorf("bsv.network must be test or main")
 		}
 		cfg.BSV.Network = n
 	}
@@ -620,7 +628,21 @@ func LoadConfig(path string) (Config, []byte, error) {
 	if strings.TrimSpace(cfg.Log.ConsoleMinLevel) == "" {
 		cfg.Log.ConsoleMinLevel = obs.LevelBusiness
 	}
-	return cfg, b, nil
+	return nil
+}
+
+func ParseConfigTOML(data []byte) (Config, error) {
+	var cfg Config
+	dec := toml.NewDecoder(strings.NewReader(string(data)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+func EncodeConfigTOML(cfg Config) ([]byte, error) {
+	return toml.Marshal(cfg)
 }
 
 func ResolveLogConfig(cfg *Config) (string, string) {
@@ -764,9 +786,9 @@ func ensureMinFreeSpace(path string, minBytes uint64) error {
 }
 
 func writeConfigSnapshot(cfg *Config, raw []byte) error {
-	cfgPath := filepath.Join(cfg.Storage.DataDir, "config", "effective-config.yaml")
+	cfgPath := filepath.Join(cfg.Storage.DataDir, "config", "effective-config.toml")
 	if len(raw) == 0 {
-		b, err := yaml.Marshal(cfg)
+		b, err := EncodeConfigTOML(*cfg)
 		if err != nil {
 			return err
 		}

@@ -356,9 +356,6 @@ func TriggerTransferChunks(ctx context.Context, buyer *Runtime, p TransferChunks
 	if buyer == nil {
 		return TransferChunksResult{}, fmt.Errorf("runtime not initialized")
 	}
-	if p.ChunkCount == 0 {
-		return TransferChunksResult{}, fmt.Errorf("chunk_count must be > 0")
-	}
 	quotes, err := TriggerClientListDirectQuotes(ctx, buyer, p.DemandID)
 	if err != nil {
 		return TransferChunksResult{}, err
