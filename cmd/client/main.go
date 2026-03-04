@@ -272,6 +272,7 @@ func newDefaultConfig(appName, network string) (clientapp.Config, error) {
 	cfg.Storage.WorkspaceDir = paths.WorkspaceDir
 	cfg.Storage.DataDir = paths.DataDir
 	cfg.HTTP.Enabled = true
+	cfg.FSHTTP.Enabled = true
 	cfg.Log.File = filepath.Join(paths.LogDir, "bitfs.log")
 	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
 		return clientapp.Config{}, err

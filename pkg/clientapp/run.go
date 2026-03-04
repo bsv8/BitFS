@@ -56,6 +56,7 @@ const (
 	defaultDiscountBPS       = 8000
 	defaultMinFreeBytes      = 128 * 1024 * 1024
 	defaultHTTPListenAddr    = "127.0.0.1:18080"
+	defaultFSHTTPListenAddr  = "127.0.0.1:18090"
 	seedBlockSize            = 65536
 )
 
@@ -218,6 +219,17 @@ type Config struct {
 		ListenAddr string `yaml:"listen_addr" toml:"listen_addr"`
 		AuthToken  string `yaml:"auth_token" toml:"auth_token"`
 	} `yaml:"http" toml:"http"`
+	FSHTTP struct {
+		Enabled                    bool   `yaml:"enabled" toml:"enabled"`
+		ListenAddr                 string `yaml:"listen_addr" toml:"listen_addr"`
+		DownloadWaitTimeoutSeconds uint32 `yaml:"download_wait_timeout_seconds" toml:"download_wait_timeout_seconds"`
+		MaxConcurrentSessions      uint32 `yaml:"max_concurrent_sessions" toml:"max_concurrent_sessions"`
+		MaxChunkPriceSatPer64K     uint64 `yaml:"max_chunk_price_sat_per_64k" toml:"max_chunk_price_sat_per_64k"`
+		QuoteWaitSeconds           uint32 `yaml:"quote_wait_seconds" toml:"quote_wait_seconds"`
+		QuotePollSeconds           uint32 `yaml:"quote_poll_seconds" toml:"quote_poll_seconds"`
+		PrefetchDistanceChunks     uint32 `yaml:"prefetch_distance_chunks" toml:"prefetch_distance_chunks"`
+		StrategyDebugLogEnabled    bool   `yaml:"strategy_debug_log_enabled" toml:"strategy_debug_log_enabled"`
+	} `yaml:"fs_http" toml:"fs_http"`
 	Log struct {
 		File            string `yaml:"file" toml:"file"`
 		ConsoleMinLevel string `yaml:"console_min_level" toml:"console_min_level"`
@@ -265,6 +277,7 @@ type Runtime struct {
 	Workspace       *workspaceManager
 	Catalog         *sellerCatalog
 	HTTP            *httpAPIServer
+	FSHTTP          *fileHTTPServer
 
 	Chain      dual2of2.ChainClient
 	feePoolsMu sync.RWMutex
@@ -372,6 +385,13 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		cfg:     &cfg,
 		db:      db,
 		catalog: catalog,
+	}
+	if err := workspaceMgr.EnsureDefaultWorkspace(); err != nil {
+		_ = db.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
 	}
 	if cfg.Scan.StartupFullScan {
 		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
@@ -532,10 +552,23 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 			}
 		}()
 	}
+	if cfg.FSHTTP.Enabled {
+		rt.FSHTTP = newFileHTTPServer(rt, &cfg, db, workspaceMgr)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := rt.FSHTTP.Start(); err != nil {
+				obs.Error("bitcast-client", "fs_http_stopped", map[string]any{"error": err.Error()})
+			}
+		}()
+	}
 
 	rt.closeFn = func() error {
 		if rt.HTTP != nil {
 			_ = rt.HTTP.Shutdown(context.Background())
+		}
+		if rt.FSHTTP != nil {
+			_ = rt.FSHTTP.Shutdown(context.Background())
 		}
 		wg.Wait()
 		if removeObs != nil {
@@ -677,6 +710,24 @@ func ApplyConfigDefaults(cfg *Config) error {
 	if strings.TrimSpace(cfg.HTTP.ListenAddr) == "" {
 		cfg.HTTP.ListenAddr = defaultHTTPListenAddr
 	}
+	if strings.TrimSpace(cfg.FSHTTP.ListenAddr) == "" {
+		cfg.FSHTTP.ListenAddr = defaultFSHTTPListenAddr
+	}
+	if cfg.FSHTTP.DownloadWaitTimeoutSeconds == 0 {
+		cfg.FSHTTP.DownloadWaitTimeoutSeconds = 60
+	}
+	if cfg.FSHTTP.MaxConcurrentSessions == 0 {
+		cfg.FSHTTP.MaxConcurrentSessions = 4
+	}
+	if cfg.FSHTTP.QuoteWaitSeconds == 0 {
+		cfg.FSHTTP.QuoteWaitSeconds = 60
+	}
+	if cfg.FSHTTP.QuotePollSeconds == 0 {
+		cfg.FSHTTP.QuotePollSeconds = 2
+	}
+	if cfg.FSHTTP.PrefetchDistanceChunks == 0 {
+		cfg.FSHTTP.PrefetchDistanceChunks = 8
+	}
 	if strings.TrimSpace(cfg.Log.ConsoleMinLevel) == "" {
 		cfg.Log.ConsoleMinLevel = obs.LevelBusiness
 	}
@@ -751,6 +802,15 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Seller.Pricing.ResaleDiscountBPS > 10000 {
 		return errors.New("seller.pricing.resale_discount_bps must be <= 10000")
+	}
+	if strings.TrimSpace(cfg.FSHTTP.ListenAddr) == "" {
+		return errors.New("fs_http.listen_addr is required")
+	}
+	if cfg.FSHTTP.MaxConcurrentSessions == 0 {
+		return errors.New("fs_http.max_concurrent_sessions must be > 0")
+	}
+	if cfg.FSHTTP.DownloadWaitTimeoutSeconds == 0 {
+		return errors.New("fs_http.download_wait_timeout_seconds must be > 0")
 	}
 	return nil
 }
@@ -873,6 +933,14 @@ func initIndexDB(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, updated_at_unix INTEGER)`,
+		`CREATE TABLE IF NOT EXISTS workspaces(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			path TEXT NOT NULL UNIQUE,
+			max_bytes INTEGER NOT NULL,
+			enabled INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, created_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS seed_price_state(seed_hash TEXT PRIMARY KEY, last_buy_unit_price_sat_per_64k INTEGER, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, unit_price_sat_per_64k INTEGER, updated_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS demand_dedup(demand_id TEXT PRIMARY KEY, seed_hash TEXT, created_at_unix INTEGER)`,
@@ -987,7 +1055,33 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS file_downloads(
+			seed_hash TEXT PRIMARY KEY,
+			file_path TEXT NOT NULL,
+			file_size INTEGER NOT NULL,
+			chunk_count INTEGER NOT NULL,
+			completed_chunks INTEGER NOT NULL,
+			paid_sats INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			demand_id TEXT NOT NULL,
+			last_error TEXT NOT NULL,
+			status_json TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS file_download_chunks(
+			seed_hash TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			seller_peer_id TEXT NOT NULL,
+			price_sats INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			PRIMARY KEY(seed_hash,chunk_index)
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_workspace_seed_hash ON workspace_files(seed_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_workspaces_path ON workspaces(path)`,
+		`CREATE INDEX IF NOT EXISTS idx_file_downloads_updated ON file_downloads(updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_file_download_chunks_seed ON file_download_chunks(seed_hash,chunk_index)`,
 		`CREATE INDEX IF NOT EXISTS idx_tx_history_created_at ON tx_history(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sale_records_created_at ON sale_records(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
@@ -1000,6 +1094,9 @@ func initIndexDB(db *sql.DB) error {
 		}
 	}
 	if err := ensureDirectQuotesSchema(db); err != nil {
+		return err
+	}
+	if err := ensureFileDownloadsSchema(db); err != nil {
 		return err
 	}
 	if err := ensureAppConfigTable(db); err != nil {
@@ -1049,60 +1146,94 @@ func ensureDirectQuotesSchema(db *sql.DB) error {
 	return err
 }
 
+func ensureFileDownloadsSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(file_downloads)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasStatusJSON := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "status_json") {
+			hasStatusJSON = true
+			break
+		}
+	}
+	if hasStatusJSON {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
+	return err
+}
+
 func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[string]sellerSeed, error) {
 	now := time.Now().Unix()
 	seenPaths := map[string]struct{}{}
 	catalog := map[string]sellerSeed{}
-	workspace := cfg.Storage.WorkspaceDir
 	seedsDir := filepath.Join(cfg.Storage.DataDir, "seeds")
-
-	err := filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		abs, err := filepath.Abs(path)
-		if err != nil {
-			return err
-		}
-		seenPaths[abs] = struct{}{}
-		st, err := os.Stat(abs)
-		if err != nil {
-			return err
-		}
-		seedBytes, seedHash, chunkCount, err := buildSeedV1(abs)
-		if err != nil {
-			return err
-		}
-		seedPath := filepath.Join(seedsDir, strings.ToLower(seedHash)+".bse")
-		if err := writeIfChanged(seedPath, seedBytes); err != nil {
-			return err
-		}
-		if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), seedHash, now); err != nil {
-			return err
-		}
-		if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET seed_file_path=excluded.seed_file_path,chunk_count=excluded.chunk_count,file_size=excluded.file_size`, seedHash, seedPath, chunkCount, st.Size(), now); err != nil {
-			return err
-		}
-		unit, total, err := upsertSeedPriceState(db, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
-		if err != nil {
-			return err
-		}
-		catalog[seedHash] = sellerSeed{SeedHash: seedHash, ChunkCount: chunkCount, ChunkPrice: unit, SeedPrice: total}
-		return nil
-	})
+	workspaces, err := listEnabledWorkspacePaths(db, cfg.Storage.WorkspaceDir)
 	if err != nil {
 		return nil, err
+	}
+
+	for _, workspace := range workspaces {
+		err = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			if d.IsDir() {
+				return nil
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			abs, err := filepath.Abs(path)
+			if err != nil {
+				return err
+			}
+			seenPaths[abs] = struct{}{}
+			st, err := os.Stat(abs)
+			if err != nil {
+				return err
+			}
+			seedBytes, seedHash, chunkCount, err := buildSeedV1(abs)
+			if err != nil {
+				return err
+			}
+			seedPath := filepath.Join(seedsDir, strings.ToLower(seedHash)+".bse")
+			if err := writeIfChanged(seedPath, seedBytes); err != nil {
+				return err
+			}
+			if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), seedHash, now); err != nil {
+				return err
+			}
+			if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET seed_file_path=excluded.seed_file_path,chunk_count=excluded.chunk_count,file_size=excluded.file_size`, seedHash, seedPath, chunkCount, st.Size(), now); err != nil {
+				return err
+			}
+			unit, total, err := upsertSeedPriceState(db, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
+			if err != nil {
+				return err
+			}
+			catalog[seedHash] = sellerSeed{SeedHash: seedHash, ChunkCount: chunkCount, ChunkPrice: unit, SeedPrice: total}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	rows, err := db.Query(`SELECT path FROM workspace_files`)
@@ -1144,6 +1275,37 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 	}
 	obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "path_count": len(seenPaths)})
 	return catalog, nil
+}
+
+func listEnabledWorkspacePaths(db *sql.DB, fallback string) ([]string, error) {
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	rows, err := db.Query(`SELECT path FROM workspaces WHERE enabled=1 ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, err
+		}
+		p = filepath.Clean(strings.TrimSpace(p))
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	fallback = filepath.Clean(strings.TrimSpace(fallback))
+	if fallback == "" {
+		return nil, fmt.Errorf("no workspace configured")
+	}
+	return []string{fallback}, nil
 }
 
 func runPeriodicScan(ctx context.Context, mgr *workspaceManager) {

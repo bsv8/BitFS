@@ -292,6 +292,10 @@ func (s *httpAPIServer) Start() error {
 		// 网关管理 API
 		mux.HandleFunc(prefix+"/v1/gateways", s.withAuth(s.handleGateways))
 		mux.HandleFunc(prefix+"/v1/gateways/master", s.withAuth(s.handleGatewayMaster))
+		// 文件系统管理 API
+		mux.HandleFunc(prefix+"/v1/admin/workspaces", s.withAuth(s.handleAdminWorkspaces))
+		mux.HandleFunc(prefix+"/v1/admin/downloads/resume", s.withAuth(s.handleAdminResumeDownload))
+		mux.HandleFunc(prefix+"/v1/admin/fs-http/strategy-debug-log", s.withAuth(s.handleAdminStrategyDebugLog))
 	}
 	registerAPI("/api")
 	registerAPI("")
@@ -1477,6 +1481,132 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"master_peer_id": master.String(), "has_master": true})
 
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
+func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if s.workspace == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace manager not initialized"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		items, err := s.workspace.List()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
+	case http.MethodPost:
+		var req struct {
+			Path     string `json:"path"`
+			MaxBytes uint64 `json:"max_bytes"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			return
+		}
+		it, err := s.workspace.Add(req.Path, req.MaxBytes)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": it})
+	case http.MethodDelete:
+		id := int64(parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000))
+		if id <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+			return
+		}
+		if err := s.workspace.DeleteByID(id); err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+				return
+			}
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "id": id})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
+func (s *httpAPIServer) handleAdminResumeDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s.rt == nil || s.rt.FSHTTP == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "file http server not enabled"})
+		return
+	}
+	var req struct {
+		SeedHash string `json:"seed_hash"`
+		Full     bool   `json:"full"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if err := s.rt.FSHTTP.Resume(req.SeedHash, req.Full); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "seed_hash": strings.ToLower(strings.TrimSpace(req.SeedHash)), "full": req.Full})
+}
+
+// handleAdminStrategyDebugLog 动态查询/更新 fs_http.strategy_debug_log_enabled。
+// 设计约束：
+// - POST 成功后立即影响运行态，无需重启；
+// - 同步写回 app_config，保证重启后状态一致；
+// - DB 持久化失败时回滚内存配置，避免运行态与持久态分叉。
+func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *http.Request) {
+	if s == nil || s.rt == nil || s.cfg == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"strategy_debug_log_enabled": s.cfg.FSHTTP.StrategyDebugLogEnabled,
+		})
+	case http.MethodPost:
+		var req struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			return
+		}
+		oldEnabled := s.cfg.FSHTTP.StrategyDebugLogEnabled
+		s.cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
+		cfg := s.rt.Config
+		cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
+		if err := SaveConfigInDB(s.db, cfg); err != nil {
+			s.cfg.FSHTTP.StrategyDebugLogEnabled = oldEnabled
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		s.rt.Config = cfg
+		obs.Business("bitcast-client", "admin_strategy_debug_log_updated", map[string]any{
+			"enabled": req.Enabled,
+		})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":                         true,
+			"strategy_debug_log_enabled": req.Enabled,
+			"changed":                    oldEnabled != req.Enabled,
+		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}

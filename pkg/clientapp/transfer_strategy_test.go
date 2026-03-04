@@ -12,26 +12,10 @@ func TestBuildTransferStrategyDefault(t *testing.T) {
 	}
 }
 
-func TestMaxPriceAllRoundRobin(t *testing.T) {
-	s := &maxPriceAllStrategy{}
-	workers := []*transferSellerWorker{
-		{quote: DirectQuoteItem{ChunkPrice: 50}},
-		{quote: DirectQuoteItem{ChunkPrice: 20}},
-		{quote: DirectQuoteItem{ChunkPrice: 30}, broken: true},
-	}
-	idx, ok := s.SelectReady([]int{0, 1, 2}, workers)
-	if !ok {
-		t.Fatalf("expected selectable worker")
-	}
-	if idx != 0 {
-		t.Fatalf("expected first round-robin worker index=0, got=%d", idx)
-	}
-	idx2, ok2 := s.SelectReady([]int{0, 1, 2}, workers)
-	if !ok2 {
-		t.Fatalf("expected selectable worker in second round")
-	}
-	if idx2 != 1 {
-		t.Fatalf("expected second round-robin worker index=1, got=%d", idx2)
+func TestBuildTransferStrategyIgnoreUnknown(t *testing.T) {
+	s := buildTransferStrategy("unknown-strategy")
+	if _, ok := s.(*smartDispatchStrategy); !ok {
+		t.Fatalf("expected smartDispatchStrategy, got %T", s)
 	}
 }
 

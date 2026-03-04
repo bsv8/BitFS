@@ -5,9 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -15,7 +13,6 @@ import (
 
 const (
 	TransferStrategySmart      = "smart"
-	TransferStrategyMaxPrice   = "max_price_all"
 	defaultChunkRetryMax       = 6
 	defaultSaturationEpsilon   = 0.03
 	defaultSaturationWindowDur = 2 * time.Second
@@ -79,7 +76,9 @@ type transferSellerWorker struct {
 	totalNanos   int64
 	emaBPS       float64
 	pruned       bool
+	prunedReason string
 	broken       bool
+	brokenReason string
 
 	consecutiveFailures int
 	assignCh            chan uint32
@@ -116,11 +115,15 @@ func (w *transferSellerWorker) updateSuccess(bytes int, elapsed time.Duration) {
 	w.emaBPS = alpha*inst + (1-alpha)*w.emaBPS
 }
 
-func (w *transferSellerWorker) updateFailure() {
+func (w *transferSellerWorker) updateFailure(reason string) {
 	w.failedCount++
 	w.consecutiveFailures++
 	if w.consecutiveFailures >= 3 {
 		w.broken = true
+		if strings.TrimSpace(reason) == "" {
+			reason = "consecutive_failures"
+		}
+		w.brokenReason = reason
 	}
 }
 
@@ -226,31 +229,6 @@ type transferDispatchStrategy interface {
 	OnChunkDone(now time.Time, completedBytes uint64, workers []*transferSellerWorker)
 }
 
-type maxPriceAllStrategy struct {
-	rrCursor int
-}
-
-func (m *maxPriceAllStrategy) SelectReady(ready []int, workers []*transferSellerWorker) (int, bool) {
-	if len(ready) == 0 {
-		return 0, false
-	}
-	candidates := make([]int, 0, len(ready))
-	for _, idx := range ready {
-		if !workers[idx].broken {
-			candidates = append(candidates, idx)
-		}
-	}
-	if len(candidates) == 0 {
-		return 0, false
-	}
-	sort.Ints(candidates)
-	pick := candidates[m.rrCursor%len(candidates)]
-	m.rrCursor++
-	return pick, true
-}
-
-func (m *maxPriceAllStrategy) OnChunkDone(_ time.Time, _ uint64, _ []*transferSellerWorker) {}
-
 type smartDispatchStrategy struct {
 	epsilon            float64
 	windowDur          time.Duration
@@ -260,6 +238,7 @@ type smartDispatchStrategy struct {
 	slowWindowStreak   int
 	alreadySaturated   bool
 	lastPrunedSellerID string
+	lastPrunedReason   string
 }
 
 func newSmartDispatchStrategy() *smartDispatchStrategy {
@@ -362,7 +341,9 @@ func (s *smartDispatchStrategy) pruneWorstSeller(workers []*transferSellerWorker
 		return
 	}
 	workers[worstIdx].pruned = true
+	workers[worstIdx].prunedReason = "saturation_low_growth"
 	s.lastPrunedSellerID = workers[worstIdx].quote.SellerPeerID
+	s.lastPrunedReason = "saturation_low_growth"
 	logTransferStrategy("evt_transfer_strategy_smart_pruned", map[string]any{
 		"seller_peer_id": shortID(workers[worstIdx].quote.SellerPeerID),
 		"score":          worstScore,
@@ -374,14 +355,18 @@ func (s *smartDispatchStrategy) pruneWorstSeller(workers []*transferSellerWorker
 }
 
 func buildTransferStrategy(name string) transferDispatchStrategy {
-	switch strings.TrimSpace(strings.ToLower(name)) {
-	case "", TransferStrategySmart:
-		return newSmartDispatchStrategy()
-	case TransferStrategyMaxPrice:
-		return &maxPriceAllStrategy{}
-	default:
-		return newSmartDispatchStrategy()
+	_ = name
+	// 设计说明：
+	// - 当前阶段只保留速价动态策略，删除占位策略实现；
+	// - 后续若新增策略，必须满足可观测与回归测试约束后再接入。
+	return newSmartDispatchStrategy()
+}
+
+func strategyNameOrDefault(name string) string {
+	if strings.TrimSpace(strings.ToLower(name)) == TransferStrategySmart {
+		return TransferStrategySmart
 	}
+	return TransferStrategySmart
 }
 
 func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
@@ -408,7 +393,8 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 		"demand_id":         strings.TrimSpace(p.DemandID),
 		"seed_hash":         shortID(seedHash),
 		"chunk_count":       p.ChunkCount,
-		"strategy":          strings.TrimSpace(p.Strategy),
+		"strategy":          strategyNameOrDefault(p.Strategy),
+		"strategy_input":    strings.TrimSpace(p.Strategy),
 		"max_seed_price":    p.MaxSeedPrice,
 		"max_chunk_price":   p.MaxChunkPrice,
 		"pool_amount":       p.PoolAmount,
@@ -447,108 +433,57 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 		return TransferChunksByStrategyResult{}, fmt.Errorf("no quotes under configured price limits")
 	}
 
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].ChunkPrice == filtered[j].ChunkPrice {
-			return filtered[i].SeedPrice < filtered[j].SeedPrice
-		}
-		return filtered[i].ChunkPrice < filtered[j].ChunkPrice
-	})
-
-	workers := make([]*transferSellerWorker, 0, len(filtered))
 	rejectedByArbiter := 0
-	for _, q := range filtered {
-		arbiterPeerID, err := resolveDealArbiter(buyer, q.SellerArbiterPeerIDs, p.ArbiterPeerID)
-		if err != nil {
+	var seedMeta seedV1Meta
+	workers, seedMeta, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
+		Ctx:           ctx,
+		Buyer:         buyer,
+		Quotes:        filtered,
+		SeedHash:      seedHash,
+		ArbiterPeerID: p.ArbiterPeerID,
+		PoolAmount:    p.PoolAmount,
+		OnQuoteRejected: func(q DirectQuoteItem, err error) {
 			rejectedByArbiter++
 			logTransferStrategy("evt_transfer_strategy_quote_rejected_arbiter", map[string]any{
 				"seller_peer_id": shortID(q.SellerPeerID),
 				"demand_id":      strings.TrimSpace(q.DemandID),
 				"error":          err.Error(),
 			})
-			continue
-		}
-		workers = append(workers, &transferSellerWorker{
-			buyer:         buyer,
-			quote:         q,
-			arbiterPeerID: arbiterPeerID,
-			seedHash:      seedHash,
-			poolAmount:    p.PoolAmount,
-			assignCh:      make(chan uint32),
-		})
-		logTransferStrategy("evt_transfer_strategy_seller_accepted", map[string]any{
-			"seller_peer_id":  shortID(q.SellerPeerID),
-			"demand_id":       strings.TrimSpace(q.DemandID),
-			"arbiter_peer_id": shortID(arbiterPeerID),
-			"chunk_price":     q.ChunkPrice,
-			"seed_price":      q.SeedPrice,
-		})
-	}
+		},
+		OnQuoteAccepted: func(q DirectQuoteItem, arbiterPeerID string) {
+			logTransferStrategy("evt_transfer_strategy_seller_accepted", map[string]any{
+				"seller_peer_id":  shortID(q.SellerPeerID),
+				"demand_id":       strings.TrimSpace(q.DemandID),
+				"arbiter_peer_id": shortID(arbiterPeerID),
+				"chunk_price":     q.ChunkPrice,
+				"seed_price":      q.SeedPrice,
+			})
+		},
+		OnSeedProbeFail: func(w *transferSellerWorker, reason string, err error) {
+			fields := map[string]any{
+				"seller_peer_id": shortID(w.quote.SellerPeerID),
+				"reason":         reason,
+			}
+			if err != nil {
+				fields["error"] = err.Error()
+			}
+			logTransferStrategy("evt_transfer_strategy_seed_probe_skip", fields)
+		},
+		OnSeedProbeOK: func(w *transferSellerWorker, meta seedV1Meta) {
+			logTransferStrategy("evt_transfer_strategy_seed_probe_ok", map[string]any{
+				"seller_peer_id": shortID(w.quote.SellerPeerID),
+				"chunk_count":    meta.ChunkCount,
+				"file_size":      meta.FileSize,
+			})
+		},
+	})
 	logTransferStrategy("evt_transfer_strategy_workers_ready", map[string]any{
 		"demand_id":           strings.TrimSpace(p.DemandID),
 		"worker_count":        len(workers),
 		"rejected_by_arbiter": rejectedByArbiter,
 	})
-	if len(workers) == 0 {
-		return TransferChunksByStrategyResult{}, fmt.Errorf("no quote with available arbiter")
-	}
-
-	// 先拿到 seed 元信息，后续才能按 chunk_hash 并发调度分块。
-	var seedMeta seedV1Meta
-	seedLoaded := false
-	for _, w := range workers {
-		if err := w.ensureSession(ctx); err != nil {
-			w.broken = true
-			logTransferStrategy("evt_transfer_strategy_seed_probe_skip", map[string]any{
-				"seller_peer_id": shortID(w.quote.SellerPeerID),
-				"reason":         "open_session_failed",
-				"error":          err.Error(),
-			})
-			continue
-		}
-		seedRes, err := TriggerClientSeedGet(ctx, buyer, SeedGetParams{
-			SellerPeerID: w.quote.SellerPeerID,
-			SessionID:    w.sessionID,
-			SeedHash:     seedHash,
-		})
-		if err != nil {
-			w.broken = true
-			logTransferStrategy("evt_transfer_strategy_seed_probe_skip", map[string]any{
-				"seller_peer_id": shortID(w.quote.SellerPeerID),
-				"reason":         "seed_get_failed",
-				"error":          err.Error(),
-			})
-			continue
-		}
-		seedMeta, err = parseSeedV1(seedRes.Seed)
-		if err != nil {
-			w.broken = true
-			logTransferStrategy("evt_transfer_strategy_seed_probe_skip", map[string]any{
-				"seller_peer_id": shortID(w.quote.SellerPeerID),
-				"reason":         "seed_parse_failed",
-				"error":          err.Error(),
-			})
-			continue
-		}
-		if !strings.EqualFold(seedMeta.SeedHashHex, seedHash) {
-			w.broken = true
-			logTransferStrategy("evt_transfer_strategy_seed_probe_skip", map[string]any{
-				"seller_peer_id": shortID(w.quote.SellerPeerID),
-				"reason":         "seed_hash_mismatch",
-				"seed_hash":      shortID(seedMeta.SeedHashHex),
-			})
-			continue
-		}
-		seedLoaded = true
-		logTransferStrategy("evt_transfer_strategy_seed_probe_ok", map[string]any{
-			"seller_peer_id": shortID(w.quote.SellerPeerID),
-			"chunk_count":    seedMeta.ChunkCount,
-			"file_size":      seedMeta.FileSize,
-		})
-		break
-	}
-	if !seedLoaded {
-		_ = closeTransferWorkers(context.Background(), workers)
-		return TransferChunksByStrategyResult{}, fmt.Errorf("seed metadata load failed from all sellers")
+	if err != nil {
+		return TransferChunksByStrategyResult{}, err
 	}
 
 	want := p.ChunkCount
@@ -560,10 +495,11 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 		return TransferChunksByStrategyResult{}, fmt.Errorf("seed has zero chunks")
 	}
 
-	strategy := buildTransferStrategy(p.Strategy)
+	effectiveStrategyName := strategyNameOrDefault(p.Strategy)
+	strategy := buildTransferStrategy(effectiveStrategyName)
 	logTransferStrategy("evt_transfer_strategy_dispatch_ready", map[string]any{
 		"demand_id":      strings.TrimSpace(p.DemandID),
-		"strategy":       strings.TrimSpace(p.Strategy),
+		"strategy":       effectiveStrategyName,
 		"effective_name": fmt.Sprintf("%T", strategy),
 		"chunk_count":    want,
 		"worker_count":   len(workers),
@@ -573,213 +509,38 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 		chunkHashes[i] = seedMeta.ChunkHashes[i]
 	}
 
-	readyCh := make(chan int, len(workers)*2)
-	resultCh := make(chan transferChunkResult, len(workers)*2)
-	var wg sync.WaitGroup
-	for idx := range workers {
-		wg.Add(1)
-		go func(workerIdx int) {
-			defer wg.Done()
-			readyCh <- workerIdx
-			for chunkIndex := range workers[workerIdx].assignCh {
-				if int(chunkIndex) >= len(chunkHashes) {
-					resultCh <- transferChunkResult{sellerIndex: workerIdx, chunkIndex: chunkIndex, err: fmt.Errorf("chunk index out of range")}
-					readyCh <- workerIdx
-					continue
-				}
-				chunk, elapsed, err := workers[workerIdx].fetchChunk(ctx, chunkIndex, chunkHashes[chunkIndex])
-				resultCh <- transferChunkResult{
-					sellerIndex: workerIdx,
-					chunkIndex:  chunkIndex,
-					chunk:       chunk,
-					elapsed:     elapsed,
-					err:         err,
-				}
-				readyCh <- workerIdx
-			}
-		}(idx)
-	}
-
-	queue := make([]uint32, 0, want)
+	pending := make(map[uint32]bool, want)
 	for i := uint32(0); i < want; i++ {
-		queue = append(queue, i)
+		pending[i] = true
 	}
-	ready := map[int]bool{}
-	retryCount := make([]int, want)
 	chunks := make([][]byte, want)
-	remaining := int(want)
-	var completedBytes uint64
-
-	popQueue := func() (uint32, bool) {
-		if len(queue) == 0 {
-			return 0, false
-		}
-		v := queue[0]
-		queue = queue[1:]
-		return v, true
-	}
-	requeue := func(idx uint32) {
-		queue = append(queue, idx)
-	}
-	pickReady := func(force bool) (int, bool) {
-		readyList := make([]int, 0, len(ready))
-		for idx, ok := range ready {
-			if ok {
-				readyList = append(readyList, idx)
+	_, runErr := runSpeedPriceChunkScheduler(speedPriceChunkSchedulerParams{
+		Ctx:          ctx,
+		Workers:      workers,
+		ChunkHashes:  chunkHashes,
+		Pending:      pending,
+		MaxRetries:   p.MaxChunkRetries,
+		Strategy:     strategy,
+		StrategyName: effectiveStrategyName,
+		SelectChunk:  defaultSelectChunk,
+		OnChunk: func(chunkIndex uint32, chunk []byte, w *transferSellerWorker, elapsed time.Duration) (uint64, error) {
+			if chunkIndex >= uint32(len(chunks)) {
+				return 0, fmt.Errorf("chunk index out of range")
 			}
-		}
-		if len(readyList) == 0 {
-			return 0, false
-		}
-		sel, ok := strategy.SelectReady(readyList, workers)
-		if ok {
-			return sel, true
-		}
-		if !force {
-			return 0, false
-		}
-		for _, idx := range readyList {
-			if !workers[idx].broken {
-				return idx, true
-			}
-		}
-		return 0, false
-	}
-	closeWorkers := func() {
-		for _, w := range workers {
-			close(w.assignCh)
-		}
-		wg.Wait()
-	}
-
-	var runErr error
-	for remaining > 0 && runErr == nil {
-		dispatched := false
-		for len(queue) > 0 {
-			idx, ok := pickReady(false)
-			if !ok {
-				break
-			}
-			chunkIndex, ok := popQueue()
-			if !ok {
-				break
-			}
-			ready[idx] = false
-			workers[idx].assignCh <- chunkIndex
-			logTransferStrategy("evt_transfer_strategy_chunk_assigned", map[string]any{
-				"chunk_index":     chunkIndex,
-				"seller_peer_id":  shortID(workers[idx].quote.SellerPeerID),
-				"queue_remaining": len(queue),
-				"strategy":        strings.TrimSpace(p.Strategy),
-			})
-			dispatched = true
-		}
-
-		if remaining == 0 {
-			break
-		}
-
-		if !dispatched {
-			if len(queue) > 0 {
-				if idx, ok := pickReady(true); ok {
-					chunkIndex, ok := popQueue()
-					if ok {
-						ready[idx] = false
-						workers[idx].assignCh <- chunkIndex
-						logTransferStrategy("evt_transfer_strategy_chunk_assigned_forced", map[string]any{
-							"chunk_index":     chunkIndex,
-							"seller_peer_id":  shortID(workers[idx].quote.SellerPeerID),
-							"queue_remaining": len(queue),
-							"strategy":        strings.TrimSpace(p.Strategy),
-						})
-						dispatched = true
-					}
-				}
-			}
-		}
-		if len(queue) > 0 {
-			available := 0
-			for _, w := range workers {
-				if !w.broken {
-					available++
-				}
-			}
-			if available == 0 {
-				runErr = fmt.Errorf("all sellers unavailable")
-				break
-			}
-		}
-
-		select {
-		case ridx := <-readyCh:
-			ready[ridx] = true
-		case res := <-resultCh:
-			if res.chunkIndex >= uint32(len(retryCount)) {
-				runErr = fmt.Errorf("chunk index out of range")
-				break
-			}
-			w := workers[res.sellerIndex]
-			if res.err != nil {
-				w.updateFailure()
-				retryCount[res.chunkIndex]++
-				logTransferStrategy("evt_transfer_strategy_chunk_failed", map[string]any{
-					"chunk_index":    res.chunkIndex,
+			if chunks[chunkIndex] == nil {
+				chunks[chunkIndex] = chunk
+				logTransferStrategy("evt_transfer_strategy_chunk_ok", map[string]any{
+					"chunk_index":    chunkIndex,
 					"seller_peer_id": shortID(w.quote.SellerPeerID),
-					"retry_count":    retryCount[res.chunkIndex],
-					"max_retries":    p.MaxChunkRetries,
-					"error":          res.err.Error(),
-					"broken":         w.broken,
+					"elapsed_ms":     elapsed.Milliseconds(),
+					"chunk_bytes":    len(chunk),
+					"ema_bps":        w.emaBPS,
 				})
-				if retryCount[res.chunkIndex] > p.MaxChunkRetries {
-					runErr = fmt.Errorf("chunk=%d transfer failed after retries: %w", res.chunkIndex, res.err)
-					break
-				}
-				requeue(res.chunkIndex)
-				continue
+				return uint64(len(chunk)), nil
 			}
-			if res.chunkIndex >= uint32(len(chunks)) {
-				runErr = fmt.Errorf("chunk index out of range")
-				break
-			}
-			hash := sha256.Sum256(res.chunk)
-			if hex.EncodeToString(hash[:]) != chunkHashes[res.chunkIndex] {
-				w.updateFailure()
-				retryCount[res.chunkIndex]++
-				logTransferStrategy("evt_transfer_strategy_chunk_hash_failed", map[string]any{
-					"chunk_index":    res.chunkIndex,
-					"seller_peer_id": shortID(w.quote.SellerPeerID),
-					"retry_count":    retryCount[res.chunkIndex],
-					"max_retries":    p.MaxChunkRetries,
-				})
-				if retryCount[res.chunkIndex] > p.MaxChunkRetries {
-					runErr = fmt.Errorf("chunk=%d hash verify failed", res.chunkIndex)
-					break
-				}
-				requeue(res.chunkIndex)
-				continue
-			}
-			if chunks[res.chunkIndex] == nil {
-				chunks[res.chunkIndex] = res.chunk
-				remaining--
-				completedBytes += uint64(len(res.chunk))
-			}
-			w.resetFailureStreak()
-			w.updateSuccess(len(res.chunk), res.elapsed)
-			logTransferStrategy("evt_transfer_strategy_chunk_ok", map[string]any{
-				"chunk_index":      res.chunkIndex,
-				"seller_peer_id":   shortID(w.quote.SellerPeerID),
-				"elapsed_ms":       res.elapsed.Milliseconds(),
-				"chunk_bytes":      len(res.chunk),
-				"remaining_chunks": remaining,
-				"ema_bps":          w.emaBPS,
-			})
-			strategy.OnChunkDone(time.Now(), completedBytes, workers)
-		case <-ctx.Done():
-			runErr = ctx.Err()
-		}
-	}
-
-	closeWorkers()
+			return 0, nil
+		},
+	})
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
