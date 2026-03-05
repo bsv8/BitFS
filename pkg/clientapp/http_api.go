@@ -865,92 +865,66 @@ func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32,
 	s.jobsMu.Lock()
 	s.getJobs[jobID].GatewayPeerID = gw.ID.String()
 	s.jobsMu.Unlock()
-
-	step := addStep("publish_demand", map[string]string{"seed_hash": seedHash, "chunk_count": fmt.Sprintf("%d", chunkCount)})
-	pub, err := TriggerGatewayPublishDemand(ctx, s.rt, PublishDemandParams{
-		SeedHash:      seedHash,
-		ChunkCount:    chunkCount,
-		GatewayPeerID: gw.ID.String(),
+	stepIndex := map[string]int{}
+	download, err := runDirectDownloadCore(ctx, s.rt, directDownloadCoreParams{
+		SeedHash:           seedHash,
+		DemandChunkCount:   chunkCount,
+		TransferChunkCount: chunkCount,
+		GatewayPeerID:      gw.ID.String(),
+		QuoteMaxRetry:      10,
+		QuoteInterval:      2 * time.Second,
+		MaxChunkPrice:      s.cfg.FSHTTP.MaxChunkPriceSatPer64K,
+		Strategy:           TransferStrategySmart,
+	}, directDownloadCoreHooks{
+		OnStepStart: func(name string, detail map[string]string) {
+			stepIndex[name] = addStep(name, detail)
+		},
+		OnStepDone: func(name string, detail map[string]string) {
+			if idx, ok := stepIndex[name]; ok {
+				endStep(idx, "done", detail)
+			}
+		},
+		OnStepFail: func(name string, _ error, detail map[string]string) {
+			if idx, ok := stepIndex[name]; ok {
+				endStep(idx, "failed", detail)
+			}
+		},
 	})
 	if err != nil {
-		endStep(step, "failed", map[string]string{"error": err.Error()})
-		fail("publish demand failed: " + err.Error())
+		fail(err.Error())
 		return
 	}
-	endStep(step, "done", map[string]string{"demand_id": pub.DemandID, "status": pub.Status})
 
-	step = addStep("list_direct_quotes", map[string]string{"demand_id": pub.DemandID})
-	var quotes []DirectQuoteItem
-	for i := 0; i < 10; i++ {
-		quotes, err = TriggerClientListDirectQuotes(ctx, s.rt, pub.DemandID)
-		if err != nil {
-			break
-		}
-		if len(quotes) > 0 {
-			break
-		}
-		time.Sleep(2 * time.Second)
+	step := addStep("write_file", map[string]string{
+		"selected_file_name": download.FileName,
+		"bytes":              fmt.Sprintf("%d", len(download.Transfer.Data)),
+	})
+	if s.workspace == nil {
+		endStep(step, "failed", map[string]string{"error": "workspace manager not initialized"})
+		fail("workspace manager not initialized")
+		return
 	}
+	outPath, err := s.workspace.SelectOutputPath(download.FileName, uint64(len(download.Transfer.Data)))
 	if err != nil {
 		endStep(step, "failed", map[string]string{"error": err.Error()})
-		fail("list direct quotes failed: " + err.Error())
+		fail("select workspace output failed: " + err.Error())
 		return
 	}
-	if len(quotes) == 0 {
-		endStep(step, "failed", map[string]string{"error": "no quotes"})
-		fail("no direct quote available")
-		return
-	}
-	finalFileName := pickRecommendedFileName(quotes, seedHash)
-	q := quotes[0]
-	endStep(step, "done", map[string]string{
-		"seller_peer_id":         q.SellerPeerID,
-		"chunk_price":            fmt.Sprintf("%d", q.ChunkPrice),
-		"selected_file_name":     finalFileName,
-		"first_recommended_name": q.RecommendedFileName,
-	})
-
-	arbiterPeerID := ""
-	if len(s.rt.HealthyArbiters) > 0 {
-		arbiterPeerID = s.rt.HealthyArbiters[0].ID.String()
-	}
-	step = addStep("direct_transfer", map[string]string{"chunk_count": fmt.Sprintf("%d", chunkCount)})
-	transfer, err := TriggerTransferChunks(ctx, s.rt, TransferChunksParams{
-		SellerPeerID:  q.SellerPeerID,
-		DemandID:      pub.DemandID,
-		ArbiterPeerID: arbiterPeerID,
-		SeedHash:      seedHash,
-		SeedPrice:     q.SeedPrice,
-		ChunkPrice:    q.ChunkPrice,
-		ExpiresAtUnix: q.ExpiresAtUnix,
-		ChunkCount:    chunkCount,
-	})
-	if err != nil {
-		endStep(step, "failed", map[string]string{"error": err.Error()})
-		fail("direct transfer failed: " + err.Error())
-		return
-	}
-	endStep(step, "done", map[string]string{
-		"deal_id":    transfer.DealID,
-		"session_id": transfer.SessionID,
-		"sha256":     transfer.SHA256,
-		"bytes":      fmt.Sprintf("%d", len(transfer.Data)),
-	})
-
-	step = addStep("write_file", map[string]string{})
-	outDir := filepath.Join(s.cfg.Storage.DataDir, "downloads")
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		endStep(step, "failed", map[string]string{"error": err.Error()})
-		fail("create download dir failed: " + err.Error())
-		return
-	}
-	outPath := filepath.Join(outDir, finalFileName)
-	if err := os.WriteFile(outPath, transfer.Data, 0o644); err != nil {
+	if err := os.WriteFile(outPath, download.Transfer.Data, 0o644); err != nil {
 		endStep(step, "failed", map[string]string{"error": err.Error()})
 		fail("write output failed: " + err.Error())
 		return
 	}
-	endStep(step, "done", map[string]string{"output_file_path": outPath, "bytes": fmt.Sprintf("%d", len(transfer.Data))})
+	if _, err := s.workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+		FilePath:              outPath,
+		Seed:                  download.Transfer.Seed,
+		AvailableChunkIndexes: contiguousChunkIndexes(download.Transfer.ChunkCount),
+	}); err != nil {
+		endStep(step, "failed", map[string]string{"error": err.Error()})
+		fail("workspace register failed: " + err.Error())
+		return
+	}
+	endStep(step, "done", map[string]string{"output_file_path": outPath, "bytes": fmt.Sprintf("%d", len(download.Transfer.Data))})
 
 	s.jobsMu.Lock()
 	if j, ok := s.getJobs[jobID]; ok {
@@ -965,42 +939,6 @@ func newJobID() string {
 	b := make([]byte, 4)
 	_, _ = rand.Read(b)
 	return fmt.Sprintf("gf_%d_%s", time.Now().Unix(), hex.EncodeToString(b))
-}
-
-func pickRecommendedFileName(quotes []DirectQuoteItem, seedHash string) string {
-	defaultName := fmt.Sprintf("%s.bin", strings.ToLower(strings.TrimSpace(seedHash)))
-	if len(quotes) == 0 {
-		return defaultName
-	}
-	type fileNameStat struct {
-		count    int
-		firstPos int
-	}
-	stats := map[string]fileNameStat{}
-	bestName := ""
-	bestCount := -1
-	bestPos := 1 << 30
-	for i, q := range quotes {
-		name := sanitizeRecommendedFileName(q.RecommendedFileName)
-		if name == "" {
-			continue
-		}
-		st, ok := stats[name]
-		if !ok {
-			st = fileNameStat{count: 0, firstPos: i}
-		}
-		st.count++
-		stats[name] = st
-		if st.count > bestCount || (st.count == bestCount && st.firstPos < bestPos) {
-			bestName = name
-			bestCount = st.count
-			bestPos = st.firstPos
-		}
-	}
-	if bestName != "" {
-		return bestName
-	}
-	return defaultName
 }
 
 func (s *httpAPIServer) handleFileHash(w http.ResponseWriter, r *http.Request) {

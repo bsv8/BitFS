@@ -10,23 +10,25 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
-	"github.com/bsv8/BFTP/pkg/obs"
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/libp2p/go-libp2p/core/host"
+	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/obs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
+	"github.com/libp2p/go-libp2p/core/host"
 )
 
 // triplePoolSession 是 buyer 侧维护的“3-of-3 费用池会话”状态。
 // 这里的金额变化来自真实可签名交易，不是数据库记账余额。
 type triplePoolSession struct {
+	DemandID         string
 	SessionID        string
 	DealID           string
 	SellerPeerID     string
 	ArbiterPeerID    string
 	PoolAmountSat    uint64
 	SpendTxFeeSat    uint64
+	OpenSequence     uint32
 	Sequence         uint32
 	SellerAmount     uint64
 	BuyerAmount      uint64
@@ -38,6 +40,8 @@ type triplePoolSession struct {
 	SellerPubKeyHex  string
 	BuyerPubKeyHex   string
 	ArbiterPubKeyHex string
+	PayCount         uint32
+	LastPaySequence  uint32
 	FinalTxID        string
 }
 
@@ -159,7 +163,7 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 	if req.Sequence == 0 {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "sequence must be >= 1"}, nil
 	}
-	if req.PoolAmount == 0 || req.CurrentTxHex == "" || req.BuyerSigHex == "" || req.BaseTxHex == "" {
+	if req.PoolAmount == 0 || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 || len(req.BaseTx) == 0 {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "missing tx payload"}, nil
 	}
 	if req.SellerAmount+req.BuyerAmount+req.SpendTxFee != req.PoolAmount {
@@ -207,8 +211,10 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid arbiter secp256k1 pubkey"}, nil
 	}
+	currentTxHex := strings.ToLower(hex.EncodeToString(req.CurrentTx))
+	baseTxHex := strings.ToLower(hex.EncodeToString(req.BaseTx))
 	parsedTx, err := te.TripleFeePoolLoadTx(
-		strings.TrimSpace(req.CurrentTxHex),
+		currentTxHex,
 		nil,
 		req.Sequence,
 		req.SellerAmount,
@@ -220,10 +226,7 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
-	buyerSig, err := hex.DecodeString(strings.TrimSpace(req.BuyerSigHex))
-	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer signature"}, nil
-	}
+	buyerSig := append([]byte(nil), req.BuyerSig...)
 	ok, err := te.ServerVerifyClientASig(parsedTx, req.PoolAmount, arbiterPub, buyerPub, sellerPriv.PubKey(), &buyerSig)
 	if err != nil || !ok {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
@@ -250,10 +253,10 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 			status=excluded.status,
 			fee_rate_sat_byte=excluded.fee_rate_sat_byte,
 			lock_blocks=excluded.lock_blocks,
-			updated_at_unix=excluded.updated_at_unix`,
+		updated_at_unix=excluded.updated_at_unix`,
 		sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPeerID,
 		buyerPubHex, strings.ToLower(hex.EncodeToString(sellerPriv.PubKey().Compressed())), arbiterPubHex,
-		req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, strings.TrimSpace(req.CurrentTxHex), strings.TrimSpace(req.BaseTxHex), strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
+		req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
 	); err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
@@ -266,9 +269,9 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 		"seller_amount": req.SellerAmount,
 	})
 	return directTransferPoolOpenResp{
-		SessionID:    sessionID,
-		Status:       "active",
-		SellerSigHex: hex.EncodeToString(*sellerSig),
+		SessionID: sessionID,
+		Status:    "active",
+		SellerSig: append([]byte(nil), (*sellerSig)...),
 	}, nil
 }
 
@@ -276,7 +279,7 @@ func handleDirectTransferPoolPay(_ host.Host, db *sql.DB, cfg Config, req direct
 	sessionID := strings.TrimSpace(req.SessionID)
 	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
-	if sessionID == "" || seedHash == "" || chunkHash == "" || req.Sequence == 0 || strings.TrimSpace(req.CurrentTxHex) == "" || strings.TrimSpace(req.BuyerSigHex) == "" {
+	if sessionID == "" || seedHash == "" || chunkHash == "" || req.Sequence == 0 || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {
 		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid pay request"}, nil
 	}
 	row, err := loadDirectTransferPoolRow(db, sessionID)
@@ -331,8 +334,9 @@ func handleDirectTransferPoolPay(_ host.Host, db *sql.DB, cfg Config, req direct
 	if err != nil {
 		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
 	}
+	currentTxHex := strings.ToLower(hex.EncodeToString(req.CurrentTx))
 	parsedTx, err := te.TripleFeePoolLoadTx(
-		strings.TrimSpace(req.CurrentTxHex),
+		currentTxHex,
 		nil,
 		req.Sequence,
 		req.SellerAmount,
@@ -344,10 +348,7 @@ func handleDirectTransferPoolPay(_ host.Host, db *sql.DB, cfg Config, req direct
 	if err != nil {
 		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
-	buyerSig, err := hex.DecodeString(strings.TrimSpace(req.BuyerSigHex))
-	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer signature"}, nil
-	}
+	buyerSig := append([]byte(nil), req.BuyerSig...)
 	ok, err := te.ServerVerifyClientASig(parsedTx, row.PoolAmount, arbiterPub, buyerPub, sellerPriv.PubKey(), &buyerSig)
 	if err != nil || !ok {
 		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
@@ -361,7 +362,7 @@ func handleDirectTransferPoolPay(_ host.Host, db *sql.DB, cfg Config, req direct
 	now := time.Now().Unix()
 	if _, err := db.Exec(
 		`UPDATE direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
-		req.Sequence, req.SellerAmount, req.BuyerAmount, strings.TrimSpace(req.CurrentTxHex), now, sessionID,
+		req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, now, sessionID,
 	); err != nil {
 		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
@@ -389,10 +390,10 @@ func handleDirectTransferPoolPay(_ host.Host, db *sql.DB, cfg Config, req direct
 		"chunk_index":   resolvedChunkIndex,
 	})
 	return directTransferPoolPayResp{
-		SessionID:    sessionID,
-		Status:       "active",
-		SellerSigHex: hex.EncodeToString(*sellerSig),
-		ChunkHex:     hex.EncodeToString(chunk),
+		SessionID: sessionID,
+		Status:    "active",
+		SellerSig: append([]byte(nil), (*sellerSig)...),
+		Chunk:     append([]byte(nil), chunk...),
 	}, nil
 }
 
@@ -428,7 +429,7 @@ func shortHash(s string) string {
 
 func handleDirectTransferPoolClose(_ host.Host, db *sql.DB, cfg Config, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 	sessionID := strings.TrimSpace(req.SessionID)
-	if sessionID == "" || strings.TrimSpace(req.CurrentTxHex) == "" || strings.TrimSpace(req.BuyerSigHex) == "" {
+	if sessionID == "" || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid close request"}, nil
 	}
 	row, err := loadDirectTransferPoolRow(db, sessionID)
@@ -454,7 +455,8 @@ func handleDirectTransferPoolClose(_ host.Host, db *sql.DB, cfg Config, req dire
 	if err != nil {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
 	}
-	rawTx, err := tx.NewTransactionFromHex(strings.TrimSpace(req.CurrentTxHex))
+	currentTxHex := strings.ToLower(hex.EncodeToString(req.CurrentTx))
+	rawTx, err := tx.NewTransactionFromHex(currentTxHex)
 	if err != nil {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
@@ -464,7 +466,7 @@ func handleDirectTransferPoolClose(_ host.Host, db *sql.DB, cfg Config, req dire
 	}
 	locktime := rawTx.LockTime
 	parsedTx, err := te.TripleFeePoolLoadTx(
-		strings.TrimSpace(req.CurrentTxHex),
+		currentTxHex,
 		&locktime,
 		seq,
 		req.SellerAmount,
@@ -476,10 +478,7 @@ func handleDirectTransferPoolClose(_ host.Host, db *sql.DB, cfg Config, req dire
 	if err != nil {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
-	buyerSig, err := hex.DecodeString(strings.TrimSpace(req.BuyerSigHex))
-	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer signature"}, nil
-	}
+	buyerSig := append([]byte(nil), req.BuyerSig...)
 	ok, err := te.ServerVerifyClientASig(parsedTx, row.PoolAmount, arbiterPub, buyerPub, sellerPriv.PubKey(), &buyerSig)
 	if err != nil || !ok {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
@@ -490,15 +489,15 @@ func handleDirectTransferPoolClose(_ host.Host, db *sql.DB, cfg Config, req dire
 	}
 	now := time.Now().Unix()
 	_, _ = db.Exec(`UPDATE direct_transfer_pools SET status='closing',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
-		req.Sequence, req.SellerAmount, req.BuyerAmount, strings.TrimSpace(req.CurrentTxHex), now, sessionID)
+		req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, now, sessionID)
 	obs.Business("bitcast-client", "direct_transfer_pool_close_sign_ok", map[string]any{
 		"session_id": sessionID,
 		"sequence":   req.Sequence,
 	})
 	return directTransferPoolCloseResp{
-		SessionID:    sessionID,
-		Status:       "closing",
-		SellerSigHex: hex.EncodeToString(*sellerSig),
+		SessionID: sessionID,
+		Status:    "closing",
+		SellerSig: append([]byte(nil), (*sellerSig)...),
 	}, nil
 }
 

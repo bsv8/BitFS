@@ -27,6 +27,12 @@ type workspaceItem struct {
 	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
+type registerDownloadedFileParams struct {
+	FilePath              string
+	Seed                  []byte
+	AvailableChunkIndexes []uint32
+}
+
 func (m *workspaceManager) EnsureDefaultWorkspace() error {
 	if m == nil || m.db == nil || m.cfg == nil {
 		return fmt.Errorf("workspace manager not initialized")
@@ -133,6 +139,9 @@ func (m *workspaceManager) DeleteByID(id int64) error {
 	if _, err := m.db.Exec(`DELETE FROM seed_price_state WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
 		return err
 	}
+	if _, err := m.db.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+		return err
+	}
 	if _, err := m.db.Exec(`DELETE FROM file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
 		return err
 	}
@@ -185,4 +194,119 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 		m.catalog.Replace(seeds)
 	}
 	return seeds, nil
+}
+
+// RegisterDownloadedFile 直接把“已下载文件 + 对应 seed”写入索引与种子目录，不走全盘扫描。
+// 设计说明：
+// - 下载流程产出的 seed 是独立事实来源，不能再从当前文件反推 seed；
+// - 支持 partial 文件：workspace_files 记录当前文件大小，seeds 记录完整种子元信息。
+func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams) (sellerSeed, error) {
+	if m == nil || m.db == nil || m.cfg == nil {
+		return sellerSeed{}, fmt.Errorf("workspace manager not initialized")
+	}
+	abs, err := filepath.Abs(strings.TrimSpace(p.FilePath))
+	if err != nil {
+		return sellerSeed{}, err
+	}
+	st, err := os.Stat(abs)
+	if err != nil {
+		return sellerSeed{}, err
+	}
+	if !st.Mode().IsRegular() {
+		return sellerSeed{}, fmt.Errorf("downloaded file is not regular")
+	}
+	meta, err := parseSeedV1(p.Seed)
+	if err != nil {
+		return sellerSeed{}, err
+	}
+	seedHash := strings.ToLower(strings.TrimSpace(meta.SeedHashHex))
+	if seedHash == "" {
+		return sellerSeed{}, fmt.Errorf("invalid seed hash")
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	seedsDir := filepath.Join(m.cfg.Storage.DataDir, "seeds")
+	if err := os.MkdirAll(seedsDir, 0o755); err != nil {
+		return sellerSeed{}, err
+	}
+	seedPath := filepath.Join(seedsDir, seedHash+".bse")
+	if err := writeIfChanged(seedPath, p.Seed); err != nil {
+		return sellerSeed{}, err
+	}
+
+	now := time.Now().Unix()
+	if _, err := m.db.Exec(
+		`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix)
+		 VALUES(?,?,?,?,?,?)
+		 ON CONFLICT(path) DO UPDATE SET
+		 file_size=excluded.file_size,
+		 mtime_unix=excluded.mtime_unix,
+		 seed_hash=excluded.seed_hash,
+		 seed_locked=excluded.seed_locked,
+		 updated_at_unix=excluded.updated_at_unix`,
+		abs, st.Size(), st.ModTime().Unix(), seedHash, 1, now,
+	); err != nil {
+		return sellerSeed{}, err
+	}
+	if _, err := m.db.Exec(
+		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix)
+		 VALUES(?,?,?,?,?)
+		 ON CONFLICT(seed_hash) DO UPDATE SET
+		 seed_file_path=excluded.seed_file_path,
+		 chunk_count=excluded.chunk_count,
+		 file_size=excluded.file_size`,
+		seedHash, seedPath, meta.ChunkCount, meta.FileSize, now,
+	); err != nil {
+		return sellerSeed{}, err
+	}
+	available := normalizeChunkIndexes(p.AvailableChunkIndexes, meta.ChunkCount)
+	if len(available) == 0 {
+		haveCount := uint32(ceilDiv(uint64(st.Size()), seedBlockSize))
+		if haveCount > meta.ChunkCount {
+			haveCount = meta.ChunkCount
+		}
+		available = contiguousChunkIndexes(haveCount)
+	}
+	existing := make([]uint32, 0, len(available))
+	rows, err := m.db.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
+	if err != nil {
+		return sellerSeed{}, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var idx uint32
+		if err := rows.Scan(&idx); err != nil {
+			return sellerSeed{}, err
+		}
+		existing = append(existing, idx)
+	}
+	if len(existing) > 0 {
+		available = normalizeChunkIndexes(append(existing, available...), meta.ChunkCount)
+	}
+	if err := replaceSeedAvailableChunks(m.db, seedHash, available); err != nil {
+		return sellerSeed{}, err
+	}
+
+	unit, total, err := upsertSeedPriceState(
+		m.db,
+		seedHash,
+		m.cfg.Seller.Pricing.FloorPriceSatPer64K,
+		m.cfg.Seller.Pricing.ResaleDiscountBPS,
+		seedPath,
+	)
+	if err != nil {
+		return sellerSeed{}, err
+	}
+	seed := sellerSeed{
+		SeedHash:   seedHash,
+		ChunkCount: meta.ChunkCount,
+		ChunkPrice: unit,
+		SeedPrice:  total,
+	}
+	if m.catalog != nil {
+		m.catalog.Upsert(seed)
+	}
+	return seed, nil
 }

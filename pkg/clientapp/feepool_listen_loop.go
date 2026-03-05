@@ -46,7 +46,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 
 	// 1) 获取网关握手参数
 	var info dual2of2.InfoResp
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
 		obs.Error("bitcast-client", "fee_pool_info_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
 		return
 	}
@@ -177,17 +177,25 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	if err != nil {
 		return nil, fmt.Errorf("build spend tx failed: %w", err)
 	}
+	spendTxBytes, err := hex.DecodeString(spendTx.Hex())
+	if err != nil {
+		return nil, fmt.Errorf("encode spend tx bytes failed: %w", err)
+	}
+	baseTxBytes, err := hex.DecodeString(baseResp.Tx.Hex())
+	if err != nil {
+		return nil, fmt.Errorf("encode base tx bytes failed: %w", err)
+	}
 
 	createReq := dual2of2.CreateReq{
 		ClientID:       rt.Config.ClientID,
-		SpendTxHex:     spendTx.Hex(),
+		SpendTx:        spendTxBytes,
 		InputAmount:    baseResp.Amount,
 		SequenceNumber: 1,
 		ServerAmount:   0,
-		ClientSigHex:   hex.EncodeToString(*clientOpenSig),
+		ClientSig:      append([]byte(nil), (*clientOpenSig)...),
 	}
 	var createResp dual2of2.CreateResp
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolCreate, gwSec(rt.rpcTrace), createReq, &createResp); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolCreate, gwSec(rt.rpcTrace), createReq, &createResp); err != nil {
 		return nil, fmt.Errorf("fee_pool.create failed: %w", err)
 	}
 	if strings.TrimSpace(createResp.SpendTxID) == "" {
@@ -197,11 +205,11 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	baseReq := dual2of2.BaseTxReq{
 		ClientID:     rt.Config.ClientID,
 		SpendTxID:    createResp.SpendTxID,
-		BaseTxHex:    baseResp.Tx.Hex(),
-		ClientSigHex: hex.EncodeToString(*clientOpenSig),
+		BaseTx:       baseTxBytes,
+		ClientSig:    append([]byte(nil), (*clientOpenSig)...),
 	}
 	var baseOut dual2of2.BaseTxResp
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolBaseTx, gwSec(rt.rpcTrace), baseReq, &baseOut); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolBaseTx, gwSec(rt.rpcTrace), baseReq, &baseOut); err != nil {
 		return nil, fmt.Errorf("fee_pool.base_tx failed: %w", err)
 	}
 	if !baseOut.Success || baseOut.Status != "active" {
@@ -343,12 +351,12 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		SequenceNumber:      nextSeq,
 		ServerAmount:        nextServerAmount,
 		Fee:                 s.SpendTxFeeSat,
-		ClientSigHex:        hex.EncodeToString(*clientSig),
+		ClientSig:           append([]byte(nil), (*clientSig)...),
 		ChargeReason:        "listen_cycle_fee",
 		ChargeAmountSatoshi: s.SingleCycleFeeSatoshi,
 	}
 	var out dual2of2.PayConfirmResp
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw, dual2of2.ProtoFeePoolPayConfirm, gwSec(rt.rpcTrace), req, &out); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw, dual2of2.ProtoFeePoolPayConfirm, gwSec(rt.rpcTrace), req, &out); err != nil {
 		return err
 	}
 	if !out.Success {

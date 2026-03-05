@@ -15,6 +15,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -62,117 +63,118 @@ const (
 
 type healthReq struct{}
 type healthResp struct {
-	Status string `json:"status"`
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
 }
 type seedGetReq struct {
-	SessionID string `json:"session_id"`
-	SeedHash  string `json:"seed_hash"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	SeedHash  string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
 }
 type seedGetResp struct {
-	SeedHex string `json:"seed_hex"`
+	Seed []byte `protobuf:"bytes,1,opt,name=seed,proto3" json:"seed"`
 }
 type directQuoteSubmitReq struct {
-	DemandID            string   `json:"demand_id"`
-	SellerPeerID        string   `json:"seller_peer_id"`
-	SeedPrice           uint64   `json:"seed_price"`
-	ChunkPrice          uint64   `json:"chunk_price"`
-	ExpiresAtUnix       int64    `json:"expires_at_unix"`
-	RecommendedFileName string   `json:"recommended_file_name,omitempty"`
-	ArbiterPeerIDs      []string `json:"arbiter_peer_ids,omitempty"`
+	DemandID             string   `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
+	SellerPeerID         string   `protobuf:"bytes,2,opt,name=seller_peer_id,json=sellerPeerId,proto3" json:"seller_peer_id"`
+	SeedPrice            uint64   `protobuf:"varint,3,opt,name=seed_price,json=seedPrice,proto3" json:"seed_price"`
+	ChunkPrice           uint64   `protobuf:"varint,4,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
+	ExpiresAtUnix        int64    `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
+	RecommendedFileName  string   `protobuf:"bytes,6,opt,name=recommended_file_name,json=recommendedFileName,proto3" json:"recommended_file_name,omitempty"`
+	ArbiterPeerIDs       []string `protobuf:"bytes,7,rep,name=arbiter_peer_ids,json=arbiterPeerIds,proto3" json:"arbiter_peer_ids,omitempty"`
+	AvailableChunkBitmap []byte   `protobuf:"bytes,8,opt,name=available_chunk_bitmap,json=availableChunkBitmap,proto3" json:"available_chunk_bitmap,omitempty"`
 }
 type directQuoteSubmitResp struct {
-	Status string `json:"status"`
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
 }
 type directDealAcceptReq struct {
-	DemandID      string `json:"demand_id"`
-	BuyerPeerID   string `json:"buyer_peer_id"`
-	SeedHash      string `json:"seed_hash"`
-	SeedPrice     uint64 `json:"seed_price"`
-	ChunkPrice    uint64 `json:"chunk_price"`
-	ExpiresAtUnix int64  `json:"expires_at_unix"`
-	ArbiterPeerID string `json:"arbiter_peer_id,omitempty"`
+	DemandID      string `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
+	BuyerPeerID   string `protobuf:"bytes,2,opt,name=buyer_peer_id,json=buyerPeerId,proto3" json:"buyer_peer_id"`
+	SeedHash      string `protobuf:"bytes,3,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
+	SeedPrice     uint64 `protobuf:"varint,4,opt,name=seed_price,json=seedPrice,proto3" json:"seed_price"`
+	ChunkPrice    uint64 `protobuf:"varint,5,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
+	ExpiresAtUnix int64  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
+	ArbiterPeerID string `protobuf:"bytes,7,opt,name=arbiter_peer_id,json=arbiterPeerId,proto3" json:"arbiter_peer_id,omitempty"`
 }
 type directDealAcceptResp struct {
-	DealID       string `json:"deal_id"`
-	SellerPeerID string `json:"seller_peer_id"`
-	ChunkPrice   uint64 `json:"chunk_price"`
-	Status       string `json:"status"`
+	DealID       string `protobuf:"bytes,1,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
+	SellerPeerID string `protobuf:"bytes,2,opt,name=seller_peer_id,json=sellerPeerId,proto3" json:"seller_peer_id"`
+	ChunkPrice   uint64 `protobuf:"varint,3,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
+	Status       string `protobuf:"bytes,4,opt,name=status,proto3" json:"status"`
 }
 type directSessionOpenReq struct {
-	DealID string `json:"deal_id"`
+	DealID string `protobuf:"bytes,1,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
 }
 type directSessionOpenResp struct {
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
 }
 type directSessionCloseReq struct {
-	SessionID string `json:"session_id"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
 }
 type directSessionCloseResp struct {
-	SessionID string `json:"session_id"`
-	Status    string `json:"status"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
 }
 
 type directTransferPoolOpenReq struct {
-	SessionID      string  `json:"session_id"`
-	DealID         string  `json:"deal_id"`
-	BuyerPeerID    string  `json:"buyer_peer_id"`
-	ArbiterPeerID  string  `json:"arbiter_peer_id"`
-	ArbiterPubKey  string  `json:"arbiter_pubkey_hex"`
-	PoolAmount     uint64  `json:"pool_amount"`
-	SpendTxFee     uint64  `json:"spend_tx_fee"`
-	Sequence       uint32  `json:"sequence"`
-	SellerAmount   uint64  `json:"seller_amount"`
-	BuyerAmount    uint64  `json:"buyer_amount"`
-	CurrentTxHex   string  `json:"current_tx_hex"`
-	BuyerSigHex    string  `json:"buyer_sig_hex"`
-	BaseTxHex      string  `json:"base_tx_hex"`
-	BaseTxID       string  `json:"base_txid"`
-	FeeRateSatByte float64 `json:"fee_rate_sat_byte"`
-	LockBlocks     uint32  `json:"lock_blocks"`
+	SessionID      string  `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	DealID         string  `protobuf:"bytes,2,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
+	BuyerPeerID    string  `protobuf:"bytes,3,opt,name=buyer_peer_id,json=buyerPeerId,proto3" json:"buyer_peer_id"`
+	ArbiterPeerID  string  `protobuf:"bytes,4,opt,name=arbiter_peer_id,json=arbiterPeerId,proto3" json:"arbiter_peer_id"`
+	ArbiterPubKey  string  `protobuf:"bytes,5,opt,name=arbiter_pubkey,json=arbiterPubkey,proto3" json:"arbiter_pubkey_hex"`
+	PoolAmount     uint64  `protobuf:"varint,6,opt,name=pool_amount,json=poolAmount,proto3" json:"pool_amount"`
+	SpendTxFee     uint64  `protobuf:"varint,7,opt,name=spend_tx_fee,json=spendTxFee,proto3" json:"spend_tx_fee"`
+	Sequence       uint32  `protobuf:"varint,8,opt,name=sequence,proto3" json:"sequence"`
+	SellerAmount   uint64  `protobuf:"varint,9,opt,name=seller_amount,json=sellerAmount,proto3" json:"seller_amount"`
+	BuyerAmount    uint64  `protobuf:"varint,10,opt,name=buyer_amount,json=buyerAmount,proto3" json:"buyer_amount"`
+	CurrentTx      []byte  `protobuf:"bytes,11,opt,name=current_tx,json=currentTx,proto3" json:"current_tx"`
+	BuyerSig       []byte  `protobuf:"bytes,12,opt,name=buyer_sig,json=buyerSig,proto3" json:"buyer_sig"`
+	BaseTx         []byte  `protobuf:"bytes,13,opt,name=base_tx,json=baseTx,proto3" json:"base_tx"`
+	BaseTxID       string  `protobuf:"bytes,14,opt,name=base_txid,json=baseTxid,proto3" json:"base_txid"`
+	FeeRateSatByte float64 `protobuf:"fixed64,15,opt,name=fee_rate_sat_byte,json=feeRateSatByte,proto3" json:"fee_rate_sat_byte"`
+	LockBlocks     uint32  `protobuf:"varint,16,opt,name=lock_blocks,json=lockBlocks,proto3" json:"lock_blocks"`
 }
 
 type directTransferPoolOpenResp struct {
-	SessionID    string `json:"session_id"`
-	Status       string `json:"status"`
-	SellerSigHex string `json:"seller_sig_hex,omitempty"`
-	Error        string `json:"error,omitempty"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
+	SellerSig []byte `protobuf:"bytes,3,opt,name=seller_sig,json=sellerSig,proto3" json:"seller_sig,omitempty"`
+	Error     string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
 }
 
 type directTransferPoolPayReq struct {
-	SessionID    string `json:"session_id"`
-	SeedHash     string `json:"seed_hash"`
-	ChunkHash    string `json:"chunk_hash"`
-	ChunkIndex   uint32 `json:"chunk_index"`
-	Sequence     uint32 `json:"sequence"`
-	SellerAmount uint64 `json:"seller_amount"`
-	BuyerAmount  uint64 `json:"buyer_amount"`
-	CurrentTxHex string `json:"current_tx_hex"`
-	BuyerSigHex  string `json:"buyer_sig_hex"`
+	SessionID    string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	SeedHash     string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
+	ChunkHash    string `protobuf:"bytes,3,opt,name=chunk_hash,json=chunkHash,proto3" json:"chunk_hash"`
+	ChunkIndex   uint32 `protobuf:"varint,4,opt,name=chunk_index,json=chunkIndex,proto3" json:"chunk_index"`
+	Sequence     uint32 `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence"`
+	SellerAmount uint64 `protobuf:"varint,6,opt,name=seller_amount,json=sellerAmount,proto3" json:"seller_amount"`
+	BuyerAmount  uint64 `protobuf:"varint,7,opt,name=buyer_amount,json=buyerAmount,proto3" json:"buyer_amount"`
+	CurrentTx    []byte `protobuf:"bytes,8,opt,name=current_tx,json=currentTx,proto3" json:"current_tx"`
+	BuyerSig     []byte `protobuf:"bytes,9,opt,name=buyer_sig,json=buyerSig,proto3" json:"buyer_sig"`
 }
 
 type directTransferPoolPayResp struct {
-	SessionID    string `json:"session_id"`
-	Status       string `json:"status"`
-	SellerSigHex string `json:"seller_sig_hex,omitempty"`
-	ChunkHex     string `json:"chunk_hex,omitempty"`
-	Error        string `json:"error,omitempty"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
+	SellerSig []byte `protobuf:"bytes,3,opt,name=seller_sig,json=sellerSig,proto3" json:"seller_sig,omitempty"`
+	Chunk     []byte `protobuf:"bytes,4,opt,name=chunk,proto3" json:"chunk,omitempty"`
+	Error     string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
 }
 
 type directTransferPoolCloseReq struct {
-	SessionID    string `json:"session_id"`
-	Sequence     uint32 `json:"sequence"`
-	SellerAmount uint64 `json:"seller_amount"`
-	BuyerAmount  uint64 `json:"buyer_amount"`
-	CurrentTxHex string `json:"current_tx_hex"`
-	BuyerSigHex  string `json:"buyer_sig_hex"`
+	SessionID    string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	Sequence     uint32 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence"`
+	SellerAmount uint64 `protobuf:"varint,3,opt,name=seller_amount,json=sellerAmount,proto3" json:"seller_amount"`
+	BuyerAmount  uint64 `protobuf:"varint,4,opt,name=buyer_amount,json=buyerAmount,proto3" json:"buyer_amount"`
+	CurrentTx    []byte `protobuf:"bytes,5,opt,name=current_tx,json=currentTx,proto3" json:"current_tx"`
+	BuyerSig     []byte `protobuf:"bytes,6,opt,name=buyer_sig,json=buyerSig,proto3" json:"buyer_sig"`
 }
 
 type directTransferPoolCloseResp struct {
-	SessionID    string `json:"session_id"`
-	Status       string `json:"status"`
-	SellerSigHex string `json:"seller_sig_hex,omitempty"`
-	Error        string `json:"error,omitempty"`
+	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
+	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
+	SellerSig []byte `protobuf:"bytes,3,opt,name=seller_sig,json=sellerSig,proto3" json:"seller_sig,omitempty"`
+	Error     string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
 }
 
 type Config struct {
@@ -932,7 +934,7 @@ func initIndexDB(db *sql.DB) error {
 			config_toml TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, updated_at_unix INTEGER)`,
+		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, seed_locked INTEGER NOT NULL DEFAULT 0, updated_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS workspaces(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			path TEXT NOT NULL UNIQUE,
@@ -942,6 +944,12 @@ func initIndexDB(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, created_at_unix INTEGER)`,
+		`CREATE TABLE IF NOT EXISTS seed_available_chunks(
+			seed_hash TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			PRIMARY KEY(seed_hash,chunk_index)
+		)`,
 		`CREATE TABLE IF NOT EXISTS seed_price_state(seed_hash TEXT PRIMARY KEY, last_buy_unit_price_sat_per_64k INTEGER, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, unit_price_sat_per_64k INTEGER, updated_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS demand_dedup(demand_id TEXT PRIMARY KEY, seed_hash TEXT, created_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS tx_history(
@@ -988,6 +996,7 @@ func initIndexDB(db *sql.DB) error {
 			chunk_price INTEGER NOT NULL,
 			expires_at_unix INTEGER NOT NULL,
 			recommended_file_name TEXT NOT NULL DEFAULT '',
+			available_chunk_bitmap_hex TEXT NOT NULL DEFAULT '',
 			seller_arbiter_peer_ids_json TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id, seller_peer_id)
@@ -1079,6 +1088,7 @@ func initIndexDB(db *sql.DB) error {
 			PRIMARY KEY(seed_hash,chunk_index)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_workspace_seed_hash ON workspace_files(seed_hash)`,
+		`CREATE INDEX IF NOT EXISTS idx_seed_available_chunks_seed ON seed_available_chunks(seed_hash,chunk_index)`,
 		`CREATE INDEX IF NOT EXISTS idx_workspaces_path ON workspaces(path)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_downloads_updated ON file_downloads(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_download_chunks_seed ON file_download_chunks(seed_hash,chunk_index)`,
@@ -1094,6 +1104,9 @@ func initIndexDB(db *sql.DB) error {
 		}
 	}
 	if err := ensureDirectQuotesSchema(db); err != nil {
+		return err
+	}
+	if err := ensureWorkspaceFilesSchema(db); err != nil {
 		return err
 	}
 	if err := ensureFileDownloadsSchema(db); err != nil {
@@ -1124,6 +1137,8 @@ func ensureDirectQuotesSchema(db *sql.DB) error {
 	}
 	defer rows.Close()
 	hasRecommendedFileName := false
+	hasAvailableChunkBitmapHex := false
+	hasAvailableChunksJSON := false
 	for rows.Next() {
 		var cid int
 		var name string
@@ -1136,13 +1151,79 @@ func ensureDirectQuotesSchema(db *sql.DB) error {
 		}
 		if strings.EqualFold(strings.TrimSpace(name), "recommended_file_name") {
 			hasRecommendedFileName = true
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "available_chunk_bitmap_hex") {
+			hasAvailableChunkBitmapHex = true
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "available_chunk_indexes_json") {
+			hasAvailableChunksJSON = true
+		}
+	}
+	if !hasRecommendedFileName {
+		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN recommended_file_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !hasAvailableChunkBitmapHex {
+		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN available_chunk_bitmap_hex TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+		hasAvailableChunkBitmapHex = true
+	}
+	if hasAvailableChunkBitmapHex && hasAvailableChunksJSON {
+		rows, err := db.Query(`SELECT id,available_chunk_indexes_json FROM direct_quotes`)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id int64
+			var rawJSON string
+			if err := rows.Scan(&id, &rawJSON); err != nil {
+				return err
+			}
+			if strings.TrimSpace(rawJSON) == "" {
+				continue
+			}
+			var indexes []uint32
+			if err := json.Unmarshal([]byte(rawJSON), &indexes); err != nil {
+				continue
+			}
+			bitmap := chunkBitmapHexFromIndexes(indexes, 0)
+			if _, err := db.Exec(`UPDATE direct_quotes SET available_chunk_bitmap_hex=? WHERE id=?`, bitmap, id); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func ensureWorkspaceFilesSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(workspace_files)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasSeedLocked := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "seed_locked") {
+			hasSeedLocked = true
 			break
 		}
 	}
-	if hasRecommendedFileName {
+	if hasSeedLocked {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE direct_quotes ADD COLUMN recommended_file_name TEXT NOT NULL DEFAULT ''`)
+	_, err = db.Exec(`ALTER TABLE workspace_files ADD COLUMN seed_locked INTEGER NOT NULL DEFAULT 0`)
 	return err
 }
 
@@ -1180,6 +1261,28 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 	seenPaths := map[string]struct{}{}
 	catalog := map[string]sellerSeed{}
 	seedsDir := filepath.Join(cfg.Storage.DataDir, "seeds")
+	type workspaceFileRef struct {
+		SeedHash string
+		Locked   bool
+	}
+	existing := map[string]workspaceFileRef{}
+	rowsExists, err := db.Query(`SELECT path,seed_hash,seed_locked FROM workspace_files`)
+	if err != nil {
+		return nil, err
+	}
+	defer rowsExists.Close()
+	for rowsExists.Next() {
+		var path, seedHash string
+		var locked int64
+		if err := rowsExists.Scan(&path, &seedHash, &locked); err != nil {
+			return nil, err
+		}
+		existing[filepath.Clean(strings.TrimSpace(path))] = workspaceFileRef{
+			SeedHash: strings.ToLower(strings.TrimSpace(seedHash)),
+			Locked:   locked != 0,
+		}
+	}
+
 	workspaces, err := listEnabledWorkspacePaths(db, cfg.Storage.WorkspaceDir)
 	if err != nil {
 		return nil, err
@@ -1205,10 +1308,29 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			if err != nil {
 				return err
 			}
+			abs = filepath.Clean(abs)
 			seenPaths[abs] = struct{}{}
 			st, err := os.Stat(abs)
 			if err != nil {
 				return err
+			}
+			if ref, ok := existing[abs]; ok && ref.Locked && ref.SeedHash != "" {
+				if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), ref.SeedHash, 1, now); err != nil {
+					return err
+				}
+				var chunkCount uint32
+				var seedPath string
+				if err := db.QueryRow(`SELECT chunk_count,seed_file_path FROM seeds WHERE seed_hash=?`, ref.SeedHash).Scan(&chunkCount, &seedPath); err == nil {
+					unit, total, err := upsertSeedPriceState(db, ref.SeedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
+					if err != nil {
+						return err
+					}
+					catalog[ref.SeedHash] = sellerSeed{SeedHash: ref.SeedHash, ChunkCount: chunkCount, ChunkPrice: unit, SeedPrice: total}
+					return nil
+				} else if !errors.Is(err, sql.ErrNoRows) {
+					return err
+				}
+				// 数据兜底：若锁定路径缺失 seed 行，回退为普通扫描重建映射。
 			}
 			seedBytes, seedHash, chunkCount, err := buildSeedV1(abs)
 			if err != nil {
@@ -1218,10 +1340,13 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			if err := writeIfChanged(seedPath, seedBytes); err != nil {
 				return err
 			}
-			if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), seedHash, now); err != nil {
+			if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), seedHash, 0, now); err != nil {
 				return err
 			}
 			if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET seed_file_path=excluded.seed_file_path,chunk_count=excluded.chunk_count,file_size=excluded.file_size`, seedHash, seedPath, chunkCount, st.Size(), now); err != nil {
+				return err
+			}
+			if err := replaceSeedAvailableChunks(db, seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
 				return err
 			}
 			unit, total, err := upsertSeedPriceState(db, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
@@ -1269,6 +1394,15 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			return nil, err
 		}
 		if _, err := db.Exec(`DELETE FROM seed_price_state WHERE seed_hash=?`, seedHash); err != nil {
+			return nil, err
+		}
+		if _, err := db.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash=?`, seedHash); err != nil {
+			return nil, err
+		}
+		if _, err := db.Exec(`DELETE FROM file_downloads WHERE seed_hash=?`, seedHash); err != nil {
+			return nil, err
+		}
+		if _, err := db.Exec(`DELETE FROM file_download_chunks WHERE seed_hash=?`, seedHash); err != nil {
 			return nil, err
 		}
 		delete(catalog, seedHash)
@@ -1341,7 +1475,7 @@ func cfgBool(v *bool, def bool) bool {
 }
 
 func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, trace p2prpc.TraceSink, cfg Config) {
-	p2prpc.HandleJSON[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
+	p2prpc.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 		buyerPeerID := strings.TrimSpace(req.BuyerPeerID)
@@ -1366,6 +1500,18 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 			})
 			return dealprod.DemandAnnounceResp{Status: "ignored_no_seed"}, nil
 		}
+		availableChunks, err := listSeedAvailableChunks(db, seedHash)
+		if err != nil {
+			return dealprod.DemandAnnounceResp{}, err
+		}
+		if len(availableChunks) == 0 {
+			obs.Business("bitcast-client", "demand_announce_ignored_no_chunks", map[string]any{
+				"demand_id":  demandID,
+				"seed_hash":  seedHash,
+				"buyer_peer": buyerPeerID,
+			})
+			return dealprod.DemandAnnounceResp{Status: "ignored_no_chunks"}, nil
+		}
 		if err := submitDirectQuote(ctx, h, trace, DirectQuoteParams{
 			DemandID:            demandID,
 			BuyerPeerID:         buyerPeerID,
@@ -1375,6 +1521,10 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 			ExpiresAtUnix:       time.Now().Add(10 * time.Minute).Unix(),
 			RecommendedFileName: recommendedFileNameBySeedHash(db, seedHash),
 			ArbiterPeerIDs:      configuredArbiterPeerIDs(cfg),
+			AvailableChunkBitmapHex: chunkBitmapHexFromIndexes(
+				availableChunks,
+				seed.ChunkCount,
+			),
 		}); err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
@@ -1384,11 +1534,12 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 			"buyer_peer":  buyerPeerID,
 			"seed_price":  seed.SeedPrice,
 			"chunk_price": seed.ChunkPrice,
+			"chunk_have":  len(availableChunks),
 		})
 		return dealprod.DemandAnnounceResp{Status: "quoted"}, nil
 	})
 
-	p2prpc.HandleJSON[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(_ context.Context, req seedGetReq) (seedGetResp, error) {
+	p2prpc.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(_ context.Context, req seedGetReq) (seedGetResp, error) {
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 		if strings.TrimSpace(req.SessionID) == "" || seedHash == "" {
 			return seedGetResp{}, fmt.Errorf("invalid params")
@@ -1408,9 +1559,9 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 		if err != nil {
 			return seedGetResp{}, err
 		}
-		return seedGetResp{SeedHex: hex.EncodeToString(seedBytes)}, nil
-	})
-	p2prpc.HandleJSON[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
+			return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
+		})
+	p2prpc.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
 		}
@@ -1422,15 +1573,17 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 		if err != nil {
 			return directQuoteSubmitResp{}, err
 		}
-		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
+			availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
+			recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
 		if _, err := db.Exec(
-			`INSERT INTO direct_quotes(demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,seller_arbiter_peer_ids_json,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?)
+			`INSERT INTO direct_quotes(demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix)
+			 VALUES(?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(demand_id,seller_peer_id) DO UPDATE SET
 			 seed_price=excluded.seed_price,
 			 chunk_price=excluded.chunk_price,
 			 expires_at_unix=excluded.expires_at_unix,
 			 recommended_file_name=excluded.recommended_file_name,
+			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
 			 seller_arbiter_peer_ids_json=excluded.seller_arbiter_peer_ids_json,
 			 created_at_unix=excluded.created_at_unix`,
 			strings.TrimSpace(req.DemandID),
@@ -1439,6 +1592,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 			req.ChunkPrice,
 			req.ExpiresAtUnix,
 			recommendedName,
+			availableChunkBitmapHex,
 			string(arbIDsJSON),
 			time.Now().Unix(),
 		); err != nil {
@@ -1446,7 +1600,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 		}
 		return directQuoteSubmitResp{Status: "stored"}, nil
 	})
-	p2prpc.HandleJSON[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(_ context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
+	p2prpc.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(_ context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.BuyerPeerID) == "" || strings.TrimSpace(req.SeedHash) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directDealAcceptResp{}, fmt.Errorf("invalid direct deal accept")
 		}
@@ -1477,7 +1631,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 			Status:       "accepted",
 		}, nil
 	})
-	p2prpc.HandleJSON[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(_ context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
+	p2prpc.HandleProto[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(_ context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
 		if strings.TrimSpace(req.DealID) == "" {
 			return directSessionOpenResp{}, fmt.Errorf("deal_id required")
 		}
@@ -1493,16 +1647,16 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 		}
 		return directSessionOpenResp{SessionID: sessionID, Status: "active"}, nil
 	})
-	p2prpc.HandleJSON[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
+	p2prpc.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 		return handleDirectTransferPoolOpen(h, db, cfg, req)
 	})
-	p2prpc.HandleJSON[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
+	p2prpc.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
 		return handleDirectTransferPoolPay(h, db, cfg, req)
 	})
-	p2prpc.HandleJSON[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
+	p2prpc.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 		return handleDirectTransferPoolClose(h, db, cfg, req)
 	})
-	p2prpc.HandleJSON[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(_ context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
+	p2prpc.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(_ context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
 		if strings.TrimSpace(req.SessionID) == "" {
 			return directSessionCloseResp{}, fmt.Errorf("session_id required")
 		}
@@ -1542,14 +1696,26 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink,
 		return err
 	}
 	var resp directQuoteSubmitResp
-	if err := p2prpc.CallJSON(ctx, h, buyerID, ProtoQuoteDirectSubmit, clientSec(trace), directQuoteSubmitReq{
-		DemandID:            strings.TrimSpace(p.DemandID),
-		SellerPeerID:        strings.ToLower(strings.TrimSpace(sellerClientID)),
-		SeedPrice:           p.SeedPrice,
-		ChunkPrice:          p.ChunkPrice,
-		ExpiresAtUnix:       p.ExpiresAtUnix,
-		RecommendedFileName: sanitizeRecommendedFileName(p.RecommendedFileName),
-		ArbiterPeerIDs:      normalizePeerIDList(p.ArbiterPeerIDs),
+	bitmapHex, err := normalizeChunkBitmapHex(p.AvailableChunkBitmapHex)
+	if err != nil {
+		return err
+	}
+	var bitmapBytes []byte
+	if bitmapHex != "" {
+		bitmapBytes, err = hex.DecodeString(bitmapHex)
+		if err != nil {
+			return fmt.Errorf("invalid available_chunk_bitmap_hex")
+		}
+	}
+	if err := p2prpc.CallProto(ctx, h, buyerID, ProtoQuoteDirectSubmit, clientSec(trace), directQuoteSubmitReq{
+		DemandID:             strings.TrimSpace(p.DemandID),
+		SellerPeerID:         strings.ToLower(strings.TrimSpace(sellerClientID)),
+		SeedPrice:            p.SeedPrice,
+		ChunkPrice:           p.ChunkPrice,
+		ExpiresAtUnix:        p.ExpiresAtUnix,
+		RecommendedFileName:  sanitizeRecommendedFileName(p.RecommendedFileName),
+		ArbiterPeerIDs:       normalizePeerIDList(p.ArbiterPeerIDs),
+		AvailableChunkBitmap: bitmapBytes,
 	}, &resp); err != nil {
 		return err
 	}
@@ -1704,7 +1870,7 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 		ok := false
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			var health healthResp
-			err := p2prpc.CallJSON(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
+			err := p2prpc.CallProto(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
 			if err == nil {
 				obs.Business("bitcast-client", kind+"_health_ok", map[string]any{
 					"peer_id": p.ID.String(),
@@ -1877,6 +2043,246 @@ func loadSeedBytesBySeedHash(db *sql.DB, seedHash string) ([]byte, error) {
 	return b, nil
 }
 
+func normalizeChunkIndexes(in []uint32, maxExclusive uint32) []uint32 {
+	if len(in) == 0 {
+		return nil
+	}
+	tmp := make([]uint32, 0, len(in))
+	seen := make(map[uint32]struct{}, len(in))
+	for _, idx := range in {
+		if maxExclusive > 0 && idx >= maxExclusive {
+			continue
+		}
+		if _, ok := seen[idx]; ok {
+			continue
+		}
+		seen[idx] = struct{}{}
+		tmp = append(tmp, idx)
+	}
+	if len(tmp) == 0 {
+		return nil
+	}
+	sort.Slice(tmp, func(i, j int) bool { return tmp[i] < tmp[j] })
+	return tmp
+}
+
+func normalizeChunkBitmapHex(bitmapHex string) (string, error) {
+	bitmapHex = strings.ToLower(strings.TrimSpace(bitmapHex))
+	if bitmapHex == "" {
+		return "", nil
+	}
+	raw, err := hex.DecodeString(bitmapHex)
+	if err != nil {
+		return "", fmt.Errorf("invalid available_chunk_bitmap_hex")
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+func normalizeChunkBitmapBytes(bitmap []byte) string {
+	if len(bitmap) == 0 {
+		return ""
+	}
+	return strings.ToLower(hex.EncodeToString(bitmap))
+}
+
+func chunkBitmapHexFromIndexes(indexes []uint32, chunkCount uint32) string {
+	indexes = normalizeChunkIndexes(indexes, chunkCount)
+	if len(indexes) == 0 {
+		return ""
+	}
+	if chunkCount == 0 {
+		chunkCount = indexes[len(indexes)-1] + 1
+	}
+	byteLen := int((chunkCount + 7) / 8)
+	bits := make([]byte, byteLen)
+	for _, idx := range indexes {
+		if idx >= chunkCount {
+			continue
+		}
+		byteIdx := idx / 8
+		// 采用 BT 风格位序：块 0 对应字节最高位(bit7)。
+		bit := 7 - (idx % 8)
+		bits[byteIdx] |= byte(1 << bit)
+	}
+	return hex.EncodeToString(bits)
+}
+
+func chunkIndexesFromBitmapHex(bitmapHex string, maxExclusive uint32) ([]uint32, error) {
+	bitmapHex, err := normalizeChunkBitmapHex(bitmapHex)
+	if err != nil {
+		return nil, err
+	}
+	if bitmapHex == "" {
+		return nil, nil
+	}
+	raw, err := hex.DecodeString(bitmapHex)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]uint32, 0, len(raw)*4)
+	for bi, b := range raw {
+		if b == 0 {
+			continue
+		}
+		for bit := uint32(0); bit < 8; bit++ {
+			mask := byte(1 << (7 - bit))
+			if b&mask == 0 {
+				continue
+			}
+			idx := uint32(bi)*8 + bit
+			if maxExclusive > 0 && idx >= maxExclusive {
+				continue
+			}
+			out = append(out, idx)
+		}
+	}
+	return normalizeChunkIndexes(out, maxExclusive), nil
+}
+
+func contiguousChunkIndexes(chunkCount uint32) []uint32 {
+	if chunkCount == 0 {
+		return nil
+	}
+	out := make([]uint32, 0, chunkCount)
+	for i := uint32(0); i < chunkCount; i++ {
+		out = append(out, i)
+	}
+	return out
+}
+
+func replaceSeedAvailableChunks(db *sql.DB, seedHash string, indexes []uint32) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return fmt.Errorf("seed_hash required")
+	}
+	indexes = normalizeChunkIndexes(indexes, 0)
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash=?`, seedHash); err != nil {
+		rollback()
+		return err
+	}
+	if len(indexes) > 0 {
+		stmt, err := tx.Prepare(`INSERT INTO seed_available_chunks(seed_hash,chunk_index,updated_at_unix) VALUES(?,?,?)`)
+		if err != nil {
+			rollback()
+			return err
+		}
+		defer stmt.Close()
+		now := time.Now().Unix()
+		for _, idx := range indexes {
+			if _, err := stmt.Exec(seedHash, idx, now); err != nil {
+				rollback()
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return nil
+}
+
+func listSeedAvailableChunks(db *sql.DB, seedHash string) ([]uint32, error) {
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return nil, fmt.Errorf("seed_hash required")
+	}
+	rows, err := db.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]uint32, 0, 128)
+	for rows.Next() {
+		var idx uint32
+		if err := rows.Scan(&idx); err != nil {
+			return nil, err
+		}
+		out = append(out, idx)
+	}
+	if len(out) > 0 {
+		return out, nil
+	}
+	// 兼容旧数据：若尚未写入块状态，按当前文件长度推导前缀可用块。
+	var seedChunkCount uint32
+	if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&seedChunkCount); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var fileSize uint64
+	if err := db.QueryRow(`SELECT file_size FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, seedHash).Scan(&fileSize); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	have := uint32(ceilDiv(fileSize, seedBlockSize))
+	if have > seedChunkCount {
+		have = seedChunkCount
+	}
+	return contiguousChunkIndexes(have), nil
+}
+
+func isSeedChunkAvailable(db *sql.DB, seedHash string, chunkIndex uint32) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("db is nil")
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return false, fmt.Errorf("seed_hash required")
+	}
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM seed_available_chunks WHERE seed_hash=? AND chunk_index=? LIMIT 1`, seedHash, chunkIndex).Scan(&one)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, sql.ErrNoRows) {
+		var cnt int
+		if err := db.QueryRow(`SELECT COUNT(1) FROM seed_available_chunks WHERE seed_hash=?`, seedHash).Scan(&cnt); err != nil {
+			return false, err
+		}
+		if cnt > 0 {
+			return false, nil
+		}
+		// 兼容旧数据：若还没有块状态表记录，按当前文件长度推导“前缀块可用”。
+		var seedChunkCount uint32
+		if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&seedChunkCount); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		var fileSize uint64
+		if err := db.QueryRow(`SELECT file_size FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, seedHash).Scan(&fileSize); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return false, nil
+			}
+			return false, err
+		}
+		have := uint32(ceilDiv(fileSize, seedBlockSize))
+		if have > seedChunkCount {
+			have = seedChunkCount
+		}
+		return chunkIndex < have, nil
+	}
+	return false, err
+}
+
 func loadChunkBytesBySeedHash(db *sql.DB, seedHash string, chunkIndex uint32) ([]byte, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
@@ -1894,6 +2300,13 @@ func loadChunkBytesBySeedHash(db *sql.DB, seedHash string, chunkIndex uint32) ([
 	}
 	if chunkIndex >= chunkCount {
 		return nil, fmt.Errorf("chunk_index out of range")
+	}
+	have, err := isSeedChunkAvailable(db, seedHash, chunkIndex)
+	if err != nil {
+		return nil, err
+	}
+	if !have {
+		return nil, fmt.Errorf("chunk not available")
 	}
 	var workspacePath string
 	if err := db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&workspacePath); err != nil {
@@ -1928,6 +2341,22 @@ func (c *sellerCatalog) Replace(seeds map[string]sellerSeed) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.seeds = seeds
+}
+
+func (c *sellerCatalog) Upsert(seed sellerSeed) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.seeds == nil {
+		c.seeds = map[string]sellerSeed{}
+	}
+	key := strings.ToLower(strings.TrimSpace(seed.SeedHash))
+	if key == "" {
+		return
+	}
+	c.seeds[key] = seed
 }
 
 func (c *sellerCatalog) Get(seedHash string) (sellerSeed, bool) {

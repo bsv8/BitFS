@@ -95,7 +95,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	}
 
 	var info dual2of2.InfoResp
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
 	session, err := ensureActiveFeePool(ctx, rt, gw, rt.Config.Listen.MaxAutoRenewAmount, info)
@@ -145,12 +145,12 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		ServerAmount:        nextServerAmount,
 		ChargeAmountSatoshi: charge,
 		Fee:                 session.SpendTxFeeSat,
-		ClientSignatureHex:  hex.EncodeToString(*clientSig),
+		ClientSignature:     append([]byte(nil), (*clientSig)...),
 		ChargeReason:        "demand_publish_fee",
 	}
 	var resp dual2of2.DemandPublishPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
@@ -198,14 +198,15 @@ func pickGatewayForBusiness(rt *Runtime, gatewayPeerID string) (peer.AddrInfo, e
 }
 
 type DirectQuoteParams struct {
-	DemandID            string   `json:"demand_id"`
-	BuyerPeerID         string   `json:"buyer_peer_id"`
-	BuyerAddrs          []string `json:"buyer_addrs"`
-	SeedPrice           uint64   `json:"seed_price"`
-	ChunkPrice          uint64   `json:"chunk_price"`
-	ExpiresAtUnix       int64    `json:"expires_at_unix"`
-	RecommendedFileName string   `json:"recommended_file_name,omitempty"`
-	ArbiterPeerIDs      []string `json:"arbiter_peer_ids,omitempty"`
+	DemandID                string   `json:"demand_id"`
+	BuyerPeerID             string   `json:"buyer_peer_id"`
+	BuyerAddrs              []string `json:"buyer_addrs"`
+	SeedPrice               uint64   `json:"seed_price"`
+	ChunkPrice              uint64   `json:"chunk_price"`
+	ExpiresAtUnix           int64    `json:"expires_at_unix"`
+	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
+	ArbiterPeerIDs          []string `json:"arbiter_peer_ids,omitempty"`
+	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 }
 
 func TriggerClientSubmitDirectQuote(ctx context.Context, seller *Runtime, p DirectQuoteParams) error {
@@ -216,13 +217,15 @@ func TriggerClientSubmitDirectQuote(ctx context.Context, seller *Runtime, p Dire
 }
 
 type DirectQuoteItem struct {
-	DemandID             string   `json:"demand_id"`
-	SellerPeerID         string   `json:"seller_peer_id"`
-	SeedPrice            uint64   `json:"seed_price"`
-	ChunkPrice           uint64   `json:"chunk_price"`
-	ExpiresAtUnix        int64    `json:"expires_at_unix"`
-	RecommendedFileName  string   `json:"recommended_file_name,omitempty"`
-	SellerArbiterPeerIDs []string `json:"seller_arbiter_peer_ids,omitempty"`
+	DemandID                string   `json:"demand_id"`
+	SellerPeerID            string   `json:"seller_peer_id"`
+	SeedPrice               uint64   `json:"seed_price"`
+	ChunkPrice              uint64   `json:"chunk_price"`
+	ExpiresAtUnix           int64    `json:"expires_at_unix"`
+	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
+	SellerArbiterPeerIDs    []string `json:"seller_arbiter_peer_ids,omitempty"`
+	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
+	AvailableChunkIndexes   []uint32 `json:"available_chunk_indexes,omitempty"`
 }
 
 func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID string) ([]DirectQuoteItem, error) {
@@ -234,7 +237,7 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	rows, err := rt.DB.Query(`SELECT demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,seller_arbiter_peer_ids_json FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+	rows, err := rt.DB.Query(`SELECT demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,seller_arbiter_peer_ids_json,available_chunk_bitmap_hex FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 	if err != nil {
 		return nil, err
 	}
@@ -244,7 +247,7 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 	for rows.Next() {
 		var it DirectQuoteItem
 		var sellerArbitersJSON string
-		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &sellerArbitersJSON); err != nil {
+		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &sellerArbitersJSON, &it.AvailableChunkBitmapHex); err != nil {
 			return nil, err
 		}
 		it.RecommendedFileName = sanitizeRecommendedFileName(it.RecommendedFileName)
@@ -253,6 +256,18 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 			if err := json.Unmarshal([]byte(sellerArbitersJSON), &ids); err == nil {
 				it.SellerArbiterPeerIDs = normalizePeerIDList(ids)
 			}
+		}
+		if strings.TrimSpace(it.AvailableChunkBitmapHex) != "" {
+			norm, err := normalizeChunkBitmapHex(it.AvailableChunkBitmapHex)
+			if err != nil {
+				continue
+			}
+			it.AvailableChunkBitmapHex = norm
+			indexes, err := chunkIndexesFromBitmapHex(norm, 0)
+			if err != nil {
+				continue
+			}
+			it.AvailableChunkIndexes = indexes
 		}
 		if it.ExpiresAtUnix > 0 && it.ExpiresAtUnix < now {
 			continue
@@ -287,18 +302,14 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 		return SeedGetResult{}, err
 	}
 	var resp seedGetResp
-	err = p2prpc.CallJSON(ctx, rt.Host, seller, ProtoSeedGet, clientSec(rt.rpcTrace), seedGetReq{
+	err = p2prpc.CallProto(ctx, rt.Host, seller, ProtoSeedGet, clientSec(rt.rpcTrace), seedGetReq{
 		SessionID: sessionID,
 		SeedHash:  seedHash,
 	}, &resp)
 	if err != nil {
 		return SeedGetResult{}, err
 	}
-	seed, err := hex.DecodeString(strings.TrimSpace(resp.SeedHex))
-	if err != nil {
-		return SeedGetResult{}, err
-	}
-	return SeedGetResult{Seed: seed}, nil
+	return SeedGetResult{Seed: append([]byte(nil), resp.Seed...)}, nil
 }
 
 type TransferOneChunkParams struct {
@@ -455,6 +466,38 @@ func TriggerTransferChunks(ctx context.Context, buyer *Runtime, p TransferChunks
 		trimmed = trimmed[:seedMeta.FileSize]
 	}
 	sum = sha256.Sum256(trimmed)
+	emitDirectTransferEvent(buyer, "direct_transfer_completed", map[string]any{
+		"event_id":                 fmt.Sprintf("%s:completed", poolOpen.SessionID),
+		"demand_id":                strings.TrimSpace(p.DemandID),
+		"seed_hash":                strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		"chunk_count":              wantChunks,
+		"seller_count":             1,
+		"bytes":                    len(trimmed),
+		"sha256":                   hex.EncodeToString(sum[:]),
+		"primary_deal_id":          poolOpen.DealID,
+		"primary_session_id":       poolOpen.SessionID,
+		"primary_open_sequence":    poolResult.OpenSequence,
+		"primary_open_base_txid":   poolResult.OpenBaseTxID,
+		"primary_pool_amount_sat":  poolResult.PoolAmount,
+		"primary_pay_count":        poolResult.PayCount,
+		"primary_last_pay_seq":     poolResult.LastPaySequence,
+		"primary_close_final_txid": poolResult.CloseFinalTxID,
+		"seller_sessions": []map[string]any{
+			{
+				"seller_peer_id":      strings.TrimSpace(p.SellerPeerID),
+				"demand_id":           strings.TrimSpace(p.DemandID),
+				"deal_id":             poolOpen.DealID,
+				"session_id":          poolOpen.SessionID,
+				"open_sequence":       poolResult.OpenSequence,
+				"open_base_txid":      poolResult.OpenBaseTxID,
+				"pool_amount_satoshi": poolResult.PoolAmount,
+				"pay_count":           poolResult.PayCount,
+				"last_pay_sequence":   poolResult.LastPaySequence,
+				"closed":              poolResult.Closed,
+				"close_final_txid":    poolResult.CloseFinalTxID,
+			},
+		},
+	})
 	return TransferChunksResult{
 		DealID:     poolOpen.DealID,
 		SessionID:  poolOpen.SessionID,
@@ -699,6 +742,14 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		if err != nil {
 			return directTransferPoolOpenResult{}, fmt.Errorf("build transfer pool spend tx failed: %w", err)
 		}
+		spendTxBytes, err := hex.DecodeString(spendTx.Hex())
+		if err != nil {
+			return directTransferPoolOpenResult{}, fmt.Errorf("encode spend tx bytes failed: %w", err)
+		}
+		baseTxBytes, err := hex.DecodeString(baseResp.Tx.Hex())
+		if err != nil {
+			return directTransferPoolOpenResult{}, fmt.Errorf("encode base tx bytes failed: %w", err)
+		}
 		spendFee := dual2of2.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
 		if spendFee == 0 {
 			spendFee = 1
@@ -714,9 +765,9 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			Sequence:       1,
 			SellerAmount:   0,
 			BuyerAmount:    buyerAmount,
-			CurrentTxHex:   spendTx.Hex(),
-			BuyerSigHex:    hex.EncodeToString(*buyerOpenSig),
-			BaseTxHex:      baseResp.Tx.Hex(),
+			CurrentTx:      spendTxBytes,
+			BuyerSig:       append([]byte(nil), (*buyerOpenSig)...),
+			BaseTx:         baseTxBytes,
 			BaseTxID:       baseResp.Tx.TxID().String(),
 			FeeRateSatByte: 0.5,
 			LockBlocks:     lockBlocks,
@@ -727,17 +778,14 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"attempt":    attempt,
 		})
 		var openResp directTransferPoolOpenResp
-		if err := p2prpc.CallJSON(ctx, buyer.Host, sellerPID, ProtoTransferPoolOpen, clientSec(buyer.rpcTrace), req, &openResp); err != nil {
+		if err := p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolOpen, clientSec(buyer.rpcTrace), req, &openResp); err != nil {
 			obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_open_failed", map[string]any{"error": err.Error()})
 			return directTransferPoolOpenResult{}, err
 		}
-		if strings.TrimSpace(openResp.Status) != "active" || strings.TrimSpace(openResp.SellerSigHex) == "" {
+		if strings.TrimSpace(openResp.Status) != "active" || len(openResp.SellerSig) == 0 {
 			return directTransferPoolOpenResult{}, fmt.Errorf("transfer pool open rejected: %s", strings.TrimSpace(openResp.Error))
 		}
-		sellerSig, err := hex.DecodeString(strings.TrimSpace(openResp.SellerSigHex))
-		if err != nil {
-			return directTransferPoolOpenResult{}, err
-		}
+		sellerSig := append([]byte(nil), openResp.SellerSig...)
 		merged, err := te.MergeTripleFeePoolSigForSpendTx(spendTx.Hex(), buyerOpenSig, &sellerSig)
 		if err != nil {
 			return directTransferPoolOpenResult{}, err
@@ -764,23 +812,42 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed: %w", err)
 		}
 		buyer.setTriplePool(&triplePoolSession{
+			DemandID:         strings.TrimSpace(p.DemandID),
 			SessionID:        curSessionID,
 			DealID:           dealID,
 			SellerPeerID:     strings.TrimSpace(p.SellerPeerID),
 			ArbiterPeerID:    req.ArbiterPeerID,
 			PoolAmountSat:    req.PoolAmount,
 			SpendTxFeeSat:    req.SpendTxFee,
+			OpenSequence:     req.Sequence,
 			Sequence:         req.Sequence,
 			SellerAmount:     req.SellerAmount,
 			BuyerAmount:      req.BuyerAmount,
 			CurrentTxHex:     merged.Hex(),
-			BaseTxHex:        req.BaseTxHex,
+			BaseTxHex:        baseResp.Tx.Hex(),
 			BaseTxID:         baseTxID,
 			FeeRateSatByte:   req.FeeRateSatByte,
 			LockBlocks:       req.LockBlocks,
 			SellerPubKeyHex:  sellerPubHex,
 			BuyerPubKeyHex:   strings.ToLower(clientActor.PubHex),
 			ArbiterPubKeyHex: arbiterPubHex,
+			PayCount:         0,
+			LastPaySequence:  0,
+		})
+		emitDirectTransferEvent(buyer, "direct_transfer_context_opened", map[string]any{
+			"event_id":                fmt.Sprintf("%s:open", curSessionID),
+			"demand_id":               strings.TrimSpace(p.DemandID),
+			"deal_id":                 dealID,
+			"session_id":              curSessionID,
+			"seller_peer_id":          strings.TrimSpace(p.SellerPeerID),
+			"arbiter_peer_id":         req.ArbiterPeerID,
+			"open_sequence":           req.Sequence,
+			"open_base_txid":          baseTxID,
+			"pool_amount_satoshi":     req.PoolAmount,
+			"spend_tx_fee_satoshi":    req.SpendTxFee,
+			"fee_rate_sat_per_byte":   req.FeeRateSatByte,
+			"lock_blocks":             req.LockBlocks,
+			"recommended_file_source": "direct_transfer_pool_open",
 		})
 		appendWalletFundFlow(buyer.DB, walletFundFlowEntry{
 			FlowID:          "direct_pool:" + curSessionID,
@@ -1002,6 +1069,10 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
+	updatedTxBytes, err := hex.DecodeString(updatedTx.Hex())
+	if err != nil {
+		return directTransferPoolPayResult{}, fmt.Errorf("encode updated tx bytes failed: %w", err)
+	}
 	req := directTransferPoolPayReq{
 		SessionID:    session.SessionID,
 		SeedHash:     seedHash,
@@ -1010,8 +1081,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		Sequence:     nextSeq,
 		SellerAmount: nextSellerAmount,
 		BuyerAmount:  session.PoolAmountSat - nextSellerAmount - session.SpendTxFeeSat,
-		CurrentTxHex: updatedTx.Hex(),
-		BuyerSigHex:  hex.EncodeToString(*buyerSig),
+		CurrentTx:    updatedTxBytes,
+		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_begin", map[string]any{
 		"session_id":    req.SessionID,
@@ -1021,29 +1092,22 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"chunk_index":   p.ChunkIndex,
 	})
 	var payResp directTransferPoolPayResp
-	if err := p2prpc.CallJSON(ctx, buyer.Host, sellerPID, ProtoTransferPoolPay, clientSec(buyer.rpcTrace), req, &payResp); err != nil {
+	if err := p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolPay, clientSec(buyer.rpcTrace), req, &payResp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolPayResult{}, err
 	}
-	if strings.TrimSpace(payResp.Status) != "active" || strings.TrimSpace(payResp.SellerSigHex) == "" {
+	if strings.TrimSpace(payResp.Status) != "active" || len(payResp.SellerSig) == 0 {
 		return directTransferPoolPayResult{}, fmt.Errorf("transfer pool pay rejected: %s", strings.TrimSpace(payResp.Error))
 	}
-	chunkHex := strings.ToLower(strings.TrimSpace(payResp.ChunkHex))
-	if chunkHex == "" {
+	chunk := append([]byte(nil), payResp.Chunk...)
+	if len(chunk) == 0 {
 		return directTransferPoolPayResult{}, fmt.Errorf("transfer pool pay rejected: chunk missing")
-	}
-	chunk, err := hex.DecodeString(chunkHex)
-	if err != nil {
-		return directTransferPoolPayResult{}, fmt.Errorf("invalid chunk hex")
 	}
 	got := sha256.Sum256(chunk)
 	if hex.EncodeToString(got[:]) != chunkHash {
 		return directTransferPoolPayResult{}, fmt.Errorf("chunk hash mismatch")
 	}
-	sellerSig, err := hex.DecodeString(strings.TrimSpace(payResp.SellerSigHex))
-	if err != nil {
-		return directTransferPoolPayResult{}, err
-	}
+	sellerSig := append([]byte(nil), payResp.SellerSig...)
 	merged, err := te.MergeTripleFeePoolSigForSpendTx(updatedTx.Hex(), buyerSig, &sellerSig)
 	if err != nil {
 		return directTransferPoolPayResult{}, err
@@ -1051,8 +1115,29 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 	session.Sequence = req.Sequence
 	session.SellerAmount = req.SellerAmount
 	session.BuyerAmount = req.BuyerAmount
+	session.PayCount++
+	session.LastPaySequence = req.Sequence
 	session.CurrentTxHex = merged.Hex()
 	buyer.setTriplePool(session)
+	emitDirectTransferEvent(buyer, "direct_transfer_chunk_paid", map[string]any{
+		"event_id":            fmt.Sprintf("%s:%d:%d", session.SessionID, req.Sequence, p.ChunkIndex),
+		"demand_id":           strings.TrimSpace(session.DemandID),
+		"deal_id":             strings.TrimSpace(session.DealID),
+		"session_id":          session.SessionID,
+		"seller_peer_id":      strings.TrimSpace(session.SellerPeerID),
+		"arbiter_peer_id":     strings.TrimSpace(session.ArbiterPeerID),
+		"seed_hash":           seedHash,
+		"chunk_hash":          chunkHash,
+		"chunk_index":         p.ChunkIndex,
+		"chunk_bytes":         len(chunk),
+		"sequence":            req.Sequence,
+		"pay_count":           session.PayCount,
+		"last_pay_sequence":   session.LastPaySequence,
+		"seller_amount_sat":   session.SellerAmount,
+		"buyer_amount_sat":    session.BuyerAmount,
+		"pool_amount_satoshi": session.PoolAmountSat,
+		"chunk_price_satoshi": p.Amount,
+	})
 	appendWalletFundFlow(buyer.DB, walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
@@ -1128,30 +1213,31 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
+	finalTxBytes, err := hex.DecodeString(finalTx.Hex())
+	if err != nil {
+		return directTransferPoolCloseResult{}, fmt.Errorf("encode final tx bytes failed: %w", err)
+	}
 	req := directTransferPoolCloseReq{
 		SessionID:    session.SessionID,
 		Sequence:     session.Sequence,
 		SellerAmount: session.SellerAmount,
 		BuyerAmount:  session.BuyerAmount,
-		CurrentTxHex: finalTx.Hex(),
-		BuyerSigHex:  hex.EncodeToString(*buyerSig),
+		CurrentTx:    finalTxBytes,
+		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_close_begin", map[string]any{
 		"session_id": req.SessionID,
 		"sequence":   req.Sequence,
 	})
 	var closeResp directTransferPoolCloseResp
-	if err := p2prpc.CallJSON(ctx, buyer.Host, sellerPID, ProtoTransferPoolClose, clientSec(buyer.rpcTrace), req, &closeResp); err != nil {
+	if err := p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolClose, clientSec(buyer.rpcTrace), req, &closeResp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_close_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolCloseResult{}, err
 	}
-	if strings.TrimSpace(closeResp.SellerSigHex) == "" {
+	if len(closeResp.SellerSig) == 0 {
 		return directTransferPoolCloseResult{}, fmt.Errorf("transfer pool close rejected: %s", strings.TrimSpace(closeResp.Error))
 	}
-	sellerSig, err := hex.DecodeString(strings.TrimSpace(closeResp.SellerSigHex))
-	if err != nil {
-		return directTransferPoolCloseResult{}, err
-	}
+	sellerSig := append([]byte(nil), closeResp.SellerSig...)
 	merged, err := te.MergeTripleFeePoolSigForSpendTx(finalTx.Hex(), buyerSig, &sellerSig)
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
@@ -1163,6 +1249,26 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	session.FinalTxID = finalTxID
 	session.CurrentTxHex = merged.Hex()
 	buyer.setTriplePool(session)
+	emitDirectTransferEvent(buyer, "direct_transfer_context_closed", map[string]any{
+		"event_id":              fmt.Sprintf("%s:close:%d", session.SessionID, session.Sequence),
+		"demand_id":             strings.TrimSpace(session.DemandID),
+		"deal_id":               strings.TrimSpace(session.DealID),
+		"session_id":            session.SessionID,
+		"seller_peer_id":        strings.TrimSpace(session.SellerPeerID),
+		"arbiter_peer_id":       strings.TrimSpace(session.ArbiterPeerID),
+		"open_sequence":         session.OpenSequence,
+		"open_base_txid":        strings.TrimSpace(session.BaseTxID),
+		"pool_amount_satoshi":   session.PoolAmountSat,
+		"pay_count":             session.PayCount,
+		"last_pay_sequence":     session.LastPaySequence,
+		"close_final_txid":      finalTxID,
+		"final_seller_amount":   session.SellerAmount,
+		"final_buyer_amount":    session.BuyerAmount,
+		"spend_tx_fee_satoshi":  session.SpendTxFeeSat,
+		"close_reason":          "transfer_completed",
+		"transfer_state":        "closed",
+		"transfer_entry_source": "direct_transfer_pool_close",
+	})
 	appendWalletFundFlow(buyer.DB, walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
@@ -1216,6 +1322,26 @@ func isRetryableTransferPoolBaseTxBroadcastErr(err error) bool {
 	return strings.Contains(msg, "txn-mempool-conflict") ||
 		strings.Contains(msg, "missing inputs") ||
 		strings.Contains(msg, "bad-txns-inputs-spent")
+}
+
+func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
+	if fields == nil {
+		fields = map[string]any{}
+	}
+	if rt != nil {
+		clientID := strings.ToLower(strings.TrimSpace(rt.Config.ClientID))
+		if clientID != "" {
+			if _, ok := fields["client_id"]; !ok {
+				fields["client_id"] = clientID
+			}
+		}
+		if rt.Host != nil {
+			if _, ok := fields["client_peer_id"]; !ok {
+				fields["client_peer_id"] = rt.Host.ID().String()
+			}
+		}
+	}
+	obs.Business("bitcast-client", name, fields)
 }
 
 func isRetryableTransferPoolSplitErr(err error) bool {
@@ -1361,7 +1487,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 		return directDealAcceptResp{}, err
 	}
 	var resp directDealAcceptResp
-	err = p2prpc.CallJSON(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
+	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
 		DemandID:      strings.TrimSpace(p.DemandID),
 		BuyerPeerID:   strings.ToLower(strings.TrimSpace(buyer.Config.ClientID)),
 		SeedHash:      strings.ToLower(strings.TrimSpace(p.SeedHash)),
@@ -1390,7 +1516,7 @@ func TriggerClientOpenDirectSession(ctx context.Context, buyer *Runtime, p OpenD
 		return directSessionOpenResp{}, err
 	}
 	var resp directSessionOpenResp
-	err = p2prpc.CallJSON(ctx, buyer.Host, sellerPID, ProtoDirectSessionOpen, clientSec(buyer.rpcTrace), directSessionOpenReq{
+	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionOpen, clientSec(buyer.rpcTrace), directSessionOpenReq{
 		DealID: strings.TrimSpace(p.DealID),
 	}, &resp)
 	if err != nil {
@@ -1413,7 +1539,7 @@ func TriggerClientCloseDirectSession(ctx context.Context, buyer *Runtime, p Clos
 		return directSessionCloseResp{}, err
 	}
 	var resp directSessionCloseResp
-	err = p2prpc.CallJSON(ctx, buyer.Host, sellerPID, ProtoDirectSessionClose, clientSec(buyer.rpcTrace), directSessionCloseReq{
+	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionClose, clientSec(buyer.rpcTrace), directSessionCloseReq{
 		SessionID: strings.TrimSpace(p.SessionID),
 	}, &resp)
 	if err != nil {

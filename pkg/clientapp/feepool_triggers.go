@@ -28,7 +28,7 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 	gw := rt.HealthyGWs[0]
 	var resp dual2of2.StateResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{})
-	err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{ClientID: rt.Config.ClientID}, &resp)
+	err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{ClientID: rt.Config.ClientID}, &resp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
 		return FeePoolStateResult{}, err
@@ -83,7 +83,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	}
 
 	var st dual2of2.StateResp
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{
 		ClientID:  rt.Config.ClientID,
 		SpendTxID: spendTxID,
 	}, &st); err != nil {
@@ -117,8 +117,8 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			},
 		}, nil
 	}
-	if strings.TrimSpace(st.CurrentTxHex) == "" {
-		return FeePoolCloseResult{}, fmt.Errorf("state.current_tx_hex empty for spend_txid=%s", spendTxID)
+	if len(st.CurrentTx) == 0 {
+		return FeePoolCloseResult{}, fmt.Errorf("state.current_tx empty for spend_txid=%s", spendTxID)
 	}
 
 	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
@@ -141,7 +141,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 
 	finalLock := uint32(0xffffffff)
 	finalSeq := uint32(0xffffffff)
-	finalTx, err := ce.LoadTx(st.CurrentTxHex, &finalLock, finalSeq, st.ServerAmountSat, serverPub, clientActor.PubKey, st.PoolAmountSat)
+	finalTx, err := ce.LoadTx(hex.EncodeToString(st.CurrentTx), &finalLock, finalSeq, st.ServerAmountSat, serverPub, clientActor.PubKey, st.PoolAmountSat)
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
@@ -155,12 +155,12 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		"gateway_peer_id": gw.ID.String(),
 		"spend_txid":      spendTxID,
 	})
-	if err := p2prpc.CallJSON(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolClose, gwSec(rt.rpcTrace), dual2of2.CloseReq{
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolClose, gwSec(rt.rpcTrace), dual2of2.CloseReq{
 		ClientID:     rt.Config.ClientID,
 		SpendTxID:    spendTxID,
 		ServerAmount: st.ServerAmountSat,
 		Fee:          st.SpendTxFeeSat,
-		ClientSigHex: hex.EncodeToString(*clientSig),
+		ClientSig:    append([]byte(nil), (*clientSig)...),
 	}, &resp); err != nil {
 		return FeePoolCloseResult{}, err
 	}

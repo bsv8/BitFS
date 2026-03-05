@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"flag"
@@ -383,63 +381,30 @@ func runDownload(cfg clientapp.Config, seedHash string) error {
 	}
 	defer func() { _ = rt.Close() }()
 
-	pub, err := clientapp.TriggerGatewayPublishDemand(ctx, rt, clientapp.PublishDemandParams{
-		SeedHash:   seedHash,
-		ChunkCount: 1,
-	})
-	if err != nil {
-		return fmt.Errorf("publish demand failed: %w", err)
-	}
-	quotes, err := waitDirectQuotes(ctx, rt, pub.DemandID, 12, 2*time.Second)
-	if err != nil {
-		return err
-	}
-	if len(quotes) == 0 {
-		return fmt.Errorf("no direct quotes for demand_id=%s", pub.DemandID)
-	}
-	q := quotes[0]
-
 	arbiter := ""
 	if len(rt.HealthyArbiters) > 0 {
 		arbiter = rt.HealthyArbiters[0].ID.String()
 	}
-	transfer, err := clientapp.TriggerTransferChunks(ctx, rt, clientapp.TransferChunksParams{
-		SellerPeerID:  q.SellerPeerID,
-		DemandID:      pub.DemandID,
-		ArbiterPeerID: arbiter,
+	download, err := clientapp.TriggerOneShotDirectDownload(ctx, rt, clientapp.OneShotDownloadParams{
 		SeedHash:      seedHash,
-		SeedPrice:     q.SeedPrice,
-		ChunkPrice:    q.ChunkPrice,
-		ExpiresAtUnix: q.ExpiresAtUnix,
-		ChunkCount:    0, // 由 seed metadata 决定实际块数（全量）
+		QuoteMaxRetry: 12,
+		QuoteInterval: 2 * time.Second,
+		ArbiterPeerID: arbiter,
 	})
-	if err != nil {
-		return fmt.Errorf("direct transfer failed: %w", err)
-	}
-
-	seedGet, err := clientapp.TriggerClientSeedGet(ctx, rt, clientapp.SeedGetParams{
-		SellerPeerID: q.SellerPeerID,
-		SessionID:    transfer.SessionID,
-		SeedHash:     seedHash,
-	})
-	if err != nil {
-		return fmt.Errorf("seed get failed: %w", err)
-	}
-	chunkCount, err := verifySeedHash(seedGet.Seed, seedHash)
 	if err != nil {
 		return err
 	}
 
 	seedPath := seedHash + ".bitfs"
-	if err := os.WriteFile(seedPath, seedGet.Seed, 0o644); err != nil {
+	if err := os.WriteFile(seedPath, download.Seed, 0o644); err != nil {
 		return err
 	}
-	fileName := chooseDownloadFileName(q.RecommendedFileName, seedHash)
-	if err := os.WriteFile(fileName, transfer.Data, 0o644); err != nil {
+	fileName := download.FileName
+	if err := os.WriteFile(fileName, download.Transfer.Data, 0o644); err != nil {
 		return err
 	}
-	fmt.Printf(msg("download_done")+"\ndemand_id: %s\nsession_id: %s\nchunk_count: %d\nseed_file: %s\nfile: %s\nbytes: %d\nsha256: %s\n",
-		pub.DemandID, transfer.SessionID, chunkCount, seedPath, fileName, len(transfer.Data), transfer.SHA256)
+	fmt.Printf(msg("download_done")+"\ndemand_id: %s\nseller_count: %d\nchunk_count: %d\nseed_file: %s\nfile: %s\nbytes: %d\nsha256: %s\n",
+		download.DemandID, len(download.Transfer.Sellers), download.ChunkCount, seedPath, fileName, len(download.Transfer.Data), download.Transfer.SHA256)
 	return nil
 }
 
@@ -820,52 +785,4 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-func waitDirectQuotes(ctx context.Context, rt *clientapp.Runtime, demandID string, maxRetry int, interval time.Duration) ([]clientapp.DirectQuoteItem, error) {
-	for i := 0; i < maxRetry; i++ {
-		quotes, err := clientapp.TriggerClientListDirectQuotes(ctx, rt, demandID)
-		if err != nil {
-			return nil, err
-		}
-		if len(quotes) > 0 {
-			return quotes, nil
-		}
-		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-time.After(interval):
-		}
-	}
-	return nil, nil
-}
-
-func verifySeedHash(seed []byte, expectedHash string) (uint32, error) {
-	if len(seed) < 22 {
-		return 0, fmt.Errorf("invalid seed bytes")
-	}
-	if string(seed[:4]) != "BSE1" {
-		return 0, fmt.Errorf("invalid seed magic")
-	}
-	chunkCount := binary.BigEndian.Uint32(seed[18:22])
-	expectLen := 22 + int(chunkCount)*32
-	if len(seed) != expectLen {
-		return 0, fmt.Errorf("invalid seed body length")
-	}
-	h := sha256.Sum256(seed)
-	got := strings.ToLower(hex.EncodeToString(h[:]))
-	if got != strings.ToLower(strings.TrimSpace(expectedHash)) {
-		return 0, fmt.Errorf("seed hash mismatch: expect=%s got=%s", expectedHash, got)
-	}
-	return chunkCount, nil
-}
-
-func chooseDownloadFileName(recommended, seedHash string) string {
-	name := strings.TrimSpace(recommended)
-	name = strings.ReplaceAll(name, "\\", "/")
-	name = filepath.Base(name)
-	if name == "." || name == "/" || name == "" {
-		return seedHash + ".bin"
-	}
-	return name
 }

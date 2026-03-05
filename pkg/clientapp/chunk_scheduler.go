@@ -280,16 +280,16 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 			if len(readyList) == 0 {
 				break
 			}
-			workerIdx, ok := p.Strategy.SelectReady(readyList, p.Workers)
+			chunkIdx, readyForChunk, ok := pickDispatchChunk(readyList, p.Workers, p.Pending, inflight, p.SelectChunk)
 			if !ok {
-				workerIdx = firstHealthyReady(readyList, p.Workers)
+				break
+			}
+			workerIdx, ok := p.Strategy.SelectReady(readyForChunk, p.Workers)
+			if !ok {
+				workerIdx = firstHealthyReady(readyForChunk, p.Workers)
 				if workerIdx < 0 {
 					break
 				}
-			}
-			chunkIdx, ok := p.SelectChunk(p.Pending, inflight)
-			if !ok {
-				break
 			}
 			delete(p.Pending, chunkIdx)
 			inflight[chunkIdx] = true
@@ -302,11 +302,19 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 		if len(p.Pending) == 0 && len(inflight) == 0 {
 			break
 		}
-		if !dispatched && len(inflight) == 0 && !hasAvailableWorker() {
-			closeWorkers()
-			err := fmt.Errorf("all sellers unavailable")
-			emit("failed", err, nil)
-			return completedBytes, err
+		if !dispatched && len(inflight) == 0 {
+			if !hasAvailableWorker() {
+				closeWorkers()
+				err := fmt.Errorf("all sellers unavailable")
+				emit("failed", err, nil)
+				return completedBytes, err
+			}
+			if !hasAnyProviderForPending(p.Pending, p.Workers) {
+				closeWorkers()
+				err := fmt.Errorf("no seller can serve remaining chunks")
+				emit("failed", err, nil)
+				return completedBytes, err
+			}
 		}
 
 		select {
@@ -407,6 +415,76 @@ func defaultSelectChunk(pending map[uint32]bool, inflight map[uint32]bool) (uint
 		return 0, false
 	}
 	return keys[0], true
+}
+
+func readyWorkersForChunk(ready []int, workers []*transferSellerWorker, chunkIndex uint32) []int {
+	out := make([]int, 0, len(ready))
+	for _, idx := range ready {
+		if idx < 0 || idx >= len(workers) {
+			continue
+		}
+		w := workers[idx]
+		if w == nil || w.broken {
+			continue
+		}
+		if !w.hasChunk(chunkIndex) {
+			continue
+		}
+		out = append(out, idx)
+	}
+	return out
+}
+
+func pickDispatchChunk(
+	ready []int,
+	workers []*transferSellerWorker,
+	pending map[uint32]bool,
+	inflight map[uint32]bool,
+	selectChunk func(pending map[uint32]bool, inflight map[uint32]bool) (uint32, bool),
+) (uint32, []int, bool) {
+	tried := map[uint32]struct{}{}
+	if selectChunk != nil {
+		if idx, ok := selectChunk(pending, inflight); ok {
+			tried[idx] = struct{}{}
+			candidates := readyWorkersForChunk(ready, workers, idx)
+			if len(candidates) > 0 {
+				return idx, candidates, true
+			}
+		}
+	}
+	keys := make([]uint32, 0, len(pending))
+	for idx := range pending {
+		if inflight[idx] {
+			continue
+		}
+		if _, ok := tried[idx]; ok {
+			continue
+		}
+		keys = append(keys, idx)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	for _, idx := range keys {
+		candidates := readyWorkersForChunk(ready, workers, idx)
+		if len(candidates) == 0 {
+			continue
+		}
+		return idx, candidates, true
+	}
+	return 0, nil, false
+}
+
+func hasAnyProviderForPending(pending map[uint32]bool, workers []*transferSellerWorker) bool {
+	for chunkIdx := range pending {
+		for _, w := range workers {
+			if w == nil || w.broken {
+				continue
+			}
+			if w.hasChunk(chunkIdx) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func cloneRetryHistogram(in map[string]uint32) map[string]uint32 {

@@ -23,7 +23,7 @@ const (
 type TransferChunksByStrategyParams struct {
 	DemandID        string `json:"demand_id"`
 	SeedHash        string `json:"seed_hash"`
-	ChunkCount      uint32 `json:"chunk_count"`
+	ChunkCount      uint32 `json:"chunk_count"` // 0 表示按 seed 元信息全量下载
 	ArbiterPeerID   string `json:"arbiter_peer_id,omitempty"`
 	MaxSeedPrice    uint64 `json:"max_seed_price,omitempty"`
 	MaxChunkPrice   uint64 `json:"max_chunk_price,omitempty"`
@@ -36,6 +36,7 @@ type TransferChunksByStrategyResult struct {
 	Data       []byte                   `json:"data"`
 	SHA256     string                   `json:"sha256"`
 	ChunkCount uint32                   `json:"chunk_count"`
+	Seed       []byte                   `json:"seed,omitempty"`
 	Sellers    []TransferSellerStatItem `json:"sellers"`
 }
 
@@ -65,10 +66,19 @@ type transferSellerWorker struct {
 	arbiterPeerID string
 	seedHash      string
 	poolAmount    uint64
+	// availableChunks 为空表示“未声明限制（默认认为可提供全部块）”。
+	availableChunks map[uint32]struct{}
 
 	dealID    string
 	sessionID string
 	opened    bool
+	openSeq   uint32
+	openBase  string
+	poolSat   uint64
+	payCount  uint32
+	lastPay   uint32
+	closed    bool
+	closeTxID string
 
 	successCount uint32
 	failedCount  uint32
@@ -82,6 +92,29 @@ type transferSellerWorker struct {
 
 	consecutiveFailures int
 	assignCh            chan uint32
+}
+
+func (w *transferSellerWorker) hasChunk(chunkIndex uint32) bool {
+	if w == nil {
+		return false
+	}
+	if len(w.availableChunks) == 0 {
+		return true
+	}
+	_, ok := w.availableChunks[chunkIndex]
+	return ok
+}
+
+func chunkIndexSet(indexes []uint32) map[uint32]struct{} {
+	indexes = normalizeChunkIndexes(indexes, 0)
+	if len(indexes) == 0 {
+		return nil
+	}
+	out := make(map[uint32]struct{}, len(indexes))
+	for _, idx := range indexes {
+		out[idx] = struct{}{}
+	}
+	return out
 }
 
 func shortID(s string) string {
@@ -179,6 +212,13 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 	w.dealID = openRes.DealID
 	w.sessionID = openRes.SessionID
 	w.opened = true
+	w.openSeq = openRes.Sequence
+	w.openBase = strings.TrimSpace(openRes.BaseTxID)
+	w.poolSat = openRes.PoolAmount
+	w.payCount = 0
+	w.lastPay = 0
+	w.closed = false
+	w.closeTxID = ""
 	logTransferStrategy("evt_transfer_strategy_open_session_ok", map[string]any{
 		"seller_peer_id": shortID(w.quote.SellerPeerID),
 		"deal_id":        strings.TrimSpace(w.dealID),
@@ -203,6 +243,8 @@ func (w *transferSellerWorker) fetchChunk(ctx context.Context, chunkIndex uint32
 	if err != nil {
 		return nil, 0, err
 	}
+	w.payCount++
+	w.lastPay = payRes.Sequence
 	return payRes.Chunk, time.Since(begin), nil
 }
 
@@ -210,10 +252,16 @@ func (w *transferSellerWorker) closeSession(ctx context.Context) error {
 	if !w.opened || strings.TrimSpace(w.sessionID) == "" {
 		return nil
 	}
-	_, err := triggerDirectTransferPoolClose(ctx, w.buyer, directTransferPoolCloseParams{
+	closeRes, err := triggerDirectTransferPoolClose(ctx, w.buyer, directTransferPoolCloseParams{
 		SellerPeerID: w.quote.SellerPeerID,
 		SessionID:    w.sessionID,
 	})
+	if err == nil {
+		w.closed = true
+		if strings.TrimSpace(closeRes.FinalTxID) != "" {
+			w.closeTxID = strings.TrimSpace(closeRes.FinalTxID)
+		}
+	}
 	_, _ = TriggerClientCloseDirectSession(ctx, w.buyer, CloseDirectSessionParams{
 		SellerPeerID: w.quote.SellerPeerID,
 		SessionID:    w.sessionID,
@@ -383,9 +431,6 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 	if strings.TrimSpace(p.DemandID) == "" || seedHash == "" {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("demand_id and seed_hash are required")
 	}
-	if p.ChunkCount == 0 {
-		return TransferChunksByStrategyResult{}, fmt.Errorf("chunk_count must be > 0")
-	}
 	if p.MaxChunkRetries <= 0 {
 		p.MaxChunkRetries = defaultChunkRetryMax
 	}
@@ -435,7 +480,8 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 
 	rejectedByArbiter := 0
 	var seedMeta seedV1Meta
-	workers, seedMeta, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
+	var seedBytes []byte
+	workers, seedMeta, seedBytes, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
 		Ctx:           ctx,
 		Buyer:         buyer,
 		Quotes:        filtered,
@@ -457,6 +503,7 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 				"arbiter_peer_id": shortID(arbiterPeerID),
 				"chunk_price":     q.ChunkPrice,
 				"seed_price":      q.SeedPrice,
+				"chunk_have":      len(q.AvailableChunkIndexes),
 			})
 		},
 		OnSeedProbeFail: func(w *transferSellerWorker, reason string, err error) {
@@ -487,12 +534,23 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 	}
 
 	want := p.ChunkCount
-	if want > seedMeta.ChunkCount {
+	if want == 0 || want > seedMeta.ChunkCount {
 		want = seedMeta.ChunkCount
 	}
 	if want == 0 {
 		_ = closeTransferWorkers(context.Background(), workers)
 		return TransferChunksByStrategyResult{}, fmt.Errorf("seed has zero chunks")
+	}
+	missing := missingChunkCoverage(want, workers)
+	if len(missing) > 0 {
+		_ = closeTransferWorkers(context.Background(), workers)
+		logTransferStrategy("evt_transfer_strategy_missing_chunks", map[string]any{
+			"demand_id":      strings.TrimSpace(p.DemandID),
+			"missing_count":  len(missing),
+			"first_missing":  missing[0],
+			"required_chunk": want,
+		})
+		return TransferChunksByStrategyResult{}, fmt.Errorf("missing chunk providers")
 	}
 
 	effectiveStrategyName := strategyNameOrDefault(p.Strategy)
@@ -573,6 +631,7 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 	sum := sha256.Sum256(data)
 
 	stats := make([]TransferSellerStatItem, 0, len(workers))
+	sellerSessions := make([]map[string]any, 0, len(workers))
 	for _, w := range workers {
 		avg := 0.0
 		if w.totalNanos > 0 {
@@ -589,6 +648,23 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 			Pruned:              w.pruned,
 			Broken:              w.broken,
 		})
+		sellerSessions = append(sellerSessions, map[string]any{
+			"seller_peer_id":        strings.TrimSpace(w.quote.SellerPeerID),
+			"demand_id":             strings.TrimSpace(w.quote.DemandID),
+			"deal_id":               strings.TrimSpace(w.dealID),
+			"session_id":            strings.TrimSpace(w.sessionID),
+			"open_sequence":         w.openSeq,
+			"open_base_txid":        strings.TrimSpace(w.openBase),
+			"pool_amount_satoshi":   w.poolSat,
+			"pay_count":             w.payCount,
+			"last_pay_sequence":     w.lastPay,
+			"closed":                w.closed,
+			"close_final_txid":      strings.TrimSpace(w.closeTxID),
+			"success_chunks":        w.successCount,
+			"failed_chunks":         w.failedCount,
+			"avg_bytes_per_second":  avg,
+			"ema_speed_bytes_per_s": w.emaBPS,
+		})
 	}
 	logTransferStrategy("evt_transfer_strategy_done", map[string]any{
 		"demand_id":    strings.TrimSpace(p.DemandID),
@@ -598,11 +674,42 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 		"sha256":       shortID(hex.EncodeToString(sum[:])),
 		"seller_count": len(stats),
 	})
+	if buyer != nil {
+		primary := map[string]any{}
+		primarySessionID := ""
+		if len(sellerSessions) > 0 {
+			primary = sellerSessions[0]
+			primarySessionID = strings.TrimSpace(fmt.Sprint(primary["session_id"]))
+		}
+		eventID := fmt.Sprintf("demand:%s:completed", strings.TrimSpace(p.DemandID))
+		if primarySessionID != "" {
+			eventID = primarySessionID + ":completed"
+		}
+		emitDirectTransferEvent(buyer, "direct_transfer_completed", map[string]any{
+			"event_id":                 eventID,
+			"demand_id":                strings.TrimSpace(p.DemandID),
+			"seed_hash":                seedHash,
+			"chunk_count":              want,
+			"seller_count":             len(stats),
+			"bytes":                    len(data),
+			"sha256":                   hex.EncodeToString(sum[:]),
+			"primary_deal_id":          primary["deal_id"],
+			"primary_session_id":       primary["session_id"],
+			"primary_open_sequence":    primary["open_sequence"],
+			"primary_open_base_txid":   primary["open_base_txid"],
+			"primary_pool_amount_sat":  primary["pool_amount_satoshi"],
+			"primary_pay_count":        primary["pay_count"],
+			"primary_last_pay_seq":     primary["last_pay_sequence"],
+			"primary_close_final_txid": primary["close_final_txid"],
+			"seller_sessions":          sellerSessions,
+		})
+	}
 
 	return TransferChunksByStrategyResult{
 		Data:       data,
 		SHA256:     hex.EncodeToString(sum[:]),
 		ChunkCount: want,
+		Seed:       seedBytes,
 		Sellers:    stats,
 	}, nil
 }
@@ -622,4 +729,27 @@ func errText(err error) string {
 		return ""
 	}
 	return err.Error()
+}
+
+func missingChunkCoverage(want uint32, workers []*transferSellerWorker) []uint32 {
+	if want == 0 {
+		return nil
+	}
+	missing := make([]uint32, 0, 8)
+	for i := uint32(0); i < want; i++ {
+		has := false
+		for _, w := range workers {
+			if w == nil || w.broken {
+				continue
+			}
+			if w.hasChunk(i) {
+				has = true
+				break
+			}
+		}
+		if !has {
+			missing = append(missing, i)
+		}
+	}
+	return missing
 }

@@ -6,6 +6,7 @@ require (
 	github.com/bsv-blockchain/go-sdk v1.2.18
 	github.com/bsv8/BFTP v0.0.0
 	github.com/bsv8/MultisigPool v0.0.0
+	github.com/golang/protobuf v1.5.0
 	github.com/libp2p/go-libp2p v0.45.0
 	github.com/multiformats/go-multiaddr v0.16.0
 	github.com/pelletier/go-toml/v2 v2.2.4

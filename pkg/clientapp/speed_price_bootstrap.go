@@ -22,19 +22,20 @@ type speedPriceBootstrapParams struct {
 
 // prepareSpeedPriceWorkersAndSeed 负责“卖家 worker 构建 + 可用 seed 元信息探测”。
 // 成功返回后，workers 中至少有一个已建立会话并可继续下载分块。
-func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSellerWorker, seedV1Meta, error) {
+// 额外返回 seed 原文，供上层流程决定是否落地 .bitfs 文件。
+func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSellerWorker, seedV1Meta, []byte, error) {
 	if p.Ctx == nil {
-		return nil, seedV1Meta{}, fmt.Errorf("context is required")
+		return nil, seedV1Meta{}, nil, fmt.Errorf("context is required")
 	}
 	if p.Buyer == nil {
-		return nil, seedV1Meta{}, fmt.Errorf("buyer runtime is required")
+		return nil, seedV1Meta{}, nil, fmt.Errorf("buyer runtime is required")
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" {
-		return nil, seedV1Meta{}, fmt.Errorf("seed hash is required")
+		return nil, seedV1Meta{}, nil, fmt.Errorf("seed hash is required")
 	}
 	if len(p.Quotes) == 0 {
-		return nil, seedV1Meta{}, fmt.Errorf("quotes are required")
+		return nil, seedV1Meta{}, nil, fmt.Errorf("quotes are required")
 	}
 
 	quotes := append([]DirectQuoteItem(nil), p.Quotes...)
@@ -58,16 +59,17 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 			p.OnQuoteAccepted(q, arbiterPeerID)
 		}
 		workers = append(workers, &transferSellerWorker{
-			buyer:         p.Buyer,
-			quote:         q,
-			arbiterPeerID: arbiterPeerID,
-			seedHash:      seedHash,
-			poolAmount:    p.PoolAmount,
-			assignCh:      make(chan uint32),
+			buyer:           p.Buyer,
+			quote:           q,
+			arbiterPeerID:   arbiterPeerID,
+			seedHash:        seedHash,
+			poolAmount:      p.PoolAmount,
+			availableChunks: chunkIndexSet(q.AvailableChunkIndexes),
+			assignCh:        make(chan uint32),
 		})
 	}
 	if len(workers) == 0 {
-		return nil, seedV1Meta{}, fmt.Errorf("no quote with available arbiter")
+		return nil, seedV1Meta{}, nil, fmt.Errorf("no quote with available arbiter")
 	}
 
 	for _, w := range workers {
@@ -109,11 +111,14 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 			}
 			continue
 		}
+		if len(w.quote.AvailableChunkIndexes) > 0 {
+			w.availableChunks = chunkIndexSet(normalizeChunkIndexes(w.quote.AvailableChunkIndexes, meta.ChunkCount))
+		}
 		if p.OnSeedProbeOK != nil {
 			p.OnSeedProbeOK(w, meta)
 		}
-		return workers, meta, nil
+		return workers, meta, append([]byte(nil), seedRes.Seed...), nil
 	}
 	_ = closeTransferWorkers(context.Background(), workers)
-	return nil, seedV1Meta{}, fmt.Errorf("seed metadata load failed from all sellers")
+	return nil, seedV1Meta{}, nil, fmt.Errorf("seed metadata load failed from all sellers")
 }

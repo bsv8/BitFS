@@ -302,7 +302,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	if len(quotes) == 0 {
 		return fmt.Errorf("no quote under max price")
 	}
-	workers, meta, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
+	workers, meta, seedBytes, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
 		Ctx:      ctx,
 		Buyer:    sess.server.rt,
 		Quotes:   quotes,
@@ -425,7 +425,11 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	if err := copyFile(sess.partPath, outPath); err != nil {
 		return err
 	}
-	if _, err := sess.server.workspace.SyncOnce(context.Background()); err != nil {
+	if _, err := sess.server.workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+		FilePath:              outPath,
+		Seed:                  seedBytes,
+		AvailableChunkIndexes: contiguousChunkIndexes(meta.ChunkCount),
+	}); err != nil {
 		return err
 	}
 	return nil
