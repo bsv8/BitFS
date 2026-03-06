@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -54,6 +55,19 @@ type parsedRange struct {
 	start int64
 	end   int64
 	ok    bool
+}
+
+type localLiveSegmentFile struct {
+	SegmentIndex    uint64
+	MediaSequence   uint64
+	Path            string
+	SeedHash        string
+	UpdatedAtUnix   int64
+	DurationMs      uint64
+	IsDiscontinuity bool
+	InitSeedHash    string
+	PlaylistURI     string
+	IsEnd           bool
 }
 
 func newFileHTTPServer(rt *Runtime, cfg *Config, db *sql.DB, workspace *workspaceManager) *fileHTTPServer {
@@ -105,6 +119,10 @@ func (s *fileHTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	parts := strings.Split(p, "/")
+	if len(parts) >= 2 && parts[0] == "live" {
+		s.handleLivePlayback(w, r, parts)
+		return
+	}
 	if len(parts) > 2 {
 		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
@@ -123,6 +141,112 @@ func (s *fileHTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleDownload(w, r, seed)
+}
+
+func (s *fileHTTPServer) handleLivePlayback(w http.ResponseWriter, r *http.Request, parts []string) {
+	if len(parts) != 3 {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
+		return
+	}
+	streamID := strings.ToLower(strings.TrimSpace(parts[1]))
+	if !isSeedHashHex(streamID) {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
+		return
+	}
+	if parts[2] == "playlist.m3u8" {
+		s.handleLivePlaylist(w, r, streamID)
+		return
+	}
+	segmentIndex, err := strconv.ParseUint(strings.TrimSpace(parts[2]), 10, 64)
+	if err != nil {
+		s.writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid segment_index"})
+		return
+	}
+	s.handleLiveSegmentMedia(w, r, streamID, segmentIndex)
+}
+
+func (s *fileHTTPServer) handleLivePlaylist(w http.ResponseWriter, r *http.Request, streamID string) {
+	segments, err := s.listLocalLiveSegmentFiles(streamID)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if len(segments) == 0 {
+		s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "stream not found"})
+		return
+	}
+	var b strings.Builder
+	b.WriteString("#EXTM3U\n")
+	b.WriteString("#EXT-X-VERSION:3\n")
+	b.WriteString("#EXT-X-PLAYLIST-TYPE:EVENT\n")
+	targetDuration := uint64(1)
+	for _, seg := range segments {
+		secs := durationMsToTargetDuration(seg.DurationMs)
+		if secs > targetDuration {
+			targetDuration = secs
+		}
+	}
+	b.WriteString(fmt.Sprintf("#EXT-X-TARGETDURATION:%d\n", targetDuration))
+	firstSequence := segments[0].MediaSequence
+	b.WriteString(fmt.Sprintf("#EXT-X-MEDIA-SEQUENCE:%d\n", firstSequence))
+	lastInitSeedHash := ""
+	for _, seg := range segments {
+		if seg.IsDiscontinuity {
+			b.WriteString("#EXT-X-DISCONTINUITY\n")
+		}
+		if seg.InitSeedHash != "" && seg.InitSeedHash != lastInitSeedHash {
+			b.WriteString(fmt.Sprintf("#EXT-X-MAP:URI=\"/%s\"\n", seg.InitSeedHash))
+			lastInitSeedHash = seg.InitSeedHash
+		}
+		b.WriteString(fmt.Sprintf("#EXTINF:%s,\n", formatExtINF(seg.DurationMs)))
+		b.WriteString(seg.PlaylistURI)
+		b.WriteByte('\n')
+	}
+	if segments[len(segments)-1].IsEnd {
+		b.WriteString("#EXT-X-ENDLIST\n")
+	}
+	w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, b.String())
+}
+
+func (s *fileHTTPServer) handleLiveSegmentMedia(w http.ResponseWriter, r *http.Request, streamID string, segmentIndex uint64) {
+	path, err := s.findLocalLiveSegmentFile(streamID, segmentIndex)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			s.writeJSON(w, http.StatusNotFound, map[string]any{"error": "segment not found"})
+			return
+		}
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	segmentBytes, err := os.ReadFile(path)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	data, mediaBytes, _, err := VerifyLiveSegment(segmentBytes)
+	if err != nil {
+		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if data.SegmentIndex != segmentIndex {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "segment index mismatch"})
+		return
+	}
+	if segmentIndex > 0 && !strings.EqualFold(strings.TrimSpace(data.StreamID), streamID) {
+		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "stream_id mismatch"})
+		return
+	}
+	contentType := strings.TrimSpace(data.MIMEType)
+	if contentType == "" {
+		contentType = http.DetectContentType(mediaBytes)
+	}
+	if strings.TrimSpace(contentType) == "" {
+		contentType = "application/octet-stream"
+	}
+	s.serveBytes(w, r, mediaBytes, contentType)
 }
 
 func (s *fileHTTPServer) handleStatus(w http.ResponseWriter, r *http.Request, seedHash string) {
@@ -773,6 +897,7 @@ func (s *fileHTTPServer) serveLocalFile(w http.ResponseWriter, r *http.Request, 
 	}
 	size := st.Size()
 	if size <= 0 {
+		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -793,6 +918,7 @@ func (s *fileHTTPServer) serveLocalFile(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Type", "application/octet-stream")
 	if pr.ok {
 		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
 		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
@@ -805,6 +931,144 @@ func (s *fileHTTPServer) serveLocalFile(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	_, _ = io.CopyN(w, f, end-start+1)
+}
+
+func (s *fileHTTPServer) serveBytes(w http.ResponseWriter, r *http.Request, data []byte, contentType string) {
+	pr, err := parseSingleRange(r.Header.Get("Range"))
+	if err != nil {
+		w.Header().Set("Accept-Ranges", "bytes")
+		s.writeJSON(w, http.StatusRequestedRangeNotSatisfiable, map[string]any{"error": err.Error()})
+		return
+	}
+	size := int64(len(data))
+	if size <= 0 {
+		if strings.TrimSpace(contentType) != "" {
+			w.Header().Set("Content-Type", contentType)
+		}
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	start := int64(0)
+	end := size - 1
+	if pr.ok {
+		if pr.start >= size {
+			s.writeJSON(w, http.StatusRequestedRangeNotSatisfiable, map[string]any{"error": "range not satisfiable"})
+			return
+		}
+		start = pr.start
+		if pr.end < size {
+			end = pr.end
+		}
+		if end < start {
+			s.writeJSON(w, http.StatusRequestedRangeNotSatisfiable, map[string]any{"error": "range not satisfiable"})
+			return
+		}
+	}
+	w.Header().Set("Accept-Ranges", "bytes")
+	if strings.TrimSpace(contentType) != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if pr.ok {
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+		w.Header().Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+	} else {
+		w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+		w.WriteHeader(http.StatusOK)
+	}
+	_, _ = w.Write(data[int(start) : int(end)+1])
+}
+
+func (s *fileHTTPServer) listLocalLiveSegmentFiles(streamID string) ([]localLiveSegmentFile, error) {
+	rows, err := s.db.Query(`SELECT path,seed_hash,updated_at_unix FROM workspace_files WHERE path LIKE ? ORDER BY updated_at_unix ASC, path ASC`, "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]localLiveSegmentFile, 0, 16)
+	for rows.Next() {
+		var p string
+		var seedHash string
+		var updatedAt int64
+		if err := rows.Scan(&p, &seedHash, &updatedAt); err != nil {
+			return nil, err
+		}
+		if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
+			continue
+		}
+		segmentBytes, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		data, _, _, err := VerifyLiveSegment(segmentBytes)
+		if err != nil {
+			continue
+		}
+		if data.SegmentIndex > 0 && !strings.EqualFold(data.StreamID, streamID) {
+			continue
+		}
+		playlistURI := strings.TrimSpace(data.PlaylistURIHint)
+		if playlistURI == "" {
+			playlistURI = fmt.Sprintf("/live/%s/%d", streamID, data.SegmentIndex)
+		}
+		mediaSequence := data.MediaSequence
+		if mediaSequence == 0 && data.SegmentIndex > 0 {
+			mediaSequence = data.SegmentIndex
+		}
+		out = append(out, localLiveSegmentFile{
+			SegmentIndex:    data.SegmentIndex,
+			MediaSequence:   mediaSequence,
+			Path:            p,
+			SeedHash:        strings.ToLower(strings.TrimSpace(seedHash)),
+			UpdatedAtUnix:   updatedAt,
+			DurationMs:      data.DurationMs,
+			IsDiscontinuity: data.IsDiscontinuity,
+			InitSeedHash:    data.InitSeedHash,
+			PlaylistURI:     playlistURI,
+			IsEnd:           data.IsEnd,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].MediaSequence == out[j].MediaSequence {
+			return out[i].SegmentIndex < out[j].SegmentIndex
+		}
+		return out[i].MediaSequence < out[j].MediaSequence
+	})
+	return out, nil
+}
+
+func (s *fileHTTPServer) findLocalLiveSegmentFile(streamID string, segmentIndex uint64) (string, error) {
+	items, err := s.listLocalLiveSegmentFiles(streamID)
+	if err != nil {
+		return "", err
+	}
+	for _, it := range items {
+		if it.SegmentIndex == segmentIndex {
+			return it.Path, nil
+		}
+	}
+	return "", sql.ErrNoRows
+}
+
+func formatExtINF(durationMs uint64) string {
+	if durationMs == 0 {
+		return "2.000"
+	}
+	return fmt.Sprintf("%.3f", float64(durationMs)/1000.0)
+}
+
+func durationMsToTargetDuration(durationMs uint64) uint64 {
+	if durationMs == 0 {
+		return 2
+	}
+	secs := durationMs / 1000
+	if durationMs%1000 != 0 {
+		secs++
+	}
+	if secs == 0 {
+		return 1
+	}
+	return secs
 }
 
 func parseSingleRange(raw string) (parsedRange, error) {

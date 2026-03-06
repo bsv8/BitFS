@@ -73,3 +73,31 @@ func (*directTransferPoolCloseReq) ProtoMessage()    {}
 func (m *directTransferPoolCloseResp) Reset()         { *m = directTransferPoolCloseResp{} }
 func (m *directTransferPoolCloseResp) String() string { return oldproto.CompactTextString(m) }
 func (*directTransferPoolCloseResp) ProtoMessage()    {}
+
+func (m *liveSegmentDataPB) Reset()         { *m = liveSegmentDataPB{} }
+func (m *liveSegmentDataPB) String() string { return oldproto.CompactTextString(m) }
+func (*liveSegmentDataPB) ProtoMessage()    {}
+
+func (m *liveSegmentPB) Reset()         { *m = liveSegmentPB{} }
+func (m *liveSegmentPB) String() string { return oldproto.CompactTextString(m) }
+func (*liveSegmentPB) ProtoMessage()    {}
+
+func (m *liveSegmentRefPB) Reset()         { *m = liveSegmentRefPB{} }
+func (m *liveSegmentRefPB) String() string { return oldproto.CompactTextString(m) }
+func (*liveSegmentRefPB) ProtoMessage()    {}
+
+func (m *liveSubscribeReq) Reset()         { *m = liveSubscribeReq{} }
+func (m *liveSubscribeReq) String() string { return oldproto.CompactTextString(m) }
+func (*liveSubscribeReq) ProtoMessage()    {}
+
+func (m *liveSubscribeResp) Reset()         { *m = liveSubscribeResp{} }
+func (m *liveSubscribeResp) String() string { return oldproto.CompactTextString(m) }
+func (*liveSubscribeResp) ProtoMessage()    {}
+
+func (m *liveHeadPushReq) Reset()         { *m = liveHeadPushReq{} }
+func (m *liveHeadPushReq) String() string { return oldproto.CompactTextString(m) }
+func (*liveHeadPushReq) ProtoMessage()    {}
+
+func (m *liveHeadPushResp) Reset()         { *m = liveHeadPushResp{} }
+func (m *liveHeadPushResp) String() string { return oldproto.CompactTextString(m) }
+func (*liveHeadPushResp) ProtoMessage()    {}

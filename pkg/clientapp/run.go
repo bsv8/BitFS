@@ -50,6 +50,8 @@ const (
 	ProtoTransferPoolOpen   protocol.ID = "/bsv-transfer/client/transfer-pool/open/1.0.0"
 	ProtoTransferPoolPay    protocol.ID = "/bsv-transfer/client/transfer-pool/pay/1.0.0"
 	ProtoTransferPoolClose  protocol.ID = "/bsv-transfer/client/transfer-pool/close/1.0.0"
+	ProtoLiveSubscribe      protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
+	ProtoLiveHeadPush       protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
 
 	defaultIndexRelPath      = "db/client-index.sqlite"
 	defaultRescanIntervalSec = 300
@@ -177,6 +179,61 @@ type directTransferPoolCloseResp struct {
 	Error     string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
 }
 
+type liveSegmentDataPB struct {
+	Version           uint32 `protobuf:"varint,1,opt,name=version,proto3" json:"version"`
+	StreamID          string `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id,omitempty"`
+	SegmentIndex      uint64 `protobuf:"varint,3,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index"`
+	PrevSeedHash      string `protobuf:"bytes,4,opt,name=prev_seed_hash,json=prevSeedHash,proto3" json:"prev_seed_hash,omitempty"`
+	PublisherPubKey   string `protobuf:"bytes,5,opt,name=publisher_pubkey,json=publisherPubkey,proto3" json:"publisher_pubkey"`
+	MediaHash         []byte `protobuf:"bytes,6,opt,name=media_hash,json=mediaHash,proto3" json:"media_hash"`
+	DurationMs        uint64 `protobuf:"varint,7,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
+	PublishedAtUnixMs int64  `protobuf:"varint,8,opt,name=published_at_unix_ms,json=publishedAtUnixMs,proto3" json:"published_at_unix_ms,omitempty"`
+	IsDiscontinuity   bool   `protobuf:"varint,9,opt,name=is_discontinuity,json=isDiscontinuity,proto3" json:"is_discontinuity,omitempty"`
+	MIMEType          string `protobuf:"bytes,10,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	InitSeedHash      string `protobuf:"bytes,11,opt,name=init_seed_hash,json=initSeedHash,proto3" json:"init_seed_hash,omitempty"`
+	PlaylistURIHint   string `protobuf:"bytes,12,opt,name=playlist_uri_hint,json=playlistUriHint,proto3" json:"playlist_uri_hint,omitempty"`
+	MediaSequence     uint64 `protobuf:"varint,13,opt,name=media_sequence,json=mediaSequence,proto3" json:"media_sequence,omitempty"`
+	IsEnd             bool   `protobuf:"varint,14,opt,name=is_end,json=isEnd,proto3" json:"is_end,omitempty"`
+}
+
+type liveSegmentPB struct {
+	Data       []byte `protobuf:"bytes,1,opt,name=data,proto3" json:"data"`
+	MediaBytes []byte `protobuf:"bytes,2,opt,name=media_bytes,json=mediaBytes,proto3" json:"media_bytes"`
+	Signature  []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature"`
+}
+
+type liveSegmentRefPB struct {
+	SegmentIndex    uint64 `protobuf:"varint,1,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index"`
+	SeedHash        string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
+	PublishedAtUnix int64  `protobuf:"varint,3,opt,name=published_at_unix,json=publishedAtUnix,proto3" json:"published_at_unix,omitempty"`
+}
+
+type liveSubscribeReq struct {
+	StreamURI        string   `protobuf:"bytes,1,opt,name=stream_uri,json=streamUri,proto3" json:"stream_uri"`
+	StreamID         string   `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
+	Window           uint32   `protobuf:"varint,3,opt,name=window,proto3" json:"window"`
+	SubscriberPeerID string   `protobuf:"bytes,4,opt,name=subscriber_peer_id,json=subscriberPeerId,proto3" json:"subscriber_peer_id"`
+	SubscriberAddrs  []string `protobuf:"bytes,5,rep,name=subscriber_addrs,json=subscriberAddrs,proto3" json:"subscriber_addrs,omitempty"`
+}
+
+type liveSubscribeResp struct {
+	Status          string              `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
+	StreamID        string              `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
+	PublisherPubKey string              `protobuf:"bytes,3,opt,name=publisher_pubkey,json=publisherPubkey,proto3" json:"publisher_pubkey"`
+	RecentSegments  []*liveSegmentRefPB `protobuf:"bytes,4,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
+}
+
+type liveHeadPushReq struct {
+	StreamID        string              `protobuf:"bytes,1,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
+	PublisherPubKey string              `protobuf:"bytes,2,opt,name=publisher_pubkey,json=publisherPubkey,proto3" json:"publisher_pubkey"`
+	RecentSegments  []*liveSegmentRefPB `protobuf:"bytes,3,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
+	SentAtUnix      int64               `protobuf:"varint,4,opt,name=sent_at_unix,json=sentAtUnix,proto3" json:"sent_at_unix"`
+}
+
+type liveHeadPushResp struct {
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
+}
+
 type Config struct {
 	ClientID string `yaml:"client_id" toml:"client_id"`
 	Keys     struct {
@@ -197,10 +254,25 @@ type Config struct {
 	Seller struct {
 		Enabled bool `yaml:"enabled" toml:"enabled"`
 		Pricing struct {
-			FloorPriceSatPer64K uint64 `yaml:"floor_price_sat_per_64k" toml:"floor_price_sat_per_64k"`
-			ResaleDiscountBPS   uint64 `yaml:"resale_discount_bps" toml:"resale_discount_bps"`
+			FloorPriceSatPer64K     uint64 `yaml:"floor_price_sat_per_64k" toml:"floor_price_sat_per_64k"`
+			ResaleDiscountBPS       uint64 `yaml:"resale_discount_bps" toml:"resale_discount_bps"`
+			LiveBasePriceSatPer64K  uint64 `yaml:"live_base_price_sat_per_64k" toml:"live_base_price_sat_per_64k"`
+			LiveFloorPriceSatPer64K uint64 `yaml:"live_floor_price_sat_per_64k" toml:"live_floor_price_sat_per_64k"`
+			LiveDecayPerMinuteBPS   uint64 `yaml:"live_decay_per_minute_bps" toml:"live_decay_per_minute_bps"`
 		} `yaml:"pricing" toml:"pricing"`
 	} `yaml:"seller" toml:"seller"`
+	Live struct {
+		CacheMaxBytes uint64 `yaml:"cache_max_bytes" toml:"cache_max_bytes"`
+		Buyer         struct {
+			TargetLagSegments   uint32 `yaml:"target_lag_segments" toml:"target_lag_segments"`
+			MaxBudgetPerMinute  uint64 `yaml:"max_budget_per_minute" toml:"max_budget_per_minute"`
+			PreferOlderSegments bool   `yaml:"prefer_older_segments" toml:"prefer_older_segments"`
+		} `yaml:"buyer" toml:"buyer"`
+		Publish struct {
+			BroadcastWindow      uint32 `yaml:"broadcast_window" toml:"broadcast_window"`
+			BroadcastIntervalSec uint32 `yaml:"broadcast_interval_seconds" toml:"broadcast_interval_seconds"`
+		} `yaml:"publish" toml:"publish"`
+	} `yaml:"live" toml:"live"`
 	Listen struct {
 		Enabled               *bool  `yaml:"enabled" toml:"enabled"`
 		RenewThresholdSeconds uint32 `yaml:"renew_threshold_seconds" toml:"renew_threshold_seconds"`
@@ -298,6 +370,7 @@ type Runtime struct {
 	walletAllocMu sync.Mutex
 
 	rpcTrace p2prpc.TraceSink
+	live     *liveRuntime
 
 	// 运行时状态
 	gwManager  *gatewayManager
@@ -395,6 +468,13 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		}
 		return nil, err
 	}
+	if err := workspaceMgr.ValidateLiveCacheCapacity(cfg.Live.CacheMaxBytes); err != nil {
+		_ = db.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
 	if cfg.Scan.StartupFullScan {
 		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
 			_ = db.Close()
@@ -403,6 +483,13 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 			}
 			return nil, err
 		}
+	}
+	if err := workspaceMgr.EnforceLiveCacheLimit(cfg.Live.CacheMaxBytes); err != nil {
+		_ = db.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
 	}
 
 	// 强制仅启用 TCP 传输，规避 QUIC 在当前工具链环境下的 TLS session ticket panic。
@@ -489,10 +576,6 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		})
 	}
 
-	if cfg.Seller.Enabled {
-		registerSellerHandlers(h, db, catalog, trace, cfg)
-	}
-
 	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
 	obs.Important("bitcast-client", "started", map[string]any{
 		"peer_id":           h.ID().String(),
@@ -518,10 +601,15 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		Workspace:                workspaceMgr,
 		Catalog:                  catalog,
 		Chain:                    opt.Chain,
+		live:                     newLiveRuntime(),
 		feePools:                 map[string]*feePoolSession{},
 		triplePool:               map[string]*triplePoolSession{},
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 trace,
+	}
+	registerLiveHandlers(rt)
+	if cfg.Seller.Enabled {
+		registerSellerHandlers(h, db, catalog, rt.live, trace, cfg)
 	}
 	if rt.Chain == nil {
 		// 设计约束：业务组件不直连 WOC，上链调用统一走 guard。
@@ -564,6 +652,8 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 			}
 		}()
 	}
+
+	go restorePersistedLiveFollows(ctx, rt)
 
 	rt.closeFn = func() error {
 		if rt.HTTP != nil {
@@ -703,6 +793,27 @@ func ApplyConfigDefaults(cfg *Config) error {
 	if cfg.Seller.Pricing.ResaleDiscountBPS == 0 {
 		cfg.Seller.Pricing.ResaleDiscountBPS = defaultDiscountBPS
 	}
+	if cfg.Seller.Pricing.LiveBasePriceSatPer64K == 0 {
+		cfg.Seller.Pricing.LiveBasePriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K * 4
+		if cfg.Seller.Pricing.LiveBasePriceSatPer64K == 0 {
+			cfg.Seller.Pricing.LiveBasePriceSatPer64K = defaultFloorSatPer64K * 4
+		}
+	}
+	if cfg.Seller.Pricing.LiveFloorPriceSatPer64K == 0 {
+		cfg.Seller.Pricing.LiveFloorPriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K
+	}
+	if cfg.Seller.Pricing.LiveDecayPerMinuteBPS == 0 {
+		cfg.Seller.Pricing.LiveDecayPerMinuteBPS = 1000
+	}
+	if cfg.Live.Buyer.TargetLagSegments == 0 {
+		cfg.Live.Buyer.TargetLagSegments = 3
+	}
+	if cfg.Live.Publish.BroadcastWindow == 0 {
+		cfg.Live.Publish.BroadcastWindow = 10
+	}
+	if cfg.Live.Publish.BroadcastIntervalSec == 0 {
+		cfg.Live.Publish.BroadcastIntervalSec = 3
+	}
 	if cfg.Scan.RescanIntervalSeconds == 0 {
 		cfg.Scan.RescanIntervalSeconds = defaultRescanIntervalSec
 	}
@@ -804,6 +915,18 @@ func validateConfig(cfg *Config) error {
 	}
 	if cfg.Seller.Pricing.ResaleDiscountBPS > 10000 {
 		return errors.New("seller.pricing.resale_discount_bps must be <= 10000")
+	}
+	if cfg.Seller.Pricing.LiveFloorPriceSatPer64K > cfg.Seller.Pricing.LiveBasePriceSatPer64K {
+		return errors.New("seller.pricing.live_floor_price_sat_per_64k must be <= seller.pricing.live_base_price_sat_per_64k")
+	}
+	if cfg.Seller.Pricing.LiveDecayPerMinuteBPS > 10000 {
+		return errors.New("seller.pricing.live_decay_per_minute_bps must be <= 10000")
+	}
+	if cfg.Live.Publish.BroadcastWindow == 0 || cfg.Live.Publish.BroadcastWindow > maxLiveWindowSize {
+		return fmt.Errorf("live.publish.broadcast_window must be between 1 and %d", maxLiveWindowSize)
+	}
+	if cfg.Live.Publish.BroadcastIntervalSec == 0 {
+		return errors.New("live.publish.broadcast_interval_seconds must be > 0")
 	}
 	if strings.TrimSpace(cfg.FSHTTP.ListenAddr) == "" {
 		return errors.New("fs_http.listen_addr is required")
@@ -1063,6 +1186,19 @@ func initIndexDB(db *sql.DB) error {
 			related_txid TEXT NOT NULL,
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS live_follows(
+			stream_id TEXT PRIMARY KEY,
+			stream_uri TEXT NOT NULL,
+			publisher_pubkey TEXT NOT NULL,
+			have_segment_index INTEGER NOT NULL,
+			last_bought_segment_index INTEGER NOT NULL,
+			last_bought_seed_hash TEXT NOT NULL,
+			last_output_file_path TEXT NOT NULL,
+			last_decision_json TEXT NOT NULL,
+			status TEXT NOT NULL,
+			last_error TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS file_downloads(
 			seed_hash TEXT PRIMARY KEY,
@@ -1474,7 +1610,7 @@ func cfgBool(v *bool, def bool) bool {
 	return *v
 }
 
-func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, trace p2prpc.TraceSink, cfg Config) {
+func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, live *liveRuntime, trace p2prpc.TraceSink, cfg Config) {
 	p2prpc.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
@@ -1499,6 +1635,13 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 				"chunk_count": req.ChunkCount,
 			})
 			return dealprod.DemandAnnounceResp{Status: "ignored_no_seed"}, nil
+		}
+		if liveMeta, ok := live.segment(seedHash); ok {
+			seed = ComputeLiveQuotePrices(seed, liveMeta, LiveSellerPricing{
+				BasePriceSatPer64K:  cfg.Seller.Pricing.LiveBasePriceSatPer64K,
+				FloorPriceSatPer64K: cfg.Seller.Pricing.LiveFloorPriceSatPer64K,
+				DecayPerMinuteBPS:   cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
+			}, time.Now())
 		}
 		availableChunks, err := listSeedAvailableChunks(db, seedHash)
 		if err != nil {
@@ -1559,8 +1702,8 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 		if err != nil {
 			return seedGetResp{}, err
 		}
-			return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
-		})
+		return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
+	})
 	p2prpc.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
@@ -1573,8 +1716,8 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, tra
 		if err != nil {
 			return directQuoteSubmitResp{}, err
 		}
-			availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
-			recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
+		availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
+		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
 		if _, err := db.Exec(
 			`INSERT INTO direct_quotes(demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix)
 			 VALUES(?,?,?,?,?,?,?,?,?)

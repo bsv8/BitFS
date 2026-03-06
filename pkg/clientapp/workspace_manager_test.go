@@ -6,7 +6,9 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
@@ -226,5 +228,112 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 	}
 	if idx != 0 {
 		t.Fatalf("available chunk index mismatch: got=%d want=0", idx)
+	}
+}
+
+func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	dataDir := filepath.Join(base, "data")
+	ws := filepath.Join(base, "ws")
+	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir seeds dir: %v", err)
+	}
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", filepath.Join(base, "index.sqlite"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = ws
+	cfg.Storage.DataDir = dataDir
+	cfg.Seller.Pricing.FloorPriceSatPer64K = 10
+	cfg.Seller.Pricing.ResaleDiscountBPS = 8000
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	mgr := &workspaceManager{
+		cfg:     &cfg,
+		db:      db,
+		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+	}
+	wsItem, err := mgr.Add(ws, 100)
+	if err != nil {
+		t.Fatalf("add workspace: %v", err)
+	}
+	if wsItem.MaxBytes != 100 {
+		t.Fatalf("workspace max bytes mismatch: got=%d want=100", wsItem.MaxBytes)
+	}
+	if err := mgr.ValidateLiveCacheCapacity(101); err == nil {
+		t.Fatalf("expected live cache validation failure")
+	}
+	if err := mgr.ValidateLiveCacheCapacity(100); err != nil {
+		t.Fatalf("validate live cache: %v", err)
+	}
+
+	streamOld := strings.Repeat("a", 64)
+	streamNew := strings.Repeat("b", 64)
+	oldPath := filepath.Join(ws, "live", streamOld, "000000.seg")
+	newPath := filepath.Join(ws, "live", streamNew, "000000.seg")
+	if err := os.MkdirAll(filepath.Dir(oldPath), 0o755); err != nil {
+		t.Fatalf("mkdir old stream: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		t.Fatalf("mkdir new stream: %v", err)
+	}
+	if err := os.WriteFile(oldPath, []byte(strings.Repeat("o", 60)), 0o644); err != nil {
+		t.Fatalf("write old seg: %v", err)
+	}
+	if err := os.WriteFile(newPath, []byte(strings.Repeat("n", 30)), 0o644); err != nil {
+		t.Fatalf("write new seg: %v", err)
+	}
+	oldTime := time.Now().Add(-time.Hour).Unix()
+	newTime := time.Now().Unix()
+	if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)`, oldPath, 60, oldTime, strings.Repeat("c", 64), oldTime); err != nil {
+		t.Fatalf("insert old workspace file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)`, newPath, 30, newTime, strings.Repeat("d", 64), newTime); err != nil {
+		t.Fatalf("insert new workspace file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, strings.Repeat("c", 64), filepath.Join(dataDir, "seeds", "c.bse"), 1, 60, oldTime); err != nil {
+		t.Fatalf("insert old seed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, strings.Repeat("d", 64), filepath.Join(dataDir, "seeds", "d.bse"), 1, 30, newTime); err != nil {
+		t.Fatalf("insert new seed: %v", err)
+	}
+
+	if err := mgr.EnforceLiveCacheLimit(40); err != nil {
+		t.Fatalf("enforce live cache: %v", err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old stream file should be removed, stat err=%v", err)
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("new stream file should remain: %v", err)
+	}
+	var remain int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE path LIKE ?`, "%"+streamOld+"%").Scan(&remain); err != nil {
+		t.Fatalf("count old stream files: %v", err)
+	}
+	if remain != 0 {
+		t.Fatalf("old stream rows should be removed, got=%d", remain)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM seeds WHERE seed_hash=?`, strings.Repeat("c", 64)).Scan(&remain); err != nil {
+		t.Fatalf("count old seed: %v", err)
+	}
+	if remain != 0 {
+		t.Fatalf("old seed should be cleaned, got=%d", remain)
 	}
 }

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/libp2p/go-libp2p"
 )
 
 func TestParseSingleRange(t *testing.T) {
@@ -222,6 +224,107 @@ func TestFileHTTPServerRejectMultiRange(t *testing.T) {
 	}
 }
 
+func TestFileHTTPServerServeLivePlaylistAndMedia(t *testing.T) {
+	t.Parallel()
+	srv, _, _ := newLocalOnlyTestServer(t, nil)
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("new host: %v", err)
+	}
+	defer h.Close()
+	srv.rt = &Runtime{Host: h}
+
+	seg0, seed0, err := BuildLiveSegment(context.Background(), srv.rt, liveSegmentDataPB{
+		Version:           1,
+		SegmentIndex:      0,
+		DurationMs:        2100,
+		MIMEType:          "video/mp2t",
+		InitSeedHash:      strings.Repeat("d", 64),
+		MediaSequence:     7,
+		PublishedAtUnixMs: 1_700_000_000_000,
+	}, []byte("video-seg-0"))
+	if err != nil {
+		t.Fatalf("build seg0: %v", err)
+	}
+	streamID := seed0
+	streamDir := filepath.Join(t.TempDir(), "live", streamID)
+	if err := os.MkdirAll(streamDir, 0o755); err != nil {
+		t.Fatalf("mkdir stream dir: %v", err)
+	}
+	seg1, _, err := BuildLiveSegment(context.Background(), srv.rt, liveSegmentDataPB{
+		Version:           1,
+		StreamID:          streamID,
+		SegmentIndex:      1,
+		PrevSeedHash:      seed0,
+		DurationMs:        3600,
+		IsDiscontinuity:   true,
+		MIMEType:          "video/mp2t",
+		InitSeedHash:      strings.Repeat("d", 64),
+		PlaylistURIHint:   "/custom/live/seg1.ts",
+		MediaSequence:     8,
+		IsEnd:             true,
+		PublishedAtUnixMs: 1_700_000_003_600,
+	}, []byte("video-seg-1"))
+	if err != nil {
+		t.Fatalf("build seg1: %v", err)
+	}
+	path0 := filepath.Join(streamDir, "000000.seg")
+	path1 := filepath.Join(streamDir, "000001.seg")
+	if err := os.WriteFile(path0, seg0, 0o644); err != nil {
+		t.Fatalf("write seg0: %v", err)
+	}
+	if err := os.WriteFile(path1, seg1, 0o644); err != nil {
+		t.Fatalf("write seg1: %v", err)
+	}
+	if err := upsertWorkspaceFileForSeedAt(t, srv.db, seed0, path0, int64(len(seg0)), time.Now().Add(-time.Minute).Unix()); err != nil {
+		t.Fatalf("insert seg0: %v", err)
+	}
+	if err := upsertWorkspaceFileForSeedAt(t, srv.db, strings.Repeat("c", 64), path1, int64(len(seg1)), time.Now().Unix()); err != nil {
+		t.Fatalf("insert seg1: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/live/"+streamID+"/playlist.m3u8", nil)
+	rec := httptest.NewRecorder()
+	srv.handleRoot(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("playlist status mismatch: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "#EXTM3U") ||
+		!strings.Contains(body, "#EXT-X-TARGETDURATION:4") ||
+		!strings.Contains(body, "#EXT-X-MEDIA-SEQUENCE:7") ||
+		!strings.Contains(body, "#EXT-X-MAP:URI=\"/"+strings.Repeat("d", 64)+"\"") ||
+		!strings.Contains(body, "#EXTINF:2.100,") ||
+		!strings.Contains(body, "#EXTINF:3.600,") ||
+		!strings.Contains(body, "#EXT-X-DISCONTINUITY") ||
+		!strings.Contains(body, "/live/"+streamID+"/0") ||
+		!strings.Contains(body, "/custom/live/seg1.ts") ||
+		!strings.Contains(body, "#EXT-X-ENDLIST") {
+		t.Fatalf("unexpected playlist body: %s", body)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/live/"+streamID+"/1", nil)
+	rec = httptest.NewRecorder()
+	srv.handleRoot(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("media status mismatch: got=%d want=%d", rec.Code, http.StatusOK)
+	}
+	if rec.Body.String() != "video-seg-1" {
+		t.Fatalf("media body mismatch: got=%q", rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/live/"+streamID+"/1", nil)
+	req.Header.Set("Range", "bytes=6-8")
+	rec = httptest.NewRecorder()
+	srv.handleRoot(rec, req)
+	if rec.Code != http.StatusPartialContent {
+		t.Fatalf("media range status mismatch: got=%d want=%d", rec.Code, http.StatusPartialContent)
+	}
+	if rec.Body.String() != "seg" {
+		t.Fatalf("media range body mismatch: got=%q", rec.Body.String())
+	}
+}
+
 func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, string) {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
@@ -247,9 +350,13 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 }
 
 func upsertWorkspaceFileForSeed(t *testing.T, db *sql.DB, seedHash, path string, size int64) error {
+	return upsertWorkspaceFileForSeedAt(t, db, seedHash, path, size, time.Now().Unix())
+}
+
+func upsertWorkspaceFileForSeedAt(t *testing.T, db *sql.DB, seedHash, path string, size int64, updatedAt int64) error {
 	t.Helper()
 	_, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
-		path, size, time.Now().Unix(), seedHash, time.Now().Unix())
+		path, size, updatedAt, seedHash, updatedAt)
 	return err
 }

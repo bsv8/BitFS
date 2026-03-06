@@ -1,0 +1,149 @@
+package clientapp
+
+import (
+	"context"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/libp2p/go-libp2p"
+	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
+)
+
+func TestLiveSubscribeURI_RoundTrip(t *testing.T) {
+	raw, err := BuildLiveSubscribeURI(strings.Repeat("ab", 33), strings.Repeat("cd", 32))
+	if err != nil {
+		t.Fatalf("build uri failed: %v", err)
+	}
+	parsed, err := ParseLiveSubscribeURI(raw)
+	if err != nil {
+		t.Fatalf("parse uri failed: %v", err)
+	}
+	if parsed.PublisherPubKey != strings.Repeat("ab", 33) {
+		t.Fatalf("unexpected publisher_pubkey: %s", parsed.PublisherPubKey)
+	}
+	if parsed.StreamID != strings.Repeat("cd", 32) {
+		t.Fatalf("unexpected stream_id: %s", parsed.StreamID)
+	}
+}
+
+func TestBuildAndVerifyLiveSegment(t *testing.T) {
+	h, err := libp2p.New()
+	if err != nil {
+		t.Fatalf("new host failed: %v", err)
+	}
+	defer h.Close()
+
+	rt := &Runtime{Host: h}
+	segBytes, seedHash, err := BuildLiveSegment(context.Background(), rt, liveSegmentDataPB{
+		Version:           1,
+		SegmentIndex:      0,
+		DurationMs:        2345,
+		PublishedAtUnixMs: 1_700_000_123_000,
+		IsDiscontinuity:   true,
+		MIMEType:          "video/mp2t",
+		InitSeedHash:      strings.Repeat("ab", 32),
+		PlaylistURIHint:   "/custom/seg0.ts",
+		IsEnd:             true,
+	}, []byte("hello-live"))
+	if err != nil {
+		t.Fatalf("build segment failed: %v", err)
+	}
+	data, media, gotSeedHash, err := VerifyLiveSegment(segBytes)
+	if err != nil {
+		t.Fatalf("verify segment failed: %v", err)
+	}
+	if gotSeedHash != seedHash {
+		t.Fatalf("seed hash mismatch: got=%s want=%s", gotSeedHash, seedHash)
+	}
+	if string(media) != "hello-live" {
+		t.Fatalf("unexpected media: %q", string(media))
+	}
+	if data.SegmentIndex != 0 {
+		t.Fatalf("unexpected segment index: %d", data.SegmentIndex)
+	}
+	if data.DurationMs != 2345 {
+		t.Fatalf("unexpected duration_ms: %d", data.DurationMs)
+	}
+	if data.PublishedAtUnixMs != 1_700_000_123_000 {
+		t.Fatalf("unexpected published_at_unix_ms: %d", data.PublishedAtUnixMs)
+	}
+	if !data.IsDiscontinuity || !data.IsEnd {
+		t.Fatalf("expected discontinuity and end flags")
+	}
+	if data.MIMEType != "video/mp2t" {
+		t.Fatalf("unexpected mime_type: %s", data.MIMEType)
+	}
+	if data.InitSeedHash != strings.Repeat("ab", 32) {
+		t.Fatalf("unexpected init_seed_hash: %s", data.InitSeedHash)
+	}
+	if data.PlaylistURIHint != "/custom/seg0.ts" {
+		t.Fatalf("unexpected playlist_uri_hint: %s", data.PlaylistURIHint)
+	}
+	if strings.TrimSpace(data.PublisherPubKey) == "" {
+		t.Fatalf("publisher_pubkey missing")
+	}
+}
+
+func TestLiveSubscribeAndPublishLatest(t *testing.T) {
+	pubHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new publisher host failed: %v", err)
+	}
+	defer pubHost.Close()
+	subHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new subscriber host failed: %v", err)
+	}
+	defer subHost.Close()
+
+	pubRT := &Runtime{Host: pubHost, live: newLiveRuntime()}
+	subRT := &Runtime{Host: subHost, live: newLiveRuntime()}
+	registerLiveHandlers(pubRT)
+	registerLiveHandlers(subRT)
+
+	pubHex, err := localPubKeyHex(pubHost)
+	if err != nil {
+		t.Fatalf("publisher pubkey failed: %v", err)
+	}
+	streamID := strings.Repeat("ab", 32)
+	uri, err := BuildLiveSubscribeURI(pubHex, streamID)
+	if err != nil {
+		t.Fatalf("build uri failed: %v", err)
+	}
+
+	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
+	res, err := TriggerLiveSubscribe(context.Background(), subRT, uri, 5)
+	if err != nil {
+		t.Fatalf("subscribe failed: %v", err)
+	}
+	if res.StreamID != streamID {
+		t.Fatalf("unexpected stream id: %s", res.StreamID)
+	}
+
+	err = TriggerLivePublishLatest(context.Background(), pubRT, streamID, []LiveSegmentRef{
+		{SegmentIndex: 11, SeedHash: strings.Repeat("cd", 32)},
+		{SegmentIndex: 12, SeedHash: strings.Repeat("ef", 32)},
+	})
+	if err != nil {
+		t.Fatalf("publish latest failed: %v", err)
+	}
+	got, err := TriggerLiveGetLatest(subRT, streamID)
+	if err != nil {
+		t.Fatalf("get latest failed: %v", err)
+	}
+	if len(got.RecentSegments) != 2 {
+		t.Fatalf("unexpected segment count: %d", len(got.RecentSegments))
+	}
+	if got.RecentSegments[1].SegmentIndex != 12 {
+		t.Fatalf("unexpected latest segment index: %d", got.RecentSegments[1].SegmentIndex)
+	}
+}

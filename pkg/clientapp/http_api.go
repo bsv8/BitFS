@@ -289,6 +289,15 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
 		mux.HandleFunc(prefix+"/v1/workspace/seeds", s.withAuth(s.handleWorkspaceSeeds))
 		mux.HandleFunc(prefix+"/v1/workspace/seeds/price", s.withAuth(s.handleSeedPriceUpdate))
+		mux.HandleFunc(prefix+"/v1/live/subscribe-uri", s.withAuth(s.handleLiveSubscribeURI))
+		mux.HandleFunc(prefix+"/v1/live/subscribe", s.withAuth(s.handleLiveSubscribe))
+		mux.HandleFunc(prefix+"/v1/live/publish/segment", s.withAuth(s.handleLivePublishSegment))
+		mux.HandleFunc(prefix+"/v1/live/publish/latest", s.withAuth(s.handleLivePublishLatest))
+		mux.HandleFunc(prefix+"/v1/live/latest", s.withAuth(s.handleLiveLatest))
+		mux.HandleFunc(prefix+"/v1/live/plan", s.withAuth(s.handleLivePlan))
+		mux.HandleFunc(prefix+"/v1/live/follow/start", s.withAuth(s.handleLiveFollowStart))
+		mux.HandleFunc(prefix+"/v1/live/follow/stop", s.withAuth(s.handleLiveFollowStop))
+		mux.HandleFunc(prefix+"/v1/live/follow/status", s.withAuth(s.handleLiveFollowStatus))
 		// 网关管理 API
 		mux.HandleFunc(prefix+"/v1/gateways", s.withAuth(s.handleGateways))
 		mux.HandleFunc(prefix+"/v1/gateways/master", s.withAuth(s.handleGatewayMaster))
@@ -1177,6 +1186,445 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 		"unit_price_sat_per_64k": unit,
 		"seed_price_satoshi":     total,
 	})
+}
+
+func (s *httpAPIServer) handleLiveSubscribeURI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.rt.Host == nil || s.cfg == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	streamID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream_id")))
+	if !isSeedHashHex(streamID) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
+		return
+	}
+	pubHex, err := localPubKeyHex(s.rt.Host)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	uri, err := BuildLiveSubscribeURI(pubHex, streamID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stream_id":                  streamID,
+		"publisher_pubkey":           pubHex,
+		"subscribe_uri":              uri,
+		"broadcast_window":           s.cfg.Live.Publish.BroadcastWindow,
+		"broadcast_interval_seconds": s.cfg.Live.Publish.BroadcastIntervalSec,
+	})
+}
+
+func (s *httpAPIServer) handleLiveSubscribe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamURI string `json:"stream_uri"`
+		Window    uint32 `json:"window"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if strings.TrimSpace(req.StreamURI) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "stream_uri is required"})
+		return
+	}
+	res, err := TriggerLiveSubscribe(r.Context(), s.rt, req.StreamURI, req.Window)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stream_id":        res.StreamID,
+		"publisher_pubkey": res.PublisherPubKey,
+		"recent_segments":  res.RecentSegments,
+		"recent_count":     len(res.RecentSegments),
+	})
+}
+
+func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.rt.Workspace == nil || s.rt.Host == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamID          string  `json:"stream_id"`
+		SegmentIndex      *uint64 `json:"segment_index,omitempty"`
+		PrevSeedHash      string  `json:"prev_seed_hash"`
+		DurationMs        uint64  `json:"duration_ms"`
+		PublishedAtUnixMs int64   `json:"published_at_unix_ms"`
+		IsDiscontinuity   bool    `json:"is_discontinuity"`
+		MIMEType          string  `json:"mime_type"`
+		InitSeedHash      string  `json:"init_seed_hash"`
+		PlaylistURIHint   string  `json:"playlist_uri_hint"`
+		MediaSequence     *uint64 `json:"media_sequence,omitempty"`
+		IsEnd             bool    `json:"is_end"`
+		MediaBytes        []byte  `json:"media_bytes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if len(req.MediaBytes) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "media_bytes is required"})
+		return
+	}
+	streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
+	pubHex, err := localPubKeyHex(s.rt.Host)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	recent, lastRef, err := s.currentLivePublishWindow(streamID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	var segmentIndex uint64
+	if req.SegmentIndex != nil {
+		segmentIndex = *req.SegmentIndex
+	} else if lastRef != nil {
+		segmentIndex = lastRef.SegmentIndex + 1
+	}
+	if streamID == "" && segmentIndex != 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "first live segment must use segment_index=0"})
+		return
+	}
+	if streamID != "" && !isSeedHashHex(streamID) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
+		return
+	}
+	prevSeedHash := strings.ToLower(strings.TrimSpace(req.PrevSeedHash))
+	if prevSeedHash == "" && lastRef != nil {
+		prevSeedHash = lastRef.SeedHash
+	}
+	if streamID != "" && segmentIndex > 0 && prevSeedHash == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "prev_seed_hash is required"})
+		return
+	}
+	publishedAtUnixMs := req.PublishedAtUnixMs
+	if publishedAtUnixMs == 0 {
+		publishedAtUnixMs = time.Now().UnixMilli()
+	}
+	mediaSequence := uint64(0)
+	if req.MediaSequence != nil {
+		mediaSequence = *req.MediaSequence
+	} else if segmentIndex > 0 {
+		mediaSequence = segmentIndex
+	}
+	segData := liveSegmentDataPB{
+		Version:           1,
+		StreamID:          streamID,
+		SegmentIndex:      segmentIndex,
+		PrevSeedHash:      prevSeedHash,
+		PublisherPubKey:   pubHex,
+		DurationMs:        req.DurationMs,
+		PublishedAtUnixMs: publishedAtUnixMs,
+		IsDiscontinuity:   req.IsDiscontinuity,
+		MIMEType:          req.MIMEType,
+		InitSeedHash:      req.InitSeedHash,
+		PlaylistURIHint:   req.PlaylistURIHint,
+		MediaSequence:     mediaSequence,
+		IsEnd:             req.IsEnd,
+	}
+	segmentBytes, _, err := BuildLiveSegment(r.Context(), s.rt, segData, req.MediaBytes)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	seedBytes, seedHash, chunkCount, err := s.buildSeedForLiveSegment(segmentBytes)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if streamID == "" {
+		streamID = seedHash
+		segData.StreamID = ""
+		recent = nil
+	}
+	outPath, err := s.rt.Workspace.SelectLiveSegmentOutputPath(streamID, segmentIndex, uint64(len(segmentBytes)))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := os.WriteFile(outPath, segmentBytes, 0o644); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if _, err := s.rt.Workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+		FilePath:              outPath,
+		Seed:                  seedBytes,
+		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.rt.Workspace.EnforceLiveCacheLimit(s.cfg.Live.CacheMaxBytes); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	recent = append(recent, LiveSegmentRef{
+		SegmentIndex:    segmentIndex,
+		SeedHash:        seedHash,
+		PublishedAtUnix: publishedAtUnixMs / 1000,
+	})
+	recent = trimLiveSegmentRefs(normalizeLiveSegmentRefs(recent), clampLiveWindow(s.cfg.Live.Publish.BroadcastWindow))
+	if err := TriggerLivePublishLatest(r.Context(), s.rt, streamID, recent); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	subscribeURI, err := BuildLiveSubscribeURI(pubHex, streamID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"stream_id":       streamID,
+		"seed_hash":       seedHash,
+		"segment_index":   segmentIndex,
+		"chunk_count":     chunkCount,
+		"output_file":     outPath,
+		"subscribe_uri":   subscribeURI,
+		"recent_segments": recent,
+	})
+}
+
+func (s *httpAPIServer) handleLivePublishLatest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamID       string           `json:"stream_id"`
+		RecentSegments []LiveSegmentRef `json:"recent_segments"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if err := TriggerLivePublishLatest(r.Context(), s.rt, req.StreamID, req.RecentSegments); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":           true,
+		"stream_id":    strings.ToLower(strings.TrimSpace(req.StreamID)),
+		"recent_count": len(normalizeLiveSegmentRefs(req.RecentSegments)),
+	})
+}
+
+func (s *httpAPIServer) buildSeedForLiveSegment(segmentBytes []byte) ([]byte, string, uint32, error) {
+	tmpDir := filepath.Join(s.cfg.Storage.DataDir, "live-publish")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return nil, "", 0, err
+	}
+	tmpPath := filepath.Join(tmpDir, randHex(8)+".seg")
+	if err := os.WriteFile(tmpPath, segmentBytes, 0o644); err != nil {
+		return nil, "", 0, err
+	}
+	defer os.Remove(tmpPath)
+	return buildSeedV1(tmpPath)
+}
+
+func (s *httpAPIServer) currentLivePublishWindow(streamID string) ([]LiveSegmentRef, *LiveSegmentRef, error) {
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
+	if streamID == "" {
+		return nil, nil, nil
+	}
+	if _, recent, ok := s.rt.live.publishedSnapshot(streamID); ok {
+		if len(recent) == 0 {
+			return nil, nil, nil
+		}
+		last := recent[len(recent)-1]
+		return recent, &last, nil
+	}
+	rows, err := s.db.Query(`SELECT path,seed_hash,updated_at_unix FROM workspace_files WHERE path LIKE ? ORDER BY updated_at_unix ASC, path ASC`, "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%")
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	recent := make([]LiveSegmentRef, 0, maxLiveWindowSize)
+	for rows.Next() {
+		var p, seedHash string
+		var updatedAt int64
+		if err := rows.Scan(&p, &seedHash, &updatedAt); err != nil {
+			return nil, nil, err
+		}
+		segmentBytes, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		data, _, _, err := VerifyLiveSegment(segmentBytes)
+		if err != nil {
+			continue
+		}
+		recent = append(recent, LiveSegmentRef{
+			SegmentIndex:    data.SegmentIndex,
+			SeedHash:        strings.ToLower(strings.TrimSpace(seedHash)),
+			PublishedAtUnix: updatedAt,
+		})
+	}
+	recent = trimLiveSegmentRefs(normalizeLiveSegmentRefs(recent), clampLiveWindow(s.cfg.Live.Publish.BroadcastWindow))
+	if len(recent) == 0 {
+		return nil, nil, nil
+	}
+	last := recent[len(recent)-1]
+	return recent, &last, nil
+}
+
+func (s *httpAPIServer) handleLiveLatest(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	streamID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream_id")))
+	if !isSeedHashHex(streamID) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
+		return
+	}
+	snap, err := TriggerLiveGetLatest(s.rt, streamID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *httpAPIServer) handleLivePlan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamID         string `json:"stream_id"`
+		HaveSegmentIndex int64  `json:"have_segment_index"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	snap, err := TriggerLiveGetLatest(s.rt, req.StreamID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	decision, err := PlanLivePurchase(snap, req.HaveSegmentIndex, LiveBuyerStrategy{
+		TargetLagSegments:   s.cfg.Live.Buyer.TargetLagSegments,
+		MaxBudgetPerMinute:  s.cfg.Live.Buyer.MaxBudgetPerMinute,
+		PreferOlderSegments: s.cfg.Live.Buyer.PreferOlderSegments,
+	}, LiveSellerPricing{
+		BasePriceSatPer64K:  s.cfg.Seller.Pricing.LiveBasePriceSatPer64K,
+		FloorPriceSatPer64K: s.cfg.Seller.Pricing.LiveFloorPriceSatPer64K,
+		DecayPerMinuteBPS:   s.cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
+	}, time.Now())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"stream_id":          strings.ToLower(strings.TrimSpace(req.StreamID)),
+		"have_segment_index": req.HaveSegmentIndex,
+		"decision":           decision,
+	})
+}
+
+func (s *httpAPIServer) handleLiveFollowStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamURI string `json:"stream_uri"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	st, err := TriggerLiveFollowStart(r.Context(), s.rt, req.StreamURI)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (s *httpAPIServer) handleLiveFollowStop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamID string `json:"stream_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if err := TriggerLiveFollowStop(s.rt, req.StreamID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "stream_id": strings.ToLower(strings.TrimSpace(req.StreamID))})
+}
+
+func (s *httpAPIServer) handleLiveFollowStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	streamID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream_id")))
+	st, err := TriggerLiveFollowStatus(s.rt, streamID)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
 }
 
 func parseBoundInt(raw string, def, minV, maxV int) int {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +32,14 @@ type registerDownloadedFileParams struct {
 	FilePath              string
 	Seed                  []byte
 	AvailableChunkIndexes []uint32
+}
+
+type liveCacheStreamStat struct {
+	StreamID            string
+	TotalBytes          uint64
+	NewestUpdatedAtUnix int64
+	Paths               []string
+	WorkspaceDirs       []string
 }
 
 func (m *workspaceManager) EnsureDefaultWorkspace() error {
@@ -132,26 +141,23 @@ func (m *workspaceManager) DeleteByID(id int64) error {
 	if path != "" {
 		_, _ = m.db.Exec(`DELETE FROM workspace_files WHERE path=? OR path LIKE ?`, path, path+string(filepath.Separator)+"%")
 	}
-	// 清理孤儿种子、价格状态和下载状态。
-	if _, err := m.db.Exec(`DELETE FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM seed_price_state WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	return nil
+	return m.cleanupOrphanSeedState()
 }
 
 func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (string, error) {
+	return m.selectOutputPath("", fileName, fileSize)
+}
+
+func (m *workspaceManager) SelectLiveSegmentOutputPath(streamID string, segmentIndex uint64, fileSize uint64) (string, error) {
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
+	if !isSeedHashHex(streamID) {
+		return "", fmt.Errorf("invalid stream_id")
+	}
+	name := fmt.Sprintf("%06d.seg", segmentIndex)
+	return m.selectOutputPath(filepath.Join("live", streamID), name, fileSize)
+}
+
+func (m *workspaceManager) selectOutputPath(relDir string, fileName string, fileSize uint64) (string, error) {
 	items, err := m.List()
 	if err != nil {
 		return "", err
@@ -159,6 +165,13 @@ func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (s
 	name := sanitizeRecommendedFileName(fileName)
 	if name == "" {
 		return "", fmt.Errorf("invalid output file name")
+	}
+	relDir = strings.TrimSpace(relDir)
+	if relDir != "" {
+		relDir = filepath.Clean(relDir)
+		if filepath.IsAbs(relDir) || relDir == "." || strings.HasPrefix(relDir, "..") {
+			return "", fmt.Errorf("invalid output relative dir")
+		}
 	}
 	for _, it := range items {
 		if !it.Enabled {
@@ -178,6 +191,9 @@ func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (s
 		if free < fileSize {
 			continue
 		}
+		if relDir != "" {
+			return filepath.Join(it.Path, relDir, name), nil
+		}
 		return filepath.Join(it.Path, name), nil
 	}
 	return "", fmt.Errorf("no workspace has enough capacity")
@@ -194,6 +210,189 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 		m.catalog.Replace(seeds)
 	}
 	return seeds, nil
+}
+
+func (m *workspaceManager) ValidateLiveCacheCapacity(maxBytes uint64) error {
+	if m == nil || m.db == nil {
+		return fmt.Errorf("workspace manager not initialized")
+	}
+	if maxBytes == 0 {
+		return nil
+	}
+	items, err := m.List()
+	if err != nil {
+		return err
+	}
+	var total uint64
+	hasBounded := false
+	for _, it := range items {
+		if !it.Enabled {
+			continue
+		}
+		if it.MaxBytes == 0 {
+			return nil
+		}
+		total += it.MaxBytes
+		hasBounded = true
+	}
+	if hasBounded && maxBytes > total {
+		return fmt.Errorf("live cache max bytes exceeds total workspace capacity")
+	}
+	return nil
+}
+
+// EnforceLiveCacheLimit 按整条直播淘汰缓存。
+// 设计说明：
+// - 直播段以 workspace/live/<stream_id>/ 存放；
+// - 淘汰时不删单段，直接删整条流，避免播放器拿到断裂时间线；
+// - 删除顺序按“最近更新时间最老”的流优先。
+func (m *workspaceManager) EnforceLiveCacheLimit(maxBytes uint64) error {
+	if m == nil || m.db == nil {
+		return fmt.Errorf("workspace manager not initialized")
+	}
+	if maxBytes == 0 {
+		return nil
+	}
+	if err := m.ValidateLiveCacheCapacity(maxBytes); err != nil {
+		return err
+	}
+	streams, totalBytes, err := m.listLiveCacheStreams()
+	if err != nil {
+		return err
+	}
+	if totalBytes <= maxBytes {
+		return nil
+	}
+	sort.Slice(streams, func(i, j int) bool {
+		if streams[i].NewestUpdatedAtUnix == streams[j].NewestUpdatedAtUnix {
+			return streams[i].StreamID < streams[j].StreamID
+		}
+		return streams[i].NewestUpdatedAtUnix < streams[j].NewestUpdatedAtUnix
+	})
+	for _, st := range streams {
+		if totalBytes <= maxBytes {
+			break
+		}
+		if err := m.deleteLiveStreamCache(st); err != nil {
+			return err
+		}
+		if totalBytes > st.TotalBytes {
+			totalBytes -= st.TotalBytes
+		} else {
+			totalBytes = 0
+		}
+	}
+	return m.cleanupOrphanSeedState()
+}
+
+func (m *workspaceManager) listLiveCacheStreams() ([]liveCacheStreamStat, uint64, error) {
+	items, err := m.List()
+	if err != nil {
+		return nil, 0, err
+	}
+	rows, err := m.db.Query(`SELECT path,file_size,updated_at_unix FROM workspace_files`)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	streams := map[string]*liveCacheStreamStat{}
+	var total uint64
+	for rows.Next() {
+		var absPath string
+		var fileSize uint64
+		var updatedAt int64
+		if err := rows.Scan(&absPath, &fileSize, &updatedAt); err != nil {
+			return nil, 0, err
+		}
+		streamID, workspaceDir, ok := classifyLiveWorkspacePath(items, absPath)
+		if !ok {
+			continue
+		}
+		st, exists := streams[streamID]
+		if !exists {
+			st = &liveCacheStreamStat{StreamID: streamID}
+			streams[streamID] = st
+		}
+		st.TotalBytes += fileSize
+		if updatedAt > st.NewestUpdatedAtUnix {
+			st.NewestUpdatedAtUnix = updatedAt
+		}
+		st.Paths = append(st.Paths, absPath)
+		if !containsString(st.WorkspaceDirs, workspaceDir) {
+			st.WorkspaceDirs = append(st.WorkspaceDirs, workspaceDir)
+		}
+		total += fileSize
+	}
+	out := make([]liveCacheStreamStat, 0, len(streams))
+	for _, st := range streams {
+		out = append(out, *st)
+	}
+	return out, total, nil
+}
+
+func classifyLiveWorkspacePath(items []workspaceItem, absPath string) (string, string, bool) {
+	absPath = filepath.Clean(strings.TrimSpace(absPath))
+	for _, it := range items {
+		if !it.Enabled {
+			continue
+		}
+		root := filepath.Clean(strings.TrimSpace(it.Path))
+		prefix := root + string(filepath.Separator)
+		if !strings.HasPrefix(absPath, prefix) {
+			continue
+		}
+		rel := strings.TrimPrefix(absPath, prefix)
+		parts := strings.Split(filepath.ToSlash(rel), "/")
+		if len(parts) < 3 || parts[0] != "live" {
+			continue
+		}
+		streamID := strings.ToLower(strings.TrimSpace(parts[1]))
+		if !isSeedHashHex(streamID) {
+			continue
+		}
+		return streamID, root, true
+	}
+	return "", "", false
+}
+
+func (m *workspaceManager) deleteLiveStreamCache(st liveCacheStreamStat) error {
+	for _, dir := range st.WorkspaceDirs {
+		if err := os.RemoveAll(filepath.Join(dir, "live", st.StreamID)); err != nil {
+			return err
+		}
+	}
+	if _, err := m.db.Exec(`DELETE FROM workspace_files WHERE path LIKE ?`, "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+st.StreamID+string(filepath.Separator)+"%"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *workspaceManager) cleanupOrphanSeedState() error {
+	if _, err := m.db.Exec(`DELETE FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`); err != nil {
+		return err
+	}
+	if _, err := m.db.Exec(`DELETE FROM seed_price_state WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+		return err
+	}
+	if _, err := m.db.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+		return err
+	}
+	if _, err := m.db.Exec(`DELETE FROM file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+		return err
+	}
+	if _, err := m.db.Exec(`DELETE FROM file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func containsString(items []string, want string) bool {
+	for _, it := range items {
+		if it == want {
+			return true
+		}
+	}
+	return false
 }
 
 // RegisterDownloadedFile 直接把“已下载文件 + 对应 seed”写入索引与种子目录，不走全盘扫描。

@@ -1,3 +1,25 @@
 [keys]
 # supports libp2p MarshalPrivateKey hex or raw 32-byte secp256k1 hex
 privkey_hex = "REPLACE_LIBP2P_PRIVKEY_HEX"
+
+[seller]
+enabled = true
+
+[seller.pricing]
+floor_price_sat_per_64k = 10
+resale_discount_bps = 8000
+live_base_price_sat_per_64k = 40
+live_floor_price_sat_per_64k = 10
+live_decay_per_minute_bps = 1000
+
+[live]
+cache_max_bytes = 0
+
+[live.buyer]
+target_lag_segments = 3
+max_budget_per_minute = 0
+prefer_older_segments = true
+
+[live.publish]
+broadcast_window = 10
+broadcast_interval_seconds = 3
