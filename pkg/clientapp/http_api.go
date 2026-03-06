@@ -291,6 +291,8 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/workspace/seeds/price", s.withAuth(s.handleSeedPriceUpdate))
 		mux.HandleFunc(prefix+"/v1/live/subscribe-uri", s.withAuth(s.handleLiveSubscribeURI))
 		mux.HandleFunc(prefix+"/v1/live/subscribe", s.withAuth(s.handleLiveSubscribe))
+		mux.HandleFunc(prefix+"/v1/live/demand/publish", s.withAuth(s.handleLiveDemandPublish))
+		mux.HandleFunc(prefix+"/v1/live/quotes", s.withAuth(s.handleLiveQuotes))
 		mux.HandleFunc(prefix+"/v1/live/publish/segment", s.withAuth(s.handleLivePublishSegment))
 		mux.HandleFunc(prefix+"/v1/live/publish/latest", s.withAuth(s.handleLivePublishLatest))
 		mux.HandleFunc(prefix+"/v1/live/latest", s.withAuth(s.handleLiveLatest))
@@ -1252,6 +1254,70 @@ func (s *httpAPIServer) handleLiveSubscribe(w http.ResponseWriter, r *http.Reque
 		"publisher_pubkey": res.PublisherPubKey,
 		"recent_segments":  res.RecentSegments,
 		"recent_count":     len(res.RecentSegments),
+	})
+}
+
+func (s *httpAPIServer) handleLiveDemandPublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var req struct {
+		StreamID         string `json:"stream_id"`
+		HaveSegmentIndex int64  `json:"have_segment_index"`
+		Window           uint32 `json:"window"`
+		GatewayPeerID    string `json:"gateway_peer_id,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	if req.Window == 0 {
+		req.Window = s.cfg.Live.Publish.BroadcastWindow
+		if req.Window == 0 {
+			req.Window = 10
+		}
+	}
+	resp, err := TriggerGatewayPublishLiveDemand(r.Context(), s.rt, PublishLiveDemandParams{
+		StreamID:         req.StreamID,
+		HaveSegmentIndex: req.HaveSegmentIndex,
+		Window:           req.Window,
+		GatewayPeerID:    req.GatewayPeerID,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *httpAPIServer) handleLiveQuotes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
+	if demandID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "demand_id is required"})
+		return
+	}
+	quotes, err := TriggerClientListLiveQuotes(r.Context(), s.rt, demandID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"demand_id": demandID,
+		"quotes":    quotes,
+		"count":     len(quotes),
 	})
 }
 

@@ -3,8 +3,12 @@ package clientapp
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -287,6 +291,74 @@ func (lr *liveRuntime) publishedSnapshot(streamID string) (string, []LiveSegment
 	return st.PublisherPubKey, append([]LiveSegmentRef(nil), st.RecentSegments...), true
 }
 
+func listLocalLiveQuoteSegments(db *sql.DB, streamID string, window int) ([]LiveQuoteSegment, uint64, error) {
+	if db == nil {
+		return nil, 0, fmt.Errorf("db not initialized")
+	}
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
+	if !isSeedHashHex(streamID) {
+		return nil, 0, fmt.Errorf("invalid stream_id")
+	}
+	rows, err := db.Query(`SELECT path,seed_hash,updated_at_unix FROM workspace_files WHERE path LIKE ? ORDER BY updated_at_unix ASC, path ASC`,
+		"%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%")
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	type item struct {
+		seg LiveQuoteSegment
+		seq uint64
+	}
+	items := make([]item, 0, 16)
+	var latest uint64
+	for rows.Next() {
+		var p, seedHash string
+		var updatedAt int64
+		if err := rows.Scan(&p, &seedHash, &updatedAt); err != nil {
+			return nil, 0, err
+		}
+		segmentBytes, err := os.ReadFile(p)
+		if err != nil {
+			continue
+		}
+		data, _, _, err := VerifyLiveSegment(segmentBytes)
+		if err != nil {
+			continue
+		}
+		if data.SegmentIndex > 0 && !strings.EqualFold(strings.TrimSpace(data.StreamID), streamID) {
+			continue
+		}
+		seq := data.MediaSequence
+		if seq == 0 {
+			seq = data.SegmentIndex
+		}
+		if data.SegmentIndex > latest {
+			latest = data.SegmentIndex
+		}
+		items = append(items, item{
+			seg: LiveQuoteSegment{
+				SegmentIndex: data.SegmentIndex,
+				SeedHash:     strings.ToLower(strings.TrimSpace(seedHash)),
+			},
+			seq: seq,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].seq == items[j].seq {
+			return items[i].seg.SegmentIndex < items[j].seg.SegmentIndex
+		}
+		return items[i].seq < items[j].seq
+	})
+	if window > 0 && len(items) > window {
+		items = items[len(items)-window:]
+	}
+	out := make([]LiveQuoteSegment, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.seg)
+	}
+	return out, latest, nil
+}
+
 func registerLiveHandlers(rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.live == nil {
 		return
@@ -335,6 +407,48 @@ func registerLiveHandlers(rt *Runtime) {
 			"segment_count": len(req.RecentSegments),
 		})
 		return liveHeadPushResp{Status: "stored"}, nil
+	})
+	p2prpc.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(_ context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
+		if rt.DB == nil || strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamID))) || len(req.RecentSegments) == 0 {
+			return liveQuoteSubmitResp{}, fmt.Errorf("invalid live quote")
+		}
+		recent := make([]LiveQuoteSegment, 0, len(req.RecentSegments))
+		for _, seg := range req.RecentSegments {
+			if seg == nil {
+				continue
+			}
+			seedHash := strings.ToLower(strings.TrimSpace(seg.SeedHash))
+			if !isSeedHashHex(seedHash) {
+				continue
+			}
+			recent = append(recent, LiveQuoteSegment{SegmentIndex: seg.SegmentIndex, SeedHash: seedHash})
+		}
+		if len(recent) == 0 {
+			return liveQuoteSubmitResp{}, fmt.Errorf("empty live quote segments")
+		}
+		recentJSON, err := json.Marshal(recent)
+		if err != nil {
+			return liveQuoteSubmitResp{}, err
+		}
+		if _, err := rt.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_peer_id,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+			VALUES(?,?,?,?,?,?,?)
+			ON CONFLICT(demand_id,seller_peer_id) DO UPDATE SET
+				stream_id=excluded.stream_id,
+				latest_segment_index=excluded.latest_segment_index,
+				recent_segments_json=excluded.recent_segments_json,
+				expires_at_unix=excluded.expires_at_unix,
+				created_at_unix=excluded.created_at_unix`,
+			strings.TrimSpace(req.DemandID),
+			strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
+			strings.ToLower(strings.TrimSpace(req.StreamID)),
+			req.LatestSegmentIndex,
+			string(recentJSON),
+			req.ExpiresAtUnix,
+			time.Now().Unix(),
+		); err != nil {
+			return liveQuoteSubmitResp{}, err
+		}
+		return liveQuoteSubmitResp{Status: "stored"}, nil
 	})
 }
 

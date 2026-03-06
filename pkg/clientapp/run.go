@@ -44,6 +44,7 @@ const (
 	ProtoArbHealth          protocol.ID = "/bsv-transfer/arbiter/healthz/1.0.0"
 	ProtoSeedGet            protocol.ID = "/bsv-transfer/client/seed/get/1.0.0"
 	ProtoQuoteDirectSubmit  protocol.ID = "/bsv-transfer/client/quote/direct_submit/1.0.0"
+	ProtoLiveQuoteSubmit    protocol.ID = "/bsv-transfer/client/live_quote/submit/1.0.0"
 	ProtoDirectDealAccept   protocol.ID = "/bsv-transfer/client/deal/accept/1.0.0"
 	ProtoDirectSessionOpen  protocol.ID = "/bsv-transfer/client/session/open/1.0.0"
 	ProtoDirectSessionClose protocol.ID = "/bsv-transfer/client/session/close/1.0.0"
@@ -231,6 +232,24 @@ type liveHeadPushReq struct {
 }
 
 type liveHeadPushResp struct {
+	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
+}
+
+type liveQuoteSegmentPB struct {
+	SegmentIndex uint64 `protobuf:"varint,1,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index"`
+	SeedHash     string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
+}
+
+type liveQuoteSubmitReq struct {
+	DemandID           string                `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
+	SellerPeerID       string                `protobuf:"bytes,2,opt,name=seller_peer_id,json=sellerPeerId,proto3" json:"seller_peer_id"`
+	StreamID           string                `protobuf:"bytes,3,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
+	LatestSegmentIndex uint64                `protobuf:"varint,4,opt,name=latest_segment_index,json=latestSegmentIndex,proto3" json:"latest_segment_index"`
+	RecentSegments     []*liveQuoteSegmentPB `protobuf:"bytes,5,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
+	ExpiresAtUnix      int64                 `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
+}
+
+type liveQuoteSubmitResp struct {
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
 }
 
@@ -1136,6 +1155,17 @@ func initIndexDB(db *sql.DB) error {
 			status TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS live_quotes(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			demand_id TEXT NOT NULL,
+			seller_peer_id TEXT NOT NULL,
+			stream_id TEXT NOT NULL,
+			latest_segment_index INTEGER NOT NULL,
+			recent_segments_json TEXT NOT NULL,
+			expires_at_unix INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			UNIQUE(demand_id, seller_peer_id)
+		)`,
 		`CREATE TABLE IF NOT EXISTS direct_sessions(
 			session_id TEXT PRIMARY KEY,
 			deal_id TEXT NOT NULL,
@@ -1195,6 +1225,7 @@ func initIndexDB(db *sql.DB) error {
 			last_bought_segment_index INTEGER NOT NULL,
 			last_bought_seed_hash TEXT NOT NULL,
 			last_output_file_path TEXT NOT NULL,
+			last_quote_seller_peer_id TEXT NOT NULL,
 			last_decision_json TEXT NOT NULL,
 			status TEXT NOT NULL,
 			last_error TEXT NOT NULL,
@@ -1228,6 +1259,7 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_workspaces_path ON workspaces(path)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_downloads_updated ON file_downloads(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_download_chunks_seed ON file_download_chunks(seed_hash,chunk_index)`,
+		`CREATE INDEX IF NOT EXISTS idx_live_quotes_demand ON live_quotes(demand_id, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_tx_history_created_at ON tx_history(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sale_records_created_at ON sale_records(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
@@ -1246,6 +1278,9 @@ func initIndexDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureFileDownloadsSchema(db); err != nil {
+		return err
+	}
+	if err := ensureLiveFollowsSchema(db); err != nil {
 		return err
 	}
 	if err := ensureAppConfigTable(db); err != nil {
@@ -1389,6 +1424,35 @@ func ensureFileDownloadsSchema(db *sql.DB) error {
 		return nil
 	}
 	_, err = db.Exec(`ALTER TABLE file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
+	return err
+}
+
+func ensureLiveFollowsSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(live_follows)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasLastQuoteSellerPeerID := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "last_quote_seller_peer_id") {
+			hasLastQuoteSellerPeerID = true
+			break
+		}
+	}
+	if hasLastQuoteSellerPeerID {
+		return nil
+	}
+	_, err = db.Exec(`ALTER TABLE live_follows ADD COLUMN last_quote_seller_peer_id TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -1681,6 +1745,45 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 		})
 		return dealprod.DemandAnnounceResp{Status: "quoted"}, nil
 	})
+	p2prpc.HandleProto[dealprod.LiveDemandAnnounceReq, dealprod.LiveDemandAnnounceResp](h, protocol.ID(dealprod.ProtoLiveDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.LiveDemandAnnounceReq) (dealprod.LiveDemandAnnounceResp, error) {
+		demandID := strings.TrimSpace(req.DemandID)
+		streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
+		buyerPeerID := strings.TrimSpace(req.BuyerPeerID)
+		if demandID == "" || !isSeedHashHex(streamID) || buyerPeerID == "" || req.Window == 0 {
+			return dealprod.LiveDemandAnnounceResp{}, fmt.Errorf("invalid live demand announce")
+		}
+		recentSegments, latestIndex, err := listLocalLiveQuoteSegments(db, streamID, int(req.Window))
+		if err != nil {
+			return dealprod.LiveDemandAnnounceResp{}, err
+		}
+		if len(recentSegments) == 0 {
+			obs.Business("bitcast-client", "live_demand_announce_ignored_no_stream", map[string]any{
+				"demand_id":  demandID,
+				"stream_id":  streamID,
+				"buyer_peer": buyerPeerID,
+			})
+			return dealprod.LiveDemandAnnounceResp{Status: "ignored_no_stream"}, nil
+		}
+		if err := submitLiveQuote(ctx, h, trace, LiveQuoteParams{
+			DemandID:           demandID,
+			BuyerPeerID:        buyerPeerID,
+			BuyerAddrs:         req.BuyerAddrs,
+			StreamID:           streamID,
+			LatestSegmentIndex: latestIndex,
+			RecentSegments:     recentSegments,
+			ExpiresAtUnix:      time.Now().Add(2 * time.Minute).Unix(),
+		}); err != nil {
+			return dealprod.LiveDemandAnnounceResp{}, err
+		}
+		obs.Business("bitcast-client", "live_demand_announce_quote_submitted", map[string]any{
+			"demand_id":            demandID,
+			"stream_id":            streamID,
+			"buyer_peer":           buyerPeerID,
+			"latest_segment_index": latestIndex,
+			"segment_count":        len(recentSegments),
+		})
+		return dealprod.LiveDemandAnnounceResp{Status: "quoted"}, nil
+	})
 
 	p2prpc.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(_ context.Context, req seedGetReq) (seedGetResp, error) {
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
@@ -1864,6 +1967,62 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink,
 	}
 	if strings.TrimSpace(resp.Status) != "stored" {
 		return fmt.Errorf("direct quote not stored")
+	}
+	return nil
+}
+
+func submitLiveQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink, p LiveQuoteParams) error {
+	if h == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	if strings.TrimSpace(p.DemandID) == "" || strings.TrimSpace(p.BuyerPeerID) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(p.StreamID))) || len(p.RecentSegments) == 0 {
+		return fmt.Errorf("invalid params")
+	}
+	if p.ExpiresAtUnix == 0 {
+		p.ExpiresAtUnix = time.Now().Add(2 * time.Minute).Unix()
+	}
+	buyerID, err := peerIDFromClientID(strings.TrimSpace(p.BuyerPeerID))
+	if err != nil {
+		return err
+	}
+	for _, raw := range p.BuyerAddrs {
+		ai, err := parseAddr(strings.TrimSpace(raw))
+		if err != nil || ai == nil {
+			continue
+		}
+		h.Peerstore().AddAddrs(ai.ID, ai.Addrs, 10*time.Minute)
+	}
+	if err := h.Connect(ctx, peer.AddrInfo{ID: buyerID}); err != nil {
+		return err
+	}
+	sellerClientID, err := localPubKeyHex(h)
+	if err != nil {
+		return err
+	}
+	recent := make([]*liveQuoteSegmentPB, 0, len(p.RecentSegments))
+	for _, seg := range p.RecentSegments {
+		seedHash := strings.ToLower(strings.TrimSpace(seg.SeedHash))
+		if !isSeedHashHex(seedHash) {
+			continue
+		}
+		recent = append(recent, &liveQuoteSegmentPB{SegmentIndex: seg.SegmentIndex, SeedHash: seedHash})
+	}
+	if len(recent) == 0 {
+		return fmt.Errorf("empty recent segments")
+	}
+	var resp liveQuoteSubmitResp
+	if err := p2prpc.CallProto(ctx, h, buyerID, ProtoLiveQuoteSubmit, clientSec(trace), liveQuoteSubmitReq{
+		DemandID:           strings.TrimSpace(p.DemandID),
+		SellerPeerID:       strings.ToLower(strings.TrimSpace(sellerClientID)),
+		StreamID:           strings.ToLower(strings.TrimSpace(p.StreamID)),
+		LatestSegmentIndex: p.LatestSegmentIndex,
+		RecentSegments:     recent,
+		ExpiresAtUnix:      p.ExpiresAtUnix,
+	}, &resp); err != nil {
+		return err
+	}
+	if strings.TrimSpace(resp.Status) != "stored" {
+		return fmt.Errorf("live quote not stored")
 	}
 	return nil
 }

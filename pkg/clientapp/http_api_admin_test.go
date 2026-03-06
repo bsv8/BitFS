@@ -110,6 +110,19 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 func TestHandleLiveAPIFlow(t *testing.T) {
 	t.Parallel()
 
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
 	pubHost, err := libp2p.New(
 		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
 		libp2p.NoTransports,
@@ -145,13 +158,13 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subCfg.Storage.DataDir = t.TempDir()
 
 	pubRT := &Runtime{Host: pubHost, Config: pubCfg, live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, Config: subCfg, live: newLiveRuntime()}
+	subRT := &Runtime{Host: subHost, Config: subCfg, DB: db, live: newLiveRuntime()}
 	registerLiveHandlers(pubRT)
 	registerLiveHandlers(subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
 
 	pubSrv := &httpAPIServer{rt: pubRT, cfg: &pubCfg}
-	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg}
+	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg, db: db}
 
 	streamID := strings.Repeat("ab", 32)
 
@@ -206,6 +219,25 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subSrv.handleLivePlan(recPlan, reqPlan)
 	if recPlan.Code != http.StatusOK {
 		t.Fatalf("live plan status: got=%d body=%s", recPlan.Code, recPlan.Body.String())
+	}
+
+	if _, err := subRT.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_peer_id,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+		VALUES(?,?,?,?,?,?,?)`,
+		"ldmd_http",
+		"seller-live",
+		streamID,
+		8,
+		`[{"segment_index":8,"seed_hash":"`+strings.Repeat("ef", 32)+`"}]`,
+		time.Now().Add(time.Minute).Unix(),
+		time.Now().Unix(),
+	); err != nil {
+		t.Fatalf("insert live quote: %v", err)
+	}
+	reqQuotes := httptest.NewRequest(http.MethodGet, "/api/v1/live/quotes?demand_id=ldmd_http", nil)
+	recQuotes := httptest.NewRecorder()
+	subSrv.handleLiveQuotes(recQuotes, reqQuotes)
+	if recQuotes.Code != http.StatusOK {
+		t.Fatalf("live quotes status: got=%d body=%s", recQuotes.Code, recQuotes.Body.String())
 	}
 }
 

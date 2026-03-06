@@ -101,3 +101,15 @@ func (*liveHeadPushReq) ProtoMessage()    {}
 func (m *liveHeadPushResp) Reset()         { *m = liveHeadPushResp{} }
 func (m *liveHeadPushResp) String() string { return oldproto.CompactTextString(m) }
 func (*liveHeadPushResp) ProtoMessage()    {}
+
+func (m *liveQuoteSegmentPB) Reset()         { *m = liveQuoteSegmentPB{} }
+func (m *liveQuoteSegmentPB) String() string { return oldproto.CompactTextString(m) }
+func (*liveQuoteSegmentPB) ProtoMessage()    {}
+
+func (m *liveQuoteSubmitReq) Reset()         { *m = liveQuoteSubmitReq{} }
+func (m *liveQuoteSubmitReq) String() string { return oldproto.CompactTextString(m) }
+func (*liveQuoteSubmitReq) ProtoMessage()    {}
+
+func (m *liveQuoteSubmitResp) Reset()         { *m = liveQuoteSubmitResp{} }
+func (m *liveQuoteSubmitResp) String() string { return oldproto.CompactTextString(m) }
+func (*liveQuoteSubmitResp) ProtoMessage()    {}

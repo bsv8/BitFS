@@ -76,6 +76,13 @@ type PublishDemandParams struct {
 	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
 }
 
+type PublishLiveDemandParams struct {
+	StreamID         string `json:"stream_id"`
+	HaveSegmentIndex int64  `json:"have_segment_index"`
+	Window           uint32 `json:"window"`
+	GatewayPeerID    string `json:"gateway_peer_id,omitempty"`
+}
+
 func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDemandParams) (dual2of2.DemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
@@ -174,6 +181,97 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	return resp, nil
 }
 
+func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p PublishLiveDemandParams) (dual2of2.LiveDemandPublishPaidResp, error) {
+	if rt == nil || rt.Host == nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
+	}
+	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
+	if !isSeedHashHex(streamID) || p.Window == 0 {
+		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("invalid params")
+	}
+	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	var info dual2of2.InfoResp
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	session, err := ensureActiveFeePool(ctx, rt, gw, rt.Config.Listen.MaxAutoRenewAmount, info)
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	charge := info.SinglePublishFeeSatoshi
+	if charge == 0 {
+		charge = 1
+	}
+	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
+	if gwPub == nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("missing gateway pubkey")
+	}
+	raw, err := gwPub.Raw()
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
+	clientActor, err := dual2of2.BuildActor("client", strings.TrimSpace(rt.Config.Keys.PrivkeyHex), isMainnet)
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	nextSeq := session.Sequence + 1
+	nextServerAmount := session.ServerAmount + charge
+	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	if err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	req := dual2of2.LiveDemandPublishPaidReq{
+		ClientID:            rt.Config.ClientID,
+		StreamID:            streamID,
+		HaveSegmentIndex:    p.HaveSegmentIndex,
+		Window:              p.Window,
+		BuyerAddrs:          localAdvertiseAddrs(rt),
+		SpendTxID:           session.SpendTxID,
+		SequenceNumber:      nextSeq,
+		ServerAmount:        nextServerAmount,
+		ChargeAmountSatoshi: charge,
+		Fee:                 session.SpendTxFeeSat,
+		ClientSignature:     append([]byte(nil), (*clientSig)...),
+		ChargeReason:        "live_demand_publish_fee",
+	}
+	var resp dual2of2.LiveDemandPublishPaidResp
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoLiveDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
+	if resp.Success {
+		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + session.SpendTxID,
+			FlowType:        "fee_pool",
+			RefID:           session.SpendTxID,
+			Stage:           "use_live_publish",
+			Direction:       "out",
+			Purpose:         "live_demand_publish_fee",
+			AmountSatoshi:   -int64(charge),
+			UsedSatoshi:     int64(charge),
+			ReturnedSatoshi: 0,
+			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
+			Note:            fmt.Sprintf("live_demand_id=%s", strings.TrimSpace(resp.DemandID)),
+			Payload:         resp,
+		})
+	}
+	return resp, nil
+}
+
 func pickGatewayForBusiness(rt *Runtime, gatewayPeerID string) (peer.AddrInfo, error) {
 	if rt == nil {
 		return peer.AddrInfo{}, fmt.Errorf("runtime not initialized")
@@ -228,6 +326,30 @@ type DirectQuoteItem struct {
 	AvailableChunkIndexes   []uint32 `json:"available_chunk_indexes,omitempty"`
 }
 
+type LiveQuoteSegment struct {
+	SegmentIndex uint64 `json:"segment_index"`
+	SeedHash     string `json:"seed_hash"`
+}
+
+type LiveQuoteParams struct {
+	DemandID           string             `json:"demand_id"`
+	BuyerPeerID        string             `json:"buyer_peer_id"`
+	BuyerAddrs         []string           `json:"buyer_addrs"`
+	StreamID           string             `json:"stream_id"`
+	LatestSegmentIndex uint64             `json:"latest_segment_index"`
+	RecentSegments     []LiveQuoteSegment `json:"recent_segments"`
+	ExpiresAtUnix      int64              `json:"expires_at_unix"`
+}
+
+type LiveQuoteItem struct {
+	DemandID           string             `json:"demand_id"`
+	SellerPeerID       string             `json:"seller_peer_id"`
+	StreamID           string             `json:"stream_id"`
+	LatestSegmentIndex uint64             `json:"latest_segment_index"`
+	RecentSegments     []LiveQuoteSegment `json:"recent_segments"`
+	ExpiresAtUnix      int64              `json:"expires_at_unix"`
+}
+
 func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID string) ([]DirectQuoteItem, error) {
 	_ = ctx
 	if rt == nil || rt.DB == nil {
@@ -271,6 +393,46 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 		}
 		if it.ExpiresAtUnix > 0 && it.ExpiresAtUnix < now {
 			continue
+		}
+		out = append(out, it)
+	}
+	return out, nil
+}
+
+func TriggerClientSubmitLiveQuote(ctx context.Context, seller *Runtime, p LiveQuoteParams) error {
+	if seller == nil || seller.Host == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	return submitLiveQuote(ctx, seller.Host, seller.rpcTrace, p)
+}
+
+func TriggerClientListLiveQuotes(ctx context.Context, rt *Runtime, demandID string) ([]LiveQuoteItem, error) {
+	_ = ctx
+	if rt == nil || rt.DB == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	demandID = strings.TrimSpace(demandID)
+	if demandID == "" {
+		return nil, fmt.Errorf("demand_id required")
+	}
+	rows, err := rt.DB.Query(`SELECT demand_id,seller_peer_id,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	now := time.Now().Unix()
+	out := make([]LiveQuoteItem, 0, 4)
+	for rows.Next() {
+		var it LiveQuoteItem
+		var recentJSON string
+		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.StreamID, &it.LatestSegmentIndex, &recentJSON, &it.ExpiresAtUnix); err != nil {
+			return nil, err
+		}
+		if it.ExpiresAtUnix > 0 && it.ExpiresAtUnix < now {
+			continue
+		}
+		if strings.TrimSpace(recentJSON) != "" {
+			_ = json.Unmarshal([]byte(recentJSON), &it.RecentSegments)
 		}
 		out = append(out, it)
 	}

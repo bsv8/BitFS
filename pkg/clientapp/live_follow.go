@@ -22,6 +22,7 @@ type LiveFollowStatus struct {
 	LastBoughtSegmentIndex uint64               `json:"last_bought_segment_index,omitempty"`
 	LastBoughtSeedHash     string               `json:"last_bought_seed_hash,omitempty"`
 	LastOutputFilePath     string               `json:"last_output_file_path,omitempty"`
+	LastQuoteSellerPeerID  string               `json:"last_quote_seller_peer_id,omitempty"`
 	LastDecision           LivePurchaseDecision `json:"last_decision"`
 	Status                 string               `json:"status"`
 	LastError              string               `json:"last_error,omitempty"`
@@ -44,6 +45,7 @@ func normalizeLiveFollowStatus(st LiveFollowStatus) LiveFollowStatus {
 	st.StreamID = strings.ToLower(strings.TrimSpace(st.StreamID))
 	st.PublisherPubKey = strings.ToLower(strings.TrimSpace(st.PublisherPubKey))
 	st.LastBoughtSeedHash = strings.ToLower(strings.TrimSpace(st.LastBoughtSeedHash))
+	st.LastQuoteSellerPeerID = strings.ToLower(strings.TrimSpace(st.LastQuoteSellerPeerID))
 	if st.HaveSegmentIndex == 0 && st.LastBoughtSeedHash == "" {
 		st.HaveSegmentIndex = -1
 	}
@@ -63,8 +65,8 @@ func persistLiveFollowStatus(db *sql.DB, st LiveFollowStatus) error {
 		decisionJSON = string(b)
 	}
 	_, err := db.Exec(`INSERT INTO live_follows(
-		stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_decision_json,status,last_error,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_peer_id,last_decision_json,status,last_error,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(stream_id) DO UPDATE SET
 		stream_uri=excluded.stream_uri,
 		publisher_pubkey=excluded.publisher_pubkey,
@@ -72,6 +74,7 @@ func persistLiveFollowStatus(db *sql.DB, st LiveFollowStatus) error {
 		last_bought_segment_index=excluded.last_bought_segment_index,
 		last_bought_seed_hash=excluded.last_bought_seed_hash,
 		last_output_file_path=excluded.last_output_file_path,
+		last_quote_seller_peer_id=excluded.last_quote_seller_peer_id,
 		last_decision_json=excluded.last_decision_json,
 		status=excluded.status,
 		last_error=excluded.last_error,
@@ -83,6 +86,7 @@ func persistLiveFollowStatus(db *sql.DB, st LiveFollowStatus) error {
 		st.LastBoughtSegmentIndex,
 		st.LastBoughtSeedHash,
 		strings.TrimSpace(st.LastOutputFilePath),
+		st.LastQuoteSellerPeerID,
 		decisionJSON,
 		strings.TrimSpace(st.Status),
 		strings.TrimSpace(st.LastError),
@@ -97,7 +101,7 @@ func loadLiveFollowStatus(db *sql.DB, streamID string) (LiveFollowStatus, bool, 
 	}
 	var st LiveFollowStatus
 	var decisionJSON string
-	err := db.QueryRow(`SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_decision_json,status,last_error,updated_at_unix
+	err := db.QueryRow(`SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_peer_id,last_decision_json,status,last_error,updated_at_unix
 		FROM live_follows WHERE stream_id=?`, strings.ToLower(strings.TrimSpace(streamID))).Scan(
 		&st.StreamURI,
 		&st.PublisherPubKey,
@@ -105,6 +109,7 @@ func loadLiveFollowStatus(db *sql.DB, streamID string) (LiveFollowStatus, bool, 
 		&st.LastBoughtSegmentIndex,
 		&st.LastBoughtSeedHash,
 		&st.LastOutputFilePath,
+		&st.LastQuoteSellerPeerID,
 		&decisionJSON,
 		&st.Status,
 		&st.LastError,
@@ -128,7 +133,7 @@ func listRunningLiveFollowStatuses(db *sql.DB) ([]LiveFollowStatus, error) {
 	if db == nil {
 		return nil, nil
 	}
-	rows, err := db.Query(`SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_decision_json,status,last_error,updated_at_unix
+	rows, err := db.Query(`SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_peer_id,last_decision_json,status,last_error,updated_at_unix
 		FROM live_follows WHERE status='running' ORDER BY updated_at_unix ASC`)
 	if err != nil {
 		return nil, err
@@ -146,6 +151,7 @@ func listRunningLiveFollowStatuses(db *sql.DB) ([]LiveFollowStatus, error) {
 			&st.LastBoughtSegmentIndex,
 			&st.LastBoughtSeedHash,
 			&st.LastOutputFilePath,
+			&st.LastQuoteSellerPeerID,
 			&decisionJSON,
 			&st.Status,
 			&st.LastError,
@@ -337,11 +343,11 @@ func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) {
 }
 
 func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
-	snap, err := TriggerLiveGetLatest(rt, streamID)
+	status, _ := rt.live.followStatus(streamID)
+	snap, sellerPeerID, err := discoverLiveSnapshotForFollow(ctx, rt, streamID, status.HaveSegmentIndex)
 	if err != nil {
 		return err
 	}
-	status, _ := rt.live.followStatus(streamID)
 	decision, err := PlanLivePurchase(snap, status.HaveSegmentIndex, LiveBuyerStrategy{
 		TargetLagSegments:   rt.Config.Live.Buyer.TargetLagSegments,
 		MaxBudgetPerMinute:  rt.Config.Live.Buyer.MaxBudgetPerMinute,
@@ -356,6 +362,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 	}
 	rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
 		st.LastDecision = decision
+		st.LastQuoteSellerPeerID = sellerPeerID
 	})
 	if st, ok := rt.live.followStatus(streamID); ok {
 		_ = persistLiveFollowStatus(rt.DB, st)
@@ -389,6 +396,76 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 		"output_file":   res.OutputFilePath,
 	})
 	return nil
+}
+
+func discoverLiveSnapshotForFollow(ctx context.Context, rt *Runtime, streamID string, haveSegmentIndex int64) (LiveSubscriberSnapshot, string, error) {
+	if rt != nil && len(rt.HealthyGWs) > 0 {
+		window := rt.Config.Live.Publish.BroadcastWindow
+		if window == 0 {
+			window = 10
+		}
+		pub, err := TriggerGatewayPublishLiveDemand(ctx, rt, PublishLiveDemandParams{
+			StreamID:         streamID,
+			HaveSegmentIndex: haveSegmentIndex,
+			Window:           window,
+		})
+		if err == nil && strings.TrimSpace(pub.DemandID) != "" {
+			if snap, sellerPeerID, ok := waitBestLiveQuoteSnapshot(ctx, rt, streamID, strings.TrimSpace(pub.DemandID)); ok {
+				return snap, sellerPeerID, nil
+			}
+		}
+	}
+	snap, err := TriggerLiveGetLatest(rt, streamID)
+	return snap, "", err
+}
+
+func waitBestLiveQuoteSnapshot(ctx context.Context, rt *Runtime, streamID, demandID string) (LiveSubscriberSnapshot, string, bool) {
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		quotes, err := TriggerClientListLiveQuotes(ctx, rt, demandID)
+		if err == nil {
+			if snap, sellerPeerID, ok := bestLiveQuoteSnapshot(streamID, quotes); ok {
+				return snap, sellerPeerID, true
+			}
+		}
+		if time.Now().After(deadline) {
+			return LiveSubscriberSnapshot{}, "", false
+		}
+		select {
+		case <-ctx.Done():
+			return LiveSubscriberSnapshot{}, "", false
+		case <-time.After(500 * time.Millisecond):
+		}
+	}
+}
+
+func bestLiveQuoteSnapshot(streamID string, quotes []LiveQuoteItem) (LiveSubscriberSnapshot, string, bool) {
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
+	var best *LiveQuoteItem
+	for i := range quotes {
+		q := &quotes[i]
+		if !strings.EqualFold(strings.TrimSpace(q.StreamID), streamID) || len(q.RecentSegments) == 0 {
+			continue
+		}
+		if best == nil || q.LatestSegmentIndex > best.LatestSegmentIndex || (q.LatestSegmentIndex == best.LatestSegmentIndex && len(q.RecentSegments) > len(best.RecentSegments)) {
+			best = q
+		}
+	}
+	if best == nil {
+		return LiveSubscriberSnapshot{}, "", false
+	}
+	recent := make([]LiveSegmentRef, 0, len(best.RecentSegments))
+	for _, seg := range best.RecentSegments {
+		recent = append(recent, LiveSegmentRef{
+			SegmentIndex: seg.SegmentIndex,
+			SeedHash:     strings.ToLower(strings.TrimSpace(seg.SeedHash)),
+		})
+	}
+	return LiveSubscriberSnapshot{
+		StreamID:       streamID,
+		RecentSegments: normalizeLiveSegmentRefs(recent),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}, strings.ToLower(strings.TrimSpace(best.SellerPeerID)), true
 }
 
 func TriggerLiveFollowStop(rt *Runtime, streamID string) error {

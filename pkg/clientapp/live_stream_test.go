@@ -2,6 +2,8 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -145,5 +147,71 @@ func TestLiveSubscribeAndPublishLatest(t *testing.T) {
 	}
 	if got.RecentSegments[1].SegmentIndex != 12 {
 		t.Fatalf("unexpected latest segment index: %d", got.RecentSegments[1].SegmentIndex)
+	}
+}
+
+func TestLiveQuoteSubmitAndList(t *testing.T) {
+	buyerDBPath := filepath.Join(t.TempDir(), "buyer.sqlite")
+	buyerDB, err := sql.Open("sqlite", buyerDBPath)
+	if err != nil {
+		t.Fatalf("open buyer db: %v", err)
+	}
+	defer buyerDB.Close()
+	if err := applySQLitePragmas(buyerDB); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(buyerDB); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	buyerHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new buyer host failed: %v", err)
+	}
+	defer buyerHost.Close()
+	sellerHost, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new seller host failed: %v", err)
+	}
+	defer sellerHost.Close()
+
+	buyerRT := &Runtime{Host: buyerHost, DB: buyerDB, live: newLiveRuntime()}
+	sellerRT := &Runtime{Host: sellerHost, live: newLiveRuntime()}
+	registerLiveHandlers(buyerRT)
+	sellerHost.Peerstore().AddAddrs(buyerHost.ID(), buyerHost.Addrs(), time.Minute)
+	buyerPub, err := localPubKeyHex(buyerHost)
+	if err != nil {
+		t.Fatalf("buyer pubkey failed: %v", err)
+	}
+	err = TriggerClientSubmitLiveQuote(context.Background(), sellerRT, LiveQuoteParams{
+		DemandID:           "ldmd_test",
+		BuyerPeerID:        buyerPub,
+		BuyerAddrs:         localAdvertiseAddrs(buyerRT),
+		StreamID:           strings.Repeat("a", 64),
+		LatestSegmentIndex: 12,
+		RecentSegments: []LiveQuoteSegment{
+			{SegmentIndex: 11, SeedHash: strings.Repeat("b", 64)},
+			{SegmentIndex: 12, SeedHash: strings.Repeat("c", 64)},
+		},
+	})
+	if err != nil {
+		t.Fatalf("submit live quote failed: %v", err)
+	}
+	quotes, err := TriggerClientListLiveQuotes(context.Background(), buyerRT, "ldmd_test")
+	if err != nil {
+		t.Fatalf("list live quotes failed: %v", err)
+	}
+	if len(quotes) != 1 {
+		t.Fatalf("unexpected quote count: %d", len(quotes))
+	}
+	if quotes[0].LatestSegmentIndex != 12 || len(quotes[0].RecentSegments) != 2 {
+		t.Fatalf("unexpected live quote payload: %+v", quotes[0])
 	}
 }
