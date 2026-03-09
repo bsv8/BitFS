@@ -51,7 +51,8 @@ func TestBootstrapToken_SetAndUseImmediately(t *testing.T) {
 	if err := SaveConfigInDB(db, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
-	rt := &Runtime{DB: db, Config: cfg}
+	runCfg := NewRunInputFromConfig(cfg, "")
+	rt := &Runtime{DB: db, runIn: runCfg}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/bootstrap/status", nil)
@@ -78,7 +79,7 @@ func TestBootstrapToken_SetAndUseImmediately(t *testing.T) {
 	if strings.TrimSpace(srv.cfg.HTTP.AuthToken) != "m1n2r3y4" {
 		t.Fatalf("server cfg token not updated")
 	}
-	if strings.TrimSpace(rt.Config.HTTP.AuthToken) != "m1n2r3y4" {
+	if strings.TrimSpace(rt.runIn.HTTP.AuthToken) != "m1n2r3y4" {
 		t.Fatalf("runtime cfg token not updated")
 	}
 
@@ -117,7 +118,8 @@ func TestBootstrapToken_UpdateRequiresExistingAuth(t *testing.T) {
 	if err := SaveConfigInDB(db, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
-	rt := &Runtime{DB: db, Config: cfg}
+	runCfg := NewRunInputFromConfig(cfg, "")
+	rt := &Runtime{DB: db, runIn: runCfg}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	// 首次初始化：非 loopback 来源应拒绝。
@@ -159,7 +161,7 @@ func TestBootstrapToken_UpdateRequiresExistingAuth(t *testing.T) {
 	if strings.TrimSpace(srv.cfg.HTTP.AuthToken) != "new-token" {
 		t.Fatalf("server cfg token not updated to new token")
 	}
-	if strings.TrimSpace(rt.Config.HTTP.AuthToken) != "new-token" {
+	if strings.TrimSpace(rt.runIn.HTTP.AuthToken) != "new-token" {
 		t.Fatalf("runtime cfg token not updated to new token")
 	}
 }

@@ -48,7 +48,7 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		t.Fatalf("save cfg: %v", err)
 	}
 
-	rt := &Runtime{DB: db, Config: cfg}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{
 		rt:  rt,
 		cfg: &cfg,
@@ -87,10 +87,10 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		}
 	}
 
-	if !cfg.FSHTTP.StrategyDebugLogEnabled {
+	if !rt.runIn.FSHTTP.StrategyDebugLogEnabled {
 		t.Fatalf("cfg pointer should be updated")
 	}
-	if !rt.Config.FSHTTP.StrategyDebugLogEnabled {
+	if !rt.runIn.FSHTTP.StrategyDebugLogEnabled {
 		t.Fatalf("runtime config should be updated")
 	}
 
@@ -135,7 +135,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if err := SaveConfigInDB(db, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
-	rt := &Runtime{DB: db, Config: cfg}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	schemaReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)
@@ -177,7 +177,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if validateRec.Code != http.StatusOK {
 		t.Fatalf("validate_only status mismatch: got=%d want=%d body=%s", validateRec.Code, http.StatusOK, validateRec.Body.String())
 	}
-	if rt.Config.Scan.RescanIntervalSeconds == 30 {
+	if rt.runIn.Scan.RescanIntervalSeconds == 30 {
 		t.Fatalf("validate_only should not mutate runtime config")
 	}
 
@@ -197,26 +197,26 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status mismatch: got=%d want=%d body=%s", updateRec.Code, http.StatusOK, updateRec.Body.String())
 	}
-	if rt.Config.HTTP.ListenAddr != "127.0.0.1:19999" {
-		t.Fatalf("http.listen_addr not updated: %s", rt.Config.HTTP.ListenAddr)
+	if rt.runIn.HTTP.ListenAddr != "127.0.0.1:19999" {
+		t.Fatalf("http.listen_addr not updated: %s", rt.runIn.HTTP.ListenAddr)
 	}
-	if rt.Config.Scan.RescanIntervalSeconds != 120 {
-		t.Fatalf("scan interval not updated: %d", rt.Config.Scan.RescanIntervalSeconds)
+	if rt.runIn.Scan.RescanIntervalSeconds != 120 {
+		t.Fatalf("scan interval not updated: %d", rt.runIn.Scan.RescanIntervalSeconds)
 	}
-	if cfgBool(rt.Config.Listen.Enabled, true) {
+	if cfgBool(rt.runIn.Listen.Enabled, true) {
 		t.Fatalf("listen.enabled not updated: got=true want=false")
 	}
-	if rt.Config.Listen.RenewThresholdSeconds != 77 {
-		t.Fatalf("listen.renew_threshold_seconds not updated: %d", rt.Config.Listen.RenewThresholdSeconds)
+	if rt.runIn.Listen.RenewThresholdSeconds != 77 {
+		t.Fatalf("listen.renew_threshold_seconds not updated: %d", rt.runIn.Listen.RenewThresholdSeconds)
 	}
-	if rt.Config.Listen.MaxAutoRenewAmount != 12345 {
-		t.Fatalf("listen.max_auto_renew_amount not updated: %d", rt.Config.Listen.MaxAutoRenewAmount)
+	if rt.runIn.Listen.MaxAutoRenewAmount != 12345 {
+		t.Fatalf("listen.max_auto_renew_amount not updated: %d", rt.runIn.Listen.MaxAutoRenewAmount)
 	}
-	if rt.Config.Listen.TickSeconds != 9 {
-		t.Fatalf("listen.tick_seconds not updated: %d", rt.Config.Listen.TickSeconds)
+	if rt.runIn.Listen.TickSeconds != 9 {
+		t.Fatalf("listen.tick_seconds not updated: %d", rt.runIn.Listen.TickSeconds)
 	}
-	if rt.Config.Seller.Pricing.ResaleDiscountBPS != 7500 {
-		t.Fatalf("resale_discount_bps mismatch: got=%d want=7500", rt.Config.Seller.Pricing.ResaleDiscountBPS)
+	if rt.runIn.Seller.Pricing.ResaleDiscountBPS != 7500 {
+		t.Fatalf("resale_discount_bps mismatch: got=%d want=7500", rt.runIn.Seller.Pricing.ResaleDiscountBPS)
 	}
 
 	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
@@ -279,8 +279,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subCfg.Storage.WorkspaceDir = t.TempDir()
 	subCfg.Storage.DataDir = t.TempDir()
 
-	pubRT := &Runtime{Host: pubHost, Config: pubCfg, live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, Config: subCfg, DB: db, live: newLiveRuntime()}
+	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
+	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), DB: db, live: newLiveRuntime()}
 	registerLiveHandlers(pubRT)
 	registerLiveHandlers(subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
@@ -404,7 +404,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := workspace.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	rt := &Runtime{Host: h, DB: db, Config: cfg, Workspace: workspace, live: newLiveRuntime()}
+	rt := &Runtime{Host: h, DB: db, runIn: NewRunInputFromConfig(cfg, ""), Workspace: workspace, live: newLiveRuntime()}
 	registerLiveHandlers(rt)
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, workspace: workspace}
 
@@ -526,8 +526,8 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
 
-	pubRT := &Runtime{Host: pubHost, Config: pubCfg, DB: db, live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, Config: subCfg, DB: db, Workspace: subWorkspace, live: newLiveRuntime()}
+	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), DB: db, live: newLiveRuntime()}
+	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), DB: db, Workspace: subWorkspace, live: newLiveRuntime()}
 	registerLiveHandlers(pubRT)
 	registerLiveHandlers(subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)

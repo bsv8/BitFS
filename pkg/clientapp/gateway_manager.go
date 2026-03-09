@@ -84,7 +84,7 @@ func (gm *gatewayManager) AddGateway(ctx context.Context, node PeerNode) (int, e
 	}
 
 	// 检查是否已存在相同地址（peer ID）或 pubkey
-	for i, g := range gm.rt.Config.Network.Gateways {
+	for i, g := range gm.rt.runIn.Network.Gateways {
 		// 检查地址重复（通过解析地址后比较 peer ID）
 		if gAI, parseErr := parseAddr(g.Addr); parseErr == nil {
 			if gAI.ID == newAI.ID {
@@ -98,8 +98,8 @@ func (gm *gatewayManager) AddGateway(ctx context.Context, node PeerNode) (int, e
 	}
 
 	// 添加到配置
-	gm.rt.Config.Network.Gateways = append(gm.rt.Config.Network.Gateways, node)
-	idx := len(gm.rt.Config.Network.Gateways) - 1
+	gm.rt.runIn.Network.Gateways = append(gm.rt.runIn.Network.Gateways, node)
+	idx := len(gm.rt.runIn.Network.Gateways) - 1
 
 	// 如果启用，立即连接
 	if node.Enabled {
@@ -122,21 +122,21 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 	gm.mu.Lock()
 	defer gm.mu.Unlock()
 
-	if index < 0 || index >= len(gm.rt.Config.Network.Gateways) {
+	if index < 0 || index >= len(gm.rt.runIn.Network.Gateways) {
 		return fmt.Errorf("gateway index %d out of range", index)
 	}
 
-	oldNode := gm.rt.Config.Network.Gateways[index]
+	oldNode := gm.rt.runIn.Network.Gateways[index]
 	oldAI, _ := parseAddr(oldNode.Addr)
 
 	// 检查新 pubkey 是否与其他网关冲突（如果不是同一个索引）
-	for i, g := range gm.rt.Config.Network.Gateways {
+	for i, g := range gm.rt.runIn.Network.Gateways {
 		if i != index && strings.EqualFold(g.Pubkey, node.Pubkey) {
 			return fmt.Errorf("gateway with pubkey %s already exists at index %d", node.Pubkey, i)
 		}
 	}
 
-	gm.rt.Config.Network.Gateways[index] = node
+	gm.rt.runIn.Network.Gateways[index] = node
 
 	// 处理连接状态变化
 	if oldAI != nil {
@@ -187,17 +187,17 @@ func (gm *gatewayManager) DeleteGateway(index int) error {
 	gm.mu.Lock()
 	defer gm.mu.Unlock()
 
-	if index < 0 || index >= len(gm.rt.Config.Network.Gateways) {
+	if index < 0 || index >= len(gm.rt.runIn.Network.Gateways) {
 		return fmt.Errorf("gateway index %d out of range", index)
 	}
 
-	node := gm.rt.Config.Network.Gateways[index]
+	node := gm.rt.runIn.Network.Gateways[index]
 	if node.Enabled {
 		return fmt.Errorf("cannot delete enabled gateway, please disable it first")
 	}
 
 	// 从列表中移除
-	gm.rt.Config.Network.Gateways = append(gm.rt.Config.Network.Gateways[:index], gm.rt.Config.Network.Gateways[index+1:]...)
+	gm.rt.runIn.Network.Gateways = append(gm.rt.runIn.Network.Gateways[:index], gm.rt.runIn.Network.Gateways[index+1:]...)
 	obs.Business("bitcast-client", "gateway_deleted", map[string]any{"index": index})
 	return nil
 }
@@ -207,10 +207,10 @@ func (gm *gatewayManager) GetGateway(index int) (PeerNode, error) {
 	gm.mu.RLock()
 	defer gm.mu.RUnlock()
 
-	if index < 0 || index >= len(gm.rt.Config.Network.Gateways) {
+	if index < 0 || index >= len(gm.rt.runIn.Network.Gateways) {
 		return PeerNode{}, fmt.Errorf("gateway index %d out of range", index)
 	}
-	return gm.rt.Config.Network.Gateways[index], nil
+	return gm.rt.runIn.Network.Gateways[index], nil
 }
 
 // ListGateways 列出所有网关
@@ -218,8 +218,8 @@ func (gm *gatewayManager) ListGateways() []PeerNode {
 	gm.mu.RLock()
 	defer gm.mu.RUnlock()
 
-	out := make([]PeerNode, len(gm.rt.Config.Network.Gateways))
-	copy(out, gm.rt.Config.Network.Gateways)
+	out := make([]PeerNode, len(gm.rt.runIn.Network.Gateways))
+	copy(out, gm.rt.runIn.Network.Gateways)
 	return out
 }
 
@@ -241,7 +241,7 @@ func (gm *gatewayManager) electMasterLocked() {
 	oldMaster := gm.rt.masterGW
 	var newMaster peer.ID
 
-	for _, g := range gm.rt.Config.Network.Gateways {
+	for _, g := range gm.rt.runIn.Network.Gateways {
 		if !g.Enabled {
 			continue
 		}
@@ -275,10 +275,10 @@ func (gm *gatewayManager) GetMasterGateway() peer.ID {
 // SaveConfig 保存配置到 DB（不落地业务配置文件）。
 func (gm *gatewayManager) SaveConfig() error {
 	gm.mu.RLock()
-	cfg := gm.rt.Config
+	cfg := gm.rt.runIn
 	gm.mu.RUnlock()
 
-	if err := SaveConfigInDB(gm.rt.DB, cfg); err != nil {
+	if err := SaveConfigInDB(gm.rt.DB, cfg.toConfig()); err != nil {
 		return fmt.Errorf("save config to db failed: %w", err)
 	}
 	obs.Business("bitcast-client", "config_saved_to_db", map[string]any{})
@@ -300,7 +300,7 @@ func (gm *gatewayManager) RefreshConnections(ctx context.Context) {
 	}
 
 	// 尝试连接新启用的网关
-	for _, g := range gm.rt.Config.Network.Gateways {
+	for _, g := range gm.rt.runIn.Network.Gateways {
 		if !g.Enabled {
 			continue
 		}

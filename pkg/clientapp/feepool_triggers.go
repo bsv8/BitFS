@@ -28,7 +28,7 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 	gw := rt.HealthyGWs[0]
 	var resp dual2of2.StateResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{})
-	err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{ClientID: rt.Config.ClientID}, &resp)
+	err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{ClientID: rt.runIn.ClientID}, &resp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
 		return FeePoolStateResult{}, err
@@ -84,7 +84,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 
 	var st dual2of2.StateResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{
-		ClientID:  rt.Config.ClientID,
+		ClientID:  rt.runIn.ClientID,
 		SpendTxID: spendTxID,
 	}, &st); err != nil {
 		return FeePoolCloseResult{}, err
@@ -133,7 +133,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
-	clientActor, err := buildClientActorFromConfig(rt.Config)
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
@@ -155,7 +155,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		"spend_txid":      spendTxID,
 	})
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolClose, gwSec(rt.rpcTrace), dual2of2.CloseReq{
-		ClientID:     rt.Config.ClientID,
+		ClientID:     rt.runIn.ClientID,
 		SpendTxID:    spendTxID,
 		ServerAmount: st.ServerAmountSat,
 		Fee:          st.SpendTxFeeSat,

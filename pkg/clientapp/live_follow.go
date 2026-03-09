@@ -259,7 +259,7 @@ func liveAutoBuySegment(ctx context.Context, rt *Runtime, decision LivePurchaseD
 	}); err != nil {
 		return liveAutoBuyResult{}, err
 	}
-	if err := rt.Workspace.EnforceLiveCacheLimit(rt.Config.Live.CacheMaxBytes); err != nil {
+	if err := rt.Workspace.EnforceLiveCacheLimit(rt.runIn.Live.CacheMaxBytes); err != nil {
 		return liveAutoBuyResult{}, err
 	}
 	return liveAutoBuyResult{
@@ -277,7 +277,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
-	subRes, err := TriggerLiveSubscribe(ctx, rt, rawURI, rt.Config.Live.Publish.BroadcastWindow)
+	subRes, err := TriggerLiveSubscribe(ctx, rt, rawURI, rt.runIn.Live.Publish.BroadcastWindow)
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
@@ -314,7 +314,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 }
 
 func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) {
-	tick := time.Duration(rt.Config.Live.Publish.BroadcastIntervalSec) * time.Second
+	tick := time.Duration(rt.runIn.Live.Publish.BroadcastIntervalSec) * time.Second
 	if tick <= 0 {
 		tick = 3 * time.Second
 	}
@@ -349,13 +349,13 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 		return err
 	}
 	decision, err := PlanLivePurchase(snap, status.HaveSegmentIndex, LiveBuyerStrategy{
-		TargetLagSegments:   rt.Config.Live.Buyer.TargetLagSegments,
-		MaxBudgetPerMinute:  rt.Config.Live.Buyer.MaxBudgetPerMinute,
-		PreferOlderSegments: rt.Config.Live.Buyer.PreferOlderSegments,
+		TargetLagSegments:   rt.runIn.Live.Buyer.TargetLagSegments,
+		MaxBudgetPerMinute:  rt.runIn.Live.Buyer.MaxBudgetPerMinute,
+		PreferOlderSegments: rt.runIn.Live.Buyer.PreferOlderSegments,
 	}, LiveSellerPricing{
-		BasePriceSatPer64K:  rt.Config.Seller.Pricing.LiveBasePriceSatPer64K,
-		FloorPriceSatPer64K: rt.Config.Seller.Pricing.LiveFloorPriceSatPer64K,
-		DecayPerMinuteBPS:   rt.Config.Seller.Pricing.LiveDecayPerMinuteBPS,
+		BasePriceSatPer64K:  rt.runIn.Seller.Pricing.LiveBasePriceSatPer64K,
+		FloorPriceSatPer64K: rt.runIn.Seller.Pricing.LiveFloorPriceSatPer64K,
+		DecayPerMinuteBPS:   rt.runIn.Seller.Pricing.LiveDecayPerMinuteBPS,
 	}, time.Now())
 	if err != nil {
 		return err
@@ -400,7 +400,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 
 func discoverLiveSnapshotForFollow(ctx context.Context, rt *Runtime, streamID string, haveSegmentIndex int64) (LiveSubscriberSnapshot, string, error) {
 	if rt != nil && len(rt.HealthyGWs) > 0 {
-		window := rt.Config.Live.Publish.BroadcastWindow
+		window := rt.runIn.Live.Publish.BroadcastWindow
 		if window == 0 {
 			window = 10
 		}

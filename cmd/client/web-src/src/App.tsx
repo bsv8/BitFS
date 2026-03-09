@@ -385,6 +385,22 @@ function setHash(path: string, query?: URLSearchParams) {
 }
 
 // ========== 子组件 ==========
+// Modal 对话框组件
+function Modal({ title, isOpen, onClose, children }: { title: string, isOpen: boolean, onClose: () => void, children: React.ReactNode }) {
+  if (!isOpen) return null;
+  return (
+    <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-dialog">
+        <div className="modal-header">
+          <h4>{title}</h4>
+          <button className="modal-close" onClick={onClose}>×</button>
+        </div>
+        <div className="modal-body">{children}</div>
+      </div>
+    </div>
+  );
+}
+
 function GatewayManagerPage({ gateways, onSave, onDelete }: { gateways: GatewaysResp | null, onSave: (id: number | null, data: Gateway) => Promise<void>, onDelete: (id: number) => Promise<void> }) {
   const [editing, setEditing] = useState<{id: number | null, data: Gateway} | null>(null);
   
@@ -435,22 +451,30 @@ function GatewayManagerPage({ gateways, onSave, onDelete }: { gateways: Gateways
           );
         })}
       </tbody></table></div>
-      {editing ? (
-        <div className="panel" style={{ marginTop: 16 }}>
-          <h4>{editing.id === null ? "添加网关" : "编辑网关"}</h4>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-            <label><input type="checkbox" checked={editing.data.enabled} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, enabled: e.target.checked } })} /> 启用</label>
-            <input className="input" placeholder="多地址 (/ip4/.../tcp/.../p2p/...)" value={editing.data.addr} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, addr: e.target.value } })} />
-            <input className="input" placeholder="公钥 (hex)" value={editing.data.pubkey} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, pubkey: e.target.value } })} />
-            <div style={{ display: "flex", gap: 8 }}>
+      <Modal 
+        title={editing?.id === null ? "添加网关" : "编辑网关"} 
+        isOpen={!!editing} 
+        onClose={() => setEditing(null)}
+      >
+        {editing && (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input type="checkbox" checked={editing.data.enabled} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, enabled: e.target.checked } })} /> 
+                <span>启用</span>
+              </label>
+              <input className="input" placeholder="多地址 (/ip4/.../tcp/.../p2p/...)" value={editing.data.addr} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, addr: e.target.value } })} />
+              <input className="input" placeholder="公钥 (hex)" value={editing.data.pubkey} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, pubkey: e.target.value } })} />
+            </div>
+            <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
               <button className="btn" onClick={() => {
                 onSave(editing.id, editing.data).then(() => setEditing(null)).catch(e => alert(e.message));
               }}>保存</button>
               <button className="btn btn-light" onClick={() => setEditing(null)}>取消</button>
             </div>
-          </div>
-        </div>
-      ) : null}
+          </>
+        )}
+      </Modal>
     </section>
   );
 }
@@ -480,22 +504,30 @@ function ArbiterManagerPage({ arbiters, onSave, onDelete }: { arbiters: Arbiters
           </tr>
         ))}
       </tbody></table></div>
-      {editing ? (
-        <div className="panel" style={{ marginTop: 16 }}>
-          <h4>{editing.id === null ? "添加仲裁服务器" : "编辑仲裁服务器"}</h4>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
-            <label><input type="checkbox" checked={editing.data.enabled} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, enabled: e.target.checked } })} /> 启用</label>
-            <input className="input" placeholder="多地址 (/ip4/.../tcp/.../p2p/...)" value={editing.data.addr} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, addr: e.target.value } })} />
-            <input className="input" placeholder="公钥 (hex)" value={editing.data.pubkey} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, pubkey: e.target.value } })} />
-            <div style={{ display: "flex", gap: 8 }}>
+      <Modal 
+        title={editing?.id === null ? "添加仲裁服务器" : "编辑仲裁服务器"} 
+        isOpen={!!editing} 
+        onClose={() => setEditing(null)}
+      >
+        {editing && (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                <input type="checkbox" checked={editing.data.enabled} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, enabled: e.target.checked } })} /> 
+                <span>启用</span>
+              </label>
+              <input className="input" placeholder="多地址 (/ip4/.../tcp/.../p2p/...)" value={editing.data.addr} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, addr: e.target.value } })} />
+              <input className="input" placeholder="公钥 (hex)" value={editing.data.pubkey} onChange={(e) => setEditing({ ...editing, data: { ...editing.data, pubkey: e.target.value } })} />
+            </div>
+            <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
               <button className="btn" onClick={() => {
                 onSave(editing.id, editing.data).then(() => setEditing(null)).catch(e => alert(e.message));
               }}>保存</button>
               <button className="btn btn-light" onClick={() => setEditing(null)}>取消</button>
             </div>
-          </div>
-        </div>
-      ) : null}
+          </>
+        )}
+      </Modal>
     </section>
   );
 }
@@ -550,6 +582,21 @@ function StaticFileManager({
     }
   };
 
+  const handleCreateDir = () => {
+    if (newDirName) {
+      onCreateDir(newDirName);
+      setNewDirName("");
+      setShowNewDir(false);
+    }
+  };
+
+  const handleSavePrice = () => {
+    if (editingPrice) {
+      onSetPrice(editingPrice.path, Number(editingPrice.floor), Number(editingPrice.discount));
+      setEditingPrice(null);
+    }
+  };
+
   if (!staticTree) return null;
 
   return (
@@ -578,14 +625,6 @@ function StaticFileManager({
           </span>
         ))}
       </div>
-
-      {showNewDir && (
-        <div className="filters" style={{ marginTop: 8 }}>
-          <input className="input" placeholder="新文件夹名称" value={newDirName} onChange={(e) => setNewDirName(e.target.value)} />
-          <button className="btn" onClick={() => { if (newDirName) { onCreateDir(newDirName); setNewDirName(""); setShowNewDir(false); } }}>创建</button>
-          <button className="btn btn-light" onClick={() => { setShowNewDir(false); setNewDirName(""); }}>取消</button>
-        </div>
-      )}
 
       {/* 文件列表 */}
       <div className="table-wrap"><table><thead><tr><th style={{ width: 30 }}></th><th>名称</th><th>类型</th><th>大小</th><th>修改时间</th><th>Seed</th><th>底价</th><th>操作</th></tr></thead><tbody>
@@ -619,18 +658,61 @@ function StaticFileManager({
         )}
       </tbody></table></div>
 
-      {/* 价格编辑弹窗 */}
-      {editingPrice && (
-        <div className="panel" style={{ marginTop: 16 }}>
-          <h4>设置价格: {short(editingPrice.path, 30)}</h4>
-          <div className="filters">
-            <input className="input" type="number" placeholder="底价 (sat/64k)" value={editingPrice.floor} onChange={(e) => setEditingPrice({ ...editingPrice, floor: e.target.value })} />
-            <input className="input" type="number" placeholder="折扣 (bps)" value={editingPrice.discount} onChange={(e) => setEditingPrice({ ...editingPrice, discount: e.target.value })} />
-            <button className="btn" onClick={() => { onSetPrice(editingPrice.path, Number(editingPrice.floor), Number(editingPrice.discount)); setEditingPrice(null); }}>保存</button>
-            <button className="btn btn-light" onClick={() => setEditingPrice(null)}>取消</button>
-          </div>
+      {/* 新建文件夹对话框 */}
+      <Modal title="新建文件夹" isOpen={showNewDir} onClose={() => { setShowNewDir(false); setNewDirName(""); }}>
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <label style={{ fontSize: 13, color: "#5f6f85" }}>在当前目录下创建新文件夹</label>
+          <input 
+            className="input" 
+            placeholder="文件夹名称" 
+            value={newDirName} 
+            onChange={(e) => setNewDirName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleCreateDir(); }}
+          />
         </div>
-      )}
+        <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+          <button className="btn" onClick={handleCreateDir}>创建</button>
+          <button className="btn btn-light" onClick={() => { setShowNewDir(false); setNewDirName(""); }}>取消</button>
+        </div>
+      </Modal>
+
+      {/* 设置价格对话框 */}
+      <Modal 
+        title={editingPrice ? `设置价格: ${short(editingPrice.path, 30)}` : "设置价格"} 
+        isOpen={!!editingPrice} 
+        onClose={() => setEditingPrice(null)}
+      >
+        {editingPrice && (
+          <>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, color: "#5f6f85", marginBottom: 4 }}>底价 (sat/64k)</label>
+                <input 
+                  className="input" 
+                  type="number" 
+                  value={editingPrice.floor} 
+                  onChange={(e) => setEditingPrice({ ...editingPrice, floor: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleSavePrice(); }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, color: "#5f6f85", marginBottom: 4 }}>折扣 (bps)</label>
+                <input 
+                  className="input" 
+                  type="number" 
+                  value={editingPrice.discount} 
+                  onChange={(e) => setEditingPrice({ ...editingPrice, discount: e.target.value })}
+                  onKeyDown={(e) => { if (e.key === "Enter") handleSavePrice(); }}
+                />
+              </div>
+            </div>
+            <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+              <button className="btn" onClick={handleSavePrice}>保存</button>
+              <button className="btn btn-light" onClick={() => setEditingPrice(null)}>取消</button>
+            </div>
+          </>
+        )}
+      </Modal>
 
       <div className="hint" style={{ marginTop: 8 }}>当前目录: {staticTree.current_path} | 选中: {selectedStaticItems.size} 项</div>
     </section>
@@ -655,6 +737,18 @@ function shortHex(s: string, n = 4) {
   if (!s) return "-";
   if (s.length <= n * 2) return s;
   return `${s.slice(0, n)}...${s.slice(-n)}`;
+}
+
+function gatewayEventMsg(e: GatewayEventsResp["items"][number]) {
+  const msgID = (e.msg_id || "").trim();
+  if (msgID) return msgID;
+  if (e.payload && typeof e.payload === "object") {
+    const payload = e.payload as Record<string, unknown>;
+    const stage = typeof payload.stage === "string" ? payload.stage.trim() : "";
+    const err = typeof payload.error === "string" ? payload.error.trim() : "";
+    if (err) return stage ? `${stage}: ${err}` : err;
+  }
+  return "-";
 }
 
 function toInt(v: string | null, d: number, min = 1, max = 500) {
@@ -1665,16 +1759,19 @@ export default function App() {
                 </div>
               </div>
               <div className="table-wrap"><table><thead><tr><th>时间</th><th>网关</th><th>动作</th><th>金额</th><th>pool</th><th>msg</th></tr></thead><tbody>
-                {gatewayEvents.items.map((e) => (
-                  <tr key={e.id} className={toInt(route.query.get("detailId"), 0, 0, 1_000_000_000) === e.id ? "selected-row" : ""} onClick={() => updateQuery({ detailId: e.id })}>
-                    <td>{t(e.created_at_unix)}</td>
-                    <td title={e.gateway_peer_id}>{short(e.gateway_peer_id, 8)}</td>
-                    <td>{e.action}</td>
-                    <td>{sat(e.amount_satoshi)}</td>
-                    <td>{e.pool_id || "-"}</td>
-                    <td>{e.msg_id || "-"}</td>
-                  </tr>
-                ))}
+                {gatewayEvents.items.map((e) => {
+                  const msg = gatewayEventMsg(e);
+                  return (
+                    <tr key={e.id} className={toInt(route.query.get("detailId"), 0, 0, 1_000_000_000) === e.id ? "selected-row" : ""} onClick={() => updateQuery({ detailId: e.id })}>
+                      <td>{t(e.created_at_unix)}</td>
+                      <td title={e.gateway_peer_id}>{short(e.gateway_peer_id, 8)}</td>
+                      <td>{e.action}</td>
+                      <td>{sat(e.amount_satoshi)}</td>
+                      <td>{e.pool_id || "-"}</td>
+                      <td title={msg}>{short(msg, 24)}</td>
+                    </tr>
+                  );
+                })}
               </tbody></table></div>
               <Pager total={gatewayEvents.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
               {gatewayEventDetail ? <pre className="detail-pre">{JSON.stringify(gatewayEventDetail, null, 2)}</pre> : <div className="hint">点击某条记录查看事件详情 payload</div>}

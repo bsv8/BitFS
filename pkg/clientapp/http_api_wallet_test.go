@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/woc"
-	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 )
 
@@ -310,8 +310,8 @@ type walletSyncMockChain struct {
 }
 
 func (m *walletSyncMockChain) GetUTXOs(address string) ([]woc.UTXO, error) { return m.utxos, nil }
-func (m *walletSyncMockChain) GetTipHeight() (uint32, error)                { return 100, nil }
-func (m *walletSyncMockChain) Broadcast(txHex string) (string, error)        { return "mock-txid", nil }
+func (m *walletSyncMockChain) GetTipHeight() (uint32, error)               { return 100, nil }
+func (m *walletSyncMockChain) Broadcast(txHex string) (string, error)      { return "mock-txid", nil }
 func (m *walletSyncMockChain) GetAddressHistory(address string) ([]woc.AddressHistoryItem, error) {
 	return m.history, nil
 }
@@ -357,8 +357,8 @@ func TestWalletLedger_AutoSyncFromChainHistory(t *testing.T) {
 	srv := &httpAPIServer{
 		db: db,
 		rt: &Runtime{
-			Config: cfg,
-			Chain:  chain,
+			runIn: NewRunInputFromConfig(cfg, privHex),
+			Chain: chain,
 		},
 	}
 
@@ -371,10 +371,10 @@ func TestWalletLedger_AutoSyncFromChainHistory(t *testing.T) {
 	var list struct {
 		Total int `json:"total"`
 		Items []struct {
-			Direction    string `json:"direction"`
-			Category     string `json:"category"`
-			AmountSatoshi int64 `json:"amount_satoshi"`
-			TxID         string `json:"txid"`
+			Direction     string `json:"direction"`
+			Category      string `json:"category"`
+			AmountSatoshi int64  `json:"amount_satoshi"`
+			TxID          string `json:"txid"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {

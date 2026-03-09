@@ -102,10 +102,10 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	}
 
 	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	session, err := ensureActiveFeePool(ctx, rt, gw, rt.Config.Listen.MaxAutoRenewAmount, info)
+	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.MaxAutoRenewAmount, info)
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
@@ -126,7 +126,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	clientActor, err := buildClientActorFromConfig(rt.Config)
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
@@ -142,7 +142,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	}
 
 	req := dual2of2.DemandPublishPaidReq{
-		ClientID:            rt.Config.ClientID,
+		ClientID:            rt.runIn.ClientID,
 		SeedHash:            seedHash,
 		ChunkCount:          p.ChunkCount,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
@@ -196,10 +196,10 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
 	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	session, err := ensureActiveFeePool(ctx, rt, gw, rt.Config.Listen.MaxAutoRenewAmount, info)
+	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.MaxAutoRenewAmount, info)
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
@@ -219,7 +219,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	clientActor, err := buildClientActorFromConfig(rt.Config)
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
@@ -234,7 +234,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
 	req := dual2of2.LiveDemandPublishPaidReq{
-		ClientID:            rt.Config.ClientID,
+		ClientID:            rt.runIn.ClientID,
 		StreamID:            streamID,
 		HaveSegmentIndex:    p.HaveSegmentIndex,
 		Window:              p.Window,
@@ -807,8 +807,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		return directTransferPoolOpenResult{}, err
 	}
 
-	clientPrivHex := strings.TrimSpace(buyer.Config.Keys.PrivkeyHex)
-	clientActor, err := dual2of2.BuildActor("buyer", clientPrivHex, strings.ToLower(strings.TrimSpace(buyer.Config.BSV.Network)) == "main")
+	clientPrivHex := strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex)
+	clientActor, err := dual2of2.BuildActor("buyer", clientPrivHex, strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
@@ -917,7 +917,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		req := directTransferPoolOpenReq{
 			SessionID:      curSessionID,
 			DealID:         dealID,
-			BuyerPeerID:    strings.ToLower(strings.TrimSpace(buyer.Config.ClientID)),
+			BuyerPeerID:    strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
 			ArbiterPeerID:  strings.TrimSpace(p.ArbiterPeerID),
 			ArbiterPubKey:  arbiterPubHex,
 			PoolAmount:     baseResp.Amount,
@@ -1060,7 +1060,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 		return selected, "", nil
 	}
 
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
+	isMainnet := strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network)) == "main"
 	clientAddr, err := kmlibs.GetAddressFromPubKey(actor.PubKey, isMainnet)
 	if err != nil {
 		return nil, "", fmt.Errorf("derive client address failed: %w", err)
@@ -1198,7 +1198,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
-	clientActor, err := dual2of2.BuildActor("buyer", strings.TrimSpace(buyer.Config.Keys.PrivkeyHex), strings.ToLower(strings.TrimSpace(buyer.Config.BSV.Network)) == "main")
+	clientActor, err := dual2of2.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
@@ -1343,7 +1343,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
-	clientActor, err := dual2of2.BuildActor("buyer", strings.TrimSpace(buyer.Config.Keys.PrivkeyHex), strings.ToLower(strings.TrimSpace(buyer.Config.BSV.Network)) == "main")
+	clientActor, err := dual2of2.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
@@ -1489,7 +1489,7 @@ func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
 		fields = map[string]any{}
 	}
 	if rt != nil {
-		clientID := strings.ToLower(strings.TrimSpace(rt.Config.ClientID))
+		clientID := strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
 		if clientID != "" {
 			if _, ok := fields["client_id"]; !ok {
 				fields["client_id"] = clientID
@@ -1605,8 +1605,8 @@ func ownArbiterPeerIDs(rt *Runtime) []string {
 	if rt == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(rt.Config.Network.Arbiters))
-	for _, a := range rt.Config.Network.Arbiters {
+	ids := make([]string, 0, len(rt.runIn.Network.Arbiters))
+	for _, a := range rt.runIn.Network.Arbiters {
 		if !a.Enabled {
 			continue
 		}
@@ -1649,7 +1649,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 	var resp directDealAcceptResp
 	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
 		DemandID:      strings.TrimSpace(p.DemandID),
-		BuyerPeerID:   strings.ToLower(strings.TrimSpace(buyer.Config.ClientID)),
+		BuyerPeerID:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
 		SeedHash:      strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		SeedPrice:     p.SeedPrice,
 		ChunkPrice:    p.ChunkPrice,

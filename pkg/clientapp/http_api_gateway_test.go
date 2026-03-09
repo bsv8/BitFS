@@ -62,7 +62,7 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 		{Enabled: true, Addr: gw1Addr, Pubkey: strings.ToLower(gw1Pub)},
 		{Enabled: true, Addr: gw2Addr, Pubkey: strings.ToLower(gw2Pub)},
 	}
-	rt := &Runtime{Host: hClient, Config: cfg}
+	rt := &Runtime{Host: hClient, runIn: NewRunInputFromConfig(cfg, "")}
 	rt.gwManager = newGatewayManager(rt, hClient)
 	if err := rt.gwManager.InitFromConfig(t.Context(), cfg.Network.Gateways); err != nil {
 		t.Fatalf("init gateways: %v", err)
@@ -160,7 +160,7 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 
 	cfg := Config{}
 	cfg.Network.Gateways = []PeerNode{{Enabled: true, Addr: gw1Addr, Pubkey: strings.ToLower(gw1Pub)}}
-	rt := &Runtime{Host: hClient, Config: cfg}
+	rt := &Runtime{Host: hClient, runIn: NewRunInputFromConfig(cfg, "")}
 	rt.gwManager = newGatewayManager(rt, hClient)
 	if err := rt.gwManager.InitFromConfig(t.Context(), cfg.Network.Gateways); err != nil {
 		t.Fatalf("init gateways: %v", err)

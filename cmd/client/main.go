@@ -415,16 +415,20 @@ func runDaemon(cfg clientapp.Config, startup startupSummary) error {
 	}
 	defer stopGuard()
 
-	rt, err := clientapp.Run(ctx, cfg, clientapp.RunOptions{
-		WebAssets: webAssets,
-		Chain:     woc.NewGuardClient(guardURL),
-	})
+	effectivePrivHex, err := clientapp.ResolveEffectivePrivKeyHex(cfg, "")
+	if err != nil {
+		return err
+	}
+	runIn := clientapp.NewRunInputFromConfig(cfg, effectivePrivHex)
+	runIn.WebAssets = webAssets
+	runIn.Chain = woc.NewGuardClient(guardURL)
+	rt, err := clientapp.Run(ctx, runIn)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rt.Close() }()
 
-	printClientStartupSummary("daemon", startup, guardURL, rt)
+	printClientStartupSummary("daemon", startup, guardURL, rt, cfg)
 	<-ctx.Done()
 	return nil
 }
@@ -450,16 +454,20 @@ func runDownload(cfg clientapp.Config, startup startupSummary, seedHash string) 
 	downloadCfg.Seller.Enabled = false
 	downloadCfg.Scan.StartupFullScan = false
 
-	rt, err := clientapp.Run(ctx, downloadCfg, clientapp.RunOptions{
-		WebAssets: webAssets,
-		Chain:     woc.NewGuardClient(guardURL),
-	})
+	effectivePrivHex, err := clientapp.ResolveEffectivePrivKeyHex(downloadCfg, "")
+	if err != nil {
+		return err
+	}
+	runIn := clientapp.NewRunInputFromConfig(downloadCfg, effectivePrivHex)
+	runIn.WebAssets = webAssets
+	runIn.Chain = woc.NewGuardClient(guardURL)
+	rt, err := clientapp.Run(ctx, runIn)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rt.Close() }()
 
-	printClientStartupSummary("download", startup, guardURL, rt)
+	printClientStartupSummary("download", startup, guardURL, rt, downloadCfg)
 	arbiter := ""
 	if len(rt.HealthyArbiters) > 0 {
 		arbiter = rt.HealthyArbiters[0].ID.String()
@@ -488,16 +496,16 @@ func runDownload(cfg clientapp.Config, startup startupSummary, seedHash string) 
 }
 
 // 启动摘要只给人看，不进入结构化日志。
-func printClientStartupSummary(mode string, startup startupSummary, guardURL string, rt *clientapp.Runtime) {
-	pubHex := strings.TrimSpace(rt.Config.ClientID)
-	if strings.TrimSpace(rt.Config.Keys.PrivkeyHex) != "" {
-		if v, err := pubHexFromPrivHex(rt.Config.Keys.PrivkeyHex); err == nil {
+func printClientStartupSummary(mode string, startup startupSummary, guardURL string, rt *clientapp.Runtime, cfg clientapp.Config) {
+	pubHex := strings.TrimSpace(rt.ClientID())
+	if strings.TrimSpace(cfg.Keys.PrivkeyHex) != "" {
+		if v, err := pubHexFromPrivHex(cfg.Keys.PrivkeyHex); err == nil {
 			pubHex = v
 		}
 	}
-	recvAddr, recvAddrErr := deriveClientAddress(rt.Config)
-	dbPath := effectiveIndexDBPath(rt.Config)
-	logFile, _ := clientapp.ResolveLogConfig(&rt.Config)
+	recvAddr, recvAddrErr := deriveClientAddress(cfg)
+	dbPath := effectiveIndexDBPath(cfg)
+	logFile, _ := clientapp.ResolveLogConfig(&cfg)
 	systemLogFile, businessLogFile := obs.ResolveSplitFilePaths(logFile)
 
 	fmt.Println("========== BitFS Client 启动信息 ==========")
@@ -507,7 +515,7 @@ func printClientStartupSummary(mode string, startup startupSummary, guardURL str
 	fmt.Printf("配置文件状态: %s\n", startup.ConfigStatus)
 	fmt.Printf("运行配置DB: %s\n", absOrRaw(startup.RuntimeConfigDBPath))
 	fmt.Printf("运行配置DB状态: %s\n", startup.RuntimeConfigStatus)
-	fmt.Printf("网络: %s\n", rt.Config.BSV.Network)
+	fmt.Printf("网络: %s\n", rt.BSVNetwork())
 	fmt.Printf("索引数据库: %s\n", absOrRaw(dbPath))
 	fmt.Printf("OBS系统日志: %s\n", absOrRaw(systemLogFile))
 	fmt.Printf("OBS业务日志: %s\n", absOrRaw(businessLogFile))
@@ -515,14 +523,14 @@ func printClientStartupSummary(mode string, startup startupSummary, guardURL str
 	fmt.Printf("Peer ID: %s\n", rt.Host.ID().String())
 	fmt.Printf("公钥(hex): %s\n", pubHex)
 	if recvAddrErr != nil {
-		fmt.Printf("收款地址(%s): <unavailable: %v>\n", rt.Config.BSV.Network, recvAddrErr)
+		fmt.Printf("收款地址(%s): <unavailable: %v>\n", rt.BSVNetwork(), recvAddrErr)
 	} else {
-		fmt.Printf("收款地址(%s): %s\n", rt.Config.BSV.Network, recvAddr)
+		fmt.Printf("收款地址(%s): %s\n", rt.BSVNetwork(), recvAddr)
 	}
 	fmt.Printf("网关数量: %d\n", len(rt.HealthyGWs))
 	fmt.Printf("仲裁数量: %d\n", len(rt.HealthyArbiters))
-	fmt.Printf("HTTP API: enabled=%t listen_addr=%s\n", rt.Config.HTTP.Enabled, rt.Config.HTTP.ListenAddr)
-	fmt.Printf("FS HTTP: enabled=%t listen_addr=%s\n", rt.Config.FSHTTP.Enabled, rt.Config.FSHTTP.ListenAddr)
+	fmt.Printf("HTTP API: enabled=%t listen_addr=%s\n", cfg.HTTP.Enabled, rt.HTTPListenAddr())
+	fmt.Printf("FS HTTP: enabled=%t listen_addr=%s\n", cfg.FSHTTP.Enabled, rt.FSHTTPListenAddr())
 	fmt.Println("监听地址:")
 	for _, a := range rt.Host.Addrs() {
 		fmt.Printf("  - %s/p2p/%s\n", a.String(), rt.Host.ID().String())

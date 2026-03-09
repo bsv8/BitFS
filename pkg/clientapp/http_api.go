@@ -558,13 +558,13 @@ func (s *httpAPIServer) handleBootstrapToken(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "auth_token is required"})
 		return
 	}
-	cfg := s.rt.Config
+	cfg := s.rt.runIn
 	cfg.HTTP.AuthToken = token
-	if err := SaveConfigInDB(s.db, cfg); err != nil {
+	if err := SaveConfigInDB(s.db, cfg.toConfig()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	s.rt.Config = cfg
+	s.rt.runIn = cfg
 	s.cfg.HTTP.AuthToken = token
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                  true,
@@ -694,7 +694,7 @@ func walletAddressAndOnchainBalance(rt *Runtime) (string, uint64, error) {
 	if rt == nil || rt.Chain == nil {
 		return "", 0, fmt.Errorf("runtime chain not initialized")
 	}
-	actor, err := buildClientActorFromConfig(rt.Config)
+	actor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return "", 0, err
 	}
@@ -742,11 +742,11 @@ func (s *httpAPIServer) syncWalletLedgerFromChain(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("chain backend does not support history api")
 	}
-	actor, err := buildClientActorFromConfig(s.rt.Config)
+	actor, err := buildClientActorFromRunInput(s.rt.runIn)
 	if err != nil {
 		return err
 	}
-	isMainnet := strings.ToLower(strings.TrimSpace(s.rt.Config.BSV.Network)) == "main"
+	isMainnet := strings.ToLower(strings.TrimSpace(s.rt.runIn.BSV.Network)) == "main"
 	clientAddr, err := kmlibs.GetAddressFromPubKey(actor.PubKey, isMainnet)
 	if err != nil {
 		return err
@@ -3204,7 +3204,7 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 检查重复
-		for i, g := range s.rt.Config.Network.Gateways {
+		for i, g := range s.rt.runIn.Network.Gateways {
 			if strings.EqualFold(g.Pubkey, req.Pubkey) {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("pubkey already exists at index %d", i)})
 				return
@@ -3498,8 +3498,8 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			Pubkey  string `json:"pubkey"`
 			Enabled bool   `json:"enabled"`
 		}
-		items := make([]arbResp, len(s.rt.Config.Network.Arbiters))
-		for i, a := range s.rt.Config.Network.Arbiters {
+		items := make([]arbResp, len(s.rt.runIn.Network.Arbiters))
+		for i, a := range s.rt.runIn.Network.Arbiters {
 			items[i] = arbResp{ID: i, Addr: a.Addr, Pubkey: a.Pubkey, Enabled: a.Enabled}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
@@ -3519,7 +3519,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newAI, _ := parseAddr(node.Addr)
-		for i, a := range s.rt.Config.Network.Arbiters {
+		for i, a := range s.rt.runIn.Network.Arbiters {
 			if strings.EqualFold(strings.TrimSpace(a.Pubkey), node.Pubkey) {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("pubkey already exists at index %d", i)})
 				return
@@ -3530,13 +3530,13 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		next := s.rt.Config
+		next := s.rt.runIn
 		next.Network.Arbiters = append(next.Network.Arbiters, node)
-		s.rt.Config = next
+		s.rt.runIn = next
 		if s.cfg != nil {
-			*s.cfg = next
+			*s.cfg = next.toConfig()
 		}
-		if err := SaveConfigInDB(s.db, next); err != nil {
+		if err := SaveConfigInDB(s.db, next.toConfig()); err != nil {
 			obs.Error("bitcast-client", "arbiter_add_save_failed", map[string]any{"error": err.Error()})
 		}
 		s.refreshHealthyArbiters(r.Context())
@@ -3552,7 +3552,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 			return
 		}
-		if id >= len(s.rt.Config.Network.Arbiters) {
+		if id >= len(s.rt.runIn.Network.Arbiters) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
 			return
 		}
@@ -3571,7 +3571,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		newAI, _ := parseAddr(node.Addr)
-		for i, a := range s.rt.Config.Network.Arbiters {
+		for i, a := range s.rt.runIn.Network.Arbiters {
 			if i == id {
 				continue
 			}
@@ -3585,13 +3585,13 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		next := s.rt.Config
+		next := s.rt.runIn
 		next.Network.Arbiters[id] = node
-		s.rt.Config = next
+		s.rt.runIn = next
 		if s.cfg != nil {
-			*s.cfg = next
+			*s.cfg = next.toConfig()
 		}
-		if err := SaveConfigInDB(s.db, next); err != nil {
+		if err := SaveConfigInDB(s.db, next.toConfig()); err != nil {
 			obs.Error("bitcast-client", "arbiter_update_save_failed", map[string]any{"error": err.Error()})
 		}
 		s.refreshHealthyArbiters(r.Context())
@@ -3607,21 +3607,21 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 			return
 		}
-		if id >= len(s.rt.Config.Network.Arbiters) {
+		if id >= len(s.rt.runIn.Network.Arbiters) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
 			return
 		}
-		if s.rt.Config.Network.Arbiters[id].Enabled {
+		if s.rt.runIn.Network.Arbiters[id].Enabled {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cannot delete enabled arbiter, please disable it first"})
 			return
 		}
-		next := s.rt.Config
+		next := s.rt.runIn
 		next.Network.Arbiters = append(next.Network.Arbiters[:id], next.Network.Arbiters[id+1:]...)
-		s.rt.Config = next
+		s.rt.runIn = next
 		if s.cfg != nil {
-			*s.cfg = next
+			*s.cfg = next.toConfig()
 		}
-		if err := SaveConfigInDB(s.db, next); err != nil {
+		if err := SaveConfigInDB(s.db, next.toConfig()); err != nil {
 			obs.Error("bitcast-client", "arbiter_delete_save_failed", map[string]any{"error": err.Error()})
 		}
 		s.refreshHealthyArbiters(r.Context())
@@ -3658,7 +3658,7 @@ func (s *httpAPIServer) refreshHealthyArbiters(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	cfgArbs := s.rt.Config.Network.Arbiters
+	cfgArbs := s.rt.runIn.Network.Arbiters
 	infos := make([]peer.AddrInfo, 0, len(cfgArbs))
 	for i, a := range cfgArbs {
 		if !a.Enabled {
@@ -3703,7 +3703,7 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 		InHealthyArbs bool   `json:"in_healthy_arbiters"`
 		Error         string `json:"error,omitempty"`
 	}
-	nodes := s.rt.Config.Network.Arbiters
+	nodes := s.rt.runIn.Network.Arbiters
 	items := make([]healthItem, 0, len(nodes))
 	connectedCount := 0
 	for i, a := range nodes {
@@ -3879,14 +3879,14 @@ func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *ht
 		}
 		oldEnabled := s.cfg.FSHTTP.StrategyDebugLogEnabled
 		s.cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
-		cfg := s.rt.Config
+		cfg := s.rt.runIn
 		cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
-		if err := SaveConfigInDB(s.db, cfg); err != nil {
+		if err := SaveConfigInDB(s.db, cfg.toConfig()); err != nil {
 			s.cfg.FSHTTP.StrategyDebugLogEnabled = oldEnabled
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		s.rt.Config = cfg
+		s.rt.runIn = cfg
 		obs.Business("bitcast-client", "admin_strategy_debug_log_updated", map[string]any{
 			"enabled": req.Enabled,
 		})
@@ -4801,7 +4801,7 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"config": adminConfigSnapshot(s.rt.Config)})
+		writeJSON(w, http.StatusOK, map[string]any{"config": adminConfigSnapshot(s.rt.runIn.toConfig())})
 	case http.MethodPost:
 		var req struct {
 			ValidateOnly bool `json:"validate_only"`
@@ -4818,7 +4818,8 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "items is required"})
 			return
 		}
-		next := s.rt.Config
+		next := s.rt.runIn
+		nextCfg := next.toConfig()
 		ruleMap := adminConfigRuleMap()
 		applied := make([]string, 0, len(req.Items))
 		for _, it := range req.Items {
@@ -4828,37 +4829,38 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported key: " + key})
 				return
 			}
-			if err := adminConfigApplyOne(&next, rule, it.Value); err != nil {
+			if err := adminConfigApplyOne(&nextCfg, rule, it.Value); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "key": key})
 				return
 			}
 			applied = append(applied, key)
 		}
 		// 全局校验兜底，避免单字段校验通过但组合非法。
-		if err := validateConfig(&next); err != nil {
+		if err := validateConfig(&nextCfg); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		next.applyConfig(nextCfg)
 		if req.ValidateOnly {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":            true,
 				"validate_only": true,
 				"applied_keys":  applied,
-				"config":        adminConfigSnapshot(next),
+				"config":        adminConfigSnapshot(nextCfg),
 			})
 			return
 		}
-		if err := SaveConfigInDB(s.db, next); err != nil {
+		if err := SaveConfigInDB(s.db, nextCfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		s.rt.Config = next
-		*s.cfg = next
+		s.rt.runIn = next
+		*s.cfg = next.toConfig()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":            true,
 			"validate_only": false,
 			"applied_keys":  applied,
-			"config":        adminConfigSnapshot(next),
+			"config":        adminConfigSnapshot(nextCfg),
 		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

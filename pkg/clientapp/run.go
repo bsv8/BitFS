@@ -69,7 +69,7 @@ const (
 	defaultListenMaxAutoRenewMainSat   = 200000
 	defaultListenTickTestSec           = 1
 	defaultListenTickMainSec           = 30
-	seedBlockSize            = 65536
+	seedBlockSize                      = 65536
 )
 
 type healthReq struct{}
@@ -355,10 +355,83 @@ type sellerCatalog struct {
 	seeds map[string]sellerSeed
 }
 
-type RunOptions struct {
-	PrivKeyHexOverride string
-	ObsSink            obs.Sink
-	WebAssets          fs.FS
+type RunInput struct {
+	ClientID string
+	BSV      struct {
+		Network string
+	}
+	Network struct {
+		Gateways []PeerNode
+		Arbiters []PeerNode
+	}
+	Storage struct {
+		WorkspaceDir string
+		DataDir      string
+		MinFreeBytes uint64
+	}
+	Seller struct {
+		Enabled bool
+		Pricing struct {
+			FloorPriceSatPer64K     uint64
+			ResaleDiscountBPS       uint64
+			LiveBasePriceSatPer64K  uint64
+			LiveFloorPriceSatPer64K uint64
+			LiveDecayPerMinuteBPS   uint64
+		}
+	}
+	Live struct {
+		CacheMaxBytes uint64
+		Buyer         struct {
+			TargetLagSegments   uint32
+			MaxBudgetPerMinute  uint64
+			PreferOlderSegments bool
+		}
+		Publish struct {
+			BroadcastWindow      uint32
+			BroadcastIntervalSec uint32
+		}
+	}
+	Listen struct {
+		Enabled               *bool
+		RenewThresholdSeconds uint32
+		MaxAutoRenewAmount    uint64
+		TickSeconds           uint32
+	}
+	Scan struct {
+		StartupFullScan       bool
+		FSWatchEnabled        bool
+		RescanIntervalSeconds uint32
+	}
+	Index struct {
+		Backend    string
+		SQLitePath string
+	}
+	HTTP struct {
+		Enabled    bool
+		ListenAddr string
+		AuthToken  string
+	}
+	FSHTTP struct {
+		Enabled                    bool
+		ListenAddr                 string
+		DownloadWaitTimeoutSeconds uint32
+		MaxConcurrentSessions      uint32
+		MaxChunkPriceSatPer64K     uint64
+		QuoteWaitSeconds           uint32
+		QuotePollSeconds           uint32
+		PrefetchDistanceChunks     uint32
+		StrategyDebugLogEnabled    bool
+	}
+	Log struct {
+		File            string
+		ConsoleMinLevel string
+	}
+
+	// EffectivePrivKeyHex 是启动前已确定的“唯一运行时私钥”。
+	// 设计约束：Host 身份与费用池签名必须都来自这把私钥。
+	EffectivePrivKeyHex string
+	ObsSink             obs.Sink
+	WebAssets           fs.FS
 
 	// Chain 允许在 E2E 中注入 fake 链后端，避免依赖公网 WOC。
 	// 生产环境默认使用 woc-guard（woc.GuardClient）。
@@ -369,10 +442,127 @@ type RunOptions struct {
 	RPCTrace p2prpc.TraceSink
 }
 
+// NewRunInputFromConfig 在 Run 外完成配置复制，避免 RunInput 直接携带 Config。
+func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
+	in := RunInput{
+		ClientID:            cfg.ClientID,
+		EffectivePrivKeyHex: effectivePrivKeyHex,
+	}
+	in.BSV.Network = cfg.BSV.Network
+	in.Network.Gateways = append([]PeerNode(nil), cfg.Network.Gateways...)
+	in.Network.Arbiters = append([]PeerNode(nil), cfg.Network.Arbiters...)
+	in.Storage.WorkspaceDir = cfg.Storage.WorkspaceDir
+	in.Storage.DataDir = cfg.Storage.DataDir
+	in.Storage.MinFreeBytes = cfg.Storage.MinFreeBytes
+	in.Seller.Enabled = cfg.Seller.Enabled
+	in.Seller.Pricing.FloorPriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K
+	in.Seller.Pricing.ResaleDiscountBPS = cfg.Seller.Pricing.ResaleDiscountBPS
+	in.Seller.Pricing.LiveBasePriceSatPer64K = cfg.Seller.Pricing.LiveBasePriceSatPer64K
+	in.Seller.Pricing.LiveFloorPriceSatPer64K = cfg.Seller.Pricing.LiveFloorPriceSatPer64K
+	in.Seller.Pricing.LiveDecayPerMinuteBPS = cfg.Seller.Pricing.LiveDecayPerMinuteBPS
+	in.Live.CacheMaxBytes = cfg.Live.CacheMaxBytes
+	in.Live.Buyer.TargetLagSegments = cfg.Live.Buyer.TargetLagSegments
+	in.Live.Buyer.MaxBudgetPerMinute = cfg.Live.Buyer.MaxBudgetPerMinute
+	in.Live.Buyer.PreferOlderSegments = cfg.Live.Buyer.PreferOlderSegments
+	in.Live.Publish.BroadcastWindow = cfg.Live.Publish.BroadcastWindow
+	in.Live.Publish.BroadcastIntervalSec = cfg.Live.Publish.BroadcastIntervalSec
+	if cfg.Listen.Enabled != nil {
+		v := *cfg.Listen.Enabled
+		in.Listen.Enabled = &v
+	}
+	in.Listen.RenewThresholdSeconds = cfg.Listen.RenewThresholdSeconds
+	in.Listen.MaxAutoRenewAmount = cfg.Listen.MaxAutoRenewAmount
+	in.Listen.TickSeconds = cfg.Listen.TickSeconds
+	in.Scan.StartupFullScan = cfg.Scan.StartupFullScan
+	in.Scan.FSWatchEnabled = cfg.Scan.FSWatchEnabled
+	in.Scan.RescanIntervalSeconds = cfg.Scan.RescanIntervalSeconds
+	in.Index.Backend = cfg.Index.Backend
+	in.Index.SQLitePath = cfg.Index.SQLitePath
+	in.HTTP.Enabled = cfg.HTTP.Enabled
+	in.HTTP.ListenAddr = cfg.HTTP.ListenAddr
+	in.HTTP.AuthToken = cfg.HTTP.AuthToken
+	in.FSHTTP.Enabled = cfg.FSHTTP.Enabled
+	in.FSHTTP.ListenAddr = cfg.FSHTTP.ListenAddr
+	in.FSHTTP.DownloadWaitTimeoutSeconds = cfg.FSHTTP.DownloadWaitTimeoutSeconds
+	in.FSHTTP.MaxConcurrentSessions = cfg.FSHTTP.MaxConcurrentSessions
+	in.FSHTTP.MaxChunkPriceSatPer64K = cfg.FSHTTP.MaxChunkPriceSatPer64K
+	in.FSHTTP.QuoteWaitSeconds = cfg.FSHTTP.QuoteWaitSeconds
+	in.FSHTTP.QuotePollSeconds = cfg.FSHTTP.QuotePollSeconds
+	in.FSHTTP.PrefetchDistanceChunks = cfg.FSHTTP.PrefetchDistanceChunks
+	in.FSHTTP.StrategyDebugLogEnabled = cfg.FSHTTP.StrategyDebugLogEnabled
+	in.Log.File = cfg.Log.File
+	in.Log.ConsoleMinLevel = cfg.Log.ConsoleMinLevel
+	return in
+}
+
+func (in *RunInput) applyConfig(cfg Config) {
+	if in == nil {
+		return
+	}
+	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
+	next.ObsSink = in.ObsSink
+	next.WebAssets = in.WebAssets
+	next.Chain = in.Chain
+	next.RPCTrace = in.RPCTrace
+	*in = next
+}
+
+func (in RunInput) toConfig() Config {
+	cfg := Config{
+		ClientID: in.ClientID,
+	}
+	cfg.BSV.Network = in.BSV.Network
+	cfg.Network.Gateways = append([]PeerNode(nil), in.Network.Gateways...)
+	cfg.Network.Arbiters = append([]PeerNode(nil), in.Network.Arbiters...)
+	cfg.Storage.WorkspaceDir = in.Storage.WorkspaceDir
+	cfg.Storage.DataDir = in.Storage.DataDir
+	cfg.Storage.MinFreeBytes = in.Storage.MinFreeBytes
+	cfg.Seller.Enabled = in.Seller.Enabled
+	cfg.Seller.Pricing.FloorPriceSatPer64K = in.Seller.Pricing.FloorPriceSatPer64K
+	cfg.Seller.Pricing.ResaleDiscountBPS = in.Seller.Pricing.ResaleDiscountBPS
+	cfg.Seller.Pricing.LiveBasePriceSatPer64K = in.Seller.Pricing.LiveBasePriceSatPer64K
+	cfg.Seller.Pricing.LiveFloorPriceSatPer64K = in.Seller.Pricing.LiveFloorPriceSatPer64K
+	cfg.Seller.Pricing.LiveDecayPerMinuteBPS = in.Seller.Pricing.LiveDecayPerMinuteBPS
+	cfg.Live.CacheMaxBytes = in.Live.CacheMaxBytes
+	cfg.Live.Buyer.TargetLagSegments = in.Live.Buyer.TargetLagSegments
+	cfg.Live.Buyer.MaxBudgetPerMinute = in.Live.Buyer.MaxBudgetPerMinute
+	cfg.Live.Buyer.PreferOlderSegments = in.Live.Buyer.PreferOlderSegments
+	cfg.Live.Publish.BroadcastWindow = in.Live.Publish.BroadcastWindow
+	cfg.Live.Publish.BroadcastIntervalSec = in.Live.Publish.BroadcastIntervalSec
+	if in.Listen.Enabled != nil {
+		v := *in.Listen.Enabled
+		cfg.Listen.Enabled = &v
+	}
+	cfg.Listen.RenewThresholdSeconds = in.Listen.RenewThresholdSeconds
+	cfg.Listen.MaxAutoRenewAmount = in.Listen.MaxAutoRenewAmount
+	cfg.Listen.TickSeconds = in.Listen.TickSeconds
+	cfg.Scan.StartupFullScan = in.Scan.StartupFullScan
+	cfg.Scan.FSWatchEnabled = in.Scan.FSWatchEnabled
+	cfg.Scan.RescanIntervalSeconds = in.Scan.RescanIntervalSeconds
+	cfg.Index.Backend = in.Index.Backend
+	cfg.Index.SQLitePath = in.Index.SQLitePath
+	cfg.HTTP.Enabled = in.HTTP.Enabled
+	cfg.HTTP.ListenAddr = in.HTTP.ListenAddr
+	cfg.HTTP.AuthToken = in.HTTP.AuthToken
+	cfg.FSHTTP.Enabled = in.FSHTTP.Enabled
+	cfg.FSHTTP.ListenAddr = in.FSHTTP.ListenAddr
+	cfg.FSHTTP.DownloadWaitTimeoutSeconds = in.FSHTTP.DownloadWaitTimeoutSeconds
+	cfg.FSHTTP.MaxConcurrentSessions = in.FSHTTP.MaxConcurrentSessions
+	cfg.FSHTTP.MaxChunkPriceSatPer64K = in.FSHTTP.MaxChunkPriceSatPer64K
+	cfg.FSHTTP.QuoteWaitSeconds = in.FSHTTP.QuoteWaitSeconds
+	cfg.FSHTTP.QuotePollSeconds = in.FSHTTP.QuotePollSeconds
+	cfg.FSHTTP.PrefetchDistanceChunks = in.FSHTTP.PrefetchDistanceChunks
+	cfg.FSHTTP.StrategyDebugLogEnabled = in.FSHTTP.StrategyDebugLogEnabled
+	cfg.Log.File = in.Log.File
+	cfg.Log.ConsoleMinLevel = in.Log.ConsoleMinLevel
+	cfg.Keys.PrivkeyHex = strings.TrimSpace(in.EffectivePrivKeyHex)
+	return cfg
+}
+
 type Runtime struct {
 	Host            host.Host
 	DB              *sql.DB
-	Config          Config
+	runIn           RunInput
 	HealthyGWs      []peer.AddrInfo
 	HealthyArbiters []peer.AddrInfo
 	Workspace       *workspaceManager
@@ -421,20 +611,72 @@ func (r *Runtime) Close() error {
 	return err
 }
 
-func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
+func (r *Runtime) ClientID() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.runIn.ClientID)
+}
+
+func (r *Runtime) HTTPListenAddr() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.runIn.HTTP.ListenAddr)
+}
+
+func (r *Runtime) FSHTTPListenAddr() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.runIn.FSHTTP.ListenAddr)
+}
+
+func (r *Runtime) WorkspaceDir() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.runIn.Storage.WorkspaceDir)
+}
+
+func (r *Runtime) BSVNetwork() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.runIn.BSV.Network)
+}
+
+func (r *Runtime) NetworkArbiters() []PeerNode {
+	if r == nil {
+		return nil
+	}
+	out := make([]PeerNode, len(r.runIn.Network.Arbiters))
+	copy(out, r.runIn.Network.Arbiters)
+	return out
+}
+
+func (r *Runtime) SellerEnabled() bool {
+	if r == nil {
+		return false
+	}
+	return r.runIn.Seller.Enabled
+}
+
+func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
 	}
+	cfg := in.toConfig()
 
-	trace := opt.RPCTrace
+	trace := in.RPCTrace
 
 	var removeObs func()
-	if opt.ObsSink != nil {
+	if in.ObsSink != nil {
 		removeObs = obs.AddListener(func(ev obs.Event) {
 			if ev.Service != "bitcast-client" {
 				return
 			}
-			opt.ObsSink.Handle(ev)
+			in.ObsSink.Handle(ev)
 		})
 	}
 
@@ -525,7 +767,7 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		libp2p.NoTransports,
 		libp2p.Transport(libp2ptcp.NewTCPTransport),
 	}
-	effectivePrivHex, err := resolvePrivKeyHex(cfg, opt.PrivKeyHexOverride)
+	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
 	if err != nil {
 		_ = db.Close()
 		if removeObs != nil {
@@ -533,17 +775,26 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	if effectivePrivHex != "" {
-		priv, err := parsePrivHex(effectivePrivHex)
-		if err != nil {
-			_ = db.Close()
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
+	if strings.TrimSpace(effectivePrivHex) == "" {
+		_ = db.Close()
+		if removeObs != nil {
+			removeObs()
 		}
-		opts = append(opts, libp2p.Identity(priv))
+		return nil, fmt.Errorf("effective private key is required")
 	}
+	// 设计约束：client_id 与费用池签名必须来自同一私钥。
+	// 运行时有效私钥作为唯一真源，后续签名路径统一读取 cfg.Keys.PrivkeyHex。
+	cfg.Keys.PrivkeyHex = effectivePrivHex
+	in.EffectivePrivKeyHex = effectivePrivHex
+	priv, err := parsePrivHex(effectivePrivHex)
+	if err != nil {
+		_ = db.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
+	opts = append(opts, libp2p.Identity(priv))
 	h, err := libp2p.New(opts...)
 	if err != nil {
 		_ = db.Close()
@@ -565,6 +816,14 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 		obs.Info("bitcast-client", "client_id_overridden_by_pubkey", map[string]any{"configured_client_id": cfg.ClientID, "effective_client_id": clientPubHex})
 	}
 	cfg.ClientID = clientPubHex
+	if err := validateClientIdentityConsistency(cfg); err != nil {
+		_ = h.Close()
+		_ = db.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
 
 	activeGWs, err := connectGateways(ctx, h, cfg.Network.Gateways)
 	if err != nil {
@@ -604,6 +863,7 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 	}
 
 	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
+	in.applyConfig(cfg)
 	obs.Important("bitcast-client", "started", map[string]any{
 		"peer_id":           h.ID().String(),
 		"pubkey_hex":        clientPubHex,
@@ -622,12 +882,12 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 	rt := &Runtime{
 		Host:                     h,
 		DB:                       db,
-		Config:                   cfg,
+		runIn:                    in,
 		HealthyGWs:               healthyGWs,
 		HealthyArbiters:          healthyArbiters,
 		Workspace:                workspaceMgr,
 		Catalog:                  catalog,
-		Chain:                    opt.Chain,
+		Chain:                    in.Chain,
 		live:                     newLiveRuntime(),
 		feePools:                 map[string]*feePoolSession{},
 		triplePool:               map[string]*triplePoolSession{},
@@ -660,7 +920,7 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
 	if cfg.HTTP.Enabled {
-		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, opt.WebAssets, trace)
+		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, in.WebAssets, trace)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -2795,6 +3055,12 @@ func resolvePrivKeyHex(cfg Config, cliPrivHex string) (string, error) {
 	return "", nil
 }
 
+// ResolveEffectivePrivKeyHex 在启动前统一解析“唯一运行时私钥”。
+// 调用方应在进入 Run 之前完成该解析，再通过 RunInput.EffectivePrivKeyHex 传入。
+func ResolveEffectivePrivKeyHex(cfg Config, overridePrivHex string) (string, error) {
+	return resolvePrivKeyHex(cfg, overridePrivHex)
+}
+
 func normalizeRawSecp256k1PrivKeyHex(s string) (string, error) {
 	hexKey := strings.ToLower(strings.TrimSpace(s))
 	if len(hexKey) != 64 {
@@ -2823,8 +3089,63 @@ func buildClientActorFromConfig(cfg Config) (*dual2of2.Actor, error) {
 	if err != nil {
 		return nil, err
 	}
+	if cid := strings.TrimSpace(cfg.ClientID); cid != "" {
+		derivedID, err := clientIDFromPrivHex(privHex)
+		if err != nil {
+			return nil, fmt.Errorf("derive client_id from signing key failed: %w", err)
+		}
+		if !strings.EqualFold(cid, derivedID) {
+			return nil, fmt.Errorf("client_id and signing key mismatch")
+		}
+	}
 	isMainnet := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
 	return dual2of2.BuildActor("client", privHex, isMainnet)
+}
+
+func buildClientActorFromRunInput(in RunInput) (*dual2of2.Actor, error) {
+	privHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
+	if err != nil {
+		return nil, err
+	}
+	if cid := strings.TrimSpace(in.ClientID); cid != "" {
+		derivedID, err := clientIDFromPrivHex(privHex)
+		if err != nil {
+			return nil, fmt.Errorf("derive client_id from signing key failed: %w", err)
+		}
+		if !strings.EqualFold(cid, derivedID) {
+			return nil, fmt.Errorf("client_id and signing key mismatch")
+		}
+	}
+	isMainnet := strings.EqualFold(strings.TrimSpace(in.BSV.Network), "main")
+	return dual2of2.BuildActor("client", privHex, isMainnet)
+}
+
+func validateClientIdentityConsistency(cfg Config) error {
+	privHex := strings.TrimSpace(cfg.Keys.PrivkeyHex)
+	clientID := strings.TrimSpace(cfg.ClientID)
+	if privHex == "" || clientID == "" {
+		return nil
+	}
+	derivedID, err := clientIDFromPrivHex(privHex)
+	if err != nil {
+		return fmt.Errorf("derive client_id from signing key failed: %w", err)
+	}
+	if !strings.EqualFold(clientID, derivedID) {
+		return fmt.Errorf("client_id and signing key mismatch")
+	}
+	return nil
+}
+
+func clientIDFromPrivHex(privHex string) (string, error) {
+	priv, err := parsePrivHex(privHex)
+	if err != nil {
+		return "", err
+	}
+	pubRaw, err := crypto.MarshalPublicKey(priv.GetPublic())
+	if err != nil {
+		return "", fmt.Errorf("marshal public key: %w", err)
+	}
+	return strings.ToLower(hex.EncodeToString(pubRaw)), nil
 }
 
 func parsePrivHex(s string) (crypto.PrivKey, error) {

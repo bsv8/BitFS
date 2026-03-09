@@ -57,8 +57,9 @@ func TestHandleArbitersCRUD(t *testing.T) {
 	arb1Addr := fmt.Sprintf("%s/p2p/%s", hArb1.Addrs()[0].String(), hArb1.ID().String())
 
 	rt := &Runtime{Host: hClient}
-	rt.Config.Network.Arbiters = []PeerNode{}
-	srv := &httpAPIServer{rt: rt, h: hClient, cfg: &rt.Config}
+	rt.runIn.Network.Arbiters = []PeerNode{}
+	cfg := rt.runIn.toConfig()
+	srv := &httpAPIServer{rt: rt, h: hClient, cfg: &cfg}
 
 	// POST: 新增仲裁节点
 	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/arbiters", strings.NewReader(fmt.Sprintf(`{"addr":"%s","pubkey":"%s","enabled":true}`, arb1Addr, strings.ToLower(arb1Pub))))
@@ -109,8 +110,8 @@ func TestHandleArbitersCRUD(t *testing.T) {
 	if delRec.Code != http.StatusOK {
 		t.Fatalf("delete status mismatch: got=%d want=%d body=%s", delRec.Code, http.StatusOK, delRec.Body.String())
 	}
-	if len(rt.Config.Network.Arbiters) != 0 {
-		t.Fatalf("arbiter count mismatch after delete: got=%d want=0", len(rt.Config.Network.Arbiters))
+	if len(rt.runIn.Network.Arbiters) != 0 {
+		t.Fatalf("arbiter count mismatch after delete: got=%d want=0", len(rt.runIn.Network.Arbiters))
 	}
 }
 
@@ -132,10 +133,11 @@ func TestHandleArbiterHealth(t *testing.T) {
 	arb1Addr := fmt.Sprintf("%s/p2p/%s", hArb1.Addrs()[0].String(), hArb1.ID().String())
 
 	rt := &Runtime{Host: hClient}
-	rt.Config.Network.Arbiters = []PeerNode{
+	rt.runIn.Network.Arbiters = []PeerNode{
 		{Enabled: true, Addr: arb1Addr, Pubkey: strings.ToLower(arb1Pub)},
 	}
-	srv := &httpAPIServer{rt: rt, h: hClient, cfg: &rt.Config}
+	cfg := rt.runIn.toConfig()
+	srv := &httpAPIServer{rt: rt, h: hClient, cfg: &cfg}
 
 	healthReq := httptest.NewRequest(http.MethodGet, "/api/v1/arbiters/health", nil)
 	healthRec := httptest.NewRecorder()

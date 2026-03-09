@@ -47,4 +47,3 @@ func TestApplyConfigDefaults_ListenDefaultsByNetwork(t *testing.T) {
 		}
 	})
 }
-

@@ -21,15 +21,15 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.DB == nil {
 		return
 	}
-	if !cfgBool(rt.Config.Listen.Enabled, true) {
+	if !cfgBool(rt.runIn.Listen.Enabled, true) {
 		return
 	}
 	// 自动触发约束：max_auto_renew_amount=0 视为显式关闭监听资金池自动动作。
-	if rt.Config.Listen.MaxAutoRenewAmount == 0 {
+	if rt.runIn.Listen.MaxAutoRenewAmount == 0 {
 		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": "all"})
 		return
 	}
-	intervalSec := rt.Config.Listen.TickSeconds
+	intervalSec := rt.runIn.Listen.TickSeconds
 	if intervalSec == 0 {
 		intervalSec = 5
 	}
@@ -170,7 +170,7 @@ func clearGatewayRuntimeError(rt *Runtime, gw peer.ID) {
 }
 
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
-	lc := rt.Config.Listen
+	lc := rt.runIn.Listen
 
 	initialFund := lc.MaxAutoRenewAmount
 	if initialFund == 0 {
@@ -180,7 +180,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 
 	// 1) 获取网关握手参数
 	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		recordGatewayRuntimeError(rt, gw.ID, "fee_pool_info", err)
 		obs.Error("bitcast-client", "fee_pool_info_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
 		return
@@ -252,7 +252,7 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 		return nil, fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
 	}
 
-	clientActor, err := buildClientActorFromConfig(rt.Config)
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return nil, err
 	}
@@ -322,7 +322,7 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	}
 
 	createReq := dual2of2.CreateReq{
-		ClientID:       rt.Config.ClientID,
+		ClientID:       rt.runIn.ClientID,
 		SpendTx:        spendTxBytes,
 		InputAmount:    baseResp.Amount,
 		SequenceNumber: 1,
@@ -338,7 +338,7 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	}
 
 	baseReq := dual2of2.BaseTxReq{
-		ClientID:  rt.Config.ClientID,
+		ClientID:  rt.runIn.ClientID,
 		SpendTxID: createResp.SpendTxID,
 		BaseTx:    baseTxBytes,
 		ClientSig: append([]byte(nil), (*clientOpenSig)...),
@@ -451,7 +451,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		return fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
 	}
 
-	clientActor, err := buildClientActorFromConfig(rt.Config)
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return err
 	}
@@ -476,7 +476,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 
 	req := dual2of2.PayConfirmReq{
-		ClientID:            rt.Config.ClientID,
+		ClientID:            rt.runIn.ClientID,
 		SpendTxID:           s.SpendTxID,
 		SequenceNumber:      nextSeq,
 		ServerAmount:        nextServerAmount,
