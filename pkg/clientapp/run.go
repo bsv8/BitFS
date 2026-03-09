@@ -995,6 +995,7 @@ func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {
 
 func initDataDirs(cfg *Config) error {
 	for _, d := range []string{
+		cfg.Storage.WorkspaceDir,
 		cfg.Storage.DataDir,
 		filepath.Join(cfg.Storage.DataDir, "config"),
 		filepath.Join(cfg.Storage.DataDir, "seeds"),

@@ -70,15 +70,35 @@ func main() {
 		log.Fatal(err)
 	}
 
-	keyCfg, keyCfgExists, err := loadKeyConfigOrEmpty(cfgPath)
-	if err != nil {
-		log.Fatal(err)
+	var keyCfg keyFileConfig
+	configFileStatus := "已加载"
+	switch act {
+	case "import", "new", "del":
+		keyCfg, _, err = loadKeyConfigOrEmpty(cfgPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+	default:
+		keyRes, err := loadOrInitKeyConfig(cfgPath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		keyCfg = keyRes.Config
+		if keyRes.Created {
+			configFileStatus = "已创建（首次启动，使用内置默认值）"
+		} else if keyRes.Upgraded {
+			configFileStatus = "已升级（缺失 privkey_hex 已自动补齐并回写）"
+		}
 	}
-	cfg, err := loadRuntimeConfigOrInit(appName, dbPath)
+	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(appName, dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
 	cfg.Keys.PrivkeyHex = keyCfg.Keys.PrivkeyHex
+	runtimeConfigStatus := "已加载"
+	if runtimeCfgCreated {
+		runtimeConfigStatus = "已创建（首次启动）"
+	}
 
 	hasKey := strings.TrimSpace(cfg.Keys.PrivkeyHex) != ""
 	switch act {
@@ -124,27 +144,28 @@ func main() {
 		return
 	}
 
-	if !hasKey {
-		if !keyCfgExists {
-			fmt.Printf(msg("config_not_found")+": %s\n", cfgPath)
-		}
-		log.Fatal(msg("err_missing_key"))
-	}
 	if err := clientapp.ValidateConfig(&cfg); err != nil {
 		log.Fatal(err)
 	}
 
+	startup := startupSummary{
+		AppName:             appName,
+		ConfigPath:          cfgPath,
+		ConfigStatus:        configFileStatus,
+		RuntimeConfigDBPath: dbPath,
+		RuntimeConfigStatus: runtimeConfigStatus,
+	}
 	switch act {
 	case "status":
 		if err := printStatus(cfgPath, appName, cfg); err != nil {
 			log.Fatal(err)
 		}
 	case "daemon":
-		if err := runDaemon(cfg); err != nil {
+		if err := runDaemon(cfg, startup); err != nil {
 			log.Fatal(err)
 		}
 	case "download":
-		if err := runDownload(cfg, seedHex); err != nil {
+		if err := runDownload(cfg, startup, seedHex); err != nil {
 			log.Fatal(err)
 		}
 	default:
@@ -219,13 +240,27 @@ func resolveAction(opts cliOptions) (string, string, error) {
 	if opts.daemon {
 		return "daemon", "", nil
 	}
-	return "status", "", nil
+	return "daemon", "", nil
 }
 
 type keyFileConfig struct {
 	Keys struct {
 		PrivkeyHex string `toml:"privkey_hex"`
 	} `toml:"keys"`
+}
+
+type keyConfigFileResult struct {
+	Config   keyFileConfig
+	Created  bool
+	Upgraded bool
+}
+
+type startupSummary struct {
+	AppName             string
+	ConfigPath          string
+	ConfigStatus        string
+	RuntimeConfigDBPath string
+	RuntimeConfigStatus string
 }
 
 func loadKeyConfigOrEmpty(configPath string) (keyFileConfig, bool, error) {
@@ -260,6 +295,36 @@ func writeKeyConfig(path string, cfg keyFileConfig) error {
 	return os.WriteFile(path, data, 0o644)
 }
 
+func loadOrInitKeyConfig(configPath string) (keyConfigFileResult, error) {
+	cfg, exists, err := loadKeyConfigOrEmpty(configPath)
+	if err != nil {
+		return keyConfigFileResult{}, err
+	}
+	if !exists {
+		gen, err := generatePrivateKeyHex()
+		if err != nil {
+			return keyConfigFileResult{}, err
+		}
+		cfg.Keys.PrivkeyHex = gen
+		if err := writeKeyConfig(configPath, cfg); err != nil {
+			return keyConfigFileResult{}, err
+		}
+		return keyConfigFileResult{Config: cfg, Created: true}, nil
+	}
+	if strings.TrimSpace(cfg.Keys.PrivkeyHex) == "" {
+		gen, err := generatePrivateKeyHex()
+		if err != nil {
+			return keyConfigFileResult{}, err
+		}
+		cfg.Keys.PrivkeyHex = gen
+		if err := writeKeyConfig(configPath, cfg); err != nil {
+			return keyConfigFileResult{}, err
+		}
+		return keyConfigFileResult{Config: cfg, Upgraded: true}, nil
+	}
+	return keyConfigFileResult{Config: cfg}, nil
+}
+
 func newDefaultConfig(appName, network string) (clientapp.Config, error) {
 	paths, err := defaultPaths(appName, network)
 	if err != nil {
@@ -278,22 +343,22 @@ func newDefaultConfig(appName, network string) (clientapp.Config, error) {
 	return cfg, nil
 }
 
-func loadRuntimeConfigOrInit(appName, dbPath string) (clientapp.Config, error) {
+func loadRuntimeConfigOrInit(appName, dbPath string) (clientapp.Config, bool, error) {
 	defaultCfg, err := newDefaultConfig(appName, "test")
 	if err != nil {
-		return clientapp.Config{}, err
+		return clientapp.Config{}, false, err
 	}
 	defaultCfg.Index.Backend = "sqlite"
 	defaultCfg.Index.SQLitePath = dbPath
 
-	cfg, _, err := clientapp.LoadOrInitConfigInDB(dbPath, defaultCfg)
+	cfg, created, err := clientapp.LoadOrInitConfigInDB(dbPath, defaultCfg)
 	if err != nil {
-		return clientapp.Config{}, err
+		return clientapp.Config{}, false, err
 	}
 	// DB 路径按 appname 推导，配置项不可覆盖。
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = dbPath
-	return cfg, nil
+	return cfg, created, nil
 }
 
 func printStatus(configPath, appName string, cfg clientapp.Config) error {
@@ -301,12 +366,20 @@ func printStatus(configPath, appName string, cfg clientapp.Config) error {
 	if err != nil {
 		return err
 	}
+	runtimeCfgDB, runtimeDBErr := defaultConfigDBPath(appName)
+	indexDB := effectiveIndexDBPath(cfg)
 	addr, bal, balErr := queryAddressBalance(context.Background(), cfg)
 	feeIn, feeOut, feeErr := queryFeePoolSummary(cfg)
 
 	fmt.Printf("appname: %s\n", appName)
 	fmt.Printf("config: %s\n", configPath)
 	fmt.Printf("network: %s\n", cfg.BSV.Network)
+	fmt.Printf("workspace_dir: %s\n", absOrRaw(cfg.Storage.WorkspaceDir))
+	fmt.Printf("data_dir: %s\n", absOrRaw(cfg.Storage.DataDir))
+	if runtimeDBErr == nil {
+		fmt.Printf("runtime_config_db: %s\n", absOrRaw(runtimeCfgDB))
+	}
+	fmt.Printf("index_db: %s\n", absOrRaw(indexDB))
 	fmt.Printf("pubkey: %s\n", pubHex)
 	if balErr != nil {
 		fmt.Printf(msg("status_balance_unavailable")+": %v\n", balErr)
@@ -316,14 +389,18 @@ func printStatus(configPath, appName string, cfg clientapp.Config) error {
 	}
 	if feeErr != nil {
 		fmt.Printf(msg("status_feepool_unavailable")+": %v\n", feeErr)
+		if strings.Contains(strings.ToLower(feeErr.Error()), "no such table") {
+			fmt.Println("hint: 先运行一次 `go run ./cmd/client -d` 初始化数据库表。")
+		}
 	} else {
 		fmt.Printf("fee_pool_in_satoshi: %d\n", feeIn)
 		fmt.Printf("fee_pool_out_satoshi: %d\n", feeOut)
 	}
+	fmt.Println("hint: 默认直接运行会进入 daemon；查看状态请使用 `-status`。")
 	return nil
 }
 
-func runDaemon(cfg clientapp.Config) error {
+func runDaemon(cfg clientapp.Config, startup startupSummary) error {
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
 	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
 		return err
@@ -347,11 +424,12 @@ func runDaemon(cfg clientapp.Config) error {
 	}
 	defer func() { _ = rt.Close() }()
 
+	printClientStartupSummary("daemon", startup, guardURL, rt)
 	<-ctx.Done()
 	return nil
 }
 
-func runDownload(cfg clientapp.Config, seedHash string) error {
+func runDownload(cfg clientapp.Config, startup startupSummary, seedHash string) error {
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
 	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
 		return err
@@ -381,6 +459,7 @@ func runDownload(cfg clientapp.Config, seedHash string) error {
 	}
 	defer func() { _ = rt.Close() }()
 
+	printClientStartupSummary("download", startup, guardURL, rt)
 	arbiter := ""
 	if len(rt.HealthyArbiters) > 0 {
 		arbiter = rt.HealthyArbiters[0].ID.String()
@@ -406,6 +485,52 @@ func runDownload(cfg clientapp.Config, seedHash string) error {
 	fmt.Printf(msg("download_done")+"\ndemand_id: %s\nseller_count: %d\nchunk_count: %d\nseed_file: %s\nfile: %s\nbytes: %d\nsha256: %s\n",
 		download.DemandID, len(download.Transfer.Sellers), download.ChunkCount, seedPath, fileName, len(download.Transfer.Data), download.Transfer.SHA256)
 	return nil
+}
+
+// 启动摘要只给人看，不进入结构化日志。
+func printClientStartupSummary(mode string, startup startupSummary, guardURL string, rt *clientapp.Runtime) {
+	pubHex := strings.TrimSpace(rt.Config.ClientID)
+	if strings.TrimSpace(rt.Config.Keys.PrivkeyHex) != "" {
+		if v, err := pubHexFromPrivHex(rt.Config.Keys.PrivkeyHex); err == nil {
+			pubHex = v
+		}
+	}
+	dbPath := effectiveIndexDBPath(rt.Config)
+	logFile, _ := clientapp.ResolveLogConfig(&rt.Config)
+
+	fmt.Println("========== BitFS Client 启动信息 ==========")
+	fmt.Printf("模式: %s\n", mode)
+	fmt.Printf("appname: %s\n", startup.AppName)
+	fmt.Printf("配置文件路径: %s\n", absOrRaw(startup.ConfigPath))
+	fmt.Printf("配置文件状态: %s\n", startup.ConfigStatus)
+	fmt.Printf("运行配置DB: %s\n", absOrRaw(startup.RuntimeConfigDBPath))
+	fmt.Printf("运行配置DB状态: %s\n", startup.RuntimeConfigStatus)
+	fmt.Printf("网络: %s\n", rt.Config.BSV.Network)
+	fmt.Printf("索引数据库: %s\n", absOrRaw(dbPath))
+	fmt.Printf("日志文件: %s\n", absOrRaw(logFile))
+	fmt.Printf("Guard URL: %s\n", guardURL)
+	fmt.Printf("Peer ID: %s\n", rt.Host.ID().String())
+	fmt.Printf("公钥(hex): %s\n", pubHex)
+	fmt.Printf("网关数量: %d\n", len(rt.HealthyGWs))
+	fmt.Printf("仲裁数量: %d\n", len(rt.HealthyArbiters))
+	fmt.Printf("HTTP API: enabled=%t listen_addr=%s\n", rt.Config.HTTP.Enabled, rt.Config.HTTP.ListenAddr)
+	fmt.Printf("FS HTTP: enabled=%t listen_addr=%s\n", rt.Config.FSHTTP.Enabled, rt.Config.FSHTTP.ListenAddr)
+	fmt.Println("监听地址:")
+	for _, a := range rt.Host.Addrs() {
+		fmt.Printf("  - %s/p2p/%s\n", a.String(), rt.Host.ID().String())
+	}
+	fmt.Println("===========================================")
+}
+
+func effectiveIndexDBPath(cfg clientapp.Config) string {
+	dbPath := strings.TrimSpace(cfg.Index.SQLitePath)
+	if dbPath == "" {
+		dbPath = "db/client-index.sqlite"
+	}
+	if !filepath.IsAbs(dbPath) {
+		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
+	}
+	return dbPath
 }
 
 func generatePrivateKeyHex() (string, error) {
@@ -785,4 +910,12 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func absOrRaw(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return path
+	}
+	return abs
 }

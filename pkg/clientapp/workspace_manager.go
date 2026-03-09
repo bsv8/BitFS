@@ -144,6 +144,56 @@ func (m *workspaceManager) DeleteByID(id int64) error {
 	return m.cleanupOrphanSeedState()
 }
 
+func (m *workspaceManager) UpdateByID(id int64, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
+	if m == nil || m.db == nil {
+		return workspaceItem{}, fmt.Errorf("workspace manager not initialized")
+	}
+	if id <= 0 {
+		return workspaceItem{}, fmt.Errorf("invalid workspace id")
+	}
+	if maxBytes == nil && enabled == nil {
+		return workspaceItem{}, fmt.Errorf("no fields to update")
+	}
+
+	var cur workspaceItem
+	var curEnabled int64
+	if err := m.db.QueryRow(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE id=?`, id).
+		Scan(&cur.ID, &cur.Path, &cur.MaxBytes, &curEnabled, &cur.CreatedAtUnix, &cur.UpdatedAtUnix); err != nil {
+		if err == sql.ErrNoRows {
+			return workspaceItem{}, fmt.Errorf("workspace not found")
+		}
+		return workspaceItem{}, err
+	}
+	cur.Enabled = curEnabled != 0
+
+	nextMaxBytes := cur.MaxBytes
+	if maxBytes != nil {
+		nextMaxBytes = *maxBytes
+	}
+	nextEnabled := cur.Enabled
+	if enabled != nil {
+		nextEnabled = *enabled
+	}
+	enabledValue := int64(0)
+	if nextEnabled {
+		enabledValue = 1
+	}
+
+	now := time.Now().Unix()
+	if _, err := m.db.Exec(`UPDATE workspaces SET max_bytes=?,enabled=?,updated_at_unix=? WHERE id=?`, nextMaxBytes, enabledValue, now, id); err != nil {
+		return workspaceItem{}, err
+	}
+
+	var out workspaceItem
+	var outEnabled int64
+	if err := m.db.QueryRow(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE id=?`, id).
+		Scan(&out.ID, &out.Path, &out.MaxBytes, &outEnabled, &out.CreatedAtUnix, &out.UpdatedAtUnix); err != nil {
+		return workspaceItem{}, err
+	}
+	out.Enabled = outEnabled != 0
+	return out, nil
+}
+
 func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (string, error) {
 	return m.selectOutputPath("", fileName, fileSize)
 }

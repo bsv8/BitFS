@@ -21,6 +21,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
 	"github.com/libp2p/go-libp2p/core/host"
+	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -243,16 +244,18 @@ type fileGetStep struct {
 }
 
 type fileGetJob struct {
-	ID             string        `json:"id"`
-	SeedHash       string        `json:"seed_hash"`
-	ChunkCount     uint32        `json:"chunk_count"`
-	GatewayPeerID  string        `json:"gateway_peer_id"`
-	Status         string        `json:"status"`
-	StartedAtUnix  int64         `json:"started_at_unix"`
-	EndedAtUnix    int64         `json:"ended_at_unix,omitempty"`
-	OutputFilePath string        `json:"output_file_path,omitempty"`
-	Error          string        `json:"error,omitempty"`
-	Steps          []fileGetStep `json:"steps"`
+	ID              string             `json:"id"`
+	SeedHash        string             `json:"seed_hash"`
+	ChunkCount      uint32             `json:"chunk_count"`
+	GatewayPeerID   string             `json:"gateway_peer_id"`
+	Status          string             `json:"status"`
+	CancelRequested bool               `json:"cancel_requested,omitempty"`
+	StartedAtUnix   int64              `json:"started_at_unix"`
+	EndedAtUnix     int64              `json:"ended_at_unix,omitempty"`
+	OutputFilePath  string             `json:"output_file_path,omitempty"`
+	Error           string             `json:"error,omitempty"`
+	Steps           []fileGetStep      `json:"steps"`
+	cancel          context.CancelFunc `json:"-"`
 }
 
 func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, webAssets fs.FS, trace p2prpc.TraceSink) *httpAPIServer {
@@ -275,6 +278,17 @@ func (s *httpAPIServer) Start() error {
 	registerAPI := func(prefix string) {
 		mux.HandleFunc(prefix+"/v1/info", s.withAuth(s.handleInfo))
 		mux.HandleFunc(prefix+"/v1/balance", s.withAuth(s.handleBalance))
+		mux.HandleFunc(prefix+"/v1/wallet/summary", s.withAuth(s.handleWalletSummary))
+		mux.HandleFunc(prefix+"/v1/wallet/fund-flows", s.withAuth(s.handleWalletFundFlows))
+		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
+		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
+		mux.HandleFunc(prefix+"/v1/direct/quotes/detail", s.withAuth(s.handleDirectQuoteDetail))
+		mux.HandleFunc(prefix+"/v1/direct/deals", s.withAuth(s.handleDirectDeals))
+		mux.HandleFunc(prefix+"/v1/direct/deals/detail", s.withAuth(s.handleDirectDealDetail))
+		mux.HandleFunc(prefix+"/v1/direct/sessions", s.withAuth(s.handleDirectSessions))
+		mux.HandleFunc(prefix+"/v1/direct/sessions/detail", s.withAuth(s.handleDirectSessionDetail))
+		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPools))
+		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetail))
 		mux.HandleFunc(prefix+"/v1/transactions", s.withAuth(s.handleTransactions))
 		mux.HandleFunc(prefix+"/v1/transactions/detail", s.withAuth(s.handleTransactionDetail))
 		mux.HandleFunc(prefix+"/v1/sales", s.withAuth(s.handleSales))
@@ -284,6 +298,7 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/files/get-file", s.withAuth(s.handleGetFileStart))
 		mux.HandleFunc(prefix+"/v1/files/get-file/job", s.withAuth(s.handleGetFileJob))
 		mux.HandleFunc(prefix+"/v1/files/get-file/jobs", s.withAuth(s.handleGetFileJobs))
+		mux.HandleFunc(prefix+"/v1/files/get-file/cancel", s.withAuth(s.handleGetFileCancel))
 		mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
 		mux.HandleFunc(prefix+"/v1/workspace/sync-once", s.withAuth(s.handleWorkspaceSyncOnce))
 		mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
@@ -303,6 +318,7 @@ func (s *httpAPIServer) Start() error {
 		// 网关管理 API
 		mux.HandleFunc(prefix+"/v1/gateways", s.withAuth(s.handleGateways))
 		mux.HandleFunc(prefix+"/v1/gateways/master", s.withAuth(s.handleGatewayMaster))
+		mux.HandleFunc(prefix+"/v1/gateways/health", s.withAuth(s.handleGatewayHealth))
 		// 文件系统管理 API
 		mux.HandleFunc(prefix+"/v1/admin/workspaces", s.withAuth(s.handleAdminWorkspaces))
 		mux.HandleFunc(prefix+"/v1/admin/downloads/resume", s.withAuth(s.handleAdminResumeDownload))
@@ -427,6 +443,649 @@ func (s *httpAPIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusNotImplemented, map[string]any{
 		"error": "balance endpoint removed (legacy off-chain balance pool)",
 	})
+}
+
+func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var flowCount, txCount, saleCount, gatewayEventCount int64
+	var totalIn, totalOut, totalUsed, totalReturned int64
+	if err := s.db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN amount_satoshi>0 THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN amount_satoshi<0 THEN -amount_satoshi ELSE 0 END),0),COALESCE(SUM(used_satoshi),0),COALESCE(SUM(returned_satoshi),0) FROM wallet_fund_flows`).Scan(&flowCount, &totalIn, &totalOut, &totalUsed, &totalReturned); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM tx_history`).Scan(&txCount); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM sale_records`).Scan(&saleCount); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM gateway_events`).Scan(&gatewayEventCount); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"flow_count":               flowCount,
+		"tx_event_count":           txCount,
+		"sale_count":               saleCount,
+		"gateway_event_count":      gatewayEventCount,
+		"total_in_satoshi":         totalIn,
+		"total_out_satoshi":        totalOut,
+		"total_used_satoshi":       totalUsed,
+		"total_returned_satoshi":   totalReturned,
+		"net_spent_satoshi":        totalUsed - totalReturned,
+		"net_amount_delta_satoshi": totalIn - totalOut,
+	})
+}
+
+func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	flowID := strings.TrimSpace(r.URL.Query().Get("flow_id"))
+	flowType := strings.TrimSpace(r.URL.Query().Get("flow_type"))
+	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
+	stage := strings.TrimSpace(r.URL.Query().Get("stage"))
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	purpose := strings.TrimSpace(r.URL.Query().Get("purpose"))
+	relatedTxID := strings.TrimSpace(r.URL.Query().Get("related_txid"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	type argsT struct {
+		args  []any
+		where string
+	}
+	build := argsT{args: []any{}}
+	if flowID != "" {
+		build.where += " AND flow_id=?"
+		build.args = append(build.args, flowID)
+	}
+	if flowType != "" {
+		build.where += " AND flow_type=?"
+		build.args = append(build.args, flowType)
+	}
+	if refID != "" {
+		build.where += " AND ref_id=?"
+		build.args = append(build.args, refID)
+	}
+	if stage != "" {
+		build.where += " AND stage=?"
+		build.args = append(build.args, stage)
+	}
+	if direction != "" {
+		build.where += " AND direction=?"
+		build.args = append(build.args, direction)
+	}
+	if purpose != "" {
+		build.where += " AND purpose=?"
+		build.args = append(build.args, purpose)
+	}
+	if relatedTxID != "" {
+		build.where += " AND related_txid=?"
+		build.args = append(build.args, relatedTxID)
+	}
+	if q != "" {
+		build.where += " AND (flow_id LIKE ? OR ref_id LIKE ? OR note LIKE ? OR related_txid LIKE ?)"
+		like := "%" + q + "%"
+		build.args = append(build.args, like, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM wallet_fund_flows WHERE 1=1"+build.where, build.args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json FROM wallet_fund_flows WHERE 1=1`+build.where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(build.args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type flowItem struct {
+		ID              int64           `json:"id"`
+		CreatedAtUnix   int64           `json:"created_at_unix"`
+		FlowID          string          `json:"flow_id"`
+		FlowType        string          `json:"flow_type"`
+		RefID           string          `json:"ref_id"`
+		Stage           string          `json:"stage"`
+		Direction       string          `json:"direction"`
+		Purpose         string          `json:"purpose"`
+		AmountSatoshi   int64           `json:"amount_satoshi"`
+		UsedSatoshi     int64           `json:"used_satoshi"`
+		ReturnedSatoshi int64           `json:"returned_satoshi"`
+		RelatedTxID     string          `json:"related_txid"`
+		Note            string          `json:"note"`
+		Payload         json.RawMessage `json:"payload"`
+	}
+	items := make([]flowItem, 0, limit)
+	for rows.Next() {
+		var it flowItem
+		var payload string
+		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.FlowID, &it.FlowType, &it.RefID, &it.Stage, &it.Direction, &it.Purpose, &it.AmountSatoshi, &it.UsedSatoshi, &it.ReturnedSatoshi, &it.RelatedTxID, &it.Note, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  items,
+	})
+}
+
+func (s *httpAPIServer) handleWalletFundFlowDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type flowItem struct {
+		ID              int64           `json:"id"`
+		CreatedAtUnix   int64           `json:"created_at_unix"`
+		FlowID          string          `json:"flow_id"`
+		FlowType        string          `json:"flow_type"`
+		RefID           string          `json:"ref_id"`
+		Stage           string          `json:"stage"`
+		Direction       string          `json:"direction"`
+		Purpose         string          `json:"purpose"`
+		AmountSatoshi   int64           `json:"amount_satoshi"`
+		UsedSatoshi     int64           `json:"used_satoshi"`
+		ReturnedSatoshi int64           `json:"returned_satoshi"`
+		RelatedTxID     string          `json:"related_txid"`
+		Note            string          `json:"note"`
+		Payload         json.RawMessage `json:"payload"`
+	}
+	var it flowItem
+	var payload string
+	err := s.db.QueryRow(`SELECT id,created_at_unix,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json FROM wallet_fund_flows WHERE id=?`, id).
+		Scan(&it.ID, &it.CreatedAtUnix, &it.FlowID, &it.FlowType, &it.RefID, &it.Stage, &it.Direction, &it.Purpose, &it.AmountSatoshi, &it.UsedSatoshi, &it.ReturnedSatoshi, &it.RelatedTxID, &it.Note, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
+	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_peer_id"))
+	buildWhere := ""
+	args := []any{}
+	if demandID != "" {
+		buildWhere += " AND demand_id=?"
+		args = append(args, demandID)
+	}
+	if sellerPeerID != "" {
+		buildWhere += " AND seller_peer_id=?"
+		args = append(args, sellerPeerID)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM direct_quotes WHERE 1=1"+buildWhere, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(`SELECT id,demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type quoteItem struct {
+		ID                      int64           `json:"id"`
+		DemandID                string          `json:"demand_id"`
+		SellerPeerID            string          `json:"seller_peer_id"`
+		SeedPrice               uint64          `json:"seed_price"`
+		ChunkPrice              uint64          `json:"chunk_price"`
+		ExpiresAtUnix           int64           `json:"expires_at_unix"`
+		RecommendedFileName     string          `json:"recommended_file_name"`
+		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
+		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_peer_ids"`
+		CreatedAtUnix           int64           `json:"created_at_unix"`
+	}
+	items := make([]quoteItem, 0, limit)
+	for rows.Next() {
+		var it quoteItem
+		var arbiterIDs string
+		if err := rows.Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.SellerArbiterPeerIDs = json.RawMessage(arbiterIDs)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  items,
+	})
+}
+
+func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type quoteItem struct {
+		ID                      int64           `json:"id"`
+		DemandID                string          `json:"demand_id"`
+		SellerPeerID            string          `json:"seller_peer_id"`
+		SeedPrice               uint64          `json:"seed_price"`
+		ChunkPrice              uint64          `json:"chunk_price"`
+		ExpiresAtUnix           int64           `json:"expires_at_unix"`
+		RecommendedFileName     string          `json:"recommended_file_name"`
+		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
+		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_peer_ids"`
+		CreatedAtUnix           int64           `json:"created_at_unix"`
+	}
+	var it quoteItem
+	var arbiterIDs string
+	err := s.db.QueryRow(`SELECT id,demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
+		Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.SellerArbiterPeerIDs = json.RawMessage(arbiterIDs)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleDirectDeals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
+	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
+	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_peer_id"))
+	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_peer_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	where := ""
+	args := []any{}
+	if demandID != "" {
+		where += " AND demand_id=?"
+		args = append(args, demandID)
+	}
+	if dealID != "" {
+		where += " AND deal_id=?"
+		args = append(args, dealID)
+	}
+	if sellerPeerID != "" {
+		where += " AND seller_peer_id=?"
+		args = append(args, sellerPeerID)
+	}
+	if buyerPeerID != "" {
+		where += " AND buyer_peer_id=?"
+		args = append(args, buyerPeerID)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM direct_deals WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(`SELECT deal_id,demand_id,buyer_peer_id,seller_peer_id,seed_hash,seed_price,chunk_price,arbiter_peer_id,status,created_at_unix FROM direct_deals WHERE 1=1`+where+` ORDER BY created_at_unix DESC,deal_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type dealItem struct {
+		DealID        string `json:"deal_id"`
+		DemandID      string `json:"demand_id"`
+		BuyerPeerID   string `json:"buyer_peer_id"`
+		SellerPeerID  string `json:"seller_peer_id"`
+		SeedHash      string `json:"seed_hash"`
+		SeedPrice     uint64 `json:"seed_price"`
+		ChunkPrice    uint64 `json:"chunk_price"`
+		ArbiterPeerID string `json:"arbiter_peer_id"`
+		Status        string `json:"status"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+	}
+	items := make([]dealItem, 0, limit)
+	for rows.Next() {
+		var it dealItem
+		if err := rows.Scan(&it.DealID, &it.DemandID, &it.BuyerPeerID, &it.SellerPeerID, &it.SeedHash, &it.SeedPrice, &it.ChunkPrice, &it.ArbiterPeerID, &it.Status, &it.CreatedAtUnix); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  items,
+	})
+}
+
+func (s *httpAPIServer) handleDirectDealDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
+	if dealID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "deal_id is required"})
+		return
+	}
+	type dealItem struct {
+		DealID        string `json:"deal_id"`
+		DemandID      string `json:"demand_id"`
+		BuyerPeerID   string `json:"buyer_peer_id"`
+		SellerPeerID  string `json:"seller_peer_id"`
+		SeedHash      string `json:"seed_hash"`
+		SeedPrice     uint64 `json:"seed_price"`
+		ChunkPrice    uint64 `json:"chunk_price"`
+		ArbiterPeerID string `json:"arbiter_peer_id"`
+		Status        string `json:"status"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+	}
+	var it dealItem
+	err := s.db.QueryRow(`SELECT deal_id,demand_id,buyer_peer_id,seller_peer_id,seed_hash,seed_price,chunk_price,arbiter_peer_id,status,created_at_unix FROM direct_deals WHERE deal_id=?`, dealID).
+		Scan(&it.DealID, &it.DemandID, &it.BuyerPeerID, &it.SellerPeerID, &it.SeedHash, &it.SeedPrice, &it.ChunkPrice, &it.ArbiterPeerID, &it.Status, &it.CreatedAtUnix)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleDirectSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	where := ""
+	args := []any{}
+	if sessionID != "" {
+		where += " AND session_id=?"
+		args = append(args, sessionID)
+	}
+	if dealID != "" {
+		where += " AND deal_id=?"
+		args = append(args, dealID)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM direct_sessions WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(`SELECT session_id,deal_id,chunk_price,paid_chunks,paid_amount,released_chunks,released_amount,status,created_at_unix,updated_at_unix FROM direct_sessions WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type sessionItem struct {
+		SessionID      string `json:"session_id"`
+		DealID         string `json:"deal_id"`
+		ChunkPrice     uint64 `json:"chunk_price"`
+		PaidChunks     uint32 `json:"paid_chunks"`
+		PaidAmount     uint64 `json:"paid_amount"`
+		ReleasedChunks uint32 `json:"released_chunks"`
+		ReleasedAmount uint64 `json:"released_amount"`
+		Status         string `json:"status"`
+		CreatedAtUnix  int64  `json:"created_at_unix"`
+		UpdatedAtUnix  int64  `json:"updated_at_unix"`
+	}
+	items := make([]sessionItem, 0, limit)
+	for rows.Next() {
+		var it sessionItem
+		if err := rows.Scan(&it.SessionID, &it.DealID, &it.ChunkPrice, &it.PaidChunks, &it.PaidAmount, &it.ReleasedChunks, &it.ReleasedAmount, &it.Status, &it.CreatedAtUnix, &it.UpdatedAtUnix); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  items,
+	})
+}
+
+func (s *httpAPIServer) handleDirectSessionDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
+		return
+	}
+	type sessionItem struct {
+		SessionID      string `json:"session_id"`
+		DealID         string `json:"deal_id"`
+		ChunkPrice     uint64 `json:"chunk_price"`
+		PaidChunks     uint32 `json:"paid_chunks"`
+		PaidAmount     uint64 `json:"paid_amount"`
+		ReleasedChunks uint32 `json:"released_chunks"`
+		ReleasedAmount uint64 `json:"released_amount"`
+		Status         string `json:"status"`
+		CreatedAtUnix  int64  `json:"created_at_unix"`
+		UpdatedAtUnix  int64  `json:"updated_at_unix"`
+	}
+	var it sessionItem
+	err := s.db.QueryRow(`SELECT session_id,deal_id,chunk_price,paid_chunks,paid_amount,released_chunks,released_amount,status,created_at_unix,updated_at_unix FROM direct_sessions WHERE session_id=?`, sessionID).
+		Scan(&it.SessionID, &it.DealID, &it.ChunkPrice, &it.PaidChunks, &it.PaidAmount, &it.ReleasedChunks, &it.ReleasedAmount, &it.Status, &it.CreatedAtUnix, &it.UpdatedAtUnix)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_peer_id"))
+	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_peer_id"))
+	arbiterPeerID := strings.TrimSpace(r.URL.Query().Get("arbiter_peer_id"))
+	where := ""
+	args := []any{}
+	if sessionID != "" {
+		where += " AND session_id=?"
+		args = append(args, sessionID)
+	}
+	if dealID != "" {
+		where += " AND deal_id=?"
+		args = append(args, dealID)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	if sellerPeerID != "" {
+		where += " AND seller_peer_id=?"
+		args = append(args, sellerPeerID)
+	}
+	if buyerPeerID != "" {
+		where += " AND buyer_peer_id=?"
+		args = append(args, buyerPeerID)
+	}
+	if arbiterPeerID != "" {
+		where += " AND arbiter_peer_id=?"
+		args = append(args, arbiterPeerID)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM direct_transfer_pools WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(`SELECT session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix FROM direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type poolItem struct {
+		SessionID        string  `json:"session_id"`
+		DealID           string  `json:"deal_id"`
+		BuyerPeerID      string  `json:"buyer_peer_id"`
+		SellerPeerID     string  `json:"seller_peer_id"`
+		ArbiterPeerID    string  `json:"arbiter_peer_id"`
+		BuyerPubkeyHex   string  `json:"buyer_pubkey_hex"`
+		SellerPubkeyHex  string  `json:"seller_pubkey_hex"`
+		ArbiterPubkeyHex string  `json:"arbiter_pubkey_hex"`
+		PoolAmount       uint64  `json:"pool_amount"`
+		SpendTxFee       uint64  `json:"spend_tx_fee"`
+		SequenceNum      uint32  `json:"sequence_num"`
+		SellerAmount     uint64  `json:"seller_amount"`
+		BuyerAmount      uint64  `json:"buyer_amount"`
+		CurrentTxHex     string  `json:"current_tx_hex"`
+		BaseTxHex        string  `json:"base_tx_hex"`
+		BaseTxID         string  `json:"base_txid"`
+		Status           string  `json:"status"`
+		FeeRateSatByte   float64 `json:"fee_rate_sat_byte"`
+		LockBlocks       uint32  `json:"lock_blocks"`
+		CreatedAtUnix    int64   `json:"created_at_unix"`
+		UpdatedAtUnix    int64   `json:"updated_at_unix"`
+	}
+	items := make([]poolItem, 0, limit)
+	for rows.Next() {
+		var it poolItem
+		if err := rows.Scan(
+			&it.SessionID, &it.DealID, &it.BuyerPeerID, &it.SellerPeerID, &it.ArbiterPeerID,
+			&it.BuyerPubkeyHex, &it.SellerPubkeyHex, &it.ArbiterPubkeyHex, &it.PoolAmount, &it.SpendTxFee,
+			&it.SequenceNum, &it.SellerAmount, &it.BuyerAmount, &it.CurrentTxHex, &it.BaseTxHex, &it.BaseTxID,
+			&it.Status, &it.FeeRateSatByte, &it.LockBlocks, &it.CreatedAtUnix, &it.UpdatedAtUnix,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":  total,
+		"limit":  limit,
+		"offset": offset,
+		"items":  items,
+	})
+}
+
+func (s *httpAPIServer) handleDirectTransferPoolDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
+	if sessionID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
+		return
+	}
+	type poolItem struct {
+		SessionID        string  `json:"session_id"`
+		DealID           string  `json:"deal_id"`
+		BuyerPeerID      string  `json:"buyer_peer_id"`
+		SellerPeerID     string  `json:"seller_peer_id"`
+		ArbiterPeerID    string  `json:"arbiter_peer_id"`
+		BuyerPubkeyHex   string  `json:"buyer_pubkey_hex"`
+		SellerPubkeyHex  string  `json:"seller_pubkey_hex"`
+		ArbiterPubkeyHex string  `json:"arbiter_pubkey_hex"`
+		PoolAmount       uint64  `json:"pool_amount"`
+		SpendTxFee       uint64  `json:"spend_tx_fee"`
+		SequenceNum      uint32  `json:"sequence_num"`
+		SellerAmount     uint64  `json:"seller_amount"`
+		BuyerAmount      uint64  `json:"buyer_amount"`
+		CurrentTxHex     string  `json:"current_tx_hex"`
+		BaseTxHex        string  `json:"base_tx_hex"`
+		BaseTxID         string  `json:"base_txid"`
+		Status           string  `json:"status"`
+		FeeRateSatByte   float64 `json:"fee_rate_sat_byte"`
+		LockBlocks       uint32  `json:"lock_blocks"`
+		CreatedAtUnix    int64   `json:"created_at_unix"`
+		UpdatedAtUnix    int64   `json:"updated_at_unix"`
+	}
+	var it poolItem
+	err := s.db.QueryRow(`SELECT session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix FROM direct_transfer_pools WHERE session_id=?`, sessionID).
+		Scan(
+			&it.SessionID, &it.DealID, &it.BuyerPeerID, &it.SellerPeerID, &it.ArbiterPeerID,
+			&it.BuyerPubkeyHex, &it.SellerPubkeyHex, &it.ArbiterPubkeyHex, &it.PoolAmount, &it.SpendTxFee,
+			&it.SequenceNum, &it.SellerAmount, &it.BuyerAmount, &it.CurrentTxHex, &it.BaseTxHex, &it.BaseTxID,
+			&it.Status, &it.FeeRateSatByte, &it.LockBlocks, &it.CreatedAtUnix, &it.UpdatedAtUnix,
+		)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
 }
 
 func (s *httpAPIServer) handleTransactions(w http.ResponseWriter, r *http.Request) {
@@ -776,11 +1435,13 @@ func (s *httpAPIServer) handleGetFileStart(w http.ResponseWriter, r *http.Reques
 		StartedAtUnix: time.Now().Unix(),
 		Steps:         make([]fileGetStep, 0, 16),
 	}
+	jobCtx, cancel := context.WithCancel(context.Background())
+	job.cancel = cancel
 	s.jobsMu.Lock()
 	s.getJobs[job.ID] = job
 	s.jobsMu.Unlock()
 
-	go s.runGetFileJob(job.ID, req.SeedHash, req.ChunkCount, req.GatewayPeerID)
+	go s.runGetFileJob(jobCtx, job.ID, req.SeedHash, req.ChunkCount, req.GatewayPeerID)
 	writeJSON(w, http.StatusOK, map[string]any{"job_id": job.ID, "status": job.Status})
 }
 
@@ -823,16 +1484,66 @@ func (s *httpAPIServer) handleGetFileJob(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, c)
 }
 
-func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32, gwOverride string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+func (s *httpAPIServer) handleGetFileCancel(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	var req struct {
+		ID string `json:"id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	id := strings.TrimSpace(req.ID)
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	s.jobsMu.Lock()
+	j, ok := s.getJobs[id]
+	if !ok {
+		s.jobsMu.Unlock()
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "job not found"})
+		return
+	}
+	if j.Status != "running" {
+		status := j.Status
+		s.jobsMu.Unlock()
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "job is not running", "status": status})
+		return
+	}
+	j.CancelRequested = true
+	cancel := j.cancel
+	s.jobsMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "status": "canceling"})
+}
+
+func (s *httpAPIServer) runGetFileJob(parentCtx context.Context, jobID, seedHash string, chunkCount uint32, gwOverride string) {
+	ctx, cancel := context.WithTimeout(parentCtx, 5*time.Minute)
 	defer cancel()
 
+	markCanceled := func() {
+		s.jobsMu.Lock()
+		if j, ok := s.getJobs[jobID]; ok {
+			j.Status = "canceled"
+			j.Error = "job canceled"
+			j.EndedAtUnix = time.Now().Unix()
+			j.cancel = nil
+		}
+		s.jobsMu.Unlock()
+	}
 	fail := func(msg string) {
 		s.jobsMu.Lock()
 		if j, ok := s.getJobs[jobID]; ok {
 			j.Status = "failed"
 			j.Error = msg
 			j.EndedAtUnix = time.Now().Unix()
+			j.cancel = nil
 		}
 		s.jobsMu.Unlock()
 	}
@@ -870,6 +1581,10 @@ func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32,
 	}
 	gw, err := pickGatewayForBusiness(s.rt, gwOverride)
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			markCanceled()
+			return
+		}
 		fail(err.Error())
 		return
 	}
@@ -902,7 +1617,15 @@ func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32,
 		},
 	})
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			markCanceled()
+			return
+		}
 		fail(err.Error())
+		return
+	}
+	if errors.Is(ctx.Err(), context.Canceled) {
+		markCanceled()
 		return
 	}
 
@@ -911,6 +1634,10 @@ func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32,
 		"bytes":              fmt.Sprintf("%d", len(download.Transfer.Data)),
 	})
 	if s.workspace == nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			markCanceled()
+			return
+		}
 		endStep(step, "failed", map[string]string{"error": "workspace manager not initialized"})
 		fail("workspace manager not initialized")
 		return
@@ -922,6 +1649,10 @@ func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32,
 		return
 	}
 	if err := os.WriteFile(outPath, download.Transfer.Data, 0o644); err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			markCanceled()
+			return
+		}
 		endStep(step, "failed", map[string]string{"error": err.Error()})
 		fail("write output failed: " + err.Error())
 		return
@@ -942,6 +1673,7 @@ func (s *httpAPIServer) runGetFileJob(jobID, seedHash string, chunkCount uint32,
 		j.Status = "done"
 		j.OutputFilePath = outPath
 		j.EndedAtUnix = time.Now().Unix()
+		j.cancel = nil
 	}
 	s.jobsMu.Unlock()
 }
@@ -1932,10 +2664,150 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"master_peer_id": master.String(), "has_master": true})
+	case http.MethodPost:
+		var req struct {
+			MasterPeerID string `json:"master_peer_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			return
+		}
+		target := strings.TrimSpace(req.MasterPeerID)
+		if target == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "master_peer_id is required"})
+			return
+		}
+		targetID, err := peer.Decode(target)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid master_peer_id"})
+			return
+		}
+
+		seenEnabled := false
+		for _, g := range gm.ListGateways() {
+			ai, parseErr := parseAddr(g.Addr)
+			if parseErr != nil {
+				continue
+			}
+			if ai.ID != targetID {
+				continue
+			}
+			if !g.Enabled {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "gateway is disabled"})
+				return
+			}
+			seenEnabled = true
+			break
+		}
+		if !seenEnabled {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "gateway peer_id not configured"})
+			return
+		}
+		if s.h == nil || s.h.Network() == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "host network not initialized"})
+			return
+		}
+		if s.h.Network().Connectedness(targetID) != libnetwork.Connected {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "gateway is not connected"})
+			return
+		}
+
+		old := gm.GetMasterGateway()
+		s.rt.masterGWMu.Lock()
+		s.rt.masterGW = targetID
+		s.rt.masterGWMu.Unlock()
+		changed := old != targetID
+		if changed {
+			obs.Business("bitcast-client", "master_gateway_set_by_admin", map[string]any{
+				"old_master_peer_id": old.String(),
+				"new_master_peer_id": targetID.String(),
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":             true,
+			"master_peer_id": targetID.String(),
+			"changed":        changed,
+		})
 
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
+}
+
+func (s *httpAPIServer) handleGatewayHealth(w http.ResponseWriter, r *http.Request) {
+	gm := s.rt.gwManager
+	if gm == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "gateway manager not initialized"})
+		return
+	}
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	healthy := map[string]bool{}
+	for _, gw := range s.rt.HealthyGWs {
+		healthy[gw.ID.String()] = true
+	}
+	master := gm.GetMasterGateway().String()
+	type healthItem struct {
+		ID            int    `json:"id"`
+		PeerID        string `json:"peer_id,omitempty"`
+		Addr          string `json:"addr"`
+		Pubkey        string `json:"pubkey"`
+		Enabled       bool   `json:"enabled"`
+		Connected     bool   `json:"connected"`
+		Connectedness string `json:"connectedness"`
+		IsMaster      bool   `json:"is_master"`
+		InHealthyGWs  bool   `json:"in_healthy_gws"`
+		Error         string `json:"error,omitempty"`
+	}
+	nodes := gm.ListGateways()
+	items := make([]healthItem, 0, len(nodes))
+	connectedCount := 0
+	for i, g := range nodes {
+		it := healthItem{
+			ID:      i,
+			Addr:    g.Addr,
+			Pubkey:  g.Pubkey,
+			Enabled: g.Enabled,
+		}
+		ai, err := parseAddr(g.Addr)
+		if err != nil {
+			it.Connectedness = "invalid_addr"
+			it.Error = err.Error()
+			items = append(items, it)
+			continue
+		}
+		it.PeerID = ai.ID.String()
+		if s.h == nil || s.h.Network() == nil {
+			it.Connectedness = "unknown"
+		} else {
+			conn := s.h.Network().Connectedness(ai.ID)
+			it.Connectedness = strings.ToLower(conn.String())
+			it.Connected = conn == libnetwork.Connected
+		}
+		if it.Connected {
+			connectedCount++
+		}
+		it.IsMaster = it.PeerID == master && master != ""
+		it.InHealthyGWs = healthy[it.PeerID]
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": len(items),
+		"enabled_total": func() int {
+			c := 0
+			for _, it := range items {
+				if it.Enabled {
+					c++
+				}
+			}
+			return c
+		}(),
+		"connected_total": connectedCount,
+		"master_peer_id":  master,
+		"items":           items,
+	})
 }
 
 func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
@@ -1962,6 +2834,34 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 		}
 		it, err := s.workspace.Add(req.Path, req.MaxBytes)
 		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": it})
+	case http.MethodPut:
+		id := int64(parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000))
+		if id <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+			return
+		}
+		var req struct {
+			MaxBytes *uint64 `json:"max_bytes,omitempty"`
+			Enabled  *bool   `json:"enabled,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			return
+		}
+		it, err := s.workspace.UpdateByID(id, req.MaxBytes, req.Enabled)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
+				return
+			}
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}

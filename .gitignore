@@ -33,3 +33,4 @@ go.work.sum
 .vault
 cmd/client/web/assets/
 david-docs/
+cmd/client/web-src/node_modules/
