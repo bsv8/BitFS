@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
 
 	"github.com/libp2p/go-libp2p/core/host"
+	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -19,6 +21,16 @@ type gatewayManager struct {
 	mu sync.RWMutex
 	// connectedGWs 存储已连接的网关 peer.ID
 	connectedGWs map[peer.ID]peer.AddrInfo
+	// states 存储网关运行时连接状态（按 peer.ID 维度）。
+	states map[peer.ID]gatewayConnState
+}
+
+type gatewayConnState struct {
+	LastError              string
+	LastConnectedAtUnix    int64
+	LastRuntimeError       string
+	LastRuntimeErrorStage  string
+	LastRuntimeErrorAtUnix int64
 }
 
 // newGatewayManager 创建网关管理器
@@ -27,6 +39,7 @@ func newGatewayManager(rt *Runtime, h host.Host) *gatewayManager {
 		rt:           rt,
 		h:            h,
 		connectedGWs: make(map[peer.ID]peer.AddrInfo),
+		states:       make(map[peer.ID]gatewayConnState),
 	}
 }
 
@@ -45,10 +58,12 @@ func (gm *gatewayManager) InitFromConfig(ctx context.Context, gateways []PeerNod
 			continue
 		}
 		if err := gm.h.Connect(ctx, *ai); err != nil {
+			gm.setConnectErrorLocked(ai.ID, err)
 			obs.Error("bitcast-client", "gateway_init_connect_failed", map[string]any{"peer_id": ai.ID.String(), "error": err.Error()})
 			continue
 		}
 		gm.connectedGWs[ai.ID] = *ai
+		gm.setConnectedLocked(ai.ID)
 		obs.Business("bitcast-client", "gateway_init_connected", map[string]any{"peer_id": ai.ID.String()})
 	}
 
@@ -89,10 +104,12 @@ func (gm *gatewayManager) AddGateway(ctx context.Context, node PeerNode) (int, e
 	// 如果启用，立即连接
 	if node.Enabled {
 		if err := gm.h.Connect(ctx, *newAI); err != nil {
+			gm.setConnectErrorLocked(newAI.ID, err)
 			obs.Error("bitcast-client", "gateway_add_connect_failed", map[string]any{"peer_id": newAI.ID.String(), "error": err.Error()})
 			return idx, nil // 返回索引，但连接失败
 		}
 		gm.connectedGWs[newAI.ID] = *newAI
+		gm.setConnectedLocked(newAI.ID)
 		obs.Business("bitcast-client", "gateway_added_and_connected", map[string]any{"peer_id": newAI.ID.String(), "index": idx})
 		gm.electMasterLocked()
 	}
@@ -134,9 +151,11 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 			newAI, err := parseAddr(node.Addr)
 			if err == nil {
 				if err := gm.h.Connect(ctx, *newAI); err != nil {
+					gm.setConnectErrorLocked(newAI.ID, err)
 					obs.Error("bitcast-client", "gateway_enable_connect_failed", map[string]any{"peer_id": newAI.ID.String(), "error": err.Error()})
 				} else {
 					gm.connectedGWs[newAI.ID] = *newAI
+					gm.setConnectedLocked(newAI.ID)
 					obs.Business("bitcast-client", "gateway_enabled_and_connected", map[string]any{"peer_id": newAI.ID.String()})
 					gm.electMasterLocked()
 				}
@@ -148,9 +167,11 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 			newAI, err := parseAddr(node.Addr)
 			if err == nil {
 				if err := gm.h.Connect(ctx, *newAI); err != nil {
+					gm.setConnectErrorLocked(newAI.ID, err)
 					obs.Error("bitcast-client", "gateway_addr_change_connect_failed", map[string]any{"peer_id": newAI.ID.String(), "error": err.Error()})
 				} else {
 					gm.connectedGWs[newAI.ID] = *newAI
+					gm.setConnectedLocked(newAI.ID)
 					obs.Business("bitcast-client", "gateway_addr_changed_and_connected", map[string]any{"peer_id": newAI.ID.String()})
 					gm.electMasterLocked()
 				}
@@ -271,8 +292,9 @@ func (gm *gatewayManager) RefreshConnections(ctx context.Context) {
 
 	// 清理已断开的连接
 	for id := range gm.connectedGWs {
-		if gm.h.Network().Connectedness(id) == 0 { // NotConnected
+		if gm.h.Network().Connectedness(id) == libnetwork.NotConnected {
 			delete(gm.connectedGWs, id)
+			gm.setConnectErrorLocked(id, fmt.Errorf("connection lost"))
 			obs.Business("bitcast-client", "gateway_connection_lost", map[string]any{"peer_id": id.String()})
 		}
 	}
@@ -290,12 +312,78 @@ func (gm *gatewayManager) RefreshConnections(ctx context.Context) {
 			continue
 		}
 		if err := gm.h.Connect(ctx, *ai); err != nil {
+			gm.setConnectErrorLocked(ai.ID, err)
 			obs.Error("bitcast-client", "gateway_refresh_connect_failed", map[string]any{"peer_id": ai.ID.String(), "error": err.Error()})
 		} else {
 			gm.connectedGWs[ai.ID] = *ai
+			gm.setConnectedLocked(ai.ID)
 			obs.Business("bitcast-client", "gateway_refreshed_connected", map[string]any{"peer_id": ai.ID.String()})
 		}
 	}
 
 	gm.electMasterLocked()
+}
+
+func (gm *gatewayManager) setConnectErrorLocked(id peer.ID, err error) {
+	if id == "" {
+		return
+	}
+	s := gm.states[id]
+	if err != nil {
+		s.LastError = strings.TrimSpace(err.Error())
+	}
+	gm.states[id] = s
+}
+
+func (gm *gatewayManager) setConnectedLocked(id peer.ID) {
+	if id == "" {
+		return
+	}
+	s := gm.states[id]
+	s.LastError = ""
+	s.LastConnectedAtUnix = time.Now().Unix()
+	gm.states[id] = s
+}
+
+func (gm *gatewayManager) setRuntimeErrorLocked(id peer.ID, stage string, err error) {
+	if id == "" || err == nil {
+		return
+	}
+	s := gm.states[id]
+	s.LastRuntimeError = strings.TrimSpace(err.Error())
+	s.LastRuntimeErrorStage = strings.TrimSpace(stage)
+	s.LastRuntimeErrorAtUnix = time.Now().Unix()
+	gm.states[id] = s
+}
+
+func (gm *gatewayManager) clearRuntimeErrorLocked(id peer.ID) {
+	if id == "" {
+		return
+	}
+	s := gm.states[id]
+	s.LastRuntimeError = ""
+	s.LastRuntimeErrorStage = ""
+	s.LastRuntimeErrorAtUnix = 0
+	gm.states[id] = s
+}
+
+// GetGatewayState 返回网关运行时状态快照。
+func (gm *gatewayManager) GetGatewayState(id peer.ID) gatewayConnState {
+	gm.mu.RLock()
+	defer gm.mu.RUnlock()
+	return gm.states[id]
+}
+
+// SetRuntimeError 记录网关业务运行时错误（例如费用池 info/open/pay 阶段失败）。
+func (gm *gatewayManager) SetRuntimeError(id peer.ID, stage string, err error) {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	gm.setRuntimeErrorLocked(id, stage, err)
+}
+
+// ClearRuntimeError 清理网关业务运行时错误（例如后续重试成功后）。
+func (gm *gatewayManager) ClearRuntimeError(id peer.ID) {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+	gm.clearRuntimeErrorLocked(id)
 }

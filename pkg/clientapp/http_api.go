@@ -3115,15 +3115,58 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		// 列出所有网关
 		gateways := gm.ListGateways()
+		healthy := map[string]bool{}
+		for _, gw := range s.rt.HealthyGWs {
+			healthy[gw.ID.String()] = true
+		}
+		master := gm.GetMasterGateway().String()
 		type gwResp struct {
-			ID      int    `json:"id"`
-			Addr    string `json:"addr"`
-			Pubkey  string `json:"pubkey"`
-			Enabled bool   `json:"enabled"`
+			ID                     int    `json:"id"`
+			PeerID                 string `json:"peer_id,omitempty"`
+			Addr                   string `json:"addr"`
+			Pubkey                 string `json:"pubkey"`
+			Enabled                bool   `json:"enabled"`
+			Connected              bool   `json:"connected"`
+			Connectedness          string `json:"connectedness"`
+			InHealthyGWs           bool   `json:"in_healthy_gws"`
+			FeePoolReady           bool   `json:"fee_pool_ready"`
+			IsMaster               bool   `json:"is_master"`
+			LastError              string `json:"last_error,omitempty"`
+			LastConnectedAtUnix    int64  `json:"last_connected_at_unix"`
+			LastRuntimeError       string `json:"last_runtime_error,omitempty"`
+			LastRuntimeErrorStage  string `json:"last_runtime_error_stage,omitempty"`
+			LastRuntimeErrorAtUnix int64  `json:"last_runtime_error_at_unix"`
 		}
 		items := make([]gwResp, len(gateways))
 		for i, g := range gateways {
-			items[i] = gwResp{ID: i, Addr: g.Addr, Pubkey: g.Pubkey, Enabled: g.Enabled}
+			it := gwResp{ID: i, Addr: g.Addr, Pubkey: g.Pubkey, Enabled: g.Enabled}
+			ai, err := parseAddr(g.Addr)
+			if err != nil {
+				it.Connectedness = "invalid_addr"
+				it.LastError = err.Error()
+				items[i] = it
+				continue
+			}
+			it.PeerID = ai.ID.String()
+			if s.h == nil || s.h.Network() == nil {
+				it.Connectedness = "unknown"
+			} else {
+				conn := s.h.Network().Connectedness(ai.ID)
+				it.Connectedness = strings.ToLower(conn.String())
+				it.Connected = conn == libnetwork.Connected
+			}
+			it.InHealthyGWs = healthy[it.PeerID]
+			it.IsMaster = master != "" && it.PeerID == master
+			st := gm.GetGatewayState(ai.ID)
+			it.LastConnectedAtUnix = st.LastConnectedAtUnix
+			if !it.Connected && strings.TrimSpace(st.LastError) != "" {
+				it.LastError = st.LastError
+			}
+			it.LastRuntimeError = st.LastRuntimeError
+			it.LastRuntimeErrorStage = st.LastRuntimeErrorStage
+			it.LastRuntimeErrorAtUnix = st.LastRuntimeErrorAtUnix
+			it.FeePoolReady = it.Enabled && it.Connected && it.InHealthyGWs && strings.TrimSpace(it.LastRuntimeError) == ""
+			items[i] = it
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
 
@@ -3372,16 +3415,20 @@ func (s *httpAPIServer) handleGatewayHealth(w http.ResponseWriter, r *http.Reque
 	}
 	master := gm.GetMasterGateway().String()
 	type healthItem struct {
-		ID            int    `json:"id"`
-		PeerID        string `json:"peer_id,omitempty"`
-		Addr          string `json:"addr"`
-		Pubkey        string `json:"pubkey"`
-		Enabled       bool   `json:"enabled"`
-		Connected     bool   `json:"connected"`
-		Connectedness string `json:"connectedness"`
-		IsMaster      bool   `json:"is_master"`
-		InHealthyGWs  bool   `json:"in_healthy_gws"`
-		Error         string `json:"error,omitempty"`
+		ID                     int    `json:"id"`
+		PeerID                 string `json:"peer_id,omitempty"`
+		Addr                   string `json:"addr"`
+		Pubkey                 string `json:"pubkey"`
+		Enabled                bool   `json:"enabled"`
+		Connected              bool   `json:"connected"`
+		Connectedness          string `json:"connectedness"`
+		IsMaster               bool   `json:"is_master"`
+		InHealthyGWs           bool   `json:"in_healthy_gws"`
+		FeePoolReady           bool   `json:"fee_pool_ready"`
+		Error                  string `json:"error,omitempty"`
+		LastRuntimeError       string `json:"last_runtime_error,omitempty"`
+		LastRuntimeErrorStage  string `json:"last_runtime_error_stage,omitempty"`
+		LastRuntimeErrorAtUnix int64  `json:"last_runtime_error_at_unix"`
 	}
 	nodes := gm.ListGateways()
 	items := make([]healthItem, 0, len(nodes))
@@ -3413,6 +3460,11 @@ func (s *httpAPIServer) handleGatewayHealth(w http.ResponseWriter, r *http.Reque
 		}
 		it.IsMaster = it.PeerID == master && master != ""
 		it.InHealthyGWs = healthy[it.PeerID]
+		st := gm.GetGatewayState(ai.ID)
+		it.LastRuntimeError = st.LastRuntimeError
+		it.LastRuntimeErrorStage = st.LastRuntimeErrorStage
+		it.LastRuntimeErrorAtUnix = st.LastRuntimeErrorAtUnix
+		it.FeePoolReady = it.Enabled && it.Connected && it.InHealthyGWs && strings.TrimSpace(it.LastRuntimeError) == ""
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -3678,7 +3730,7 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"total":           len(items),
+		"total": len(items),
 		"enabled_total": func() int {
 			c := 0
 			for _, it := range items {

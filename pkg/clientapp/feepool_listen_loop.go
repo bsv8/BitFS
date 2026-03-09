@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"sync"
 	"strings"
+	"sync"
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -83,7 +83,14 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	}
 
 	reconcile := func() {
+		if rt.gwManager != nil {
+			// 每个 tick 都刷新一次连接，确保新增/短暂掉线后可自动恢复。
+			rt.gwManager.RefreshConnections(ctx)
+		}
 		gws := snapshotHealthyGateways(rt)
+		if len(gws) == 0 {
+			obs.Info("bitcast-client", "listen_loop_wait_gateway_connection", map[string]any{"reason": "no_connected_gateway"})
+		}
 		active := make(map[string]struct{}, len(gws))
 		for _, gw := range gws {
 			gwID := gw.ID.String()
@@ -135,6 +142,33 @@ func snapshotHealthyGateways(rt *Runtime) []peer.AddrInfo {
 	return append([]peer.AddrInfo(nil), rt.HealthyGWs...)
 }
 
+func recordGatewayRuntimeError(rt *Runtime, gw peer.ID, stage string, err error) {
+	if rt == nil || gw == "" || err == nil {
+		return
+	}
+	if rt.gwManager != nil {
+		rt.gwManager.SetRuntimeError(gw, stage, err)
+	}
+	appendGatewayEvent(rt.DB, gatewayEventEntry{
+		GatewayPeerID: gw.String(),
+		Action:        "listen_error",
+		AmountSatoshi: 0,
+		Payload: map[string]any{
+			"stage": stage,
+			"error": err.Error(),
+		},
+	})
+}
+
+func clearGatewayRuntimeError(rt *Runtime, gw peer.ID) {
+	if rt == nil || gw == "" {
+		return
+	}
+	if rt.gwManager != nil {
+		rt.gwManager.ClearRuntimeError(gw)
+	}
+}
+
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	lc := rt.Config.Listen
 
@@ -147,6 +181,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	// 1) 获取网关握手参数
 	var info dual2of2.InfoResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.Config.ClientID}, &info); err != nil {
+		recordGatewayRuntimeError(rt, gw.ID, "fee_pool_info", err)
 		obs.Error("bitcast-client", "fee_pool_info_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
 		return
 	}
@@ -164,9 +199,11 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	// 2) 确保本地已有 active 费用池会话（没有则创建）
 	sess, err := ensureActiveFeePool(ctx, rt, gw, initialFund, info)
 	if err != nil {
+		recordGatewayRuntimeError(rt, gw.ID, "fee_pool_open", err)
 		obs.Error("bitcast-client", "fee_pool_open_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
 		return
 	}
+	clearGatewayRuntimeError(rt, gw.ID)
 
 	// 3) 周期扣费：client 侧按 billing_cycle_seconds 定时发起 PayConfirm
 	cycleSec := info.BillingCycleSeconds
@@ -182,7 +219,10 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 			return
 		case <-ticker.C:
 			if err := payOneListenCycle(ctx, rt, gw.ID, sess); err != nil {
+				recordGatewayRuntimeError(rt, gw.ID, "fee_pool_pay", err)
 				obs.Error("bitcast-client", "fee_pool_listen_pay_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
+			} else {
+				clearGatewayRuntimeError(rt, gw.ID)
 			}
 		}
 	}
