@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 )
 
@@ -133,8 +133,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
-	clientActor, err := dual2of2.BuildActor("client", strings.TrimSpace(rt.Config.Keys.PrivkeyHex), isMainnet)
+	clientActor, err := buildClientActorFromConfig(rt.Config)
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}

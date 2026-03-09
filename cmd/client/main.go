@@ -401,8 +401,8 @@ func printStatus(configPath, appName string, cfg clientapp.Config) error {
 }
 
 func runDaemon(cfg clientapp.Config, startup startupSummary) error {
-	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
-	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
+	logFile, _ := clientapp.ResolveLogConfig(&cfg)
+	if err := obs.Init(logFile, obs.LevelNone); err != nil {
 		return err
 	}
 	defer func() { _ = obs.Close() }()
@@ -430,8 +430,8 @@ func runDaemon(cfg clientapp.Config, startup startupSummary) error {
 }
 
 func runDownload(cfg clientapp.Config, startup startupSummary, seedHash string) error {
-	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
-	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
+	logFile, _ := clientapp.ResolveLogConfig(&cfg)
+	if err := obs.Init(logFile, obs.LevelNone); err != nil {
 		return err
 	}
 	defer func() { _ = obs.Close() }()
@@ -495,8 +495,10 @@ func printClientStartupSummary(mode string, startup startupSummary, guardURL str
 			pubHex = v
 		}
 	}
+	recvAddr, recvAddrErr := deriveClientAddress(rt.Config)
 	dbPath := effectiveIndexDBPath(rt.Config)
 	logFile, _ := clientapp.ResolveLogConfig(&rt.Config)
+	systemLogFile, businessLogFile := obs.ResolveSplitFilePaths(logFile)
 
 	fmt.Println("========== BitFS Client 启动信息 ==========")
 	fmt.Printf("模式: %s\n", mode)
@@ -507,10 +509,16 @@ func printClientStartupSummary(mode string, startup startupSummary, guardURL str
 	fmt.Printf("运行配置DB状态: %s\n", startup.RuntimeConfigStatus)
 	fmt.Printf("网络: %s\n", rt.Config.BSV.Network)
 	fmt.Printf("索引数据库: %s\n", absOrRaw(dbPath))
-	fmt.Printf("日志文件: %s\n", absOrRaw(logFile))
+	fmt.Printf("OBS系统日志: %s\n", absOrRaw(systemLogFile))
+	fmt.Printf("OBS业务日志: %s\n", absOrRaw(businessLogFile))
 	fmt.Printf("Guard URL: %s\n", guardURL)
 	fmt.Printf("Peer ID: %s\n", rt.Host.ID().String())
 	fmt.Printf("公钥(hex): %s\n", pubHex)
+	if recvAddrErr != nil {
+		fmt.Printf("收款地址(%s): <unavailable: %v>\n", rt.Config.BSV.Network, recvAddrErr)
+	} else {
+		fmt.Printf("收款地址(%s): %s\n", rt.Config.BSV.Network, recvAddr)
+	}
 	fmt.Printf("网关数量: %d\n", len(rt.HealthyGWs))
 	fmt.Printf("仲裁数量: %d\n", len(rt.HealthyArbiters))
 	fmt.Printf("HTTP API: enabled=%t listen_addr=%s\n", rt.Config.HTTP.Enabled, rt.Config.HTTP.ListenAddr)
@@ -520,6 +528,23 @@ func printClientStartupSummary(mode string, startup startupSummary, guardURL str
 		fmt.Printf("  - %s/p2p/%s\n", a.String(), rt.Host.ID().String())
 	}
 	fmt.Println("===========================================")
+}
+
+func deriveClientAddress(cfg clientapp.Config) (string, error) {
+	k, err := parsePrivHex(cfg.Keys.PrivkeyHex)
+	if err != nil {
+		return "", err
+	}
+	raw, err := k.Raw()
+	if err != nil {
+		return "", err
+	}
+	isMain := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
+	actor, err := dual2of2.BuildActor("client", hex.EncodeToString(raw), isMain)
+	if err != nil {
+		return "", err
+	}
+	return actor.Addr, nil
 }
 
 func effectiveIndexDBPath(cfg clientapp.Config) string {
@@ -538,23 +563,45 @@ func generatePrivateKeyHex() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	b, err := crypto.MarshalPrivateKey(k)
+	b, err := k.Raw()
 	if err != nil {
 		return "", err
+	}
+	if len(b) != 32 {
+		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(b))
 	}
 	return strings.ToLower(hex.EncodeToString(b)), nil
 }
 
 func normalizePrivateKeyHex(in string) (string, error) {
-	k, err := parsePrivHex(in)
+	hexKey, err := normalizeRawSecp256k1PrivKeyHex(in)
 	if err != nil {
 		return "", err
 	}
-	b, err := crypto.MarshalPrivateKey(k)
-	if err != nil {
-		return "", err
+	return hexKey, nil
+}
+
+func normalizeRawSecp256k1PrivKeyHex(in string) (string, error) {
+	hexKey := strings.ToLower(strings.TrimSpace(in))
+	if len(hexKey) != 64 {
+		return "", fmt.Errorf("invalid private key format: expect 32-byte secp256k1 hex (len=64)")
 	}
-	return strings.ToLower(hex.EncodeToString(b)), nil
+	b, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid private key hex: %w", err)
+	}
+	priv, err := crypto.UnmarshalSecp256k1PrivateKey(b)
+	if err != nil {
+		return "", fmt.Errorf("invalid secp256k1 private key: %w", err)
+	}
+	raw, err := priv.Raw()
+	if err != nil {
+		return "", fmt.Errorf("read private key raw bytes: %w", err)
+	}
+	if len(raw) != 32 {
+		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(raw))
+	}
+	return strings.ToLower(hex.EncodeToString(raw)), nil
 }
 
 func pubHexFromPrivHex(privHex string) (string, error) {
@@ -571,17 +618,15 @@ func pubHexFromPrivHex(privHex string) (string, error) {
 }
 
 func parsePrivHex(s string) (crypto.PrivKey, error) {
-	b, err := hex.DecodeString(strings.TrimSpace(s))
+	hexKey, err := normalizeRawSecp256k1PrivKeyHex(s)
 	if err != nil {
 		return nil, err
 	}
-	if k, err := crypto.UnmarshalPrivateKey(b); err == nil {
-		return k, nil
+	b, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, err
 	}
-	if len(b) == 32 {
-		return crypto.UnmarshalSecp256k1PrivateKey(b)
-	}
-	return nil, fmt.Errorf("invalid private key format: expect libp2p MarshalPrivateKey bytes or raw 32-byte secp256k1 key")
+	return crypto.UnmarshalSecp256k1PrivateKey(b)
 }
 
 func queryAddressBalance(ctx context.Context, cfg clientapp.Config) (string, uint64, error) {

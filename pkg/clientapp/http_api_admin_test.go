@@ -107,6 +107,128 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	}
 }
 
+func TestHandleAdminConfigUpdateValidation(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir() + "-data"
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = ":memory:"
+	cfg.HTTP.AuthToken = "abcd1234"
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	if err := SaveConfigInDB(db, cfg); err != nil {
+		t.Fatalf("save cfg: %v", err)
+	}
+	rt := &Runtime{DB: db, Config: cfg}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+
+	schemaReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)
+	schemaRec := httptest.NewRecorder()
+	srv.handleAdminConfigSchema(schemaRec, schemaReq)
+	if schemaRec.Code != http.StatusOK {
+		t.Fatalf("schema status mismatch: got=%d want=%d body=%s", schemaRec.Code, http.StatusOK, schemaRec.Body.String())
+	}
+	var schemaBody struct {
+		Items []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(schemaRec.Body.Bytes(), &schemaBody); err != nil {
+		t.Fatalf("decode schema response: %v", err)
+	}
+	hasKey := map[string]bool{}
+	for _, it := range schemaBody.Items {
+		hasKey[it.Key] = true
+	}
+	for _, key := range []string{
+		"listen.enabled",
+		"listen.renew_threshold_seconds",
+		"listen.max_auto_renew_amount",
+		"listen.tick_seconds",
+	} {
+		if !hasKey[key] {
+			t.Fatalf("schema missing key: %s", key)
+		}
+	}
+
+	// validate_only: 不应落库。
+	validateReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
+		"validate_only": true,
+		"items": [{"key":"scan.rescan_interval_seconds","value":30}]
+	}`))
+	validateRec := httptest.NewRecorder()
+	srv.handleAdminConfig(validateRec, validateReq)
+	if validateRec.Code != http.StatusOK {
+		t.Fatalf("validate_only status mismatch: got=%d want=%d body=%s", validateRec.Code, http.StatusOK, validateRec.Body.String())
+	}
+	if rt.Config.Scan.RescanIntervalSeconds == 30 {
+		t.Fatalf("validate_only should not mutate runtime config")
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
+		"items": [
+			{"key":"http.listen_addr","value":"127.0.0.1:19999"},
+			{"key":"listen.enabled","value":false},
+			{"key":"listen.renew_threshold_seconds","value":77},
+			{"key":"listen.max_auto_renew_amount","value":12345},
+			{"key":"listen.tick_seconds","value":9},
+			{"key":"scan.rescan_interval_seconds","value":120},
+			{"key":"seller.pricing.resale_discount_ratio","value":0.75}
+		]
+	}`))
+	updateRec := httptest.NewRecorder()
+	srv.handleAdminConfig(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status mismatch: got=%d want=%d body=%s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+	if rt.Config.HTTP.ListenAddr != "127.0.0.1:19999" {
+		t.Fatalf("http.listen_addr not updated: %s", rt.Config.HTTP.ListenAddr)
+	}
+	if rt.Config.Scan.RescanIntervalSeconds != 120 {
+		t.Fatalf("scan interval not updated: %d", rt.Config.Scan.RescanIntervalSeconds)
+	}
+	if cfgBool(rt.Config.Listen.Enabled, true) {
+		t.Fatalf("listen.enabled not updated: got=true want=false")
+	}
+	if rt.Config.Listen.RenewThresholdSeconds != 77 {
+		t.Fatalf("listen.renew_threshold_seconds not updated: %d", rt.Config.Listen.RenewThresholdSeconds)
+	}
+	if rt.Config.Listen.MaxAutoRenewAmount != 12345 {
+		t.Fatalf("listen.max_auto_renew_amount not updated: %d", rt.Config.Listen.MaxAutoRenewAmount)
+	}
+	if rt.Config.Listen.TickSeconds != 9 {
+		t.Fatalf("listen.tick_seconds not updated: %d", rt.Config.Listen.TickSeconds)
+	}
+	if rt.Config.Seller.Pricing.ResaleDiscountBPS != 7500 {
+		t.Fatalf("resale_discount_bps mismatch: got=%d want=7500", rt.Config.Seller.Pricing.ResaleDiscountBPS)
+	}
+
+	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
+		"items": [{"key":"scan.rescan_interval_seconds","value":1}]
+	}`))
+	badRec := httptest.NewRecorder()
+	srv.handleAdminConfig(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad bound status mismatch: got=%d want=%d body=%s", badRec.Code, http.StatusBadRequest, badRec.Body.String())
+	}
+}
+
 func TestHandleLiveAPIFlow(t *testing.T) {
 	t.Parallel()
 

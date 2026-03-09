@@ -126,8 +126,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
-	clientActor, err := dual2of2.BuildActor("client", strings.TrimSpace(rt.Config.Keys.PrivkeyHex), isMainnet)
+	clientActor, err := buildClientActorFromConfig(rt.Config)
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
@@ -220,8 +219,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
-	clientActor, err := dual2of2.BuildActor("client", strings.TrimSpace(rt.Config.Keys.PrivkeyHex), isMainnet)
+	clientActor, err := buildClientActorFromConfig(rt.Config)
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}

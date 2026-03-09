@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -61,6 +62,13 @@ const (
 	defaultMinFreeBytes      = 128 * 1024 * 1024
 	defaultHTTPListenAddr    = "127.0.0.1:18080"
 	defaultFSHTTPListenAddr  = "127.0.0.1:18090"
+	// listen 默认值按网络区分：test 取极小可用值，main 取更稳健值。
+	defaultListenRenewThresholdTestSec = 5
+	defaultListenRenewThresholdMainSec = 1800
+	defaultListenMaxAutoRenewTestSat   = 100
+	defaultListenMaxAutoRenewMainSat   = 200000
+	defaultListenTickTestSec           = 1
+	defaultListenTickMainSec           = 30
 	seedBlockSize            = 65536
 )
 
@@ -649,7 +657,7 @@ func Run(ctx context.Context, cfg Config, opt RunOptions) (*Runtime, error) {
 			runPeriodicScan(ctx, workspaceMgr)
 		}()
 	}
-	// seller.listen loop（按周期扣费/续费），仅在 seller.enabled 且 listen.enabled 时启动。
+	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
 	if cfg.HTTP.Enabled {
 		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, opt.WebAssets, trace)
@@ -833,6 +841,31 @@ func ApplyConfigDefaults(cfg *Config) error {
 	if cfg.Live.Publish.BroadcastIntervalSec == 0 {
 		cfg.Live.Publish.BroadcastIntervalSec = 3
 	}
+	if cfg.Listen.Enabled == nil {
+		v := true
+		cfg.Listen.Enabled = &v
+	}
+	if cfg.Listen.RenewThresholdSeconds == 0 {
+		if cfg.BSV.Network == "main" {
+			cfg.Listen.RenewThresholdSeconds = defaultListenRenewThresholdMainSec
+		} else {
+			cfg.Listen.RenewThresholdSeconds = defaultListenRenewThresholdTestSec
+		}
+	}
+	if cfg.Listen.MaxAutoRenewAmount == 0 {
+		if cfg.BSV.Network == "main" {
+			cfg.Listen.MaxAutoRenewAmount = defaultListenMaxAutoRenewMainSat
+		} else {
+			cfg.Listen.MaxAutoRenewAmount = defaultListenMaxAutoRenewTestSat
+		}
+	}
+	if cfg.Listen.TickSeconds == 0 {
+		if cfg.BSV.Network == "main" {
+			cfg.Listen.TickSeconds = defaultListenTickMainSec
+		} else {
+			cfg.Listen.TickSeconds = defaultListenTickTestSec
+		}
+	}
 	if cfg.Scan.RescanIntervalSeconds == 0 {
 		cfg.Scan.RescanIntervalSeconds = defaultRescanIntervalSec
 	}
@@ -861,7 +894,7 @@ func ApplyConfigDefaults(cfg *Config) error {
 		cfg.FSHTTP.PrefetchDistanceChunks = 8
 	}
 	if strings.TrimSpace(cfg.Log.ConsoleMinLevel) == "" {
-		cfg.Log.ConsoleMinLevel = obs.LevelBusiness
+		cfg.Log.ConsoleMinLevel = obs.LevelNone
 	}
 	return nil
 }
@@ -890,7 +923,7 @@ func ResolveLogConfig(cfg *Config) (string, string) {
 	}
 	consoleMin := strings.TrimSpace(cfg.Log.ConsoleMinLevel)
 	if consoleMin == "" {
-		consoleMin = obs.LevelBusiness
+		consoleMin = obs.LevelNone
 	}
 	return filepath.Clean(logFile), consoleMin
 }
@@ -956,12 +989,38 @@ func validateConfig(cfg *Config) error {
 	if cfg.FSHTTP.DownloadWaitTimeoutSeconds == 0 {
 		return errors.New("fs_http.download_wait_timeout_seconds must be > 0")
 	}
+	if strings.TrimSpace(cfg.HTTP.ListenAddr) == "" {
+		return errors.New("http.listen_addr is required")
+	}
+	if !isLoopbackListenAddr(cfg.HTTP.ListenAddr) && strings.TrimSpace(cfg.HTTP.AuthToken) == "" {
+		return errors.New("http.auth_token is required when http.listen_addr is not loopback")
+	}
 	return nil
 }
 
 // ValidateConfig 对外提供启动前配置校验，失败即中止启动。
 func ValidateConfig(cfg *Config) error {
 	return validateConfig(cfg)
+}
+
+func isLoopbackListenAddr(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.TrimSpace(host), "[]")
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {
@@ -1218,6 +1277,39 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_ledger_entries(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			txid TEXT NOT NULL,
+			direction TEXT NOT NULL,
+			category TEXT NOT NULL,
+			amount_satoshi INTEGER NOT NULL,
+			counterparty_label TEXT NOT NULL,
+			status TEXT NOT NULL,
+			block_height INTEGER NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			raw_ref_id TEXT NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_chain_tx_raw(
+			txid TEXT PRIMARY KEY,
+			block_height INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			wallet_input_satoshi INTEGER NOT NULL,
+			wallet_output_satoshi INTEGER NOT NULL,
+			net_amount_satoshi INTEGER NOT NULL,
+			category TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS static_file_prices(
+			path TEXT PRIMARY KEY,
+			floor_unit_price_sat_per_64k INTEGER NOT NULL,
+			resale_discount_bps INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS live_follows(
 			stream_id TEXT PRIMARY KEY,
 			stream_uri TEXT NOT NULL,
@@ -1266,6 +1358,12 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_created_at ON wallet_fund_flows(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_created_at ON wallet_ledger_entries(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_occurred_at ON wallet_ledger_entries(occurred_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_txid ON wallet_ledger_entries(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_direction_category ON wallet_ledger_entries(direction, category, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_chain_tx_raw_height ON wallet_chain_tx_raw(block_height DESC, txid DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_static_file_prices_updated ON static_file_prices(updated_at_unix DESC)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -2689,26 +2787,56 @@ func parseAddr(full string) (*peer.AddrInfo, error) {
 
 func resolvePrivKeyHex(cfg Config, cliPrivHex string) (string, error) {
 	if s := strings.TrimSpace(cliPrivHex); s != "" {
-		return s, nil
+		return normalizeRawSecp256k1PrivKeyHex(s)
 	}
 	if s := strings.TrimSpace(cfg.Keys.PrivkeyHex); s != "" {
-		return s, nil
+		return normalizeRawSecp256k1PrivKeyHex(s)
 	}
 	return "", nil
 }
 
-func parsePrivHex(s string) (crypto.PrivKey, error) {
-	b, err := hex.DecodeString(strings.TrimSpace(s))
+func normalizeRawSecp256k1PrivKeyHex(s string) (string, error) {
+	hexKey := strings.ToLower(strings.TrimSpace(s))
+	if len(hexKey) != 64 {
+		return "", fmt.Errorf("invalid private key format: expect 32-byte secp256k1 hex (len=64)")
+	}
+	b, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return "", fmt.Errorf("invalid private key hex: %w", err)
+	}
+	priv, err := crypto.UnmarshalSecp256k1PrivateKey(b)
+	if err != nil {
+		return "", fmt.Errorf("invalid secp256k1 private key: %w", err)
+	}
+	raw, err := priv.Raw()
+	if err != nil {
+		return "", fmt.Errorf("read private key raw bytes: %w", err)
+	}
+	if len(raw) != 32 {
+		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(raw))
+	}
+	return strings.ToLower(hex.EncodeToString(raw)), nil
+}
+
+func buildClientActorFromConfig(cfg Config) (*dual2of2.Actor, error) {
+	privHex, err := normalizeRawSecp256k1PrivKeyHex(cfg.Keys.PrivkeyHex)
 	if err != nil {
 		return nil, err
 	}
-	if k, err := crypto.UnmarshalPrivateKey(b); err == nil {
-		return k, nil
+	isMainnet := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
+	return dual2of2.BuildActor("client", privHex, isMainnet)
+}
+
+func parsePrivHex(s string) (crypto.PrivKey, error) {
+	hexKey, err := normalizeRawSecp256k1PrivKeyHex(s)
+	if err != nil {
+		return nil, err
 	}
-	if len(b) == 32 {
-		return crypto.UnmarshalSecp256k1PrivateKey(b)
+	b, err := hex.DecodeString(hexKey)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("invalid private key format: expect libp2p MarshalPrivateKey bytes or raw 32-byte secp256k1 key")
+	return crypto.UnmarshalSecp256k1PrivateKey(b)
 }
 
 func localPubKeyHex(h host.Host) (string, error) {

@@ -168,6 +168,63 @@ tbody tr { cursor: pointer; }
 .btn-light:hover { background: #f3f7fc; border-color: #9bb3cd; }
 .btn-ghost { margin-top: auto; border-color: #3e5f88; background: transparent; }
 
+/* 静态文件管理器样式 */
+.path-bar {
+  padding: 8px 12px;
+  background: #f5f8fd;
+  border-radius: 8px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  color: #4e627b;
+}
+
+.path-bar .btn-ghost {
+  background: #fff;
+  border: 1px solid #ccd7e6;
+  color: #26476b;
+}
+
+.path-bar .btn-ghost:hover {
+  background: #f0f5ff;
+  border-color: #0f6cad;
+}
+
+/* 复制按钮样式 */
+.copy-btn {
+  background: transparent;
+  border: 1px dashed #b6c7dc;
+  color: #26476b;
+  font-family: monospace;
+  font-size: 12px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.copy-btn:hover {
+  background: #e8f3ff;
+  border-color: #0f6cad;
+  border-style: solid;
+}
+
+.file-name-btn {
+  background: #e8f3ff;
+  border: 1px solid #b8d4f0;
+  color: #0a4f81;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.file-name-btn:hover {
+  background: #d4e9ff;
+  border-color: #8abce8;
+}
+
+.dir-icon { color: #f59e0b; }
+.file-icon { color: #6b7280; }
+
 .hint { margin-top: 6px; color: #0a4f81; font-size: 12px; }
 .detail-pre {
   margin-top: 10px;

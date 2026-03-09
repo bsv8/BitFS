@@ -4,16 +4,17 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"sync"
 	"strings"
 	"time"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/libp2p/go-libp2p/core/peer"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func startListenLoops(ctx context.Context, rt *Runtime) {
@@ -23,16 +24,115 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	if !cfgBool(rt.Config.Listen.Enabled, true) {
 		return
 	}
-	if !rt.Config.Seller.Enabled {
+	// 自动触发约束：max_auto_renew_amount=0 视为显式关闭监听资金池自动动作。
+	if rt.Config.Listen.MaxAutoRenewAmount == 0 {
+		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": "all"})
 		return
+	}
+	intervalSec := rt.Config.Listen.TickSeconds
+	if intervalSec == 0 {
+		intervalSec = 5
+	}
+	type loopHandle struct {
+		cancel context.CancelFunc
+		runID  uint64
+	}
+	var mu sync.Mutex
+	running := map[string]loopHandle{}
+	var nextRunID uint64
+
+	startOne := func(gw peer.AddrInfo) {
+		gwID := gw.ID.String()
+		if gwID == "" {
+			return
+		}
+		mu.Lock()
+		if _, ok := running[gwID]; ok {
+			mu.Unlock()
+			return
+		}
+		loopCtx, cancel := context.WithCancel(ctx)
+		nextRunID++
+		runID := nextRunID
+		running[gwID] = loopHandle{cancel: cancel, runID: runID}
+		mu.Unlock()
+
+		go func() {
+			defer func() {
+				mu.Lock()
+				// 仅移除当前实例，避免覆盖新一轮重连创建的 loop。
+				if cur, ok := running[gwID]; ok && cur.runID == runID {
+					delete(running, gwID)
+				}
+				mu.Unlock()
+			}()
+			runListenLoop(loopCtx, rt, gw)
+		}()
+	}
+
+	stopMissing := func(active map[string]struct{}) {
+		mu.Lock()
+		defer mu.Unlock()
+		for gwID, h := range running {
+			if _, ok := active[gwID]; ok {
+				continue
+			}
+			h.cancel()
+			delete(running, gwID)
+		}
+	}
+
+	reconcile := func() {
+		gws := snapshotHealthyGateways(rt)
+		active := make(map[string]struct{}, len(gws))
+		for _, gw := range gws {
+			gwID := gw.ID.String()
+			if gwID == "" {
+				continue
+			}
+			active[gwID] = struct{}{}
+			startOne(gw)
+		}
+		stopMissing(active)
+	}
+
+	// 启动立即对齐一次，之后按 tick 秒持续自动对齐。
+	reconcile()
+	go func() {
+		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				mu.Lock()
+				for gwID, h := range running {
+					h.cancel()
+					delete(running, gwID)
+				}
+				mu.Unlock()
+				return
+			case <-ticker.C:
+				reconcile()
+			}
+		}
+	}()
+}
+
+func snapshotHealthyGateways(rt *Runtime) []peer.AddrInfo {
+	if rt == nil {
+		return nil
+	}
+	if rt.gwManager != nil {
+		gws := rt.gwManager.GetConnectedGateways()
+		if len(gws) > 0 {
+			rt.HealthyGWs = gws
+			return append([]peer.AddrInfo(nil), gws...)
+		}
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return
+		return nil
 	}
-	for _, gw := range rt.HealthyGWs {
-		gw := gw
-		go runListenLoop(ctx, rt, gw)
-	}
+	return append([]peer.AddrInfo(nil), rt.HealthyGWs...)
 }
 
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
@@ -112,12 +212,7 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 		return nil, fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
 	}
 
-	clientPrivHex := strings.TrimSpace(rt.Config.Keys.PrivkeyHex)
-	if len(clientPrivHex) != 64 {
-		return nil, fmt.Errorf("keys.privkey_hex must be 32-byte secp256k1 (hex length 64)")
-	}
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
-	clientActor, err := dual2of2.BuildActor("client", clientPrivHex, isMainnet)
+	clientActor, err := buildClientActorFromConfig(rt.Config)
 	if err != nil {
 		return nil, err
 	}
@@ -203,10 +298,10 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	}
 
 	baseReq := dual2of2.BaseTxReq{
-		ClientID:     rt.Config.ClientID,
-		SpendTxID:    createResp.SpendTxID,
-		BaseTx:       baseTxBytes,
-		ClientSig:    append([]byte(nil), (*clientOpenSig)...),
+		ClientID:  rt.Config.ClientID,
+		SpendTxID: createResp.SpendTxID,
+		BaseTx:    baseTxBytes,
+		ClientSig: append([]byte(nil), (*clientOpenSig)...),
 	}
 	var baseOut dual2of2.BaseTxResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolBaseTx, gwSec(rt.rpcTrace), baseReq, &baseOut); err != nil {
@@ -316,12 +411,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		return fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
 	}
 
-	clientPrivHex := strings.TrimSpace(rt.Config.Keys.PrivkeyHex)
-	if len(clientPrivHex) != 64 {
-		return fmt.Errorf("keys.privkey_hex must be 32-byte secp256k1 (hex length 64)")
-	}
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.Config.BSV.Network)) == "main"
-	clientActor, err := dual2of2.BuildActor("client", clientPrivHex, isMainnet)
+	clientActor, err := buildClientActorFromConfig(rt.Config)
 	if err != nil {
 		return err
 	}
