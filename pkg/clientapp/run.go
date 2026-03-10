@@ -62,11 +62,11 @@ const (
 	defaultMinFreeBytes      = 128 * 1024 * 1024
 	defaultHTTPListenAddr    = "127.0.0.1:18080"
 	defaultFSHTTPListenAddr  = "127.0.0.1:18090"
-	// listen 默认值按网络区分：test 取极小可用值，main 取更稳健值。
+	// listen 默认值按网络区分：test 取较小轮数便于联调，main 取更稳健轮数。
 	defaultListenRenewThresholdTestSec = 5
 	defaultListenRenewThresholdMainSec = 1800
-	defaultListenMaxAutoRenewTestSat   = 100
-	defaultListenMaxAutoRenewMainSat   = 200000
+	defaultListenAutoRenewRoundsTest   = 5
+	defaultListenAutoRenewRoundsMain   = 200
 	defaultListenTickTestSec           = 1
 	defaultListenTickMainSec           = 30
 	seedBlockSize                      = 65536
@@ -303,7 +303,7 @@ type Config struct {
 	Listen struct {
 		Enabled               *bool  `yaml:"enabled" toml:"enabled"`
 		RenewThresholdSeconds uint32 `yaml:"renew_threshold_seconds" toml:"renew_threshold_seconds"`
-		MaxAutoRenewAmount    uint64 `yaml:"max_auto_renew_amount" toml:"max_auto_renew_amount"`
+		AutoRenewRounds       uint64 `yaml:"auto_renew_rounds" toml:"auto_renew_rounds"`
 		TickSeconds           uint32 `yaml:"tick_seconds" toml:"tick_seconds"`
 	} `yaml:"listen" toml:"listen"`
 	Scan struct {
@@ -394,7 +394,7 @@ type RunInput struct {
 	Listen struct {
 		Enabled               *bool
 		RenewThresholdSeconds uint32
-		MaxAutoRenewAmount    uint64
+		AutoRenewRounds       uint64
 		TickSeconds           uint32
 	}
 	Scan struct {
@@ -471,7 +471,7 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 		in.Listen.Enabled = &v
 	}
 	in.Listen.RenewThresholdSeconds = cfg.Listen.RenewThresholdSeconds
-	in.Listen.MaxAutoRenewAmount = cfg.Listen.MaxAutoRenewAmount
+	in.Listen.AutoRenewRounds = cfg.Listen.AutoRenewRounds
 	in.Listen.TickSeconds = cfg.Listen.TickSeconds
 	in.Scan.StartupFullScan = cfg.Scan.StartupFullScan
 	in.Scan.FSWatchEnabled = cfg.Scan.FSWatchEnabled
@@ -534,7 +534,7 @@ func (in RunInput) toConfig() Config {
 		cfg.Listen.Enabled = &v
 	}
 	cfg.Listen.RenewThresholdSeconds = in.Listen.RenewThresholdSeconds
-	cfg.Listen.MaxAutoRenewAmount = in.Listen.MaxAutoRenewAmount
+	cfg.Listen.AutoRenewRounds = in.Listen.AutoRenewRounds
 	cfg.Listen.TickSeconds = in.Listen.TickSeconds
 	cfg.Scan.StartupFullScan = in.Scan.StartupFullScan
 	cfg.Scan.FSWatchEnabled = in.Scan.FSWatchEnabled
@@ -1112,11 +1112,11 @@ func ApplyConfigDefaults(cfg *Config) error {
 			cfg.Listen.RenewThresholdSeconds = defaultListenRenewThresholdTestSec
 		}
 	}
-	if cfg.Listen.MaxAutoRenewAmount == 0 {
+	if cfg.Listen.AutoRenewRounds == 0 {
 		if cfg.BSV.Network == "main" {
-			cfg.Listen.MaxAutoRenewAmount = defaultListenMaxAutoRenewMainSat
+			cfg.Listen.AutoRenewRounds = defaultListenAutoRenewRoundsMain
 		} else {
-			cfg.Listen.MaxAutoRenewAmount = defaultListenMaxAutoRenewTestSat
+			cfg.Listen.AutoRenewRounds = defaultListenAutoRenewRoundsTest
 		}
 	}
 	if cfg.Listen.TickSeconds == 0 {
@@ -1160,8 +1160,11 @@ func ApplyConfigDefaults(cfg *Config) error {
 }
 
 func ParseConfigTOML(data []byte) (Config, error) {
+	// 历史字段迁移：金额语义已下线，统一收敛到“续费轮数”。
+	// 迁移后仍走严格模式，避免把未知字段静默吞掉。
+	normalized := strings.ReplaceAll(string(data), "max_auto_renew_amount", "auto_renew_rounds")
 	var cfg Config
-	dec := toml.NewDecoder(strings.NewReader(string(data)))
+	dec := toml.NewDecoder(strings.NewReader(normalized))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&cfg); err != nil {
 		return Config{}, err

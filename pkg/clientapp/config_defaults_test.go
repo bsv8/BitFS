@@ -15,8 +15,8 @@ func TestApplyConfigDefaults_ListenDefaultsByNetwork(t *testing.T) {
 		if cfg.Listen.Enabled == nil || !*cfg.Listen.Enabled {
 			t.Fatalf("listen.enabled default should be true")
 		}
-		if got, want := cfg.Listen.MaxAutoRenewAmount, uint64(100); got != want {
-			t.Fatalf("listen.max_auto_renew_amount=%d, want %d", got, want)
+		if got, want := cfg.Listen.AutoRenewRounds, uint64(5); got != want {
+			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)
 		}
 		if got, want := cfg.Listen.RenewThresholdSeconds, uint32(5); got != want {
 			t.Fatalf("listen.renew_threshold_seconds=%d, want %d", got, want)
@@ -36,8 +36,8 @@ func TestApplyConfigDefaults_ListenDefaultsByNetwork(t *testing.T) {
 		if cfg.Listen.Enabled == nil || !*cfg.Listen.Enabled {
 			t.Fatalf("listen.enabled default should be true")
 		}
-		if got, want := cfg.Listen.MaxAutoRenewAmount, uint64(200000); got != want {
-			t.Fatalf("listen.max_auto_renew_amount=%d, want %d", got, want)
+		if got, want := cfg.Listen.AutoRenewRounds, uint64(200); got != want {
+			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)
 		}
 		if got, want := cfg.Listen.RenewThresholdSeconds, uint32(1800); got != want {
 			t.Fatalf("listen.renew_threshold_seconds=%d, want %d", got, want)

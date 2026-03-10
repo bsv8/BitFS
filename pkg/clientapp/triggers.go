@@ -105,7 +105,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.MaxAutoRenewAmount, info)
+	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.AutoRenewRounds, info)
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
@@ -199,7 +199,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.MaxAutoRenewAmount, info)
+	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.AutoRenewRounds, info)
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}

@@ -159,7 +159,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	for _, key := range []string{
 		"listen.enabled",
 		"listen.renew_threshold_seconds",
-		"listen.max_auto_renew_amount",
+		"listen.auto_renew_rounds",
 		"listen.tick_seconds",
 	} {
 		if !hasKey[key] {
@@ -186,7 +186,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 			{"key":"http.listen_addr","value":"127.0.0.1:19999"},
 			{"key":"listen.enabled","value":false},
 			{"key":"listen.renew_threshold_seconds","value":77},
-			{"key":"listen.max_auto_renew_amount","value":12345},
+			{"key":"listen.auto_renew_rounds","value":12345},
 			{"key":"listen.tick_seconds","value":9},
 			{"key":"scan.rescan_interval_seconds","value":120},
 			{"key":"seller.pricing.resale_discount_ratio","value":0.75}
@@ -209,8 +209,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if rt.runIn.Listen.RenewThresholdSeconds != 77 {
 		t.Fatalf("listen.renew_threshold_seconds not updated: %d", rt.runIn.Listen.RenewThresholdSeconds)
 	}
-	if rt.runIn.Listen.MaxAutoRenewAmount != 12345 {
-		t.Fatalf("listen.max_auto_renew_amount not updated: %d", rt.runIn.Listen.MaxAutoRenewAmount)
+	if rt.runIn.Listen.AutoRenewRounds != 12345 {
+		t.Fatalf("listen.auto_renew_rounds not updated: %d", rt.runIn.Listen.AutoRenewRounds)
 	}
 	if rt.runIn.Listen.TickSeconds != 9 {
 		t.Fatalf("listen.tick_seconds not updated: %d", rt.runIn.Listen.TickSeconds)

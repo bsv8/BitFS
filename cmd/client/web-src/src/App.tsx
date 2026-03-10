@@ -739,6 +739,86 @@ function shortHex(s: string, n = 4) {
   return `${s.slice(0, n)}...${s.slice(-n)}`;
 }
 
+/**
+ * 详情表格组件 - 将对象数据渲染为 title:value 表格
+ * 长字符串（如 hex、二进制）自动截断显示为 前四...后四 格式
+ */
+function DetailTable({ data }: { data: Record<string, unknown> | null | undefined })
+{
+  if (!data || typeof data !== "object") {
+    return <div style={{ color: "#6a7d95", padding: "20px 0" }}>无数据</div>;
+  }
+
+  const entries = Object.entries(data as Record<string, unknown>);
+
+  if (entries.length === 0) {
+    return <div style={{ color: "#6a7d95", padding: "20px 0" }}>空对象</div>;
+  }
+
+  return (
+    <table className="detail-table">
+      <tbody>
+        {entries.map(([key, value]) => {
+          const { displayValue, title } = formatDetailValue(value);
+          return (
+            <tr key={key}>
+              <td className="detail-key">{key}</td>
+              <td className="detail-value" title={title}>{displayValue}</td>
+            </tr>
+          );
+        })}
+      </tbody>
+    </table>
+  );
+}
+
+/**
+ * 格式化详情字段值
+ * - 长 hex 字符串显示为 前四...后四
+ * - 嵌套对象递归格式化为 JSON
+ * - 数组格式化为 JSON
+ */
+function formatDetailValue(value: unknown): { displayValue: string; title: string } {
+  if (value === null) return { displayValue: "null", title: "null" };
+  if (value === undefined) return { displayValue: "undefined", title: "undefined" };
+
+  const type = typeof value;
+
+  if (type === "boolean" || type === "number") {
+    const str = String(value);
+    return { displayValue: str, title: str };
+  }
+
+  if (type === "string") {
+    const str = value as string;
+    // 长字符串（可能是 hex、txid、hash 等）截断显示
+    if (str.length > 20) {
+      return { displayValue: shortHex(str, 4), title: str };
+    }
+    return { displayValue: str, title: str };
+  }
+
+  if (type === "object") {
+    if (Array.isArray(value)) {
+      const json = JSON.stringify(value, null, 2);
+      // 数组内容太长时显示摘要
+      if (json.length > 100) {
+        return { displayValue: `[数组 ${value.length} 项]`, title: json };
+      }
+      return { displayValue: json, title: json };
+    }
+    // 嵌套对象
+    const json = JSON.stringify(value, null, 2);
+    if (json.length > 100) {
+      return { displayValue: "{对象}", title: json };
+    }
+    return { displayValue: json, title: json };
+  }
+
+  const str = String(value);
+  return { displayValue: str, title: str };
+}
+
 function gatewayEventMsg(e: GatewayEventsResp["items"][number]) {
   const msgID = (e.msg_id || "").trim();
   if (msgID) return msgID;
@@ -829,7 +909,8 @@ export default function App() {
   const [gatewayEvents, setGatewayEvents] = useState<GatewayEventsResp | null>(null);
   const [txDetail, setTxDetail] = useState<unknown>(null);
   const [walletLedgerDetail, setWalletLedgerDetail] = useState<unknown>(null);
-  const [gatewayEventDetail, setGatewayEventDetail] = useState<unknown>(null);
+  const [gatewayEventDetail, setGatewayEventDetail] = useState<Record<string, unknown> | null>(null);
+  const [gatewayEventModalOpen, setGatewayEventModalOpen] = useState(false);
   const [walletSummary, setWalletSummary] = useState<WalletSummaryResp | null>(null);
 
   // 网关状态
@@ -961,16 +1042,24 @@ export default function App() {
     const pageSize = toInt(route.query.get("pageSize"), 20);
     const gatewayPeerID = route.query.get("gateway_peer_id") || "";
     const action = route.query.get("action") || "";
-    const detailID = toInt(route.query.get("detailId"), 0, 0, 1_000_000_000);
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
     if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
     if (action) params.set("action", action);
     const list = await api<GatewayEventsResp>(`api/v1/gateways/events?${params.toString()}`);
     setGatewayEvents(list);
-    if (detailID > 0) {
-      setGatewayEventDetail(await api(`api/v1/gateways/events/detail?id=${detailID}`));
-    } else {
-      setGatewayEventDetail(null);
+    // 网关事件详情通过弹窗显示，不再根据 URL detailId 加载
+    setGatewayEventDetail(null);
+    setGatewayEventModalOpen(false);
+  };
+
+  // 加载网关事件详情并打开弹窗
+  const loadGatewayEventDetail = async (id: number) => {
+    try {
+      const detail = await api<Record<string, unknown>>(`api/v1/gateways/events/detail?id=${id}`);
+      setGatewayEventDetail(detail);
+      setGatewayEventModalOpen(true);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "加载详情失败");
     }
   };
 
@@ -1762,7 +1851,7 @@ export default function App() {
                 {gatewayEvents.items.map((e) => {
                   const msg = gatewayEventMsg(e);
                   return (
-                    <tr key={e.id} className={toInt(route.query.get("detailId"), 0, 0, 1_000_000_000) === e.id ? "selected-row" : ""} onClick={() => updateQuery({ detailId: e.id })}>
+                    <tr key={e.id} onClick={() => loadGatewayEventDetail(e.id)}>
                       <td>{t(e.created_at_unix)}</td>
                       <td title={e.gateway_peer_id}>{short(e.gateway_peer_id, 8)}</td>
                       <td>{e.action}</td>
@@ -1774,7 +1863,23 @@ export default function App() {
                 })}
               </tbody></table></div>
               <Pager total={gatewayEvents.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
-              {gatewayEventDetail ? <pre className="detail-pre">{JSON.stringify(gatewayEventDetail, null, 2)}</pre> : <div className="hint">点击某条记录查看事件详情 payload</div>}
+              <div className="hint">点击某条记录查看事件详情</div>
+
+              {/* 网关事件详情弹窗 */}
+              <Modal
+                title="网关事件详情"
+                isOpen={gatewayEventModalOpen}
+                onClose={() => setGatewayEventModalOpen(false)}
+              >
+                {gatewayEventDetail && (
+                  <div className="detail-table-wrap">
+                    <DetailTable data={gatewayEventDetail} />
+                  </div>
+                )}
+                <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+                  <button className="btn btn-light" onClick={() => setGatewayEventModalOpen(false)}>关闭</button>
+                </div>
+              </Modal>
             </section>
           );
         })() : null}

@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -17,6 +18,11 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
+var (
+	errListenFeePoolRotateRequired = errors.New("listen fee pool rotate required")
+	errListenFeePoolStop           = errors.New("listen fee pool stopped")
+)
+
 func startListenLoops(ctx context.Context, rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.DB == nil {
 		return
@@ -24,8 +30,8 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	if !cfgBool(rt.runIn.Listen.Enabled, true) {
 		return
 	}
-	// 自动触发约束：max_auto_renew_amount=0 视为显式关闭监听资金池自动动作。
-	if rt.runIn.Listen.MaxAutoRenewAmount == 0 {
+	// 自动触发约束：auto_renew_rounds=0 视为显式关闭监听资金池自动动作。
+	if rt.runIn.Listen.AutoRenewRounds == 0 {
 		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": "all"})
 		return
 	}
@@ -172,8 +178,8 @@ func clearGatewayRuntimeError(rt *Runtime, gw peer.ID) {
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	lc := rt.runIn.Listen
 
-	initialFund := lc.MaxAutoRenewAmount
-	if initialFund == 0 {
+	autoRenewRounds := lc.AutoRenewRounds
+	if autoRenewRounds == 0 {
 		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": gw.ID.String()})
 		return
 	}
@@ -197,7 +203,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	})
 
 	// 2) 确保本地已有 active 费用池会话（没有则创建）
-	sess, err := ensureActiveFeePool(ctx, rt, gw, initialFund, info)
+	sess, err := ensureActiveFeePool(ctx, rt, gw, autoRenewRounds, info)
 	if err != nil {
 		recordGatewayRuntimeError(rt, gw.ID, "fee_pool_open", err)
 		obs.Error("bitcast-client", "fee_pool_open_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
@@ -219,6 +225,22 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 			return
 		case <-ticker.C:
 			if err := payOneListenCycle(ctx, rt, gw.ID, sess); err != nil {
+				if errors.Is(err, errListenFeePoolRotateRequired) {
+					nextSess, rotateErr := rotateListenFeePool(ctx, rt, gw, sess, autoRenewRounds, info)
+					if rotateErr == nil {
+						sess = nextSess
+						clearGatewayRuntimeError(rt, gw.ID)
+						continue
+					}
+					if errors.Is(rotateErr, errListenFeePoolStop) {
+						recordGatewayRuntimeError(rt, gw.ID, "fee_pool_rotate_open", rotateErr)
+						obs.Error("bitcast-client", "fee_pool_listen_stopped", map[string]any{"gateway": gw.ID.String(), "error": rotateErr.Error()})
+						return
+					}
+					recordGatewayRuntimeError(rt, gw.ID, "fee_pool_rotate_open", rotateErr)
+					obs.Error("bitcast-client", "fee_pool_rotate_failed", map[string]any{"gateway": gw.ID.String(), "error": rotateErr.Error()})
+					continue
+				}
 				recordGatewayRuntimeError(rt, gw.ID, "fee_pool_pay", err)
 				obs.Error("bitcast-client", "fee_pool_listen_pay_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
 			} else {
@@ -228,7 +250,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	}
 }
 
-func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, targetPoolAmount uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
 	if rt == nil || rt.Host == nil || rt.DB == nil || rt.Chain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -236,7 +258,16 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	if existing, ok := rt.getFeePool(gwID); ok && existing != nil && existing.Status == "active" && existing.SpendTxID != "" {
 		return existing, nil
 	}
+	return createFeePoolSession(ctx, rt, gw, autoRenewRounds, info)
+}
 
+// createFeePoolSession 在链上创建新的费用池并注册为当前 active 会话。
+// 设计说明：监听轮换场景要求“先开新池再关旧池”，因此新池创建流程必须可复用。
+func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+	if rt == nil || rt.Host == nil || rt.DB == nil || rt.Chain == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	gwID := gw.ID.String()
 	// server BSV 公钥：从 peerstore 提取 raw（必须是 33字节压缩公钥）。
 	pub := rt.Host.Peerstore().PubKey(gw.ID)
 	if pub == nil {
@@ -273,20 +304,15 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 		kmutxos = append(kmutxos, kmlibs.UTXO{TxID: u.TxID, Vout: u.Vout, Value: u.Value})
 	}
 
-	poolAmount := targetPoolAmount
-	if poolAmount == 0 {
-		// target=0 表示“非监听场景，仅用于业务发布扣费”。
-		// 这里用小额默认值，避免每次 demand 发布都占用过大本金。
-		poolAmount = 200
-		if info.SinglePublishFeeSatoshi > 0 && info.SinglePublishFeeSatoshi*20 > poolAmount {
-			poolAmount = info.SinglePublishFeeSatoshi * 20
-		}
+	if autoRenewRounds == 0 {
+		return nil, fmt.Errorf("auto renew rounds is zero")
+	}
+	poolAmount, err := listenPoolAmountByRounds(autoRenewRounds, info.SingleCycleFeeSatoshi, 0)
+	if err != nil {
+		return nil, err
 	}
 	if info.MinimumPoolAmountSatoshi > 0 && poolAmount < info.MinimumPoolAmountSatoshi {
 		poolAmount = info.MinimumPoolAmountSatoshi
-	}
-	if poolAmount == 0 {
-		return nil, fmt.Errorf("pool amount is zero")
 	}
 
 	tip, err := rt.Chain.GetTipHeight()
@@ -311,6 +337,49 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, tar
 	)
 	if err != nil {
 		return nil, fmt.Errorf("build spend tx failed: %w", err)
+	}
+	if clientAmount > poolAmount {
+		return nil, fmt.Errorf("invalid spend tx client amount: pool=%d client=%d", poolAmount, clientAmount)
+	}
+	spendTxFeeSat := poolAmount - clientAmount
+	requiredPoolAmount, err := listenPoolAmountByRounds(autoRenewRounds, info.SingleCycleFeeSatoshi, spendTxFeeSat)
+	if err != nil {
+		return nil, err
+	}
+	if info.MinimumPoolAmountSatoshi > 0 && requiredPoolAmount < info.MinimumPoolAmountSatoshi {
+		requiredPoolAmount = info.MinimumPoolAmountSatoshi
+	}
+	if requiredPoolAmount > poolAmount {
+		poolAmount = requiredPoolAmount
+		baseResp, err = ce.BuildDualFeePoolBaseTx(&kmutxos, poolAmount, clientActor.PrivKey, serverPub, false, info.FeeRateSatPerByte)
+		if err != nil {
+			return nil, fmt.Errorf("rebuild base tx failed: %w", err)
+		}
+		spendTx, clientOpenSig, clientAmount, err = ce.BuildDualFeePoolSpendTX(
+			baseResp.Tx,
+			poolAmount,
+			0,
+			endHeight,
+			clientActor.PrivKey,
+			serverPub,
+			false,
+			info.FeeRateSatPerByte,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("rebuild spend tx failed: %w", err)
+		}
+		if clientAmount > poolAmount {
+			return nil, fmt.Errorf("invalid rebuilt spend tx client amount: pool=%d client=%d", poolAmount, clientAmount)
+		}
+		spendTxFeeSat = poolAmount - clientAmount
+	}
+	if clientAmount < info.SingleCycleFeeSatoshi+spendTxFeeSat {
+		return nil, fmt.Errorf(
+			"pool amount underfunded by rounds: rounds=%d client_amount=%d need=%d",
+			autoRenewRounds,
+			clientAmount,
+			info.SingleCycleFeeSatoshi+spendTxFeeSat,
+		)
 	}
 	spendTxBytes, err := hex.DecodeString(spendTx.Hex())
 	if err != nil {
@@ -435,7 +504,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 	if s.ClientAmount < s.SingleCycleFeeSatoshi+s.SpendTxFeeSat {
 		obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{"gateway": gw.String(), "client_amount": s.ClientAmount, "need": s.SingleCycleFeeSatoshi + s.SpendTxFeeSat})
-		return fmt.Errorf("insufficient fee pool amount")
+		return errListenFeePoolRotateRequired
 	}
 
 	pub := rt.Host.Peerstore().PubKey(gw)
@@ -532,4 +601,94 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		Payload:         out,
 	})
 	return nil
+}
+
+// rotateListenFeePool 处理监听费用池轮换：先开新池并切换，再异步单次尝试关闭旧池。
+// 注意：旧池 close 失败不自动重试，交给管理平台手动处理。
+func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old *feePoolSession, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+	if rt == nil || old == nil {
+		return nil, fmt.Errorf("session missing")
+	}
+	obs.Business("bitcast-client", "fee_pool_rotate_begin", map[string]any{
+		"gateway":         gw.ID.String(),
+		"old_spend_txid":  old.SpendTxID,
+		"old_client_fund": old.ClientAmount,
+		"need":            old.SingleCycleFeeSatoshi + old.SpendTxFeeSat,
+	})
+	next, err := createFeePoolSession(ctx, rt, gw, autoRenewRounds, info)
+	if err != nil {
+		if isWalletInsufficientForListen(err) {
+			return nil, fmt.Errorf("%w: wallet insufficient for new fee pool: %v", errListenFeePoolStop, err)
+		}
+		return nil, err
+	}
+	rt.setFeePool(gw.ID.String(), next)
+	obs.Business("bitcast-client", "fee_pool_rotate_switch_active", map[string]any{
+		"gateway":        gw.ID.String(),
+		"old_spend_txid": old.SpendTxID,
+		"new_spend_txid": next.SpendTxID,
+	})
+
+	old.Status = "retired"
+	go func(oldSpendTxID string, gatewayPeerID string) {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		obs.Business("bitcast-client", "fee_pool_rotate_close_old_begin", map[string]any{
+			"gateway":        gatewayPeerID,
+			"old_spend_txid": oldSpendTxID,
+		})
+		_, closeErr := TriggerGatewayFeePoolCloseBySpendTxID(closeCtx, rt, FeePoolCloseBySpendTxIDParams{
+			SpendTxID:     oldSpendTxID,
+			GatewayPeerID: gatewayPeerID,
+		})
+		if closeErr != nil {
+			obs.Error("bitcast-client", "fee_pool_rotate_close_old_failed", map[string]any{
+				"gateway":        gatewayPeerID,
+				"old_spend_txid": oldSpendTxID,
+				"error":          closeErr.Error(),
+			})
+			return
+		}
+		obs.Business("bitcast-client", "fee_pool_rotate_close_old_ok", map[string]any{
+			"gateway":        gatewayPeerID,
+			"old_spend_txid": oldSpendTxID,
+		})
+	}(old.SpendTxID, gw.ID.String())
+
+	return next, nil
+}
+
+func isWalletInsufficientForListen(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(strings.TrimSpace(err.Error()))
+	if strings.Contains(s, "no utxos") {
+		return true
+	}
+	if strings.Contains(s, "insufficient") {
+		return true
+	}
+	if strings.Contains(s, "not enough") {
+		return true
+	}
+	return false
+}
+
+func listenPoolAmountByRounds(rounds uint64, singleCycleFee uint64, spendTxFee uint64) (uint64, error) {
+	if rounds == 0 {
+		return 0, fmt.Errorf("auto renew rounds is zero")
+	}
+	unit := singleCycleFee + spendTxFee
+	if unit < singleCycleFee {
+		return 0, fmt.Errorf("listen fee overflow: single_cycle_fee=%d spend_tx_fee=%d", singleCycleFee, spendTxFee)
+	}
+	if rounds > ^uint64(0)/unit {
+		return 0, fmt.Errorf("listen pool amount overflow: rounds=%d unit=%d", rounds, unit)
+	}
+	poolAmount := rounds * unit
+	if poolAmount == 0 {
+		return 0, fmt.Errorf("pool amount is zero")
+	}
+	return poolAmount, nil
 }

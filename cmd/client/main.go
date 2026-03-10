@@ -273,7 +273,21 @@ func loadKeyConfigOrEmpty(configPath string) (keyFileConfig, bool, error) {
 		dec := toml.NewDecoder(strings.NewReader(string(b)))
 		dec.DisallowUnknownFields()
 		if err := dec.Decode(&cfg); err != nil {
-			return keyFileConfig{}, true, err
+			// 兼容历史文件：旧版本 config.toml 可能是全量配置（非仅 keys）。
+			// 这里容错提取 keys，随后回写为“仅 keys”新格式，后续继续严格模式。
+			var legacy struct {
+				Keys struct {
+					PrivkeyHex string `toml:"privkey_hex"`
+				} `toml:"keys"`
+			}
+			if decLegacyErr := toml.Unmarshal(b, &legacy); decLegacyErr != nil {
+				return keyFileConfig{}, true, err
+			}
+			cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(legacy.Keys.PrivkeyHex))
+			if err := writeKeyConfig(configPath, cfg); err != nil {
+				return keyFileConfig{}, true, err
+			}
+			return cfg, true, nil
 		}
 		cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(cfg.Keys.PrivkeyHex))
 		return cfg, true, nil

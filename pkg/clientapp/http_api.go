@@ -4733,7 +4733,7 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
-		{Key: "listen.max_auto_renew_amount", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 40, Description: "监听自动续费上限(最小入池金额)"},
+		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（按网关单轮费用计算入池金额）"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
 		{Key: "storage.min_free_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "最小空闲空间"},
@@ -4874,7 +4874,7 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"fs_http.listen_addr":                         cfg.FSHTTP.ListenAddr,
 		"listen.enabled":                              cfgBool(cfg.Listen.Enabled, true),
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
-		"listen.max_auto_renew_amount":                cfg.Listen.MaxAutoRenewAmount,
+		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
 		"listen.tick_seconds":                         cfg.Listen.TickSeconds,
 		"scan.rescan_interval_seconds":                cfg.Scan.RescanIntervalSeconds,
 		"storage.min_free_bytes":                      cfg.Storage.MinFreeBytes,
@@ -5019,8 +5019,8 @@ func adminConfigSetInt(cfg *Config, key string, v int64) error {
 	switch key {
 	case "listen.renew_threshold_seconds":
 		cfg.Listen.RenewThresholdSeconds = uint32(v)
-	case "listen.max_auto_renew_amount":
-		cfg.Listen.MaxAutoRenewAmount = u
+	case "listen.auto_renew_rounds":
+		cfg.Listen.AutoRenewRounds = u
 	case "listen.tick_seconds":
 		cfg.Listen.TickSeconds = uint32(v)
 	case "scan.rescan_interval_seconds":
