@@ -1,0 +1,486 @@
+package clientapp
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/libp2p/go-libp2p/core/peer"
+)
+
+const (
+	clientKernelCommandFeePoolEnsureActive = "feepool.ensure_active"
+	clientKernelCommandFeePoolCycleTick    = "feepool.cycle_tick"
+	clientKernelCommandLivePlanPurchase    = "live.plan_purchase"
+	clientKernelCommandWorkspaceSync       = "workspace.sync"
+	clientKernelCommandDirectDownloadCore  = "direct.download_core"
+	clientKernelCommandTransferByStrategy  = "direct.transfer_by_strategy"
+)
+
+type clientKernelCommand struct {
+	CommandID       string
+	CommandType     string
+	GatewayPeerID   string
+	RequestedBy     string
+	RequestedAt     int64
+	AllowWhenPaused bool
+	Payload         map[string]any
+}
+
+type clientKernelResult struct {
+	Accepted     bool           `json:"accepted"`
+	Status       string         `json:"status"`
+	ErrorCode    string         `json:"error_code,omitempty"`
+	ErrorMessage string         `json:"error_message,omitempty"`
+	StateBefore  string         `json:"state_before,omitempty"`
+	StateAfter   string         `json:"state_after,omitempty"`
+	Data         map[string]any `json:"data,omitempty"`
+}
+
+// clientKernel 是客户端统一业务内核入口：外部只发命令，不直接调用域内业务函数。
+type clientKernel struct {
+	rt      *Runtime
+	feePool *feePoolKernel
+}
+
+func newClientKernel(rt *Runtime) *clientKernel {
+	return &clientKernel{
+		rt:      rt,
+		feePool: newFeePoolKernel(rt),
+	}
+}
+
+func (k *clientKernel) isFeePoolPaused(gatewayPeerID string) bool {
+	if k == nil || k.feePool == nil {
+		return false
+	}
+	return k.feePool.isPaused(gatewayPeerID)
+}
+
+func (k *clientKernel) tryResumeFeePoolPausedGateway(ctx context.Context, gwID string) {
+	if k == nil || k.feePool == nil || k.rt == nil {
+		return
+	}
+	gw, ok := findGatewayByPeerID(k.rt, gwID)
+	if !ok {
+		return
+	}
+	k.feePool.tryResumePausedGateway(ctx, gw)
+}
+
+func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) clientKernelResult {
+	if k == nil || k.rt == nil {
+		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "runtime_not_initialized", ErrorMessage: "runtime not initialized"}
+	}
+	if strings.TrimSpace(cmd.CommandType) == "" {
+		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "command_type_required", ErrorMessage: "command type required"}
+	}
+	if strings.TrimSpace(cmd.CommandID) == "" {
+		cmd.CommandID = newKernelCommandID()
+	}
+	if cmd.RequestedAt <= 0 {
+		cmd.RequestedAt = time.Now().Unix()
+	}
+	if strings.TrimSpace(cmd.RequestedBy) == "" {
+		cmd.RequestedBy = "system"
+	}
+	if cmd.Payload == nil {
+		cmd.Payload = map[string]any{}
+	}
+
+	switch cmd.CommandType {
+	case clientKernelCommandFeePoolEnsureActive, clientKernelCommandFeePoolCycleTick:
+		if k.feePool == nil {
+			return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "feepool_kernel_missing", ErrorMessage: "fee pool kernel not initialized"}
+		}
+		gw, err := pickGatewayForBusiness(k.rt, cmd.GatewayPeerID)
+		if err != nil {
+			return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "gateway_unavailable", ErrorMessage: err.Error()}
+		}
+		fpCmd := feePoolKernelCommand{
+			CommandID:       cmd.CommandID,
+			GatewayPeer:     gw.ID.String(),
+			RequestedBy:     cmd.RequestedBy,
+			RequestedAt:     cmd.RequestedAt,
+			AllowWhenPaused: cmd.AllowWhenPaused,
+			Payload:         cmd.Payload,
+		}
+		if cmd.CommandType == clientKernelCommandFeePoolEnsureActive {
+			fpCmd.CommandType = feePoolCommandEnsureActive
+		} else {
+			fpCmd.CommandType = feePoolCommandCycleTick
+		}
+		res := k.feePool.dispatch(ctx, gw, fpCmd)
+		return clientKernelResult{
+			Accepted:     res.Accepted,
+			Status:       res.Status,
+			ErrorCode:    res.ErrorCode,
+			ErrorMessage: res.ErrorMessage,
+			StateBefore:  res.StateBefore,
+			StateAfter:   res.StateAfter,
+			Data:         res.Meta,
+		}
+
+	case clientKernelCommandLivePlanPurchase:
+		return k.dispatchLivePlanPurchase(ctx, cmd)
+	case clientKernelCommandWorkspaceSync:
+		return k.dispatchWorkspaceSync(ctx, cmd)
+
+	default:
+		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "unsupported_command", ErrorMessage: fmt.Sprintf("unsupported command: %s", cmd.CommandType)}
+	}
+}
+
+func (k *clientKernel) dispatchWorkspaceSync(ctx context.Context, cmd clientKernelCommand) clientKernelResult {
+	// 设计约束：workspace 扫描由调度层触发，kernel 只负责执行与审计。
+	if k == nil || k.rt == nil || k.rt.Workspace == nil {
+		return clientKernelResult{
+			Accepted:     false,
+			Status:       "rejected",
+			ErrorCode:    "workspace_not_initialized",
+			ErrorMessage: "workspace not initialized",
+			StateBefore:  "workspace_sync",
+			StateAfter:   "workspace_sync",
+		}
+	}
+	startAt := time.Now()
+	out, err := TriggerWorkspaceSyncOnce(ctx, k.rt)
+	status := "applied"
+	errCode := ""
+	errMsg := ""
+	if err != nil {
+		status = "failed"
+		errCode = "workspace_sync_failed"
+		errMsg = err.Error()
+	}
+	appendCommandJournal(k.rt.DB, commandJournalEntry{
+		CommandID:     cmd.CommandID,
+		CommandType:   cmd.CommandType,
+		GatewayPeerID: "workspace",
+		AggregateID:   "workspace:default",
+		RequestedBy:   cmd.RequestedBy,
+		RequestedAt:   cmd.RequestedAt,
+		Accepted:      true,
+		Status:        status,
+		ErrorCode:     errCode,
+		ErrorMessage:  errMsg,
+		StateBefore:   "workspace_sync",
+		StateAfter:    "workspace_sync",
+		DurationMS:    time.Since(startAt).Milliseconds(),
+		Payload:       cmd.Payload,
+		Result: map[string]any{
+			"status":     status,
+			"seed_count": out.SeedCount,
+		},
+	})
+	if err != nil {
+		return clientKernelResult{
+			Accepted:     true,
+			Status:       "failed",
+			ErrorCode:    errCode,
+			ErrorMessage: errMsg,
+			StateBefore:  "workspace_sync",
+			StateAfter:   "workspace_sync",
+		}
+	}
+	return clientKernelResult{
+		Accepted:    true,
+		Status:      "applied",
+		StateBefore: "workspace_sync",
+		StateAfter:  "workspace_sync",
+		Data: map[string]any{
+			"seed_count": out.SeedCount,
+		},
+	}
+}
+
+func (k *clientKernel) runDirectDownloadCore(ctx context.Context, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
+	if k == nil || k.rt == nil {
+		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
+	}
+	cmdID := newKernelCommandID()
+	startAt := time.Now()
+	out, err := runDirectDownloadCoreLegacy(ctx, k.rt, p, hooks)
+	status := "applied"
+	errCode := ""
+	errMsg := ""
+	if err != nil {
+		status = "failed"
+		errCode = "direct_download_core_failed"
+		errMsg = err.Error()
+	}
+	appendCommandJournal(k.rt.DB, commandJournalEntry{
+		CommandID:     cmdID,
+		CommandType:   clientKernelCommandDirectDownloadCore,
+		GatewayPeerID: strings.TrimSpace(out.GatewayPeerID),
+		AggregateID:   "seed:" + strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		RequestedBy:   "client_kernel",
+		RequestedAt:   time.Now().Unix(),
+		Accepted:      true,
+		Status:        status,
+		ErrorCode:     errCode,
+		ErrorMessage:  errMsg,
+		StateBefore:   "direct_download",
+		StateAfter:    "direct_download",
+		DurationMS:    time.Since(startAt).Milliseconds(),
+		Payload: map[string]any{
+			"seed_hash":            strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"demand_chunk_count":   p.DemandChunkCount,
+			"transfer_chunk_count": p.TransferChunkCount,
+			"gateway_peer_id":      strings.TrimSpace(p.GatewayPeerID),
+			"strategy":             strings.TrimSpace(p.Strategy),
+			"max_chunk_price":      p.MaxChunkPrice,
+			"max_seed_price":       p.MaxSeedPrice,
+		},
+		Result: map[string]any{
+			"status":     status,
+			"gateway_id": strings.TrimSpace(out.GatewayPeerID),
+			"demand_id":  strings.TrimSpace(out.DemandID),
+			"file_name":  strings.TrimSpace(out.FileName),
+		},
+	})
+	return out, err
+}
+
+func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
+	if k == nil || k.rt == nil {
+		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
+	}
+	cmdID := newKernelCommandID()
+	startAt := time.Now()
+	out, err := triggerTransferChunksByStrategyLegacy(ctx, k.rt, p)
+	status := "applied"
+	errCode := ""
+	errMsg := ""
+	if err != nil {
+		status = "failed"
+		errCode = "direct_transfer_by_strategy_failed"
+		errMsg = err.Error()
+	}
+	appendCommandJournal(k.rt.DB, commandJournalEntry{
+		CommandID:     cmdID,
+		CommandType:   clientKernelCommandTransferByStrategy,
+		GatewayPeerID: "direct",
+		AggregateID:   "seed:" + strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		RequestedBy:   "client_kernel",
+		RequestedAt:   time.Now().Unix(),
+		Accepted:      true,
+		Status:        status,
+		ErrorCode:     errCode,
+		ErrorMessage:  errMsg,
+		StateBefore:   "direct_transfer",
+		StateAfter:    "direct_transfer",
+		DurationMS:    time.Since(startAt).Milliseconds(),
+		Payload: map[string]any{
+			"demand_id":       strings.TrimSpace(p.DemandID),
+			"seed_hash":       strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"chunk_count":     p.ChunkCount,
+			"arbiter_peer_id": strings.TrimSpace(p.ArbiterPeerID),
+			"strategy":        strings.TrimSpace(p.Strategy),
+			"pool_amount":     p.PoolAmount,
+		},
+		Result: map[string]any{
+			"status":       status,
+			"chunk_count":  out.ChunkCount,
+			"seller_count": len(out.Sellers),
+			"sha256":       shortToken(strings.TrimSpace(out.SHA256)),
+		},
+	})
+	return out, err
+}
+
+func (k *clientKernel) dispatchLivePlanPurchase(_ context.Context, cmd clientKernelCommand) clientKernelResult {
+	streamID := strings.ToLower(strings.TrimSpace(anyToString(cmd.Payload["stream_id"])))
+	if !isSeedHashHex(streamID) {
+		return clientKernelResult{
+			Accepted:     false,
+			Status:       "rejected",
+			ErrorCode:    "invalid_stream_id",
+			ErrorMessage: "invalid stream_id",
+			StateBefore:  "live_plan",
+			StateAfter:   "live_plan",
+		}
+	}
+	haveSegmentIndex := anyToInt64(cmd.Payload["have_segment_index"])
+	now := time.Now()
+	snap, err := TriggerLiveGetLatest(k.rt, streamID)
+	if err != nil {
+		appendEffectLog(k.rt.DB, effectLogEntry{
+			CommandID:     cmd.CommandID,
+			GatewayPeerID: "live",
+			EffectType:    "live_snapshot",
+			Stage:         "query_latest",
+			Status:        "failed",
+			ErrorMessage:  err.Error(),
+			Payload:       map[string]any{"stream_id": streamID},
+		})
+		appendCommandJournal(k.rt.DB, commandJournalEntry{
+			CommandID:     cmd.CommandID,
+			CommandType:   cmd.CommandType,
+			GatewayPeerID: "live",
+			AggregateID:   "stream:" + streamID,
+			RequestedBy:   cmd.RequestedBy,
+			RequestedAt:   cmd.RequestedAt,
+			Accepted:      true,
+			Status:        "failed",
+			ErrorCode:     "live_snapshot_failed",
+			ErrorMessage:  err.Error(),
+			StateBefore:   "live_plan",
+			StateAfter:    "live_plan",
+			DurationMS:    0,
+			Payload:       cmd.Payload,
+			Result:        map[string]any{"accepted": true, "status": "failed"},
+		})
+		return clientKernelResult{
+			Accepted:     true,
+			Status:       "failed",
+			ErrorCode:    "live_snapshot_failed",
+			ErrorMessage: err.Error(),
+			StateBefore:  "live_plan",
+			StateAfter:   "live_plan",
+		}
+	}
+	decision, err := PlanLivePurchase(snap, haveSegmentIndex, LiveBuyerStrategy{
+		TargetLagSegments:   k.rt.runIn.Live.Buyer.TargetLagSegments,
+		MaxBudgetPerMinute:  k.rt.runIn.Live.Buyer.MaxBudgetPerMinute,
+		PreferOlderSegments: k.rt.runIn.Live.Buyer.PreferOlderSegments,
+	}, LiveSellerPricing{
+		BasePriceSatPer64K:  k.rt.runIn.Seller.Pricing.LiveBasePriceSatPer64K,
+		FloorPriceSatPer64K: k.rt.runIn.Seller.Pricing.LiveFloorPriceSatPer64K,
+		DecayPerMinuteBPS:   k.rt.runIn.Seller.Pricing.LiveDecayPerMinuteBPS,
+	}, now)
+	if err != nil {
+		appendEffectLog(k.rt.DB, effectLogEntry{
+			CommandID:     cmd.CommandID,
+			GatewayPeerID: "live",
+			EffectType:    "live_plan",
+			Stage:         "compute_decision",
+			Status:        "failed",
+			ErrorMessage:  err.Error(),
+			Payload: map[string]any{
+				"stream_id":          streamID,
+				"have_segment_index": haveSegmentIndex,
+			},
+		})
+		return clientKernelResult{
+			Accepted:     true,
+			Status:       "failed",
+			ErrorCode:    "live_plan_failed",
+			ErrorMessage: err.Error(),
+			StateBefore:  "live_plan",
+			StateAfter:   "live_plan",
+		}
+	}
+	appendDomainEvent(k.rt.DB, domainEventEntry{
+		CommandID:     cmd.CommandID,
+		GatewayPeerID: "live",
+		EventName:     "live_plan_decided",
+		StateBefore:   "live_plan",
+		StateAfter:    "live_plan",
+		Payload: map[string]any{
+			"stream_id":            streamID,
+			"have_segment_index":   haveSegmentIndex,
+			"target_segment_index": decision.TargetSegmentIndex,
+			"target_seed_hash":     shortToken(decision.SeedHash),
+		},
+	})
+	appendStateSnapshot(k.rt.DB, stateSnapshotEntry{
+		CommandID:     cmd.CommandID,
+		GatewayPeerID: "live",
+		State:         "live_plan",
+		PauseReason:   "",
+		PauseNeedSat:  0,
+		PauseHaveSat:  0,
+		LastError:     "",
+		Payload: map[string]any{
+			"stream_id":            streamID,
+			"have_segment_index":   haveSegmentIndex,
+			"target_segment_index": decision.TargetSegmentIndex,
+		},
+	})
+	appendEffectLog(k.rt.DB, effectLogEntry{
+		CommandID:     cmd.CommandID,
+		GatewayPeerID: "live",
+		EffectType:    "live_plan",
+		Stage:         "compute_decision",
+		Status:        "ok",
+		ErrorMessage:  "",
+		Payload: map[string]any{
+			"stream_id":            streamID,
+			"target_segment_index": decision.TargetSegmentIndex,
+		},
+	})
+	out := clientKernelResult{
+		Accepted:    true,
+		Status:      "applied",
+		StateBefore: "live_plan",
+		StateAfter:  "live_plan",
+		Data: map[string]any{
+			"stream_id":          streamID,
+			"have_segment_index": haveSegmentIndex,
+			"decision":           decision,
+		},
+	}
+	appendCommandJournal(k.rt.DB, commandJournalEntry{
+		CommandID:     cmd.CommandID,
+		CommandType:   cmd.CommandType,
+		GatewayPeerID: "live",
+		AggregateID:   "stream:" + streamID,
+		RequestedBy:   cmd.RequestedBy,
+		RequestedAt:   cmd.RequestedAt,
+		Accepted:      true,
+		Status:        "applied",
+		ErrorCode:     "",
+		ErrorMessage:  "",
+		StateBefore:   "live_plan",
+		StateAfter:    "live_plan",
+		DurationMS:    0,
+		Payload:       cmd.Payload,
+		Result:        out,
+	})
+	return out
+}
+
+func findGatewayByPeerID(rt *Runtime, gwID string) (peer.AddrInfo, bool) {
+	if rt == nil || strings.TrimSpace(gwID) == "" {
+		return peer.AddrInfo{}, false
+	}
+	for _, gw := range snapshotHealthyGateways(rt) {
+		if strings.EqualFold(strings.TrimSpace(gw.ID.String()), strings.TrimSpace(gwID)) {
+			return gw, true
+		}
+	}
+	return peer.AddrInfo{}, false
+}
+
+func anyToString(v any) string {
+	switch x := v.(type) {
+	case string:
+		return x
+	default:
+		return fmt.Sprintf("%v", v)
+	}
+}
+
+func anyToInt64(v any) int64 {
+	switch x := v.(type) {
+	case int:
+		return int64(x)
+	case int64:
+		return x
+	case uint64:
+		if x > ^uint64(0)>>1 {
+			return int64(^uint64(0) >> 1)
+		}
+		return int64(x)
+	case float64:
+		return int64(x)
+	case json.Number:
+		n, _ := x.Int64()
+		return n
+	default:
+		return 0
+	}
+}

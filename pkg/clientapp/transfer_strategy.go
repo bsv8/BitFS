@@ -418,6 +418,17 @@ func strategyNameOrDefault(name string) string {
 }
 
 func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
+	if buyer == nil {
+		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
+	}
+	kernel := ensureClientKernel(buyer)
+	if kernel == nil {
+		return TransferChunksByStrategyResult{}, fmt.Errorf("client kernel not initialized")
+	}
+	return kernel.runTransferChunksByStrategy(ctx, p)
+}
+
+func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
 	// 设计说明：
 	// 1) 先做报价硬过滤（价格上限 + 可用仲裁）；
 	// 2) 再构造卖家 worker（每个 worker 维护独立 transfer-pool 会话）；

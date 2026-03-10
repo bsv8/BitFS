@@ -348,18 +348,14 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 	if err != nil {
 		return err
 	}
-	decision, err := PlanLivePurchase(snap, status.HaveSegmentIndex, LiveBuyerStrategy{
-		TargetLagSegments:   rt.runIn.Live.Buyer.TargetLagSegments,
-		MaxBudgetPerMinute:  rt.runIn.Live.Buyer.MaxBudgetPerMinute,
-		PreferOlderSegments: rt.runIn.Live.Buyer.PreferOlderSegments,
-	}, LiveSellerPricing{
-		BasePriceSatPer64K:  rt.runIn.Seller.Pricing.LiveBasePriceSatPer64K,
-		FloorPriceSatPer64K: rt.runIn.Seller.Pricing.LiveFloorPriceSatPer64K,
-		DecayPerMinuteBPS:   rt.runIn.Seller.Pricing.LiveDecayPerMinuteBPS,
-	}, time.Now())
+	plan, err := TriggerLivePlan(ctx, rt, LivePlanParams{
+		StreamID:         streamID,
+		HaveSegmentIndex: status.HaveSegmentIndex,
+	})
 	if err != nil {
 		return err
 	}
+	decision := plan.Decision
 	rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
 		st.LastDecision = decision
 		st.LastQuoteSellerPeerID = sellerPeerID

@@ -83,6 +83,60 @@ type PublishLiveDemandParams struct {
 	GatewayPeerID    string `json:"gateway_peer_id,omitempty"`
 }
 
+type LivePlanParams struct {
+	StreamID         string `json:"stream_id"`
+	HaveSegmentIndex int64  `json:"have_segment_index"`
+}
+
+type LivePlanResult struct {
+	StreamID         string               `json:"stream_id"`
+	HaveSegmentIndex int64                `json:"have_segment_index"`
+	Decision         LivePurchaseDecision `json:"decision"`
+}
+
+// TriggerLivePlan 触发直播价速策略命令，统一走客户端业务内核。
+func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePlanResult, error) {
+	if rt == nil || rt.Host == nil {
+		return LivePlanResult{}, fmt.Errorf("runtime not initialized")
+	}
+	kernel := ensureClientKernel(rt)
+	if kernel == nil {
+		return LivePlanResult{}, fmt.Errorf("client kernel not initialized")
+	}
+	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
+	res := kernel.dispatch(ctx, clientKernelCommand{
+		CommandType: clientKernelCommandLivePlanPurchase,
+		RequestedBy: "trigger_live_plan",
+		Payload: map[string]any{
+			"stream_id":          streamID,
+			"have_segment_index": p.HaveSegmentIndex,
+		},
+	})
+	if !res.Accepted || strings.TrimSpace(res.Status) != "applied" {
+		msg := strings.TrimSpace(res.ErrorMessage)
+		if msg == "" {
+			msg = strings.TrimSpace(res.ErrorCode)
+		}
+		if msg == "" {
+			msg = "live plan failed"
+		}
+		return LivePlanResult{}, fmt.Errorf("%s", msg)
+	}
+	rawDecision, ok := res.Data["decision"]
+	if !ok {
+		return LivePlanResult{}, fmt.Errorf("live plan decision missing")
+	}
+	dec, ok := rawDecision.(LivePurchaseDecision)
+	if !ok {
+		return LivePlanResult{}, fmt.Errorf("live plan decision invalid")
+	}
+	return LivePlanResult{
+		StreamID:         streamID,
+		HaveSegmentIndex: p.HaveSegmentIndex,
+		Decision:         dec,
+	}, nil
+}
+
 func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDemandParams) (dual2of2.DemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
@@ -105,9 +159,28 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.AutoRenewRounds, info)
-	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+	if kernel := ensureClientKernel(rt); kernel != nil {
+		kres := kernel.dispatch(ctx, clientKernelCommand{
+			CommandType:   clientKernelCommandFeePoolEnsureActive,
+			GatewayPeerID: gw.ID.String(),
+			RequestedBy:   "trigger_publish_demand",
+			Payload: map[string]any{
+				"trigger":     "demand_publish",
+				"seed_hash":   seedHash,
+				"chunk_count": p.ChunkCount,
+			},
+			AllowWhenPaused: true,
+		})
+		if kres.Status != "applied" {
+			if strings.TrimSpace(kres.ErrorMessage) != "" {
+				return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
+			}
+			return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
+		}
+	}
+	session, ok := rt.getFeePool(gw.ID.String())
+	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
+		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
 	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
@@ -199,9 +272,29 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	session, err := ensureActiveFeePool(ctx, rt, gw, rt.runIn.Listen.AutoRenewRounds, info)
-	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+	if kernel := ensureClientKernel(rt); kernel != nil {
+		kres := kernel.dispatch(ctx, clientKernelCommand{
+			CommandType:   clientKernelCommandFeePoolEnsureActive,
+			GatewayPeerID: gw.ID.String(),
+			RequestedBy:   "trigger_publish_live_demand",
+			Payload: map[string]any{
+				"trigger":            "live_demand_publish",
+				"stream_id":          streamID,
+				"have_segment_index": p.HaveSegmentIndex,
+				"window":             p.Window,
+			},
+			AllowWhenPaused: true,
+		})
+		if kres.Status != "applied" {
+			if strings.TrimSpace(kres.ErrorMessage) != "" {
+				return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
+			}
+			return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
+		}
+	}
+	session, ok := rt.getFeePool(gw.ID.String())
+	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
+		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
 	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
@@ -470,231 +563,6 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 		return SeedGetResult{}, err
 	}
 	return SeedGetResult{Seed: append([]byte(nil), resp.Seed...)}, nil
-}
-
-type TransferOneChunkParams struct {
-	SellerPeerID  string `json:"seller_peer_id"`
-	DemandID      string `json:"demand_id"`
-	ArbiterPeerID string `json:"arbiter_peer_id"`
-	SeedHash      string `json:"seed_hash"`
-	SeedPrice     uint64 `json:"seed_price"`
-	ChunkPrice    uint64 `json:"chunk_price"`
-	ExpiresAtUnix int64  `json:"expires_at_unix"`
-}
-
-type TransferOneChunkResult struct {
-	DealID     string             `json:"deal_id"`
-	SessionID  string             `json:"session_id"`
-	Chunk      []byte             `json:"chunk"`
-	SHA256     string             `json:"sha256"`
-	ChunkPrice uint64             `json:"chunk_price"`
-	Pool       TransferPoolResult `json:"pool"`
-}
-
-type TransferChunksParams struct {
-	SellerPeerID  string `json:"seller_peer_id"`
-	DemandID      string `json:"demand_id"`
-	ArbiterPeerID string `json:"arbiter_peer_id"`
-	SeedHash      string `json:"seed_hash"`
-	SeedPrice     uint64 `json:"seed_price"`
-	ChunkPrice    uint64 `json:"chunk_price"`
-	ExpiresAtUnix int64  `json:"expires_at_unix"`
-	ChunkCount    uint32 `json:"chunk_count"`
-	PoolAmount    uint64 `json:"pool_amount,omitempty"`
-}
-
-type TransferChunksResult struct {
-	DealID     string             `json:"deal_id"`
-	SessionID  string             `json:"session_id"`
-	Data       []byte             `json:"data"`
-	SHA256     string             `json:"sha256"`
-	ChunkCount uint32             `json:"chunk_count"`
-	Pool       TransferPoolResult `json:"pool"`
-}
-
-type TransferPoolResult struct {
-	Opened          bool   `json:"opened"`
-	OpenSequence    uint32 `json:"open_sequence"`
-	OpenBaseTxID    string `json:"open_base_txid,omitempty"`
-	PoolAmount      uint64 `json:"pool_amount_satoshi,omitempty"`
-	PayCount        uint32 `json:"pay_count"`
-	LastPaySequence uint32 `json:"last_pay_sequence"`
-	Closed          bool   `json:"closed"`
-	CloseFinalTxID  string `json:"close_final_txid,omitempty"`
-}
-
-func TriggerTransferChunks(ctx context.Context, buyer *Runtime, p TransferChunksParams) (TransferChunksResult, error) {
-	if buyer == nil {
-		return TransferChunksResult{}, fmt.Errorf("runtime not initialized")
-	}
-	quotes, err := TriggerClientListDirectQuotes(ctx, buyer, p.DemandID)
-	if err != nil {
-		return TransferChunksResult{}, err
-	}
-	var dq *DirectQuoteItem
-	for i := range quotes {
-		if strings.EqualFold(strings.TrimSpace(quotes[i].SellerPeerID), strings.TrimSpace(p.SellerPeerID)) {
-			dq = &quotes[i]
-			break
-		}
-	}
-	if dq == nil {
-		return TransferChunksResult{}, fmt.Errorf("no quote found for seller=%s demand=%s", strings.TrimSpace(p.SellerPeerID), strings.TrimSpace(p.DemandID))
-	}
-	selectedArbiter, err := resolveDealArbiter(buyer, dq.SellerArbiterPeerIDs, p.ArbiterPeerID)
-	if err != nil {
-		return TransferChunksResult{}, err
-	}
-
-	poolOpen, err := triggerDirectTransferPoolOpen(ctx, buyer, directTransferPoolOpenParams{
-		SellerPeerID:  p.SellerPeerID,
-		ArbiterPeerID: selectedArbiter,
-		DemandID:      p.DemandID,
-		SeedHash:      p.SeedHash,
-		SeedPrice:     p.SeedPrice,
-		ChunkPrice:    p.ChunkPrice,
-		ExpiresAtUnix: p.ExpiresAtUnix,
-		PoolAmount:    p.PoolAmount,
-	})
-	if err != nil {
-		return TransferChunksResult{}, err
-	}
-
-	poolResult := TransferPoolResult{
-		Opened:       true,
-		OpenSequence: poolOpen.Sequence,
-		OpenBaseTxID: poolOpen.BaseTxID,
-		PoolAmount:   poolOpen.PoolAmount,
-	}
-	seedRes, err := TriggerClientSeedGet(ctx, buyer, SeedGetParams{
-		SellerPeerID: p.SellerPeerID,
-		SessionID:    poolOpen.SessionID,
-		SeedHash:     p.SeedHash,
-	})
-	if err != nil {
-		return TransferChunksResult{}, err
-	}
-	seedMeta, err := parseSeedV1(seedRes.Seed)
-	if err != nil {
-		return TransferChunksResult{}, err
-	}
-	if !strings.EqualFold(seedMeta.SeedHashHex, p.SeedHash) {
-		return TransferChunksResult{}, fmt.Errorf("seed hash mismatch")
-	}
-	wantChunks := p.ChunkCount
-	if wantChunks == 0 || wantChunks > seedMeta.ChunkCount {
-		wantChunks = seedMeta.ChunkCount
-	}
-	data := make([]byte, 0, int(wantChunks)*int(seedBlockSize))
-	for i := uint32(0); i < wantChunks; i++ {
-		chunkHash := seedMeta.ChunkHashes[i]
-		payRes, err := triggerDirectTransferPoolPay(ctx, buyer, directTransferPoolPayParams{
-			SellerPeerID: p.SellerPeerID,
-			SessionID:    poolOpen.SessionID,
-			Amount:       p.ChunkPrice,
-			SeedHash:     p.SeedHash,
-			ChunkHash:    chunkHash,
-			ChunkIndex:   i,
-		})
-		if err != nil {
-			return TransferChunksResult{}, err
-		}
-		poolResult.PayCount++
-		poolResult.LastPaySequence = payRes.Sequence
-		got := sha256.Sum256(payRes.Chunk)
-		if hex.EncodeToString(got[:]) != chunkHash {
-			return TransferChunksResult{}, fmt.Errorf("chunk hash mismatch index=%d", i)
-		}
-		data = append(data, payRes.Chunk...)
-	}
-	closeRes, err := triggerDirectTransferPoolClose(ctx, buyer, directTransferPoolCloseParams{
-		SellerPeerID: p.SellerPeerID,
-		SessionID:    poolOpen.SessionID,
-	})
-	if err != nil {
-		return TransferChunksResult{}, err
-	}
-	poolResult.Closed = true
-	poolResult.CloseFinalTxID = closeRes.FinalTxID
-	_, _ = TriggerClientCloseDirectSession(ctx, buyer, CloseDirectSessionParams{
-		SellerPeerID: p.SellerPeerID,
-		SessionID:    poolOpen.SessionID,
-	})
-	sum := sha256.Sum256(data)
-	trimmed := data
-	if uint64(len(trimmed)) > seedMeta.FileSize {
-		trimmed = trimmed[:seedMeta.FileSize]
-	}
-	sum = sha256.Sum256(trimmed)
-	emitDirectTransferEvent(buyer, "direct_transfer_completed", map[string]any{
-		"event_id":                 fmt.Sprintf("%s:completed", poolOpen.SessionID),
-		"demand_id":                strings.TrimSpace(p.DemandID),
-		"seed_hash":                strings.ToLower(strings.TrimSpace(p.SeedHash)),
-		"chunk_count":              wantChunks,
-		"seller_count":             1,
-		"bytes":                    len(trimmed),
-		"sha256":                   hex.EncodeToString(sum[:]),
-		"primary_deal_id":          poolOpen.DealID,
-		"primary_session_id":       poolOpen.SessionID,
-		"primary_open_sequence":    poolResult.OpenSequence,
-		"primary_open_base_txid":   poolResult.OpenBaseTxID,
-		"primary_pool_amount_sat":  poolResult.PoolAmount,
-		"primary_pay_count":        poolResult.PayCount,
-		"primary_last_pay_seq":     poolResult.LastPaySequence,
-		"primary_close_final_txid": poolResult.CloseFinalTxID,
-		"seller_sessions": []map[string]any{
-			{
-				"seller_peer_id":      strings.TrimSpace(p.SellerPeerID),
-				"demand_id":           strings.TrimSpace(p.DemandID),
-				"deal_id":             poolOpen.DealID,
-				"session_id":          poolOpen.SessionID,
-				"open_sequence":       poolResult.OpenSequence,
-				"open_base_txid":      poolResult.OpenBaseTxID,
-				"pool_amount_satoshi": poolResult.PoolAmount,
-				"pay_count":           poolResult.PayCount,
-				"last_pay_sequence":   poolResult.LastPaySequence,
-				"closed":              poolResult.Closed,
-				"close_final_txid":    poolResult.CloseFinalTxID,
-			},
-		},
-	})
-	return TransferChunksResult{
-		DealID:     poolOpen.DealID,
-		SessionID:  poolOpen.SessionID,
-		Data:       trimmed,
-		SHA256:     hex.EncodeToString(sum[:]),
-		ChunkCount: wantChunks,
-		Pool:       poolResult,
-	}, nil
-}
-
-func TriggerTransferOneChunk(ctx context.Context, buyer *Runtime, p TransferOneChunkParams) (TransferOneChunkResult, error) {
-	transfer, err := TriggerTransferChunks(ctx, buyer, TransferChunksParams{
-		SellerPeerID:  p.SellerPeerID,
-		DemandID:      p.DemandID,
-		ArbiterPeerID: p.ArbiterPeerID,
-		SeedHash:      p.SeedHash,
-		SeedPrice:     p.SeedPrice,
-		ChunkPrice:    p.ChunkPrice,
-		ExpiresAtUnix: p.ExpiresAtUnix,
-		ChunkCount:    1,
-		PoolAmount:    0,
-	})
-	if err != nil {
-		return TransferOneChunkResult{}, err
-	}
-	chunk := transfer.Data
-	if len(chunk) > 64 {
-		chunk = chunk[:64]
-	}
-	return TransferOneChunkResult{
-		DealID:     transfer.DealID,
-		SessionID:  transfer.SessionID,
-		Chunk:      chunk,
-		SHA256:     transfer.SHA256,
-		ChunkPrice: p.ChunkPrice,
-		Pool:       transfer.Pool,
-	}, nil
 }
 
 type directTransferPoolOpenParams struct {

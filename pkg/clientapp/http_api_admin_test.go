@@ -107,6 +107,154 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	}
 }
 
+func TestHandleAdminOrchestratorStatus(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir()
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = ":memory:"
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt.orch = newOrchestrator(rt)
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/status", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminOrchestratorStatus(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var out map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if got, ok := out["global_concurrency"].(float64); !ok || int(got) != 1 {
+		t.Fatalf("global_concurrency mismatch: got=%v", out["global_concurrency"])
+	}
+}
+
+func TestHandleAdminOrchestratorLogs(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	appendOrchestratorLog(db, orchestratorLogEntry{
+		EventType:      "signal_received",
+		Source:         "workspace_worker",
+		SignalType:     "workspace.tick",
+		AggregateKey:   "workspace:default",
+		IdempotencyKey: "workspace_sync:123456",
+		CommandType:    clientKernelCommandWorkspaceSync,
+		GatewayPeerID:  "16Uiu2HAm9hV4Nj8k8rZcZqWqQPKw28Y61S7",
+		TaskStatus:     "queued",
+		RetryCount:     0,
+		QueueLength:    1,
+		Payload:        map[string]any{"trigger": "periodic_tick"},
+	})
+	appendOrchestratorLog(db, orchestratorLogEntry{
+		EventType:      "task_dispatch_result",
+		Source:         "orchestrator",
+		SignalType:     "workspace.tick",
+		AggregateKey:   "workspace:default",
+		IdempotencyKey: "workspace_sync:123456",
+		CommandType:    clientKernelCommandWorkspaceSync,
+		GatewayPeerID:  "16Uiu2HAm9hV4Nj8k8rZcZqWqQPKw28Y61S7",
+		TaskStatus:     "applied",
+		RetryCount:     0,
+		QueueLength:    0,
+		Payload:        map[string]any{"duration_ms": 12},
+	})
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir()
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = ":memory:"
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs?event_type=signal_received&limit=10&offset=0", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminOrchestratorLogs(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var out struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID             int64           `json:"id"`
+			EventType      string          `json:"event_type"`
+			IdempotencyKey string          `json:"idempotency_key"`
+			GatewayPeerID  string          `json:"gateway_peer_id"`
+			Payload        json.RawMessage `json:"payload"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if out.Total != 1 || len(out.Items) != 1 {
+		t.Fatalf("list mismatch: total=%d items=%d", out.Total, len(out.Items))
+	}
+	if out.Items[0].EventType != "signal_received" {
+		t.Fatalf("event_type mismatch: %s", out.Items[0].EventType)
+	}
+	if out.Items[0].IdempotencyKey != "workspace_sync:123456" {
+		t.Fatalf("idempotency_key mismatch: %s", out.Items[0].IdempotencyKey)
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs/detail?id="+itoa64(out.Items[0].ID), nil)
+	detailRec := httptest.NewRecorder()
+	srv.handleAdminOrchestratorLogDetail(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
+	}
+	var detail struct {
+		ID             int64  `json:"id"`
+		EventType      string `json:"event_type"`
+		IdempotencyKey string `json:"idempotency_key"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	if detail.ID != out.Items[0].ID || detail.EventType != "signal_received" {
+		t.Fatalf("detail mismatch: id=%d event=%s", detail.ID, detail.EventType)
+	}
+	if detail.IdempotencyKey != "workspace_sync:123456" {
+		t.Fatalf("detail idempotency_key mismatch: %s", detail.IdempotencyKey)
+	}
+}
+
 func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	t.Parallel()
 

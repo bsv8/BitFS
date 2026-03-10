@@ -46,6 +46,8 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	var mu sync.Mutex
 	running := map[string]loopHandle{}
 	var nextRunID uint64
+	// waitRechargeState 记录“该网关是否已输出过等待充值日志”，用于触发式日志节流。
+	waitRechargeState := map[string]bool{}
 
 	startOne := func(gw peer.AddrInfo) {
 		gwID := gw.ID.String()
@@ -98,13 +100,35 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 			obs.Info("bitcast-client", "listen_loop_wait_gateway_connection", map[string]any{"reason": "no_connected_gateway"})
 		}
 		active := make(map[string]struct{}, len(gws))
+		seen := make(map[string]struct{}, len(gws))
 		for _, gw := range gws {
 			gwID := gw.ID.String()
 			if gwID == "" {
 				continue
 			}
+			seen[gwID] = struct{}{}
+			if kernel := ensureClientKernel(rt); kernel != nil {
+				kernel.tryResumeFeePoolPausedGateway(ctx, gwID)
+				if kernel.isFeePoolPaused(gwID) {
+					if !waitRechargeState[gwID] {
+						obs.Info("bitcast-client", "fee_pool_wait_wallet_recharge", map[string]any{"gateway": gwID})
+						waitRechargeState[gwID] = true
+					}
+					continue
+				}
+			}
+			if waitRechargeState[gwID] {
+				obs.Business("bitcast-client", "fee_pool_recharge_detected_resume", map[string]any{"gateway": gwID})
+				delete(waitRechargeState, gwID)
+			}
 			active[gwID] = struct{}{}
 			startOne(gw)
+		}
+		for gwID := range waitRechargeState {
+			if _, ok := seen[gwID]; ok {
+				continue
+			}
+			delete(waitRechargeState, gwID)
 		}
 		stopMissing(active)
 	}
@@ -176,45 +200,22 @@ func clearGatewayRuntimeError(rt *Runtime, gw peer.ID) {
 }
 
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
-	lc := rt.runIn.Listen
-
-	autoRenewRounds := lc.AutoRenewRounds
-	if autoRenewRounds == 0 {
-		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": gw.ID.String()})
+	kernel := ensureClientKernel(rt)
+	if rt == nil || kernel == nil {
 		return
 	}
-
-	// 1) 获取网关握手参数
-	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
-		recordGatewayRuntimeError(rt, gw.ID, "fee_pool_info", err)
-		obs.Error("bitcast-client", "fee_pool_info_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
-		return
-	}
-	obs.Business("bitcast-client", "fee_pool_info_ack", map[string]any{
-		"gateway":                     gw.ID.String(),
-		"billing_cycle_seconds":       info.BillingCycleSeconds,
-		"single_cycle_fee_satoshi":    info.SingleCycleFeeSatoshi,
-		"single_publish_fee_satoshi":  info.SinglePublishFeeSatoshi,
-		"renew_notify_before_seconds": info.RenewNotifyBeforeSeconds,
-		"minimum_pool_amount_satoshi": info.MinimumPoolAmountSatoshi,
-		"lock_blocks":                 info.LockBlocks,
-		"fee_rate_sat_per_byte":       info.FeeRateSatPerByte,
+	openRes := kernel.dispatch(ctx, clientKernelCommand{
+		CommandType:   clientKernelCommandFeePoolEnsureActive,
+		GatewayPeerID: gw.ID.String(),
+		RequestedBy:   "listen_loop",
+		Payload:       map[string]any{"trigger": "listen_loop_start"},
 	})
-
-	// 2) 确保本地已有 active 费用池会话（没有则创建）
-	sess, err := ensureActiveFeePool(ctx, rt, gw, autoRenewRounds, info)
-	if err != nil {
-		recordGatewayRuntimeError(rt, gw.ID, "fee_pool_open", err)
-		obs.Error("bitcast-client", "fee_pool_open_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
+	if openRes.Status == "paused" || !openRes.Accepted {
 		return
 	}
-	clearGatewayRuntimeError(rt, gw.ID)
-
-	// 3) 周期扣费：client 侧按 billing_cycle_seconds 定时发起 PayConfirm
-	cycleSec := info.BillingCycleSeconds
-	if cycleSec == 0 {
-		cycleSec = 60
+	cycleSec := uint32(60)
+	if sess, ok := rt.getFeePool(gw.ID.String()); ok && sess != nil && sess.BillingCycleSeconds > 0 {
+		cycleSec = sess.BillingCycleSeconds
 	}
 	ticker := time.NewTicker(time.Duration(cycleSec) * time.Second)
 	defer ticker.Stop()
@@ -224,27 +225,27 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if err := payOneListenCycle(ctx, rt, gw.ID, sess); err != nil {
-				if errors.Is(err, errListenFeePoolRotateRequired) {
-					nextSess, rotateErr := rotateListenFeePool(ctx, rt, gw, sess, autoRenewRounds, info)
-					if rotateErr == nil {
-						sess = nextSess
-						clearGatewayRuntimeError(rt, gw.ID)
-						continue
-					}
-					if errors.Is(rotateErr, errListenFeePoolStop) {
-						recordGatewayRuntimeError(rt, gw.ID, "fee_pool_rotate_open", rotateErr)
-						obs.Error("bitcast-client", "fee_pool_listen_stopped", map[string]any{"gateway": gw.ID.String(), "error": rotateErr.Error()})
-						return
-					}
-					recordGatewayRuntimeError(rt, gw.ID, "fee_pool_rotate_open", rotateErr)
-					obs.Error("bitcast-client", "fee_pool_rotate_failed", map[string]any{"gateway": gw.ID.String(), "error": rotateErr.Error()})
-					continue
-				}
-				recordGatewayRuntimeError(rt, gw.ID, "fee_pool_pay", err)
-				obs.Error("bitcast-client", "fee_pool_listen_pay_failed", map[string]any{"gateway": gw.ID.String(), "error": err.Error()})
-			} else {
-				clearGatewayRuntimeError(rt, gw.ID)
+			if orch := getClientOrchestrator(rt); orch != nil {
+				orch.EmitSignal(orchestratorSignal{
+					Source:       "listen_loop",
+					Type:         orchestratorSignalFeePoolTick,
+					AggregateKey: gw.ID.String(),
+					Payload: map[string]any{
+						"trigger": "billing_tick",
+					},
+				})
+				continue
+			}
+			tickRes := kernel.dispatch(ctx, clientKernelCommand{
+				CommandType:   clientKernelCommandFeePoolCycleTick,
+				GatewayPeerID: gw.ID.String(),
+				RequestedBy:   "listen_loop",
+				Payload: map[string]any{
+					"trigger": "billing_tick",
+				},
+			})
+			if tickRes.Status == "paused" {
+				return
 			}
 		}
 	}

@@ -68,6 +68,61 @@ type FeePoolCloseBySpendTxIDParams struct {
 	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
 }
 
+type FeePoolEnsureActiveParams struct {
+	GatewayPeerID   string `json:"gateway_peer_id,omitempty"`
+	AllowWhenPaused bool   `json:"allow_when_paused,omitempty"`
+	RequestedBy     string `json:"requested_by,omitempty"`
+}
+
+type FeePoolEnsureActiveResult struct {
+	GatewayPeerID string `json:"gateway_peer_id"`
+	Accepted      bool   `json:"accepted"`
+	Status        string `json:"status"`
+	ErrorCode     string `json:"error_code,omitempty"`
+	ErrorMessage  string `json:"error_message,omitempty"`
+	StateBefore   string `json:"state_before,omitempty"`
+	StateAfter    string `json:"state_after,omitempty"`
+}
+
+// TriggerGatewayFeePoolEnsureActive 显式触发费用池内核执行 ensure_active 命令（用于 e2e/运维触发）。
+func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePoolEnsureActiveParams) (FeePoolEnsureActiveResult, error) {
+	if rt == nil || rt.Host == nil {
+		return FeePoolEnsureActiveResult{}, fmt.Errorf("runtime not initialized")
+	}
+	kernel := ensureClientKernel(rt)
+	if kernel == nil {
+		return FeePoolEnsureActiveResult{}, fmt.Errorf("client kernel not initialized")
+	}
+	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	if err != nil {
+		return FeePoolEnsureActiveResult{}, err
+	}
+	requestedBy := strings.TrimSpace(p.RequestedBy)
+	if requestedBy == "" {
+		requestedBy = "trigger_fee_pool_ensure_active"
+	}
+	res := kernel.dispatch(ctx, clientKernelCommand{
+		CommandType:     clientKernelCommandFeePoolEnsureActive,
+		GatewayPeerID:   gw.ID.String(),
+		RequestedBy:     requestedBy,
+		AllowWhenPaused: p.AllowWhenPaused,
+		Payload: map[string]any{
+			"trigger":           "manual_ensure_active",
+			"allow_when_paused": p.AllowWhenPaused,
+			"gateway_peer_id":   gw.ID.String(),
+		},
+	})
+	return FeePoolEnsureActiveResult{
+		GatewayPeerID: gw.ID.String(),
+		Accepted:      res.Accepted,
+		Status:        res.Status,
+		ErrorCode:     res.ErrorCode,
+		ErrorMessage:  res.ErrorMessage,
+		StateBefore:   res.StateBefore,
+		StateAfter:    res.StateAfter,
+	}, nil
+}
+
 // TriggerGatewayFeePoolCloseBySpendTxID 按 spend_txid 触发关闭费用池通道并广播 final tx（运维/回收工具用）。
 func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p FeePoolCloseBySpendTxIDParams) (FeePoolCloseResult, error) {
 	if rt == nil || rt.Host == nil {

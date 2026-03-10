@@ -253,6 +253,99 @@ type AdminConfigSchema = {
   }>;
 };
 
+// ========== FeePool 审计相关类型 ==========
+type FeePoolCommand = {
+  id: number;
+  created_at_unix: number;
+  command_id: string;
+  command_type: string;
+  gateway_peer_id: string;
+  aggregate_id: string;
+  requested_by: string;
+  requested_at_unix: number;
+  accepted: boolean;
+  status: string;
+  error_code: string;
+  error_message: string;
+  state_before: string;
+  state_after: string;
+  duration_ms: number;
+  payload: unknown;
+  result: unknown;
+};
+
+type FeePoolCommandsResp = {
+  total: number;
+  items: FeePoolCommand[];
+};
+
+type FeePoolEvent = {
+  id: number;
+  created_at_unix: number;
+  command_id: string;
+  gateway_peer_id: string;
+  event_name: string;
+  state_before: string;
+  state_after: string;
+  payload: unknown;
+};
+
+type FeePoolEventsResp = {
+  total: number;
+  items: FeePoolEvent[];
+};
+
+type FeePoolState = {
+  id: number;
+  created_at_unix: number;
+  command_id: string;
+  gateway_peer_id: string;
+  state: string;
+  pause_reason: string;
+  pause_need_satoshi: number;
+  pause_have_satoshi: number;
+  last_error: string;
+  payload: unknown;
+};
+
+type FeePoolStatesResp = {
+  total: number;
+  items: FeePoolState[];
+};
+
+type FeePoolEffect = {
+  id: number;
+  created_at_unix: number;
+  command_id: string;
+  gateway_peer_id: string;
+  effect_type: string;
+  stage: string;
+  status: string;
+  error_message: string;
+  payload: unknown;
+};
+
+type FeePoolEffectsResp = {
+  total: number;
+  items: FeePoolEffect[];
+};
+
+// ========== 工作区管理相关类型 ==========
+type Workspace = {
+  id: number;
+  created_at_unix: number;
+  updated_at_unix: number;
+  path: string;
+  max_bytes: number;
+  used_bytes: number;
+  enabled: boolean;
+};
+
+type WorkspacesResp = {
+  total: number;
+  items: Workspace[];
+};
+
 type AdminLiveStorageSummary = {
   stream_count: number;
   file_count: number;
@@ -942,6 +1035,19 @@ export default function App() {
   const [adminConfigSchema, setAdminConfigSchema] = useState<AdminConfigSchema | null>(null);
   const [configDrafts, setConfigDrafts] = useState<Record<string, string>>({});
 
+  // FeePool 审计状态
+  const [feePoolCommands, setFeePoolCommands] = useState<FeePoolCommandsResp | null>(null);
+  const [feePoolCommandDetail, setFeePoolCommandDetail] = useState<FeePoolCommand | null>(null);
+  const [feePoolEvents, setFeePoolEvents] = useState<FeePoolEventsResp | null>(null);
+  const [feePoolStates, setFeePoolStates] = useState<FeePoolStatesResp | null>(null);
+  const [feePoolEffects, setFeePoolEffects] = useState<FeePoolEffectsResp | null>(null);
+  const [feePoolAuditModalOpen, setFeePoolAuditModalOpen] = useState(false);
+  const [feePoolAuditTab, setFeePoolAuditTab] = useState<"command" | "events" | "states" | "effects">("command");
+
+  // 工作区管理状态
+  const [workspaces, setWorkspaces] = useState<WorkspacesResp | null>(null);
+  const [workspaceEditing, setWorkspaceEditing] = useState<{id: number | null, data: Partial<Workspace>} | null>(null);
+
   // 静态文件管理状态
   const [staticTree, setStaticTree] = useState<StaticTreeResp | null>(null);
   const [staticPathHistory, setStaticPathHistory] = useState<string[]>(["/"]);
@@ -956,7 +1062,7 @@ export default function App() {
   useEffect(() => {
     const onHash = () => setRoute(nowPath());
     window.addEventListener("hashchange", onHash);
-    if (!window.location.hash) setHash("/wallet");
+    if (!window.location.hash) setHash("/finance");
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
@@ -985,12 +1091,18 @@ export default function App() {
 
   // ========== 钱包模块加载函数 ==========
   const loadWalletSummary = async () => {
-    const [txData, summaryData] = await Promise.all([
-      api<TxResp>("api/v1/transactions?limit=5&offset=0"),
-      api<WalletSummaryResp>("api/v1/wallet/summary")
-    ]);
-    setTx(txData);
-    setWalletSummary(summaryData);
+    try {
+      const [txData, summaryData] = await Promise.all([
+        api<TxResp>("api/v1/transactions?limit=5&offset=0"),
+        api<WalletSummaryResp>("api/v1/wallet/summary")
+      ]);
+      setTx(txData);
+      setWalletSummary(summaryData);
+    } catch (e) {
+      setTx({ total: 0, items: [] });
+      setWalletSummary(null);
+      throw e;
+    }
   };
 
   const loadWalletFlows = async () => {
@@ -1232,6 +1344,73 @@ export default function App() {
     }
   };
 
+  // ========== FeePool 审计加载函数 ==========
+  const loadFeePoolCommands = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const commandType = route.query.get("command_type") || "";
+    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const status = route.query.get("status") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (commandType) params.set("command_type", commandType);
+    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (status) params.set("status", status);
+    setFeePoolCommands(await api<FeePoolCommandsResp>(`api/v1/admin/feepool/commands?${params.toString()}`));
+  };
+
+  const loadFeePoolCommandDetail = async (id: number) => {
+    const detail = await api<FeePoolCommand>(`api/v1/admin/feepool/commands/detail?id=${id}`);
+    setFeePoolCommandDetail(detail);
+    // 同时加载关联数据
+    const [events, states, effects] = await Promise.all([
+      api<FeePoolEventsResp>(`api/v1/admin/feepool/events?command_id=${detail.command_id}&limit=50`),
+      api<FeePoolStatesResp>(`api/v1/admin/feepool/states?command_id=${detail.command_id}&limit=50`),
+      api<FeePoolEffectsResp>(`api/v1/admin/feepool/effects?command_id=${detail.command_id}&limit=50`)
+    ]);
+    setFeePoolEvents(events);
+    setFeePoolStates(states);
+    setFeePoolEffects(effects);
+    setFeePoolAuditTab("command");
+    setFeePoolAuditModalOpen(true);
+  };
+
+  // ========== 工作区管理加载函数 ==========
+  const loadWorkspaces = async () => {
+    setWorkspaces(await api<WorkspacesResp>("api/v1/admin/workspaces"));
+  };
+
+  const saveWorkspace = async (id: number | null, data: { path?: string; max_bytes?: number; enabled?: boolean }) => {
+    if (id === null) {
+      await api("api/v1/admin/workspaces", "POST", undefined, data);
+    } else {
+      await api(`api/v1/admin/workspaces?id=${id}`, "PUT", undefined, data);
+    }
+    await loadWorkspaces();
+  };
+
+  const deleteWorkspace = async (id: number) => {
+    await api(`api/v1/admin/workspaces?id=${id}`, "DELETE");
+    await loadWorkspaces();
+  };
+
+  // ========== 策略调试日志函数 ==========
+  const loadStrategyDebugLog = async () => {
+    const resp = await api<{ strategy_debug_log_enabled: boolean }>("api/v1/admin/fs-http/strategy-debug-log");
+    setStrategyDebugLogEnabled(resp.strategy_debug_log_enabled);
+  };
+
+  const setStrategyDebugLog = async (enabled: boolean) => {
+    setStrategyDebugLogLoading(true);
+    try {
+      await api("api/v1/admin/fs-http/strategy-debug-log", "POST", undefined, { enabled });
+      setStrategyDebugLogEnabled(enabled);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "设置失败");
+    } finally {
+      setStrategyDebugLogLoading(false);
+    }
+  };
+
   // ========== 静态文件管理函数 ==========
   const loadStaticTree = async (path: string) => {
     setBusy(true);
@@ -1382,18 +1561,21 @@ export default function App() {
       setErr("");
       try {
         switch (route.path) {
-          // 钱包模块
-          case "/wallet":
+          // 资金管理模块
+          case "/finance":
             await loadWalletSummary();
             break;
-          case "/wallet/flows":
-            await loadWalletFlows();
-            break;
-          case "/wallet/ledger":
+          case "/finance/ledger":
             await loadWalletLedger();
             break;
-          case "/wallet/gateway-events":
+          case "/finance/flows":
+            await loadWalletFlows();
+            break;
+          case "/finance/gateway-flows":
             await loadWalletGatewayEvents();
+            break;
+          case "/finance/transfer-pools":
+            await loadDirectTransferPools();
             break;
           // 设置模块
           case "/settings/gateways":
@@ -1426,9 +1608,6 @@ export default function App() {
           case "/direct/sessions":
             await loadDirectSessions();
             break;
-          case "/direct/transfer-pools":
-            await loadDirectTransferPools();
-            break;
           // Live 模块
           case "/live/streams":
             await loadLiveStreams();
@@ -1443,6 +1622,12 @@ export default function App() {
           case "/admin/downloads":
             // 暂无专门 API，仅保留入口
             break;
+          case "/admin/feepool":
+            await loadFeePoolCommands();
+            break;
+          case "/admin/workspaces":
+            await loadWorkspaces();
+            break;
           case "/admin/live":
             await loadLiveStreams();
             break;
@@ -1452,10 +1637,10 @@ export default function App() {
             }
             break;
           case "/admin/config":
-            await Promise.all([loadAdminConfig(), loadAdminConfigSchema()]);
+            await Promise.all([loadAdminConfig(), loadAdminConfigSchema(), loadStrategyDebugLog()]);
             break;
           default:
-            setHash("/wallet");
+            setHash("/finance");
         }
       } catch (e) {
         setErr(e instanceof Error ? e.message : "加载失败");
@@ -1598,7 +1783,8 @@ export default function App() {
     route.path.startsWith("/settings") ? "settings" :
       route.path.startsWith("/direct") ? "direct" :
         route.path.startsWith("/live") ? "live" :
-          route.path.startsWith("/admin") ? "admin" : "wallet";
+          route.path.startsWith("/admin") ? "admin" :
+            route.path.startsWith("/finance") ? "finance" : "finance";
 
   const routeQueryText = route.query.toString();
   const routeMeta = routeQueryText ? `?${route.query.size} params` : "";
@@ -1640,22 +1826,22 @@ export default function App() {
           <h2>控制台</h2>
         </div>
 
-        {/* 钱包模块 */}
+        {/* 资金管理大项 */}
         <div className="menu-group">
-          <h4>💰 钱包</h4>
-          <button className={route.path === "/wallet" ? "menu active" : "menu"} onClick={() => setHash("/wallet")}>模块首页</button>
-          <button className={route.path === "/wallet/flows" ? "menu active" : "menu"} onClick={() => setHash("/wallet/flows", new URLSearchParams("page=1&pageSize=20"))}>费用池流水</button>
-          <button className={route.path === "/wallet/ledger" ? "menu active" : "menu"} onClick={() => setHash("/wallet/ledger", new URLSearchParams("page=1&pageSize=20"))}>链上流水</button>
-          <button className={route.path === "/wallet/gateway-events" ? "menu active" : "menu"} onClick={() => setHash("/wallet/gateway-events", new URLSearchParams("page=1&pageSize=20"))}>网关事件</button>
+          <h4>💰 资金管理</h4>
+          <button className={route.path === "/finance" ? "menu active" : "menu"} onClick={() => setHash("/finance")}>资金总览</button>
+          <button className={route.path === "/finance/ledger" ? "menu active" : "menu"} onClick={() => setHash("/finance/ledger", new URLSearchParams("page=1&pageSize=20"))}>链上账本</button>
+          <button className={route.path === "/finance/flows" ? "menu active" : "menu"} onClick={() => setHash("/finance/flows", new URLSearchParams("page=1&pageSize=20"))}>费用池流水</button>
+          <button className={route.path === "/finance/gateway-flows" ? "menu active" : "menu"} onClick={() => setHash("/finance/gateway-flows", new URLSearchParams("page=1&pageSize=20"))}>网关资金流</button>
+          <button className={route.path === "/finance/transfer-pools" ? "menu active" : "menu"} onClick={() => setHash("/finance/transfer-pools", new URLSearchParams("page=1&pageSize=20"))}>Direct资金池</button>
         </div>
 
-        {/* Direct 模块 */}
+        {/* Direct 交易模块 */}
         <div className="menu-group">
           <h4>🔗 Direct 交易</h4>
           <button className={route.path === "/direct/quotes" ? "menu active" : "menu"} onClick={() => setHash("/direct/quotes", new URLSearchParams("page=1&pageSize=20"))}>报价列表</button>
           <button className={route.path === "/direct/deals" ? "menu active" : "menu"} onClick={() => setHash("/direct/deals", new URLSearchParams("page=1&pageSize=20"))}>成交记录</button>
           <button className={route.path === "/direct/sessions" ? "menu active" : "menu"} onClick={() => setHash("/direct/sessions", new URLSearchParams("page=1&pageSize=20"))}>会话管理</button>
-          <button className={route.path === "/direct/transfer-pools" ? "menu active" : "menu"} onClick={() => setHash("/direct/transfer-pools", new URLSearchParams("page=1&pageSize=20"))}>资金池</button>
         </div>
 
         {/* Live 模块 */}
@@ -1679,9 +1865,11 @@ export default function App() {
         {/* Admin 管理模块 */}
         <div className="menu-group">
           <h4>⚙️ 管理</h4>
-          <button className={route.path === "/admin/downloads" ? "menu active" : "menu"} onClick={() => setHash("/admin/downloads")}>下载管理</button>
-          <button className={route.path === "/admin/live" ? "menu active" : "menu"} onClick={() => setHash("/admin/live")}>Live 管理</button>
+          <button className={route.path === "/admin/feepool" ? "menu active" : "menu"} onClick={() => setHash("/admin/feepool", new URLSearchParams("page=1&pageSize=20"))}>费用池审计</button>
+          <button className={route.path === "/admin/workspaces" ? "menu active" : "menu"} onClick={() => setHash("/admin/workspaces")}>工作区管理</button>
           <button className={route.path === "/admin/static" ? "menu active" : "menu"} onClick={() => setHash("/admin/static")}>静态文件</button>
+          <button className={route.path === "/admin/live" ? "menu active" : "menu"} onClick={() => setHash("/admin/live")}>Live 管理</button>
+          <button className={route.path === "/admin/downloads" ? "menu active" : "menu"} onClick={() => setHash("/admin/downloads")}>下载管理</button>
           <button className={route.path === "/admin/config" ? "menu active" : "menu"} onClick={() => setHash("/admin/config")}>系统配置</button>
         </div>
 
@@ -1698,7 +1886,7 @@ export default function App() {
       <main className="content">
         <header className="top">
           <h1>
-            {moduleName === "wallet" ? "💰 钱包模块" :
+            {moduleName === "finance" ? "💰 资金管理" :
               moduleName === "direct" ? "🔗 Direct 交易" :
                 moduleName === "live" ? "📡 Live 直播" :
                   moduleName === "files" ? "📁 文件模块" :
@@ -1712,8 +1900,14 @@ export default function App() {
         {busy ? <div className="panel">加载中...</div> : null}
         {err ? <div className="panel err-inline">{err}</div> : null}
 
-        {/* ========== 钱包模块页面 ========== */}
-        {route.path === "/wallet" && tx ? (
+        {/* ========== 资金管理模块页面 ========== */}
+        {route.path === "/finance" && !busy && !tx ? (
+          <section className="panel">
+            <h3>资金总览</h3>
+            <div className="hint">暂无数据，请检查 API 连接或刷新页面</div>
+          </section>
+        ) : null}
+        {route.path === "/finance" && tx ? (
           <>
             {walletSummary && (
               <section className="stats-grid">
@@ -1756,7 +1950,7 @@ export default function App() {
           </>
         ) : null}
 
-        {route.path === "/wallet/flows" && tx ? (() => {
+        {route.path === "/finance/flows" && tx ? (() => {
           const page = toInt(route.query.get("page"), 1);
           const pageSize = toInt(route.query.get("pageSize"), 20);
           const eventType = route.query.get("event_type") || "";
@@ -1793,7 +1987,7 @@ export default function App() {
           );
         })() : null}
 
-        {route.path === "/wallet/ledger" && walletLedger ? (() => {
+        {route.path === "/finance/ledger" && walletLedger ? (() => {
           const page = toInt(route.query.get("page"), 1);
           const pageSize = toInt(route.query.get("pageSize"), 20);
           const direction = route.query.get("direction") || "";
@@ -1832,7 +2026,7 @@ export default function App() {
           );
         })() : null}
 
-        {route.path === "/wallet/gateway-events" && gatewayEvents ? (() => {
+        {route.path === "/finance/gateway-flows" && gatewayEvents ? (() => {
           const page = toInt(route.query.get("page"), 1);
           const pageSize = toInt(route.query.get("pageSize"), 20);
           const gatewayPeerID = route.query.get("gateway_peer_id") || "";
@@ -1840,7 +2034,7 @@ export default function App() {
           return (
             <section className="panel">
               <div className="panel-head">
-                <h3>网关事件历史</h3>
+                <h3>网关资金流</h3>
                 <div className="filters">
                   <input className="input" defaultValue={gatewayPeerID} placeholder="gateway_peer_id" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 }); }} />
                   <input className="input" defaultValue={action} placeholder="action" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ action: (e.target as HTMLInputElement).value, page: 1 }); }} />
@@ -2089,12 +2283,12 @@ export default function App() {
           );
         })() : null}
 
-        {route.path === "/direct/transfer-pools" && directTransferPools ? (() => {
+        {route.path === "/finance/transfer-pools" && directTransferPools ? (() => {
           const page = toInt(route.query.get("page"), 1);
           const pageSize = toInt(route.query.get("pageSize"), 20);
           return (
             <section className="panel">
-              <div className="panel-head"><h3>资金池</h3></div>
+              <div className="panel-head"><h3>Direct资金池</h3></div>
               <div className="table-wrap"><table><thead><tr><th>Pool ID</th><th>买方</th><th>卖方</th><th>总额</th><th>已释放</th><th>状态</th><th>创建时间</th></tr></thead><tbody>
                 {directTransferPools.items.map((p) => (
                   <tr key={p.pool_id}>
@@ -2232,6 +2426,153 @@ export default function App() {
           token={token}
         />}
 
+        {/* ========== FeePool 审计页面 ========== */}
+        {route.path === "/admin/feepool" && feePoolCommands ? (() => {
+          const page = toInt(route.query.get("page"), 1);
+          const pageSize = toInt(route.query.get("pageSize"), 20);
+          const commandType = route.query.get("command_type") || "";
+          const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+          const status = route.query.get("status") || "";
+          return (
+            <section className="panel">
+              <div className="panel-head">
+                <h3>费用池审计</h3>
+                <div className="hint">命令 → 事件 → 状态 → 效果 完整追踪</div>
+              </div>
+              <div className="filters">
+                <input className="input" defaultValue={commandType} placeholder="命令类型" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ command_type: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={gatewayPeerID} placeholder="网关 PeerID" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={status} placeholder="状态" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ status: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <button className="btn" onClick={() => updateQuery({ page: 1 })}>查询</button>
+              </div>
+              <div className="table-wrap"><table><thead><tr><th>时间</th><th>命令ID</th><th>类型</th><th>网关</th><th>状态</th><th>耗时</th><th>操作</th></tr></thead><tbody>
+                {feePoolCommands.items.map((cmd) => (
+                  <tr key={cmd.id}>
+                    <td>{t(cmd.created_at_unix)}</td>
+                    <td title={cmd.command_id}>{short(cmd.command_id, 8)}</td>
+                    <td>{cmd.command_type}</td>
+                    <td title={cmd.gateway_peer_id}>{short(cmd.gateway_peer_id, 8)}</td>
+                    <td>{cmd.status}</td>
+                    <td>{cmd.duration_ms}ms</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadFeePoolCommandDetail(cmd.id)}>审计追踪</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+              <Pager total={feePoolCommands.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
+
+              {/* FeePool 审计追踪弹窗 */}
+              <Modal
+                title={feePoolCommandDetail ? `审计追踪: ${short(feePoolCommandDetail.command_id, 12)}` : "审计追踪"}
+                isOpen={feePoolAuditModalOpen}
+                onClose={() => setFeePoolAuditModalOpen(false)}
+              >
+                {feePoolCommandDetail && (
+                  <>
+                    <div className="tabs" style={{ display: "flex", gap: 4, marginBottom: 16, borderBottom: "1px solid #e5e7eb" }}>
+                      {(["command", "events", "states", "effects"] as const).map((tab) => (
+                        <button
+                          key={tab}
+                          className={feePoolAuditTab === tab ? "btn" : "btn btn-light"}
+                          style={{ borderRadius: "4px 4px 0 0", marginBottom: -1 }}
+                          onClick={() => setFeePoolAuditTab(tab)}
+                        >
+                          {tab === "command" ? "命令详情" : tab === "events" ? `领域事件 (${feePoolEvents?.total || 0})` : tab === "states" ? `状态快照 (${feePoolStates?.total || 0})` : `效果日志 (${feePoolEffects?.total || 0})`}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="detail-table-wrap">
+                      {feePoolAuditTab === "command" && <DetailTable data={feePoolCommandDetail} />}
+                      {feePoolAuditTab === "events" && feePoolEvents && (
+                        <div className="table-wrap" style={{ maxHeight: 400, overflow: "auto" }}>
+                          <table><thead><tr><th>时间</th><th>事件名</th><th>状态变更</th></tr></thead><tbody>
+                            {feePoolEvents.items.map((e) => (
+                              <tr key={e.id}><td>{t(e.created_at_unix)}</td><td>{e.event_name}</td><td>{e.state_before} → {e.state_after}</td></tr>
+                            ))}
+                          </tbody></table>
+                        </div>
+                      )}
+                      {feePoolAuditTab === "states" && feePoolStates && (
+                        <div className="table-wrap" style={{ maxHeight: 400, overflow: "auto" }}>
+                          <table><thead><tr><th>时间</th><th>状态</th><th>暂停原因</th><th>需求/拥有</th></tr></thead><tbody>
+                            {feePoolStates.items.map((s) => (
+                              <tr key={s.id}><td>{t(s.created_at_unix)}</td><td>{s.state}</td><td>{s.pause_reason || "-"}</td><td>{s.pause_need_satoshi} / {s.pause_have_satoshi}</td></tr>
+                            ))}
+                          </tbody></table>
+                        </div>
+                      )}
+                      {feePoolAuditTab === "effects" && feePoolEffects && (
+                        <div className="table-wrap" style={{ maxHeight: 400, overflow: "auto" }}>
+                          <table><thead><tr><th>时间</th><th>效果类型</th><th>阶段</th><th>状态</th></tr></thead><tbody>
+                            {feePoolEffects.items.map((e) => (
+                              <tr key={e.id}><td>{t(e.created_at_unix)}</td><td>{e.effect_type}</td><td>{e.stage}</td><td>{e.status}</td></tr>
+                            ))}
+                          </tbody></table>
+                        </div>
+                      )}
+                    </div>
+                  </>
+                )}
+                <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+                  <button className="btn btn-light" onClick={() => setFeePoolAuditModalOpen(false)}>关闭</button>
+                </div>
+              </Modal>
+            </section>
+          );
+        })() : null}
+
+        {/* ========== 工作区管理页面 ========== */}
+        {route.path === "/admin/workspaces" && workspaces ? (
+          <section className="panel">
+            <div className="panel-head">
+              <h3>工作区管理</h3>
+              <button className="btn" onClick={() => setWorkspaceEditing({ id: null, data: { path: "", max_bytes: 10737418240, enabled: true } })}>添加工作区</button>
+            </div>
+            <div className="table-wrap"><table><thead><tr><th>ID</th><th>路径</th><th>容量上限</th><th>已用空间</th><th>状态</th><th>操作</th></tr></thead><tbody>
+              {workspaces.items.map((w) => (
+                <tr key={w.id}>
+                  <td>{w.id}</td>
+                  <td title={w.path}>{w.path}</td>
+                  <td>{formatBytes(w.max_bytes)}</td>
+                  <td>{formatBytes(w.used_bytes)}</td>
+                  <td>{w.enabled ? "✅ 启用" : "⛔ 禁用"}</td>
+                  <td>
+                    <button className="btn btn-light" onClick={() => setWorkspaceEditing({ id: w.id, data: { ...w } })}>编辑</button>
+                    {!w.enabled && <button className="btn btn-light" onClick={() => deleteWorkspace(w.id).catch(e => alert(e.message))}>删除</button>}
+                  </td>
+                </tr>
+              ))}
+            </tbody></table></div>
+
+            {/* 工作区编辑弹窗 */}
+            <Modal
+              title={workspaceEditing?.id === null ? "添加工作区" : "编辑工作区"}
+              isOpen={!!workspaceEditing}
+              onClose={() => setWorkspaceEditing(null)}
+            >
+              {workspaceEditing && (
+                <>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                      <input type="checkbox" checked={workspaceEditing.data.enabled} onChange={(e) => setWorkspaceEditing({ ...workspaceEditing, data: { ...workspaceEditing.data, enabled: e.target.checked } })} />
+                      <span>启用</span>
+                    </label>
+                    <input className="input" placeholder="路径" value={workspaceEditing.data.path || ""} onChange={(e) => setWorkspaceEditing({ ...workspaceEditing, data: { ...workspaceEditing.data, path: e.target.value } })} />
+                    <input className="input" type="number" placeholder="容量上限 (bytes)" value={workspaceEditing.data.max_bytes || ""} onChange={(e) => setWorkspaceEditing({ ...workspaceEditing, data: { ...workspaceEditing.data, max_bytes: Number(e.target.value) } })} />
+                  </div>
+                  <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+                    <button className="btn" onClick={() => {
+                      saveWorkspace(workspaceEditing.id, workspaceEditing.data).then(() => setWorkspaceEditing(null)).catch(e => alert(e.message));
+                    }}>保存</button>
+                    <button className="btn btn-light" onClick={() => setWorkspaceEditing(null)}>取消</button>
+                  </div>
+                </>
+              )}
+            </Modal>
+          </section>
+        ) : null}
+
         {/* 系统配置页面 */}
         {route.path === "/admin/config" && adminConfig && adminConfigSchema ? (() => {
           return (
@@ -2267,6 +2608,23 @@ export default function App() {
                   );
                 })}
               </tbody></table></div>
+              {/* 策略调试日志开关 */}
+              <div className="panel" style={{ marginTop: 16 }}>
+                <div className="panel-head"><h4>调试设置</h4></div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
+                    <input 
+                      type="checkbox" 
+                      checked={strategyDebugLogEnabled ?? false} 
+                      disabled={strategyDebugLogLoading}
+                      onChange={(e) => setStrategyDebugLog(e.target.checked)}
+                    />
+                    <span>策略调试日志 (strategy_debug_log_enabled)</span>
+                  </label>
+                  {strategyDebugLogLoading && <span className="hint">保存中...</span>}
+                </div>
+                <div className="hint">开启后将记录文件下载策略的详细调试信息，用于排查下载问题。</div>
+              </div>
             </section>
           );
         })() : null}

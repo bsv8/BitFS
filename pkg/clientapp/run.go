@@ -593,6 +593,8 @@ type Runtime struct {
 	gwManager  *gatewayManager
 	masterGW   peer.ID
 	masterGWMu sync.RWMutex
+	kernel     *clientKernel
+	orch       *orchestrator
 
 	closeOnce sync.Once
 	closeFn   func() error
@@ -894,6 +896,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 trace,
 	}
+	rt.kernel = newClientKernel(rt)
+	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
 	if cfg.Seller.Enabled {
 		registerSellerHandlers(h, db, catalog, rt.live, trace, cfg)
@@ -910,12 +914,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rt.HealthyGWs = rt.gwManager.GetConnectedGateways()
 
 	var wg sync.WaitGroup
-	if cfg.Scan.RescanIntervalSeconds > 0 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			runPeriodicScan(ctx, workspaceMgr)
-		}()
+	if rt.orch != nil {
+		rt.orch.Start(ctx)
 	}
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
@@ -1540,6 +1540,74 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS command_journal(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			command_id TEXT NOT NULL,
+			command_type TEXT NOT NULL,
+			gateway_peer_id TEXT NOT NULL,
+			aggregate_id TEXT NOT NULL,
+			requested_by TEXT NOT NULL,
+			requested_at_unix INTEGER NOT NULL,
+			accepted INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			error_code TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			state_before TEXT NOT NULL,
+			state_after TEXT NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			payload_json TEXT NOT NULL,
+			result_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS domain_events(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			command_id TEXT NOT NULL,
+			gateway_peer_id TEXT NOT NULL,
+			event_name TEXT NOT NULL,
+			state_before TEXT NOT NULL,
+			state_after TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS state_snapshots(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			command_id TEXT NOT NULL,
+			gateway_peer_id TEXT NOT NULL,
+			state TEXT NOT NULL,
+			pause_reason TEXT NOT NULL,
+			pause_need_satoshi INTEGER NOT NULL,
+			pause_have_satoshi INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS effect_logs(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			command_id TEXT NOT NULL,
+			gateway_peer_id TEXT NOT NULL,
+			effect_type TEXT NOT NULL,
+			stage TEXT NOT NULL,
+			status TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS orchestrator_logs(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			event_type TEXT NOT NULL,
+			source TEXT NOT NULL,
+			signal_type TEXT NOT NULL,
+			aggregate_key TEXT NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			command_type TEXT NOT NULL,
+			gateway_peer_id TEXT NOT NULL,
+			task_status TEXT NOT NULL,
+			retry_count INTEGER NOT NULL,
+			queue_length INTEGER NOT NULL,
+			error_message TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_ledger_entries(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
@@ -1621,6 +1689,22 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_created_at ON wallet_fund_flows(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_cmd_id ON command_journal(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_created_at ON orchestrator_logs(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_event_type ON orchestrator_logs(event_type, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_signal_type ON orchestrator_logs(signal_type, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_gateway ON orchestrator_logs(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_idempotency ON orchestrator_logs(idempotency_key, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_created_at ON wallet_ledger_entries(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_occurred_at ON wallet_ledger_entries(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_txid ON wallet_ledger_entries(txid, id DESC)`,

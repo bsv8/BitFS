@@ -420,6 +420,17 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/admin/static/entry", s.withAuth(s.handleAdminStaticEntry))
 		mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
 		mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/commands/detail", s.withAuth(s.handleAdminFeePoolCommandDetail))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/events", s.withAuth(s.handleAdminFeePoolEvents))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/events/detail", s.withAuth(s.handleAdminFeePoolEventDetail))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/states", s.withAuth(s.handleAdminFeePoolStates))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/states/detail", s.withAuth(s.handleAdminFeePoolStateDetail))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/effects", s.withAuth(s.handleAdminFeePoolEffects))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/effects/detail", s.withAuth(s.handleAdminFeePoolEffectDetail))
+		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
+		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs/detail", s.withAuth(s.handleAdminOrchestratorLogDetail))
+		mux.HandleFunc(prefix+"/v1/admin/orchestrator/status", s.withAuth(s.handleAdminOrchestratorStatus))
 		mux.HandleFunc(prefix+"/v1/admin/config", s.withAuth(s.handleAdminConfig))
 		mux.HandleFunc(prefix+"/v1/admin/config/schema", s.withAuth(s.handleAdminConfigSchema))
 	}
@@ -630,7 +641,6 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	s.syncWalletLedgerBestEffort(r.Context())
 	var flowCount, txCount, saleCount, gatewayEventCount int64
 	var totalIn, totalOut, totalUsed, totalReturned int64
 	var ledgerCount, ledgerIn, ledgerOut int64
@@ -988,7 +998,6 @@ func (s *httpAPIServer) handleWalletLedger(w http.ResponseWriter, r *http.Reques
 	}
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	s.syncWalletLedgerBestEffort(r.Context())
 	direction := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("direction")))
 	category := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("category")))
 	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
@@ -1074,7 +1083,6 @@ func (s *httpAPIServer) handleWalletLedgerDetail(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	s.syncWalletLedgerBestEffort(r.Context())
 	type item struct {
 		ID                int64           `json:"id"`
 		CreatedAtUnix     int64           `json:"created_at_unix"`
@@ -2024,6 +2032,617 @@ func (s *httpAPIServer) handleGatewayEventDetail(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, it)
 }
 
+func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	commandType := strings.TrimSpace(r.URL.Query().Get("command_type"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := []any{}
+	if commandType != "" {
+		where += " AND command_type=?"
+		args = append(args, commandType)
+	}
+	if gatewayPeerID != "" {
+		where += " AND gateway_peer_id=?"
+		args = append(args, gatewayPeerID)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	if commandID != "" {
+		where += " AND command_id=?"
+		args = append(args, commandID)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (error_message LIKE ? OR command_id LIKE ? OR requested_by LIKE ? OR state_before LIKE ? OR state_after LIKE ?)"
+		args = append(args, like, like, like, like, like)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM command_journal WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		FROM command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		CommandType   string          `json:"command_type"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		AggregateID   string          `json:"aggregate_id"`
+		RequestedBy   string          `json:"requested_by"`
+		RequestedAt   int64           `json:"requested_at_unix"`
+		Accepted      bool            `json:"accepted"`
+		Status        string          `json:"status"`
+		ErrorCode     string          `json:"error_code"`
+		ErrorMessage  string          `json:"error_message"`
+		StateBefore   string          `json:"state_before"`
+		StateAfter    string          `json:"state_after"`
+		DurationMS    int64           `json:"duration_ms"`
+		Payload       json.RawMessage `json:"payload"`
+		Result        json.RawMessage `json:"result"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var accepted int
+		var payload string
+		var result string
+		if err := rows.Scan(
+			&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.CommandType, &it.GatewayPeerID, &it.AggregateID, &it.RequestedBy, &it.RequestedAt, &accepted, &it.Status, &it.ErrorCode, &it.ErrorMessage, &it.StateBefore, &it.StateAfter, &it.DurationMS, &payload, &result,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Accepted = accepted != 0
+		it.Payload = json.RawMessage(payload)
+		it.Result = json.RawMessage(result)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		CommandType   string          `json:"command_type"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		AggregateID   string          `json:"aggregate_id"`
+		RequestedBy   string          `json:"requested_by"`
+		RequestedAt   int64           `json:"requested_at_unix"`
+		Accepted      bool            `json:"accepted"`
+		Status        string          `json:"status"`
+		ErrorCode     string          `json:"error_code"`
+		ErrorMessage  string          `json:"error_message"`
+		StateBefore   string          `json:"state_before"`
+		StateAfter    string          `json:"state_after"`
+		DurationMS    int64           `json:"duration_ms"`
+		Payload       json.RawMessage `json:"payload"`
+		Result        json.RawMessage `json:"result"`
+	}
+	var it item
+	var accepted int
+	var payload string
+	var result string
+	err := s.db.QueryRow(
+		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		FROM command_journal WHERE id=?`, id,
+	).Scan(
+		&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.CommandType, &it.GatewayPeerID, &it.AggregateID, &it.RequestedBy, &it.RequestedAt, &accepted, &it.Status, &it.ErrorCode, &it.ErrorMessage, &it.StateBefore, &it.StateAfter, &it.DurationMS, &payload, &result,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Accepted = accepted != 0
+	it.Payload = json.RawMessage(payload)
+	it.Result = json.RawMessage(result)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	eventName := strings.TrimSpace(r.URL.Query().Get("event_name"))
+
+	where := ""
+	args := []any{}
+	if commandID != "" {
+		where += " AND command_id=?"
+		args = append(args, commandID)
+	}
+	if gatewayPeerID != "" {
+		where += " AND gateway_peer_id=?"
+		args = append(args, gatewayPeerID)
+	}
+	if eventName != "" {
+		where += " AND event_name=?"
+		args = append(args, eventName)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM domain_events WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(`SELECT id,created_at_unix,command_id,gateway_peer_id,event_name,state_before,state_after,payload_json FROM domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		EventName     string          `json:"event_name"`
+		StateBefore   string          `json:"state_before"`
+		StateAfter    string          `json:"state_after"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.EventName, &it.StateBefore, &it.StateAfter, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		EventName     string          `json:"event_name"`
+		StateBefore   string          `json:"state_before"`
+		StateAfter    string          `json:"state_after"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_peer_id,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id).
+		Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.EventName, &it.StateBefore, &it.StateAfter, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+
+	where := ""
+	args := []any{}
+	if commandID != "" {
+		where += " AND command_id=?"
+		args = append(args, commandID)
+	}
+	if gatewayPeerID != "" {
+		where += " AND gateway_peer_id=?"
+		args = append(args, gatewayPeerID)
+	}
+	if state != "" {
+		where += " AND state=?"
+		args = append(args, state)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM state_snapshots WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,command_id,gateway_peer_id,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+		FROM state_snapshots WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		State         string          `json:"state"`
+		PauseReason   string          `json:"pause_reason"`
+		PauseNeedSat  uint64          `json:"pause_need_satoshi"`
+		PauseHaveSat  uint64          `json:"pause_have_satoshi"`
+		LastError     string          `json:"last_error"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.State, &it.PauseReason, &it.PauseNeedSat, &it.PauseHaveSat, &it.LastError, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		State         string          `json:"state"`
+		PauseReason   string          `json:"pause_reason"`
+		PauseNeedSat  uint64          `json:"pause_need_satoshi"`
+		PauseHaveSat  uint64          `json:"pause_have_satoshi"`
+		LastError     string          `json:"last_error"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(
+		`SELECT id,created_at_unix,command_id,gateway_peer_id,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+		FROM state_snapshots WHERE id=?`, id,
+	).Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.State, &it.PauseReason, &it.PauseNeedSat, &it.PauseHaveSat, &it.LastError, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	effectType := strings.TrimSpace(r.URL.Query().Get("effect_type"))
+	stage := strings.TrimSpace(r.URL.Query().Get("stage"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+
+	where := ""
+	args := []any{}
+	if commandID != "" {
+		where += " AND command_id=?"
+		args = append(args, commandID)
+	}
+	if gatewayPeerID != "" {
+		where += " AND gateway_peer_id=?"
+		args = append(args, gatewayPeerID)
+	}
+	if effectType != "" {
+		where += " AND effect_type=?"
+		args = append(args, effectType)
+	}
+	if stage != "" {
+		where += " AND stage=?"
+		args = append(args, stage)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM effect_logs WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,command_id,gateway_peer_id,effect_type,stage,status,error_message,payload_json
+		FROM effect_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		EffectType    string          `json:"effect_type"`
+		Stage         string          `json:"stage"`
+		Status        string          `json:"status"`
+		ErrorMessage  string          `json:"error_message"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.EffectType, &it.Stage, &it.Status, &it.ErrorMessage, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		EffectType    string          `json:"effect_type"`
+		Stage         string          `json:"stage"`
+		Status        string          `json:"status"`
+		ErrorMessage  string          `json:"error_message"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(
+		`SELECT id,created_at_unix,command_id,gateway_peer_id,effect_type,stage,status,error_message,payload_json
+		FROM effect_logs WHERE id=?`, id,
+	).Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.EffectType, &it.Stage, &it.Status, &it.ErrorMessage, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
+	signalType := strings.TrimSpace(r.URL.Query().Get("signal_type"))
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	idempotencyKey := strings.TrimSpace(r.URL.Query().Get("idempotency_key"))
+	taskStatus := strings.TrimSpace(r.URL.Query().Get("task_status"))
+
+	where := ""
+	args := []any{}
+	if eventType != "" {
+		where += " AND event_type=?"
+		args = append(args, eventType)
+	}
+	if signalType != "" {
+		where += " AND signal_type=?"
+		args = append(args, signalType)
+	}
+	if source != "" {
+		where += " AND source=?"
+		args = append(args, source)
+	}
+	if gatewayPeerID != "" {
+		where += " AND gateway_peer_id=?"
+		args = append(args, gatewayPeerID)
+	}
+	if idempotencyKey != "" {
+		where += " AND idempotency_key=?"
+		args = append(args, idempotencyKey)
+	}
+	if taskStatus != "" {
+		where += " AND task_status=?"
+		args = append(args, taskStatus)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM orchestrator_logs WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+		FROM orchestrator_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+
+	type item struct {
+		ID             int64           `json:"id"`
+		CreatedAtUnix  int64           `json:"created_at_unix"`
+		EventType      string          `json:"event_type"`
+		Source         string          `json:"source"`
+		SignalType     string          `json:"signal_type"`
+		AggregateKey   string          `json:"aggregate_key"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		CommandType    string          `json:"command_type"`
+		GatewayPeerID  string          `json:"gateway_peer_id"`
+		TaskStatus     string          `json:"task_status"`
+		RetryCount     int             `json:"retry_count"`
+		QueueLength    int             `json:"queue_length"`
+		ErrorMessage   string          `json:"error_message"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(
+			&it.ID, &it.CreatedAtUnix, &it.EventType, &it.Source, &it.SignalType, &it.AggregateKey, &it.IdempotencyKey,
+			&it.CommandType, &it.GatewayPeerID, &it.TaskStatus, &it.RetryCount, &it.QueueLength, &it.ErrorMessage, &payload,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID             int64           `json:"id"`
+		CreatedAtUnix  int64           `json:"created_at_unix"`
+		EventType      string          `json:"event_type"`
+		Source         string          `json:"source"`
+		SignalType     string          `json:"signal_type"`
+		AggregateKey   string          `json:"aggregate_key"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		CommandType    string          `json:"command_type"`
+		GatewayPeerID  string          `json:"gateway_peer_id"`
+		TaskStatus     string          `json:"task_status"`
+		RetryCount     int             `json:"retry_count"`
+		QueueLength    int             `json:"queue_length"`
+		ErrorMessage   string          `json:"error_message"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(
+		`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+		FROM orchestrator_logs WHERE id=?`, id,
+	).Scan(
+		&it.ID, &it.CreatedAtUnix, &it.EventType, &it.Source, &it.SignalType, &it.AggregateKey, &it.IdempotencyKey,
+		&it.CommandType, &it.GatewayPeerID, &it.TaskStatus, &it.RetryCount, &it.QueueLength, &it.ErrorMessage, &payload,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminOrchestratorStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	orch := getClientOrchestrator(s.rt)
+	if orch == nil {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled": false,
+			"status":  "not_initialized",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, orch.SnapshotStatus())
+}
+
 func (s *httpAPIServer) handleGetFileStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2962,15 +3581,10 @@ func (s *httpAPIServer) handleLivePlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
-	decision, err := PlanLivePurchase(snap, req.HaveSegmentIndex, LiveBuyerStrategy{
-		TargetLagSegments:   s.cfg.Live.Buyer.TargetLagSegments,
-		MaxBudgetPerMinute:  s.cfg.Live.Buyer.MaxBudgetPerMinute,
-		PreferOlderSegments: s.cfg.Live.Buyer.PreferOlderSegments,
-	}, LiveSellerPricing{
-		BasePriceSatPer64K:  s.cfg.Seller.Pricing.LiveBasePriceSatPer64K,
-		FloorPriceSatPer64K: s.cfg.Seller.Pricing.LiveFloorPriceSatPer64K,
-		DecayPerMinuteBPS:   s.cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
-	}, time.Now())
+	plan, err := TriggerLivePlan(r.Context(), s.rt, LivePlanParams{
+		StreamID:         req.StreamID,
+		HaveSegmentIndex: req.HaveSegmentIndex,
+	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -2978,7 +3592,8 @@ func (s *httpAPIServer) handleLivePlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"stream_id":          strings.ToLower(strings.TrimSpace(req.StreamID)),
 		"have_segment_index": req.HaveSegmentIndex,
-		"decision":           decision,
+		"decision":           plan.Decision,
+		"snapshot":           snap,
 	})
 }
 

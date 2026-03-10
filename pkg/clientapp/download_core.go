@@ -46,6 +46,17 @@ type directDownloadCoreHooks struct {
 }
 
 func runDirectDownloadCore(ctx context.Context, rt *Runtime, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
+	if rt == nil {
+		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
+	}
+	kernel := ensureClientKernel(rt)
+	if kernel == nil {
+		return directDownloadCoreResult{}, fmt.Errorf("client kernel not initialized")
+	}
+	return kernel.runDirectDownloadCore(ctx, p, hooks)
+}
+
+func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
 	if rt == nil || rt.Host == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
 	}

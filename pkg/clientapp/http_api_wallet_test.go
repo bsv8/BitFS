@@ -319,7 +319,7 @@ func (m *walletSyncMockChain) GetTxDetail(txid string) (woc.TxDetail, error) {
 	return m.txs[txid], nil
 }
 
-func TestWalletLedger_AutoSyncFromChainHistory(t *testing.T) {
+func TestWalletLedger_QueryAfterChainSync(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
 	privHex := "1111111111111111111111111111111111111111111111111111111111111111"
@@ -360,6 +360,9 @@ func TestWalletLedger_AutoSyncFromChainHistory(t *testing.T) {
 			runIn: NewRunInputFromConfig(cfg, privHex),
 			Chain: chain,
 		},
+	}
+	if err := srv.syncWalletLedgerFromChain(t.Context()); err != nil {
+		t.Fatalf("sync wallet ledger from chain: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/ledger?limit=10&offset=0", nil)
