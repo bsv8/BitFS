@@ -1,6 +1,14 @@
 import React, { useEffect, useState } from "react";
 
-type AuthState = "locked" | "checking" | "ready" | "error";
+/**
+ * 新的认证状态模型（基于私钥解锁）
+ * - no_key: 系统中没有私钥，需要先创建或导入
+ * - locked: 有私钥但未解锁，需要输入密码解锁
+ * - unlocked: 已解锁，可以正常使用所有 API
+ * - error: 发生错误
+ * - checking: 正在检查状态
+ */
+type AuthState = "no_key" | "locked" | "unlocked" | "error" | "checking";
 
 // ========== 钱包相关类型 ==========
 type TxResp = {
@@ -443,8 +451,46 @@ type AdminLiveStorageSummary = {
   total_bytes: number;
 };
 
-type BootstrapStatusResp = {
-  needs_bootstrap: boolean;
+/**
+ * 密钥状态响应
+ * GET /api/v1/key/status
+ */
+type KeyStatusResp = {
+  appname: string;
+  has_key: boolean;
+  unlocked: boolean;
+};
+
+/**
+ * 创建私钥请求
+ * POST /api/v1/key/new
+ */
+type KeyNewReq = {
+  password: string;
+};
+
+/**
+ * 导入私钥请求
+ * POST /api/v1/key/import
+ */
+type KeyImportReq = {
+  cipher: Record<string, unknown>;
+};
+
+/**
+ * 导出私钥响应
+ * GET /api/v1/key/export
+ */
+type KeyExportResp = {
+  cipher: Record<string, unknown>;
+};
+
+/**
+ * 解锁请求
+ * POST /api/v1/key/unlock
+ */
+type KeyUnlockReq = {
+  password: string;
 };
 
 // ========== 静态文件管理类型 ==========
@@ -728,8 +774,7 @@ function StaticFileManager({
   onDelete,
   onSetPrice,
   onToggleSelection,
-  onUpload,
-  token
+  onUpload
 }: { 
   staticTree: StaticTreeResp | null,
   staticPathHistory: string[],
@@ -742,8 +787,7 @@ function StaticFileManager({
   onDelete: (path: string) => void,
   onSetPrice: (path: string, floor: number, discount: number) => void,
   onToggleSelection: (path: string) => void,
-  onUpload: (file: File, targetDir: string, overwrite: boolean) => Promise<void>,
-  token: string
+  onUpload: (file: File, targetDir: string, overwrite: boolean) => Promise<void>
 }) {
   const [newDirName, setNewDirName] = useState("");
   const [showNewDir, setShowNewDir] = useState(false);
@@ -1076,12 +1120,23 @@ function formatBytes(bytes: number): string {
 }
 
 export default function App() {
-  const [auth, setAuth] = useState<AuthState>("locked");
+  // 认证状态
+  const [auth, setAuth] = useState<AuthState>("checking");
   const [authErr, setAuthErr] = useState("");
-  const [tokenInput, setTokenInput] = useState("");
-  const [token, setToken] = useState("");
-  const [needsBootstrap, setNeedsBootstrap] = useState<boolean | null>(null);
-  const [bootstrapChecking, setBootstrapChecking] = useState(true);
+  const [loading, setLoading] = useState(false);
+  
+  // 密钥状态
+  const [keyStatus, setKeyStatus] = useState<KeyStatusResp | null>(null);
+  
+  // 密码输入（用于解锁/创建）
+  const [passwordInput, setPasswordInput] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  
+  // 导入的密文
+  const [importCipher, setImportCipher] = useState("");
+  
+  // 视图状态
+  const [view, setView] = useState<"unlock" | "create" | "import" | "export">("unlock");
 
   const [route, setRoute] = useState<HashRoute>(() => nowPath());
   const [busy, setBusy] = useState(false);
@@ -1161,6 +1216,10 @@ export default function App() {
   const [getFileSeedHash, setGetFileSeedHash] = useState("");
   const [getFileChunkCount, setGetFileChunkCount] = useState("1");
 
+  // 策略调试日志状态
+  const [strategyDebugLogEnabled, setStrategyDebugLogEnabled] = useState<boolean | null>(null);
+  const [strategyDebugLogLoading, setStrategyDebugLogLoading] = useState(false);
+
   useEffect(() => {
     const onHash = () => setRoute(nowPath());
     window.addEventListener("hashchange", onHash);
@@ -1168,10 +1227,12 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const api = async <T,>(path: string, method = "GET", tokenOverride?: string, body?: unknown): Promise<T> => {
-    const tk = (tokenOverride ?? token).trim();
+  /**
+   * API 调用函数（新模型 - 无需 token）
+   * 未解锁时调用非白名单 API 会返回 423 Locked
+   */
+  const api = async <T,>(path: string, method = "GET", body?: unknown): Promise<T> => {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (tk) headers.Authorization = `Bearer ${tk}`;
     const resp = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
     const text = await resp.text();
     let parsed: any = text;
@@ -1284,9 +1345,9 @@ export default function App() {
 
   const saveGateway = async (id: number | null, data: Gateway) => {
     if (id === null) {
-      await api("api/v1/gateways", "POST", undefined, data);
+      await api("api/v1/gateways", "POST", data);
     } else {
-      await api(`api/v1/gateways?id=${id}`, "PUT", undefined, data);
+      await api(`api/v1/gateways?id=${id}`, "PUT", data);
     }
     await loadGateways();
   };
@@ -1303,9 +1364,9 @@ export default function App() {
 
   const saveArbiter = async (id: number | null, data: Arbiter) => {
     if (id === null) {
-      await api("api/v1/arbiters", "POST", undefined, data);
+      await api("api/v1/arbiters", "POST", data);
     } else {
-      await api(`api/v1/arbiters?id=${id}`, "PUT", undefined, data);
+      await api(`api/v1/arbiters?id=${id}`, "PUT", data);
     }
     await loadArbiters();
   };
@@ -1423,7 +1484,7 @@ export default function App() {
 
   const saveAdminConfig = async (key: string, value: unknown) => {
     try {
-      await api("api/v1/admin/config", "POST", undefined, {
+      await api("api/v1/admin/config", "POST", {
         items: [{ key, value }]
       });
       await loadAdminConfig();
@@ -1439,7 +1500,7 @@ export default function App() {
 
   const resumeDownload = async (demandId: string) => {
     try {
-      await api("api/v1/admin/downloads/resume", "POST", undefined, { demand_id: demandId });
+      await api("api/v1/admin/downloads/resume", "POST", { demand_id: demandId });
       alert("已触发恢复下载");
     } catch (e) {
       alert(e instanceof Error ? e.message : "恢复失败");
@@ -1531,9 +1592,9 @@ export default function App() {
 
   const saveWorkspace = async (id: number | null, data: { path?: string; max_bytes?: number; enabled?: boolean }) => {
     if (id === null) {
-      await api("api/v1/admin/workspaces", "POST", undefined, data);
+      await api("api/v1/admin/workspaces", "POST", data);
     } else {
-      await api(`api/v1/admin/workspaces?id=${id}`, "PUT", undefined, data);
+      await api(`api/v1/admin/workspaces?id=${id}`, "PUT", data);
     }
     await loadWorkspaces();
   };
@@ -1552,7 +1613,7 @@ export default function App() {
   const setStrategyDebugLog = async (enabled: boolean) => {
     setStrategyDebugLogLoading(true);
     try {
-      await api("api/v1/admin/fs-http/strategy-debug-log", "POST", undefined, { enabled });
+      await api("api/v1/admin/fs-http/strategy-debug-log", "POST", { enabled });
       setStrategyDebugLogEnabled(enabled);
     } catch (e) {
       alert(e instanceof Error ? e.message : "设置失败");
@@ -1598,18 +1659,18 @@ export default function App() {
 
   const createStaticDir = async (name: string) => {
     const newPath = staticCurrentPath === "/" ? `/${name}` : `${staticCurrentPath}/${name}`;
-    await api("api/v1/admin/static/mkdir", "POST", undefined, { path: newPath });
+    await api("api/v1/admin/static/mkdir", "POST", { path: newPath });
     await loadStaticTree(staticCurrentPath);
   };
 
   const moveStaticItem = async (fromPath: string, toPath: string) => {
-    await api("api/v1/admin/static/move", "POST", undefined, { from: fromPath, to: toPath });
+    await api("api/v1/admin/static/move", "POST", { from: fromPath, to: toPath });
     await loadStaticTree(staticCurrentPath);
   };
 
   const deleteStaticEntry = async (path: string) => {
     if (!confirm(`确定删除 ${path} 吗？`)) return;
-    await api("api/v1/admin/static/entry", "DELETE", undefined, { path });
+    await api("api/v1/admin/static/entry", "DELETE", { path });
     await loadStaticTree(staticCurrentPath);
   };
 
@@ -1624,7 +1685,7 @@ export default function App() {
   };
 
   const setStaticItemPrice = async (path: string, floorPrice: number, discountBps: number) => {
-    await api("api/v1/admin/static/price/set", "POST", undefined, {
+    await api("api/v1/admin/static/price/set", "POST", {
       path,
       floor_price_sat_per_64k: floorPrice,
       resale_discount_bps: discountBps
@@ -1640,7 +1701,6 @@ export default function App() {
     
     const resp = await fetch("api/v1/admin/static/upload", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
       body: formData
     });
     if (!resp.ok) {
@@ -1666,7 +1726,7 @@ export default function App() {
       setErr("seed_hash 和 chunk_count 必须有效");
       return;
     }
-    const out = await api<{ job_id: string }>("api/v1/files/get-file", "POST", undefined, {
+    const out = await api<{ job_id: string }>("api/v1/files/get-file", "POST", {
       seed_hash: seedHash,
       chunk_count: chunkCount
     });
@@ -1691,7 +1751,7 @@ export default function App() {
     };
     setSeedDraft(seed, { saving: true, message: "" });
     try {
-      await api("api/v1/workspace/seeds/price", "POST", undefined, {
+      await api("api/v1/workspace/seeds/price", "POST", {
         seed_hash: seed.seed_hash,
         floor_price_sat_per_64k: Number(d.floor || "0"),
         resale_discount_bps: Number(d.discount || "0")
@@ -1705,7 +1765,7 @@ export default function App() {
 
   // ========== 路由处理 ==========
   useEffect(() => {
-    if (auth !== "ready") return;
+    if (auth !== "unlocked") return;
     const run = async () => {
       setBusy(true);
       setErr("");
@@ -1810,7 +1870,7 @@ export default function App() {
 
   // 文件任务轮询
   useEffect(() => {
-    if (auth !== "ready") return;
+    if (auth !== "unlocked") return;
     if (route.path !== "/files") return;
     const jobID = route.query.get("job_id");
     if (!jobID) return;
@@ -1821,89 +1881,175 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [auth, route.path, route.query.get("job_id")]);
 
-  // 登录相关
+  // 初始化：检查密钥状态
   useEffect(() => {
     const initAuth = async () => {
-      const saved = localStorage.getItem("bitcast_api_token") ?? "";
-      setTokenInput(saved);
-      setBootstrapChecking(true);
+      setAuth("checking");
+      setAuthErr("");
       try {
-        const status = await api<BootstrapStatusResp>("api/v1/bootstrap/status", "GET", "");
-        const bootstrapNeeded = !!status.needs_bootstrap;
-        setNeedsBootstrap(bootstrapNeeded);
-        if (!bootstrapNeeded && saved.trim()) {
-          await login(saved.trim(), true);
-        }
+        await checkKeyStatus();
       } catch (e) {
         setAuth("error");
         setAuthErr(e instanceof Error ? e.message : "初始化状态检查失败");
-      } finally {
-        setBootstrapChecking(false);
       }
     };
     void initAuth();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const login = async (raw: string, silent = false) => {
-    const tk = raw.trim();
-    if (!tk) {
-      setAuth("error");
-      setAuthErr("请输入 token");
+  /**
+   * 检查密钥状态
+   * GET /api/v1/key/status
+   */
+  const checkKeyStatus = async (): Promise<KeyStatusResp> => {
+    const status = await api<KeyStatusResp>("api/v1/key/status", "GET");
+    setKeyStatus(status);
+    
+    if (!status.has_key) {
+      setAuth("no_key");
+      setView("create");
+    } else if (!status.unlocked) {
+      setAuth("locked");
+      setView("unlock");
+    } else {
+      setAuth("unlocked");
+    }
+    
+    return status;
+  };
+
+  /**
+   * 创建新私钥
+   * POST /api/v1/key/new
+   */
+  const createKey = async (password: string, confirm: string) => {
+    if (!password) {
+      setAuthErr("请输入密码");
       return;
     }
-    setAuth("checking");
+    if (password !== confirm) {
+      setAuthErr("两次输入的密码不一致");
+      return;
+    }
+    if (password.length < 8) {
+      setAuthErr("密码长度至少 8 位");
+      return;
+    }
+    
+    setLoading(true);
     setAuthErr("");
     try {
-      await api("api/v1/info", "GET", tk);
-      localStorage.setItem("bitcast_api_token", tk);
-      setToken(tk);
-      setNeedsBootstrap(false);
-      setAuth("ready");
+      await api("api/v1/key/new", "POST", { password } as KeyNewReq);
+      // 创建成功后自动解锁
+      await unlock(password);
     } catch (e) {
-      localStorage.removeItem("bitcast_api_token");
-      setToken("");
-      const msg = e instanceof Error ? e.message : "登录失败";
-      if (msg.includes("token is not initialized")) {
-        setNeedsBootstrap(true);
-      }
-      setAuth("error");
-      setAuthErr(msg);
-      if (silent) setTokenInput("");
+      setAuth("no_key");
+      setAuthErr(e instanceof Error ? e.message : "创建私钥失败");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const bootstrapToken = async (raw: string) => {
-    const tk = raw.trim();
-    if (!tk) {
-      setAuth("error");
-      setAuthErr("请输入 token");
+  /**
+   * 导入私钥
+   * POST /api/v1/key/import
+   */
+  const importKey = async (cipherJson: string) => {
+    if (!cipherJson.trim()) {
+      setAuthErr("请输入密文 JSON");
       return;
     }
-    setAuth("checking");
+    
+    let cipher: Record<string, unknown>;
+    try {
+      cipher = JSON.parse(cipherJson);
+    } catch {
+      setAuthErr("无效的 JSON 格式");
+      return;
+    }
+    
+    setLoading(true);
     setAuthErr("");
     try {
-      await api("api/v1/bootstrap/token", "POST", "", { auth_token: tk });
-      await api("api/v1/info", "GET", tk);
-      localStorage.setItem("bitcast_api_token", tk);
-      setToken(tk);
-      setNeedsBootstrap(false);
-      setAuth("ready");
+      await api("api/v1/key/import", "POST", { cipher } as KeyImportReq);
+      // 导入成功后切换到解锁视图
+      setAuth("locked");
+      setView("unlock");
+      setAuthErr("私钥已导入，请输入密码解锁");
     } catch (e) {
-      localStorage.removeItem("bitcast_api_token");
-      setToken("");
-      setAuth("error");
-      setAuthErr(e instanceof Error ? e.message : "初始化 token 失败");
+      setAuth("no_key");
+      setAuthErr(e instanceof Error ? e.message : "导入私钥失败");
+    } finally {
+      setLoading(false);
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem("bitcast_api_token");
-    setToken("");
-    setTokenInput("");
-    setAuth("locked");
+  /**
+   * 解锁私钥
+   * POST /api/v1/key/unlock
+   */
+  const unlock = async (password: string) => {
+    if (!password) {
+      setAuthErr("请输入密码");
+      return;
+    }
+    
+    setLoading(true);
     setAuthErr("");
-    // 清空所有状态
+    try {
+      await api("api/v1/key/unlock", "POST", { password } as KeyUnlockReq);
+      setAuth("unlocked");
+      setPasswordInput("");
+    } catch (e) {
+      setAuth("locked");
+      setAuthErr(e instanceof Error ? e.message : "解锁失败，密码错误");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * 锁定/注销
+   * POST /api/v1/key/lock
+   */
+  const lock = async () => {
+    setLoading(true);
+    try {
+      await api("api/v1/key/lock", "POST");
+      setAuth("locked");
+      setView("unlock");
+      setPasswordInput("");
+      // 清空业务状态
+      resetBusinessState();
+    } catch (e) {
+      // 即使 API 失败，也切换到锁定状态
+      setAuth("locked");
+      setView("unlock");
+      resetBusinessState();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  /**
+   * 导出私钥
+   * GET /api/v1/key/export
+   */
+  const exportKey = async (): Promise<string | null> => {
+    try {
+      const resp = await api<KeyExportResp>("api/v1/key/export", "GET");
+      return JSON.stringify(resp.cipher, null, 2);
+    } catch (e) {
+      setAuthErr(e instanceof Error ? e.message : "导出私钥失败");
+      return null;
+    }
+  };
+
+  /**
+   * 重置业务状态（锁定时调用）
+   */
+  const resetBusinessState = () => {
+    // 清空所有业务状态
     setTx(null);
     setWalletLedger(null);
     setSeeds(null);
@@ -1942,6 +2088,9 @@ export default function App() {
     setFeePoolCommands(null);
     setFeePoolCommandDetail(null);
     setFeePoolAuditModalOpen(false);
+    setWalletSummary(null);
+    setArbiters(null);
+    setWorkspaces(null);
   };
 
   // 计算当前模块
@@ -1955,30 +2104,167 @@ export default function App() {
   const routeQueryText = route.query.toString();
   const routeMeta = routeQueryText ? `?${route.query.size} params` : "";
 
-  // 登录页
-  if (auth !== "ready") {
-    const bootstrapMode = needsBootstrap === true;
-    const title = bootstrapMode ? "BitFS 客户端首次初始化" : "BitFS 客户端管理后台";
-    const desc = bootstrapMode ? "当前系统未设置管理 token，请先初始化后再进入控制台。" : "登录后可按模块进入子页面。URL 可刷新复现。";
-    const actionLabel = auth === "checking" ? (bootstrapMode ? "初始化中" : "验证中") : (bootstrapMode ? "初始化并登录" : "登录");
+  // ========== 认证/解锁页面 ==========
+  if (auth !== "unlocked") {
     return (
       <div className="login-shell">
         <div className="login-card">
-          <p className="eyebrow">Bitcast Client</p>
-          <h1>{title}</h1>
-          <p className="desc">{desc}</p>
-          {bootstrapChecking ? <p className="desc">检查初始化状态中...</p> : null}
-          <div className="login-row">
-            <input className="input" type="password" value={tokenInput} onChange={(e) => setTokenInput(e.target.value)} placeholder="API Token" />
-            <button
-              className="btn"
-              onClick={() => void (bootstrapMode ? bootstrapToken(tokenInput) : login(tokenInput))}
-              disabled={auth === "checking" || bootstrapChecking}
-            >
-              {actionLabel}
-            </button>
-          </div>
-          {auth === "error" ? <p className="err">{authErr}</p> : null}
+          <p className="eyebrow">BitFS Client {keyStatus?.appname ? `· ${keyStatus.appname}` : ""}</p>
+          
+          {/* 加载中状态 */}
+          {auth === "checking" && (
+            <>
+              <h1>系统初始化中...</h1>
+              <p className="desc">正在检查密钥状态，请稍候</p>
+            </>
+          )}
+          
+          {/* 错误状态 */}
+          {auth === "error" && (
+            <>
+              <h1>⚠️ 出错了</h1>
+              <p className="desc">{authErr || "系统初始化失败"}</p>
+              <button className="btn" onClick={() => void checkKeyStatus()}>重试</button>
+            </>
+          )}
+          
+          {/* 无密钥状态 - 需要创建或导入 */}
+          {auth === "no_key" && (
+            <>
+              {view === "create" && (
+                <>
+                  <h1>🔐 创建新私钥</h1>
+                  <p className="desc">系统中没有私钥，请设置密码创建新私钥。<br />密码将用于加密私钥，请妥善保管。</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 20 }}>
+                    <input 
+                      className="input" 
+                      type="password" 
+                      value={passwordInput} 
+                      onChange={(e) => setPasswordInput(e.target.value)} 
+                      placeholder="设置密码（至少8位）"
+                      onKeyDown={(e) => { if (e.key === "Enter") createKey(passwordInput, confirmPassword); }}
+                    />
+                    <input 
+                      className="input" 
+                      type="password" 
+                      value={confirmPassword} 
+                      onChange={(e) => setConfirmPassword(e.target.value)} 
+                      placeholder="确认密码"
+                      onKeyDown={(e) => { if (e.key === "Enter") createKey(passwordInput, confirmPassword); }}
+                    />
+                    <button
+                      className="btn"
+                      onClick={() => void createKey(passwordInput, confirmPassword)}
+                      disabled={loading}
+                    >
+                      创建并解锁
+                    </button>
+                    <button className="btn btn-light" onClick={() => { setView("import"); setAuthErr(""); }}>
+                      已有私钥？点击导入
+                    </button>
+                  </div>
+                </>
+              )}
+              
+              {view === "import" && (
+                <>
+                  <h1>📥 导入私钥</h1>
+                  <p className="desc">请粘贴导出的密文 JSON，导入后原密码仍然有效。</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 20 }}>
+                    <textarea
+                      className="input"
+                      style={{ minHeight: 120, fontFamily: "monospace", fontSize: 12 }}
+                      value={importCipher}
+                      onChange={(e) => setImportCipher(e.target.value)}
+                      placeholder={`{\n  "version": 1,\n  "cipher": "..."\n}`}
+                    />
+                    <button
+                      className="btn"
+                      onClick={() => void importKey(importCipher)}
+                      disabled={loading}
+                    >
+                      导入私钥
+                    </button>
+                    <button className="btn btn-light" onClick={() => { setView("create"); setAuthErr(""); }}>
+                      返回创建新私钥
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+          
+          {/* 锁定状态 - 需要输入密码解锁 */}
+          {auth === "locked" && (
+            <>
+              {view === "unlock" && (
+                <>
+                  <h1>🔒 系统已锁定</h1>
+                  <p className="desc">私钥已加密存储，请输入密码解锁以继续使用。</p>
+                  <div className="login-row" style={{ marginTop: 20 }}>
+                    <input 
+                      className="input" 
+                      type="password" 
+                      value={passwordInput} 
+                      onChange={(e) => setPasswordInput(e.target.value)} 
+                      placeholder="输入密码"
+                      onKeyDown={(e) => { if (e.key === "Enter") unlock(passwordInput); }}
+                    />
+                    <button
+                      className="btn"
+                      onClick={() => void unlock(passwordInput)}
+                      disabled={loading}
+                    >
+                      解锁
+                    </button>
+                  </div>
+                  <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "center" }}>
+                    <button className="btn btn-light" onClick={() => { setView("export"); setAuthErr(""); }}>
+                      导出私钥备份
+                    </button>
+                  </div>
+                </>
+              )}
+              
+              {view === "export" && (
+                <>
+                  <h1>📤 导出私钥</h1>
+                  <p className="desc">以下是加密后的私钥密文，请妥善保存。<br />导出操作不会删除原私钥。</p>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 20 }}>
+                    <textarea
+                      className="input"
+                      style={{ minHeight: 120, fontFamily: "monospace", fontSize: 12 }}
+                      readOnly
+                      value={importCipher || "点击获取密文..."}
+                      onClick={async () => {
+                        const cipher = await exportKey();
+                        if (cipher) setImportCipher(cipher);
+                      }}
+                    />
+                    <button
+                      className="btn"
+                      onClick={async () => {
+                        const cipher = await exportKey();
+                        if (cipher) {
+                          setImportCipher(cipher);
+                          // 复制到剪贴板
+                          navigator.clipboard.writeText(cipher);
+                          alert("密文已复制到剪贴板");
+                        }
+                      }}
+                    >
+                      获取并复制密文
+                    </button>
+                    <button className="btn btn-light" onClick={() => { setView("unlock"); setAuthErr(""); }}>
+                      返回解锁
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+          
+          {authErr ? <p className="err" style={{ marginTop: 16 }}>{authErr}</p> : null}
         </div>
       </div>
     );
@@ -2048,7 +2334,7 @@ export default function App() {
           <button className={route.path === "/settings/arbiters" ? "menu active" : "menu"} onClick={() => setHash("/settings/arbiters")}>仲裁服务器</button>
         </div>
 
-        <button className="btn btn-ghost" onClick={logout}>登出</button>
+        <button className="btn btn-ghost" onClick={() => void lock()}>🔒 锁定/注销</button>
       </aside>
 
       <main className="content">
@@ -2591,7 +2877,6 @@ export default function App() {
           onSetPrice={setStaticItemPrice}
           onToggleSelection={toggleStaticItemSelection}
           onUpload={uploadStaticFile}
-          token={token}
         />}
 
         {/* ========== Orchestrator 调度页面 ========== */}

@@ -1,27 +1,21 @@
 package main
 
 import (
-	"context"
+	"bufio"
 	"database/sql"
 	"encoding/hex"
-	"errors"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
-	"time"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
-	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/woc"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
-	"github.com/pelletier/go-toml/v2"
+	"golang.org/x/term"
 	_ "modernc.org/sqlite"
 )
 
@@ -30,14 +24,26 @@ var cliLang = detectCLILanguage()
 
 type cliOptions struct {
 	appName    string
-	configPath string
-	importHex  string
 	newKey     bool
-	delKey     bool
-	status     bool
-	daemon     bool
+	importPath string
+	exportPath string
 	showVer    bool
 }
+
+type startupSummary struct {
+	AppName             string
+	RuntimeConfigDBPath string
+	RuntimeConfigStatus string
+}
+
+type cliAction string
+
+const (
+	actionRun    cliAction = "run"
+	actionNew    cliAction = "new"
+	actionImport cliAction = "import"
+	actionExport cliAction = "export"
+)
 
 func main() {
 	opts := parseFlags()
@@ -50,138 +56,65 @@ func main() {
 	if appName == "" {
 		log.Fatal(msg("err_appname_empty"))
 	}
-
-	cfgPath := strings.TrimSpace(opts.configPath)
-	if cfgPath == "" {
-		var err error
-		cfgPath, err = defaultConfigPath(appName)
-		if err != nil {
-			log.Fatal(err)
-		}
+	if len(flag.Args()) > 0 {
+		log.Fatal(msg("err_unexpected_args"))
 	}
-	cfgPath = filepath.Clean(cfgPath)
+	action, err := resolveCLIAction(opts)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	dbPath, err := defaultConfigDBPath(appName)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	act, seedHex, err := resolveAction(opts)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	var keyCfg keyFileConfig
-	configFileStatus := "已加载"
-	switch act {
-	case "import", "new", "del":
-		keyCfg, _, err = loadKeyConfigOrEmpty(cfgPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-	default:
-		keyRes, err := loadOrInitKeyConfig(cfgPath)
-		if err != nil {
-			log.Fatal(err)
-		}
-		keyCfg = keyRes.Config
-		if keyRes.Created {
-			configFileStatus = "已创建（首次启动，使用内置默认值）"
-		} else if keyRes.Upgraded {
-			configFileStatus = "已升级（缺失 privkey_hex 已自动补齐并回写）"
-		}
-	}
 	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(appName, dbPath)
 	if err != nil {
 		log.Fatal(err)
 	}
-	cfg.Keys.PrivkeyHex = keyCfg.Keys.PrivkeyHex
 	runtimeConfigStatus := "已加载"
 	if runtimeCfgCreated {
 		runtimeConfigStatus = "已创建（首次启动）"
 	}
-
-	hasKey := strings.TrimSpace(cfg.Keys.PrivkeyHex) != ""
-	switch act {
-	case "import":
-		if hasKey {
-			log.Fatal(msg("err_key_exists_delete_first"))
-		}
-		norm, err := normalizePrivateKeyHex(opts.importHex)
-		if err != nil {
-			log.Fatalf(msg("err_import_invalid")+": %v", err)
-		}
-		keyCfg.Keys.PrivkeyHex = norm
-		if err := writeKeyConfig(cfgPath, keyCfg); err != nil {
-			log.Fatal(err)
-		}
-		pubHex, _ := pubHexFromPrivHex(norm)
-		fmt.Printf(msg("import_done")+"\nappname: %s\nconfig: %s\npubkey: %s\n", appName, cfgPath, pubHex)
-		return
-	case "new":
-		if hasKey {
-			log.Fatal(msg("err_key_exists_delete_first"))
-		}
-		gen, err := generatePrivateKeyHex()
-		if err != nil {
-			log.Fatal(err)
-		}
-		keyCfg.Keys.PrivkeyHex = gen
-		if err := writeKeyConfig(cfgPath, keyCfg); err != nil {
-			log.Fatal(err)
-		}
-		pubHex, _ := pubHexFromPrivHex(gen)
-		fmt.Printf(msg("new_done")+"\nappname: %s\nconfig: %s\npubkey: %s\n", appName, cfgPath, pubHex)
-		return
-	case "del":
-		if !hasKey {
-			log.Fatal(msg("err_no_key_to_delete"))
-		}
-		keyCfg.Keys.PrivkeyHex = ""
-		if err := writeKeyConfig(cfgPath, keyCfg); err != nil {
-			log.Fatal(err)
-		}
-		fmt.Printf(msg("del_done")+"\nappname: %s\nconfig: %s\n", appName, cfgPath)
-		return
-	}
-
-	if err := clientapp.ValidateConfig(&cfg); err != nil {
-		log.Fatal(err)
-	}
-
 	startup := startupSummary{
 		AppName:             appName,
-		ConfigPath:          cfgPath,
-		ConfigStatus:        configFileStatus,
 		RuntimeConfigDBPath: dbPath,
 		RuntimeConfigStatus: runtimeConfigStatus,
 	}
-	switch act {
-	case "status":
-		if err := printStatus(cfgPath, appName, cfg); err != nil {
+
+	switch action {
+	case actionNew:
+		if err := runCLIKeyNew(appName, dbPath); err != nil {
 			log.Fatal(err)
 		}
-	case "daemon":
-		if err := runDaemon(cfg, startup); err != nil {
+		return
+	case actionImport:
+		if err := runCLIKeyImport(dbPath, opts.importPath); err != nil {
 			log.Fatal(err)
 		}
-	case "download":
-		if err := runDownload(cfg, startup, seedHex); err != nil {
+		return
+	case actionExport:
+		if err := runCLIKeyExport(dbPath, opts.exportPath); err != nil {
 			log.Fatal(err)
 		}
+		return
+	case actionRun:
+		if err := runManagedDaemon(appName, cfg, startup, dbPath); err != nil {
+			log.Fatal(err)
+		}
+		return
 	default:
-		log.Fatalf("unknown action: %s", act)
+		log.Fatalf("unknown cli action: %s", action)
 	}
 }
 
 func parseFlags() cliOptions {
 	var opts cliOptions
 	flag.StringVar(&opts.appName, "appname", "bitfs", msg("flag_appname"))
-	flag.StringVar(&opts.configPath, "config", "", msg("flag_config"))
-	flag.StringVar(&opts.importHex, "import", "", msg("flag_import"))
 	flag.BoolVar(&opts.newKey, "new", false, msg("flag_new"))
-	flag.BoolVar(&opts.delKey, "del", false, msg("flag_del"))
-	flag.BoolVar(&opts.status, "status", false, msg("flag_status"))
-	flag.BoolVar(&opts.daemon, "d", false, msg("flag_daemon"))
+	flag.StringVar(&opts.importPath, "import", "", msg("flag_import"))
+	flag.StringVar(&opts.exportPath, "export", "", msg("flag_export"))
 	flag.BoolVar(&opts.showVer, "version", false, msg("flag_version"))
 	flag.Usage = func() {
 		_, _ = fmt.Fprintln(flag.CommandLine.Output(), msg("usage_line"))
@@ -191,152 +124,173 @@ func parseFlags() cliOptions {
 	return opts
 }
 
-func resolveAction(opts cliOptions) (string, string, error) {
-	args := flag.Args()
+func resolveCLIAction(opts cliOptions) (cliAction, error) {
 	actions := 0
-	if strings.TrimSpace(opts.importHex) != "" {
-		actions++
-	}
 	if opts.newKey {
 		actions++
 	}
-	if opts.delKey {
+	if strings.TrimSpace(opts.importPath) != "" {
 		actions++
 	}
-	if opts.status {
-		actions++
-	}
-	if opts.daemon {
+	if strings.TrimSpace(opts.exportPath) != "" {
 		actions++
 	}
 	if actions > 1 {
-		return "", "", errors.New(msg("err_actions_mutually_exclusive"))
-	}
-	if len(args) > 1 {
-		return "", "", errors.New(msg("err_only_one_hex"))
-	}
-	if len(args) == 1 {
-		if actions > 0 {
-			return "", "", errors.New(msg("err_action_hex_conflict"))
-		}
-		h := strings.ToLower(strings.TrimSpace(args[0]))
-		if h == "" {
-			return "", "", errors.New(msg("err_hex_empty"))
-		}
-		if _, err := hex.DecodeString(h); err != nil {
-			return "", "", fmt.Errorf(msg("err_hex_invalid")+": %w", err)
-		}
-		return "download", h, nil
-	}
-	if strings.TrimSpace(opts.importHex) != "" {
-		return "import", "", nil
+		return "", fmt.Errorf("%s", msg("err_actions_mutually_exclusive"))
 	}
 	if opts.newKey {
-		return "new", "", nil
+		return actionNew, nil
 	}
-	if opts.delKey {
-		return "del", "", nil
+	if strings.TrimSpace(opts.importPath) != "" {
+		return actionImport, nil
 	}
-	if opts.daemon {
-		return "daemon", "", nil
+	if strings.TrimSpace(opts.exportPath) != "" {
+		return actionExport, nil
 	}
-	return "daemon", "", nil
+	return actionRun, nil
 }
 
-type keyFileConfig struct {
-	Keys struct {
-		PrivkeyHex string `toml:"privkey_hex"`
-	} `toml:"keys"`
-}
-
-type keyConfigFileResult struct {
-	Config   keyFileConfig
-	Created  bool
-	Upgraded bool
-}
-
-type startupSummary struct {
-	AppName             string
-	ConfigPath          string
-	ConfigStatus        string
-	RuntimeConfigDBPath string
-	RuntimeConfigStatus string
-}
-
-func loadKeyConfigOrEmpty(configPath string) (keyFileConfig, bool, error) {
-	if _, err := os.Stat(configPath); err == nil {
-		b, err := os.ReadFile(configPath)
-		if err != nil {
-			return keyFileConfig{}, true, err
-		}
-		var cfg keyFileConfig
-		dec := toml.NewDecoder(strings.NewReader(string(b)))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(&cfg); err != nil {
-			// 兼容历史文件：旧版本 config.toml 可能是全量配置（非仅 keys）。
-			// 这里容错提取 keys，随后回写为“仅 keys”新格式，后续继续严格模式。
-			var legacy struct {
-				Keys struct {
-					PrivkeyHex string `toml:"privkey_hex"`
-				} `toml:"keys"`
-			}
-			if decLegacyErr := toml.Unmarshal(b, &legacy); decLegacyErr != nil {
-				return keyFileConfig{}, true, err
-			}
-			cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(legacy.Keys.PrivkeyHex))
-			if err := writeKeyConfig(configPath, cfg); err != nil {
-				return keyFileConfig{}, true, err
-			}
-			return cfg, true, nil
-		}
-		cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(cfg.Keys.PrivkeyHex))
-		return cfg, true, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return keyFileConfig{}, false, err
-	}
-	return keyFileConfig{}, false, nil
-}
-
-func writeKeyConfig(path string, cfg keyFileConfig) error {
-	cfg.Keys.PrivkeyHex = strings.ToLower(strings.TrimSpace(cfg.Keys.PrivkeyHex))
-	data, err := toml.Marshal(cfg)
+func runCLIKeyNew(appName, dbPath string) error {
+	db, err := openRuntimeDB(dbPath)
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	defer db.Close()
+	if _, exists, err := loadEncryptedKeyEnvelope(db); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%s", msg("err_key_exists"))
+	}
+	p1, err := readPassword(msg("prompt_password_new"))
+	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	p2, err := readPassword(msg("prompt_password_confirm"))
+	if err != nil {
+		return err
+	}
+	if p1 != p2 {
+		return fmt.Errorf("%s", msg("err_password_not_match"))
+	}
+	if strings.TrimSpace(p1) == "" {
+		return fmt.Errorf("%s", msg("err_password_empty"))
+	}
+	privHex, err := generatePrivateKeyHex()
+	if err != nil {
+		return err
+	}
+	env, err := encryptPrivateKeyEnvelope(appName, privHex, p1)
+	if err != nil {
+		return err
+	}
+	if err := saveEncryptedKeyEnvelope(db, env); err != nil {
+		return err
+	}
+	pubHex, _ := pubHexFromPrivHex(privHex)
+	fmt.Printf("%s\nappname: %s\npubkey: %s\n", msg("new_done"), appName, pubHex)
+	return nil
 }
 
-func loadOrInitKeyConfig(configPath string) (keyConfigFileResult, error) {
-	cfg, exists, err := loadKeyConfigOrEmpty(configPath)
+func runCLIKeyImport(dbPath, importPath string) error {
+	importPath = strings.TrimSpace(importPath)
+	if importPath == "" {
+		return fmt.Errorf("%s", msg("err_import_path_required"))
+	}
+	raw, err := os.ReadFile(importPath)
 	if err != nil {
-		return keyConfigFileResult{}, err
+		return err
 	}
-	if !exists {
-		gen, err := generatePrivateKeyHex()
+	var env encryptedKeyEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return fmt.Errorf("invalid key envelope json: %w", err)
+	}
+	db, err := openRuntimeDB(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, exists, err := loadEncryptedKeyEnvelope(db); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%s", msg("err_key_exists"))
+	}
+	if err := saveEncryptedKeyEnvelope(db, env); err != nil {
+		return err
+	}
+	fmt.Printf("%s\nfile: %s\n", msg("import_done"), importPath)
+	return nil
+}
+
+func runCLIKeyExport(dbPath, exportPath string) error {
+	exportPath = strings.TrimSpace(exportPath)
+	if exportPath == "" {
+		return fmt.Errorf("%s", msg("err_export_path_required"))
+	}
+	db, err := openRuntimeDB(dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	env, exists, err := loadEncryptedKeyEnvelope(db)
+	if err != nil {
+		return err
+	}
+	if !exists || env == nil {
+		return fmt.Errorf("%s", msg("err_key_not_found"))
+	}
+	data, err := json.MarshalIndent(env, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(exportPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(exportPath, data, 0o600); err != nil {
+		return err
+	}
+	fmt.Printf("%s\nfile: %s\n", msg("export_done"), exportPath)
+	return nil
+}
+
+func readPassword(prompt string) (string, error) {
+	if prompt == "" {
+		prompt = "password"
+	}
+	fmt.Fprint(os.Stderr, prompt)
+	fd := int(os.Stdin.Fd())
+	if term.IsTerminal(fd) {
+		b, err := term.ReadPassword(fd)
+		fmt.Fprintln(os.Stderr)
 		if err != nil {
-			return keyConfigFileResult{}, err
+			return "", err
 		}
-		cfg.Keys.PrivkeyHex = gen
-		if err := writeKeyConfig(configPath, cfg); err != nil {
-			return keyConfigFileResult{}, err
-		}
-		return keyConfigFileResult{Config: cfg, Created: true}, nil
+		return strings.TrimSpace(string(b)), nil
 	}
-	if strings.TrimSpace(cfg.Keys.PrivkeyHex) == "" {
-		gen, err := generatePrivateKeyHex()
-		if err != nil {
-			return keyConfigFileResult{}, err
-		}
-		cfg.Keys.PrivkeyHex = gen
-		if err := writeKeyConfig(configPath, cfg); err != nil {
-			return keyConfigFileResult{}, err
-		}
-		return keyConfigFileResult{Config: cfg, Upgraded: true}, nil
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return "", err
 	}
-	return keyConfigFileResult{Config: cfg}, nil
+	return strings.TrimSpace(line), nil
+}
+
+func openRuntimeDB(dbPath string) (*sql.DB, error) {
+	dbPath = filepath.Clean(strings.TrimSpace(dbPath))
+	if dbPath == "" {
+		return nil, fmt.Errorf("db path is empty")
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		return nil, err
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureKeyringTable(db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
 }
 
 func newDefaultConfig(appName, network string) (clientapp.Config, error) {
@@ -375,211 +329,6 @@ func loadRuntimeConfigOrInit(appName, dbPath string) (clientapp.Config, bool, er
 	return cfg, created, nil
 }
 
-func printStatus(configPath, appName string, cfg clientapp.Config) error {
-	pubHex, err := pubHexFromPrivHex(cfg.Keys.PrivkeyHex)
-	if err != nil {
-		return err
-	}
-	runtimeCfgDB, runtimeDBErr := defaultConfigDBPath(appName)
-	indexDB := effectiveIndexDBPath(cfg)
-	addr, bal, balErr := queryAddressBalance(context.Background(), cfg)
-	feeIn, feeOut, feeErr := queryFeePoolSummary(cfg)
-
-	fmt.Printf("appname: %s\n", appName)
-	fmt.Printf("config: %s\n", configPath)
-	fmt.Printf("network: %s\n", cfg.BSV.Network)
-	fmt.Printf("workspace_dir: %s\n", absOrRaw(cfg.Storage.WorkspaceDir))
-	fmt.Printf("data_dir: %s\n", absOrRaw(cfg.Storage.DataDir))
-	if runtimeDBErr == nil {
-		fmt.Printf("runtime_config_db: %s\n", absOrRaw(runtimeCfgDB))
-	}
-	fmt.Printf("index_db: %s\n", absOrRaw(indexDB))
-	fmt.Printf("pubkey: %s\n", pubHex)
-	if balErr != nil {
-		fmt.Printf(msg("status_balance_unavailable")+": %v\n", balErr)
-	} else {
-		fmt.Printf("address: %s\n", addr)
-		fmt.Printf("balance_satoshi: %d\n", bal)
-	}
-	if feeErr != nil {
-		fmt.Printf(msg("status_feepool_unavailable")+": %v\n", feeErr)
-		if strings.Contains(strings.ToLower(feeErr.Error()), "no such table") {
-			fmt.Println("hint: 先运行一次 `go run ./cmd/client -d` 初始化数据库表。")
-		}
-	} else {
-		fmt.Printf("fee_pool_in_satoshi: %d\n", feeIn)
-		fmt.Printf("fee_pool_out_satoshi: %d\n", feeOut)
-	}
-	fmt.Println("hint: 默认直接运行会进入 daemon；查看状态请使用 `-status`。")
-	return nil
-}
-
-func runDaemon(cfg clientapp.Config, startup startupSummary) error {
-	logFile, _ := clientapp.ResolveLogConfig(&cfg)
-	if err := obs.Init(logFile, obs.LevelNone); err != nil {
-		return err
-	}
-	defer func() { _ = obs.Close() }()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	guardURL, stopGuard, err := woc.EnsureGuardRunning(ctx, woc.GuardRuntimeOptions{Network: cfg.BSV.Network})
-	if err != nil {
-		return err
-	}
-	defer stopGuard()
-
-	effectivePrivHex, err := clientapp.ResolveEffectivePrivKeyHex(cfg, "")
-	if err != nil {
-		return err
-	}
-	runIn := clientapp.NewRunInputFromConfig(cfg, effectivePrivHex)
-	runIn.WebAssets = webAssets
-	runIn.Chain = woc.NewGuardClient(guardURL)
-	rt, err := clientapp.Run(ctx, runIn)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.Close() }()
-
-	printClientStartupSummary("daemon", startup, guardURL, rt, cfg)
-	<-ctx.Done()
-	return nil
-}
-
-func runDownload(cfg clientapp.Config, startup startupSummary, seedHash string) error {
-	logFile, _ := clientapp.ResolveLogConfig(&cfg)
-	if err := obs.Init(logFile, obs.LevelNone); err != nil {
-		return err
-	}
-	defer func() { _ = obs.Close() }()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	guardURL, stopGuard, err := woc.EnsureGuardRunning(ctx, woc.GuardRuntimeOptions{Network: cfg.BSV.Network})
-	if err != nil {
-		return err
-	}
-	defer stopGuard()
-
-	// 一次性下载模式不需要 HTTP 服务和卖方监听。
-	downloadCfg := cfg
-	downloadCfg.HTTP.Enabled = false
-	downloadCfg.Seller.Enabled = false
-	downloadCfg.Scan.StartupFullScan = false
-
-	effectivePrivHex, err := clientapp.ResolveEffectivePrivKeyHex(downloadCfg, "")
-	if err != nil {
-		return err
-	}
-	runIn := clientapp.NewRunInputFromConfig(downloadCfg, effectivePrivHex)
-	runIn.WebAssets = webAssets
-	runIn.Chain = woc.NewGuardClient(guardURL)
-	rt, err := clientapp.Run(ctx, runIn)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.Close() }()
-
-	printClientStartupSummary("download", startup, guardURL, rt, downloadCfg)
-	arbiter := ""
-	if len(rt.HealthyArbiters) > 0 {
-		arbiter = rt.HealthyArbiters[0].ID.String()
-	}
-	download, err := clientapp.TriggerOneShotDirectDownload(ctx, rt, clientapp.OneShotDownloadParams{
-		SeedHash:      seedHash,
-		QuoteMaxRetry: 12,
-		QuoteInterval: 2 * time.Second,
-		ArbiterPeerID: arbiter,
-	})
-	if err != nil {
-		return err
-	}
-
-	seedPath := seedHash + ".bitfs"
-	if err := os.WriteFile(seedPath, download.Seed, 0o644); err != nil {
-		return err
-	}
-	fileName := download.FileName
-	if err := os.WriteFile(fileName, download.Transfer.Data, 0o644); err != nil {
-		return err
-	}
-	fmt.Printf(msg("download_done")+"\ndemand_id: %s\nseller_count: %d\nchunk_count: %d\nseed_file: %s\nfile: %s\nbytes: %d\nsha256: %s\n",
-		download.DemandID, len(download.Transfer.Sellers), download.ChunkCount, seedPath, fileName, len(download.Transfer.Data), download.Transfer.SHA256)
-	return nil
-}
-
-// 启动摘要只给人看，不进入结构化日志。
-func printClientStartupSummary(mode string, startup startupSummary, guardURL string, rt *clientapp.Runtime, cfg clientapp.Config) {
-	pubHex := strings.TrimSpace(rt.ClientID())
-	if strings.TrimSpace(cfg.Keys.PrivkeyHex) != "" {
-		if v, err := pubHexFromPrivHex(cfg.Keys.PrivkeyHex); err == nil {
-			pubHex = v
-		}
-	}
-	recvAddr, recvAddrErr := deriveClientAddress(cfg)
-	dbPath := effectiveIndexDBPath(cfg)
-	logFile, _ := clientapp.ResolveLogConfig(&cfg)
-	systemLogFile, businessLogFile := obs.ResolveSplitFilePaths(logFile)
-
-	fmt.Println("========== BitFS Client 启动信息 ==========")
-	fmt.Printf("模式: %s\n", mode)
-	fmt.Printf("appname: %s\n", startup.AppName)
-	fmt.Printf("配置文件路径: %s\n", absOrRaw(startup.ConfigPath))
-	fmt.Printf("配置文件状态: %s\n", startup.ConfigStatus)
-	fmt.Printf("运行配置DB: %s\n", absOrRaw(startup.RuntimeConfigDBPath))
-	fmt.Printf("运行配置DB状态: %s\n", startup.RuntimeConfigStatus)
-	fmt.Printf("网络: %s\n", rt.BSVNetwork())
-	fmt.Printf("索引数据库: %s\n", absOrRaw(dbPath))
-	fmt.Printf("OBS系统日志: %s\n", absOrRaw(systemLogFile))
-	fmt.Printf("OBS业务日志: %s\n", absOrRaw(businessLogFile))
-	fmt.Printf("Guard URL: %s\n", guardURL)
-	fmt.Printf("Peer ID: %s\n", rt.Host.ID().String())
-	fmt.Printf("公钥(hex): %s\n", pubHex)
-	if recvAddrErr != nil {
-		fmt.Printf("收款地址(%s): <unavailable: %v>\n", rt.BSVNetwork(), recvAddrErr)
-	} else {
-		fmt.Printf("收款地址(%s): %s\n", rt.BSVNetwork(), recvAddr)
-	}
-	fmt.Printf("网关数量: %d\n", len(rt.HealthyGWs))
-	fmt.Printf("仲裁数量: %d\n", len(rt.HealthyArbiters))
-	fmt.Printf("HTTP API: enabled=%t listen_addr=%s\n", cfg.HTTP.Enabled, rt.HTTPListenAddr())
-	fmt.Printf("FS HTTP: enabled=%t listen_addr=%s\n", cfg.FSHTTP.Enabled, rt.FSHTTPListenAddr())
-	fmt.Println("监听地址:")
-	for _, a := range rt.Host.Addrs() {
-		fmt.Printf("  - %s/p2p/%s\n", a.String(), rt.Host.ID().String())
-	}
-	fmt.Println("===========================================")
-}
-
-func deriveClientAddress(cfg clientapp.Config) (string, error) {
-	k, err := parsePrivHex(cfg.Keys.PrivkeyHex)
-	if err != nil {
-		return "", err
-	}
-	raw, err := k.Raw()
-	if err != nil {
-		return "", err
-	}
-	isMain := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
-	actor, err := dual2of2.BuildActor("client", hex.EncodeToString(raw), isMain)
-	if err != nil {
-		return "", err
-	}
-	return actor.Addr, nil
-}
-
-func effectiveIndexDBPath(cfg clientapp.Config) string {
-	dbPath := strings.TrimSpace(cfg.Index.SQLitePath)
-	if dbPath == "" {
-		dbPath = "db/client-index.sqlite"
-	}
-	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
-	}
-	return dbPath
-}
-
 func generatePrivateKeyHex() (string, error) {
 	k, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, -1)
 	if err != nil {
@@ -593,14 +342,6 @@ func generatePrivateKeyHex() (string, error) {
 		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(b))
 	}
 	return strings.ToLower(hex.EncodeToString(b)), nil
-}
-
-func normalizePrivateKeyHex(in string) (string, error) {
-	hexKey, err := normalizeRawSecp256k1PrivKeyHex(in)
-	if err != nil {
-		return "", err
-	}
-	return hexKey, nil
 }
 
 func normalizeRawSecp256k1PrivKeyHex(in string) (string, error) {
@@ -651,78 +392,22 @@ func parsePrivHex(s string) (crypto.PrivKey, error) {
 	return crypto.UnmarshalSecp256k1PrivateKey(b)
 }
 
-func queryAddressBalance(ctx context.Context, cfg clientapp.Config) (string, uint64, error) {
-	k, err := parsePrivHex(cfg.Keys.PrivkeyHex)
-	if err != nil {
-		return "", 0, err
+func absOrRaw(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
 	}
-	raw, err := k.Raw()
-	if err != nil {
-		return "", 0, err
+	if v, err := filepath.Abs(path); err == nil {
+		return v
 	}
-	isMain := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
-	actor, err := dual2of2.BuildActor("client", hex.EncodeToString(raw), isMain)
-	if err != nil {
-		return "", 0, err
-	}
-	guardURL, stopGuard, err := woc.EnsureGuardRunning(ctx, woc.GuardRuntimeOptions{Network: cfg.BSV.Network})
-	if err != nil {
-		return actor.Addr, 0, err
-	}
-	defer stopGuard()
-	utxos, err := woc.NewGuardClient(guardURL).GetUTXOsContext(ctx, actor.Addr)
-	if err != nil {
-		return actor.Addr, 0, err
-	}
-	var sum uint64
-	for _, u := range utxos {
-		sum += u.Value
-	}
-	return actor.Addr, sum, nil
-}
-
-func queryFeePoolSummary(cfg clientapp.Config) (uint64, uint64, error) {
-	dbPath := strings.TrimSpace(cfg.Index.SQLitePath)
-	if dbPath == "" {
-		dbPath = "db/client-index.sqlite"
-	}
-	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
-	}
-	if _, err := os.Stat(dbPath); err != nil {
-		return 0, 0, err
-	}
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer db.Close()
-
-	var inSat int64
-	if err := db.QueryRow(`SELECT COALESCE(SUM(amount_satoshi),0) FROM wallet_fund_flows WHERE flow_type='fee_pool' AND amount_satoshi>0`).Scan(&inSat); err != nil {
-		return 0, 0, err
-	}
-	var outSat int64
-	if err := db.QueryRow(`SELECT COALESCE(SUM(amount_satoshi),0) FROM wallet_fund_flows WHERE flow_type='fee_pool' AND amount_satoshi<0`).Scan(&outSat); err != nil {
-		return 0, 0, err
-	}
-	return uint64(inSat), uint64(-outSat), nil
+	return path
 }
 
 type appPaths struct {
-	ConfigPath   string
 	ConfigDBPath string
 	DataDir      string
 	WorkspaceDir string
 	LogDir       string
-}
-
-func defaultConfigPath(appName string) (string, error) {
-	paths, err := defaultPaths(appName, "test")
-	if err != nil {
-		return "", err
-	}
-	return paths.ConfigPath, nil
 }
 
 func defaultConfigDBPath(appName string) (string, error) {
@@ -751,7 +436,6 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		}
 		local := firstNonEmpty(os.Getenv("LOCALAPPDATA"), appData)
 		return appPaths{
-			ConfigPath:   filepath.Join(appData, appName, "config.toml"),
 			ConfigDBPath: filepath.Join(local, appName, "config", "runtime-config.sqlite"),
 			DataDir:      filepath.Join(local, appName, network),
 			WorkspaceDir: filepath.Join(local, appName, "workspace"),
@@ -764,7 +448,6 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		}
 		appSupport := filepath.Join(home, "Library", "Application Support")
 		return appPaths{
-			ConfigPath:   filepath.Join(appSupport, appName, "config.toml"),
 			ConfigDBPath: filepath.Join(appSupport, appName, "config", "runtime-config.sqlite"),
 			DataDir:      filepath.Join(appSupport, appName, network),
 			WorkspaceDir: filepath.Join(appSupport, appName, "workspace"),
@@ -775,12 +458,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		if err != nil {
 			return appPaths{}, err
 		}
-		cfgBase, err := os.UserConfigDir()
-		if err != nil {
-			cfgBase = filepath.Join(home, ".config")
-		}
 		return appPaths{
-			ConfigPath:   filepath.Join(cfgBase, appName, "config.toml"),
 			ConfigDBPath: filepath.Join(home, ".local", "state", appName, "runtime-config.sqlite"),
 			DataDir:      filepath.Join(home, ".local", "share", appName, network),
 			WorkspaceDir: filepath.Join(home, ".local", "share", appName, "workspace"),
@@ -853,119 +531,99 @@ func msg(key string) string {
 var cliMessages = map[string]map[string]string{
 	"en": {
 		"version_line":                   "bitfs version %s",
-		"usage_line":                     "Usage: bitfs [flags] [seed_hex]",
-		"flag_appname":                   "app instance name used to derive config/data/log directories",
-		"flag_config":                    "private key config file path (derived from appname by default)",
-		"flag_import":                    "import private key hex",
-		"flag_new":                       "create new private key",
-		"flag_del":                       "delete current private key",
-		"flag_status":                    "show status (default action)",
-		"flag_daemon":                    "run in daemon mode",
+		"usage_line":                     "Usage: bitfs [flags]",
+		"flag_appname":                   "app instance name",
+		"flag_new":                       "create encrypted private key in db",
+		"flag_import":                    "import encrypted key json file into db",
+		"flag_export":                    "export encrypted key json file from db",
 		"flag_version":                   "show version",
 		"err_appname_empty":              "-appname cannot be empty",
-		"err_key_exists_delete_first":    "private key already exists in current instance, run -del first",
-		"err_import_invalid":             "invalid private key for -import",
-		"err_no_key_to_delete":           "no private key to delete",
-		"config_not_found":               "config file not found",
-		"err_missing_key":                "private key is not configured, run -new or -import <hex> first",
-		"err_actions_mutually_exclusive": "action flags are mutually exclusive: choose one of -import/-new/-del/-status/-d",
-		"err_only_one_hex":               "only one hex argument is allowed",
-		"err_action_hex_conflict":        "action flags and seed hex argument are mutually exclusive",
-		"err_hex_empty":                  "hex argument cannot be empty",
-		"err_hex_invalid":                "invalid hex argument",
-		"import_done":                    "Private key imported",
+		"err_unexpected_args":            "unexpected positional arguments",
+		"err_actions_mutually_exclusive": "action flags are mutually exclusive: choose one of -new/-import/-export",
+		"err_key_exists":                 "encrypted key already exists",
+		"err_key_not_found":              "encrypted key not found, run -new or -import first",
+		"err_import_path_required":       "-import requires a file path",
+		"err_export_path_required":       "-export requires a file path",
+		"prompt_password_new":            "Enter password: ",
+		"prompt_password_confirm":        "Confirm password: ",
+		"prompt_password_unlock":         "Unlock password: ",
+		"err_password_not_match":         "passwords do not match",
+		"err_password_empty":             "password cannot be empty",
 		"new_done":                       "Private key created",
-		"del_done":                       "Private key deleted",
-		"status_balance_unavailable":     "balance unavailable",
-		"status_feepool_unavailable":     "fee pool unavailable",
-		"download_done":                  "Download completed",
+		"import_done":                    "Encrypted key imported",
+		"export_done":                    "Encrypted key exported",
 	},
 	"zh-CN": {
 		"version_line":                   "bitfs 版本 %s",
-		"usage_line":                     "用法: bitfs [flags] [seed_hex]",
-		"flag_appname":                   "应用实例名，用于计算配置/数据/日志目录",
-		"flag_config":                    "私钥配置文件路径（默认按 appname 计算）",
-		"flag_import":                    "导入私钥 hex",
-		"flag_new":                       "创建新私钥",
-		"flag_del":                       "删除当前私钥",
-		"flag_status":                    "显示状态（默认动作）",
-		"flag_daemon":                    "后台服务模式",
+		"usage_line":                     "用法: bitfs [flags]",
+		"flag_appname":                   "应用实例名",
+		"flag_new":                       "新建并加密私钥到 db",
+		"flag_import":                    "从 json 文件导入密文私钥到 db",
+		"flag_export":                    "从 db 导出密文私钥到 json 文件",
 		"flag_version":                   "显示版本",
 		"err_appname_empty":              "-appname 不能为空",
-		"err_key_exists_delete_first":    "当前实例已存在私钥，请先执行 -del",
-		"err_import_invalid":             "-import 私钥非法",
-		"err_no_key_to_delete":           "当前没有可删除的私钥",
-		"config_not_found":               "未检测到配置文件",
-		"err_missing_key":                "未配置私钥，请先执行 -new 或 -import <hex>",
-		"err_actions_mutually_exclusive": "动作命令互斥：-import/-new/-del/-status/-d 只能选一个",
-		"err_only_one_hex":               "只能提供一个 hex 参数",
-		"err_action_hex_conflict":        "动作命令与 hex 参数互斥",
-		"err_hex_empty":                  "hex 参数不能为空",
-		"err_hex_invalid":                "hex 参数非法",
-		"import_done":                    "已导入私钥",
-		"new_done":                       "已新建私钥",
-		"del_done":                       "已删除私钥",
-		"status_balance_unavailable":     "余额不可用",
-		"status_feepool_unavailable":     "费用池不可用",
-		"download_done":                  "下载完成",
+		"err_unexpected_args":            "不支持位置参数",
+		"err_actions_mutually_exclusive": "动作命令互斥：-new/-import/-export 只能选一个",
+		"err_key_exists":                 "db 中已存在密文私钥",
+		"err_key_not_found":              "db 中没有密文私钥，请先执行 -new 或 -import",
+		"err_import_path_required":       "-import 需要提供文件路径",
+		"err_export_path_required":       "-export 需要提供文件路径",
+		"prompt_password_new":            "输入密码: ",
+		"prompt_password_confirm":        "再次输入密码: ",
+		"prompt_password_unlock":         "输入解锁密码: ",
+		"err_password_not_match":         "两次密码不一致",
+		"err_password_empty":             "密码不能为空",
+		"new_done":                       "已创建私钥",
+		"import_done":                    "已导入密文私钥",
+		"export_done":                    "已导出密文私钥",
 	},
 	"zh-TW": {
 		"version_line":                   "bitfs 版本 %s",
-		"usage_line":                     "用法: bitfs [flags] [seed_hex]",
-		"flag_appname":                   "應用實例名，用於計算配置/資料/日誌目錄",
-		"flag_config":                    "私鑰配置檔路徑（預設按 appname 計算）",
-		"flag_import":                    "匯入私鑰 hex",
-		"flag_new":                       "建立新私鑰",
-		"flag_del":                       "刪除目前私鑰",
-		"flag_status":                    "顯示狀態（預設動作）",
-		"flag_daemon":                    "背景服務模式",
+		"usage_line":                     "用法: bitfs [flags]",
+		"flag_appname":                   "應用實例名",
+		"flag_new":                       "新建並加密私鑰到 db",
+		"flag_import":                    "從 json 檔案匯入密文私鑰到 db",
+		"flag_export":                    "從 db 匯出密文私鑰到 json 檔案",
 		"flag_version":                   "顯示版本",
 		"err_appname_empty":              "-appname 不能為空",
-		"err_key_exists_delete_first":    "目前實例已存在私鑰，請先執行 -del",
-		"err_import_invalid":             "-import 私鑰不合法",
-		"err_no_key_to_delete":           "目前沒有可刪除的私鑰",
-		"config_not_found":               "未偵測到配置檔",
-		"err_missing_key":                "未配置私鑰，請先執行 -new 或 -import <hex>",
-		"err_actions_mutually_exclusive": "動作命令互斥：-import/-new/-del/-status/-d 只能選一個",
-		"err_only_one_hex":               "只能提供一個 hex 參數",
-		"err_action_hex_conflict":        "動作命令與 hex 參數互斥",
-		"err_hex_empty":                  "hex 參數不能為空",
-		"err_hex_invalid":                "hex 參數不合法",
-		"import_done":                    "已匯入私鑰",
+		"err_unexpected_args":            "不支援位置參數",
+		"err_actions_mutually_exclusive": "動作命令互斥：-new/-import/-export 只能選一個",
+		"err_key_exists":                 "db 中已存在密文私鑰",
+		"err_key_not_found":              "db 中沒有密文私鑰，請先執行 -new 或 -import",
+		"err_import_path_required":       "-import 需要提供檔案路徑",
+		"err_export_path_required":       "-export 需要提供檔案路徑",
+		"prompt_password_new":            "輸入密碼: ",
+		"prompt_password_confirm":        "再次輸入密碼: ",
+		"prompt_password_unlock":         "輸入解鎖密碼: ",
+		"err_password_not_match":         "兩次密碼不一致",
+		"err_password_empty":             "密碼不能為空",
 		"new_done":                       "已建立私鑰",
-		"del_done":                       "已刪除私鑰",
-		"status_balance_unavailable":     "餘額不可用",
-		"status_feepool_unavailable":     "費用池不可用",
-		"download_done":                  "下載完成",
+		"import_done":                    "已匯入密文私鑰",
+		"export_done":                    "已匯出密文私鑰",
 	},
 	"ja": {
 		"version_line":                   "bitfs バージョン %s",
-		"usage_line":                     "使い方: bitfs [flags] [seed_hex]",
-		"flag_appname":                   "設定/データ/ログ ディレクトリ計算に使うアプリ名",
-		"flag_config":                    "秘密鍵設定ファイルのパス（既定は appname から計算）",
-		"flag_import":                    "秘密鍵 hex をインポート",
-		"flag_new":                       "新しい秘密鍵を作成",
-		"flag_del":                       "現在の秘密鍵を削除",
-		"flag_status":                    "状態を表示（デフォルト動作）",
-		"flag_daemon":                    "デーモンモードで起動",
+		"usage_line":                     "使い方: bitfs [flags]",
+		"flag_appname":                   "アプリインスタンス名",
+		"flag_new":                       "DB に暗号化秘密鍵を新規作成",
+		"flag_import":                    "json から暗号化秘密鍵を DB にインポート",
+		"flag_export":                    "DB から暗号化秘密鍵を json にエクスポート",
 		"flag_version":                   "バージョンを表示",
 		"err_appname_empty":              "-appname は空にできません",
-		"err_key_exists_delete_first":    "このインスタンスには既に秘密鍵があります。先に -del を実行してください",
-		"err_import_invalid":             "-import の秘密鍵が不正です",
-		"err_no_key_to_delete":           "削除できる秘密鍵がありません",
-		"config_not_found":               "設定ファイルが見つかりません",
-		"err_missing_key":                "秘密鍵が未設定です。先に -new または -import <hex> を実行してください",
-		"err_actions_mutually_exclusive": "アクションフラグは排他です: -import/-new/-del/-status/-d のいずれか1つのみ",
-		"err_only_one_hex":               "hex 引数は1つだけ指定できます",
-		"err_action_hex_conflict":        "アクションフラグと seed hex 引数は同時指定できません",
-		"err_hex_empty":                  "hex 引数は空にできません",
-		"err_hex_invalid":                "hex 引数が不正です",
-		"import_done":                    "秘密鍵をインポートしました",
+		"err_unexpected_args":            "位置引数はサポートされていません",
+		"err_actions_mutually_exclusive": "アクションフラグは排他です: -new/-import/-export のいずれか1つのみ",
+		"err_key_exists":                 "暗号化秘密鍵は既に存在します",
+		"err_key_not_found":              "暗号化秘密鍵が見つかりません。先に -new か -import を実行してください",
+		"err_import_path_required":       "-import にはファイルパスが必要です",
+		"err_export_path_required":       "-export にはファイルパスが必要です",
+		"prompt_password_new":            "パスワード入力: ",
+		"prompt_password_confirm":        "パスワード再入力: ",
+		"prompt_password_unlock":         "アンロック用パスワード: ",
+		"err_password_not_match":         "パスワードが一致しません",
+		"err_password_empty":             "パスワードは空にできません",
 		"new_done":                       "秘密鍵を作成しました",
-		"del_done":                       "秘密鍵を削除しました",
-		"status_balance_unavailable":     "残高を取得できません",
-		"status_feepool_unavailable":     "手数料プール情報を取得できません",
-		"download_done":                  "ダウンロード完了",
+		"import_done":                    "暗号化秘密鍵をインポートしました",
+		"export_done":                    "暗号化秘密鍵をエクスポートしました",
 	},
 }
 
@@ -977,12 +635,4 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
-}
-
-func absOrRaw(path string) string {
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return path
-	}
-	return abs
 }
