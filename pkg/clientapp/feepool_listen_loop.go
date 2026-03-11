@@ -199,6 +199,10 @@ func clearGatewayRuntimeError(rt *Runtime, gw peer.ID) {
 	}
 }
 
+func shouldRunListenBillingLoop(openRes clientKernelResult) bool {
+	return openRes.Accepted && strings.TrimSpace(openRes.Status) == "applied"
+}
+
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 	kernel := ensureClientKernel(rt)
 	if rt == nil || kernel == nil {
@@ -210,7 +214,8 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 		RequestedBy:   "listen_loop",
 		Payload:       map[string]any{"trigger": "listen_loop_start"},
 	})
-	if openRes.Status == "paused" || !openRes.Accepted {
+	// 只有首次建池成功才进入周期 loop；失败/暂停都交给外层 reconcile 再拉起。
+	if !shouldRunListenBillingLoop(openRes) {
 		return
 	}
 	cycleSec := uint32(60)
@@ -237,7 +242,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
 				continue
 			}
 			tickRes := kernel.dispatch(ctx, clientKernelCommand{
-				CommandType:   clientKernelCommandFeePoolCycleTick,
+				CommandType:   clientKernelCommandFeePoolMaintain,
 				GatewayPeerID: gw.ID.String(),
 				RequestedBy:   "listen_loop",
 				Payload: map[string]any{

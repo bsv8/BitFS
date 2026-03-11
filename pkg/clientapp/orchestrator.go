@@ -322,7 +322,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 		}
 		out = append(out, &orchestratorTask{
 			Command: clientKernelCommand{
-				CommandType:   clientKernelCommandFeePoolCycleTick,
+				CommandType:   clientKernelCommandFeePoolMaintain,
 				GatewayPeerID: gwID,
 				RequestedBy:   "orchestrator",
 				Payload: map[string]any{
@@ -341,7 +341,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 			}
 			out = append(out, &orchestratorTask{
 				Command: clientKernelCommand{
-					CommandType:   clientKernelCommandFeePoolCycleTick,
+					CommandType:   clientKernelCommandFeePoolMaintain,
 					GatewayPeerID: gwID,
 					RequestedBy:   "orchestrator",
 					Payload: map[string]any{
@@ -511,7 +511,18 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 			RetryCount:     task.RetryCount,
 			ErrorMessage:   err,
 		})
-		o.failTask(task, fmt.Errorf("%s", err), true)
+		o.failTask(task, fmt.Errorf("%s", err), o.isRetryableFailure(res))
+	}
+}
+
+// isRetryableFailure 定义调度层重试语义：余额暂停/前置条件缺失这类状态型失败不做指数重试。
+func (o *orchestrator) isRetryableFailure(res clientKernelResult) bool {
+	code := strings.TrimSpace(strings.ToLower(res.ErrorCode))
+	switch code {
+	case "session_missing", "wallet_insufficient", "wallet_insufficient_paused":
+		return false
+	default:
+		return true
 	}
 }
 

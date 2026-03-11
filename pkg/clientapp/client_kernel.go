@@ -13,6 +13,7 @@ import (
 const (
 	clientKernelCommandFeePoolEnsureActive = "feepool.ensure_active"
 	clientKernelCommandFeePoolCycleTick    = "feepool.cycle_tick"
+	clientKernelCommandFeePoolMaintain     = "feepool.maintain"
 	clientKernelCommandLivePlanPurchase    = "live.plan_purchase"
 	clientKernelCommandWorkspaceSync       = "workspace.sync"
 	clientKernelCommandDirectDownloadCore  = "direct.download_core"
@@ -52,6 +53,99 @@ func newClientKernel(rt *Runtime) *clientKernel {
 	}
 }
 
+func normalizeClientKernelCommand(cmd clientKernelCommand) clientKernelCommand {
+	if strings.TrimSpace(cmd.CommandID) == "" {
+		cmd.CommandID = newKernelCommandID()
+	}
+	if cmd.RequestedAt <= 0 {
+		cmd.RequestedAt = time.Now().Unix()
+	}
+	if strings.TrimSpace(cmd.RequestedBy) == "" {
+		cmd.RequestedBy = "system"
+	}
+	if cmd.Payload == nil {
+		cmd.Payload = map[string]any{}
+	}
+	return cmd
+}
+
+func resolveFeePoolMaintainCommandType(rt *Runtime, gatewayPeerID string) string {
+	if rt == nil {
+		return feePoolCommandEnsureActive
+	}
+	sess, ok := rt.getFeePool(strings.TrimSpace(gatewayPeerID))
+	if ok && sess != nil && strings.TrimSpace(sess.SpendTxID) != "" && strings.TrimSpace(sess.Status) == "active" {
+		return feePoolCommandCycleTick
+	}
+	return feePoolCommandEnsureActive
+}
+
+func (k *clientKernel) rejectWithAudit(cmd clientKernelCommand, gatewayPeerID, aggregateID, stateBefore, stateAfter, errorCode, errorMessage string) clientKernelResult {
+	cmd = normalizeClientKernelCommand(cmd)
+	if strings.TrimSpace(gatewayPeerID) == "" {
+		gatewayPeerID = strings.TrimSpace(cmd.GatewayPeerID)
+	}
+	if strings.TrimSpace(aggregateID) == "" {
+		switch strings.TrimSpace(cmd.CommandType) {
+		case clientKernelCommandWorkspaceSync:
+			aggregateID = "workspace:default"
+		case clientKernelCommandLivePlanPurchase:
+			streamID := strings.ToLower(strings.TrimSpace(anyToString(cmd.Payload["stream_id"])))
+			if streamID == "" {
+				streamID = "unknown"
+			}
+			aggregateID = "stream:" + streamID
+		case clientKernelCommandFeePoolEnsureActive, clientKernelCommandFeePoolCycleTick, clientKernelCommandFeePoolMaintain:
+			gw := strings.TrimSpace(cmd.GatewayPeerID)
+			if gw == "" {
+				gw = "auto"
+			}
+			aggregateID = "gateway:" + gw
+		default:
+			aggregateID = strings.TrimSpace(cmd.CommandType)
+			if aggregateID == "" {
+				aggregateID = "unknown"
+			}
+		}
+	}
+	if strings.TrimSpace(stateBefore) == "" {
+		stateBefore = "kernel"
+	}
+	if strings.TrimSpace(stateAfter) == "" {
+		stateAfter = stateBefore
+	}
+	if k != nil && k.rt != nil {
+		appendCommandJournal(k.rt.DB, commandJournalEntry{
+			CommandID:     cmd.CommandID,
+			CommandType:   cmd.CommandType,
+			GatewayPeerID: strings.TrimSpace(gatewayPeerID),
+			AggregateID:   strings.TrimSpace(aggregateID),
+			RequestedBy:   cmd.RequestedBy,
+			RequestedAt:   cmd.RequestedAt,
+			Accepted:      false,
+			Status:        "rejected",
+			ErrorCode:     strings.TrimSpace(errorCode),
+			ErrorMessage:  strings.TrimSpace(errorMessage),
+			StateBefore:   strings.TrimSpace(stateBefore),
+			StateAfter:    strings.TrimSpace(stateAfter),
+			DurationMS:    0,
+			Payload:       cmd.Payload,
+			Result: map[string]any{
+				"accepted": false,
+				"status":   "rejected",
+			},
+		})
+	}
+	return clientKernelResult{
+		Accepted:     false,
+		Status:       "rejected",
+		ErrorCode:    strings.TrimSpace(errorCode),
+		ErrorMessage: strings.TrimSpace(errorMessage),
+		StateBefore:  strings.TrimSpace(stateBefore),
+		StateAfter:   strings.TrimSpace(stateAfter),
+	}
+}
+
 func (k *clientKernel) isFeePoolPaused(gatewayPeerID string) bool {
 	if k == nil || k.feePool == nil {
 		return false
@@ -74,30 +168,19 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 	if k == nil || k.rt == nil {
 		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "runtime_not_initialized", ErrorMessage: "runtime not initialized"}
 	}
+	cmd = normalizeClientKernelCommand(cmd)
 	if strings.TrimSpace(cmd.CommandType) == "" {
-		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "command_type_required", ErrorMessage: "command type required"}
-	}
-	if strings.TrimSpace(cmd.CommandID) == "" {
-		cmd.CommandID = newKernelCommandID()
-	}
-	if cmd.RequestedAt <= 0 {
-		cmd.RequestedAt = time.Now().Unix()
-	}
-	if strings.TrimSpace(cmd.RequestedBy) == "" {
-		cmd.RequestedBy = "system"
-	}
-	if cmd.Payload == nil {
-		cmd.Payload = map[string]any{}
+		return k.rejectWithAudit(cmd, "kernel", "kernel", "kernel", "kernel", "command_type_required", "command type required")
 	}
 
 	switch cmd.CommandType {
-	case clientKernelCommandFeePoolEnsureActive, clientKernelCommandFeePoolCycleTick:
+	case clientKernelCommandFeePoolEnsureActive, clientKernelCommandFeePoolCycleTick, clientKernelCommandFeePoolMaintain:
 		if k.feePool == nil {
-			return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "feepool_kernel_missing", ErrorMessage: "fee pool kernel not initialized"}
+			return k.rejectWithAudit(cmd, cmd.GatewayPeerID, "", "feepool", "feepool", "feepool_kernel_missing", "fee pool kernel not initialized")
 		}
 		gw, err := pickGatewayForBusiness(k.rt, cmd.GatewayPeerID)
 		if err != nil {
-			return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "gateway_unavailable", ErrorMessage: err.Error()}
+			return k.rejectWithAudit(cmd, cmd.GatewayPeerID, "", "feepool", "feepool", "gateway_unavailable", err.Error())
 		}
 		fpCmd := feePoolKernelCommand{
 			CommandID:       cmd.CommandID,
@@ -109,8 +192,12 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 		}
 		if cmd.CommandType == clientKernelCommandFeePoolEnsureActive {
 			fpCmd.CommandType = feePoolCommandEnsureActive
-		} else {
+		} else if cmd.CommandType == clientKernelCommandFeePoolCycleTick {
 			fpCmd.CommandType = feePoolCommandCycleTick
+		} else {
+			// 维护命令语义：只暴露一个入口，由内核入口按当前会话状态决定走 ensure_active 还是 cycle_tick。
+			// 这样调度层不需要感知费用池状态，避免无会话时误调 cycle_tick 造成失败风暴。
+			fpCmd.CommandType = resolveFeePoolMaintainCommandType(k.rt, gw.ID.String())
 		}
 		res := k.feePool.dispatch(ctx, gw, fpCmd)
 		return clientKernelResult{
@@ -129,21 +216,15 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 		return k.dispatchWorkspaceSync(ctx, cmd)
 
 	default:
-		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "unsupported_command", ErrorMessage: fmt.Sprintf("unsupported command: %s", cmd.CommandType)}
+		return k.rejectWithAudit(cmd, cmd.GatewayPeerID, "", "kernel", "kernel", "unsupported_command", fmt.Sprintf("unsupported command: %s", cmd.CommandType))
 	}
 }
 
 func (k *clientKernel) dispatchWorkspaceSync(ctx context.Context, cmd clientKernelCommand) clientKernelResult {
 	// 设计约束：workspace 扫描由调度层触发，kernel 只负责执行与审计。
+	cmd = normalizeClientKernelCommand(cmd)
 	if k == nil || k.rt == nil || k.rt.Workspace == nil {
-		return clientKernelResult{
-			Accepted:     false,
-			Status:       "rejected",
-			ErrorCode:    "workspace_not_initialized",
-			ErrorMessage: "workspace not initialized",
-			StateBefore:  "workspace_sync",
-			StateAfter:   "workspace_sync",
-		}
+		return k.rejectWithAudit(cmd, "workspace", "workspace:default", "workspace_sync", "workspace_sync", "workspace_not_initialized", "workspace not initialized")
 	}
 	startAt := time.Now()
 	out, err := TriggerWorkspaceSyncOnce(ctx, k.rt)
@@ -292,16 +373,14 @@ func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p Transf
 }
 
 func (k *clientKernel) dispatchLivePlanPurchase(_ context.Context, cmd clientKernelCommand) clientKernelResult {
+	cmd = normalizeClientKernelCommand(cmd)
 	streamID := strings.ToLower(strings.TrimSpace(anyToString(cmd.Payload["stream_id"])))
 	if !isSeedHashHex(streamID) {
-		return clientKernelResult{
-			Accepted:     false,
-			Status:       "rejected",
-			ErrorCode:    "invalid_stream_id",
-			ErrorMessage: "invalid stream_id",
-			StateBefore:  "live_plan",
-			StateAfter:   "live_plan",
+		agg := streamID
+		if agg == "" {
+			agg = "unknown"
 		}
+		return k.rejectWithAudit(cmd, "live", "stream:"+agg, "live_plan", "live_plan", "invalid_stream_id", "invalid stream_id")
 	}
 	haveSegmentIndex := anyToInt64(cmd.Payload["have_segment_index"])
 	now := time.Now()

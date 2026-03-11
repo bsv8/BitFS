@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,6 +151,112 @@ func TestHandleAdminOrchestratorStatus(t *testing.T) {
 	}
 }
 
+func TestHandleAdminClientKernelCommands(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	appendCommandJournal(db, commandJournalEntry{
+		CommandID:     "ck_1",
+		CommandType:   clientKernelCommandWorkspaceSync,
+		GatewayPeerID: "workspace",
+		AggregateID:   "workspace:default",
+		RequestedBy:   "test",
+		RequestedAt:   time.Now().Unix(),
+		Accepted:      true,
+		Status:        "applied",
+		StateBefore:   "workspace_sync",
+		StateAfter:    "workspace_sync",
+		Payload:       map[string]any{"trigger": "manual"},
+		Result:        map[string]any{"seed_count": 1},
+	})
+	appendCommandJournal(db, commandJournalEntry{
+		CommandID:     "fp_1",
+		CommandType:   "fee_pool_internal_only",
+		GatewayPeerID: "gw",
+		AggregateID:   "gateway:gw",
+		RequestedBy:   "test",
+		RequestedAt:   time.Now().Unix(),
+		Accepted:      true,
+		Status:        "applied",
+		StateBefore:   "active",
+		StateAfter:    "active",
+		Payload:       map[string]any{},
+		Result:        map[string]any{},
+	})
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir()
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = ":memory:"
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10&offset=0", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminClientKernelCommands(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var out struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID          int64  `json:"id"`
+			CommandID   string `json:"command_id"`
+			CommandType string `json:"command_type"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if out.Total != 1 || len(out.Items) != 1 {
+		t.Fatalf("client-kernel list mismatch: total=%d items=%d", out.Total, len(out.Items))
+	}
+	if out.Items[0].CommandID != "ck_1" || out.Items[0].CommandType != clientKernelCommandWorkspaceSync {
+		t.Fatalf("list content mismatch: id=%s type=%s", out.Items[0].CommandID, out.Items[0].CommandType)
+	}
+
+	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?command_type=fee_pool_internal_only", nil)
+	badRec := httptest.NewRecorder()
+	srv.handleAdminClientKernelCommands(badRec, badReq)
+	if badRec.Code != http.StatusBadRequest {
+		t.Fatalf("bad command_type status mismatch: got=%d want=%d body=%s", badRec.Code, http.StatusBadRequest, badRec.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands/detail?id="+itoa64(out.Items[0].ID), nil)
+	detailRec := httptest.NewRecorder()
+	srv.handleAdminClientKernelCommandDetail(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
+	}
+
+	var feePoolID int64
+	if err := db.QueryRow(`SELECT id FROM command_journal WHERE command_id='fp_1'`).Scan(&feePoolID); err != nil {
+		t.Fatalf("query feepool row id failed: %v", err)
+	}
+	notFoundReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands/detail?id="+itoa64(feePoolID), nil)
+	notFoundRec := httptest.NewRecorder()
+	srv.handleAdminClientKernelCommandDetail(notFoundRec, notFoundReq)
+	if notFoundRec.Code != http.StatusNotFound {
+		t.Fatalf("non-client-kernel detail status mismatch: got=%d want=%d body=%s", notFoundRec.Code, http.StatusNotFound, notFoundRec.Body.String())
+	}
+}
+
 func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	t.Parallel()
 
@@ -213,11 +320,11 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	var out struct {
 		Total int `json:"total"`
 		Items []struct {
-			ID             int64           `json:"id"`
-			EventType      string          `json:"event_type"`
-			IdempotencyKey string          `json:"idempotency_key"`
-			GatewayPeerID  string          `json:"gateway_peer_id"`
-			Payload        json.RawMessage `json:"payload"`
+			EventID        string `json:"event_id"`
+			StepsCount     int    `json:"steps_count"`
+			LatestEvent    string `json:"latest_event_type"`
+			IdempotencyKey string `json:"idempotency_key"`
+			GatewayPeerID  string `json:"gateway_peer_id"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -226,29 +333,48 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	if out.Total != 1 || len(out.Items) != 1 {
 		t.Fatalf("list mismatch: total=%d items=%d", out.Total, len(out.Items))
 	}
-	if out.Items[0].EventType != "signal_received" {
-		t.Fatalf("event_type mismatch: %s", out.Items[0].EventType)
+	if out.Items[0].EventID != "workspace_sync:123456" {
+		t.Fatalf("event_id mismatch: %s", out.Items[0].EventID)
+	}
+	if out.Items[0].StepsCount != 1 {
+		t.Fatalf("steps_count mismatch: %d", out.Items[0].StepsCount)
+	}
+	if out.Items[0].LatestEvent != "signal_received" {
+		t.Fatalf("latest_event_type mismatch: %s", out.Items[0].LatestEvent)
 	}
 	if out.Items[0].IdempotencyKey != "workspace_sync:123456" {
 		t.Fatalf("idempotency_key mismatch: %s", out.Items[0].IdempotencyKey)
 	}
 
-	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs/detail?id="+itoa64(out.Items[0].ID), nil)
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs/detail?event_id="+url.QueryEscape(out.Items[0].EventID), nil)
 	detailRec := httptest.NewRecorder()
 	srv.handleAdminOrchestratorLogDetail(detailRec, detailReq)
 	if detailRec.Code != http.StatusOK {
 		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
 	}
 	var detail struct {
-		ID             int64  `json:"id"`
-		EventType      string `json:"event_type"`
+		EventID        string `json:"event_id"`
+		LatestEvent    string `json:"latest_event_type"`
 		IdempotencyKey string `json:"idempotency_key"`
+		StepsCount     int    `json:"steps_count"`
+		Steps          []struct {
+			EventType string `json:"event_type"`
+		} `json:"steps"`
 	}
 	if err := json.Unmarshal(detailRec.Body.Bytes(), &detail); err != nil {
 		t.Fatalf("decode detail response: %v", err)
 	}
-	if detail.ID != out.Items[0].ID || detail.EventType != "signal_received" {
-		t.Fatalf("detail mismatch: id=%d event=%s", detail.ID, detail.EventType)
+	if detail.EventID != out.Items[0].EventID {
+		t.Fatalf("detail event_id mismatch: %s", detail.EventID)
+	}
+	if detail.LatestEvent != "task_dispatch_result" {
+		t.Fatalf("detail latest_event_type mismatch: %s", detail.LatestEvent)
+	}
+	if detail.StepsCount != 2 || len(detail.Steps) != 2 {
+		t.Fatalf("detail steps mismatch: steps_count=%d len=%d", detail.StepsCount, len(detail.Steps))
+	}
+	if detail.Steps[0].EventType != "signal_received" || detail.Steps[1].EventType != "task_dispatch_result" {
+		t.Fatalf("detail step order mismatch: first=%s second=%s", detail.Steps[0].EventType, detail.Steps[1].EventType)
 	}
 	if detail.IdempotencyKey != "workspace_sync:123456" {
 		t.Fatalf("detail idempotency_key mismatch: %s", detail.IdempotencyKey)

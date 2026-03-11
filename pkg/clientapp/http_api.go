@@ -428,6 +428,8 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/admin/feepool/states/detail", s.withAuth(s.handleAdminFeePoolStateDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects", s.withAuth(s.handleAdminFeePoolEffects))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects/detail", s.withAuth(s.handleAdminFeePoolEffectDetail))
+		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands", s.withAuth(s.handleAdminClientKernelCommands))
+		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands/detail", s.withAuth(s.handleAdminClientKernelCommandDetail))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs/detail", s.withAuth(s.handleAdminOrchestratorLogDetail))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/status", s.withAuth(s.handleAdminOrchestratorStatus))
@@ -2491,6 +2493,188 @@ func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r 
 	writeJSON(w, http.StatusOK, it)
 }
 
+var adminClientKernelCommandTypes = []string{
+	clientKernelCommandFeePoolEnsureActive,
+	clientKernelCommandFeePoolCycleTick,
+	clientKernelCommandFeePoolMaintain,
+	clientKernelCommandLivePlanPurchase,
+	clientKernelCommandWorkspaceSync,
+	clientKernelCommandDirectDownloadCore,
+	clientKernelCommandTransferByStrategy,
+}
+
+func isAdminClientKernelCommandType(v string) bool {
+	needle := strings.TrimSpace(v)
+	if needle == "" {
+		return false
+	}
+	for _, t := range adminClientKernelCommandTypes {
+		if strings.EqualFold(strings.TrimSpace(t), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	commandType := strings.TrimSpace(r.URL.Query().Get("command_type"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if commandType != "" && !isAdminClientKernelCommandType(commandType) {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported client kernel command_type"})
+		return
+	}
+
+	where := " AND command_type IN (?,?,?,?,?,?,?)"
+	args := []any{
+		adminClientKernelCommandTypes[0],
+		adminClientKernelCommandTypes[1],
+		adminClientKernelCommandTypes[2],
+		adminClientKernelCommandTypes[3],
+		adminClientKernelCommandTypes[4],
+		adminClientKernelCommandTypes[5],
+		adminClientKernelCommandTypes[6],
+	}
+	if commandType != "" {
+		where += " AND command_type=?"
+		args = append(args, commandType)
+	}
+	if gatewayPeerID != "" {
+		where += " AND gateway_peer_id=?"
+		args = append(args, gatewayPeerID)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	if commandID != "" {
+		where += " AND command_id=?"
+		args = append(args, commandID)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (error_message LIKE ? OR command_id LIKE ? OR requested_by LIKE ? OR state_before LIKE ? OR state_after LIKE ?)"
+		args = append(args, like, like, like, like, like)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM command_journal WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		FROM command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		CommandType   string          `json:"command_type"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		AggregateID   string          `json:"aggregate_id"`
+		RequestedBy   string          `json:"requested_by"`
+		RequestedAt   int64           `json:"requested_at_unix"`
+		Accepted      bool            `json:"accepted"`
+		Status        string          `json:"status"`
+		ErrorCode     string          `json:"error_code"`
+		ErrorMessage  string          `json:"error_message"`
+		StateBefore   string          `json:"state_before"`
+		StateAfter    string          `json:"state_after"`
+		DurationMS    int64           `json:"duration_ms"`
+		Payload       json.RawMessage `json:"payload"`
+		Result        json.RawMessage `json:"result"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var accepted int
+		var payload string
+		var result string
+		if err := rows.Scan(
+			&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.CommandType, &it.GatewayPeerID, &it.AggregateID, &it.RequestedBy, &it.RequestedAt, &accepted, &it.Status, &it.ErrorCode, &it.ErrorMessage, &it.StateBefore, &it.StateAfter, &it.DurationMS, &payload, &result,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Accepted = accepted != 0
+		it.Payload = json.RawMessage(payload)
+		it.Result = json.RawMessage(result)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminClientKernelCommandDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		CommandID     string          `json:"command_id"`
+		CommandType   string          `json:"command_type"`
+		GatewayPeerID string          `json:"gateway_peer_id"`
+		AggregateID   string          `json:"aggregate_id"`
+		RequestedBy   string          `json:"requested_by"`
+		RequestedAt   int64           `json:"requested_at_unix"`
+		Accepted      bool            `json:"accepted"`
+		Status        string          `json:"status"`
+		ErrorCode     string          `json:"error_code"`
+		ErrorMessage  string          `json:"error_message"`
+		StateBefore   string          `json:"state_before"`
+		StateAfter    string          `json:"state_after"`
+		DurationMS    int64           `json:"duration_ms"`
+		Payload       json.RawMessage `json:"payload"`
+		Result        json.RawMessage `json:"result"`
+	}
+	var it item
+	var accepted int
+	var payload string
+	var result string
+	err := s.db.QueryRow(
+		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		FROM command_journal WHERE id=?`, id,
+	).Scan(
+		&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.CommandType, &it.GatewayPeerID, &it.AggregateID, &it.RequestedBy, &it.RequestedAt, &accepted, &it.Status, &it.ErrorCode, &it.ErrorMessage, &it.StateBefore, &it.StateAfter, &it.DurationMS, &payload, &result,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if !isAdminClientKernelCommandType(it.CommandType) {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+		return
+	}
+	it.Accepted = accepted != 0
+	it.Payload = json.RawMessage(payload)
+	it.Result = json.RawMessage(result)
+	writeJSON(w, http.StatusOK, it)
+}
+
 func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2531,14 +2715,34 @@ func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *ht
 		where += " AND task_status=?"
 		args = append(args, taskStatus)
 	}
+	const singleStepEventPrefix = "__single__:"
+	eventIDExpr := "CASE WHEN TRIM(idempotency_key)<>'' THEN idempotency_key ELSE '" + singleStepEventPrefix + "' || CAST(id AS TEXT) END"
 	var total int
-	if err := s.db.QueryRow("SELECT COUNT(1) FROM orchestrator_logs WHERE 1=1"+where, args...).Scan(&total); err != nil {
+	countSQL := "SELECT COUNT(1) FROM (SELECT " + eventIDExpr + " AS event_id FROM orchestrator_logs WHERE 1=1" + where + " GROUP BY 1)"
+	if err := s.db.QueryRow(countSQL, args...).Scan(&total); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	listSQL := `WITH grouped AS (
+		SELECT
+			` + eventIDExpr + ` AS event_id,
+			MIN(created_at_unix) AS started_at_unix,
+			MAX(created_at_unix) AS ended_at_unix,
+			COUNT(1) AS steps_count,
+			MAX(id) AS latest_log_id
+		FROM orchestrator_logs
+		WHERE 1=1` + where + `
+		GROUP BY 1
+	)
+	SELECT
+		g.event_id,g.started_at_unix,g.ended_at_unix,g.steps_count,g.latest_log_id,
+		l.idempotency_key,l.aggregate_key,l.command_type,l.gateway_peer_id,l.source,l.signal_type,l.event_type,l.task_status,l.retry_count,l.queue_length,l.error_message
+	FROM grouped g
+	JOIN orchestrator_logs l ON l.id=g.latest_log_id
+	ORDER BY g.latest_log_id DESC
+	LIMIT ? OFFSET ?`
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
-		FROM orchestrator_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		listSQL,
 		append(args, limit, offset)...,
 	)
 	if err != nil {
@@ -2548,33 +2752,34 @@ func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *ht
 	defer rows.Close()
 
 	type item struct {
-		ID             int64           `json:"id"`
-		CreatedAtUnix  int64           `json:"created_at_unix"`
-		EventType      string          `json:"event_type"`
-		Source         string          `json:"source"`
-		SignalType     string          `json:"signal_type"`
-		AggregateKey   string          `json:"aggregate_key"`
-		IdempotencyKey string          `json:"idempotency_key"`
-		CommandType    string          `json:"command_type"`
-		GatewayPeerID  string          `json:"gateway_peer_id"`
-		TaskStatus     string          `json:"task_status"`
-		RetryCount     int             `json:"retry_count"`
-		QueueLength    int             `json:"queue_length"`
-		ErrorMessage   string          `json:"error_message"`
-		Payload        json.RawMessage `json:"payload"`
+		EventID          string `json:"event_id"`
+		StartedAtUnix    int64  `json:"started_at_unix"`
+		EndedAtUnix      int64  `json:"ended_at_unix"`
+		StepsCount       int    `json:"steps_count"`
+		LatestLogID      int64  `json:"latest_log_id"`
+		IdempotencyKey   string `json:"idempotency_key"`
+		AggregateKey     string `json:"aggregate_key"`
+		CommandType      string `json:"command_type"`
+		GatewayPeerID    string `json:"gateway_peer_id"`
+		Source           string `json:"source"`
+		SignalType       string `json:"signal_type"`
+		LatestEventType  string `json:"latest_event_type"`
+		LatestTaskStatus string `json:"latest_task_status"`
+		LatestRetryCount int    `json:"latest_retry_count"`
+		LatestQueueLen   int    `json:"latest_queue_length"`
+		LastErrorMessage string `json:"last_error_message"`
 	}
 	items := make([]item, 0, limit)
 	for rows.Next() {
 		var it item
-		var payload string
 		if err := rows.Scan(
-			&it.ID, &it.CreatedAtUnix, &it.EventType, &it.Source, &it.SignalType, &it.AggregateKey, &it.IdempotencyKey,
-			&it.CommandType, &it.GatewayPeerID, &it.TaskStatus, &it.RetryCount, &it.QueueLength, &it.ErrorMessage, &payload,
+			&it.EventID, &it.StartedAtUnix, &it.EndedAtUnix, &it.StepsCount, &it.LatestLogID, &it.IdempotencyKey, &it.AggregateKey,
+			&it.CommandType, &it.GatewayPeerID, &it.Source, &it.SignalType, &it.LatestEventType, &it.LatestTaskStatus,
+			&it.LatestRetryCount, &it.LatestQueueLen, &it.LastErrorMessage,
 		); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		it.Payload = json.RawMessage(payload)
 		items = append(items, it)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
@@ -2585,12 +2790,13 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+	eventID := strings.TrimSpace(r.URL.Query().Get("event_id"))
+	if eventID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "event_id is required"})
 		return
 	}
-	type item struct {
+
+	type stepItem struct {
 		ID             int64           `json:"id"`
 		CreatedAtUnix  int64           `json:"created_at_unix"`
 		EventType      string          `json:"event_type"`
@@ -2606,25 +2812,68 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 		ErrorMessage   string          `json:"error_message"`
 		Payload        json.RawMessage `json:"payload"`
 	}
-	var it item
-	var payload string
-	err := s.db.QueryRow(
-		`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
-		FROM orchestrator_logs WHERE id=?`, id,
-	).Scan(
-		&it.ID, &it.CreatedAtUnix, &it.EventType, &it.Source, &it.SignalType, &it.AggregateKey, &it.IdempotencyKey,
-		&it.CommandType, &it.GatewayPeerID, &it.TaskStatus, &it.RetryCount, &it.QueueLength, &it.ErrorMessage, &payload,
+	const singleStepEventPrefix = "__single__:"
+	var (
+		rows *sql.Rows
+		err  error
 	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+	if strings.HasPrefix(eventID, singleStepEventPrefix) {
+		rawID := strings.TrimPrefix(eventID, singleStepEventPrefix)
+		id, perr := strconv.ParseInt(rawID, 10, 64)
+		if perr != nil || id <= 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid event_id"})
 			return
 		}
+		rows, err = s.db.Query(
+			`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+			FROM orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
+		)
+	} else {
+		rows, err = s.db.Query(
+			`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+			FROM orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
+		)
+	}
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	it.Payload = json.RawMessage(payload)
-	writeJSON(w, http.StatusOK, it)
+	defer rows.Close()
+
+	steps := make([]stepItem, 0, 8)
+	for rows.Next() {
+		var it stepItem
+		var payload string
+		if err := rows.Scan(
+			&it.ID, &it.CreatedAtUnix, &it.EventType, &it.Source, &it.SignalType, &it.AggregateKey, &it.IdempotencyKey,
+			&it.CommandType, &it.GatewayPeerID, &it.TaskStatus, &it.RetryCount, &it.QueueLength, &it.ErrorMessage, &payload,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		steps = append(steps, it)
+	}
+	if len(steps) == 0 {
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "event not found"})
+		return
+	}
+	first := steps[0]
+	last := steps[len(steps)-1]
+	writeJSON(w, http.StatusOK, map[string]any{
+		"event_id":           eventID,
+		"idempotency_key":    strings.TrimSpace(last.IdempotencyKey),
+		"aggregate_key":      strings.TrimSpace(last.AggregateKey),
+		"command_type":       strings.TrimSpace(last.CommandType),
+		"gateway_peer_id":    strings.TrimSpace(last.GatewayPeerID),
+		"started_at_unix":    first.CreatedAtUnix,
+		"ended_at_unix":      last.CreatedAtUnix,
+		"steps_count":        len(steps),
+		"latest_event_type":  strings.TrimSpace(last.EventType),
+		"latest_task_status": strings.TrimSpace(last.TaskStatus),
+		"last_error_message": strings.TrimSpace(last.ErrorMessage),
+		"steps":              steps,
+	})
 }
 
 func (s *httpAPIServer) handleAdminOrchestratorStatus(w http.ResponseWriter, r *http.Request) {

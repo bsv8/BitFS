@@ -253,6 +253,97 @@ type AdminConfigSchema = {
   }>;
 };
 
+// ========== Orchestrator 调度相关类型 ==========
+type OrchestratorEvent = {
+  event_id: string;
+  started_at_unix: number;
+  ended_at_unix: number;
+  steps_count: number;
+  latest_log_id: number;
+  idempotency_key: string;
+  aggregate_key: string;
+  command_type: string;
+  gateway_peer_id: string;
+  source: string;
+  signal_type: string;
+  latest_event_type: string;
+  latest_task_status: string;
+  latest_retry_count: number;
+  latest_queue_length: number;
+  last_error_message: string;
+};
+
+type OrchestratorEventsResp = {
+  total: number;
+  items: OrchestratorEvent[];
+};
+
+type OrchestratorEventStep = {
+  id: number;
+  created_at_unix: number;
+  event_type: string;
+  source: string;
+  signal_type: string;
+  aggregate_key: string;
+  idempotency_key: string;
+  command_type: string;
+  gateway_peer_id: string;
+  task_status: string;
+  retry_count: number;
+  queue_length: number;
+  error_message: string;
+  payload: unknown;
+};
+
+type OrchestratorEventDetail = {
+  event_id: string;
+  idempotency_key: string;
+  aggregate_key: string;
+  command_type: string;
+  gateway_peer_id: string;
+  started_at_unix: number;
+  ended_at_unix: number;
+  steps_count: number;
+  latest_event_type: string;
+  latest_task_status: string;
+  last_error_message: string;
+  steps: OrchestratorEventStep[];
+};
+
+type OrchestratorStatus = {
+  enabled: boolean;
+  status: string;
+  active_signals?: number;
+  pending_tasks?: number;
+  [key: string]: unknown;
+};
+
+// ========== ClientKernel 命令相关类型 ==========
+type ClientKernelCommand = {
+  id: number;
+  created_at_unix: number;
+  command_id: string;
+  command_type: string;
+  gateway_peer_id: string;
+  aggregate_id: string;
+  requested_by: string;
+  requested_at_unix: number;
+  accepted: boolean;
+  status: string;
+  error_code: string;
+  error_message: string;
+  state_before: string;
+  state_after: string;
+  duration_ms: number;
+  payload: unknown;
+  result: unknown;
+};
+
+type ClientKernelCommandsResp = {
+  total: number;
+  items: ClientKernelCommand[];
+};
+
 // ========== FeePool 审计相关类型 ==========
 type FeePoolCommand = {
   id: number;
@@ -1035,6 +1126,17 @@ export default function App() {
   const [adminConfigSchema, setAdminConfigSchema] = useState<AdminConfigSchema | null>(null);
   const [configDrafts, setConfigDrafts] = useState<Record<string, string>>({});
 
+  // Orchestrator 调度状态
+  const [orchestratorEvents, setOrchestratorEvents] = useState<OrchestratorEventsResp | null>(null);
+  const [orchestratorEventDetail, setOrchestratorEventDetail] = useState<OrchestratorEventDetail | null>(null);
+  const [orchestratorStatus, setOrchestratorStatus] = useState<OrchestratorStatus | null>(null);
+  const [orchestratorModalOpen, setOrchestratorModalOpen] = useState(false);
+
+  // ClientKernel 命令状态
+  const [clientKernelCommands, setClientKernelCommands] = useState<ClientKernelCommandsResp | null>(null);
+  const [clientKernelCommandDetail, setClientKernelCommandDetail] = useState<ClientKernelCommand | null>(null);
+  const [clientKernelModalOpen, setClientKernelModalOpen] = useState(false);
+
   // FeePool 审计状态
   const [feePoolCommands, setFeePoolCommands] = useState<FeePoolCommandsResp | null>(null);
   const [feePoolCommandDetail, setFeePoolCommandDetail] = useState<FeePoolCommand | null>(null);
@@ -1344,6 +1446,54 @@ export default function App() {
     }
   };
 
+  // ========== Orchestrator 调度加载函数 ==========
+  const loadOrchestratorLogs = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const eventType = route.query.get("event_type") || "";
+    const signalType = route.query.get("signal_type") || "";
+    const source = route.query.get("source") || "";
+    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const taskStatus = route.query.get("task_status") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (eventType) params.set("event_type", eventType);
+    if (signalType) params.set("signal_type", signalType);
+    if (source) params.set("source", source);
+    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (taskStatus) params.set("task_status", taskStatus);
+    setOrchestratorEvents(await api<OrchestratorEventsResp>(`api/v1/admin/orchestrator/logs?${params.toString()}`));
+  };
+
+  const loadOrchestratorLogDetail = async (eventID: string) => {
+    const detail = await api<OrchestratorEventDetail>(`api/v1/admin/orchestrator/logs/detail?event_id=${encodeURIComponent(eventID)}`);
+    setOrchestratorEventDetail(detail);
+    setOrchestratorModalOpen(true);
+  };
+
+  const loadOrchestratorStatus = async () => {
+    setOrchestratorStatus(await api<OrchestratorStatus>("api/v1/admin/orchestrator/status"));
+  };
+
+  // ========== ClientKernel 命令加载函数 ==========
+  const loadClientKernelCommands = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const commandType = route.query.get("command_type") || "";
+    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const status = route.query.get("status") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (commandType) params.set("command_type", commandType);
+    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (status) params.set("status", status);
+    setClientKernelCommands(await api<ClientKernelCommandsResp>(`api/v1/admin/client-kernel/commands?${params.toString()}`));
+  };
+
+  const loadClientKernelCommandDetail = async (id: number) => {
+    const detail = await api<ClientKernelCommand>(`api/v1/admin/client-kernel/commands/detail?id=${id}`);
+    setClientKernelCommandDetail(detail);
+    setClientKernelModalOpen(true);
+  };
+
   // ========== FeePool 审计加载函数 ==========
   const loadFeePoolCommands = async () => {
     const page = toInt(route.query.get("page"), 1);
@@ -1619,6 +1769,12 @@ export default function App() {
             await loadLiveStorageSummary();
             break;
           // Admin 管理模块
+          case "/admin/orchestrator":
+            await Promise.all([loadOrchestratorLogs(), loadOrchestratorStatus()]);
+            break;
+          case "/admin/client-kernel":
+            await loadClientKernelCommands();
+            break;
           case "/admin/downloads":
             // 暂无专门 API，仅保留入口
             break;
@@ -1776,6 +1932,16 @@ export default function App() {
     setSalesDetail(null);
     setGatewayEventDetail(null);
     setGetFileJob(null);
+    setOrchestratorEvents(null);
+    setOrchestratorEventDetail(null);
+    setOrchestratorStatus(null);
+    setOrchestratorModalOpen(false);
+    setClientKernelCommands(null);
+    setClientKernelCommandDetail(null);
+    setClientKernelModalOpen(false);
+    setFeePoolCommands(null);
+    setFeePoolCommandDetail(null);
+    setFeePoolAuditModalOpen(false);
   };
 
   // 计算当前模块
@@ -1865,6 +2031,8 @@ export default function App() {
         {/* Admin 管理模块 */}
         <div className="menu-group">
           <h4>⚙️ 管理</h4>
+          <button className={route.path === "/admin/orchestrator" ? "menu active" : "menu"} onClick={() => setHash("/admin/orchestrator", new URLSearchParams("page=1&pageSize=20"))}>调度器</button>
+          <button className={route.path === "/admin/client-kernel" ? "menu active" : "menu"} onClick={() => setHash("/admin/client-kernel", new URLSearchParams("page=1&pageSize=20"))}>内核命令</button>
           <button className={route.path === "/admin/feepool" ? "menu active" : "menu"} onClick={() => setHash("/admin/feepool", new URLSearchParams("page=1&pageSize=20"))}>费用池审计</button>
           <button className={route.path === "/admin/workspaces" ? "menu active" : "menu"} onClick={() => setHash("/admin/workspaces")}>工作区管理</button>
           <button className={route.path === "/admin/static" ? "menu active" : "menu"} onClick={() => setHash("/admin/static")}>静态文件</button>
@@ -2425,6 +2593,171 @@ export default function App() {
           onUpload={uploadStaticFile}
           token={token}
         />}
+
+        {/* ========== Orchestrator 调度页面 ========== */}
+        {route.path === "/admin/orchestrator" && orchestratorEvents ? (() => {
+          const page = toInt(route.query.get("page"), 1);
+          const pageSize = toInt(route.query.get("pageSize"), 20);
+          const eventType = route.query.get("event_type") || "";
+          const signalType = route.query.get("signal_type") || "";
+          const source = route.query.get("source") || "";
+          const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+          const taskStatus = route.query.get("task_status") || "";
+          return (
+            <section className="panel">
+              <div className="panel-head">
+                <h3>调度器 (Orchestrator)</h3>
+                <div className="hint">任务调度与信号处理中心</div>
+              </div>
+              
+              {/* 状态概览 */}
+              {orchestratorStatus && (
+                <div className="stats-grid" style={{ marginBottom: 16 }}>
+                  <article className="stat">
+                    <p>状态</p>
+                    <h3>{orchestratorStatus.enabled ? "✅ 运行中" : "⛔ 未启用"}</h3>
+                  </article>
+                  <article className="stat">
+                    <p>活跃信号</p>
+                    <h3>{orchestratorStatus.active_signals ?? "-"}</h3>
+                  </article>
+                  <article className="stat">
+                    <p>待处理任务</p>
+                    <h3>{orchestratorStatus.pending_tasks ?? "-"}</h3>
+                  </article>
+                </div>
+              )}
+
+              <div className="filters">
+                <input className="input" defaultValue={eventType} placeholder="event_type" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ event_type: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={signalType} placeholder="signal_type" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ signal_type: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={source} placeholder="source" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ source: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={gatewayPeerID} placeholder="网关 PeerID" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={taskStatus} placeholder="task_status" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ task_status: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <button className="btn" onClick={() => updateQuery({ page: 1 })}>查询</button>
+              </div>
+              <div className="table-wrap"><table><thead><tr><th>开始时间</th><th>结束时间</th><th>步骤数</th><th>最新事件</th><th>命令类型</th><th>任务状态</th><th>来源</th><th>信号</th><th>操作</th></tr></thead><tbody>
+                {orchestratorEvents.items.map((evt) => (
+                  <tr key={evt.event_id}>
+                    <td>{t(evt.started_at_unix)}</td>
+                    <td>{t(evt.ended_at_unix)}</td>
+                    <td>{evt.steps_count}</td>
+                    <td>{evt.latest_event_type || "-"}</td>
+                    <td>{evt.command_type || "-"}</td>
+                    <td>{evt.latest_task_status || "-"}</td>
+                    <td title={evt.source}>{short(evt.source, 12)}</td>
+                    <td title={evt.signal_type}>{short(evt.signal_type, 10)}</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadOrchestratorLogDetail(evt.event_id)}>详情</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+              <Pager total={orchestratorEvents.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
+
+              {/* Orchestrator 日志详情弹窗 */}
+              <Modal
+                title={orchestratorEventDetail ? `调度事件详情: ${orchestratorEventDetail.event_id}` : "调度事件详情"}
+                isOpen={orchestratorModalOpen}
+                onClose={() => setOrchestratorModalOpen(false)}
+              >
+                {orchestratorEventDetail && (
+                  <div style={{ display: "grid", gap: 12 }}>
+                    <div className="detail-table-wrap">
+                      <DetailTable data={{
+                        event_id: orchestratorEventDetail.event_id,
+                        idempotency_key: orchestratorEventDetail.idempotency_key,
+                        aggregate_key: orchestratorEventDetail.aggregate_key,
+                        command_type: orchestratorEventDetail.command_type,
+                        gateway_peer_id: orchestratorEventDetail.gateway_peer_id,
+                        started_at: t(orchestratorEventDetail.started_at_unix),
+                        ended_at: t(orchestratorEventDetail.ended_at_unix),
+                        steps_count: orchestratorEventDetail.steps_count,
+                        latest_event_type: orchestratorEventDetail.latest_event_type,
+                        latest_task_status: orchestratorEventDetail.latest_task_status,
+                        last_error_message: orchestratorEventDetail.last_error_message || "-"
+                      }} />
+                    </div>
+                    <div className="table-wrap"><table><thead><tr><th>时间</th><th>事件</th><th>来源</th><th>信号</th><th>命令</th><th>状态</th><th>重试</th><th>队列</th><th>错误</th></tr></thead><tbody>
+                      {orchestratorEventDetail.steps.map((step) => (
+                        <tr key={step.id}>
+                          <td>{t(step.created_at_unix)}</td>
+                          <td>{step.event_type}</td>
+                          <td title={step.source}>{short(step.source, 12)}</td>
+                          <td title={step.signal_type}>{short(step.signal_type, 10)}</td>
+                          <td>{step.command_type || "-"}</td>
+                          <td>{step.task_status || "-"}</td>
+                          <td>{step.retry_count}</td>
+                          <td>{step.queue_length}</td>
+                          <td title={step.error_message}>{step.error_message ? short(step.error_message, 16) : "-"}</td>
+                        </tr>
+                      ))}
+                    </tbody></table></div>
+                  </div>
+                )}
+                <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+                  <button className="btn btn-light" onClick={() => setOrchestratorModalOpen(false)}>关闭</button>
+                </div>
+              </Modal>
+            </section>
+          );
+        })() : null}
+
+        {/* ========== ClientKernel 命令页面 ========== */}
+        {route.path === "/admin/client-kernel" && clientKernelCommands ? (() => {
+          const page = toInt(route.query.get("page"), 1);
+          const pageSize = toInt(route.query.get("pageSize"), 20);
+          const commandType = route.query.get("command_type") || "";
+          const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+          const status = route.query.get("status") || "";
+          return (
+            <section className="panel">
+              <div className="panel-head">
+                <h3>Client Kernel 命令</h3>
+                <div className="hint">客户端内核命令调度记录（费用池、直播、工作区、下载等）</div>
+              </div>
+              <div className="filters">
+                <input className="input" defaultValue={commandType} placeholder="命令类型" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ command_type: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={gatewayPeerID} placeholder="网关 PeerID" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <input className="input" defaultValue={status} placeholder="状态" onKeyDown={(e) => { if (e.key === "Enter") updateQuery({ status: (e.target as HTMLInputElement).value, page: 1 }); }} />
+                <button className="btn" onClick={() => updateQuery({ page: 1 })}>查询</button>
+              </div>
+              <div className="table-wrap"><table><thead><tr><th>时间</th><th>命令ID</th><th>类型</th><th>网关</th><th>聚合ID</th><th>状态</th><th>耗时</th><th>操作</th></tr></thead><tbody>
+                {clientKernelCommands.items.map((cmd) => (
+                  <tr key={cmd.id}>
+                    <td>{t(cmd.created_at_unix)}</td>
+                    <td title={cmd.command_id}>{short(cmd.command_id, 8)}</td>
+                    <td>{cmd.command_type}</td>
+                    <td title={cmd.gateway_peer_id}>{short(cmd.gateway_peer_id, 8)}</td>
+                    <td title={cmd.aggregate_id}>{short(cmd.aggregate_id, 16)}</td>
+                    <td>{cmd.status}</td>
+                    <td>{cmd.duration_ms}ms</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadClientKernelCommandDetail(cmd.id)}>详情</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody></table></div>
+              <Pager total={clientKernelCommands.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
+
+              {/* Client Kernel 命令详情弹窗 */}
+              <Modal
+                title={clientKernelCommandDetail ? `命令详情: ${short(clientKernelCommandDetail.command_id, 12)}` : "命令详情"}
+                isOpen={clientKernelModalOpen}
+                onClose={() => setClientKernelModalOpen(false)}
+              >
+                {clientKernelCommandDetail && (
+                  <div className="detail-table-wrap">
+                    <DetailTable data={clientKernelCommandDetail} />
+                  </div>
+                )}
+                <div className="modal-footer" style={{ margin: "16px -20px -20px", paddingTop: 16 }}>
+                  <button className="btn btn-light" onClick={() => setClientKernelModalOpen(false)}>关闭</button>
+                </div>
+              </Modal>
+            </section>
+          );
+        })() : null}
 
         {/* ========== FeePool 审计页面 ========== */}
         {route.path === "/admin/feepool" && feePoolCommands ? (() => {

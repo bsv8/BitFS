@@ -68,3 +68,89 @@ func TestKernelTransferByStrategyWritesJournal(t *testing.T) {
 		t.Fatalf("journal aggregate_id mismatch: got=%s", aggregateID)
 	}
 }
+
+func TestKernelDispatchRejectedWritesJournal(t *testing.T) {
+	t.Parallel()
+
+	type tc struct {
+		name      string
+		cmd       clientKernelCommand
+		prepare   func(*clientKernel)
+		errorCode string
+	}
+	cases := []tc{
+		{
+			name: "command_type_required",
+			cmd: clientKernelCommand{
+				RequestedBy: "test",
+			},
+			errorCode: "command_type_required",
+		},
+		{
+			name: "feepool_kernel_missing",
+			cmd: clientKernelCommand{
+				CommandType:   clientKernelCommandFeePoolEnsureActive,
+				GatewayPeerID: "16Uiu2HAmFakeGateway",
+			},
+			prepare:   func(k *clientKernel) { k.feePool = nil },
+			errorCode: "feepool_kernel_missing",
+		},
+		{
+			name: "workspace_not_initialized",
+			cmd: clientKernelCommand{
+				CommandType: clientKernelCommandWorkspaceSync,
+				RequestedBy: "test",
+			},
+			errorCode: "workspace_not_initialized",
+		},
+		{
+			name: "invalid_stream_id",
+			cmd: clientKernelCommand{
+				CommandType: clientKernelCommandLivePlanPurchase,
+				RequestedBy: "test",
+				Payload: map[string]any{
+					"stream_id": "bad_stream_id",
+				},
+			},
+			errorCode: "invalid_stream_id",
+		},
+	}
+
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			db := newWalletAPITestDB(t)
+			rt := &Runtime{DB: db}
+			k := newClientKernel(rt)
+			if c.prepare != nil {
+				c.prepare(k)
+			}
+			res := k.dispatch(context.Background(), c.cmd)
+			if res.Accepted {
+				t.Fatalf("dispatch should be rejected")
+			}
+			if strings.TrimSpace(res.ErrorCode) != c.errorCode {
+				t.Fatalf("dispatch error_code mismatch: got=%s want=%s", res.ErrorCode, c.errorCode)
+			}
+
+			var accepted int
+			var status, gotCode string
+			if err := db.QueryRow(
+				`SELECT accepted,status,error_code FROM command_journal
+				 WHERE error_code=? ORDER BY id DESC LIMIT 1`,
+				c.errorCode,
+			).Scan(&accepted, &status, &gotCode); err != nil {
+				t.Fatalf("query command_journal failed: %v", err)
+			}
+			if accepted != 0 {
+				t.Fatalf("journal accepted mismatch: got=%d want=0", accepted)
+			}
+			if strings.TrimSpace(status) != "rejected" {
+				t.Fatalf("journal status mismatch: got=%s want=rejected", status)
+			}
+			if strings.TrimSpace(gotCode) != c.errorCode {
+				t.Fatalf("journal error_code mismatch: got=%s want=%s", gotCode, c.errorCode)
+			}
+		})
+	}
+}
