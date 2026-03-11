@@ -7,11 +7,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"mime"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -22,6 +25,8 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/woc"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 type managedDaemon struct {
@@ -47,6 +52,11 @@ type managedDaemon struct {
 func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSummary, dbPath string) error {
 	rootCtx, rootCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer rootCancel()
+	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
+	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
+		return err
+	}
+	defer func() { _ = obs.Close() }()
 
 	db, err := openRuntimeDB(dbPath)
 	if err != nil {
@@ -65,6 +75,11 @@ func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSumma
 		_ = db.Close()
 		return err
 	}
+	// 缺省启动路径进入“命令行解锁循环”：
+	// - locked + 有密钥：提示输入密码；
+	// - API 若先解锁：命令行输入会自动取消并提示已解锁；
+	// - API 再次 lock：会重新进入等待密码状态。
+	go d.cliUnlockLoop()
 	<-rootCtx.Done()
 	return d.close()
 }
@@ -360,13 +375,21 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		stopGuard()
 		return err
 	}
+	// 设计说明：
+	// managed 层通过反向代理转发到 runtime HTTP。
+	// 这里不能使用 :0 作为目标地址字符串，否则代理目标不可达会稳定 502。
+	runtimeHTTPAddr, err := allocateLoopbackTCPAddr()
+	if err != nil {
+		stopGuard()
+		return err
+	}
 	token, err := randomTokenHex(24)
 	if err != nil {
 		stopGuard()
 		return err
 	}
 	runCfg.HTTP.AuthToken = token
-	runCfg.HTTP.ListenAddr = "127.0.0.1:0"
+	runCfg.HTTP.ListenAddr = runtimeHTTPAddr
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
 	runIn.WebAssets = webAssets
 	runIn.Chain = woc.NewGuardClient(guardURL)
@@ -408,6 +431,26 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	return nil
 }
 
+func allocateLoopbackTCPAddr() (string, error) {
+	var lastErr error
+	for i := 0; i < 8; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		addr := strings.TrimSpace(ln.Addr().String())
+		_ = ln.Close()
+		if addr != "" && !strings.HasSuffix(addr, ":0") {
+			return addr, nil
+		}
+	}
+	if lastErr != nil {
+		return "", fmt.Errorf("allocate runtime http listen addr failed: %w", lastErr)
+	}
+	return "", fmt.Errorf("allocate runtime http listen addr failed")
+}
+
 func (d *managedDaemon) stopRuntime() error {
 	d.mu.Lock()
 	cancel := d.rtCancel
@@ -431,6 +474,136 @@ func (d *managedDaemon) stopRuntime() error {
 	}
 	obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"appname": d.appName})
 	return nil
+}
+
+func (d *managedDaemon) cliUnlockLoop() {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		obs.Info("bitcast-client", "cli_unlock_loop_skipped_non_interactive_stdin", map[string]any{"appname": d.appName})
+		return
+	}
+	for {
+		select {
+		case <-d.rootCtx.Done():
+			return
+		default:
+		}
+		if d.isUnlocked() {
+			time.Sleep(200 * time.Millisecond)
+			continue
+		}
+		env, exists, err := loadEncryptedKeyEnvelope(d.db)
+		if err != nil {
+			obs.Error("bitcast-client", "cli_unlock_load_key_failed", map[string]any{"error": err.Error()})
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		if !exists || env == nil {
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		password, cancelled, err := d.readPasswordCancelable(msg("prompt_password_unlock"))
+		if err != nil {
+			obs.Error("bitcast-client", "cli_unlock_read_password_failed", map[string]any{"error": err.Error()})
+			time.Sleep(300 * time.Millisecond)
+			continue
+		}
+		if cancelled {
+			// 管理 API 已解锁，等待下一轮状态变化（例如再次 lock）。
+			time.Sleep(150 * time.Millisecond)
+			continue
+		}
+		password = strings.TrimSpace(password)
+		if password == "" {
+			obs.Info("bitcast-client", "cli_unlock_empty_password", map[string]any{"appname": d.appName})
+			continue
+		}
+		if d.isUnlocked() {
+			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
+			continue
+		}
+		privHex, err := decryptPrivateKeyEnvelope(d.appName, *env, password)
+		if err != nil {
+			obs.Error("bitcast-client", "cli_unlock_decrypt_failed", map[string]any{"error": err.Error()})
+			continue
+		}
+		if err := d.startRuntime(privHex); err != nil {
+			obs.Error("bitcast-client", "cli_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
+			continue
+		}
+		obs.Important("bitcast-client", "cli_unlock_succeeded", map[string]any{"appname": d.appName})
+	}
+}
+
+// readPasswordCancelable 在终端输入密码时支持“被 API 解锁后取消等待”。
+// 返回 cancelled=true 表示输入过程中检测到已解锁，调用方应停止本次输入流程。
+func (d *managedDaemon) readPasswordCancelable(prompt string) (password string, cancelled bool, err error) {
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		p, e := readPassword(prompt)
+		return p, false, e
+	}
+	fmt.Fprint(os.Stderr, prompt)
+	oldState, err := term.MakeRaw(fd)
+	if err != nil {
+		return "", false, err
+	}
+	defer func() {
+		_ = term.Restore(fd, oldState)
+		fmt.Fprintln(os.Stderr)
+	}()
+
+	buf := make([]byte, 0, 128)
+	for {
+		if d.isUnlocked() {
+			fmt.Fprint(os.Stderr, "\r已解锁（管理 API 已生效），取消命令行密码输入。")
+			return "", true, nil
+		}
+		select {
+		case <-d.rootCtx.Done():
+			return "", false, d.rootCtx.Err()
+		default:
+		}
+
+		pollFds := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
+		n, pollErr := unix.Poll(pollFds, 200)
+		if pollErr != nil {
+			if errors.Is(pollErr, unix.EINTR) {
+				continue
+			}
+			return "", false, pollErr
+		}
+		if n == 0 {
+			continue
+		}
+		var one [1]byte
+		readN, readErr := unix.Read(fd, one[:])
+		if readErr != nil {
+			if errors.Is(readErr, unix.EINTR) {
+				continue
+			}
+			return "", false, readErr
+		}
+		if readN != 1 {
+			continue
+		}
+		ch := one[0]
+		switch ch {
+		case '\r', '\n':
+			return strings.TrimSpace(string(buf)), false, nil
+		case 127, 8:
+			if len(buf) > 0 {
+				buf = buf[:len(buf)-1]
+			}
+		case 3:
+			return "", false, context.Canceled
+		default:
+			// 忽略控制字符，仅收集可见输入。
+			if ch >= 32 && ch <= 126 {
+				buf = append(buf, ch)
+			}
+		}
+	}
 }
 
 func (d *managedDaemon) currentProxy() *httputil.ReverseProxy {
