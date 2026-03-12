@@ -2,7 +2,7 @@ package clientapp
 
 import "testing"
 
-func TestApplyConfigDefaults_ListenDefaultsByNetwork(t *testing.T) {
+func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 	t.Parallel()
 
 	t.Run("test", func(t *testing.T) {
@@ -36,7 +36,7 @@ func TestApplyConfigDefaults_ListenDefaultsByNetwork(t *testing.T) {
 		if cfg.Listen.Enabled == nil || !*cfg.Listen.Enabled {
 			t.Fatalf("listen.enabled default should be true")
 		}
-		if got, want := cfg.Listen.AutoRenewRounds, uint64(200); got != want {
+		if got, want := cfg.Listen.AutoRenewRounds, uint64(5); got != want {
 			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)
 		}
 		if got, want := cfg.Listen.RenewThresholdSeconds, uint32(1800); got != want {

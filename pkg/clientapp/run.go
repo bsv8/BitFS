@@ -61,11 +61,12 @@ const (
 	defaultMinFreeBytes      = 128 * 1024 * 1024
 	defaultHTTPListenAddr    = "127.0.0.1:18080"
 	defaultFSHTTPListenAddr  = "127.0.0.1:18090"
-	// listen 默认值按网络区分：test 取较小轮数便于联调，main 取更稳健轮数。
+	// listen 默认值：
+	// - auto_renew_rounds 采用单一默认值，落库后由管理员统一配置；
+	// - renew_threshold/tick 仍按网络给默认值，避免主网/测试网节奏差异过大。
 	defaultListenRenewThresholdTestSec = 5
 	defaultListenRenewThresholdMainSec = 1800
-	defaultListenAutoRenewRoundsTest   = 5
-	defaultListenAutoRenewRoundsMain   = 200
+	defaultListenAutoRenewRounds       = 5
 	defaultListenTickTestSec           = 1
 	defaultListenTickMainSec           = 30
 	seedBlockSize                      = 65536
@@ -1020,6 +1021,15 @@ func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error
 	if err != nil {
 		return Config{}, false, err
 	}
+	// 设计约束：
+	// - index.* 由启动参数推导，不作为持久化配置的一部分；
+	// - 读回时若缺失，回填默认推导值，保证运行期语义完整。
+	if strings.TrimSpace(cfg.Index.Backend) == "" {
+		cfg.Index.Backend = strings.TrimSpace(defaultCfg.Index.Backend)
+	}
+	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
+		cfg.Index.SQLitePath = strings.TrimSpace(defaultCfg.Index.SQLitePath)
+	}
 	return cfg, false, nil
 }
 
@@ -1036,10 +1046,16 @@ func SaveConfigInDB(db *sql.DB, cfg Config) error {
 	if err != nil {
 		return err
 	}
+	// 设计约束：
+	// - index.* 是系统派生值（由 appname/启动路径推导），不可持久化；
+	// - 避免“配置里再存配置库位置”的自引用误导。
+	raw := stripTOMLSections(string(data), map[string]struct{}{
+		"index": {},
+	})
 	_, err = db.Exec(
 		`INSERT INTO app_config(id,config_toml,updated_at_unix) VALUES(1,?,?)
 		 ON CONFLICT(id) DO UPDATE SET config_toml=excluded.config_toml,updated_at_unix=excluded.updated_at_unix`,
-		string(data),
+		raw,
 		time.Now().Unix(),
 	)
 	return err
@@ -1108,11 +1124,7 @@ func ApplyConfigDefaults(cfg *Config) error {
 		}
 	}
 	if cfg.Listen.AutoRenewRounds == 0 {
-		if cfg.BSV.Network == "main" {
-			cfg.Listen.AutoRenewRounds = defaultListenAutoRenewRoundsMain
-		} else {
-			cfg.Listen.AutoRenewRounds = defaultListenAutoRenewRoundsTest
-		}
+		cfg.Listen.AutoRenewRounds = defaultListenAutoRenewRounds
 	}
 	if cfg.Listen.TickSeconds == 0 {
 		if cfg.BSV.Network == "main" {
@@ -1189,6 +1201,31 @@ func stripDeprecatedTOMLKeyLines(src string, keys map[string]struct{}) string {
 			candidate = strings.TrimSpace(candidate[:i])
 		}
 		if _, deprecated := keys[candidate]; deprecated {
+			continue
+		}
+		dst = append(dst, line)
+	}
+	return strings.Join(dst, "\n")
+}
+
+func stripTOMLSections(src string, sections map[string]struct{}) string {
+	if strings.TrimSpace(src) == "" || len(sections) == 0 {
+		return src
+	}
+	lines := strings.Split(src, "\n")
+	dst := make([]string, 0, len(lines))
+	skip := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			name := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "["), "]"))
+			_, shouldSkip := sections[name]
+			skip = shouldSkip
+			if shouldSkip {
+				continue
+			}
+		}
+		if skip {
 			continue
 		}
 		dst = append(dst, line)

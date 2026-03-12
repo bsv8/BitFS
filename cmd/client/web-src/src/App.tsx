@@ -2619,6 +2619,9 @@ export default function App() {
             <div className="panel-head">
               <h3>系统配置</h3>
             </div>
+            <div className="hint" style={{ marginBottom: 12 }}>
+              说明：`listen.auto_renew_rounds` 为统一配置项，不区分测试网/主网；`index.*` 为系统派生值，不在此页面开放编辑。
+            </div>
             <div className="table-wrap">
               <table>
                 <thead>

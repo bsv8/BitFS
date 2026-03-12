@@ -5500,7 +5500,7 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
-		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（按网关单轮费用计算入池金额）"},
+		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
 		{Key: "storage.min_free_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "最小空闲空间"},
