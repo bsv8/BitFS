@@ -663,8 +663,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	return nil
 }
 
-// rotateListenFeePool 处理监听费用池轮换：先开新池并切换，再异步单次尝试关闭旧池。
-// 注意：旧池 close 失败不自动重试，交给管理平台手动处理。
+// rotateListenFeePool 处理监听费用池轮换：先开新池并切换，再异步重试关闭旧池。
 func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old *feePoolSession, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
 	if rt == nil || old == nil {
 		return nil, fmt.Errorf("session missing")
@@ -691,17 +690,11 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old
 
 	old.Status = "retired"
 	go func(oldSpendTxID string, gatewayPeerID string) {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
 		obs.Business("bitcast-client", "fee_pool_rotate_close_old_begin", map[string]any{
 			"gateway":        gatewayPeerID,
 			"old_spend_txid": oldSpendTxID,
 		})
-		_, closeErr := TriggerGatewayFeePoolCloseBySpendTxID(closeCtx, rt, FeePoolCloseBySpendTxIDParams{
-			SpendTxID:     oldSpendTxID,
-			GatewayPeerID: gatewayPeerID,
-		})
-		if closeErr != nil {
+		if closeErr := closeOldFeePoolWithRetry(rt, oldSpendTxID, gatewayPeerID); closeErr != nil {
 			obs.Error("bitcast-client", "fee_pool_rotate_close_old_failed", map[string]any{
 				"gateway":        gatewayPeerID,
 				"old_spend_txid": oldSpendTxID,
@@ -716,6 +709,38 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old
 	}(old.SpendTxID, gw.ID.String())
 
 	return next, nil
+}
+
+func closeOldFeePoolWithRetry(rt *Runtime, oldSpendTxID string, gatewayPeerID string) error {
+	const attemptTimeout = 30 * time.Second
+	backoffs := []time.Duration{0, 2 * time.Second, 5 * time.Second}
+	var lastErr error
+	for i, wait := range backoffs {
+		if wait > 0 {
+			time.Sleep(wait)
+		}
+		attempt := i + 1
+		closeCtx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		_, err := TriggerGatewayFeePoolCloseBySpendTxID(closeCtx, rt, FeePoolCloseBySpendTxIDParams{
+			SpendTxID:     oldSpendTxID,
+			GatewayPeerID: gatewayPeerID,
+		})
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		obs.Error("bitcast-client", "fee_pool_rotate_close_old_retry", map[string]any{
+			"gateway":        gatewayPeerID,
+			"old_spend_txid": oldSpendTxID,
+			"attempt":        attempt,
+			"error":          err.Error(),
+		})
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("close old fee pool failed with unknown error")
+	}
+	return lastErr
 }
 
 func isWalletInsufficientForListen(err error) bool {

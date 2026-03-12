@@ -84,6 +84,21 @@ type FeePoolEnsureActiveResult struct {
 	StateAfter    string `json:"state_after,omitempty"`
 }
 
+type FeePoolListenUnderpayProbeParams struct {
+	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
+	SpendTxID     string `json:"spend_txid,omitempty"`
+}
+
+type FeePoolListenUnderpayProbeResult struct {
+	GatewayPeerID          string                  `json:"gateway_peer_id"`
+	SpendTxID              string                  `json:"spend_txid"`
+	ExpectedSingleCycleFee uint64                  `json:"expected_single_cycle_fee_satoshi"`
+	AttemptChargeAmount    uint64                  `json:"attempt_charge_amount_satoshi"`
+	AttemptSequence        uint32                  `json:"attempt_sequence"`
+	AttemptServerAmount    uint64                  `json:"attempt_server_amount_satoshi"`
+	Response               dual2of2.PayConfirmResp `json:"response"`
+}
+
 // TriggerGatewayFeePoolEnsureActive 显式触发费用池内核执行 ensure_active 命令（用于 e2e/运维触发）。
 func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePoolEnsureActiveParams) (FeePoolEnsureActiveResult, error) {
 	if rt == nil || rt.Host == nil {
@@ -120,6 +135,95 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePo
 		ErrorMessage:  res.ErrorMessage,
 		StateBefore:   res.StateBefore,
 		StateAfter:    res.StateAfter,
+	}, nil
+}
+
+// TriggerGatewayFeePoolListenUnderpayProbe 仅用于 e2e：发送“低于单轮监听费”的 pay_confirm，验证网关拒绝策略。
+func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, p FeePoolListenUnderpayProbeParams) (FeePoolListenUnderpayProbeResult, error) {
+	if rt == nil || rt.Host == nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("runtime not initialized")
+	}
+	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, err
+	}
+	sess, ok := rt.getFeePool(gw.ID.String())
+	if !ok || sess == nil || strings.TrimSpace(sess.SpendTxID) == "" {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
+	}
+	spendTxID := strings.TrimSpace(p.SpendTxID)
+	if spendTxID == "" {
+		spendTxID = strings.TrimSpace(sess.SpendTxID)
+	}
+	if !strings.EqualFold(spendTxID, strings.TrimSpace(sess.SpendTxID)) {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("spend_txid does not match local active session")
+	}
+	if sess.SingleCycleFeeSatoshi <= 1 {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("single_cycle_fee_satoshi must be greater than 1 for underpay probe")
+	}
+	if strings.TrimSpace(sess.CurrentTxHex) == "" {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("session current tx missing")
+	}
+
+	pub := rt.Host.Peerstore().PubKey(gw.ID)
+	if pub == nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("missing gateway public key in peerstore")
+	}
+	raw, err := pub.Raw()
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("read gateway raw pubkey: %w", err)
+	}
+	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
+	}
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, err
+	}
+
+	underpay := sess.SingleCycleFeeSatoshi - 1
+	nextSeq := sess.Sequence + 1
+	nextServerAmount := sess.ServerAmount + underpay
+	updatedTx, err := ce.LoadTx(
+		sess.CurrentTxHex,
+		nil,
+		nextSeq,
+		nextServerAmount,
+		serverPub,
+		clientActor.PubKey,
+		sess.PoolAmountSat,
+	)
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("load updated tx failed: %w", err)
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("client sign update failed: %w", err)
+	}
+
+	req := dual2of2.PayConfirmReq{
+		ClientID:            rt.runIn.ClientID,
+		SpendTxID:           spendTxID,
+		SequenceNumber:      nextSeq,
+		ServerAmount:        nextServerAmount,
+		Fee:                 sess.SpendTxFeeSat,
+		ClientSig:           append([]byte(nil), (*clientSig)...),
+		ChargeReason:        "listen_cycle_fee",
+		ChargeAmountSatoshi: underpay,
+	}
+	var resp dual2of2.PayConfirmResp
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolPayConfirm, gwSec(rt.rpcTrace), req, &resp); err != nil {
+		return FeePoolListenUnderpayProbeResult{}, err
+	}
+	return FeePoolListenUnderpayProbeResult{
+		GatewayPeerID:          gw.ID.String(),
+		SpendTxID:              spendTxID,
+		ExpectedSingleCycleFee: sess.SingleCycleFeeSatoshi,
+		AttemptChargeAmount:    underpay,
+		AttemptSequence:        nextSeq,
+		AttemptServerAmount:    nextServerAmount,
+		Response:               resp,
 	}, nil
 }
 
