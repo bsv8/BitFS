@@ -313,6 +313,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 	if autoRenewRounds == 0 {
 		return nil, fmt.Errorf("auto renew rounds is zero")
 	}
+	initialServerAmount := info.SingleCycleFeeSatoshi
 	poolAmount, err := listenPoolAmountByRounds(autoRenewRounds, info.SingleCycleFeeSatoshi, 0)
 	if err != nil {
 		return nil, err
@@ -334,7 +335,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 	spendTx, clientOpenSig, clientAmount, err := ce.BuildDualFeePoolSpendTX(
 		baseResp.Tx,
 		poolAmount,
-		0,
+		initialServerAmount,
 		endHeight,
 		clientActor.PrivKey,
 		serverPub,
@@ -347,7 +348,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 	if clientAmount > poolAmount {
 		return nil, fmt.Errorf("invalid spend tx client amount: pool=%d client=%d", poolAmount, clientAmount)
 	}
-	spendTxFeeSat := poolAmount - clientAmount
+	spendTxFeeSat := dual2of2.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
 	requiredPoolAmount, err := listenPoolAmountByRounds(autoRenewRounds, info.SingleCycleFeeSatoshi, spendTxFeeSat)
 	if err != nil {
 		return nil, err
@@ -364,7 +365,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		spendTx, clientOpenSig, clientAmount, err = ce.BuildDualFeePoolSpendTX(
 			baseResp.Tx,
 			poolAmount,
-			0,
+			initialServerAmount,
 			endHeight,
 			clientActor.PrivKey,
 			serverPub,
@@ -377,9 +378,14 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		if clientAmount > poolAmount {
 			return nil, fmt.Errorf("invalid rebuilt spend tx client amount: pool=%d client=%d", poolAmount, clientAmount)
 		}
-		spendTxFeeSat = poolAmount - clientAmount
+		spendTxFeeSat = dual2of2.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
 	}
-	if clientAmount < info.SingleCycleFeeSatoshi+spendTxFeeSat {
+	// 创建即首扣：rounds 的第 1 轮在 open 时已经划拨给网关，后续只需校验剩余轮次资金。
+	remainingRounds := autoRenewRounds
+	if initialServerAmount >= info.SingleCycleFeeSatoshi && remainingRounds > 0 {
+		remainingRounds--
+	}
+	if remainingRounds > 0 && clientAmount < info.SingleCycleFeeSatoshi+spendTxFeeSat {
 		return nil, fmt.Errorf(
 			"pool amount underfunded by rounds: rounds=%d client_amount=%d need=%d",
 			autoRenewRounds,
@@ -401,7 +407,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		SpendTx:        spendTxBytes,
 		InputAmount:    baseResp.Amount,
 		SequenceNumber: 1,
-		ServerAmount:   0,
+		ServerAmount:   initialServerAmount,
 		ClientSig:      append([]byte(nil), (*clientOpenSig)...),
 	}
 	var createResp dual2of2.CreateResp
@@ -434,7 +440,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		PoolAmountSat: createResp.PoolAmountSat,
 		SpendTxFeeSat: createResp.SpendTxFeeSat,
 		Sequence:      1,
-		ServerAmount:  0,
+		ServerAmount:  initialServerAmount,
 		ClientAmount:  clientAmount,
 		CurrentTxHex:  spendTx.Hex(),
 
@@ -469,6 +475,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 			"base_txid":                  baseOut.BaseTxID,
 			"pool_amount_satoshi":        createResp.PoolAmountSat,
 			"spend_tx_fee_satoshi":       createResp.SpendTxFeeSat,
+			"initial_server_amount":      initialServerAmount,
 			"billing_cycle_seconds":      info.BillingCycleSeconds,
 			"single_cycle_fee_satoshi":   info.SingleCycleFeeSatoshi,
 			"single_publish_fee_satoshi": info.SinglePublishFeeSatoshi,
@@ -492,8 +499,55 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 			"base_txid":            baseOut.BaseTxID,
 			"pool_amount_satoshi":  createResp.PoolAmountSat,
 			"spend_tx_fee_satoshi": createResp.SpendTxFeeSat,
+			"server_amount":        initialServerAmount,
 		},
 	})
+	if initialServerAmount > 0 {
+		// open 锁池与首扣是两笔不同业务事件：这里把首扣单独记成 debit。
+		appendTxHistory(rt.DB, txHistoryEntry{
+			GatewayPeerID: gwID,
+			EventType:     "fee_pool_open_debit",
+			Direction:     "debit",
+			AmountSatoshi: -int64(initialServerAmount),
+			Purpose:       "listen_cycle_fee",
+			Note:          fmt.Sprintf("spend_txid=%s seq=1 server_amount=%d trigger=open_create", createResp.SpendTxID, initialServerAmount),
+			PoolID:        createResp.SpendTxID,
+			SequenceNum:   1,
+		})
+		appendGatewayEvent(rt.DB, gatewayEventEntry{
+			GatewayPeerID: gwID,
+			Action:        "listen_cycle_fee_open",
+			PoolID:        createResp.SpendTxID,
+			SequenceNum:   1,
+			AmountSatoshi: int64(initialServerAmount),
+			Payload: map[string]any{
+				"spend_txid":        createResp.SpendTxID,
+				"sequence":          1,
+				"server_amount":     initialServerAmount,
+				"charge_reason":     "listen_cycle_fee",
+				"charge_amount_sat": initialServerAmount,
+				"trigger":           "open_create",
+			},
+		})
+		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + createResp.SpendTxID,
+			FlowType:        "fee_pool",
+			RefID:           createResp.SpendTxID,
+			Stage:           "use_open",
+			Direction:       "out",
+			Purpose:         "listen_cycle_fee",
+			AmountSatoshi:   -int64(initialServerAmount),
+			UsedSatoshi:     int64(initialServerAmount),
+			ReturnedSatoshi: 0,
+			RelatedTxID:     createResp.SpendTxID,
+			Note:            "sequence=1 trigger=open_create",
+			Payload: map[string]any{
+				"sequence":          1,
+				"charge_reason":     "listen_cycle_fee",
+				"charge_amount_sat": initialServerAmount,
+			},
+		})
+	}
 
 	return s, nil
 }
