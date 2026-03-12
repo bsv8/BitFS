@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"math"
 	"mime"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -356,8 +355,6 @@ func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateway
 func (s *httpAPIServer) Start() error {
 	mux := http.NewServeMux()
 	registerAPI := func(prefix string) {
-		mux.HandleFunc(prefix+"/v1/bootstrap/status", s.handleBootstrapStatus)
-		mux.HandleFunc(prefix+"/v1/bootstrap/token", s.handleBootstrapToken)
 		mux.HandleFunc(prefix+"/v1/info", s.withAuth(s.handleInfo))
 		mux.HandleFunc(prefix+"/v1/balance", s.withAuth(s.handleBalance))
 		mux.HandleFunc(prefix+"/v1/wallet/summary", s.withAuth(s.handleWalletSummary))
@@ -509,100 +506,7 @@ func (s *httpAPIServer) Shutdown(ctx context.Context) error {
 }
 
 func (s *httpAPIServer) withAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		token := strings.TrimSpace(s.cfg.HTTP.AuthToken)
-		if token == "" {
-			writeJSON(w, http.StatusForbidden, map[string]any{"error": "token is not initialized"})
-			return
-		}
-		if !tokenAuthorized(r, token) {
-			writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-			return
-		}
-		next(w, r)
-	}
-}
-
-func tokenAuthorized(r *http.Request, token string) bool {
-	authz := strings.TrimSpace(r.Header.Get("Authorization"))
-	if strings.HasPrefix(strings.ToLower(authz), "bearer ") && strings.TrimSpace(authz[7:]) == token {
-		return true
-	}
-	return strings.TrimSpace(r.Header.Get("X-API-Token")) == token
-}
-
-func (s *httpAPIServer) handleBootstrapStatus(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"needs_bootstrap": strings.TrimSpace(s.cfg.HTTP.AuthToken) == "",
-	})
-}
-
-func (s *httpAPIServer) handleBootstrapToken(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.rt == nil || s.cfg == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
-		return
-	}
-	currentToken := strings.TrimSpace(s.cfg.HTTP.AuthToken)
-	if currentToken == "" && !requestFromLoopback(r) {
-		writeJSON(w, http.StatusForbidden, map[string]any{"error": "bootstrap is allowed only from loopback"})
-		return
-	}
-	if currentToken != "" && !tokenAuthorized(r, currentToken) {
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})
-		return
-	}
-	var req struct {
-		AuthToken string `json:"auth_token"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	token := strings.TrimSpace(req.AuthToken)
-	if token == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "auth_token is required"})
-		return
-	}
-	cfg := s.rt.runIn
-	cfg.HTTP.AuthToken = token
-	if err := SaveConfigInDB(s.db, cfg.toConfig()); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	s.rt.runIn = cfg
-	s.cfg.HTTP.AuthToken = token
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                  true,
-		"bootstrap_completed": currentToken == "",
-		"updated":             currentToken != "",
-	})
-}
-
-func requestFromLoopback(r *http.Request) bool {
-	if r == nil {
-		return false
-	}
-	host := strings.TrimSpace(r.RemoteAddr)
-	if host == "" {
-		return true
-	}
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
+	return next
 }
 
 func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
@@ -5593,7 +5497,6 @@ type adminConfigRule struct {
 func adminConfigRules() []adminConfigRule {
 	return []adminConfigRule{
 		{Key: "http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "管理 API 监听地址"},
-		{Key: "http.auth_token", Type: adminConfigString, MinLen: 8, MaxLen: 256, Description: "管理 API 鉴权 token"},
 		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
@@ -5734,7 +5637,6 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 func adminConfigSnapshot(cfg Config) map[string]any {
 	return map[string]any{
 		"http.listen_addr":                            cfg.HTTP.ListenAddr,
-		"http.auth_token":                             cfg.HTTP.AuthToken,
 		"fs_http.listen_addr":                         cfg.FSHTTP.ListenAddr,
 		"listen.enabled":                              cfgBool(cfg.Listen.Enabled, true),
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
@@ -5868,8 +5770,6 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 	switch key {
 	case "http.listen_addr":
 		cfg.HTTP.ListenAddr = v
-	case "http.auth_token":
-		cfg.HTTP.AuthToken = v
 	case "fs_http.listen_addr":
 		cfg.FSHTTP.ListenAddr = v
 	default:

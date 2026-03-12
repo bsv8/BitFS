@@ -402,7 +402,6 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	cfg.Storage.DataDir = t.TempDir() + "-data"
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = ":memory:"
-	cfg.HTTP.AuthToken = "abcd1234"
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}

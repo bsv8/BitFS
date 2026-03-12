@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -318,7 +317,6 @@ type Config struct {
 	HTTP struct {
 		Enabled    bool   `yaml:"enabled" toml:"enabled"`
 		ListenAddr string `yaml:"listen_addr" toml:"listen_addr"`
-		AuthToken  string `yaml:"auth_token" toml:"auth_token"`
 	} `yaml:"http" toml:"http"`
 	FSHTTP struct {
 		Enabled                    bool   `yaml:"enabled" toml:"enabled"`
@@ -409,7 +407,6 @@ type RunInput struct {
 	HTTP struct {
 		Enabled    bool
 		ListenAddr string
-		AuthToken  string
 	}
 	FSHTTP struct {
 		Enabled                    bool
@@ -480,7 +477,6 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 	in.Index.SQLitePath = cfg.Index.SQLitePath
 	in.HTTP.Enabled = cfg.HTTP.Enabled
 	in.HTTP.ListenAddr = cfg.HTTP.ListenAddr
-	in.HTTP.AuthToken = cfg.HTTP.AuthToken
 	in.FSHTTP.Enabled = cfg.FSHTTP.Enabled
 	in.FSHTTP.ListenAddr = cfg.FSHTTP.ListenAddr
 	in.FSHTTP.DownloadWaitTimeoutSeconds = cfg.FSHTTP.DownloadWaitTimeoutSeconds
@@ -543,7 +539,6 @@ func (in RunInput) toConfig() Config {
 	cfg.Index.SQLitePath = in.Index.SQLitePath
 	cfg.HTTP.Enabled = in.HTTP.Enabled
 	cfg.HTTP.ListenAddr = in.HTTP.ListenAddr
-	cfg.HTTP.AuthToken = in.HTTP.AuthToken
 	cfg.FSHTTP.Enabled = in.FSHTTP.Enabled
 	cfg.FSHTTP.ListenAddr = in.FSHTTP.ListenAddr
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = in.FSHTTP.DownloadWaitTimeoutSeconds
@@ -1163,6 +1158,11 @@ func ParseConfigTOML(data []byte) (Config, error) {
 	// 历史字段迁移：金额语义已下线，统一收敛到“续费轮数”。
 	// 迁移后仍走严格模式，避免把未知字段静默吞掉。
 	normalized := strings.ReplaceAll(string(data), "max_auto_renew_amount", "auto_renew_rounds")
+	// 历史字段迁移：管理 API token 语义已移除。
+	// 这里仅做读时清理，避免旧 DB 配置因严格解析失败。
+	normalized = stripDeprecatedTOMLKeyLines(normalized, map[string]struct{}{
+		"auth_token": {},
+	})
 	var cfg Config
 	dec := toml.NewDecoder(strings.NewReader(normalized))
 	dec.DisallowUnknownFields()
@@ -1170,6 +1170,30 @@ func ParseConfigTOML(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+func stripDeprecatedTOMLKeyLines(src string, keys map[string]struct{}) string {
+	if strings.TrimSpace(src) == "" || len(keys) == 0 {
+		return src
+	}
+	lines := strings.Split(src, "\n")
+	dst := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			dst = append(dst, line)
+			continue
+		}
+		candidate := trimmed
+		if i := strings.Index(candidate, "="); i >= 0 {
+			candidate = strings.TrimSpace(candidate[:i])
+		}
+		if _, deprecated := keys[candidate]; deprecated {
+			continue
+		}
+		dst = append(dst, line)
+	}
+	return strings.Join(dst, "\n")
 }
 
 func EncodeConfigTOML(cfg Config) ([]byte, error) {
@@ -1255,35 +1279,12 @@ func validateConfig(cfg *Config) error {
 	if strings.TrimSpace(cfg.HTTP.ListenAddr) == "" {
 		return errors.New("http.listen_addr is required")
 	}
-	if !isLoopbackListenAddr(cfg.HTTP.ListenAddr) && strings.TrimSpace(cfg.HTTP.AuthToken) == "" {
-		return errors.New("http.auth_token is required when http.listen_addr is not loopback")
-	}
 	return nil
 }
 
 // ValidateConfig 对外提供启动前配置校验，失败即中止启动。
 func ValidateConfig(cfg *Config) error {
 	return validateConfig(cfg)
-}
-
-func isLoopbackListenAddr(addr string) bool {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		return false
-	}
-	host := addr
-	if h, _, err := net.SplitHostPort(addr); err == nil {
-		host = h
-	}
-	host = strings.Trim(strings.TrimSpace(host), "[]")
-	if host == "" {
-		return false
-	}
-	if strings.EqualFold(host, "localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }
 
 func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {

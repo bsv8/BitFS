@@ -2,9 +2,7 @@ package main
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -41,12 +39,11 @@ type managedDaemon struct {
 	db  *sql.DB
 	srv *http.Server
 
-	mu            sync.RWMutex
-	rt            *clientapp.Runtime
-	rtCancel      context.CancelFunc
-	rtProxy       *httputil.ReverseProxy
-	guardStop     func()
-	internalToken string
+	mu        sync.RWMutex
+	rt        *clientapp.Runtime
+	rtCancel  context.CancelFunc
+	rtProxy   *httputil.ReverseProxy
+	guardStop func()
 }
 
 func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSummary, dbPath string) error {
@@ -93,7 +90,6 @@ func (d *managedDaemon) close() error {
 	d.rt = nil
 	d.rtProxy = nil
 	d.guardStop = nil
-	d.internalToken = ""
 	d.mu.Unlock()
 
 	if cancel != nil {
@@ -383,12 +379,6 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		stopGuard()
 		return err
 	}
-	token, err := randomTokenHex(24)
-	if err != nil {
-		stopGuard()
-		return err
-	}
-	runCfg.HTTP.AuthToken = token
 	runCfg.HTTP.ListenAddr = runtimeHTTPAddr
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
 	runIn.WebAssets = webAssets
@@ -409,19 +399,12 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		return err
 	}
 	proxy := httputil.NewSingleHostReverseProxy(targetURL)
-	baseDirector := proxy.Director
-	proxy.Director = func(req *http.Request) {
-		baseDirector(req)
-		req.Header.Set("X-API-Token", token)
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
 
 	d.mu.Lock()
 	d.rt = rt
 	d.rtCancel = cancel
 	d.rtProxy = proxy
 	d.guardStop = stopGuard
-	d.internalToken = token
 	d.mu.Unlock()
 
 	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
@@ -460,7 +443,6 @@ func (d *managedDaemon) stopRuntime() error {
 	d.rt = nil
 	d.rtProxy = nil
 	d.guardStop = nil
-	d.internalToken = ""
 	d.mu.Unlock()
 
 	if cancel != nil {
@@ -622,17 +604,6 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func randomTokenHex(n int) (string, error) {
-	if n <= 0 {
-		n = 16
-	}
-	b := make([]byte, n)
-	if _, err := rand.Read(b); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(b), nil
 }
 
 func pathClean(p string) string {

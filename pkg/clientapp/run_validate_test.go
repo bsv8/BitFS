@@ -1,11 +1,8 @@
 package clientapp
 
-import (
-	"strings"
-	"testing"
-)
+import "testing"
 
-func TestValidateConfig_HTTPTokenRequiredOnNonLoopback(t *testing.T) {
+func TestValidateConfig_HTTPListenAddrRequired(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{}
@@ -16,17 +13,17 @@ func TestValidateConfig_HTTPTokenRequiredOnNonLoopback(t *testing.T) {
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 10
 	cfg.FSHTTP.MaxConcurrentSessions = 4
-	cfg.HTTP.ListenAddr = "0.0.0.0:18080"
+	cfg.HTTP.ListenAddr = ""
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	cfg.HTTP.AuthToken = ""
+	cfg.HTTP.ListenAddr = ""
 
 	err := ValidateConfig(&cfg)
 	if err == nil {
-		t.Fatalf("expected error when non-loopback http listen addr has empty token")
+		t.Fatalf("expected error when http.listen_addr is empty")
 	}
-	if !strings.Contains(err.Error(), "http.auth_token is required when http.listen_addr is not loopback") {
+	if err.Error() != "http.listen_addr is required" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
