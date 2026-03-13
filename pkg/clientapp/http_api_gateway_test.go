@@ -80,9 +80,9 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 	var healthBody struct {
 		Total          int    `json:"total"`
 		ConnectedTotal int    `json:"connected_total"`
-		MasterPeerID   string `json:"master_peer_id"`
+		MasterPeerID   string `json:"master_gateway_pubkey_hex"`
 		Items          []struct {
-			PeerID        string `json:"peer_id"`
+			PeerID        string `json:"transport_peer_id"`
 			Connected     bool   `json:"connected"`
 			Connectedness string `json:"connectedness"`
 		} `json:"items"`
@@ -97,14 +97,14 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 		t.Fatalf("unexpected health items: %+v", healthBody.Items)
 	}
 
-	postBadReq := httptest.NewRequest(http.MethodPost, "/api/v1/gateways/master", strings.NewReader(`{"master_peer_id":"12D3KooWBadPeerID"}`))
+	postBadReq := httptest.NewRequest(http.MethodPost, "/api/v1/gateways/master", strings.NewReader(`{"master_gateway_pubkey_hex":"12D3KooWBadPeerID"}`))
 	postBadRec := httptest.NewRecorder()
 	srv.handleGatewayMaster(postBadRec, postBadReq)
 	if postBadRec.Code != http.StatusBadRequest {
 		t.Fatalf("set master bad status mismatch: got=%d want=%d", postBadRec.Code, http.StatusBadRequest)
 	}
 
-	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/gateways/master", strings.NewReader(`{"master_peer_id":"`+hGw2.ID().String()+`"}`))
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/gateways/master", strings.NewReader(`{"master_gateway_pubkey_hex":"`+hGw2.ID().String()+`"}`))
 	postRec := httptest.NewRecorder()
 	srv.handleGatewayMaster(postRec, postReq)
 	if postRec.Code != http.StatusOK {
@@ -119,13 +119,13 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 	healthRec2 := httptest.NewRecorder()
 	srv.handleGatewayHealth(healthRec2, healthReq)
 	var healthBody2 struct {
-		MasterPeerID string `json:"master_peer_id"`
+		MasterPeerID string `json:"master_gateway_pubkey_hex"`
 	}
 	if err := json.Unmarshal(healthRec2.Body.Bytes(), &healthBody2); err != nil {
 		t.Fatalf("decode health body2: %v", err)
 	}
 	if healthBody2.MasterPeerID != hGw2.ID().String() {
-		t.Fatalf("master_peer_id mismatch in health: got=%s want=%s", healthBody2.MasterPeerID, hGw2.ID().String())
+		t.Fatalf("master_gateway_pubkey_hex mismatch in health: got=%s want=%s", healthBody2.MasterPeerID, hGw2.ID().String())
 	}
 }
 
@@ -178,7 +178,7 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 	var listBody struct {
 		Items []struct {
 			ID            int    `json:"id"`
-			PeerID        string `json:"peer_id"`
+			PeerID        string `json:"transport_peer_id"`
 			Connected     bool   `json:"connected"`
 			Connectedness string `json:"connectedness"`
 			FeePoolReady  bool   `json:"fee_pool_ready"`
@@ -234,7 +234,7 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 	}
 	var listBody2 struct {
 		Items []struct {
-			PeerID        string `json:"peer_id"`
+			PeerID        string `json:"transport_peer_id"`
 			Connected     bool   `json:"connected"`
 			Connectedness string `json:"connectedness"`
 			FeePoolReady  bool   `json:"fee_pool_ready"`

@@ -58,7 +58,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 	})
 
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?gateway_peer_id=gw1&limit=10&offset=0", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?gateway_pubkey_hex=gw1&limit=10&offset=0", nil)
 		rec := httptest.NewRecorder()
 		srv.handleAdminFeePoolCommands(rec, req)
 		if rec.Code != http.StatusOK {

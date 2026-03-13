@@ -133,6 +133,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 		return
 	}
 	gwID := gw.ID.String()
+	gwBusinessID := gatewayBusinessID(k.rt, gw.ID)
 	lock := k.getGatewayLock(gwID)
 	lock.Lock()
 	defer lock.Unlock()
@@ -159,7 +160,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 	k.setState(gwID, st)
 	appendDomainEvent(k.rt.DB, domainEventEntry{
 		CommandID:     "",
-		GatewayPeerID: gwID,
+		GatewayPeerID: gwBusinessID,
 		EventName:     "fee_pool_resumed_by_wallet_probe",
 		StateBefore:   before,
 		StateAfter:    st.State,
@@ -168,7 +169,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 		},
 	})
 	obs.Business("bitcast-client", "fee_pool_resume_ready", map[string]any{
-		"gateway":                gwID,
+		"gateway":                gwBusinessID,
 		"wallet_balance_satoshi": sum,
 	})
 }
@@ -181,6 +182,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	if gwID == "" {
 		return feePoolKernelResult{Accepted: false, Status: "rejected", ErrorCode: "gateway_required", ErrorMessage: "gateway peer id required"}
 	}
+	gwBusinessID := gatewayBusinessID(k.rt, gw.ID)
 	if strings.TrimSpace(cmd.CommandType) == "" {
 		return feePoolKernelResult{Accepted: false, Status: "rejected", ErrorCode: "command_type_required", ErrorMessage: "command type required"}
 	}
@@ -193,9 +195,9 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	if cmd.RequestedAt <= 0 {
 		cmd.RequestedAt = time.Now().Unix()
 	}
-	cmd.GatewayPeer = gwID
+	cmd.GatewayPeer = gwBusinessID
 	if strings.TrimSpace(cmd.AggregateID) == "" {
-		cmd.AggregateID = "gateway:" + gwID
+		cmd.AggregateID = "gateway:" + gwBusinessID
 	}
 
 	startAt := time.Now()
@@ -219,7 +221,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		events = append(events, name)
 		appendDomainEvent(k.rt.DB, domainEventEntry{
 			CommandID:     cmd.CommandID,
-			GatewayPeerID: gwID,
+			GatewayPeerID: gwBusinessID,
 			EventName:     name,
 			StateBefore:   fromState,
 			StateAfter:    toState,
@@ -233,7 +235,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		}
 		appendEffectLog(k.rt.DB, effectLogEntry{
 			CommandID:     cmd.CommandID,
-			GatewayPeerID: gwID,
+			GatewayPeerID: gwBusinessID,
 			EffectType:    effectType,
 			Stage:         stage,
 			Status:        status,
@@ -246,7 +248,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		result.StateAfter = state.State
 		appendStateSnapshot(k.rt.DB, stateSnapshotEntry{
 			CommandID:     cmd.CommandID,
-			GatewayPeerID: gwID,
+			GatewayPeerID: gwBusinessID,
 			State:         state.State,
 			PauseReason:   state.PauseReason,
 			PauseNeedSat:  state.PauseNeedSat,
@@ -257,7 +259,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		appendCommandJournal(k.rt.DB, commandJournalEntry{
 			CommandID:     cmd.CommandID,
 			CommandType:   cmd.CommandType,
-			GatewayPeerID: gwID,
+			GatewayPeerID: gwBusinessID,
 			AggregateID:   cmd.AggregateID,
 			RequestedBy:   cmd.RequestedBy,
 			RequestedAt:   cmd.RequestedAt,
@@ -684,7 +686,7 @@ func appendCommandJournal(db *sql.DB, e commandJournalEntry) {
 	}
 	_, err := db.Exec(
 		`INSERT INTO command_journal(
-			created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+			created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		strings.TrimSpace(e.CommandID),
@@ -713,7 +715,7 @@ func appendDomainEvent(db *sql.DB, e domainEventEntry) {
 		return
 	}
 	_, err := db.Exec(
-		`INSERT INTO domain_events(created_at_unix,command_id,gateway_peer_id,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
+		`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		strings.TrimSpace(e.CommandID),
 		strings.TrimSpace(e.GatewayPeerID),
@@ -733,7 +735,7 @@ func appendStateSnapshot(db *sql.DB, e stateSnapshotEntry) {
 	}
 	_, err := db.Exec(
 		`INSERT INTO state_snapshots(
-			created_at_unix,command_id,gateway_peer_id,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		strings.TrimSpace(e.CommandID),
@@ -755,7 +757,7 @@ func appendEffectLog(db *sql.DB, e effectLogEntry) {
 		return
 	}
 	_, err := db.Exec(
-		`INSERT INTO effect_logs(created_at_unix,command_id,gateway_peer_id,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		strings.TrimSpace(e.CommandID),
 		strings.TrimSpace(e.GatewayPeerID),

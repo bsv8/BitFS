@@ -12,7 +12,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO direct_quotes(demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix)
+	_, err := db.Exec(`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?)`,
 		"dmd_1", "seller_1", 1000, 10, 1700000100, "f1.bin", "ff", `["arb_1","arb_2"]`, 1700000001,
 		"dmd_2", "seller_2", 2000, 20, 1700000200, "f2.bin", "0f", `["arb_3"]`, 1700000002,
@@ -20,7 +20,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert direct_quotes: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO direct_deals(deal_id,demand_id,buyer_peer_id,seller_peer_id,seed_hash,seed_price,chunk_price,arbiter_peer_id,status,created_at_unix)
+	_, err = db.Exec(`INSERT INTO direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		"deal_1", "dmd_1", "buyer_1", "seller_1", "seed_1", 1000, 10, "arb_1", "active", 1700000003,
 	)
@@ -35,9 +35,9 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		t.Fatalf("insert direct_sessions: %v", err)
 	}
 	_, err = db.Exec(`INSERT INTO direct_transfer_pools(
-		session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"sess_1", "deal_1", "buyer_1", "seller_1", "arb_1", "a1", "b1", "c1", 1000, 2, 3, 30, 968, "ctx", "btx", "btxid_1", "active", 0.5, 6, 1700000004, 1700000005,
+		session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"sess_1", "deal_1", "buyer_1", "seller_1", "arb_1", 1000, 2, 3, 30, 968, "ctx", "btx", "btxid_1", "active", 0.5, 6, 1700000004, 1700000005,
 	)
 	if err != nil {
 		t.Fatalf("insert direct_transfer_pools: %v", err)
@@ -55,7 +55,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 			Items []struct {
 				ID           int64  `json:"id"`
 				DemandID     string `json:"demand_id"`
-				SellerPeerID string `json:"seller_peer_id"`
+				SellerPeerID string `json:"seller_pubkey_hex"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {

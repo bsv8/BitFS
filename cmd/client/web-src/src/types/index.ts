@@ -14,7 +14,7 @@ export type TxResp = {
   items: Array<{
     id: number;
     created_at_unix: number;
-    gateway_peer_id: string;
+    gateway_pubkey_hex: string;
     event_type: string;
     direction: string;
     amount_satoshi: number;
@@ -47,7 +47,7 @@ export type GatewayEventsResp = {
   items: Array<{
     id: number;
     created_at_unix: number;
-    gateway_peer_id: string;
+    gateway_pubkey_hex: string;
     action: string;
     msg_id?: string;
     sequence_num?: number;
@@ -83,7 +83,7 @@ export type SalesResp = {
     chunk_index: number;
     unit_price_sat_per_64k: number;
     amount_satoshi: number;
-    buyer_gateway_peer_id: string;
+    buyer_gateway_pubkey_hex: string;
   }>;
 };
 
@@ -104,7 +104,7 @@ export type Gateway = {
   enabled: boolean;
   addr: string;
   pubkey: string;
-  peer_id?: string;
+  transport_peer_id?: string;
   connected?: boolean;
   connectedness?: string;
   in_healthy_gws?: boolean;
@@ -142,7 +142,7 @@ export type DirectQuote = {
   created_at_unix: number;
   expires_at_unix: number;
   quote_satoshi: number;
-  seller_peer_id: string;
+  seller_pubkey_hex: string;
   seller_addr: string;
   status: string;
 };
@@ -159,8 +159,8 @@ export type DirectDeal = {
   chunk_count: number;
   created_at_unix: number;
   amount_satoshi: number;
-  buyer_peer_id: string;
-  seller_peer_id: string;
+  buyer_pubkey_hex: string;
+  seller_pubkey_hex: string;
   status: string;
 };
 
@@ -174,8 +174,8 @@ export type DirectSession = {
   deal_id: string;
   created_at_unix: number;
   ended_at_unix?: number;
-  buyer_peer_id: string;
-  seller_peer_id: string;
+  buyer_pubkey_hex: string;
+  seller_pubkey_hex: string;
   seed_hash: string;
   chunk_index: number;
   status: string;
@@ -189,8 +189,8 @@ export type DirectSessionsResp = {
 
 export type DirectTransferPool = {
   pool_id: string;
-  buyer_peer_id: string;
-  seller_peer_id: string;
+  buyer_pubkey_hex: string;
+  seller_pubkey_hex: string;
   created_at_unix: number;
   total_satoshi: number;
   released_satoshi: number;
@@ -269,7 +269,7 @@ export type OrchestratorEvent = {
   idempotency_key: string;
   aggregate_key: string;
   command_type: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   source: string;
   signal_type: string;
   latest_event_type: string;
@@ -293,7 +293,7 @@ export type OrchestratorEventStep = {
   aggregate_key: string;
   idempotency_key: string;
   command_type: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   task_status: string;
   retry_count: number;
   queue_length: number;
@@ -306,7 +306,7 @@ export type OrchestratorEventDetail = {
   idempotency_key: string;
   aggregate_key: string;
   command_type: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   started_at_unix: number;
   ended_at_unix: number;
   steps_count: number;
@@ -330,7 +330,7 @@ export type ClientKernelCommand = {
   created_at_unix: number;
   command_id: string;
   command_type: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   aggregate_id: string;
   requested_by: string;
   requested_at_unix: number;
@@ -356,7 +356,7 @@ export type FeePoolCommand = {
   created_at_unix: number;
   command_id: string;
   command_type: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   aggregate_id: string;
   requested_by: string;
   requested_at_unix: number;
@@ -380,7 +380,7 @@ export type FeePoolEvent = {
   id: number;
   created_at_unix: number;
   command_id: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   event_name: string;
   state_before: string;
   state_after: string;
@@ -396,7 +396,7 @@ export type FeePoolState = {
   id: number;
   created_at_unix: number;
   command_id: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   state: string;
   pause_reason: string;
   pause_need_satoshi: number;
@@ -414,7 +414,7 @@ export type FeePoolEffect = {
   id: number;
   created_at_unix: number;
   command_id: string;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   effect_type: string;
   stage: string;
   status: string;
@@ -517,7 +517,7 @@ export type FileGetJob = {
   id: string;
   seed_hash: string;
   chunk_count: number;
-  gateway_peer_id: string;
+  gateway_pubkey_hex: string;
   status: string;
   started_at_unix: number;
   ended_at_unix?: number;

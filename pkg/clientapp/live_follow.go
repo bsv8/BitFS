@@ -22,7 +22,7 @@ type LiveFollowStatus struct {
 	LastBoughtSegmentIndex uint64               `json:"last_bought_segment_index,omitempty"`
 	LastBoughtSeedHash     string               `json:"last_bought_seed_hash,omitempty"`
 	LastOutputFilePath     string               `json:"last_output_file_path,omitempty"`
-	LastQuoteSellerPeerID  string               `json:"last_quote_seller_peer_id,omitempty"`
+	LastQuoteSellerPeerID  string               `json:"last_quote_seller_pubkey_hex,omitempty"`
 	LastDecision           LivePurchaseDecision `json:"last_decision"`
 	Status                 string               `json:"status"`
 	LastError              string               `json:"last_error,omitempty"`
@@ -65,7 +65,7 @@ func persistLiveFollowStatus(db *sql.DB, st LiveFollowStatus) error {
 		decisionJSON = string(b)
 	}
 	_, err := db.Exec(`INSERT INTO live_follows(
-		stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_peer_id,last_decision_json,status,last_error,updated_at_unix
+		stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(stream_id) DO UPDATE SET
 		stream_uri=excluded.stream_uri,
@@ -74,7 +74,7 @@ func persistLiveFollowStatus(db *sql.DB, st LiveFollowStatus) error {
 		last_bought_segment_index=excluded.last_bought_segment_index,
 		last_bought_seed_hash=excluded.last_bought_seed_hash,
 		last_output_file_path=excluded.last_output_file_path,
-		last_quote_seller_peer_id=excluded.last_quote_seller_peer_id,
+		last_quote_seller_pubkey_hex=excluded.last_quote_seller_pubkey_hex,
 		last_decision_json=excluded.last_decision_json,
 		status=excluded.status,
 		last_error=excluded.last_error,
@@ -101,7 +101,7 @@ func loadLiveFollowStatus(db *sql.DB, streamID string) (LiveFollowStatus, bool, 
 	}
 	var st LiveFollowStatus
 	var decisionJSON string
-	err := db.QueryRow(`SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_peer_id,last_decision_json,status,last_error,updated_at_unix
+	err := db.QueryRow(`SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
 		FROM live_follows WHERE stream_id=?`, strings.ToLower(strings.TrimSpace(streamID))).Scan(
 		&st.StreamURI,
 		&st.PublisherPubKey,
@@ -133,7 +133,7 @@ func listRunningLiveFollowStatuses(db *sql.DB) ([]LiveFollowStatus, error) {
 	if db == nil {
 		return nil, nil
 	}
-	rows, err := db.Query(`SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_peer_id,last_decision_json,status,last_error,updated_at_unix
+	rows, err := db.Query(`SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
 		FROM live_follows WHERE status='running' ORDER BY updated_at_unix ASC`)
 	if err != nil {
 		return nil, err

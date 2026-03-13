@@ -103,7 +103,7 @@ func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownl
 	doneStep(hooks, downloadStepListQuotes, map[string]string{
 		"seller_count":           strconv.Itoa(len(quotes)),
 		"selected_file_name":     fileName,
-		"first_seller_peer_id":   quotes[0].SellerPeerID,
+		"first_seller_pubkey_hex":   quotes[0].SellerPeerID,
 		"first_recommended_name": quotes[0].RecommendedFileName,
 	})
 

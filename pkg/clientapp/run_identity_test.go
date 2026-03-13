@@ -18,13 +18,13 @@ func TestClientIDFromPrivHex_StableAndLowercase(t *testing.T) {
 		t.Fatalf("derive id #2: %v", err)
 	}
 	if id1 == "" {
-		t.Fatalf("derived client_id should not be empty")
+		t.Fatalf("derived client_pubkey_hex should not be empty")
 	}
 	if id1 != id2 {
-		t.Fatalf("derived client_id should be stable: %q != %q", id1, id2)
+		t.Fatalf("derived client_pubkey_hex should be stable: %q != %q", id1, id2)
 	}
 	if id1 != strings.ToLower(id1) {
-		t.Fatalf("derived client_id should be lowercase: %q", id1)
+		t.Fatalf("derived client_pubkey_hex should be lowercase: %q", id1)
 	}
 }
 
@@ -60,7 +60,7 @@ func TestBuildClientActorFromConfig_MatchAccepted(t *testing.T) {
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
 	id, err := clientIDFromPrivHex(cfg.Keys.PrivkeyHex)
 	if err != nil {
-		t.Fatalf("derive client_id: %v", err)
+		t.Fatalf("derive client_pubkey_hex: %v", err)
 	}
 	cfg.ClientID = id
 

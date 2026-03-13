@@ -15,7 +15,7 @@ import (
 )
 
 type FeePoolStateResult struct {
-	GatewayPeerID string             `json:"gateway_peer_id"`
+	GatewayPeerID string             `json:"gateway_pubkey_hex"`
 	State         dual2of2.StateResp `json:"state"`
 }
 
@@ -27,6 +27,7 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 		return FeePoolStateResult{}, fmt.Errorf("no healthy gateway")
 	}
 	gw := rt.HealthyGWs[0]
+	gatewayID := gatewayBusinessID(rt, gw.ID)
 	var resp dual2of2.StateResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{})
 	err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{ClientID: rt.runIn.ClientID}, &resp)
@@ -34,12 +35,12 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
 		return FeePoolStateResult{}, err
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_end", map[string]any{"gateway_peer_id": gw.ID.String(), "spend_txid": resp.SpendTxID, "sequence": resp.Sequence})
-	return FeePoolStateResult{GatewayPeerID: gw.ID.String(), State: resp}, nil
+	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_end", map[string]any{"gateway_pubkey_hex": gatewayID, "spend_txid": resp.SpendTxID, "sequence": resp.Sequence})
+	return FeePoolStateResult{GatewayPeerID: gatewayID, State: resp}, nil
 }
 
 type FeePoolCloseResult struct {
-	GatewayPeerID string             `json:"gateway_peer_id"`
+	GatewayPeerID string             `json:"gateway_pubkey_hex"`
 	Result        dual2of2.CloseResp `json:"result"`
 }
 
@@ -52,6 +53,7 @@ func TriggerGatewayFeePoolClose(ctx context.Context, rt *Runtime) (FeePoolCloseR
 		return FeePoolCloseResult{}, fmt.Errorf("no healthy gateway")
 	}
 	gw := rt.HealthyGWs[0]
+	gatewayID := gatewayBusinessID(rt, gw.ID)
 
 	sess, ok := rt.getFeePool(gw.ID.String())
 	if !ok || sess == nil || sess.SpendTxID == "" {
@@ -60,23 +62,23 @@ func TriggerGatewayFeePoolClose(ctx context.Context, rt *Runtime) (FeePoolCloseR
 	// 统一走按 spend_txid 的网关状态驱动收尾，避免本地会话金额滞后导致 close 失败。
 	return TriggerGatewayFeePoolCloseBySpendTxID(ctx, rt, FeePoolCloseBySpendTxIDParams{
 		SpendTxID:     sess.SpendTxID,
-		GatewayPeerID: gw.ID.String(),
+		GatewayPeerID: gatewayID,
 	})
 }
 
 type FeePoolCloseBySpendTxIDParams struct {
 	SpendTxID     string `json:"spend_txid"`
-	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
+	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 }
 
 type FeePoolEnsureActiveParams struct {
-	GatewayPeerID   string `json:"gateway_peer_id,omitempty"`
+	GatewayPeerID   string `json:"gateway_pubkey_hex,omitempty"`
 	AllowWhenPaused bool   `json:"allow_when_paused,omitempty"`
 	RequestedBy     string `json:"requested_by,omitempty"`
 }
 
 type FeePoolEnsureActiveResult struct {
-	GatewayPeerID string `json:"gateway_peer_id"`
+	GatewayPeerID string `json:"gateway_pubkey_hex"`
 	Accepted      bool   `json:"accepted"`
 	Status        string `json:"status"`
 	ErrorCode     string `json:"error_code,omitempty"`
@@ -86,12 +88,12 @@ type FeePoolEnsureActiveResult struct {
 }
 
 type FeePoolListenUnderpayProbeParams struct {
-	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
+	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 	SpendTxID     string `json:"spend_txid,omitempty"`
 }
 
 type FeePoolListenUnderpayProbeResult struct {
-	GatewayPeerID          string                  `json:"gateway_peer_id"`
+	GatewayPeerID          string                  `json:"gateway_pubkey_hex"`
 	SpendTxID              string                  `json:"spend_txid"`
 	ExpectedSingleCycleFee uint64                  `json:"expected_single_cycle_fee_satoshi"`
 	AttemptChargeAmount    uint64                  `json:"attempt_charge_amount_satoshi"`
@@ -113,6 +115,7 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePo
 	if err != nil {
 		return FeePoolEnsureActiveResult{}, err
 	}
+	gatewayID := gatewayBusinessID(rt, gw.ID)
 	requestedBy := strings.TrimSpace(p.RequestedBy)
 	if requestedBy == "" {
 		requestedBy = "trigger_fee_pool_ensure_active"
@@ -125,11 +128,11 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePo
 		Payload: map[string]any{
 			"trigger":           "manual_ensure_active",
 			"allow_when_paused": p.AllowWhenPaused,
-			"gateway_peer_id":   gw.ID.String(),
+			"gateway_pubkey_hex":   gatewayID,
 		},
 	})
 	return FeePoolEnsureActiveResult{
-		GatewayPeerID: gw.ID.String(),
+		GatewayPeerID: gatewayID,
 		Accepted:      res.Accepted,
 		Status:        res.Status,
 		ErrorCode:     res.ErrorCode,
@@ -148,6 +151,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
 	}
+	gatewayID := gatewayBusinessID(rt, gw.ID)
 	sess, ok := rt.getFeePool(gw.ID.String())
 	if !ok || sess == nil || strings.TrimSpace(sess.SpendTxID) == "" {
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
@@ -218,7 +222,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 		return FeePoolListenUnderpayProbeResult{}, err
 	}
 	return FeePoolListenUnderpayProbeResult{
-		GatewayPeerID:          gw.ID.String(),
+		GatewayPeerID:          gatewayID,
 		SpendTxID:              spendTxID,
 		ExpectedSingleCycleFee: sess.SingleCycleFeeSatoshi,
 		AttemptChargeAmount:    underpay,
@@ -241,6 +245,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
+	gatewayID := gatewayBusinessID(rt, gw.ID)
 
 	var st dual2of2.StateResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{
@@ -268,7 +273,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			Payload:         st,
 		})
 		return FeePoolCloseResult{
-			GatewayPeerID: gw.ID.String(),
+			GatewayPeerID: gatewayID,
 			Result: dual2of2.CloseResp{
 				Success:        true,
 				Status:         "closed",
@@ -278,7 +283,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		}, nil
 	}
 	if strings.TrimSpace(st.Status) == "close_submitted" {
-		finalState, waitErr := waitGatewayFeePoolClosedBySpendTxID(ctx, rt, gw.ID.String(), spendTxID)
+		finalState, waitErr := waitGatewayFeePoolClosedBySpendTxID(ctx, rt, gatewayID, spendTxID)
 		if waitErr != nil {
 			return FeePoolCloseResult{}, waitErr
 		}
@@ -297,7 +302,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			Payload:         finalState,
 		})
 		return FeePoolCloseResult{
-			GatewayPeerID: gw.ID.String(),
+			GatewayPeerID: gatewayID,
 			Result: dual2of2.CloseResp{
 				Success:        true,
 				Status:         "closed",
@@ -340,7 +345,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 
 	var resp dual2of2.CloseResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_begin", map[string]any{
-		"gateway_peer_id": gw.ID.String(),
+		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":      spendTxID,
 	})
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolClose, gwSec(rt.rpcTrace), dual2of2.CloseReq{
@@ -353,7 +358,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		return FeePoolCloseResult{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_end", map[string]any{
-		"gateway_peer_id": gw.ID.String(),
+		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":      spendTxID,
 		"final_txid":      resp.FinalSpendTxID,
 		"status":          resp.Status,
@@ -370,12 +375,12 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			UsedSatoshi:     int64(st.ServerAmountSat),
 			ReturnedSatoshi: int64(st.ClientAmountSat),
 			RelatedTxID:     strings.TrimSpace(resp.FinalSpendTxID),
-			Note:            fmt.Sprintf("gateway=%s", gw.ID.String()),
+			Note:            fmt.Sprintf("gateway=%s", gatewayID),
 			Payload:         resp,
 		})
 	}
 	if resp.Success && strings.TrimSpace(resp.Status) == "close_submitted" {
-		finalState, waitErr := waitGatewayFeePoolClosedBySpendTxID(ctx, rt, gw.ID.String(), spendTxID)
+		finalState, waitErr := waitGatewayFeePoolClosedBySpendTxID(ctx, rt, gatewayID, spendTxID)
 		if waitErr != nil {
 			return FeePoolCloseResult{}, waitErr
 		}
@@ -392,11 +397,11 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			UsedSatoshi:     int64(finalState.ServerAmountSat),
 			ReturnedSatoshi: int64(finalState.ClientAmountSat),
 			RelatedTxID:     strings.TrimSpace(finalState.FinalTxID),
-			Note:            fmt.Sprintf("gateway=%s close_submitted_wait_done", gw.ID.String()),
+			Note:            fmt.Sprintf("gateway=%s close_submitted_wait_done", gatewayID),
 			Payload:         finalState,
 		})
 	}
-	return FeePoolCloseResult{GatewayPeerID: gw.ID.String(), Result: resp}, nil
+	return FeePoolCloseResult{GatewayPeerID: gatewayID, Result: resp}, nil
 }
 
 func waitGatewayFeePoolClosedBySpendTxID(ctx context.Context, rt *Runtime, gatewayPeerID string, spendTxID string) (dual2of2.StateResp, error) {

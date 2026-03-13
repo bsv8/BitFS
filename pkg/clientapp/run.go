@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -54,11 +55,12 @@ const (
 	ProtoLiveSubscribe      protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
 	ProtoLiveHeadPush       protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
 
-	defaultIndexRelPath      = "db/client-index.sqlite"
-	seedBlockSize                      = 65536
+	defaultIndexRelPath = "db/client-index.sqlite"
+	seedBlockSize       = 65536
 
-	// app_config 采用 KV 结构，避免“整表单行文档”在配置扩展时产生耦合。
-	AppConfigKeyRuntimeConfigTOML           = "runtime_config_toml"
+	// app_config 采用 KV 结构，运行配置按“一字段一键”持久化。
+	AppConfigKeyConfigSchemaVersion         = "config.schema_version"
+	AppConfigValueConfigSchemaVersionV1     = "1"
 	AppConfigKeyEncryptionMasterKeyEnvelope = "encryption_master_key_envelope"
 )
 
@@ -75,12 +77,12 @@ type seedGetResp struct {
 }
 type directQuoteSubmitReq struct {
 	DemandID             string   `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
-	SellerPeerID         string   `protobuf:"bytes,2,opt,name=seller_peer_id,json=sellerPeerId,proto3" json:"seller_peer_id"`
+	SellerPeerID         string   `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
 	SeedPrice            uint64   `protobuf:"varint,3,opt,name=seed_price,json=seedPrice,proto3" json:"seed_price"`
 	ChunkPrice           uint64   `protobuf:"varint,4,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
 	ExpiresAtUnix        int64    `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
 	RecommendedFileName  string   `protobuf:"bytes,6,opt,name=recommended_file_name,json=recommendedFileName,proto3" json:"recommended_file_name,omitempty"`
-	ArbiterPeerIDs       []string `protobuf:"bytes,7,rep,name=arbiter_peer_ids,json=arbiterPeerIds,proto3" json:"arbiter_peer_ids,omitempty"`
+	ArbiterPeerIDs       []string `protobuf:"bytes,7,rep,name=arbiter_pubkey_hexes,json=arbiterPeerIds,proto3" json:"arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmap []byte   `protobuf:"bytes,8,opt,name=available_chunk_bitmap,json=availableChunkBitmap,proto3" json:"available_chunk_bitmap,omitempty"`
 }
 type directQuoteSubmitResp struct {
@@ -88,16 +90,16 @@ type directQuoteSubmitResp struct {
 }
 type directDealAcceptReq struct {
 	DemandID      string `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
-	BuyerPeerID   string `protobuf:"bytes,2,opt,name=buyer_peer_id,json=buyerPeerId,proto3" json:"buyer_peer_id"`
+	BuyerPeerID   string `protobuf:"bytes,2,opt,name=buyer_pubkey_hex,json=buyerPeerId,proto3" json:"buyer_pubkey_hex"`
 	SeedHash      string `protobuf:"bytes,3,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
 	SeedPrice     uint64 `protobuf:"varint,4,opt,name=seed_price,json=seedPrice,proto3" json:"seed_price"`
 	ChunkPrice    uint64 `protobuf:"varint,5,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
 	ExpiresAtUnix int64  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
-	ArbiterPeerID string `protobuf:"bytes,7,opt,name=arbiter_peer_id,json=arbiterPeerId,proto3" json:"arbiter_peer_id,omitempty"`
+	ArbiterPeerID string `protobuf:"bytes,7,opt,name=arbiter_pubkey_hex,json=arbiterPeerId,proto3" json:"arbiter_pubkey_hex,omitempty"`
 }
 type directDealAcceptResp struct {
 	DealID       string `protobuf:"bytes,1,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
-	SellerPeerID string `protobuf:"bytes,2,opt,name=seller_peer_id,json=sellerPeerId,proto3" json:"seller_peer_id"`
+	SellerPeerID string `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
 	ChunkPrice   uint64 `protobuf:"varint,3,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
 	Status       string `protobuf:"bytes,4,opt,name=status,proto3" json:"status"`
 }
@@ -119,8 +121,8 @@ type directSessionCloseResp struct {
 type directTransferPoolOpenReq struct {
 	SessionID      string  `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
 	DealID         string  `protobuf:"bytes,2,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
-	BuyerPeerID    string  `protobuf:"bytes,3,opt,name=buyer_peer_id,json=buyerPeerId,proto3" json:"buyer_peer_id"`
-	ArbiterPeerID  string  `protobuf:"bytes,4,opt,name=arbiter_peer_id,json=arbiterPeerId,proto3" json:"arbiter_peer_id"`
+	BuyerPeerID    string  `protobuf:"bytes,3,opt,name=buyer_pubkey_hex,json=buyerPeerId,proto3" json:"buyer_pubkey_hex"`
+	ArbiterPeerID  string  `protobuf:"bytes,4,opt,name=arbiter_pubkey_hex,json=arbiterPeerId,proto3" json:"arbiter_pubkey_hex"`
 	ArbiterPubKey  string  `protobuf:"bytes,5,opt,name=arbiter_pubkey,json=arbiterPubkey,proto3" json:"arbiter_pubkey_hex"`
 	PoolAmount     uint64  `protobuf:"varint,6,opt,name=pool_amount,json=poolAmount,proto3" json:"pool_amount"`
 	SpendTxFee     uint64  `protobuf:"varint,7,opt,name=spend_tx_fee,json=spendTxFee,proto3" json:"spend_tx_fee"`
@@ -211,7 +213,7 @@ type liveSubscribeReq struct {
 	StreamURI        string   `protobuf:"bytes,1,opt,name=stream_uri,json=streamUri,proto3" json:"stream_uri"`
 	StreamID         string   `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
 	Window           uint32   `protobuf:"varint,3,opt,name=window,proto3" json:"window"`
-	SubscriberPeerID string   `protobuf:"bytes,4,opt,name=subscriber_peer_id,json=subscriberPeerId,proto3" json:"subscriber_peer_id"`
+	SubscriberPeerID string   `protobuf:"bytes,4,opt,name=subscriber_pubkey_hex,json=subscriberPeerId,proto3" json:"subscriber_pubkey_hex"`
 	SubscriberAddrs  []string `protobuf:"bytes,5,rep,name=subscriber_addrs,json=subscriberAddrs,proto3" json:"subscriber_addrs,omitempty"`
 }
 
@@ -240,7 +242,7 @@ type liveQuoteSegmentPB struct {
 
 type liveQuoteSubmitReq struct {
 	DemandID           string                `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
-	SellerPeerID       string                `protobuf:"bytes,2,opt,name=seller_peer_id,json=sellerPeerId,proto3" json:"seller_peer_id"`
+	SellerPeerID       string                `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
 	StreamID           string                `protobuf:"bytes,3,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
 	LatestSegmentIndex uint64                `protobuf:"varint,4,opt,name=latest_segment_index,json=latestSegmentIndex,proto3" json:"latest_segment_index"`
 	RecentSegments     []*liveQuoteSegmentPB `protobuf:"bytes,5,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
@@ -252,7 +254,7 @@ type liveQuoteSubmitResp struct {
 }
 
 type Config struct {
-	ClientID string `yaml:"client_id" toml:"client_id"`
+	ClientID string `yaml:"client_pubkey_hex" toml:"client_pubkey_hex"`
 	Keys     struct {
 		PrivkeyHex string `yaml:"privkey_hex" toml:"privkey_hex"`
 	} `yaml:"keys" toml:"keys"`
@@ -415,6 +417,10 @@ type RunInput struct {
 		ConsoleMinLevel string
 	}
 
+	// DisableHTTPServer 仅影响本次 Run 的启动行为，不会持久化到配置。
+	// managed 模式使用单入口时设为 true，避免 runtime 内部再开启 HTTP 监听。
+	DisableHTTPServer bool
+
 	// EffectivePrivKeyHex 是启动前已确定的“唯一运行时私钥”。
 	// 设计约束：Host 身份与费用池签名必须都来自这把私钥。
 	EffectivePrivKeyHex string
@@ -486,11 +492,13 @@ func (in *RunInput) applyConfig(cfg Config) {
 	if in == nil {
 		return
 	}
+	disableHTTPServer := in.DisableHTTPServer
 	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
 	next.ObsSink = in.ObsSink
 	next.WebAssets = in.WebAssets
 	next.Chain = in.Chain
 	next.RPCTrace = in.RPCTrace
+	next.DisableHTTPServer = disableHTTPServer
 	*in = next
 }
 
@@ -773,7 +781,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, fmt.Errorf("effective private key is required")
 	}
-	// 设计约束：client_id 与费用池签名必须来自同一私钥。
+	// 设计约束：client_pubkey_hex 与费用池签名必须来自同一私钥。
 	// 运行时有效私钥作为唯一真源，后续签名路径统一读取 cfg.Keys.PrivkeyHex。
 	cfg.Keys.PrivkeyHex = effectivePrivHex
 	in.EffectivePrivKeyHex = effectivePrivHex
@@ -804,7 +812,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		return nil, err
 	}
 	if cfg.ClientID != "" && !strings.EqualFold(strings.TrimSpace(cfg.ClientID), clientPubHex) {
-		obs.Info("bitcast-client", "client_id_overridden_by_pubkey", map[string]any{"configured_client_id": cfg.ClientID, "effective_client_id": clientPubHex})
+		obs.Info("bitcast-client", "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": cfg.ClientID, "effective_client_pubkey_hex": clientPubHex})
 	}
 	cfg.ClientID = clientPubHex
 	if err := validateClientIdentityConsistency(cfg); err != nil {
@@ -856,9 +864,9 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
 	in.applyConfig(cfg)
 	obs.Important("bitcast-client", "started", map[string]any{
-		"peer_id":           h.ID().String(),
+		"transport_peer_id": h.ID().String(),
 		"pubkey_hex":        clientPubHex,
-		"client_id":         cfg.ClientID,
+		"client_pubkey_hex": cfg.ClientID,
 		"seller_enabled":    cfg.Seller.Enabled,
 		"listen_enabled":    cfgBool(cfg.Listen.Enabled, true),
 		"gateway_count":     len(healthyGWs),
@@ -911,7 +919,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	startChainMaintainer(ctx, rt)
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
-	if cfg.HTTP.Enabled {
+	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
 		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, in.WebAssets, trace)
 		wg.Add(1)
 		go func() {
@@ -998,8 +1006,10 @@ func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error
 	if err := ensureAppConfigTable(db); err != nil {
 		return Config{}, false, err
 	}
-
-	raw, exists, err := LoadAppConfigValue(db, AppConfigKeyRuntimeConfigTOML)
+	cfg, exists, err := loadRuntimeConfigFromKV(db, defaultCfg)
+	if err != nil {
+		return Config{}, false, err
+	}
 	if !exists {
 		cfg := defaultCfg
 		// 私钥仅允许保留在配置文件，不写入 DB。
@@ -1008,19 +1018,6 @@ func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error
 			return Config{}, false, err
 		}
 		return cfg, true, nil
-	}
-	cfg, err := ParseConfigTOML([]byte(raw))
-	if err != nil {
-		return Config{}, false, err
-	}
-	// 设计约束：
-	// - index.* 由启动参数推导，不作为持久化配置的一部分；
-	// - 读回时若缺失，回填默认推导值，保证运行期语义完整。
-	if strings.TrimSpace(cfg.Index.Backend) == "" {
-		cfg.Index.Backend = strings.TrimSpace(defaultCfg.Index.Backend)
-	}
-	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
-		cfg.Index.SQLitePath = strings.TrimSpace(defaultCfg.Index.SQLitePath)
 	}
 	return cfg, false, nil
 }
@@ -1034,17 +1031,460 @@ func SaveConfigInDB(db *sql.DB, cfg Config) error {
 		return err
 	}
 	cfg.Keys.PrivkeyHex = ""
-	data, err := EncodeConfigTOML(cfg)
+	kv, err := encodeRuntimeConfigKV(cfg)
 	if err != nil {
 		return err
 	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	// 清理旧地基：禁止继续保留 runtime_config_toml 单条模式。
+	if _, err = tx.Exec(`DELETE FROM app_config WHERE key='runtime_config_toml'`); err != nil {
+		return err
+	}
+	now := time.Now().Unix()
+	for _, key := range appConfigRuntimeManagedKeys() {
+		val, ok := kv[key]
+		if !ok {
+			continue
+		}
+		if _, err = tx.Exec(
+			`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
+			key,
+			val,
+			now,
+		); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func appConfigRuntimeManagedKeys() []string {
+	return []string{
+		AppConfigKeyConfigSchemaVersion,
+		"client_pubkey_hex",
+		"bsv.network",
+		"network.gateways",
+		"network.arbiters",
+		"storage.workspace_dir",
+		"storage.data_dir",
+		"storage.min_free_bytes",
+		"seller.enabled",
+		"seller.pricing.floor_price_sat_per_64k",
+		"seller.pricing.resale_discount_bps",
+		"seller.pricing.live_base_price_sat_per_64k",
+		"seller.pricing.live_floor_price_sat_per_64k",
+		"seller.pricing.live_decay_per_minute_bps",
+		"live.cache_max_bytes",
+		"live.buyer.target_lag_segments",
+		"live.buyer.max_budget_per_minute",
+		"live.buyer.prefer_older_segments",
+		"live.publish.broadcast_window",
+		"live.publish.broadcast_interval_seconds",
+		"listen.enabled",
+		"listen.renew_threshold_seconds",
+		"listen.auto_renew_rounds",
+		"listen.tick_seconds",
+		"scan.startup_full_scan",
+		"scan.fs_watch_enabled",
+		"scan.rescan_interval_seconds",
+		"http.enabled",
+		"http.listen_addr",
+		"fs_http.enabled",
+		"fs_http.listen_addr",
+		"fs_http.download_wait_timeout_seconds",
+		"fs_http.max_concurrent_sessions",
+		"fs_http.max_chunk_price_sat_per_64k",
+		"fs_http.quote_wait_seconds",
+		"fs_http.quote_poll_seconds",
+		"fs_http.prefetch_distance_chunks",
+		"fs_http.strategy_debug_log_enabled",
+		"log.file",
+		"log.console_min_level",
+	}
+}
+
+func encodeRuntimeConfigKV(cfg Config) (map[string]string, error) {
+	gatewaysJSON, err := json.Marshal(cfg.Network.Gateways)
+	if err != nil {
+		return nil, err
+	}
+	arbitersJSON, err := json.Marshal(cfg.Network.Arbiters)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]string{
+		AppConfigKeyConfigSchemaVersion:               AppConfigValueConfigSchemaVersionV1,
+		"client_pubkey_hex":                           strings.TrimSpace(cfg.ClientID),
+		"bsv.network":                                 strings.TrimSpace(cfg.BSV.Network),
+		"network.gateways":                            string(gatewaysJSON),
+		"network.arbiters":                            string(arbitersJSON),
+		"storage.workspace_dir":                       strings.TrimSpace(cfg.Storage.WorkspaceDir),
+		"storage.data_dir":                            strings.TrimSpace(cfg.Storage.DataDir),
+		"storage.min_free_bytes":                      strconv.FormatUint(cfg.Storage.MinFreeBytes, 10),
+		"seller.enabled":                              strconv.FormatBool(cfg.Seller.Enabled),
+		"seller.pricing.floor_price_sat_per_64k":      strconv.FormatUint(cfg.Seller.Pricing.FloorPriceSatPer64K, 10),
+		"seller.pricing.resale_discount_bps":          strconv.FormatUint(cfg.Seller.Pricing.ResaleDiscountBPS, 10),
+		"seller.pricing.live_base_price_sat_per_64k":  strconv.FormatUint(cfg.Seller.Pricing.LiveBasePriceSatPer64K, 10),
+		"seller.pricing.live_floor_price_sat_per_64k": strconv.FormatUint(cfg.Seller.Pricing.LiveFloorPriceSatPer64K, 10),
+		"seller.pricing.live_decay_per_minute_bps":    strconv.FormatUint(cfg.Seller.Pricing.LiveDecayPerMinuteBPS, 10),
+		"live.cache_max_bytes":                        strconv.FormatUint(cfg.Live.CacheMaxBytes, 10),
+		"live.buyer.target_lag_segments":              strconv.FormatUint(uint64(cfg.Live.Buyer.TargetLagSegments), 10),
+		"live.buyer.max_budget_per_minute":            strconv.FormatUint(cfg.Live.Buyer.MaxBudgetPerMinute, 10),
+		"live.buyer.prefer_older_segments":            strconv.FormatBool(cfg.Live.Buyer.PreferOlderSegments),
+		"live.publish.broadcast_window":               strconv.FormatUint(uint64(cfg.Live.Publish.BroadcastWindow), 10),
+		"live.publish.broadcast_interval_seconds":     strconv.FormatUint(uint64(cfg.Live.Publish.BroadcastIntervalSec), 10),
+		"listen.enabled":                              strconv.FormatBool(cfgBool(cfg.Listen.Enabled, true)),
+		"listen.renew_threshold_seconds":              strconv.FormatUint(uint64(cfg.Listen.RenewThresholdSeconds), 10),
+		"listen.auto_renew_rounds":                    strconv.FormatUint(cfg.Listen.AutoRenewRounds, 10),
+		"listen.tick_seconds":                         strconv.FormatUint(uint64(cfg.Listen.TickSeconds), 10),
+		"scan.startup_full_scan":                      strconv.FormatBool(cfg.Scan.StartupFullScan),
+		"scan.fs_watch_enabled":                       strconv.FormatBool(cfg.Scan.FSWatchEnabled),
+		"scan.rescan_interval_seconds":                strconv.FormatUint(uint64(cfg.Scan.RescanIntervalSeconds), 10),
+		"http.enabled":                                strconv.FormatBool(cfg.HTTP.Enabled),
+		"http.listen_addr":                            strings.TrimSpace(cfg.HTTP.ListenAddr),
+		"fs_http.enabled":                             strconv.FormatBool(cfg.FSHTTP.Enabled),
+		"fs_http.listen_addr":                         strings.TrimSpace(cfg.FSHTTP.ListenAddr),
+		"fs_http.download_wait_timeout_seconds":       strconv.FormatUint(uint64(cfg.FSHTTP.DownloadWaitTimeoutSeconds), 10),
+		"fs_http.max_concurrent_sessions":             strconv.FormatUint(uint64(cfg.FSHTTP.MaxConcurrentSessions), 10),
+		"fs_http.max_chunk_price_sat_per_64k":         strconv.FormatUint(cfg.FSHTTP.MaxChunkPriceSatPer64K, 10),
+		"fs_http.quote_wait_seconds":                  strconv.FormatUint(uint64(cfg.FSHTTP.QuoteWaitSeconds), 10),
+		"fs_http.quote_poll_seconds":                  strconv.FormatUint(uint64(cfg.FSHTTP.QuotePollSeconds), 10),
+		"fs_http.prefetch_distance_chunks":            strconv.FormatUint(uint64(cfg.FSHTTP.PrefetchDistanceChunks), 10),
+		"fs_http.strategy_debug_log_enabled":          strconv.FormatBool(cfg.FSHTTP.StrategyDebugLogEnabled),
+		"log.file":                                    strings.TrimSpace(cfg.Log.File),
+		"log.console_min_level":                       strings.TrimSpace(cfg.Log.ConsoleMinLevel),
+	}, nil
+}
+
+func loadRuntimeConfigFromKV(db *sql.DB, defaultCfg Config) (Config, bool, error) {
+	items, err := loadAllAppConfigValues(db)
+	if err != nil {
+		return Config{}, false, err
+	}
+	version, ok := items[AppConfigKeyConfigSchemaVersion]
+	if !ok {
+		return Config{}, false, nil
+	}
+	if strings.TrimSpace(version) != AppConfigValueConfigSchemaVersionV1 {
+		return Config{}, false, fmt.Errorf("unsupported config schema version: %s", strings.TrimSpace(version))
+	}
+	cfg := defaultCfg
+	cfg.Keys.PrivkeyHex = ""
+	if err := decodeRuntimeConfigKV(&cfg, items); err != nil {
+		return Config{}, false, err
+	}
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		return Config{}, false, err
+	}
 	// 设计约束：
-	// - index.* 是系统派生值（由 appname/启动路径推导），不可持久化；
-	// - 避免“配置里再存配置库位置”的自引用误导。
-	raw := stripTOMLSections(string(data), map[string]struct{}{
-		"index": {},
-	})
-	return SaveAppConfigValue(db, AppConfigKeyRuntimeConfigTOML, raw)
+	// - index.* 由启动参数推导，不作为持久化配置的一部分；
+	// - 读回时若缺失，回填默认推导值，保证运行期语义完整。
+	if strings.TrimSpace(cfg.Index.Backend) == "" {
+		cfg.Index.Backend = strings.TrimSpace(defaultCfg.Index.Backend)
+	}
+	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
+		cfg.Index.SQLitePath = strings.TrimSpace(defaultCfg.Index.SQLitePath)
+	}
+	return cfg, true, nil
+}
+
+func loadAllAppConfigValues(db *sql.DB) (map[string]string, error) {
+	rows, err := db.Query(`SELECT key,value FROM app_config`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]string, 64)
+	for rows.Next() {
+		var key string
+		var value string
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, err
+		}
+		out[strings.TrimSpace(key)] = value
+	}
+	return out, rows.Err()
+}
+
+func decodeRuntimeConfigKV(cfg *Config, items map[string]string) error {
+	if cfg == nil {
+		return fmt.Errorf("config is nil")
+	}
+	if s, ok := items["client_pubkey_hex"]; ok {
+		cfg.ClientID = strings.TrimSpace(s)
+	}
+	if s, ok := items["bsv.network"]; ok {
+		cfg.BSV.Network = strings.TrimSpace(s)
+	}
+	if s, ok := items["network.gateways"]; ok && strings.TrimSpace(s) != "" {
+		var gateways []PeerNode
+		if err := json.Unmarshal([]byte(s), &gateways); err != nil {
+			return fmt.Errorf("decode network.gateways: %w", err)
+		}
+		cfg.Network.Gateways = gateways
+	}
+	if s, ok := items["network.arbiters"]; ok && strings.TrimSpace(s) != "" {
+		var arbiters []PeerNode
+		if err := json.Unmarshal([]byte(s), &arbiters); err != nil {
+			return fmt.Errorf("decode network.arbiters: %w", err)
+		}
+		cfg.Network.Arbiters = arbiters
+	}
+	if s, ok := items["storage.workspace_dir"]; ok {
+		cfg.Storage.WorkspaceDir = strings.TrimSpace(s)
+	}
+	if s, ok := items["storage.data_dir"]; ok {
+		cfg.Storage.DataDir = strings.TrimSpace(s)
+	}
+	if s, ok := items["storage.min_free_bytes"]; ok {
+		v, err := parseUint64KV("storage.min_free_bytes", s)
+		if err != nil {
+			return err
+		}
+		cfg.Storage.MinFreeBytes = v
+	}
+	if s, ok := items["seller.enabled"]; ok {
+		v, err := parseBoolKV("seller.enabled", s)
+		if err != nil {
+			return err
+		}
+		cfg.Seller.Enabled = v
+	}
+	if s, ok := items["seller.pricing.floor_price_sat_per_64k"]; ok {
+		v, err := parseUint64KV("seller.pricing.floor_price_sat_per_64k", s)
+		if err != nil {
+			return err
+		}
+		cfg.Seller.Pricing.FloorPriceSatPer64K = v
+	}
+	if s, ok := items["seller.pricing.resale_discount_bps"]; ok {
+		v, err := parseUint64KV("seller.pricing.resale_discount_bps", s)
+		if err != nil {
+			return err
+		}
+		cfg.Seller.Pricing.ResaleDiscountBPS = v
+	}
+	if s, ok := items["seller.pricing.live_base_price_sat_per_64k"]; ok {
+		v, err := parseUint64KV("seller.pricing.live_base_price_sat_per_64k", s)
+		if err != nil {
+			return err
+		}
+		cfg.Seller.Pricing.LiveBasePriceSatPer64K = v
+	}
+	if s, ok := items["seller.pricing.live_floor_price_sat_per_64k"]; ok {
+		v, err := parseUint64KV("seller.pricing.live_floor_price_sat_per_64k", s)
+		if err != nil {
+			return err
+		}
+		cfg.Seller.Pricing.LiveFloorPriceSatPer64K = v
+	}
+	if s, ok := items["seller.pricing.live_decay_per_minute_bps"]; ok {
+		v, err := parseUint64KV("seller.pricing.live_decay_per_minute_bps", s)
+		if err != nil {
+			return err
+		}
+		cfg.Seller.Pricing.LiveDecayPerMinuteBPS = v
+	}
+	if s, ok := items["live.cache_max_bytes"]; ok {
+		v, err := parseUint64KV("live.cache_max_bytes", s)
+		if err != nil {
+			return err
+		}
+		cfg.Live.CacheMaxBytes = v
+	}
+	if s, ok := items["live.buyer.target_lag_segments"]; ok {
+		v, err := parseUint32KV("live.buyer.target_lag_segments", s)
+		if err != nil {
+			return err
+		}
+		cfg.Live.Buyer.TargetLagSegments = v
+	}
+	if s, ok := items["live.buyer.max_budget_per_minute"]; ok {
+		v, err := parseUint64KV("live.buyer.max_budget_per_minute", s)
+		if err != nil {
+			return err
+		}
+		cfg.Live.Buyer.MaxBudgetPerMinute = v
+	}
+	if s, ok := items["live.buyer.prefer_older_segments"]; ok {
+		v, err := parseBoolKV("live.buyer.prefer_older_segments", s)
+		if err != nil {
+			return err
+		}
+		cfg.Live.Buyer.PreferOlderSegments = v
+	}
+	if s, ok := items["live.publish.broadcast_window"]; ok {
+		v, err := parseUint32KV("live.publish.broadcast_window", s)
+		if err != nil {
+			return err
+		}
+		cfg.Live.Publish.BroadcastWindow = v
+	}
+	if s, ok := items["live.publish.broadcast_interval_seconds"]; ok {
+		v, err := parseUint32KV("live.publish.broadcast_interval_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.Live.Publish.BroadcastIntervalSec = v
+	}
+	if s, ok := items["listen.enabled"]; ok {
+		v, err := parseBoolKV("listen.enabled", s)
+		if err != nil {
+			return err
+		}
+		cfg.Listen.Enabled = boolPtr(v)
+	}
+	if s, ok := items["listen.renew_threshold_seconds"]; ok {
+		v, err := parseUint32KV("listen.renew_threshold_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.Listen.RenewThresholdSeconds = v
+	}
+	if s, ok := items["listen.auto_renew_rounds"]; ok {
+		v, err := parseUint64KV("listen.auto_renew_rounds", s)
+		if err != nil {
+			return err
+		}
+		cfg.Listen.AutoRenewRounds = v
+	}
+	if s, ok := items["listen.tick_seconds"]; ok {
+		v, err := parseUint32KV("listen.tick_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.Listen.TickSeconds = v
+	}
+	if s, ok := items["scan.startup_full_scan"]; ok {
+		v, err := parseBoolKV("scan.startup_full_scan", s)
+		if err != nil {
+			return err
+		}
+		cfg.Scan.StartupFullScan = v
+	}
+	if s, ok := items["scan.fs_watch_enabled"]; ok {
+		v, err := parseBoolKV("scan.fs_watch_enabled", s)
+		if err != nil {
+			return err
+		}
+		cfg.Scan.FSWatchEnabled = v
+	}
+	if s, ok := items["scan.rescan_interval_seconds"]; ok {
+		v, err := parseUint32KV("scan.rescan_interval_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.Scan.RescanIntervalSeconds = v
+	}
+	if s, ok := items["http.enabled"]; ok {
+		v, err := parseBoolKV("http.enabled", s)
+		if err != nil {
+			return err
+		}
+		cfg.HTTP.Enabled = v
+	}
+	if s, ok := items["http.listen_addr"]; ok {
+		cfg.HTTP.ListenAddr = strings.TrimSpace(s)
+	}
+	if s, ok := items["fs_http.enabled"]; ok {
+		v, err := parseBoolKV("fs_http.enabled", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.Enabled = v
+	}
+	if s, ok := items["fs_http.listen_addr"]; ok {
+		cfg.FSHTTP.ListenAddr = strings.TrimSpace(s)
+	}
+	if s, ok := items["fs_http.download_wait_timeout_seconds"]; ok {
+		v, err := parseUint32KV("fs_http.download_wait_timeout_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.DownloadWaitTimeoutSeconds = v
+	}
+	if s, ok := items["fs_http.max_concurrent_sessions"]; ok {
+		v, err := parseUint32KV("fs_http.max_concurrent_sessions", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.MaxConcurrentSessions = v
+	}
+	if s, ok := items["fs_http.max_chunk_price_sat_per_64k"]; ok {
+		v, err := parseUint64KV("fs_http.max_chunk_price_sat_per_64k", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.MaxChunkPriceSatPer64K = v
+	}
+	if s, ok := items["fs_http.quote_wait_seconds"]; ok {
+		v, err := parseUint32KV("fs_http.quote_wait_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.QuoteWaitSeconds = v
+	}
+	if s, ok := items["fs_http.quote_poll_seconds"]; ok {
+		v, err := parseUint32KV("fs_http.quote_poll_seconds", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.QuotePollSeconds = v
+	}
+	if s, ok := items["fs_http.prefetch_distance_chunks"]; ok {
+		v, err := parseUint32KV("fs_http.prefetch_distance_chunks", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.PrefetchDistanceChunks = v
+	}
+	if s, ok := items["fs_http.strategy_debug_log_enabled"]; ok {
+		v, err := parseBoolKV("fs_http.strategy_debug_log_enabled", s)
+		if err != nil {
+			return err
+		}
+		cfg.FSHTTP.StrategyDebugLogEnabled = v
+	}
+	if s, ok := items["log.file"]; ok {
+		cfg.Log.File = strings.TrimSpace(s)
+	}
+	if s, ok := items["log.console_min_level"]; ok {
+		cfg.Log.ConsoleMinLevel = strings.TrimSpace(s)
+	}
+	return nil
+}
+
+func parseBoolKV(key, raw string) (bool, error) {
+	v, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, fmt.Errorf("%s parse bool failed: %w", key, err)
+	}
+	return v, nil
+}
+
+func parseUint32KV(key, raw string) (uint32, error) {
+	v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s parse uint32 failed: %w", key, err)
+	}
+	return uint32(v), nil
+}
+
+func parseUint64KV(key, raw string) (uint64, error) {
+	v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s parse uint64 failed: %w", key, err)
+	}
+	return v, nil
 }
 
 func ApplyConfigDefaults(cfg *Config) error {
@@ -1329,7 +1769,7 @@ func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {
 			return err
 		}
 		if addrInfo.ID != peerIDFromCfg {
-			return fmt.Errorf("addr peer_id mismatch for pubkey=%s", pk)
+			return fmt.Errorf("addr transport_peer_id mismatch for pubkey=%s", pk)
 		}
 	}
 	return nil
@@ -1440,7 +1880,7 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS tx_history(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			event_type TEXT NOT NULL,
 			direction TEXT NOT NULL,
 			amount_satoshi INTEGER NOT NULL,
@@ -1459,13 +1899,13 @@ func initIndexDB(db *sql.DB) error {
 			chunk_index INTEGER NOT NULL,
 			unit_price_sat_per_64k INTEGER NOT NULL,
 			amount_satoshi INTEGER NOT NULL,
-			buyer_gateway_peer_id TEXT NOT NULL,
+			buyer_gateway_pubkey_hex TEXT NOT NULL,
 			release_token TEXT NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS gateway_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			action TEXT NOT NULL,
 			msg_id TEXT NOT NULL,
 			sequence_num INTEGER NOT NULL,
@@ -1476,38 +1916,38 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS direct_quotes(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
-			seller_peer_id TEXT NOT NULL,
+			seller_pubkey_hex TEXT NOT NULL,
 			seed_price INTEGER NOT NULL,
 			chunk_price INTEGER NOT NULL,
 			expires_at_unix INTEGER NOT NULL,
 			recommended_file_name TEXT NOT NULL DEFAULT '',
 			available_chunk_bitmap_hex TEXT NOT NULL DEFAULT '',
-			seller_arbiter_peer_ids_json TEXT NOT NULL,
+			seller_arbiter_pubkey_hexes_json TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
-			UNIQUE(demand_id, seller_peer_id)
+			UNIQUE(demand_id, seller_pubkey_hex)
 		)`,
 		`CREATE TABLE IF NOT EXISTS direct_deals(
 			deal_id TEXT PRIMARY KEY,
 			demand_id TEXT NOT NULL,
-			buyer_peer_id TEXT NOT NULL,
-			seller_peer_id TEXT NOT NULL,
+			buyer_pubkey_hex TEXT NOT NULL,
+			seller_pubkey_hex TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
 			seed_price INTEGER NOT NULL,
 			chunk_price INTEGER NOT NULL,
-			arbiter_peer_id TEXT NOT NULL,
+			arbiter_pubkey_hex TEXT NOT NULL,
 			status TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS live_quotes(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
-			seller_peer_id TEXT NOT NULL,
+			seller_pubkey_hex TEXT NOT NULL,
 			stream_id TEXT NOT NULL,
 			latest_segment_index INTEGER NOT NULL,
 			recent_segments_json TEXT NOT NULL,
 			expires_at_unix INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,
-			UNIQUE(demand_id, seller_peer_id)
+			UNIQUE(demand_id, seller_pubkey_hex)
 		)`,
 		`CREATE TABLE IF NOT EXISTS direct_sessions(
 			session_id TEXT PRIMARY KEY,
@@ -1524,9 +1964,6 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS direct_transfer_pools(
 			session_id TEXT PRIMARY KEY,
 			deal_id TEXT NOT NULL,
-			buyer_peer_id TEXT NOT NULL,
-			seller_peer_id TEXT NOT NULL,
-			arbiter_peer_id TEXT NOT NULL,
 			buyer_pubkey_hex TEXT NOT NULL,
 			seller_pubkey_hex TEXT NOT NULL,
 			arbiter_pubkey_hex TEXT NOT NULL,
@@ -1565,7 +2002,7 @@ func initIndexDB(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL,
 			command_type TEXT NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			aggregate_id TEXT NOT NULL,
 			requested_by TEXT NOT NULL,
 			requested_at_unix INTEGER NOT NULL,
@@ -1583,7 +2020,7 @@ func initIndexDB(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			event_name TEXT NOT NULL,
 			state_before TEXT NOT NULL,
 			state_after TEXT NOT NULL,
@@ -1593,7 +2030,7 @@ func initIndexDB(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			state TEXT NOT NULL,
 			pause_reason TEXT NOT NULL,
 			pause_need_satoshi INTEGER NOT NULL,
@@ -1605,7 +2042,7 @@ func initIndexDB(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			effect_type TEXT NOT NULL,
 			stage TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -1621,7 +2058,7 @@ func initIndexDB(db *sql.DB) error {
 			aggregate_key TEXT NOT NULL,
 			idempotency_key TEXT NOT NULL,
 			command_type TEXT NOT NULL,
-			gateway_peer_id TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
 			task_status TEXT NOT NULL,
 			retry_count INTEGER NOT NULL,
 			queue_length INTEGER NOT NULL,
@@ -1844,7 +2281,7 @@ func initIndexDB(db *sql.DB) error {
 			last_bought_segment_index INTEGER NOT NULL,
 			last_bought_seed_hash TEXT NOT NULL,
 			last_output_file_path TEXT NOT NULL,
-			last_quote_seller_peer_id TEXT NOT NULL,
+			last_quote_seller_pubkey_hex TEXT NOT NULL,
 			last_decision_json TEXT NOT NULL,
 			status TEXT NOT NULL,
 			last_error TEXT NOT NULL,
@@ -1868,7 +2305,7 @@ func initIndexDB(db *sql.DB) error {
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			status TEXT NOT NULL,
-			seller_peer_id TEXT NOT NULL,
+			seller_pubkey_hex TEXT NOT NULL,
 			price_sats INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
 			PRIMARY KEY(seed_hash,chunk_index)
@@ -1886,19 +2323,19 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_cmd_id ON command_journal(command_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_created_at ON orchestrator_logs(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_event_type ON orchestrator_logs(event_type, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_signal_type ON orchestrator_logs(signal_type, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_gateway ON orchestrator_logs(gateway_peer_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_gateway ON orchestrator_logs(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_idempotency ON orchestrator_logs(idempotency_key, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_created_at ON wallet_ledger_entries(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_occurred_at ON wallet_ledger_entries(occurred_at_unix DESC, id DESC)`,
@@ -2004,7 +2441,7 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	return err
 }
 
-// EnsureAppConfigKVSchema 保证 app_config 是 KV 结构；若检测到旧单行结构会自动迁移。
+// EnsureAppConfigKVSchema 保证 app_config 是 KV 结构。
 func EnsureAppConfigKVSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -2029,16 +2466,7 @@ func EnsureAppConfigKVSchema(db *sql.DB) error {
 		_, hasKey := cols["key"]
 		_, hasValue := cols["value"]
 		_, hasUpdated := cols["updated_at_unix"]
-		_, hasID := cols["id"]
-		_, hasConfigTOML := cols["config_toml"]
-		switch {
-		case hasKey && hasValue && hasUpdated:
-			// 已是新结构，不需要处理。
-		case hasID && hasConfigTOML && hasUpdated:
-			if err := migrateAppConfigLegacyRowToKV(db); err != nil {
-				return err
-			}
-		default:
+		if !(hasKey && hasValue && hasUpdated) {
 			return fmt.Errorf("unsupported app_config schema")
 		}
 	}
@@ -2113,40 +2541,6 @@ func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 	}
 	return out, rows.Err()
-}
-
-func migrateAppConfigLegacyRowToKV(db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-	if _, err = tx.Exec(`CREATE TABLE app_config_kv_new(
-		key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
-		value TEXT NOT NULL,
-		updated_at_unix INTEGER NOT NULL
-	)`); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(
-		`INSERT INTO app_config_kv_new(key,value,updated_at_unix)
-		 SELECT ?,config_toml,updated_at_unix FROM app_config
-		 WHERE id=1 AND trim(config_toml)<>''`,
-		AppConfigKeyRuntimeConfigTOML,
-	); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(`DROP TABLE app_config`); err != nil {
-		return err
-	}
-	if _, err = tx.Exec(`ALTER TABLE app_config_kv_new RENAME TO app_config`); err != nil {
-		return err
-	}
-	return tx.Commit()
 }
 
 func migrateAndDropLegacyKeyringTable(db *sql.DB) error {
@@ -2319,7 +2713,7 @@ func ensureLiveFollowsSchema(db *sql.DB) error {
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
 			return err
 		}
-		if strings.EqualFold(strings.TrimSpace(name), "last_quote_seller_peer_id") {
+		if strings.EqualFold(strings.TrimSpace(name), "last_quote_seller_pubkey_hex") {
 			hasLastQuoteSellerPeerID = true
 			break
 		}
@@ -2327,7 +2721,7 @@ func ensureLiveFollowsSchema(db *sql.DB) error {
 	if hasLastQuoteSellerPeerID {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE live_follows ADD COLUMN last_quote_seller_peer_id TEXT NOT NULL DEFAULT ''`)
+	_, err = db.Exec(`ALTER TABLE live_follows ADD COLUMN last_quote_seller_pubkey_hex TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -2679,15 +3073,15 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 		availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
 		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
 		if _, err := db.Exec(
-			`INSERT INTO direct_quotes(demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix)
+			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
 			 VALUES(?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(demand_id,seller_peer_id) DO UPDATE SET
+			 ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
 			 seed_price=excluded.seed_price,
 			 chunk_price=excluded.chunk_price,
 			 expires_at_unix=excluded.expires_at_unix,
 			 recommended_file_name=excluded.recommended_file_name,
 			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
-			 seller_arbiter_peer_ids_json=excluded.seller_arbiter_peer_ids_json,
+			 seller_arbiter_pubkey_hexes_json=excluded.seller_arbiter_pubkey_hexes_json,
 			 created_at_unix=excluded.created_at_unix`,
 			strings.TrimSpace(req.DemandID),
 			strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
@@ -2712,7 +3106,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 		}
 		dealID := "ddeal_" + randHex(8)
 		if _, err := db.Exec(
-			`INSERT INTO direct_deals(deal_id,demand_id,buyer_peer_id,seller_peer_id,seed_hash,seed_price,chunk_price,arbiter_peer_id,status,created_at_unix)
+			`INSERT INTO direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
 			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			dealID,
 			strings.TrimSpace(req.DemandID),
@@ -2982,10 +3376,10 @@ func connectGateways(ctx context.Context, h host.Host, gateways []PeerNode) ([]p
 			continue
 		}
 		if err := h.Connect(ctx, *ai); err != nil {
-			obs.Error("bitcast-client", "gateway_connect_failed", map[string]any{"peer_id": ai.ID.String(), "error": err.Error()})
+			obs.Error("bitcast-client", "gateway_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
 			continue
 		}
-		obs.Business("bitcast-client", "gateway_connected", map[string]any{"peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
+		obs.Business("bitcast-client", "gateway_connected", map[string]any{"transport_peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
 		out = append(out, *ai)
 	}
 	// 允许零网关，返回空列表
@@ -3009,13 +3403,13 @@ func connectArbiters(ctx context.Context, h host.Host, arbiters []PeerNode) ([]p
 		}
 		if err := h.Connect(ctx, *ai); err != nil {
 			obs.Error("bitcast-client", "arbiter_connect_failed", map[string]any{
-				"index":   i,
-				"peer_id": ai.ID.String(),
-				"error":   err.Error(),
+				"index":             i,
+				"transport_peer_id": ai.ID.String(),
+				"error":             err.Error(),
 			})
 			continue
 		}
-		obs.Business("bitcast-client", "arbiter_connected", map[string]any{"peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
+		obs.Business("bitcast-client", "arbiter_connected", map[string]any{"transport_peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
 		out = append(out, *ai)
 	}
 	return out, nil
@@ -3032,18 +3426,18 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 			err := p2prpc.CallProto(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
 			if err == nil {
 				obs.Business("bitcast-client", kind+"_health_ok", map[string]any{
-					"peer_id": p.ID.String(),
-					"status":  health.Status,
-					"attempt": attempt,
+					"transport_peer_id": p.ID.String(),
+					"status":            health.Status,
+					"attempt":           attempt,
 				})
 				ok = true
 				break
 			}
 			lastErr = err
 			obs.Error("bitcast-client", kind+"_health_failed", map[string]any{
-				"peer_id": p.ID.String(),
-				"attempt": attempt,
-				"error":   err.Error(),
+				"transport_peer_id": p.ID.String(),
+				"attempt":           attempt,
+				"error":             err.Error(),
 			})
 			if attempt < maxAttempts {
 				time.Sleep(500 * time.Millisecond)
@@ -3054,8 +3448,8 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 			continue
 		}
 		obs.Error("bitcast-client", kind+"_unhealthy", map[string]any{
-			"peer_id": p.ID.String(),
-			"error":   errString(lastErr),
+			"transport_peer_id": p.ID.String(),
+			"error":             errString(lastErr),
 		})
 	}
 	return out
@@ -3590,10 +3984,10 @@ func buildClientActorFromConfig(cfg Config) (*dual2of2.Actor, error) {
 	if cid := strings.TrimSpace(cfg.ClientID); cid != "" {
 		derivedID, err := clientIDFromPrivHex(privHex)
 		if err != nil {
-			return nil, fmt.Errorf("derive client_id from signing key failed: %w", err)
+			return nil, fmt.Errorf("derive client_pubkey_hex from signing key failed: %w", err)
 		}
 		if !strings.EqualFold(cid, derivedID) {
-			return nil, fmt.Errorf("client_id and signing key mismatch")
+			return nil, fmt.Errorf("client_pubkey_hex and signing key mismatch")
 		}
 	}
 	isMainnet := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
@@ -3608,10 +4002,10 @@ func buildClientActorFromRunInput(in RunInput) (*dual2of2.Actor, error) {
 	if cid := strings.TrimSpace(in.ClientID); cid != "" {
 		derivedID, err := clientIDFromPrivHex(privHex)
 		if err != nil {
-			return nil, fmt.Errorf("derive client_id from signing key failed: %w", err)
+			return nil, fmt.Errorf("derive client_pubkey_hex from signing key failed: %w", err)
 		}
 		if !strings.EqualFold(cid, derivedID) {
-			return nil, fmt.Errorf("client_id and signing key mismatch")
+			return nil, fmt.Errorf("client_pubkey_hex and signing key mismatch")
 		}
 	}
 	isMainnet := strings.EqualFold(strings.TrimSpace(in.BSV.Network), "main")
@@ -3626,10 +4020,10 @@ func validateClientIdentityConsistency(cfg Config) error {
 	}
 	derivedID, err := clientIDFromPrivHex(privHex)
 	if err != nil {
-		return fmt.Errorf("derive client_id from signing key failed: %w", err)
+		return fmt.Errorf("derive client_pubkey_hex from signing key failed: %w", err)
 	}
 	if !strings.EqualFold(clientID, derivedID) {
-		return fmt.Errorf("client_id and signing key mismatch")
+		return fmt.Errorf("client_pubkey_hex and signing key mismatch")
 	}
 	return nil
 }

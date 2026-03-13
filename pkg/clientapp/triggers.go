@@ -73,14 +73,14 @@ func TriggerWorkspaceSyncOnce(ctx context.Context, rt *Runtime) (WorkspaceSyncRe
 type PublishDemandParams struct {
 	SeedHash      string `json:"seed_hash"`
 	ChunkCount    uint32 `json:"chunk_count"`
-	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
+	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 }
 
 type PublishLiveDemandParams struct {
 	StreamID         string `json:"stream_id"`
 	HaveSegmentIndex int64  `json:"have_segment_index"`
 	Window           uint32 `json:"window"`
-	GatewayPeerID    string `json:"gateway_peer_id,omitempty"`
+	GatewayPeerID    string `json:"gateway_pubkey_hex,omitempty"`
 }
 
 type LivePlanParams struct {
@@ -233,6 +233,14 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
+	if err := validateDemandPublishPaidResp(resp); err != nil {
+		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{
+			"error":   err.Error(),
+			"status":  strings.TrimSpace(resp.Status),
+			"success": resp.Success,
+		})
+		return dual2of2.DemandPublishPaidResp{}, err
+	}
 	if resp.Success {
 		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
@@ -249,7 +257,12 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 			Payload:         resp,
 		})
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_end", map[string]any{"demand_id": resp.DemandID, "status": resp.Status})
+	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_end", map[string]any{
+		"demand_id": resp.DemandID,
+		"status":    resp.Status,
+		"success":   resp.Success,
+		"error":     strings.TrimSpace(resp.Error),
+	})
 	return resp, nil
 }
 
@@ -344,6 +357,9 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoLiveDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
+	if err := validateLiveDemandPublishPaidResp(resp); err != nil {
+		return dual2of2.LiveDemandPublishPaidResp{}, err
+	}
 	if resp.Success {
 		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
@@ -363,6 +379,39 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	return resp, nil
 }
 
+// validateDemandPublishPaidResp 统一校验网关 publish_demand 业务响应。
+// 设计约束：
+// - RPC 成功 != 业务成功，必须检查 success 位；
+// - success=true 时 demand_id 必须存在，否则后续 list quotes 必然失败。
+func validateDemandPublishPaidResp(resp dual2of2.DemandPublishPaidResp) error {
+	if !resp.Success {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			msg = "gateway publish demand failed"
+		}
+		return fmt.Errorf("gateway demand publish rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
+	}
+	if strings.TrimSpace(resp.DemandID) == "" {
+		return fmt.Errorf("gateway demand publish returned empty demand_id")
+	}
+	return nil
+}
+
+// validateLiveDemandPublishPaidResp 统一校验网关 publish_live_demand 业务响应。
+func validateLiveDemandPublishPaidResp(resp dual2of2.LiveDemandPublishPaidResp) error {
+	if !resp.Success {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			msg = "gateway publish live demand failed"
+		}
+		return fmt.Errorf("gateway live demand publish rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
+	}
+	if strings.TrimSpace(resp.DemandID) == "" {
+		return fmt.Errorf("gateway live demand publish returned empty demand_id")
+	}
+	return nil
+}
+
 func pickGatewayForBusiness(rt *Runtime, gatewayPeerID string) (peer.AddrInfo, error) {
 	if rt == nil {
 		return peer.AddrInfo{}, fmt.Errorf("runtime not initialized")
@@ -374,27 +423,44 @@ func pickGatewayForBusiness(rt *Runtime, gatewayPeerID string) (peer.AddrInfo, e
 	if override == "" {
 		return rt.HealthyGWs[0], nil
 	}
-	gid, err := peer.Decode(override)
-	if err != nil {
-		return peer.AddrInfo{}, fmt.Errorf("invalid gateway_peer_id: %w", err)
-	}
 	for _, gw := range rt.HealthyGWs {
-		if gw.ID == gid {
+		if strings.EqualFold(gw.ID.String(), override) || strings.EqualFold(gatewayBusinessID(rt, gw.ID), override) {
 			return gw, nil
 		}
 	}
-	return peer.AddrInfo{}, fmt.Errorf("gateway_peer_id not connected: %s", override)
+	return peer.AddrInfo{}, fmt.Errorf("gateway_pubkey_hex not connected: %s", override)
+}
+
+// gatewayBusinessID 返回业务层统一网关 ID（优先使用配置中的网关公钥）。
+// 说明：内部连接仍以 libp2p peer.ID 路由；对外观测/触发参数统一为公钥 ID。
+func gatewayBusinessID(rt *Runtime, pid peer.ID) string {
+	peerID := strings.TrimSpace(pid.String())
+	if peerID == "" || rt == nil {
+		return peerID
+	}
+	for _, g := range rt.runIn.Network.Gateways {
+		ai, err := parseAddr(g.Addr)
+		if err != nil || ai == nil || ai.ID != pid {
+			continue
+		}
+		pubkey := strings.ToLower(strings.TrimSpace(g.Pubkey))
+		if pubkey != "" {
+			return pubkey
+		}
+		break
+	}
+	return peerID
 }
 
 type DirectQuoteParams struct {
 	DemandID                string   `json:"demand_id"`
-	BuyerPeerID             string   `json:"buyer_peer_id"`
+	BuyerPeerID             string   `json:"buyer_pubkey_hex"`
 	BuyerAddrs              []string `json:"buyer_addrs"`
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
-	ArbiterPeerIDs          []string `json:"arbiter_peer_ids,omitempty"`
+	ArbiterPeerIDs          []string `json:"arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 }
 
@@ -407,12 +473,12 @@ func TriggerClientSubmitDirectQuote(ctx context.Context, seller *Runtime, p Dire
 
 type DirectQuoteItem struct {
 	DemandID                string   `json:"demand_id"`
-	SellerPeerID            string   `json:"seller_peer_id"`
+	SellerPeerID            string   `json:"seller_pubkey_hex"`
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
-	SellerArbiterPeerIDs    []string `json:"seller_arbiter_peer_ids,omitempty"`
+	SellerArbiterPeerIDs    []string `json:"seller_arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 	AvailableChunkIndexes   []uint32 `json:"available_chunk_indexes,omitempty"`
 }
@@ -424,7 +490,7 @@ type LiveQuoteSegment struct {
 
 type LiveQuoteParams struct {
 	DemandID           string             `json:"demand_id"`
-	BuyerPeerID        string             `json:"buyer_peer_id"`
+	BuyerPeerID        string             `json:"buyer_pubkey_hex"`
 	BuyerAddrs         []string           `json:"buyer_addrs"`
 	StreamID           string             `json:"stream_id"`
 	LatestSegmentIndex uint64             `json:"latest_segment_index"`
@@ -434,7 +500,7 @@ type LiveQuoteParams struct {
 
 type LiveQuoteItem struct {
 	DemandID           string             `json:"demand_id"`
-	SellerPeerID       string             `json:"seller_peer_id"`
+	SellerPeerID       string             `json:"seller_pubkey_hex"`
 	StreamID           string             `json:"stream_id"`
 	LatestSegmentIndex uint64             `json:"latest_segment_index"`
 	RecentSegments     []LiveQuoteSegment `json:"recent_segments"`
@@ -450,7 +516,7 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	rows, err := rt.DB.Query(`SELECT demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,seller_arbiter_peer_ids_json,available_chunk_bitmap_hex FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+	rows, err := rt.DB.Query(`SELECT demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,seller_arbiter_pubkey_hexes_json,available_chunk_bitmap_hex FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +572,7 @@ func TriggerClientListLiveQuotes(ctx context.Context, rt *Runtime, demandID stri
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	rows, err := rt.DB.Query(`SELECT demand_id,seller_peer_id,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+	rows, err := rt.DB.Query(`SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 	if err != nil {
 		return nil, err
 	}
@@ -531,7 +597,7 @@ func TriggerClientListLiveQuotes(ctx context.Context, rt *Runtime, demandID stri
 }
 
 type SeedGetParams struct {
-	SellerPeerID string `json:"seller_peer_id"`
+	SellerPeerID string `json:"seller_pubkey_hex"`
 	SessionID    string `json:"session_id"`
 	SeedHash     string `json:"seed_hash"`
 }
@@ -874,8 +940,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"demand_id":               strings.TrimSpace(p.DemandID),
 			"deal_id":                 dealID,
 			"session_id":              curSessionID,
-			"seller_peer_id":          strings.TrimSpace(p.SellerPeerID),
-			"arbiter_peer_id":         req.ArbiterPeerID,
+			"seller_pubkey_hex":          strings.TrimSpace(p.SellerPeerID),
+			"arbiter_pubkey_hex":         req.ArbiterPeerID,
 			"open_sequence":           req.Sequence,
 			"open_base_txid":          baseTxID,
 			"pool_amount_satoshi":     req.PoolAmount,
@@ -1168,8 +1234,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"demand_id":           strings.TrimSpace(session.DemandID),
 		"deal_id":             strings.TrimSpace(session.DealID),
 		"session_id":          session.SessionID,
-		"seller_peer_id":      strings.TrimSpace(session.SellerPeerID),
-		"arbiter_peer_id":     strings.TrimSpace(session.ArbiterPeerID),
+		"seller_pubkey_hex":      strings.TrimSpace(session.SellerPeerID),
+		"arbiter_pubkey_hex":     strings.TrimSpace(session.ArbiterPeerID),
 		"seed_hash":           seedHash,
 		"chunk_hash":          chunkHash,
 		"chunk_index":         p.ChunkIndex,
@@ -1306,8 +1372,8 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 		"demand_id":             strings.TrimSpace(session.DemandID),
 		"deal_id":               strings.TrimSpace(session.DealID),
 		"session_id":            session.SessionID,
-		"seller_peer_id":        strings.TrimSpace(session.SellerPeerID),
-		"arbiter_peer_id":       strings.TrimSpace(session.ArbiterPeerID),
+		"seller_pubkey_hex":        strings.TrimSpace(session.SellerPeerID),
+		"arbiter_pubkey_hex":       strings.TrimSpace(session.ArbiterPeerID),
 		"open_sequence":         session.OpenSequence,
 		"open_base_txid":        strings.TrimSpace(session.BaseTxID),
 		"pool_amount_satoshi":   session.PoolAmountSat,
@@ -1392,13 +1458,13 @@ func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
 	if rt != nil {
 		clientID := strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
 		if clientID != "" {
-			if _, ok := fields["client_id"]; !ok {
-				fields["client_id"] = clientID
+			if _, ok := fields["client_pubkey_hex"]; !ok {
+				fields["client_pubkey_hex"] = clientID
 			}
 		}
 		if rt.Host != nil {
-			if _, ok := fields["client_peer_id"]; !ok {
-				fields["client_peer_id"] = rt.Host.ID().String()
+			if _, ok := fields["client_transport_peer_id"]; !ok {
+				fields["client_transport_peer_id"] = rt.Host.ID().String()
 			}
 		}
 	}
@@ -1477,7 +1543,7 @@ func resolveDealArbiter(buyer *Runtime, sellerArbiters []string, override string
 	pin := strings.TrimSpace(override)
 	if pin != "" {
 		if _, err := peer.Decode(pin); err != nil {
-			return "", fmt.Errorf("invalid arbiter_peer_id override: %w", err)
+			return "", fmt.Errorf("invalid arbiter_pubkey_hex override: %w", err)
 		}
 		if _, ok := sellerSet[pin]; !ok {
 			return "", fmt.Errorf("arbiter override not supported by seller: %s", pin)
@@ -1530,13 +1596,13 @@ func ownArbiterPeerIDs(rt *Runtime) []string {
 }
 
 type DirectDealAcceptParams struct {
-	SellerPeerID  string `json:"seller_peer_id"`
+	SellerPeerID  string `json:"seller_pubkey_hex"`
 	DemandID      string `json:"demand_id"`
 	SeedHash      string `json:"seed_hash"`
 	SeedPrice     uint64 `json:"seed_price"`
 	ChunkPrice    uint64 `json:"chunk_price"`
 	ExpiresAtUnix int64  `json:"expires_at_unix"`
-	ArbiterPeerID string `json:"arbiter_peer_id,omitempty"`
+	ArbiterPeerID string `json:"arbiter_pubkey_hex,omitempty"`
 }
 
 func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p DirectDealAcceptParams) (directDealAcceptResp, error) {
@@ -1564,7 +1630,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 }
 
 type OpenDirectSessionParams struct {
-	SellerPeerID string `json:"seller_peer_id"`
+	SellerPeerID string `json:"seller_pubkey_hex"`
 	DealID       string `json:"deal_id"`
 }
 
@@ -1587,7 +1653,7 @@ func TriggerClientOpenDirectSession(ctx context.Context, buyer *Runtime, p OpenD
 }
 
 type CloseDirectSessionParams struct {
-	SellerPeerID string `json:"seller_peer_id"`
+	SellerPeerID string `json:"seller_pubkey_hex"`
 	SessionID    string `json:"session_id"`
 }
 
@@ -1623,11 +1689,11 @@ func localAdvertiseAddrs(rt *Runtime) []string {
 func peerIDFromClientID(clientID string) (peer.ID, error) {
 	clientID = strings.TrimSpace(clientID)
 	if clientID == "" {
-		return "", fmt.Errorf("client_id required")
+		return "", fmt.Errorf("client_pubkey_hex required")
 	}
 	b, err := hex.DecodeString(clientID)
 	if err != nil {
-		return "", fmt.Errorf("decode client_id: %w", err)
+		return "", fmt.Errorf("decode client_pubkey_hex: %w", err)
 	}
 	pub, err := crypto.UnmarshalPublicKey(b)
 	if err != nil {

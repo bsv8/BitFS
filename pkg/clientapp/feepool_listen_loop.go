@@ -238,7 +238,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 	// - 这里只做“一次计费 tick”，周期由统一任务框架负责。
 	if !shouldRunListenBillingLoop(openRes) {
 		return map[string]any{
-			"gateway_peer_id": gw.ID.String(),
+			"gateway_pubkey_hex": gw.ID.String(),
 			"result":          "skip_not_active",
 			"trigger":         trigger,
 		}, nil
@@ -253,7 +253,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 			},
 		})
 		return map[string]any{
-			"gateway_peer_id": gw.ID.String(),
+			"gateway_pubkey_hex": gw.ID.String(),
 			"result":          "signal_emitted",
 			"trigger":         "billing_tick",
 		}, nil
@@ -268,7 +268,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 	})
 	if tickRes.Status == "paused" {
 		return map[string]any{
-			"gateway_peer_id": gw.ID.String(),
+			"gateway_pubkey_hex": gw.ID.String(),
 			"result":          "paused",
 			"trigger":         "billing_tick",
 		}, nil
@@ -277,7 +277,7 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 		return nil, fmt.Errorf("listen billing tick failed: %s", strings.TrimSpace(tickRes.ErrorMessage))
 	}
 	return map[string]any{
-		"gateway_peer_id": gw.ID.String(),
+		"gateway_pubkey_hex": gw.ID.String(),
 		"result":          "applied",
 		"trigger":         "billing_tick",
 	}, nil

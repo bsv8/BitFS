@@ -430,9 +430,9 @@ func registerLiveHandlers(rt *Runtime) {
 		if err != nil {
 			return liveQuoteSubmitResp{}, err
 		}
-		if _, err := rt.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_peer_id,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+		if _, err := rt.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
 			VALUES(?,?,?,?,?,?,?)
-			ON CONFLICT(demand_id,seller_peer_id) DO UPDATE SET
+			ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
 				stream_id=excluded.stream_id,
 				latest_segment_index=excluded.latest_segment_index,
 				recent_segments_json=excluded.recent_segments_json,
@@ -634,7 +634,7 @@ func TriggerLivePublishLatest(ctx context.Context, rt *Runtime, streamID string,
 		if err := p2prpc.CallProto(ctx, rt.Host, subscriberID, ProtoLiveHeadPush, clientSec(rt.rpcTrace), req, &resp); err != nil {
 			obs.Error("bitcast-client", "live_head_push_failed", map[string]any{
 				"stream_id": streamID,
-				"peer_id":   target.PeerID,
+				"transport_peer_id":   target.PeerID,
 				"error":     err.Error(),
 			})
 			continue

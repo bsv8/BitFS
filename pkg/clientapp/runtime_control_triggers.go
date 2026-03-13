@@ -24,13 +24,13 @@ func TriggerSetListenAutoRenewRounds(rt *Runtime, rounds uint64) (ListenAutoRene
 }
 
 type EmitFeePoolTickSignalParams struct {
-	GatewayPeerID string `json:"gateway_peer_id,omitempty"`
+	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 	Count         int    `json:"count,omitempty"`
 	Source        string `json:"source,omitempty"`
 }
 
 type EmitFeePoolTickSignalResult struct {
-	GatewayPeerID string `json:"gateway_peer_id"`
+	GatewayPeerID string `json:"gateway_pubkey_hex"`
 	EmittedCount  int    `json:"emitted_count"`
 }
 
@@ -66,7 +66,7 @@ func TriggerEmitFeePoolTickSignal(rt *Runtime, p EmitFeePoolTickSignalParams) (E
 		})
 	}
 	return EmitFeePoolTickSignalResult{
-		GatewayPeerID: gw.ID.String(),
+		GatewayPeerID: gatewayBusinessID(rt, gw.ID),
 		EmittedCount:  n,
 	}, nil
 }

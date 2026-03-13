@@ -30,7 +30,7 @@ func appendOrchestratorLog(db *sql.DB, e orchestratorLogEntry) {
 	}
 	_, err := db.Exec(
 		`INSERT INTO orchestrator_logs(
-			created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+			created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		strings.TrimSpace(e.EventType),

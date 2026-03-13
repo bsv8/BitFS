@@ -107,7 +107,7 @@ func appendTxHistory(db *sql.DB, e txHistoryEntry) {
 		e.Purpose = e.EventType
 	}
 	_, err := db.Exec(
-		`INSERT INTO tx_history(created_at_unix,gateway_peer_id,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO tx_history(created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		e.GatewayPeerID,
 		e.EventType,
@@ -256,7 +256,7 @@ func appendGatewayEvent(db *sql.DB, e gatewayEventEntry) {
 		}
 	}
 	_, err := db.Exec(
-		`INSERT INTO gateway_events(created_at_unix,gateway_peer_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO gateway_events(created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		e.GatewayPeerID,
 		e.Action,
@@ -276,7 +276,7 @@ func appendSaleRecord(db *sql.DB, e saleRecordEntry) {
 		return
 	}
 	_, err := db.Exec(
-		`INSERT INTO sale_records(created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_peer_id,release_token) VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO sale_records(created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token) VALUES(?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
 		e.SessionID,
 		e.SeedHash,
@@ -326,7 +326,7 @@ type fileGetJob struct {
 	ID              string             `json:"id"`
 	SeedHash        string             `json:"seed_hash"`
 	ChunkCount      uint32             `json:"chunk_count"`
-	GatewayPeerID   string             `json:"gateway_peer_id"`
+	GatewayPeerID   string             `json:"gateway_pubkey_hex"`
 	Status          string             `json:"status"`
 	CancelRequested bool               `json:"cancel_requested,omitempty"`
 	StartedAtUnix   int64              `json:"started_at_unix"`
@@ -352,7 +352,7 @@ func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateway
 	}
 }
 
-func (s *httpAPIServer) Start() error {
+func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	registerAPI := func(prefix string) {
 		mux.HandleFunc(prefix+"/v1/info", s.withAuth(s.handleInfo))
@@ -458,7 +458,7 @@ func (s *httpAPIServer) Start() error {
 		var err error
 		sub, err = fs.Sub(s.webAssets, "web")
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 	serveAsset := func(w http.ResponseWriter, r *http.Request, name string) bool {
@@ -496,6 +496,23 @@ func (s *httpAPIServer) Start() error {
 		}
 		_ = serveAsset(w, r, name)
 	})
+	return mux, nil
+}
+
+// Handler 返回 runtime API 的 HTTP handler。
+// 设计说明：用于 managed 进程内直调，避免内部反向代理与额外监听端口。
+func (s *httpAPIServer) Handler() (http.Handler, error) {
+	if s == nil {
+		return nil, fmt.Errorf("http api server is nil")
+	}
+	return s.buildMux()
+}
+
+func (s *httpAPIServer) Start() error {
+	mux, err := s.buildMux()
+	if err != nil {
+		return err
+	}
 
 	s.srv = &http.Server{
 		Addr:              s.cfg.HTTP.ListenAddr,
@@ -506,7 +523,7 @@ func (s *httpAPIServer) Start() error {
 		IdleTimeout:       60 * time.Second,
 	}
 	obs.Important("bitcast-client", "http_api_started", map[string]any{"listen_addr": s.cfg.HTTP.ListenAddr})
-	err := s.srv.ListenAndServe()
+	err = s.srv.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -532,8 +549,8 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_id":           s.cfg.ClientID,
-		"peer_id":             s.h.ID().String(),
+		"client_pubkey_hex":           s.cfg.ClientID,
+		"transport_peer_id":             s.h.ID().String(),
 		"pubkey_hex":          s.cfg.ClientID,
 		"seller_enabled":      s.cfg.Seller.Enabled,
 		"workspace_dir":       s.cfg.Storage.WorkspaceDir,
@@ -1179,7 +1196,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
-	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_peer_id"))
+	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
 	buildWhere := ""
 	args := []any{}
 	if demandID != "" {
@@ -1187,7 +1204,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 		args = append(args, demandID)
 	}
 	if sellerPeerID != "" {
-		buildWhere += " AND seller_peer_id=?"
+		buildWhere += " AND seller_pubkey_hex=?"
 		args = append(args, sellerPeerID)
 	}
 	var total int
@@ -1195,7 +1212,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	rows, err := s.db.Query(`SELECT id,demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1204,13 +1221,13 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 	type quoteItem struct {
 		ID                      int64           `json:"id"`
 		DemandID                string          `json:"demand_id"`
-		SellerPeerID            string          `json:"seller_peer_id"`
+		SellerPeerID            string          `json:"seller_pubkey_hex"`
 		SeedPrice               uint64          `json:"seed_price"`
 		ChunkPrice              uint64          `json:"chunk_price"`
 		ExpiresAtUnix           int64           `json:"expires_at_unix"`
 		RecommendedFileName     string          `json:"recommended_file_name"`
 		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
-		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_peer_ids"`
+		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_pubkey_hexes"`
 		CreatedAtUnix           int64           `json:"created_at_unix"`
 	}
 	items := make([]quoteItem, 0, limit)
@@ -1245,18 +1262,18 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 	type quoteItem struct {
 		ID                      int64           `json:"id"`
 		DemandID                string          `json:"demand_id"`
-		SellerPeerID            string          `json:"seller_peer_id"`
+		SellerPeerID            string          `json:"seller_pubkey_hex"`
 		SeedPrice               uint64          `json:"seed_price"`
 		ChunkPrice              uint64          `json:"chunk_price"`
 		ExpiresAtUnix           int64           `json:"expires_at_unix"`
 		RecommendedFileName     string          `json:"recommended_file_name"`
 		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
-		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_peer_ids"`
+		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_pubkey_hexes"`
 		CreatedAtUnix           int64           `json:"created_at_unix"`
 	}
 	var it quoteItem
 	var arbiterIDs string
-	err := s.db.QueryRow(`SELECT id,demand_id,seller_peer_id,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_peer_ids_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
+	err := s.db.QueryRow(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
 		Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1279,8 +1296,8 @@ func (s *httpAPIServer) handleDirectDeals(w http.ResponseWriter, r *http.Request
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
 	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
-	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_peer_id"))
-	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_peer_id"))
+	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
+	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_pubkey_hex"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	where := ""
 	args := []any{}
@@ -1293,11 +1310,11 @@ func (s *httpAPIServer) handleDirectDeals(w http.ResponseWriter, r *http.Request
 		args = append(args, dealID)
 	}
 	if sellerPeerID != "" {
-		where += " AND seller_peer_id=?"
+		where += " AND seller_pubkey_hex=?"
 		args = append(args, sellerPeerID)
 	}
 	if buyerPeerID != "" {
-		where += " AND buyer_peer_id=?"
+		where += " AND buyer_pubkey_hex=?"
 		args = append(args, buyerPeerID)
 	}
 	if status != "" {
@@ -1309,7 +1326,7 @@ func (s *httpAPIServer) handleDirectDeals(w http.ResponseWriter, r *http.Request
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	rows, err := s.db.Query(`SELECT deal_id,demand_id,buyer_peer_id,seller_peer_id,seed_hash,seed_price,chunk_price,arbiter_peer_id,status,created_at_unix FROM direct_deals WHERE 1=1`+where+` ORDER BY created_at_unix DESC,deal_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix FROM direct_deals WHERE 1=1`+where+` ORDER BY created_at_unix DESC,deal_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1318,12 +1335,12 @@ func (s *httpAPIServer) handleDirectDeals(w http.ResponseWriter, r *http.Request
 	type dealItem struct {
 		DealID        string `json:"deal_id"`
 		DemandID      string `json:"demand_id"`
-		BuyerPeerID   string `json:"buyer_peer_id"`
-		SellerPeerID  string `json:"seller_peer_id"`
+		BuyerPeerID   string `json:"buyer_pubkey_hex"`
+		SellerPeerID  string `json:"seller_pubkey_hex"`
 		SeedHash      string `json:"seed_hash"`
 		SeedPrice     uint64 `json:"seed_price"`
 		ChunkPrice    uint64 `json:"chunk_price"`
-		ArbiterPeerID string `json:"arbiter_peer_id"`
+		ArbiterPeerID string `json:"arbiter_pubkey_hex"`
 		Status        string `json:"status"`
 		CreatedAtUnix int64  `json:"created_at_unix"`
 	}
@@ -1357,17 +1374,17 @@ func (s *httpAPIServer) handleDirectDealDetail(w http.ResponseWriter, r *http.Re
 	type dealItem struct {
 		DealID        string `json:"deal_id"`
 		DemandID      string `json:"demand_id"`
-		BuyerPeerID   string `json:"buyer_peer_id"`
-		SellerPeerID  string `json:"seller_peer_id"`
+		BuyerPeerID   string `json:"buyer_pubkey_hex"`
+		SellerPeerID  string `json:"seller_pubkey_hex"`
 		SeedHash      string `json:"seed_hash"`
 		SeedPrice     uint64 `json:"seed_price"`
 		ChunkPrice    uint64 `json:"chunk_price"`
-		ArbiterPeerID string `json:"arbiter_peer_id"`
+		ArbiterPeerID string `json:"arbiter_pubkey_hex"`
 		Status        string `json:"status"`
 		CreatedAtUnix int64  `json:"created_at_unix"`
 	}
 	var it dealItem
-	err := s.db.QueryRow(`SELECT deal_id,demand_id,buyer_peer_id,seller_peer_id,seed_hash,seed_price,chunk_price,arbiter_peer_id,status,created_at_unix FROM direct_deals WHERE deal_id=?`, dealID).
+	err := s.db.QueryRow(`SELECT deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix FROM direct_deals WHERE deal_id=?`, dealID).
 		Scan(&it.DealID, &it.DemandID, &it.BuyerPeerID, &it.SellerPeerID, &it.SeedHash, &it.SeedPrice, &it.ChunkPrice, &it.ArbiterPeerID, &it.Status, &it.CreatedAtUnix)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1490,9 +1507,9 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
 	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_peer_id"))
-	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_peer_id"))
-	arbiterPeerID := strings.TrimSpace(r.URL.Query().Get("arbiter_peer_id"))
+	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
+	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_pubkey_hex"))
+	arbiterPeerID := strings.TrimSpace(r.URL.Query().Get("arbiter_pubkey_hex"))
 	where := ""
 	args := []any{}
 	if sessionID != "" {
@@ -1508,15 +1525,15 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 		args = append(args, status)
 	}
 	if sellerPeerID != "" {
-		where += " AND seller_peer_id=?"
+		where += " AND seller_pubkey_hex=?"
 		args = append(args, sellerPeerID)
 	}
 	if buyerPeerID != "" {
-		where += " AND buyer_peer_id=?"
+		where += " AND buyer_pubkey_hex=?"
 		args = append(args, buyerPeerID)
 	}
 	if arbiterPeerID != "" {
-		where += " AND arbiter_peer_id=?"
+		where += " AND arbiter_pubkey_hex=?"
 		args = append(args, arbiterPeerID)
 	}
 	var total int
@@ -1524,7 +1541,14 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	rows, err := s.db.Query(`SELECT session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix FROM direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT
+		session_id,deal_id,
+		buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+		buyer_pubkey_hex AS buyer_pubkey_hex_alias,
+		seller_pubkey_hex AS seller_pubkey_hex_alias,
+		arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
+		pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
+		FROM direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1533,9 +1557,9 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 	type poolItem struct {
 		SessionID        string  `json:"session_id"`
 		DealID           string  `json:"deal_id"`
-		BuyerPeerID      string  `json:"buyer_peer_id"`
-		SellerPeerID     string  `json:"seller_peer_id"`
-		ArbiterPeerID    string  `json:"arbiter_peer_id"`
+		BuyerPeerID      string  `json:"buyer_pubkey_hex"`
+		SellerPeerID     string  `json:"seller_pubkey_hex"`
+		ArbiterPeerID    string  `json:"arbiter_pubkey_hex"`
 		BuyerPubkeyHex   string  `json:"buyer_pubkey_hex"`
 		SellerPubkeyHex  string  `json:"seller_pubkey_hex"`
 		ArbiterPubkeyHex string  `json:"arbiter_pubkey_hex"`
@@ -1588,9 +1612,9 @@ func (s *httpAPIServer) handleDirectTransferPoolDetail(w http.ResponseWriter, r 
 	type poolItem struct {
 		SessionID        string  `json:"session_id"`
 		DealID           string  `json:"deal_id"`
-		BuyerPeerID      string  `json:"buyer_peer_id"`
-		SellerPeerID     string  `json:"seller_peer_id"`
-		ArbiterPeerID    string  `json:"arbiter_peer_id"`
+		BuyerPeerID      string  `json:"buyer_pubkey_hex"`
+		SellerPeerID     string  `json:"seller_pubkey_hex"`
+		ArbiterPeerID    string  `json:"arbiter_pubkey_hex"`
 		BuyerPubkeyHex   string  `json:"buyer_pubkey_hex"`
 		SellerPubkeyHex  string  `json:"seller_pubkey_hex"`
 		ArbiterPubkeyHex string  `json:"arbiter_pubkey_hex"`
@@ -1609,7 +1633,14 @@ func (s *httpAPIServer) handleDirectTransferPoolDetail(w http.ResponseWriter, r 
 		UpdatedAtUnix    int64   `json:"updated_at_unix"`
 	}
 	var it poolItem
-	err := s.db.QueryRow(`SELECT session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix FROM direct_transfer_pools WHERE session_id=?`, sessionID).
+	err := s.db.QueryRow(`SELECT
+		session_id,deal_id,
+		buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+		buyer_pubkey_hex AS buyer_pubkey_hex_alias,
+		seller_pubkey_hex AS seller_pubkey_hex_alias,
+		arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
+		pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
+		FROM direct_transfer_pools WHERE session_id=?`, sessionID).
 		Scan(
 			&it.SessionID, &it.DealID, &it.BuyerPeerID, &it.SellerPeerID, &it.ArbiterPeerID,
 			&it.BuyerPubkeyHex, &it.SellerPubkeyHex, &it.ArbiterPubkeyHex, &it.PoolAmount, &it.SpendTxFee,
@@ -1657,7 +1688,7 @@ func (s *httpAPIServer) handleTransactions(w http.ResponseWriter, r *http.Reques
 		build.args = append(build.args, purpose)
 	}
 	if q != "" {
-		build.where += " AND (note LIKE ? OR msg_id LIKE ? OR gateway_peer_id LIKE ?)"
+		build.where += " AND (note LIKE ? OR msg_id LIKE ? OR gateway_pubkey_hex LIKE ?)"
 		like := "%" + q + "%"
 		build.args = append(build.args, like, like, like)
 	}
@@ -1669,7 +1700,7 @@ func (s *httpAPIServer) handleTransactions(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	querySQL := "SELECT id,created_at_unix,gateway_peer_id,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE 1=1" + build.where + " ORDER BY id DESC LIMIT ? OFFSET ?"
+	querySQL := "SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE 1=1" + build.where + " ORDER BY id DESC LIMIT ? OFFSET ?"
 	qArgs := append(build.args, limit, offset)
 	rows, err := s.db.Query(querySQL, qArgs...)
 	if err != nil {
@@ -1681,7 +1712,7 @@ func (s *httpAPIServer) handleTransactions(w http.ResponseWriter, r *http.Reques
 	type txItem struct {
 		ID            int64  `json:"id"`
 		CreatedAtUnix int64  `json:"created_at_unix"`
-		GatewayPeerID string `json:"gateway_peer_id"`
+		GatewayPeerID string `json:"gateway_pubkey_hex"`
 		EventType     string `json:"event_type"`
 		Direction     string `json:"direction"`
 		AmountSatoshi int64  `json:"amount_satoshi"`
@@ -1719,11 +1750,11 @@ func (s *httpAPIServer) handleTransactionDetail(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	row := s.db.QueryRow(`SELECT id,created_at_unix,gateway_peer_id,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE id=?`, id)
+	row := s.db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE id=?`, id)
 	type txItem struct {
 		ID            int64  `json:"id"`
 		CreatedAtUnix int64  `json:"created_at_unix"`
-		GatewayPeerID string `json:"gateway_peer_id"`
+		GatewayPeerID string `json:"gateway_pubkey_hex"`
 		EventType     string `json:"event_type"`
 		Direction     string `json:"direction"`
 		AmountSatoshi int64  `json:"amount_satoshi"`
@@ -1769,7 +1800,7 @@ func (s *httpAPIServer) handleSales(w http.ResponseWriter, r *http.Request) {
 	}
 
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_peer_id,release_token
+		`SELECT id,created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token
 		 FROM sale_records`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -1786,7 +1817,7 @@ func (s *httpAPIServer) handleSales(w http.ResponseWriter, r *http.Request) {
 		ChunkIndex         uint32 `json:"chunk_index"`
 		UnitPriceSatPer64K uint64 `json:"unit_price_sat_per_64k"`
 		AmountSatoshi      uint64 `json:"amount_satoshi"`
-		BuyerGatewayPeerID string `json:"buyer_gateway_peer_id"`
+		BuyerGatewayPeerID string `json:"buyer_gateway_pubkey_hex"`
 		ReleaseToken       string `json:"release_token"`
 	}
 	items := make([]saleItem, 0, limit)
@@ -1824,11 +1855,11 @@ func (s *httpAPIServer) handleSaleDetail(w http.ResponseWriter, r *http.Request)
 		ChunkIndex         uint32 `json:"chunk_index"`
 		UnitPriceSatPer64K uint64 `json:"unit_price_sat_per_64k"`
 		AmountSatoshi      uint64 `json:"amount_satoshi"`
-		BuyerGatewayPeerID string `json:"buyer_gateway_peer_id"`
+		BuyerGatewayPeerID string `json:"buyer_gateway_pubkey_hex"`
 		ReleaseToken       string `json:"release_token"`
 	}
 	var it saleItem
-	err := s.db.QueryRow(`SELECT id,created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_peer_id,release_token FROM sale_records WHERE id=?`, id).
+	err := s.db.QueryRow(`SELECT id,created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token FROM sale_records WHERE id=?`, id).
 		Scan(&it.ID, &it.CreatedAtUnix, &it.SessionID, &it.SeedHash, &it.ChunkIndex, &it.UnitPriceSatPer64K, &it.AmountSatoshi, &it.BuyerGatewayPeerID, &it.ReleaseToken)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1848,13 +1879,13 @@ func (s *httpAPIServer) handleGatewayEvents(w http.ResponseWriter, r *http.Reque
 	}
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	action := strings.TrimSpace(r.URL.Query().Get("action"))
 
 	where := ""
 	args := []any{}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if action != "" {
@@ -1868,7 +1899,7 @@ func (s *httpAPIServer) handleGatewayEvents(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	rows, err := s.db.Query(`SELECT id,created_at_unix,gateway_peer_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1877,7 +1908,7 @@ func (s *httpAPIServer) handleGatewayEvents(w http.ResponseWriter, r *http.Reque
 	type eventItem struct {
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		Action        string          `json:"action"`
 		MsgID         string          `json:"msg_id,omitempty"`
 		SequenceNum   uint32          `json:"sequence_num,omitempty"`
@@ -1917,7 +1948,7 @@ func (s *httpAPIServer) handleGatewayEventDetail(w http.ResponseWriter, r *http.
 	type eventItem struct {
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		Action        string          `json:"action"`
 		MsgID         string          `json:"msg_id,omitempty"`
 		SequenceNum   uint32          `json:"sequence_num,omitempty"`
@@ -1927,7 +1958,7 @@ func (s *httpAPIServer) handleGatewayEventDetail(w http.ResponseWriter, r *http.
 	}
 	var it eventItem
 	var payload string
-	err := s.db.QueryRow(`SELECT id,created_at_unix,gateway_peer_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE id=?`, id).
+	err := s.db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE id=?`, id).
 		Scan(&it.ID, &it.CreatedAtUnix, &it.GatewayPeerID, &it.Action, &it.MsgID, &it.SequenceNum, &it.PoolID, &it.AmountSatoshi, &payload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -1949,7 +1980,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandType := strings.TrimSpace(r.URL.Query().Get("command_type"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -1961,7 +1992,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 		args = append(args, commandType)
 	}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if status != "" {
@@ -1983,7 +2014,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
 		FROM command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -1997,7 +2028,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
 		CommandType   string          `json:"command_type"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		AggregateID   string          `json:"aggregate_id"`
 		RequestedBy   string          `json:"requested_by"`
 		RequestedAt   int64           `json:"requested_at_unix"`
@@ -2046,7 +2077,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
 		CommandType   string          `json:"command_type"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		AggregateID   string          `json:"aggregate_id"`
 		RequestedBy   string          `json:"requested_by"`
 		RequestedAt   int64           `json:"requested_at_unix"`
@@ -2065,7 +2096,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r
 	var payload string
 	var result string
 	err := s.db.QueryRow(
-		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
 		FROM command_journal WHERE id=?`, id,
 	).Scan(
 		&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.CommandType, &it.GatewayPeerID, &it.AggregateID, &it.RequestedBy, &it.RequestedAt, &accepted, &it.Status, &it.ErrorCode, &it.ErrorMessage, &it.StateBefore, &it.StateAfter, &it.DurationMS, &payload, &result,
@@ -2092,7 +2123,7 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	eventName := strings.TrimSpace(r.URL.Query().Get("event_name"))
 
 	where := ""
@@ -2102,7 +2133,7 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 		args = append(args, commandID)
 	}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if eventName != "" {
@@ -2114,7 +2145,7 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	rows, err := s.db.Query(`SELECT id,created_at_unix,command_id,gateway_peer_id,event_name,state_before,state_after,payload_json FROM domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2124,7 +2155,7 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		EventName     string          `json:"event_name"`
 		StateBefore   string          `json:"state_before"`
 		StateAfter    string          `json:"state_after"`
@@ -2158,7 +2189,7 @@ func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		EventName     string          `json:"event_name"`
 		StateBefore   string          `json:"state_before"`
 		StateAfter    string          `json:"state_after"`
@@ -2166,7 +2197,7 @@ func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *
 	}
 	var it item
 	var payload string
-	err := s.db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_peer_id,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id).
+	err := s.db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id).
 		Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.EventName, &it.StateBefore, &it.StateAfter, &payload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2188,7 +2219,7 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 
 	where := ""
@@ -2198,7 +2229,7 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 		args = append(args, commandID)
 	}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if state != "" {
@@ -2211,7 +2242,7 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,command_id,gateway_peer_id,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 		FROM state_snapshots WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -2224,7 +2255,7 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		State         string          `json:"state"`
 		PauseReason   string          `json:"pause_reason"`
 		PauseNeedSat  uint64          `json:"pause_need_satoshi"`
@@ -2260,7 +2291,7 @@ func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		State         string          `json:"state"`
 		PauseReason   string          `json:"pause_reason"`
 		PauseNeedSat  uint64          `json:"pause_need_satoshi"`
@@ -2271,7 +2302,7 @@ func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *
 	var it item
 	var payload string
 	err := s.db.QueryRow(
-		`SELECT id,created_at_unix,command_id,gateway_peer_id,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 		FROM state_snapshots WHERE id=?`, id,
 	).Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.State, &it.PauseReason, &it.PauseNeedSat, &it.PauseHaveSat, &it.LastError, &payload)
 	if err != nil {
@@ -2294,7 +2325,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	effectType := strings.TrimSpace(r.URL.Query().Get("effect_type"))
 	stage := strings.TrimSpace(r.URL.Query().Get("stage"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
@@ -2306,7 +2337,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http
 		args = append(args, commandID)
 	}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if effectType != "" {
@@ -2327,7 +2358,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,command_id,gateway_peer_id,effect_type,stage,status,error_message,payload_json
+		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 		FROM effect_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -2340,7 +2371,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		EffectType    string          `json:"effect_type"`
 		Stage         string          `json:"stage"`
 		Status        string          `json:"status"`
@@ -2375,7 +2406,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r 
 		ID            int64           `json:"id"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		EffectType    string          `json:"effect_type"`
 		Stage         string          `json:"stage"`
 		Status        string          `json:"status"`
@@ -2385,7 +2416,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r 
 	var it item
 	var payload string
 	err := s.db.QueryRow(
-		`SELECT id,created_at_unix,command_id,gateway_peer_id,effect_type,stage,status,error_message,payload_json
+		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 		FROM effect_logs WHERE id=?`, id,
 	).Scan(&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.GatewayPeerID, &it.EffectType, &it.Stage, &it.Status, &it.ErrorMessage, &payload)
 	if err != nil {
@@ -2431,7 +2462,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandType := strings.TrimSpace(r.URL.Query().Get("command_type"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
@@ -2455,7 +2486,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r
 		args = append(args, commandType)
 	}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if status != "" {
@@ -2477,7 +2508,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
 		FROM command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -2491,7 +2522,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
 		CommandType   string          `json:"command_type"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		AggregateID   string          `json:"aggregate_id"`
 		RequestedBy   string          `json:"requested_by"`
 		RequestedAt   int64           `json:"requested_at_unix"`
@@ -2540,7 +2571,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommandDetail(w http.ResponseWrit
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		CommandID     string          `json:"command_id"`
 		CommandType   string          `json:"command_type"`
-		GatewayPeerID string          `json:"gateway_peer_id"`
+		GatewayPeerID string          `json:"gateway_pubkey_hex"`
 		AggregateID   string          `json:"aggregate_id"`
 		RequestedBy   string          `json:"requested_by"`
 		RequestedAt   int64           `json:"requested_at_unix"`
@@ -2559,7 +2590,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommandDetail(w http.ResponseWrit
 	var payload string
 	var result string
 	err := s.db.QueryRow(
-		`SELECT id,created_at_unix,command_id,command_type,gateway_peer_id,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
 		FROM command_journal WHERE id=?`, id,
 	).Scan(
 		&it.ID, &it.CreatedAtUnix, &it.CommandID, &it.CommandType, &it.GatewayPeerID, &it.AggregateID, &it.RequestedBy, &it.RequestedAt, &accepted, &it.Status, &it.ErrorCode, &it.ErrorMessage, &it.StateBefore, &it.StateAfter, &it.DurationMS, &payload, &result,
@@ -2592,7 +2623,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *ht
 	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
 	signalType := strings.TrimSpace(r.URL.Query().Get("signal_type"))
 	source := strings.TrimSpace(r.URL.Query().Get("source"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_peer_id"))
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	idempotencyKey := strings.TrimSpace(r.URL.Query().Get("idempotency_key"))
 	taskStatus := strings.TrimSpace(r.URL.Query().Get("task_status"))
 
@@ -2611,7 +2642,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *ht
 		args = append(args, source)
 	}
 	if gatewayPeerID != "" {
-		where += " AND gateway_peer_id=?"
+		where += " AND gateway_pubkey_hex=?"
 		args = append(args, gatewayPeerID)
 	}
 	if idempotencyKey != "" {
@@ -2643,7 +2674,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *ht
 	)
 	SELECT
 		g.event_id,g.started_at_unix,g.ended_at_unix,g.steps_count,g.latest_log_id,
-		l.idempotency_key,l.aggregate_key,l.command_type,l.gateway_peer_id,l.source,l.signal_type,l.event_type,l.task_status,l.retry_count,l.queue_length,l.error_message
+		l.idempotency_key,l.aggregate_key,l.command_type,l.gateway_pubkey_hex,l.source,l.signal_type,l.event_type,l.task_status,l.retry_count,l.queue_length,l.error_message
 	FROM grouped g
 	JOIN orchestrator_logs l ON l.id=g.latest_log_id
 	ORDER BY g.latest_log_id DESC
@@ -2667,7 +2698,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *ht
 		IdempotencyKey   string `json:"idempotency_key"`
 		AggregateKey     string `json:"aggregate_key"`
 		CommandType      string `json:"command_type"`
-		GatewayPeerID    string `json:"gateway_peer_id"`
+		GatewayPeerID    string `json:"gateway_pubkey_hex"`
 		Source           string `json:"source"`
 		SignalType       string `json:"signal_type"`
 		LatestEventType  string `json:"latest_event_type"`
@@ -2712,7 +2743,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 		AggregateKey   string          `json:"aggregate_key"`
 		IdempotencyKey string          `json:"idempotency_key"`
 		CommandType    string          `json:"command_type"`
-		GatewayPeerID  string          `json:"gateway_peer_id"`
+		GatewayPeerID  string          `json:"gateway_pubkey_hex"`
 		TaskStatus     string          `json:"task_status"`
 		RetryCount     int             `json:"retry_count"`
 		QueueLength    int             `json:"queue_length"`
@@ -2732,12 +2763,12 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 			return
 		}
 		rows, err = s.db.Query(
-			`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+			`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 			FROM orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
 		)
 	} else {
 		rows, err = s.db.Query(
-			`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_peer_id,task_status,retry_count,queue_length,error_message,payload_json
+			`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 			FROM orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
 		)
 	}
@@ -2772,7 +2803,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 		"idempotency_key":    strings.TrimSpace(last.IdempotencyKey),
 		"aggregate_key":      strings.TrimSpace(last.AggregateKey),
 		"command_type":       strings.TrimSpace(last.CommandType),
-		"gateway_peer_id":    strings.TrimSpace(last.GatewayPeerID),
+		"gateway_pubkey_hex":    strings.TrimSpace(last.GatewayPeerID),
 		"started_at_unix":    first.CreatedAtUnix,
 		"ended_at_unix":      last.CreatedAtUnix,
 		"steps_count":        len(steps),
@@ -4065,7 +4096,7 @@ func (s *httpAPIServer) handleGetFileStart(w http.ResponseWriter, r *http.Reques
 	type reqBody struct {
 		SeedHash      string `json:"seed_hash"`
 		ChunkCount    uint32 `json:"chunk_count"`
-		GatewayPeerID string `json:"gateway_peer_id,omitempty"`
+		GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 	}
 	var req reqBody
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -4657,7 +4688,7 @@ func (s *httpAPIServer) handleLiveDemandPublish(w http.ResponseWriter, r *http.R
 		StreamID         string `json:"stream_id"`
 		HaveSegmentIndex int64  `json:"have_segment_index"`
 		Window           uint32 `json:"window"`
-		GatewayPeerID    string `json:"gateway_peer_id,omitempty"`
+		GatewayPeerID    string `json:"gateway_pubkey_hex,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -5151,7 +5182,7 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		master := gm.GetMasterGateway().String()
 		type gwResp struct {
 			ID                     int    `json:"id"`
-			PeerID                 string `json:"peer_id,omitempty"`
+			PeerID                 string `json:"transport_peer_id,omitempty"`
 			Addr                   string `json:"addr"`
 			Pubkey                 string `json:"pubkey"`
 			Enabled                bool   `json:"enabled"`
@@ -5222,14 +5253,14 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid addr: " + err.Error()})
 			return
 		}
-		// 验证 pubkey 与 peer_id 匹配
+		// 验证 pubkey 与 transport_peer_id 匹配
 		pidFromPub, err := peerIDFromSecp256k1PubHex(req.Pubkey)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid pubkey: " + err.Error()})
 			return
 		}
 		if ai.ID != pidFromPub {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "pubkey does not match addr peer_id"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "pubkey does not match addr transport_peer_id"})
 			return
 		}
 		// 检查重复
@@ -5354,13 +5385,13 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 	case http.MethodGet:
 		master := gm.GetMasterGateway()
 		if master == "" {
-			writeJSON(w, http.StatusOK, map[string]any{"master_peer_id": "", "has_master": false})
+			writeJSON(w, http.StatusOK, map[string]any{"master_gateway_pubkey_hex": "", "has_master": false})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"master_peer_id": master.String(), "has_master": true})
+		writeJSON(w, http.StatusOK, map[string]any{"master_gateway_pubkey_hex": master.String(), "has_master": true})
 	case http.MethodPost:
 		var req struct {
-			MasterPeerID string `json:"master_peer_id"`
+			MasterPeerID string `json:"master_gateway_pubkey_hex"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -5368,12 +5399,12 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 		}
 		target := strings.TrimSpace(req.MasterPeerID)
 		if target == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "master_peer_id is required"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "master_gateway_pubkey_hex is required"})
 			return
 		}
 		targetID, err := peer.Decode(target)
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid master_peer_id"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid master_gateway_pubkey_hex"})
 			return
 		}
 
@@ -5394,7 +5425,7 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 			break
 		}
 		if !seenEnabled {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "gateway peer_id not configured"})
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "gateway transport_peer_id not configured"})
 			return
 		}
 		if s.h == nil || s.h.Network() == nil {
@@ -5413,13 +5444,13 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 		changed := old != targetID
 		if changed {
 			obs.Business("bitcast-client", "master_gateway_set_by_admin", map[string]any{
-				"old_master_peer_id": old.String(),
-				"new_master_peer_id": targetID.String(),
+				"old_master_gateway_pubkey_hex": old.String(),
+				"new_master_gateway_pubkey_hex": targetID.String(),
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
-			"master_peer_id": targetID.String(),
+			"master_gateway_pubkey_hex": targetID.String(),
 			"changed":        changed,
 		})
 
@@ -5445,7 +5476,7 @@ func (s *httpAPIServer) handleGatewayHealth(w http.ResponseWriter, r *http.Reque
 	master := gm.GetMasterGateway().String()
 	type healthItem struct {
 		ID                     int    `json:"id"`
-		PeerID                 string `json:"peer_id,omitempty"`
+		PeerID                 string `json:"transport_peer_id,omitempty"`
 		Addr                   string `json:"addr"`
 		Pubkey                 string `json:"pubkey"`
 		Enabled                bool   `json:"enabled"`
@@ -5508,7 +5539,7 @@ func (s *httpAPIServer) handleGatewayHealth(w http.ResponseWriter, r *http.Reque
 			return c
 		}(),
 		"connected_total": connectedCount,
-		"master_peer_id":  master,
+		"master_gateway_pubkey_hex":  master,
 		"items":           items,
 	})
 }
@@ -5555,7 +5586,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			}
 			ai, parseErr := parseAddr(strings.TrimSpace(a.Addr))
 			if parseErr == nil && ai.ID == newAI.ID {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("addr peer_id already exists at index %d", i)})
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("addr transport_peer_id already exists at index %d", i)})
 				return
 			}
 		}
@@ -5610,7 +5641,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			}
 			ai, parseErr := parseAddr(strings.TrimSpace(a.Addr))
 			if parseErr == nil && ai.ID == newAI.ID {
-				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("addr peer_id already exists at index %d", i)})
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("addr transport_peer_id already exists at index %d", i)})
 				return
 			}
 		}
@@ -5675,7 +5706,7 @@ func normalizeArbiterNode(addr, pubkey string, enabled bool) (PeerNode, error) {
 		return PeerNode{}, fmt.Errorf("invalid pubkey: %w", err)
 	}
 	if ai.ID != pidFromPub {
-		return PeerNode{}, fmt.Errorf("pubkey does not match addr peer_id")
+		return PeerNode{}, fmt.Errorf("pubkey does not match addr transport_peer_id")
 	}
 	return PeerNode{Enabled: enabled, Addr: addr, Pubkey: pubkey}, nil
 }
@@ -5699,7 +5730,7 @@ func (s *httpAPIServer) refreshHealthyArbiters(ctx context.Context) {
 			continue
 		}
 		if err := s.h.Connect(ctx, *ai); err != nil {
-			obs.Error("bitcast-client", "arbiter_connect_failed", map[string]any{"index": i, "peer_id": ai.ID.String(), "error": err.Error()})
+			obs.Error("bitcast-client", "arbiter_connect_failed", map[string]any{"index": i, "transport_peer_id": ai.ID.String(), "error": err.Error()})
 			continue
 		}
 		infos = append(infos, *ai)
@@ -5723,7 +5754,7 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 	}
 	type healthItem struct {
 		ID            int    `json:"id"`
-		PeerID        string `json:"peer_id,omitempty"`
+		PeerID        string `json:"transport_peer_id,omitempty"`
 		Addr          string `json:"addr"`
 		Pubkey        string `json:"pubkey"`
 		Enabled       bool   `json:"enabled"`

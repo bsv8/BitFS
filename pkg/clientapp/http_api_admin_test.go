@@ -95,16 +95,12 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		t.Fatalf("runtime config should be updated")
 	}
 
-	var raw string
-	if err := db.QueryRow(`SELECT value FROM app_config WHERE key=?`, AppConfigKeyRuntimeConfigTOML).Scan(&raw); err != nil {
-		t.Fatalf("query app config: %v", err)
+	var persisted string
+	if err := db.QueryRow(`SELECT value FROM app_config WHERE key='fs_http.strategy_debug_log_enabled'`).Scan(&persisted); err != nil {
+		t.Fatalf("query fs_http.strategy_debug_log_enabled: %v", err)
 	}
-	loaded, err := ParseConfigTOML([]byte(raw))
-	if err != nil {
-		t.Fatalf("parse app config: %v", err)
-	}
-	if !loaded.FSHTTP.StrategyDebugLogEnabled {
-		t.Fatalf("db persisted config should be enabled")
+	if persisted != "true" {
+		t.Fatalf("db persisted config should be true, got=%q", persisted)
 	}
 }
 
@@ -518,7 +514,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 			StepsCount     int    `json:"steps_count"`
 			LatestEvent    string `json:"latest_event_type"`
 			IdempotencyKey string `json:"idempotency_key"`
-			GatewayPeerID  string `json:"gateway_peer_id"`
+			GatewayPeerID  string `json:"gateway_pubkey_hex"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -810,7 +806,7 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 		t.Fatalf("live plan status: got=%d body=%s", recPlan.Code, recPlan.Body.String())
 	}
 
-	if _, err := subRT.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_peer_id,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+	if _, err := subRT.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
 		VALUES(?,?,?,?,?,?,?)`,
 		"ldmd_http",
 		"seller-live",

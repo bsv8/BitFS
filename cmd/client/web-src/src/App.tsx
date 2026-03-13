@@ -621,10 +621,10 @@ export default function App() {
   const loadWalletGatewayEvents = async () => {
     const page = toInt(route.query.get("page"), 1);
     const pageSize = toInt(route.query.get("pageSize"), 20);
-    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
     const action = route.query.get("action") || "";
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
-    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (gatewayPeerID) params.set("gateway_pubkey_hex", gatewayPeerID);
     if (action) params.set("action", action);
     const list = await getGatewayEvents(params);
     setGatewayEvents(list);
@@ -831,13 +831,13 @@ export default function App() {
     const eventType = route.query.get("event_type") || "";
     const signalType = route.query.get("signal_type") || "";
     const source = route.query.get("source") || "";
-    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
     const taskStatus = route.query.get("task_status") || "";
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
     if (eventType) params.set("event_type", eventType);
     if (signalType) params.set("signal_type", signalType);
     if (source) params.set("source", source);
-    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (gatewayPeerID) params.set("gateway_pubkey_hex", gatewayPeerID);
     if (taskStatus) params.set("task_status", taskStatus);
     setOrchestratorEvents(await getOrchestratorLogs(params));
   };
@@ -857,11 +857,11 @@ export default function App() {
     const page = toInt(route.query.get("page"), 1);
     const pageSize = toInt(route.query.get("pageSize"), 20);
     const commandType = route.query.get("command_type") || "";
-    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
     const status = route.query.get("status") || "";
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
     if (commandType) params.set("command_type", commandType);
-    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (gatewayPeerID) params.set("gateway_pubkey_hex", gatewayPeerID);
     if (status) params.set("status", status);
     setClientKernelCommands(await getClientKernelCommands(params));
   };
@@ -877,11 +877,11 @@ export default function App() {
     const page = toInt(route.query.get("page"), 1);
     const pageSize = toInt(route.query.get("pageSize"), 20);
     const commandType = route.query.get("command_type") || "";
-    const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+    const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
     const status = route.query.get("status") || "";
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
     if (commandType) params.set("command_type", commandType);
-    if (gatewayPeerID) params.set("gateway_peer_id", gatewayPeerID);
+    if (gatewayPeerID) params.set("gateway_pubkey_hex", gatewayPeerID);
     if (status) params.set("status", status);
     setFeePoolCommands(await getFeePoolCommands(params));
   };
@@ -1373,7 +1373,7 @@ export default function App() {
                       <td className={it.amount_satoshi < 0 ? "down" : "up"}>{sat(it.amount_satoshi)}</td>
                       <td>{purposeLabel(it.purpose, it.event_type)}</td>
                       <td>{it.note || "-"}</td>
-                      <td title={it.gateway_peer_id}>{short(it.gateway_peer_id, 8)}</td>
+                      <td title={it.gateway_pubkey_hex}>{short(it.gateway_pubkey_hex, 8)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1492,7 +1492,7 @@ export default function App() {
       {route.path === "/finance/gateway-flows" && gatewayEvents ? (() => {
         const page = toInt(route.query.get("page"), 1);
         const pageSize = toInt(route.query.get("pageSize"), 20);
-        const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+        const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
         const action = route.query.get("action") || "";
         return (
           <section className="panel">
@@ -1502,9 +1502,9 @@ export default function App() {
                 <input
                   className="input"
                   defaultValue={gatewayPeerID}
-                  placeholder="gateway_peer_id"
+                  placeholder="gateway_pubkey_hex"
                   onKeyDown={(e) => {
-                    if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 });
+                    if (e.key === "Enter") updateQuery({ gateway_pubkey_hex: (e.target as HTMLInputElement).value, page: 1 });
                   }}
                 />
                 <input
@@ -1538,7 +1538,7 @@ export default function App() {
                     return (
                       <tr key={e.id} onClick={() => loadGatewayEventDetail(e.id)}>
                         <td>{t(e.created_at_unix)}</td>
-                        <td title={e.gateway_peer_id}>{short(e.gateway_peer_id, 8)}</td>
+                        <td title={e.gateway_pubkey_hex}>{short(e.gateway_pubkey_hex, 8)}</td>
                         <td>{e.action}</td>
                         <td>{sat(e.amount_satoshi)}</td>
                         <td>{e.pool_id || "-"}</td>
@@ -1624,7 +1624,7 @@ export default function App() {
             {getFileJob ? (
               <div className="job-box">
                 <div className="hint">
-                  job_id: {getFileJob.id} | status: {getFileJob.status} | gateway: {getFileJob.gateway_peer_id || "-"}
+                  job_id: {getFileJob.id} | status: {getFileJob.status} | gateway: {getFileJob.gateway_pubkey_hex || "-"}
                 </div>
                 {getFileJob.output_file_path ? <div className="hint">output: {getFileJob.output_file_path}</div> : null}
                 {getFileJob.error ? <div className="err-inline">error: {getFileJob.error}</div> : null}
@@ -1820,7 +1820,7 @@ export default function App() {
                       <td>{s.chunk_index}</td>
                       <td>{sat(s.unit_price_sat_per_64k)}</td>
                       <td className="up">{sat(s.amount_satoshi)}</td>
-                      <td title={s.buyer_gateway_peer_id}>{short(s.buyer_gateway_peer_id, 8)}</td>
+                      <td title={s.buyer_gateway_pubkey_hex}>{short(s.buyer_gateway_pubkey_hex, 8)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1914,7 +1914,7 @@ export default function App() {
                       <td title={q.seed_hash}>{short(q.seed_hash, 8)}</td>
                       <td>{q.chunk_count}</td>
                       <td className="up">{sat(q.quote_satoshi)}</td>
-                      <td title={q.seller_peer_id}>{short(q.seller_peer_id, 6)}</td>
+                      <td title={q.seller_pubkey_hex}>{short(q.seller_pubkey_hex, 6)}</td>
                       <td>{q.status}</td>
                       <td>{t(q.expires_at_unix)}</td>
                     </tr>
@@ -1958,8 +1958,8 @@ export default function App() {
                       <td title={d.seed_hash}>{short(d.seed_hash, 6)}</td>
                       <td>{d.chunk_count}</td>
                       <td className="up">{sat(d.amount_satoshi)}</td>
-                      <td title={d.buyer_peer_id}>{short(d.buyer_peer_id, 6)}</td>
-                      <td title={d.seller_peer_id}>{short(d.seller_peer_id, 6)}</td>
+                      <td title={d.buyer_pubkey_hex}>{short(d.buyer_pubkey_hex, 6)}</td>
+                      <td title={d.seller_pubkey_hex}>{short(d.seller_pubkey_hex, 6)}</td>
                       <td>{d.status}</td>
                       <td>{t(d.created_at_unix)}</td>
                     </tr>
@@ -2002,8 +2002,8 @@ export default function App() {
                       <td title={s.deal_id}>{short(s.deal_id, 6)}</td>
                       <td title={s.seed_hash}>{short(s.seed_hash, 6)}</td>
                       <td>{s.chunk_index}</td>
-                      <td title={s.buyer_peer_id}>{short(s.buyer_peer_id, 6)}</td>
-                      <td title={s.seller_peer_id}>{short(s.seller_peer_id, 6)}</td>
+                      <td title={s.buyer_pubkey_hex}>{short(s.buyer_pubkey_hex, 6)}</td>
+                      <td title={s.seller_pubkey_hex}>{short(s.seller_pubkey_hex, 6)}</td>
                       <td>{s.status}</td>
                       <td>{formatBytes(s.bytes_transferred)}</td>
                       <td>{t(s.created_at_unix)}</td>
@@ -2042,8 +2042,8 @@ export default function App() {
                   {directTransferPools.items.map((p) => (
                     <tr key={p.pool_id}>
                       <td title={p.pool_id}>{short(p.pool_id, 12)}</td>
-                      <td title={p.buyer_peer_id}>{short(p.buyer_peer_id, 8)}</td>
-                      <td title={p.seller_peer_id}>{short(p.seller_peer_id, 8)}</td>
+                      <td title={p.buyer_pubkey_hex}>{short(p.buyer_pubkey_hex, 8)}</td>
+                      <td title={p.seller_pubkey_hex}>{short(p.seller_pubkey_hex, 8)}</td>
                       <td>{sat(p.total_satoshi)}</td>
                       <td>{sat(p.released_satoshi)}</td>
                       <td>{p.status}</td>
@@ -2267,7 +2267,7 @@ export default function App() {
         const eventType = route.query.get("event_type") || "";
         const signalType = route.query.get("signal_type") || "";
         const source = route.query.get("source") || "";
-        const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+        const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
         const taskStatus = route.query.get("task_status") || "";
         return (
           <section className="panel">
@@ -2323,7 +2323,7 @@ export default function App() {
                 defaultValue={gatewayPeerID}
                 placeholder="网关 PeerID"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 });
+                  if (e.key === "Enter") updateQuery({ gateway_pubkey_hex: (e.target as HTMLInputElement).value, page: 1 });
                 }}
               />
               <input
@@ -2390,7 +2390,7 @@ export default function App() {
                         idempotency_key: orchestratorEventDetail.idempotency_key,
                         aggregate_key: orchestratorEventDetail.aggregate_key,
                         command_type: orchestratorEventDetail.command_type,
-                        gateway_peer_id: orchestratorEventDetail.gateway_peer_id,
+                        gateway_pubkey_hex: orchestratorEventDetail.gateway_pubkey_hex,
                         started_at: t(orchestratorEventDetail.started_at_unix),
                         ended_at: t(orchestratorEventDetail.ended_at_unix),
                         steps_count: orchestratorEventDetail.steps_count,
@@ -2449,7 +2449,7 @@ export default function App() {
         const page = toInt(route.query.get("page"), 1);
         const pageSize = toInt(route.query.get("pageSize"), 20);
         const commandType = route.query.get("command_type") || "";
-        const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+        const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
         const status = route.query.get("status") || "";
         return (
           <section className="panel">
@@ -2471,7 +2471,7 @@ export default function App() {
                 defaultValue={gatewayPeerID}
                 placeholder="网关 PeerID"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 });
+                  if (e.key === "Enter") updateQuery({ gateway_pubkey_hex: (e.target as HTMLInputElement).value, page: 1 });
                 }}
               />
               <input
@@ -2506,7 +2506,7 @@ export default function App() {
                       <td>{t(cmd.created_at_unix)}</td>
                       <td title={cmd.command_id}>{short(cmd.command_id, 8)}</td>
                       <td>{cmd.command_type}</td>
-                      <td title={cmd.gateway_peer_id}>{short(cmd.gateway_peer_id, 8)}</td>
+                      <td title={cmd.gateway_pubkey_hex}>{short(cmd.gateway_pubkey_hex, 8)}</td>
                       <td title={cmd.aggregate_id}>{short(cmd.aggregate_id, 16)}</td>
                       <td>{cmd.status}</td>
                       <td>{cmd.duration_ms}ms</td>
@@ -2547,7 +2547,7 @@ export default function App() {
         const page = toInt(route.query.get("page"), 1);
         const pageSize = toInt(route.query.get("pageSize"), 20);
         const commandType = route.query.get("command_type") || "";
-        const gatewayPeerID = route.query.get("gateway_peer_id") || "";
+        const gatewayPeerID = route.query.get("gateway_pubkey_hex") || "";
         const status = route.query.get("status") || "";
         return (
           <section className="panel">
@@ -2569,7 +2569,7 @@ export default function App() {
                 defaultValue={gatewayPeerID}
                 placeholder="网关 PeerID"
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") updateQuery({ gateway_peer_id: (e.target as HTMLInputElement).value, page: 1 });
+                  if (e.key === "Enter") updateQuery({ gateway_pubkey_hex: (e.target as HTMLInputElement).value, page: 1 });
                 }}
               />
               <input
@@ -2603,7 +2603,7 @@ export default function App() {
                       <td>{t(cmd.created_at_unix)}</td>
                       <td title={cmd.command_id}>{short(cmd.command_id, 8)}</td>
                       <td>{cmd.command_type}</td>
-                      <td title={cmd.gateway_peer_id}>{short(cmd.gateway_peer_id, 8)}</td>
+                      <td title={cmd.gateway_pubkey_hex}>{short(cmd.gateway_pubkey_hex, 8)}</td>
                       <td>{cmd.status}</td>
                       <td>{cmd.duration_ms}ms</td>
                       <td>

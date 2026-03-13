@@ -14,7 +14,7 @@ type OneShotDownloadParams struct {
 	QuoteMaxRetry int           `json:"quote_max_retry,omitempty"`
 	QuoteInterval time.Duration `json:"quote_interval,omitempty"`
 
-	ArbiterPeerID string `json:"arbiter_peer_id,omitempty"`
+	ArbiterPeerID string `json:"arbiter_pubkey_hex,omitempty"`
 }
 
 // OneShotDownloadResult 输出一次性下载的关键链路信息与下载结果。

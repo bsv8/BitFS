@@ -374,7 +374,7 @@ func recordFeePoolCycleEvent(db *sql.DB, spendTxID string, sequence uint32, amou
 		Payload: map[string]any{
 			"sequence":           sequence,
 			"charge_amount_sat":  amount,
-			"gateway_peer_id":    strings.TrimSpace(gatewayPeerID),
+			"gateway_pubkey_hex":    strings.TrimSpace(gatewayPeerID),
 			"financial_affected": false,
 		},
 	}); err != nil {

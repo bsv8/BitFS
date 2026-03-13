@@ -174,7 +174,7 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 	var dealBuyerPeerID string
 	var dealSellerPeerID string
 	var dealArbiterPeerID string
-	if err := db.QueryRow(`SELECT buyer_peer_id,seller_peer_id,arbiter_peer_id FROM direct_deals WHERE deal_id=?`, dealID).
+	if err := db.QueryRow(`SELECT buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex FROM direct_deals WHERE deal_id=?`, dealID).
 		Scan(&dealBuyerPeerID, &dealSellerPeerID, &dealArbiterPeerID); err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
@@ -239,10 +239,9 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 	now := time.Now().Unix()
 	if _, err := db.Exec(
 		`INSERT INTO direct_transfer_pools(
-			session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,
-			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+			session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(session_id) DO UPDATE SET
 			sequence_num=excluded.sequence_num,
 			seller_amount=excluded.seller_amount,
@@ -255,7 +254,6 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 			lock_blocks=excluded.lock_blocks,
 		updated_at_unix=excluded.updated_at_unix`,
 		sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPeerID,
-		buyerPubHex, strings.ToLower(hex.EncodeToString(sellerPriv.PubKey().Compressed())), arbiterPubHex,
 		req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
 	); err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
@@ -504,7 +502,13 @@ func handleDirectTransferPoolClose(_ host.Host, db *sql.DB, cfg Config, req dire
 func loadDirectTransferPoolRow(db *sql.DB, sessionID string) (directTransferPoolRow, error) {
 	var row directTransferPoolRow
 	err := db.QueryRow(
-		`SELECT session_id,deal_id,buyer_peer_id,seller_peer_id,arbiter_peer_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks
+		`SELECT
+			session_id,deal_id,
+			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+			buyer_pubkey_hex AS buyer_pubkey_hex_alias,
+			seller_pubkey_hex AS seller_pubkey_hex_alias,
+			arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
+			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks
 		 FROM direct_transfer_pools WHERE session_id=?`,
 		sessionID,
 	).Scan(

@@ -151,7 +151,7 @@ func TestHandleArbiterHealth(t *testing.T) {
 		ConnectedTotal int `json:"connected_total"`
 		HealthyTotal   int `json:"healthy_total"`
 		Items          []struct {
-			PeerID        string `json:"peer_id"`
+			PeerID        string `json:"transport_peer_id"`
 			Connected     bool   `json:"connected"`
 			InHealthyArbs bool   `json:"in_healthy_arbiters"`
 		} `json:"items"`

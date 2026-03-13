@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,8 +11,6 @@ import (
 	"mime"
 	"net"
 	"net/http"
-	"net/http/httputil"
-	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -23,6 +22,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/woc"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
@@ -43,7 +43,7 @@ type managedDaemon struct {
 	mu        sync.RWMutex
 	rt        *clientapp.Runtime
 	rtCancel  context.CancelFunc
-	rtProxy   *httputil.ReverseProxy
+	rtAPI     http.Handler
 	guardStop func()
 }
 
@@ -74,6 +74,8 @@ func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSumma
 		_ = db.Close()
 		return err
 	}
+	// 控制台先打印“解锁前可见运行摘要”，再进入密码输入阶段。
+	d.printLockedStartupSummary()
 	// 缺省启动路径进入“命令行解锁循环”：
 	// - locked + 有密钥：提示输入密码；
 	// - API 若先解锁：命令行输入会自动取消并提示已解锁；
@@ -90,7 +92,7 @@ func (d *managedDaemon) close() error {
 	guardStop := d.guardStop
 	d.rtCancel = nil
 	d.rt = nil
-	d.rtProxy = nil
+	d.rtAPI = nil
 	d.guardStop = nil
 	d.mu.Unlock()
 
@@ -189,12 +191,12 @@ func (d *managedDaemon) handleWebAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Request) {
-	proxy := d.currentProxy()
-	if proxy == nil {
+	api := d.currentRuntimeAPI()
+	if api == nil {
 		writeJSON(w, http.StatusLocked, map[string]any{"error": "client is locked"})
 		return
 	}
-	proxy.ServeHTTP(w, r)
+	api.ServeHTTP(w, r)
 }
 
 func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
@@ -340,10 +342,14 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 	}
 	privHex, err := decryptPrivateKeyEnvelope(d.appName, *env, req.Password)
 	if err != nil {
+		obs.Error("bitcast-client", "api_unlock_decrypt_failed", map[string]any{"error": err.Error()})
+		fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 		return
 	}
 	if err := d.startRuntime(privHex); err != nil {
+		obs.Error("bitcast-client", "api_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
+		fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -380,16 +386,10 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		stopGuard()
 		return err
 	}
-	// 设计说明：
-	// managed 层通过反向代理转发到 runtime HTTP。
-	// 这里不能使用 :0 作为目标地址字符串，否则代理目标不可达会稳定 502。
-	runtimeHTTPAddr, err := allocateLoopbackTCPAddr()
-	if err != nil {
-		stopGuard()
-		return err
-	}
-	runCfg.HTTP.ListenAddr = runtimeHTTPAddr
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
+	// 设计说明：
+	// managed 模式统一由单一入口承载 API，不再启动 runtime 内部 HTTP 监听。
+	runIn.DisableHTTPServer = true
 	runIn.WebAssets = webAssets
 	runIn.Chain = woc.NewGuardClient(guardURL)
 
@@ -400,47 +400,82 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		stopGuard()
 		return err
 	}
-	targetURL, err := url.Parse("http://" + strings.TrimSpace(rt.HTTPListenAddr()))
+	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt, webAssets)
 	if err != nil {
 		_ = rt.Close()
 		cancel()
 		stopGuard()
 		return err
 	}
-	proxy := httputil.NewSingleHostReverseProxy(targetURL)
 
 	d.mu.Lock()
 	d.rt = rt
 	d.rtCancel = cancel
-	d.rtProxy = proxy
+	d.rtAPI = runtimeAPI
 	d.guardStop = stopGuard
 	d.mu.Unlock()
 
+	// 控制台打印“解锁后运行摘要”。
+	// 设计约束：统一放在 startRuntime 成功路径，保证 CLI/API 两种解锁方式输出一致。
+	d.printUnlockedRuntimeSummary(runCfg, rt)
 	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
-		"peer_id":      rt.Host.ID().String(),
-		"runtime_http": rt.HTTPListenAddr(),
+		"transport_peer_id": rt.Host.ID().String(),
 	})
 	return nil
 }
 
-func allocateLoopbackTCPAddr() (string, error) {
-	var lastErr error
-	for i := 0; i < 8; i++ {
-		ln, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		addr := strings.TrimSpace(ln.Addr().String())
-		_ = ln.Close()
-		if addr != "" && !strings.HasSuffix(addr, ":0") {
-			return addr, nil
-		}
+func (d *managedDaemon) printLockedStartupSummary() {
+	fmt.Fprintf(os.Stderr, "=== BitFS 客户端启动信息（待解锁）===\n")
+	fmt.Fprintf(os.Stderr, "appname: %s\n", d.appName)
+	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
+	fmt.Fprintf(os.Stderr, "managed_api.listen_addr: %s\n", strings.TrimSpace(d.cfg.HTTP.ListenAddr))
+	fmt.Fprintf(os.Stderr, "runtime_config.db_path: %s\n", strings.TrimSpace(d.startup.RuntimeConfigDBPath))
+	fmt.Fprintf(os.Stderr, "runtime_config.status: %s\n", strings.TrimSpace(d.startup.RuntimeConfigStatus))
+	fmt.Fprintf(os.Stderr, "状态: 已启动（锁定），等待解锁密码或管理 API 解锁。\n")
+}
+
+func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt *clientapp.Runtime) {
+	if rt == nil {
+		return
 	}
-	if lastErr != nil {
-		return "", fmt.Errorf("allocate runtime http listen addr failed: %w", lastErr)
+	pubHex, pubErr := runtimePubKeyHex(rt)
+	pubLine := pubHex
+	if pubErr != nil {
+		pubLine = "unavailable (" + pubErr.Error() + ")"
 	}
-	return "", fmt.Errorf("allocate runtime http listen addr failed")
+	fmt.Fprintf(os.Stderr, "=== BitFS 客户端运行信息（已解锁）===\n")
+	fmt.Fprintf(os.Stderr, "appname: %s\n", d.appName)
+	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
+	fmt.Fprintf(os.Stderr, "pubkey_hex: %s\n", strings.TrimSpace(pubLine))
+	fmt.Fprintf(os.Stderr, "transport_peer_id: %s\n", strings.TrimSpace(rt.Host.ID().String()))
+	fmt.Fprintf(os.Stderr, "managed_api.listen_addr: %s\n", strings.TrimSpace(d.cfg.HTTP.ListenAddr))
+	fmt.Fprintf(os.Stderr, "fs_http.listen_addr: %s\n", strings.TrimSpace(runCfg.FSHTTP.ListenAddr))
+	fmt.Fprintf(os.Stderr, "runtime_config.db_path: %s\n", strings.TrimSpace(d.startup.RuntimeConfigDBPath))
+}
+
+func runtimePubKeyHex(rt *clientapp.Runtime) (string, error) {
+	if rt == nil || rt.Host == nil {
+		return "", fmt.Errorf("runtime host not ready")
+	}
+	pub := rt.Host.Peerstore().PubKey(rt.Host.ID())
+	if pub == nil {
+		return "", fmt.Errorf("missing host public key")
+	}
+	raw, err := crypto.MarshalPublicKey(pub)
+	if err != nil {
+		return "", fmt.Errorf("marshal host public key failed: %w", err)
+	}
+	return strings.ToLower(strings.TrimSpace(hex.EncodeToString(raw))), nil
+}
+
+func (d *managedDaemon) currentNetworkName() string {
+	if n := strings.TrimSpace(d.cfg.BSV.Network); n != "" {
+		return n
+	}
+	if n := strings.TrimSpace(d.initNetwork); n != "" {
+		return n
+	}
+	return "unknown"
 }
 
 func (d *managedDaemon) stopRuntime() error {
@@ -450,7 +485,7 @@ func (d *managedDaemon) stopRuntime() error {
 	guardStop := d.guardStop
 	d.rtCancel = nil
 	d.rt = nil
-	d.rtProxy = nil
+	d.rtAPI = nil
 	d.guardStop = nil
 	d.mu.Unlock()
 
@@ -516,10 +551,12 @@ func (d *managedDaemon) cliUnlockLoop() {
 		privHex, err := decryptPrivateKeyEnvelope(d.appName, *env, password)
 		if err != nil {
 			obs.Error("bitcast-client", "cli_unlock_decrypt_failed", map[string]any{"error": err.Error()})
+			fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
 			continue
 		}
 		if err := d.startRuntime(privHex); err != nil {
 			obs.Error("bitcast-client", "cli_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
+			fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
 			continue
 		}
 		obs.Important("bitcast-client", "cli_unlock_succeeded", map[string]any{"appname": d.appName})
@@ -597,10 +634,10 @@ func (d *managedDaemon) readPasswordCancelable(prompt string) (password string, 
 	}
 }
 
-func (d *managedDaemon) currentProxy() *httputil.ReverseProxy {
+func (d *managedDaemon) currentRuntimeAPI() http.Handler {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.rtProxy
+	return d.rtAPI
 }
 
 func (d *managedDaemon) isUnlocked() bool {

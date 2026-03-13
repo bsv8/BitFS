@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestSaveConfigInDB_DoesNotPersistIndexSection(t *testing.T) {
+func TestSaveConfigInDB_PersistsOneKeyPerField(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "cfg.sqlite")
@@ -37,15 +37,26 @@ func TestSaveConfigInDB_DoesNotPersistIndexSection(t *testing.T) {
 		t.Fatalf("save cfg: %v", err)
 	}
 
-	var raw string
-	if err := db.QueryRow(`SELECT value FROM app_config WHERE key=?`, AppConfigKeyRuntimeConfigTOML).Scan(&raw); err != nil {
-		t.Fatalf("query app config: %v", err)
+	var runtimeTomlCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM app_config WHERE key='runtime_config_toml'`).Scan(&runtimeTomlCount); err != nil {
+		t.Fatalf("query runtime_config_toml count: %v", err)
 	}
-	if strings.Contains(raw, "[index]") {
-		t.Fatalf("index section should not be persisted: %s", raw)
+	if runtimeTomlCount != 0 {
+		t.Fatalf("runtime_config_toml should be removed, got=%d", runtimeTomlCount)
 	}
-	if strings.Contains(raw, "sqlite_path") {
-		t.Fatalf("index sqlite_path should not be persisted: %s", raw)
+	var httpListen string
+	if err := db.QueryRow(`SELECT value FROM app_config WHERE key='http.listen_addr'`).Scan(&httpListen); err != nil {
+		t.Fatalf("query http.listen_addr: %v", err)
+	}
+	if httpListen != "127.0.0.1:18080" {
+		t.Fatalf("http.listen_addr mismatch: got=%q", httpListen)
+	}
+	var indexCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM app_config WHERE key IN ('index.backend','index.sqlite_path')`).Scan(&indexCount); err != nil {
+		t.Fatalf("query index key count: %v", err)
+	}
+	if indexCount != 0 {
+		t.Fatalf("index keys should not be persisted, got=%d", indexCount)
 	}
 }
 
@@ -90,7 +101,7 @@ func TestLoadOrInitConfigInDB_FillsDerivedIndex(t *testing.T) {
 	}
 }
 
-func TestEnsureAppConfigKVSchema_MigratesLegacySingleRow(t *testing.T) {
+func TestEnsureAppConfigKVSchema_RejectsLegacySingleRow(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "legacy-runtime.sqlite")
@@ -109,22 +120,60 @@ func TestEnsureAppConfigKVSchema_MigratesLegacySingleRow(t *testing.T) {
 	)`); err != nil {
 		t.Fatalf("create legacy app_config: %v", err)
 	}
-	legacyRaw := "[bsv]\nnetwork=\"test\"\n"
-	if _, err := db.Exec(`INSERT INTO app_config(id,config_toml,updated_at_unix) VALUES(1,?,?)`, legacyRaw, int64(123)); err != nil {
+	if _, err := db.Exec(`INSERT INTO app_config(id,config_toml,updated_at_unix) VALUES(1,?,?)`, "[bsv]\nnetwork=\"test\"\n", int64(123)); err != nil {
 		t.Fatalf("insert legacy app_config row: %v", err)
 	}
 
-	if err := EnsureAppConfigKVSchema(db); err != nil {
-		t.Fatalf("ensure app_config kv schema: %v", err)
+	err = EnsureAppConfigKVSchema(db)
+	if err == nil {
+		t.Fatalf("expected legacy schema rejected")
 	}
-	gotRaw, exists, err := LoadAppConfigValue(db, AppConfigKeyRuntimeConfigTOML)
+	if !strings.Contains(err.Error(), "unsupported app_config schema") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInitIndexDB_DirectTransferPoolsColumnsUnique(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
-		t.Fatalf("load migrated runtime config: %v", err)
+		t.Fatalf("open db: %v", err)
 	}
-	if !exists {
-		t.Fatalf("expected migrated runtime config exists")
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
 	}
-	if gotRaw != legacyRaw {
-		t.Fatalf("migrated runtime config mismatch: got=%q want=%q", gotRaw, legacyRaw)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	rows, err := db.Query(`PRAGMA table_info(direct_transfer_pools)`)
+	if err != nil {
+		t.Fatalf("query table_info: %v", err)
+	}
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatalf("scan table_info: %v", err)
+		}
+		counts[strings.ToLower(strings.TrimSpace(name))]++
+	}
+	if counts["buyer_pubkey_hex"] != 1 {
+		t.Fatalf("buyer_pubkey_hex should appear once, got=%d", counts["buyer_pubkey_hex"])
+	}
+	if counts["seller_pubkey_hex"] != 1 {
+		t.Fatalf("seller_pubkey_hex should appear once, got=%d", counts["seller_pubkey_hex"])
+	}
+	if counts["arbiter_pubkey_hex"] != 1 {
+		t.Fatalf("arbiter_pubkey_hex should appear once, got=%d", counts["arbiter_pubkey_hex"])
 	}
 }
