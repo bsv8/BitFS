@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
@@ -293,14 +294,21 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 	if err != nil {
 		return nil, err
 	}
+	clientLockScript := ""
+	isMainnet := strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network)) == "main"
+	if addr, addrErr := kmlibs.GetAddressFromPubKey(clientActor.PubKey, isMainnet); addrErr == nil {
+		if lock, lockErr := p2pkh.Lock(addr); lockErr == nil {
+			clientLockScript = strings.TrimSpace(lock.String())
+		}
+	}
 	// 钱包 UTXO 分配必须单步串行：从选输入到 base tx 广播成功都在同一临界区。
 	allocMu := rt.walletAllocMutex()
 	allocMu.Lock()
 	defer allocMu.Unlock()
 
-	utxos, err := rt.Chain.GetUTXOs(clientActor.Addr)
+	utxos, err := getWalletUTXOsFromDB(rt)
 	if err != nil {
-		return nil, fmt.Errorf("query utxos failed: %w", err)
+		return nil, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}
 	if len(utxos) == 0 {
 		return nil, fmt.Errorf("no utxos for client address: %s", clientActor.Addr)
@@ -322,9 +330,9 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		poolAmount = info.MinimumPoolAmountSatoshi
 	}
 
-	tip, err := rt.Chain.GetTipHeight()
+	tip, err := getTipHeightFromDB(rt)
 	if err != nil {
-		return nil, fmt.Errorf("query tip height failed: %w", err)
+		return nil, fmt.Errorf("load tip height from snapshot failed: %w", err)
 	}
 	endHeight := tip + info.LockBlocks
 
@@ -502,6 +510,16 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 			"server_amount":        initialServerAmount,
 		},
 	})
+	recordFeePoolOpenAccounting(rt.DB, feePoolOpenAccountingInput{
+		BusinessID:        "biz_feepool_open_" + strings.TrimSpace(createResp.SpendTxID),
+		SpendTxID:         createResp.SpendTxID,
+		BaseTxID:          baseOut.BaseTxID,
+		BaseTxHex:         baseResp.Tx.Hex(),
+		ClientLockScript:  clientLockScript,
+		PoolAmountSatoshi: createResp.PoolAmountSat,
+		FromPartyID:       "client:self",
+		ToPartyID:         "gateway:" + gwID,
+	})
 	if initialServerAmount > 0 {
 		// open 锁池与首扣是两笔不同业务事件：这里把首扣单独记成 debit。
 		appendTxHistory(rt.DB, txHistoryEntry{
@@ -660,6 +678,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		Note:            fmt.Sprintf("sequence=%d", out.Sequence),
 		Payload:         out,
 	})
+	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, out.Sequence, s.SingleCycleFeeSatoshi, s.GatewayPeerID)
 	return nil
 }
 

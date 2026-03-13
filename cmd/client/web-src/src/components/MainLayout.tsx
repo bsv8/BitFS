@@ -221,6 +221,48 @@ export function MainLayout({ route, onLock, children }: MainLayoutProps) {
             下载管理
           </button>
           <button
+            className={route.path === "/admin/utxos" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/utxos", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            UTXO 管理
+          </button>
+          <button
+            className={route.path === "/admin/utxo-events" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/utxo-events", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            UTXO 事件
+          </button>
+          <button
+            className={route.path === "/admin/chain-tip-logs" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/chain-tip-logs", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            链高度日志
+          </button>
+          <button
+            className={route.path === "/admin/chain-utxo-logs" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/chain-utxo-logs", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            UTXO 轮询日志
+          </button>
+          <button
+            className={route.path === "/admin/finance-business" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/finance-business", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            财务业务
+          </button>
+          <button
+            className={route.path === "/admin/finance-breakdown" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/finance-breakdown", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            财务分解
+          </button>
+          <button
+            className={route.path === "/admin/finance-utxo-links" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/finance-utxo-links", new URLSearchParams("page=1&pageSize=20"))}
+          >
+            UTXO 关系
+          </button>
+          <button
             className={route.path === "/admin/config" ? "menu active" : "menu"}
             onClick={() => setHash("/admin/config")}
           >

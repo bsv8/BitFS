@@ -610,22 +610,18 @@ func probeListenOpenNeedAndWallet(rt *Runtime, info dual2of2.InfoResp) (uint64, 
 }
 
 func walletUTXOBalanceSatoshi(rt *Runtime) (uint64, error) {
-	if rt == nil || rt.Chain == nil {
-		return 0, fmt.Errorf("runtime chain not initialized")
+	if rt == nil {
+		return 0, fmt.Errorf("runtime not initialized")
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	_, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return 0, err
 	}
-	utxos, err := rt.Chain.GetUTXOs(clientActor.Addr)
+	_, bal, err := getWalletBalanceFromDB(rt)
 	if err != nil {
 		return 0, err
 	}
-	var sum uint64
-	for _, u := range utxos {
-		sum += u.Value
-	}
-	return sum, nil
+	return bal, nil
 }
 
 type commandJournalEntry struct {

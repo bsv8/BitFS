@@ -104,7 +104,7 @@ func newOrchestrator(rt *Runtime) *orchestrator {
 		dedupWindow:    10 * time.Second,
 		retryMax:       5,
 		backoffCap:     120 * time.Second,
-		chainPollEvery: 5 * time.Second,
+		chainPollEvery: 0,
 		signalCh:       make(chan orchestratorSignal, 128),
 		taskCh:         make(chan struct{}, 1),
 		pendingTask:    map[string]struct{}{},
@@ -116,7 +116,7 @@ func newOrchestrator(rt *Runtime) *orchestrator {
 			RetryBackoffCapSec:  120,
 			GlobalConcurrency:   1,
 			WorkspaceTickSecond: workspaceTick,
-			ChainPollSeconds:    5,
+			ChainPollSeconds:    0,
 		},
 	}
 }
@@ -137,8 +137,9 @@ func (o *orchestrator) Start(ctx context.Context) {
 		},
 	})
 	go o.run(ctx)
+	// 设计约束：workspace 周期扫描只走 orchestrator 信号入口，
+	// 不再保留 run.go 的直连扫描循环，避免出现双调度语义。
 	go o.runWorkspaceSignalWorker(ctx)
-	go o.runChainTipSignalWorker(ctx)
 }
 
 func (o *orchestrator) SnapshotStatus() OrchestratorStatus {
@@ -200,6 +201,7 @@ func (o *orchestrator) runWorkspaceSignalWorker(ctx context.Context) {
 	if o == nil || o.rt == nil || o.rt.runIn.Scan.RescanIntervalSeconds == 0 {
 		return
 	}
+	// 唯一入口：按扫描间隔发 workspace.tick，后续统一进入 kernel 执行 SyncOnce。
 	interval := time.Duration(o.rt.runIn.Scan.RescanIntervalSeconds) * time.Second
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -214,43 +216,8 @@ func (o *orchestrator) runWorkspaceSignalWorker(ctx context.Context) {
 }
 
 func (o *orchestrator) runChainTipSignalWorker(ctx context.Context) {
-	if o == nil || o.rt == nil || o.rt.Chain == nil {
-		return
-	}
-	ticker := time.NewTicker(o.chainPollEvery)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			tip, err := o.rt.Chain.GetTipHeight()
-			if err != nil {
-				o.mu.Lock()
-				o.status.LastError = err.Error()
-				o.mu.Unlock()
-				continue
-			}
-			if o.lastTip == 0 {
-				o.lastTip = tip
-				continue
-			}
-			if tip <= o.lastTip {
-				continue
-			}
-			from := o.lastTip
-			o.lastTip = tip
-			o.EmitSignal(orchestratorSignal{
-				Source:       "chain_tip_worker",
-				Type:         orchestratorSignalChainTip,
-				AggregateKey: "chain:tip",
-				Payload: map[string]any{
-					"tip_from": from,
-					"tip_to":   tip,
-				},
-			})
-		}
-	}
+	// 区块高度由链维护进程统一拉取并发信号，这里保留空实现避免旧入口误用。
+	<-ctx.Done()
 }
 
 func (o *orchestrator) handleSignal(sig orchestratorSignal) {

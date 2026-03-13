@@ -596,3 +596,183 @@ export type HashRoute = {
   path: string;
   query: URLSearchParams;
 };
+  wallet_address: string;
+  onchain_balance_satoshi: number;
+  balance_source: string;
+};
+
+export type HashRoute = {
+  path: string;
+  query: URLSearchParams;
+};
+
+// ========== UTXO 管理相关类型 ==========
+
+/** UTXO 实体 */
+export type WalletUTXO = {
+  utxo_id: string;
+  wallet_id: string;
+  address: string;
+  txid: string;
+  vout: number;
+  value_satoshi: number;
+  state: string;
+  origin_type: string;
+  income_eligible: number;
+  created_txid: string;
+  spent_txid: string;
+  reserved_by: string;
+  reserved_at_unix: number;
+  created_at_unix: number;
+  updated_at_unix: number;
+  spent_at_unix: number;
+};
+
+export type WalletUTXOsResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: WalletUTXO[];
+};
+
+/** UTXO 事件 */
+export type UTXOEvent = {
+  id: number;
+  utxo_id: string;
+  event_type: string;
+  ref_txid: string;
+  ref_business_id: string;
+  amount_satoshi: number;
+  note: string;
+  payload: unknown;
+  created_at_unix: number;
+};
+
+export type UTXOEventsResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: UTXOEvent[];
+};
+
+// ========== 财务业务相关类型 ==========
+
+/** 财务业务主表 */
+export type FinanceBusiness = {
+  business_id: string;
+  scene_type: string;
+  scene_subtype: string;
+  from_party_id: string;
+  to_party_id: string;
+  ref_id: string;
+  status: string;
+  occurred_at_unix: number;
+  idempotency_key: string;
+  note: string;
+  payload: unknown;
+};
+
+export type FinanceBusinessesResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: FinanceBusiness[];
+};
+
+/** 财务分解表 */
+export type FinanceBreakdown = {
+  id: number;
+  business_id: string;
+  txid: string;
+  gross_input_satoshi: number;
+  change_back_satoshi: number;
+  external_in_satoshi: number;
+  counterparty_out_satoshi: number;
+  miner_fee_satoshi: number;
+  net_out_satoshi: number;
+  net_in_satoshi: number;
+  created_at_unix: number;
+  note: string;
+  payload: unknown;
+};
+
+export type FinanceBreakdownsResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: FinanceBreakdown[];
+};
+
+/** 业务-UTXO 关系表 */
+export type FinanceUTXOLink = {
+  id: number;
+  business_id: string;
+  txid: string;
+  utxo_id: string;
+  role: string;
+  amount_satoshi: number;
+  created_at_unix: number;
+  note: string;
+  payload: unknown;
+};
+
+export type FinanceUTXOLinksResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: FinanceUTXOLink[];
+};
+
+// ========== 链轮询日志相关类型 ==========
+
+/** 链高度轮询日志 */
+export type ChainTipLog = {
+  id: number;
+  triggered_at_unix: number;
+  started_at_unix: number;
+  ended_at_unix: number;
+  duration_ms: number;
+  trigger_source: string;
+  status: string;
+  error_message: string;
+  result: {
+    task_type?: string;
+    tip_from?: number;
+    tip_to?: number;
+    signal_emit?: boolean;
+    [key: string]: unknown;
+  };
+};
+
+export type ChainTipLogsResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ChainTipLog[];
+};
+
+/** UTXO 轮询日志 */
+export type ChainUTXOLog = {
+  id: number;
+  triggered_at_unix: number;
+  started_at_unix: number;
+  ended_at_unix: number;
+  duration_ms: number;
+  trigger_source: string;
+  status: string;
+  error_message: string;
+  result: {
+    task_type?: string;
+    address?: string;
+    utxo_count?: number;
+    balance_satoshi?: number;
+    [key: string]: unknown;
+  };
+};
+
+export type ChainUTXOLogsResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ChainUTXOLog[];
+};

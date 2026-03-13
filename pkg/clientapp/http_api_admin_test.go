@@ -96,7 +96,7 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	}
 
 	var raw string
-	if err := db.QueryRow(`SELECT config_toml FROM app_config WHERE id=1`).Scan(&raw); err != nil {
+	if err := db.QueryRow(`SELECT value FROM app_config WHERE key=?`, AppConfigKeyRuntimeConfigTOML).Scan(&raw); err != nil {
 		t.Fatalf("query app config: %v", err)
 	}
 	loaded, err := ParseConfigTOML([]byte(raw))

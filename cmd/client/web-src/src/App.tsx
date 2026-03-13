@@ -58,6 +58,21 @@ import type {
   WorkspacesResp,
   StaticTreeResp,
   FileGetJob,
+  // UTXO 管理类型
+  WalletUTXOsResp,
+  WalletUTXO,
+  UTXOEventsResp,
+  UTXOEvent,
+  // 财务业务类型
+  FinanceBusinessesResp,
+  FinanceBusiness,
+  FinanceBreakdownsResp,
+  FinanceBreakdown,
+  FinanceUTXOLinksResp,
+  FinanceUTXOLink,
+  // 链轮询日志类型
+  ChainTipLogsResp,
+  ChainUTXOLogsResp,
 } from "./types";
 
 // ========== API 导入 ==========
@@ -112,6 +127,21 @@ import {
   startFileGetJob,
   getStrategyDebugLog,
   setStrategyDebugLog,
+  // UTXO 管理 API
+  getWalletUTXOs,
+  getWalletUTXODetail,
+  getUTXOEvents,
+  getUTXOEventDetail,
+  // 财务业务 API
+  getFinanceBusinesses,
+  getFinanceBusinessDetail,
+  getFinanceBreakdowns,
+  getFinanceBreakdownDetail,
+  getFinanceUTXOLinks,
+  getFinanceUTXOLinkDetail,
+  // 链轮询日志 API
+  getChainTipLogs,
+  getChainUTXOLogs,
 } from "./api";
 
 // ========== 工具函数导入 ==========
@@ -254,6 +284,26 @@ export default function App() {
   const [feePoolAuditModalOpen, setFeePoolAuditModalOpen] = useState(false);
   const [feePoolAuditTab, setFeePoolAuditTab] = useState<"command" | "events" | "states" | "effects">("command");
 
+  // ========== UTXO 管理状态 ==========
+  const [walletUTXOs, setWalletUTXOs] = useState<WalletUTXOsResp | null>(null);
+  const [walletUTXODetail, setWalletUTXODetail] = useState<WalletUTXO | null>(null);
+  const [utxoEvents, setUTXOEvents] = useState<UTXOEventsResp | null>(null);
+  const [utxoEventDetail, setUTXOEventDetail] = useState<UTXOEvent | null>(null);
+  const [utxoDetailModalOpen, setUTXODetailModalOpen] = useState(false);
+
+  // ========== 财务业务状态 ==========
+  const [financeBusinesses, setFinanceBusinesses] = useState<FinanceBusinessesResp | null>(null);
+  const [financeBusinessDetail, setFinanceBusinessDetail] = useState<FinanceBusiness | null>(null);
+  const [financeBreakdowns, setFinanceBreakdowns] = useState<FinanceBreakdownsResp | null>(null);
+  const [financeBreakdownDetail, setFinanceBreakdownDetail] = useState<FinanceBreakdown | null>(null);
+  const [financeUTXOLinks, setFinanceUTXOLinks] = useState<FinanceUTXOLinksResp | null>(null);
+  const [financeUTXOLinkDetail, setFinanceUTXOLinkDetail] = useState<FinanceUTXOLink | null>(null);
+  const [financeDetailModalOpen, setFinanceDetailModalOpen] = useState(false);
+
+  // ========== 链轮询日志状态 ==========
+  const [chainTipLogs, setChainTipLogs] = useState<ChainTipLogsResp | null>(null);
+  const [chainUTXOLogs, setChainUTXOLogs] = useState<ChainUTXOLogsResp | null>(null);
+
   // ========== 工作区管理状态 ==========
   const [workspaces, setWorkspaces] = useState<WorkspacesResp | null>(null);
   const [workspaceEditing, setWorkspaceEditing] = useState<{ id: number | null; data: Partial<Workspace> } | null>(null);
@@ -390,6 +440,30 @@ export default function App() {
           case "/admin/config":
             await Promise.all([loadAdminConfig(), loadAdminConfigSchema(), loadStrategyDebugLog()]);
             break;
+          // UTXO 管理模块
+          case "/admin/utxos":
+            await loadWalletUTXOs();
+            break;
+          case "/admin/utxo-events":
+            await loadUTXOEvents();
+            break;
+          // 财务业务模块
+          case "/admin/finance-business":
+            await loadFinanceBusinesses();
+            break;
+          case "/admin/finance-breakdown":
+            await loadFinanceBreakdowns();
+            break;
+          case "/admin/finance-utxo-links":
+            await loadFinanceUTXOLinks();
+            break;
+          // 链轮询日志模块
+          case "/admin/chain-tip-logs":
+            await loadChainTipLogs();
+            break;
+          case "/admin/chain-utxo-logs":
+            await loadChainUTXOLogs();
+            break;
           default:
             setHash("/finance");
         }
@@ -460,6 +534,23 @@ export default function App() {
       setWalletSummary(null);
       setArbiters(null);
       setWorkspaces(null);
+      // UTXO 管理状态重置
+      setWalletUTXOs(null);
+      setWalletUTXODetail(null);
+      setUTXOEvents(null);
+      setUTXOEventDetail(null);
+      setUTXODetailModalOpen(false);
+      // 财务业务状态重置
+      setFinanceBusinesses(null);
+      setFinanceBusinessDetail(null);
+      setFinanceBreakdowns(null);
+      setFinanceBreakdownDetail(null);
+      setFinanceUTXOLinks(null);
+      setFinanceUTXOLinkDetail(null);
+      setFinanceDetailModalOpen(false);
+      // 链轮询日志状态重置
+      setChainTipLogs(null);
+      setChainUTXOLogs(null);
     });
   }, []);
 
@@ -840,6 +931,138 @@ export default function App() {
     } finally {
       setStrategyDebugLogLoading(false);
     }
+  };
+
+  // ----- UTXO 管理模块 -----
+  const loadWalletUTXOs = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const walletId = route.query.get("wallet_id") || "";
+    const address = route.query.get("address") || "";
+    const state = route.query.get("state") || "";
+    const originType = route.query.get("origin_type") || "";
+    const txid = route.query.get("txid") || "";
+    const q = route.query.get("q") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (walletId) params.set("wallet_id", walletId);
+    if (address) params.set("address", address);
+    if (state) params.set("state", state);
+    if (originType) params.set("origin_type", originType);
+    if (txid) params.set("txid", txid);
+    if (q) params.set("q", q);
+    setWalletUTXOs(await getWalletUTXOs(params));
+  };
+
+  const loadWalletUTXODetail = async (utxoId: string) => {
+    const detail = await getWalletUTXODetail(utxoId);
+    setWalletUTXODetail(detail);
+    setUTXODetailModalOpen(true);
+  };
+
+  const loadUTXOEvents = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const utxoId = route.query.get("utxo_id") || "";
+    const eventType = route.query.get("event_type") || "";
+    const refTxid = route.query.get("ref_txid") || "";
+    const q = route.query.get("q") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (utxoId) params.set("utxo_id", utxoId);
+    if (eventType) params.set("event_type", eventType);
+    if (refTxid) params.set("ref_txid", refTxid);
+    if (q) params.set("q", q);
+    setUTXOEvents(await getUTXOEvents(params));
+  };
+
+  const loadUTXOEventDetail = async (id: number) => {
+    const detail = await getUTXOEventDetail(id);
+    setUTXOEventDetail(detail);
+    setUTXODetailModalOpen(true);
+  };
+
+  // ----- 财务业务模块 -----
+  const loadFinanceBusinesses = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const businessId = route.query.get("business_id") || "";
+    const sceneType = route.query.get("scene_type") || "";
+    const sceneSubType = route.query.get("scene_subtype") || "";
+    const status = route.query.get("status") || "";
+    const q = route.query.get("q") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (businessId) params.set("business_id", businessId);
+    if (sceneType) params.set("scene_type", sceneType);
+    if (sceneSubType) params.set("scene_subtype", sceneSubType);
+    if (status) params.set("status", status);
+    if (q) params.set("q", q);
+    setFinanceBusinesses(await getFinanceBusinesses(params));
+  };
+
+  const loadFinanceBusinessDetail = async (businessId: string) => {
+    const detail = await getFinanceBusinessDetail(businessId);
+    setFinanceBusinessDetail(detail);
+    setFinanceDetailModalOpen(true);
+  };
+
+  const loadFinanceBreakdowns = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const businessId = route.query.get("business_id") || "";
+    const txid = route.query.get("txid") || "";
+    const q = route.query.get("q") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (businessId) params.set("business_id", businessId);
+    if (txid) params.set("txid", txid);
+    if (q) params.set("q", q);
+    setFinanceBreakdowns(await getFinanceBreakdowns(params));
+  };
+
+  const loadFinanceBreakdownDetail = async (id: number) => {
+    const detail = await getFinanceBreakdownDetail(id);
+    setFinanceBreakdownDetail(detail);
+    setFinanceDetailModalOpen(true);
+  };
+
+  const loadFinanceUTXOLinks = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const businessId = route.query.get("business_id") || "";
+    const txid = route.query.get("txid") || "";
+    const utxoId = route.query.get("utxo_id") || "";
+    const role = route.query.get("role") || "";
+    const q = route.query.get("q") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (businessId) params.set("business_id", businessId);
+    if (txid) params.set("txid", txid);
+    if (utxoId) params.set("utxo_id", utxoId);
+    if (role) params.set("role", role);
+    if (q) params.set("q", q);
+    setFinanceUTXOLinks(await getFinanceUTXOLinks(params));
+  };
+
+  const loadFinanceUTXOLinkDetail = async (id: number) => {
+    const detail = await getFinanceUTXOLinkDetail(id);
+    setFinanceUTXOLinkDetail(detail);
+    setFinanceDetailModalOpen(true);
+  };
+
+  // ----- 链轮询日志模块 -----
+  const loadChainTipLogs = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const status = route.query.get("status") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (status) params.set("status", status);
+    setChainTipLogs(await getChainTipLogs(params));
+  };
+
+  const loadChainUTXOLogs = async () => {
+    const page = toInt(route.query.get("page"), 1);
+    const pageSize = toInt(route.query.get("pageSize"), 20);
+    const status = route.query.get("status") || "";
+    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (status) params.set("status", status);
+    setChainUTXOLogs(await getChainUTXOLogs(params));
   };
 
   // ----- 静态文件管理模块 -----
@@ -2611,6 +2834,587 @@ export default function App() {
           </Modal>
         </section>
       ) : null}
+
+      {/* UTXO 管理页面 */}
+      {route.path === "/admin/utxos" && walletUTXOs ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h3>UTXO 管理</h3>
+            <div className="filters">
+              <input
+                className="input small"
+                placeholder="UTXO ID / TXID / Address"
+                value={route.query.get("q") || ""}
+                onChange={(e) => updateQuery({ q: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Wallet ID"
+                value={route.query.get("wallet_id") || ""}
+                onChange={(e) => updateQuery({ wallet_id: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Address"
+                value={route.query.get("address") || ""}
+                onChange={(e) => updateQuery({ address: e.target.value, page: 1 })}
+              />
+              <select
+                className="input small"
+                value={route.query.get("state") || ""}
+                onChange={(e) => updateQuery({ state: e.target.value, page: 1 })}
+              >
+                <option value="">全部状态</option>
+                <option value="unspent">未花费</option>
+                <option value="spent">已花费</option>
+                <option value="reserved">已预留</option>
+              </select>
+              <select
+                className="input small"
+                value={route.query.get("origin_type") || ""}
+                onChange={(e) => updateQuery({ origin_type: e.target.value, page: 1 })}
+              >
+                <option value="">全部来源</option>
+                <option value="incoming">流入</option>
+                <option value="change">找零</option>
+                <option value="internal">内部</option>
+              </select>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>UTXO ID</th>
+                  <th>Address</th>
+                  <th>Value</th>
+                  <th>State</th>
+                  <th>Origin</th>
+                  <th>Income Eligible</th>
+                  <th>Reserved By</th>
+                  <th>Updated</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {walletUTXOs.items.map((utxo) => (
+                  <tr key={utxo.utxo_id}>
+                    <td title={utxo.utxo_id}>{shortHex(utxo.utxo_id, 16)}</td>
+                    <td title={utxo.address}>{shortHex(utxo.address, 12)}</td>
+                    <td>{sat(utxo.value_satoshi)}</td>
+                    <td>
+                      <span className={`badge ${utxo.state === "unspent" ? "ok" : utxo.state === "spent" ? "err" : "warn"}`}>
+                        {utxo.state}
+                      </span>
+                    </td>
+                    <td>{utxo.origin_type}</td>
+                    <td>{utxo.income_eligible ? "是" : "否"}</td>
+                    <td>{utxo.reserved_by || "-"}</td>
+                    <td>{t(utxo.updated_at_unix)}</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadWalletUTXODetail(utxo.utxo_id)}>
+                        详情
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager
+            total={walletUTXOs.total}
+            page={toInt(route.query.get("page"), 1)}
+            pageSize={toInt(route.query.get("pageSize"), 20)}
+            onChange={(page, pageSize) => updateQuery({ page, pageSize })}
+          />
+          <Modal isOpen={utxoDetailModalOpen} onClose={() => setUTXODetailModalOpen(false)} title="UTXO 详情">
+            {walletUTXODetail && <DetailTable data={walletUTXODetail} />}
+          </Modal>
+        </section>
+      ) : null}
+
+      {/* UTXO 事件页面 */}
+      {route.path === "/admin/utxo-events" && utxoEvents ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h3>UTXO 事件</h3>
+            <div className="filters">
+              <input
+                className="input small"
+                placeholder="搜索..."
+                value={route.query.get("q") || ""}
+                onChange={(e) => updateQuery({ q: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="UTXO ID"
+                value={route.query.get("utxo_id") || ""}
+                onChange={(e) => updateQuery({ utxo_id: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Event Type"
+                value={route.query.get("event_type") || ""}
+                onChange={(e) => updateQuery({ event_type: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Ref TXID"
+                value={route.query.get("ref_txid") || ""}
+                onChange={(e) => updateQuery({ ref_txid: e.target.value, page: 1 })}
+              />
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>UTXO ID</th>
+                  <th>Event Type</th>
+                  <th>Amount</th>
+                  <th>Ref TXID</th>
+                  <th>Ref Business</th>
+                  <th>Note</th>
+                  <th>Created</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {utxoEvents.items.map((event) => (
+                  <tr key={event.id}>
+                    <td>{event.id}</td>
+                    <td title={event.utxo_id}>{shortHex(event.utxo_id, 16)}</td>
+                    <td>{event.event_type}</td>
+                    <td>{event.amount_satoshi ? sat(event.amount_satoshi) : "-"}</td>
+                    <td title={event.ref_txid}>{event.ref_txid ? shortHex(event.ref_txid, 12) : "-"}</td>
+                    <td>{event.ref_business_id || "-"}</td>
+                    <td>{event.note || "-"}</td>
+                    <td>{t(event.created_at_unix)}</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadUTXOEventDetail(event.id)}>
+                        详情
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager
+            total={utxoEvents.total}
+            page={toInt(route.query.get("page"), 1)}
+            pageSize={toInt(route.query.get("pageSize"), 20)}
+            onChange={(page, pageSize) => updateQuery({ page, pageSize })}
+          />
+          <Modal isOpen={utxoDetailModalOpen} onClose={() => setUTXODetailModalOpen(false)} title="UTXO 事件详情">
+            {utxoEventDetail && <DetailTable data={utxoEventDetail} />}
+          </Modal>
+        </section>
+      ) : null}
+
+      {/* 财务业务页面 */}
+      {route.path === "/admin/finance-business" && financeBusinesses ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h3>财务业务主表</h3>
+            <div className="filters">
+              <input
+                className="input small"
+                placeholder="搜索..."
+                value={route.query.get("q") || ""}
+                onChange={(e) => updateQuery({ q: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Business ID"
+                value={route.query.get("business_id") || ""}
+                onChange={(e) => updateQuery({ business_id: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Scene Type"
+                value={route.query.get("scene_type") || ""}
+                onChange={(e) => updateQuery({ scene_type: e.target.value, page: 1 })}
+              />
+              <select
+                className="input small"
+                value={route.query.get("status") || ""}
+                onChange={(e) => updateQuery({ status: e.target.value, page: 1 })}
+              >
+                <option value="">全部状态</option>
+                <option value="pending">待处理</option>
+                <option value="confirmed">已确认</option>
+                <option value="failed">失败</option>
+              </select>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Business ID</th>
+                  <th>Scene Type</th>
+                  <th>Scene SubType</th>
+                  <th>From</th>
+                  <th>To</th>
+                  <th>Ref ID</th>
+                  <th>Status</th>
+                  <th>Occurred</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeBusinesses.items.map((biz) => (
+                  <tr key={biz.business_id}>
+                    <td title={biz.business_id}>{shortHex(biz.business_id, 12)}</td>
+                    <td>{biz.scene_type}</td>
+                    <td>{biz.scene_subtype}</td>
+                    <td title={biz.from_party_id}>{shortHex(biz.from_party_id, 8)}</td>
+                    <td title={biz.to_party_id}>{shortHex(biz.to_party_id, 8)}</td>
+                    <td title={biz.ref_id}>{biz.ref_id ? shortHex(biz.ref_id, 8) : "-"}</td>
+                    <td>
+                      <span className={`badge ${biz.status === "confirmed" ? "ok" : biz.status === "failed" ? "err" : "warn"}`}>
+                        {biz.status}
+                      </span>
+                    </td>
+                    <td>{t(biz.occurred_at_unix)}</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadFinanceBusinessDetail(biz.business_id)}>
+                        详情
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager
+            total={financeBusinesses.total}
+            page={toInt(route.query.get("page"), 1)}
+            pageSize={toInt(route.query.get("pageSize"), 20)}
+            onChange={(page, pageSize) => updateQuery({ page, pageSize })}
+          />
+          <Modal isOpen={financeDetailModalOpen} onClose={() => setFinanceDetailModalOpen(false)} title="财务业务详情">
+            {financeBusinessDetail && <DetailTable data={financeBusinessDetail} />}
+          </Modal>
+        </section>
+      ) : null}
+
+      {/* 财务分解页面 */}
+      {route.path === "/admin/finance-breakdown" && financeBreakdowns ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h3>财务分解表</h3>
+            <div className="filters">
+              <input
+                className="input small"
+                placeholder="搜索..."
+                value={route.query.get("q") || ""}
+                onChange={(e) => updateQuery({ q: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Business ID"
+                value={route.query.get("business_id") || ""}
+                onChange={(e) => updateQuery({ business_id: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="TXID"
+                value={route.query.get("txid") || ""}
+                onChange={(e) => updateQuery({ txid: e.target.value, page: 1 })}
+              />
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Business ID</th>
+                  <th>TXID</th>
+                  <th>Gross Input</th>
+                  <th>Change Back</th>
+                  <th>External In</th>
+                  <th>Counterparty Out</th>
+                  <th>Miner Fee</th>
+                  <th>Net Out</th>
+                  <th>Net In</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeBreakdowns.items.map((bd) => (
+                  <tr key={bd.id}>
+                    <td>{bd.id}</td>
+                    <td title={bd.business_id}>{shortHex(bd.business_id, 8)}</td>
+                    <td title={bd.txid}>{shortHex(bd.txid, 12)}</td>
+                    <td>{sat(bd.gross_input_satoshi)}</td>
+                    <td>{sat(bd.change_back_satoshi)}</td>
+                    <td>{sat(bd.external_in_satoshi)}</td>
+                    <td>{sat(bd.counterparty_out_satoshi)}</td>
+                    <td>{sat(bd.miner_fee_satoshi)}</td>
+                    <td>{sat(bd.net_out_satoshi)}</td>
+                    <td>{sat(bd.net_in_satoshi)}</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadFinanceBreakdownDetail(bd.id)}>
+                        详情
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager
+            total={financeBreakdowns.total}
+            page={toInt(route.query.get("page"), 1)}
+            pageSize={toInt(route.query.get("pageSize"), 20)}
+            onChange={(page, pageSize) => updateQuery({ page, pageSize })}
+          />
+          <Modal isOpen={financeDetailModalOpen} onClose={() => setFinanceDetailModalOpen(false)} title="财务分解详情">
+            {financeBreakdownDetail && <DetailTable data={financeBreakdownDetail} />}
+          </Modal>
+        </section>
+      ) : null}
+
+      {/* UTXO 关系页面 */}
+      {route.path === "/admin/finance-utxo-links" && financeUTXOLinks ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h3>业务-UTXO 关系表</h3>
+            <div className="filters">
+              <input
+                className="input small"
+                placeholder="搜索..."
+                value={route.query.get("q") || ""}
+                onChange={(e) => updateQuery({ q: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="Business ID"
+                value={route.query.get("business_id") || ""}
+                onChange={(e) => updateQuery({ business_id: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="TXID"
+                value={route.query.get("txid") || ""}
+                onChange={(e) => updateQuery({ txid: e.target.value, page: 1 })}
+              />
+              <input
+                className="input small"
+                placeholder="UTXO ID"
+                value={route.query.get("utxo_id") || ""}
+                onChange={(e) => updateQuery({ utxo_id: e.target.value, page: 1 })}
+              />
+              <select
+                className="input small"
+                value={route.query.get("role") || ""}
+                onChange={(e) => updateQuery({ role: e.target.value, page: 1 })}
+              >
+                <option value="">全部角色</option>
+                <option value="input">输入</option>
+                <option value="output">输出</option>
+                <option value="fee">手续费</option>
+              </select>
+            </div>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Business ID</th>
+                  <th>TXID</th>
+                  <th>UTXO ID</th>
+                  <th>Role</th>
+                  <th>Amount</th>
+                  <th>Created</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {financeUTXOLinks.items.map((link) => (
+                  <tr key={link.id}>
+                    <td>{link.id}</td>
+                    <td title={link.business_id}>{shortHex(link.business_id, 8)}</td>
+                    <td title={link.txid}>{shortHex(link.txid, 12)}</td>
+                    <td title={link.utxo_id}>{shortHex(link.utxo_id, 12)}</td>
+                    <td>
+                      <span className={`badge ${link.role === "input" ? "warn" : link.role === "output" ? "ok" : ""}`}>
+                        {link.role}
+                      </span>
+                    </td>
+                    <td>{sat(link.amount_satoshi)}</td>
+                    <td>{t(link.created_at_unix)}</td>
+                    <td>
+                      <button className="btn btn-light" onClick={() => loadFinanceUTXOLinkDetail(link.id)}>
+                        详情
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <Pager
+            total={financeUTXOLinks.total}
+            page={toInt(route.query.get("page"), 1)}
+            pageSize={toInt(route.query.get("pageSize"), 20)}
+            onChange={(page, pageSize) => updateQuery({ page, pageSize })}
+          />
+          <Modal isOpen={financeDetailModalOpen} onClose={() => setFinanceDetailModalOpen(false)} title="UTXO 关系详情">
+            {financeUTXOLinkDetail && <DetailTable data={financeUTXOLinkDetail} />}
+          </Modal>
+        </section>
+      ) : null}
+
+      {/* ========== 链轮询日志页面 ========== */}
+      {/* 链高度轮询日志 */}
+      {route.path === "/admin/chain-tip-logs" && chainTipLogs ? (() => {
+        const page = toInt(route.query.get("page"), 1);
+        const pageSize = toInt(route.query.get("pageSize"), 20);
+        const status = route.query.get("status") || "";
+        return (
+          <section className="panel">
+            <div className="panel-head">
+              <h3>链高度轮询日志</h3>
+              <div className="hint">区块链高度轮询任务执行记录（60秒间隔）</div>
+            </div>
+            <div className="filters">
+              <select
+                className="input small"
+                value={status}
+                onChange={(e) => updateQuery({ status: e.target.value, page: 1 })}
+              >
+                <option value="">全部状态</option>
+                <option value="success">成功</option>
+                <option value="failed">失败</option>
+                <option value="skipped_running">跳过（运行中）</option>
+              </select>
+              <button className="btn" onClick={() => updateQuery({ page: 1 })}>
+                查询
+              </button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>触发时间</th>
+                    <th>开始时间</th>
+                    <th>结束时间</th>
+                    <th>耗时</th>
+                    <th>触发源</th>
+                    <th>状态</th>
+                    <th>高度变化</th>
+                    <th>信号触发</th>
+                    <th>错误信息</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chainTipLogs.items.map((log) => (
+                    <tr key={log.id}>
+                      <td>{log.id}</td>
+                      <td>{t(log.triggered_at_unix)}</td>
+                      <td>{t(log.started_at_unix)}</td>
+                      <td>{t(log.ended_at_unix)}</td>
+                      <td>{log.duration_ms}ms</td>
+                      <td>{log.trigger_source}</td>
+                      <td>
+                        <span className={`badge ${log.status === "success" ? "ok" : log.status === "failed" ? "err" : "warn"}`}>
+                          {log.status}
+                        </span>
+                      </td>
+                      <td>
+                        {log.result?.tip_from !== undefined && log.result?.tip_to !== undefined
+                          ? `${log.result.tip_from} → ${log.result.tip_to}`
+                          : "-"}
+                      </td>
+                      <td>{log.result?.signal_emit ? "✅" : "-"}</td>
+                      <td title={log.error_message}>{log.error_message ? short(log.error_message, 20) : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pager total={chainTipLogs.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
+          </section>
+        );
+      })() : null}
+
+      {/* UTXO 轮询日志 */}
+      {route.path === "/admin/chain-utxo-logs" && chainUTXOLogs ? (() => {
+        const page = toInt(route.query.get("page"), 1);
+        const pageSize = toInt(route.query.get("pageSize"), 20);
+        const status = route.query.get("status") || "";
+        return (
+          <section className="panel">
+            <div className="panel-head">
+              <h3>UTXO 轮询日志</h3>
+              <div className="hint">钱包 UTXO 同步轮询任务执行记录（10秒间隔）</div>
+            </div>
+            <div className="filters">
+              <select
+                className="input small"
+                value={status}
+                onChange={(e) => updateQuery({ status: e.target.value, page: 1 })}
+              >
+                <option value="">全部状态</option>
+                <option value="success">成功</option>
+                <option value="failed">失败</option>
+                <option value="skipped_running">跳过（运行中）</option>
+              </select>
+              <button className="btn" onClick={() => updateQuery({ page: 1 })}>
+                查询
+              </button>
+            </div>
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>触发时间</th>
+                    <th>开始时间</th>
+                    <th>结束时间</th>
+                    <th>耗时</th>
+                    <th>触发源</th>
+                    <th>状态</th>
+                    <th>地址</th>
+                    <th>UTXO 数量</th>
+                    <th>余额</th>
+                    <th>错误信息</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {chainUTXOLogs.items.map((log) => (
+                    <tr key={log.id}>
+                      <td>{log.id}</td>
+                      <td>{t(log.triggered_at_unix)}</td>
+                      <td>{t(log.started_at_unix)}</td>
+                      <td>{t(log.ended_at_unix)}</td>
+                      <td>{log.duration_ms}ms</td>
+                      <td>{log.trigger_source}</td>
+                      <td>
+                        <span className={`badge ${log.status === "success" ? "ok" : log.status === "failed" ? "err" : "warn"}`}>
+                          {log.status}
+                        </span>
+                      </td>
+                      <td title={log.result?.address}>{log.result?.address ? shortHex(log.result.address, 12) : "-"}</td>
+                      <td>{log.result?.utxo_count ?? "-"}</td>
+                      <td>{log.result?.balance_satoshi !== undefined ? sat(log.result.balance_satoshi) : "-"}</td>
+                      <td title={log.error_message}>{log.error_message ? short(log.error_message, 20) : "-"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Pager total={chainUTXOLogs.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
+          </section>
+        );
+      })() : null}
 
       {/* 系统配置页面 */}
       {route.path === "/admin/config" && adminConfig && adminConfigSchema ? (() => {

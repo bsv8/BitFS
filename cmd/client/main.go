@@ -286,7 +286,7 @@ func openRuntimeDB(dbPath string) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := ensureKeyringTable(db); err != nil {
+	if err := clientapp.EnsureAppConfigKVSchema(db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

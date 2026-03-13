@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
@@ -276,6 +277,35 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			},
 		}, nil
 	}
+	if strings.TrimSpace(st.Status) == "close_submitted" {
+		finalState, waitErr := waitGatewayFeePoolClosedBySpendTxID(ctx, rt, gw.ID.String(), spendTxID)
+		if waitErr != nil {
+			return FeePoolCloseResult{}, waitErr
+		}
+		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + spendTxID,
+			FlowType:        "fee_pool",
+			RefID:           spendTxID,
+			Stage:           "close_settle",
+			Direction:       "settle",
+			Purpose:         "fee_pool_close",
+			AmountSatoshi:   0,
+			UsedSatoshi:     int64(finalState.ServerAmountSat),
+			ReturnedSatoshi: int64(finalState.ClientAmountSat),
+			RelatedTxID:     strings.TrimSpace(finalState.FinalTxID),
+			Note:            "already_close_submitted",
+			Payload:         finalState,
+		})
+		return FeePoolCloseResult{
+			GatewayPeerID: gw.ID.String(),
+			Result: dual2of2.CloseResp{
+				Success:        true,
+				Status:         "closed",
+				Broadcasted:    true,
+				FinalSpendTxID: strings.TrimSpace(finalState.FinalTxID),
+			},
+		}, nil
+	}
 	if len(st.CurrentTx) == 0 {
 		return FeePoolCloseResult{}, fmt.Errorf("state.current_tx empty for spend_txid=%s", spendTxID)
 	}
@@ -328,7 +358,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		"final_txid":      resp.FinalSpendTxID,
 		"status":          resp.Status,
 	})
-	if resp.Success {
+	if resp.Success && strings.TrimSpace(resp.Status) == "closed" {
 		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + spendTxID,
 			FlowType:        "fee_pool",
@@ -344,5 +374,59 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 			Payload:         resp,
 		})
 	}
+	if resp.Success && strings.TrimSpace(resp.Status) == "close_submitted" {
+		finalState, waitErr := waitGatewayFeePoolClosedBySpendTxID(ctx, rt, gw.ID.String(), spendTxID)
+		if waitErr != nil {
+			return FeePoolCloseResult{}, waitErr
+		}
+		resp.Status = "closed"
+		resp.FinalSpendTxID = strings.TrimSpace(finalState.FinalTxID)
+		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + spendTxID,
+			FlowType:        "fee_pool",
+			RefID:           spendTxID,
+			Stage:           "close_settle",
+			Direction:       "settle",
+			Purpose:         "fee_pool_close",
+			AmountSatoshi:   0,
+			UsedSatoshi:     int64(finalState.ServerAmountSat),
+			ReturnedSatoshi: int64(finalState.ClientAmountSat),
+			RelatedTxID:     strings.TrimSpace(finalState.FinalTxID),
+			Note:            fmt.Sprintf("gateway=%s close_submitted_wait_done", gw.ID.String()),
+			Payload:         finalState,
+		})
+	}
 	return FeePoolCloseResult{GatewayPeerID: gw.ID.String(), Result: resp}, nil
+}
+
+func waitGatewayFeePoolClosedBySpendTxID(ctx context.Context, rt *Runtime, gatewayPeerID string, spendTxID string) (dual2of2.StateResp, error) {
+	if rt == nil || rt.Host == nil {
+		return dual2of2.StateResp{}, fmt.Errorf("runtime not initialized")
+	}
+	txid := strings.TrimSpace(spendTxID)
+	if txid == "" {
+		return dual2of2.StateResp{}, fmt.Errorf("spend_txid required")
+	}
+	gw, err := pickGatewayForBusiness(rt, strings.TrimSpace(gatewayPeerID))
+	if err != nil {
+		return dual2of2.StateResp{}, err
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return dual2of2.StateResp{}, fmt.Errorf("wait close finalized timeout/canceled: %w", ctx.Err())
+		default:
+		}
+		var st dual2of2.StateResp
+		if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{
+			ClientID:  rt.runIn.ClientID,
+			SpendTxID: txid,
+		}, &st); err != nil {
+			return dual2of2.StateResp{}, err
+		}
+		if strings.TrimSpace(st.Status) == "closed" && strings.TrimSpace(st.FinalTxID) != "" {
+			return st, nil
+		}
+		time.Sleep(800 * time.Millisecond)
+	}
 }

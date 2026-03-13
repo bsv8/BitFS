@@ -132,13 +132,20 @@ func (d *managedDaemon) startHTTPServer() error {
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
+
+	// 启动阶段先完成端口预绑定，避免异步 ListenAndServe 把绑定失败吞进后台日志，
+	// 导致前台仅看到“解锁提示后退出”而没有明确错误。
+	ln, err := net.Listen("tcp", d.cfg.HTTP.ListenAddr)
+	if err != nil {
+		return fmt.Errorf("start managed api listen failed: %w", err)
+	}
 	obs.Important("bitcast-client", "managed_api_started", map[string]any{
 		"listen_addr": d.cfg.HTTP.ListenAddr,
 		"appname":     d.appName,
 		"locked":      true,
 	})
 	go func() {
-		if err := d.srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			obs.Error("bitcast-client", "managed_api_stopped", map[string]any{"error": err.Error()})
 			d.rootCancel()
 		}

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsv8/BitFS/pkg/clientapp"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -39,29 +40,16 @@ type encryptedKeyEnvelopeKDF struct {
 	SaltHex     string `json:"salt_hex"`
 }
 
-func ensureKeyringTable(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS keyring_singleton(
-		id INTEGER PRIMARY KEY CHECK(id=1),
-		cipher_json TEXT NOT NULL,
-		updated_at_unix INTEGER NOT NULL
-	)`)
-	return err
-}
-
 func loadEncryptedKeyEnvelope(db *sql.DB) (*encryptedKeyEnvelope, bool, error) {
-	if err := ensureKeyringTable(db); err != nil {
-		return nil, false, err
+	if db == nil {
+		return nil, false, fmt.Errorf("db is nil")
 	}
-	var raw string
-	err := db.QueryRow(`SELECT cipher_json FROM keyring_singleton WHERE id=1`).Scan(&raw)
-	if err == sql.ErrNoRows {
-		return nil, false, nil
-	}
+	raw, exists, err := clientapp.LoadAppConfigValue(db, clientapp.AppConfigKeyEncryptionMasterKeyEnvelope)
 	if err != nil {
 		return nil, false, err
+	}
+	if !exists {
+		return nil, false, nil
 	}
 	var env encryptedKeyEnvelope
 	if err := json.Unmarshal([]byte(raw), &env); err != nil {
@@ -71,7 +59,10 @@ func loadEncryptedKeyEnvelope(db *sql.DB) (*encryptedKeyEnvelope, bool, error) {
 }
 
 func saveEncryptedKeyEnvelope(db *sql.DB, env encryptedKeyEnvelope) error {
-	if err := ensureKeyringTable(db); err != nil {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if err := clientapp.EnsureAppConfigKVSchema(db); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(env, "", "  ")
@@ -79,8 +70,9 @@ func saveEncryptedKeyEnvelope(db *sql.DB, env encryptedKeyEnvelope) error {
 		return err
 	}
 	_, err = db.Exec(
-		`INSERT INTO keyring_singleton(id,cipher_json,updated_at_unix) VALUES(1,?,?)
-		 ON CONFLICT(id) DO UPDATE SET cipher_json=excluded.cipher_json,updated_at_unix=excluded.updated_at_unix`,
+		`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
+		clientapp.AppConfigKeyEncryptionMasterKeyEnvelope,
 		string(data),
 		time.Now().Unix(),
 	)

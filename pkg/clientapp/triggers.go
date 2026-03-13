@@ -680,6 +680,13 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
+	clientLockScript := ""
+	isMainnet := strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main"
+	if addr, addrErr := kmlibs.GetAddressFromPubKey(clientActor.PubKey, isMainnet); addrErr == nil {
+		if lock, lockErr := p2pkh.Lock(addr); lockErr == nil {
+			clientLockScript = strings.TrimSpace(lock.String())
+		}
+	}
 
 	target := p.PoolAmount
 	if target == 0 {
@@ -708,9 +715,9 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			allocMu.Lock()
 			defer allocMu.Unlock()
 
-			utxos, err := buyer.Chain.GetUTXOs(clientActor.Addr)
+			utxos, err := getWalletUTXOsFromDB(buyer)
 			if err != nil {
-				return nil, "", fmt.Errorf("query utxos failed: %w", err)
+				return nil, "", fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 			}
 			if len(utxos) == 0 {
 				return nil, "", fmt.Errorf("no utxos for buyer address")
@@ -761,9 +768,9 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		if err != nil {
 			return directTransferPoolOpenResult{}, fmt.Errorf("build transfer pool base tx failed: %w", err)
 		}
-		tip, err := buyer.Chain.GetTipHeight()
+		tip, err := getTipHeightFromDB(buyer)
 		if err != nil {
-			return directTransferPoolOpenResult{}, fmt.Errorf("query tip failed: %w", err)
+			return directTransferPoolOpenResult{}, fmt.Errorf("load tip height from snapshot failed: %w", err)
 		}
 		lockBlocks := uint32(6)
 		spendTx, buyerOpenSig, buyerAmount, err := te.BuildTripleFeePoolSpendTX(baseResp.Tx, baseResp.Amount, tip+lockBlocks, arbiterPubKey, clientActor.PrivKey, sellerPub, false, 0.5)
@@ -896,6 +903,15 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 				"sequence":             req.Sequence,
 			},
 		})
+		recordDirectPoolOpenAccounting(buyer.DB, directPoolOpenAccountingInput{
+			SessionID:         curSessionID,
+			DealID:            dealID,
+			BaseTxID:          baseTxID,
+			BaseTxHex:         baseResp.Tx.Hex(),
+			ClientLockScript:  clientLockScript,
+			PoolAmountSatoshi: req.PoolAmount,
+			SellerPeerID:      strings.TrimSpace(p.SellerPeerID),
+		})
 		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_end", map[string]any{
 			"session_id": req.SessionID,
 			"base_txid":  baseTxID,
@@ -1006,7 +1022,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		utxos, err := rt.Chain.GetUTXOs(actor.Addr)
+		utxos, err := getWalletUTXOsFromDB(rt)
 		if err == nil {
 			for _, u := range utxos {
 				if strings.EqualFold(strings.TrimSpace(u.TxID), splitTxID) && u.Vout == 0 && u.Value == target {
@@ -1184,6 +1200,14 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 			"sequence":    req.Sequence,
 		},
 	})
+	recordDirectPoolPayAccounting(
+		buyer.DB,
+		session.SessionID,
+		req.Sequence,
+		p.Amount,
+		strings.TrimSpace(session.SellerPeerID),
+		strings.TrimSpace(merged.TxID().String()),
+	)
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
 		"session_id":    req.SessionID,
 		"sequence":      req.Sequence,
@@ -1315,6 +1339,15 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 			"pool_amount_satoshi":   session.PoolAmountSat,
 		},
 	})
+	recordDirectPoolCloseAccounting(
+		buyer.DB,
+		session.SessionID,
+		finalTxID,
+		merged.Hex(),
+		session.SellerAmount,
+		session.BuyerAmount,
+		strings.TrimSpace(session.SellerPeerID),
+	)
 	buyer.deleteTriplePool(session.SessionID)
 	buyer.releaseTransferPoolSessionMutex(session.SessionID)
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_close_end", map[string]any{

@@ -38,7 +38,7 @@ func TestSaveConfigInDB_DoesNotPersistIndexSection(t *testing.T) {
 	}
 
 	var raw string
-	if err := db.QueryRow(`SELECT config_toml FROM app_config WHERE id=1`).Scan(&raw); err != nil {
+	if err := db.QueryRow(`SELECT value FROM app_config WHERE key=?`, AppConfigKeyRuntimeConfigTOML).Scan(&raw); err != nil {
 		t.Fatalf("query app config: %v", err)
 	}
 	if strings.Contains(raw, "[index]") {
@@ -87,5 +87,44 @@ func TestLoadOrInitConfigInDB_FillsDerivedIndex(t *testing.T) {
 	}
 	if second.Index.Backend != "sqlite" || second.Index.SQLitePath != dbPath {
 		t.Fatalf("second index mismatch: %#v", second.Index)
+	}
+}
+
+func TestEnsureAppConfigKVSchema_MigratesLegacySingleRow(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "legacy-runtime.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE app_config(
+		id INTEGER PRIMARY KEY CHECK(id=1),
+		config_toml TEXT NOT NULL,
+		updated_at_unix INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy app_config: %v", err)
+	}
+	legacyRaw := "[bsv]\nnetwork=\"test\"\n"
+	if _, err := db.Exec(`INSERT INTO app_config(id,config_toml,updated_at_unix) VALUES(1,?,?)`, legacyRaw, int64(123)); err != nil {
+		t.Fatalf("insert legacy app_config row: %v", err)
+	}
+
+	if err := EnsureAppConfigKVSchema(db); err != nil {
+		t.Fatalf("ensure app_config kv schema: %v", err)
+	}
+	gotRaw, exists, err := LoadAppConfigValue(db, AppConfigKeyRuntimeConfigTOML)
+	if err != nil {
+		t.Fatalf("load migrated runtime config: %v", err)
+	}
+	if !exists {
+		t.Fatalf("expected migrated runtime config exists")
+	}
+	if gotRaw != legacyRaw {
+		t.Fatalf("migrated runtime config mismatch: got=%q want=%q", gotRaw, legacyRaw)
 	}
 }

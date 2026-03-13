@@ -59,6 +59,21 @@ import type {
   FeePoolEffectsResp,
   // 文件获取任务类型
   FileGetJob,
+  // UTXO 管理类型
+  WalletUTXOsResp,
+  WalletUTXO,
+  UTXOEventsResp,
+  UTXOEvent,
+  // 财务业务类型
+  FinanceBusinessesResp,
+  FinanceBusiness,
+  FinanceBreakdownsResp,
+  FinanceBreakdown,
+  FinanceUTXOLinksResp,
+  FinanceUTXOLink,
+  // 链轮询日志类型
+  ChainTipLogsResp,
+  ChainUTXOLogsResp,
 } from "../types";
 
 /**
@@ -726,4 +741,137 @@ export function getStrategyDebugLog(): Promise<{ strategy_debug_log_enabled: boo
  */
 export function setStrategyDebugLog(enabled: boolean): Promise<void> {
   return api<void>("api/v1/admin/fs-http/strategy-debug-log", "POST", { enabled });
+}
+
+// ========== UTXO 管理 API ==========
+
+/**
+ * 获取 UTXO 列表
+ * GET /api/v1/admin/wallet/utxos
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getWalletUTXOs(params?: URLSearchParams): Promise<WalletUTXOsResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<WalletUTXOsResp>(`api/v1/admin/wallet/utxos${query}`);
+}
+
+/**
+ * 获取 UTXO 详情
+ * GET /api/v1/admin/wallet/utxos/detail?utxo_id={utxoId}
+ * 
+ * @param utxoId - UTXO ID
+ */
+export function getWalletUTXODetail(utxoId: string): Promise<WalletUTXO> {
+  return api<WalletUTXO>(`api/v1/admin/wallet/utxos/detail?utxo_id=${encodeURIComponent(utxoId)}`);
+}
+
+/**
+ * 获取 UTXO 事件列表
+ * GET /api/v1/admin/wallet/utxo-events
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getUTXOEvents(params?: URLSearchParams): Promise<UTXOEventsResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<UTXOEventsResp>(`api/v1/admin/wallet/utxo-events${query}`);
+}
+
+/**
+ * 获取 UTXO 事件详情
+ * GET /api/v1/admin/wallet/utxo-events/detail?id={id}
+ * 
+ * @param id - 事件记录 ID
+ */
+export function getUTXOEventDetail(id: number): Promise<UTXOEvent> {
+  return api<UTXOEvent>(`api/v1/admin/wallet/utxo-events/detail?id=${id}`);
+}
+
+// ========== 财务业务 API ==========
+
+/**
+ * 获取财务业务列表
+ * GET /api/v1/admin/finance/businesses
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getFinanceBusinesses(params?: URLSearchParams): Promise<FinanceBusinessesResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<FinanceBusinessesResp>(`api/v1/admin/finance/businesses${query}`);
+}
+
+/**
+ * 获取财务业务详情
+ * GET /api/v1/admin/finance/businesses/detail?business_id={businessId}
+ * 
+ * @param businessId - 业务 ID
+ */
+export function getFinanceBusinessDetail(businessId: string): Promise<FinanceBusiness> {
+  return api<FinanceBusiness>(`api/v1/admin/finance/businesses/detail?business_id=${encodeURIComponent(businessId)}`);
+}
+
+/**
+ * 获取财务分解列表
+ * GET /api/v1/admin/finance/breakdowns
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getFinanceBreakdowns(params?: URLSearchParams): Promise<FinanceBreakdownsResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<FinanceBreakdownsResp>(`api/v1/admin/finance/breakdowns${query}`);
+}
+
+/**
+ * 获取财务分解详情
+ * GET /api/v1/admin/finance/breakdowns/detail?id={id}
+ * 
+ * @param id - 分解记录 ID
+ */
+export function getFinanceBreakdownDetail(id: number): Promise<FinanceBreakdown> {
+  return api<FinanceBreakdown>(`api/v1/admin/finance/breakdowns/detail?id=${id}`);
+}
+
+/**
+ * 获取业务-UTXO 关系列表
+ * GET /api/v1/admin/finance/utxo-links
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getFinanceUTXOLinks(params?: URLSearchParams): Promise<FinanceUTXOLinksResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<FinanceUTXOLinksResp>(`api/v1/admin/finance/utxo-links${query}`);
+}
+
+/**
+ * 获取业务-UTXO 关系详情
+ * GET /api/v1/admin/finance/utxo-links/detail?id={id}
+ * 
+ * @param id - 关系记录 ID
+ */
+export function getFinanceUTXOLinkDetail(id: number): Promise<FinanceUTXOLink> {
+  return api<FinanceUTXOLink>(`api/v1/admin/finance/utxo-links/detail?id=${id}`);
+}
+
+// ========== 链轮询日志 API ==========
+
+/**
+ * 获取链高度轮询日志列表
+ * GET /api/v1/admin/chain/tip/logs
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getChainTipLogs(params?: URLSearchParams): Promise<ChainTipLogsResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<ChainTipLogsResp>(`api/v1/admin/chain/tip/logs${query}`);
+}
+
+/**
+ * 获取 UTXO 轮询日志列表
+ * GET /api/v1/admin/chain/utxo/logs
+ * 
+ * @param params - 查询参数（分页、过滤等）
+ */
+export function getChainUTXOLogs(params?: URLSearchParams): Promise<ChainUTXOLogsResp> {
+  const query = params ? `?${params.toString()}` : "";
+  return api<ChainUTXOLogsResp>(`api/v1/admin/chain/utxo/logs${query}`);
 }

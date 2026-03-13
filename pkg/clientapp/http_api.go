@@ -430,6 +430,23 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs/detail", s.withAuth(s.handleAdminOrchestratorLogDetail))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/status", s.withAuth(s.handleAdminOrchestratorStatus))
+		mux.HandleFunc(prefix+"/v1/admin/chain/scheduler/status", s.withAuth(s.handleAdminChainSchedulerStatus))
+		mux.HandleFunc(prefix+"/v1/admin/chain/tip/status", s.withAuth(s.handleAdminChainTipStatus))
+		mux.HandleFunc(prefix+"/v1/admin/chain/tip/logs", s.withAuth(s.handleAdminChainTipLogs))
+		mux.HandleFunc(prefix+"/v1/admin/chain/utxo/status", s.withAuth(s.handleAdminChainUTXOStatus))
+		mux.HandleFunc(prefix+"/v1/admin/chain/utxo/logs", s.withAuth(s.handleAdminChainUTXOLogs))
+		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos", s.withAuth(s.handleAdminWalletUTXOs))
+		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos/detail", s.withAuth(s.handleAdminWalletUTXODetail))
+		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events", s.withAuth(s.handleAdminWalletUTXOEvents))
+		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events/detail", s.withAuth(s.handleAdminWalletUTXOEventDetail))
+		mux.HandleFunc(prefix+"/v1/admin/finance/businesses", s.withAuth(s.handleAdminFinanceBusinesses))
+		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
+		mux.HandleFunc(prefix+"/v1/admin/finance/process-events", s.withAuth(s.handleAdminFinanceProcessEvents))
+		mux.HandleFunc(prefix+"/v1/admin/finance/process-events/detail", s.withAuth(s.handleAdminFinanceProcessEventDetail))
+		mux.HandleFunc(prefix+"/v1/admin/finance/breakdowns", s.withAuth(s.handleAdminFinanceBreakdowns))
+		mux.HandleFunc(prefix+"/v1/admin/finance/breakdowns/detail", s.withAuth(s.handleAdminFinanceBreakdownDetail))
+		mux.HandleFunc(prefix+"/v1/admin/finance/utxo-links", s.withAuth(s.handleAdminFinanceUTXOLinks))
+		mux.HandleFunc(prefix+"/v1/admin/finance/utxo-links/detail", s.withAuth(s.handleAdminFinanceUTXOLinkDetail))
 		mux.HandleFunc(prefix+"/v1/admin/config", s.withAuth(s.handleAdminConfig))
 		mux.HandleFunc(prefix+"/v1/admin/config/schema", s.withAuth(s.handleAdminConfigSchema))
 	}
@@ -607,22 +624,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 }
 
 func walletAddressAndOnchainBalance(rt *Runtime) (string, uint64, error) {
-	if rt == nil || rt.Chain == nil {
-		return "", 0, fmt.Errorf("runtime chain not initialized")
-	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return "", 0, err
-	}
-	utxos, err := rt.Chain.GetUTXOs(actor.Addr)
-	if err != nil {
-		return actor.Addr, 0, err
-	}
-	var sum uint64
-	for _, u := range utxos {
-		sum += u.Value
-	}
-	return actor.Addr, sum, nil
+	return getWalletBalanceFromDB(rt)
 }
 
 type walletHistoryClient interface {
@@ -741,6 +743,7 @@ func (s *httpAPIServer) syncWalletLedgerFromChain(ctx context.Context) error {
 		}); err != nil {
 			return err
 		}
+		recordWalletChainAccounting(s.db, txid, category, inSat, outSat, net, payload)
 	}
 	return nil
 }
@@ -2794,6 +2797,968 @@ func (s *httpAPIServer) handleAdminOrchestratorStatus(w http.ResponseWriter, r *
 		return
 	}
 	writeJSON(w, http.StatusOK, orch.SnapshotStatus())
+}
+
+func (s *httpAPIServer) handleAdminChainSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	cm := getChainMaintainer(s.rt)
+	if cm == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "status": "not_initialized"})
+		return
+	}
+	writeJSON(w, http.StatusOK, cm.snapshotStatus())
+}
+
+func (s *httpAPIServer) handleAdminChainTipStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	snap, err := loadChainTipSnapshot(s.db)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	addr, err := clientWalletAddress(s.rt)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	snap, err := loadWalletUTXOSnapshot(s.db, addr)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if strings.TrimSpace(snap.Address) == "" {
+		snap.Address = addr
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+func (s *httpAPIServer) handleAdminChainTipLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	where := ""
+	args := make([]any, 0, 4)
+	if status != "" {
+		where = " WHERE status=?"
+		args = append(args, status)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM chain_tip_worker_logs"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json
+		 FROM chain_tip_worker_logs`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID              int64           `json:"id"`
+		TriggeredAtUnix int64           `json:"triggered_at_unix"`
+		StartedAtUnix   int64           `json:"started_at_unix"`
+		EndedAtUnix     int64           `json:"ended_at_unix"`
+		DurationMS      int64           `json:"duration_ms"`
+		TriggerSource   string          `json:"trigger_source"`
+		Status          string          `json:"status"`
+		ErrorMessage    string          `json:"error_message"`
+		Result          json.RawMessage `json:"result"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var result string
+		if err := rows.Scan(&it.ID, &it.TriggeredAtUnix, &it.StartedAtUnix, &it.EndedAtUnix, &it.DurationMS, &it.TriggerSource, &it.Status, &it.ErrorMessage, &result); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Result = json.RawMessage(result)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminChainUTXOLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	where := ""
+	args := make([]any, 0, 4)
+	if status != "" {
+		where = " WHERE status=?"
+		args = append(args, status)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM chain_utxo_worker_logs"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json
+		 FROM chain_utxo_worker_logs`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID              int64           `json:"id"`
+		TriggeredAtUnix int64           `json:"triggered_at_unix"`
+		StartedAtUnix   int64           `json:"started_at_unix"`
+		EndedAtUnix     int64           `json:"ended_at_unix"`
+		DurationMS      int64           `json:"duration_ms"`
+		TriggerSource   string          `json:"trigger_source"`
+		Status          string          `json:"status"`
+		ErrorMessage    string          `json:"error_message"`
+		Result          json.RawMessage `json:"result"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var result string
+		if err := rows.Scan(&it.ID, &it.TriggeredAtUnix, &it.StartedAtUnix, &it.EndedAtUnix, &it.DurationMS, &it.TriggerSource, &it.Status, &it.ErrorMessage, &result); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Result = json.RawMessage(result)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	walletID := strings.TrimSpace(r.URL.Query().Get("wallet_id"))
+	address := strings.TrimSpace(r.URL.Query().Get("address"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	originType := strings.TrimSpace(r.URL.Query().Get("origin_type"))
+	incomeEligible := strings.TrimSpace(r.URL.Query().Get("income_eligible"))
+	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
+	reservedBy := strings.TrimSpace(r.URL.Query().Get("reserved_by"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := make([]any, 0, 16)
+	if walletID != "" {
+		where += " AND wallet_id=?"
+		args = append(args, walletID)
+	}
+	if address != "" {
+		where += " AND address=?"
+		args = append(args, address)
+	}
+	if state != "" {
+		where += " AND state=?"
+		args = append(args, state)
+	}
+	if originType != "" {
+		where += " AND origin_type=?"
+		args = append(args, originType)
+	}
+	if incomeEligible != "" {
+		v := strings.TrimSpace(strings.ToLower(incomeEligible))
+		if v == "1" || v == "true" || v == "yes" {
+			where += " AND income_eligible=1"
+		} else if v == "0" || v == "false" || v == "no" {
+			where += " AND income_eligible=0"
+		}
+	}
+	if txid != "" {
+		where += " AND txid=?"
+		args = append(args, txid)
+	}
+	if reservedBy != "" {
+		where += " AND reserved_by=?"
+		args = append(args, reservedBy)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (utxo_id LIKE ? OR txid LIKE ? OR address LIKE ? OR created_txid LIKE ? OR spent_txid LIKE ?)"
+		args = append(args, like, like, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM wallet_utxo WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,origin_type,income_eligible,created_txid,spent_txid,reserved_by,reserved_at_unix,created_at_unix,updated_at_unix,spent_at_unix
+		 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		UTXOID         string `json:"utxo_id"`
+		WalletID       string `json:"wallet_id"`
+		Address        string `json:"address"`
+		TxID           string `json:"txid"`
+		Vout           uint32 `json:"vout"`
+		ValueSatoshi   uint64 `json:"value_satoshi"`
+		State          string `json:"state"`
+		OriginType     string `json:"origin_type"`
+		IncomeEligible int    `json:"income_eligible"`
+		CreatedTxID    string `json:"created_txid"`
+		SpentTxID      string `json:"spent_txid"`
+		ReservedBy     string `json:"reserved_by"`
+		ReservedAtUnix int64  `json:"reserved_at_unix"`
+		CreatedAtUnix  int64  `json:"created_at_unix"`
+		UpdatedAtUnix  int64  `json:"updated_at_unix"`
+		SpentAtUnix    int64  `json:"spent_at_unix"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		if err := rows.Scan(
+			&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.OriginType, &it.IncomeEligible,
+			&it.CreatedTxID, &it.SpentTxID, &it.ReservedBy, &it.ReservedAtUnix, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminWalletUTXODetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	utxoID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("utxo_id")))
+	if utxoID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "utxo_id is required"})
+		return
+	}
+	type item struct {
+		UTXOID         string `json:"utxo_id"`
+		WalletID       string `json:"wallet_id"`
+		Address        string `json:"address"`
+		TxID           string `json:"txid"`
+		Vout           uint32 `json:"vout"`
+		ValueSatoshi   uint64 `json:"value_satoshi"`
+		State          string `json:"state"`
+		OriginType     string `json:"origin_type"`
+		IncomeEligible int    `json:"income_eligible"`
+		CreatedTxID    string `json:"created_txid"`
+		SpentTxID      string `json:"spent_txid"`
+		ReservedBy     string `json:"reserved_by"`
+		ReservedAtUnix int64  `json:"reserved_at_unix"`
+		CreatedAtUnix  int64  `json:"created_at_unix"`
+		UpdatedAtUnix  int64  `json:"updated_at_unix"`
+		SpentAtUnix    int64  `json:"spent_at_unix"`
+	}
+	var it item
+	err := s.db.QueryRow(
+		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,origin_type,income_eligible,created_txid,spent_txid,reserved_by,reserved_at_unix,created_at_unix,updated_at_unix,spent_at_unix
+		 FROM wallet_utxo WHERE utxo_id=?`,
+		utxoID,
+	).Scan(
+		&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.OriginType, &it.IncomeEligible,
+		&it.CreatedTxID, &it.SpentTxID, &it.ReservedBy, &it.ReservedAtUnix, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminWalletUTXOEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	utxoID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("utxo_id")))
+	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
+	refTxID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("ref_txid")))
+	refBusinessID := strings.TrimSpace(r.URL.Query().Get("ref_business_id"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := make([]any, 0, 12)
+	if utxoID != "" {
+		where += " AND utxo_id=?"
+		args = append(args, utxoID)
+	}
+	if eventType != "" {
+		where += " AND event_type=?"
+		args = append(args, eventType)
+	}
+	if refTxID != "" {
+		where += " AND ref_txid=?"
+		args = append(args, refTxID)
+	}
+	if refBusinessID != "" {
+		where += " AND ref_business_id=?"
+		args = append(args, refBusinessID)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (utxo_id LIKE ? OR note LIKE ? OR ref_txid LIKE ? OR ref_business_id LIKE ?)"
+		args = append(args, like, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM wallet_utxo_events WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,created_at_unix,utxo_id,event_type,ref_txid,ref_business_id,note,payload_json
+		 FROM wallet_utxo_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		UTXOID        string          `json:"utxo_id"`
+		EventType     string          `json:"event_type"`
+		RefTxID       string          `json:"ref_txid"`
+		RefBusinessID string          `json:"ref_business_id"`
+		Note          string          `json:"note"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.UTXOID, &it.EventType, &it.RefTxID, &it.RefBusinessID, &it.Note, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		UTXOID        string          `json:"utxo_id"`
+		EventType     string          `json:"event_type"`
+		RefTxID       string          `json:"ref_txid"`
+		RefBusinessID string          `json:"ref_business_id"`
+		Note          string          `json:"note"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(`SELECT id,created_at_unix,utxo_id,event_type,ref_txid,ref_business_id,note,payload_json FROM wallet_utxo_events WHERE id=?`, id).
+		Scan(&it.ID, &it.CreatedAtUnix, &it.UTXOID, &it.EventType, &it.RefTxID, &it.RefBusinessID, &it.Note, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	sceneType := strings.TrimSpace(r.URL.Query().Get("scene_type"))
+	sceneSubType := strings.TrimSpace(r.URL.Query().Get("scene_subtype"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
+	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
+	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := make([]any, 0, 16)
+	if businessID != "" {
+		where += " AND business_id=?"
+		args = append(args, businessID)
+	}
+	if sceneType != "" {
+		where += " AND scene_type=?"
+		args = append(args, sceneType)
+	}
+	if sceneSubType != "" {
+		where += " AND scene_subtype=?"
+		args = append(args, sceneSubType)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	if fromPartyID != "" {
+		where += " AND from_party_id=?"
+		args = append(args, fromPartyID)
+	}
+	if toPartyID != "" {
+		where += " AND to_party_id=?"
+		args = append(args, toPartyID)
+	}
+	if refID != "" {
+		where += " AND ref_id=?"
+		args = append(args, refID)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (business_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ?)"
+		args = append(args, like, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM fin_business WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
+		 FROM fin_business WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,business_id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		BusinessID     string          `json:"business_id"`
+		SceneType      string          `json:"scene_type"`
+		SceneSubType   string          `json:"scene_subtype"`
+		FromPartyID    string          `json:"from_party_id"`
+		ToPartyID      string          `json:"to_party_id"`
+		RefID          string          `json:"ref_id"`
+		Status         string          `json:"status"`
+		OccurredAtUnix int64           `json:"occurred_at_unix"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Note           string          `json:"note"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.BusinessID, &it.SceneType, &it.SceneSubType, &it.FromPartyID, &it.ToPartyID, &it.RefID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	if businessID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_id is required"})
+		return
+	}
+	type item struct {
+		BusinessID     string          `json:"business_id"`
+		SceneType      string          `json:"scene_type"`
+		SceneSubType   string          `json:"scene_subtype"`
+		FromPartyID    string          `json:"from_party_id"`
+		ToPartyID      string          `json:"to_party_id"`
+		RefID          string          `json:"ref_id"`
+		Status         string          `json:"status"`
+		OccurredAtUnix int64           `json:"occurred_at_unix"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Note           string          `json:"note"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(
+		`SELECT business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
+		 FROM fin_business WHERE business_id=?`,
+		businessID,
+	).Scan(&it.BusinessID, &it.SceneType, &it.SceneSubType, &it.FromPartyID, &it.ToPartyID, &it.RefID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+// handleAdminFinanceProcessEvents 返回财务流程事件（如 fee_pool/cycle_pay）。
+// 说明：该接口用于过程追踪，不代表真实资金变动。
+func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	processID := strings.TrimSpace(r.URL.Query().Get("process_id"))
+	sceneType := strings.TrimSpace(r.URL.Query().Get("scene_type"))
+	sceneSubType := strings.TrimSpace(r.URL.Query().Get("scene_subtype"))
+	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := make([]any, 0, 16)
+	if processID != "" {
+		where += " AND process_id=?"
+		args = append(args, processID)
+	}
+	if sceneType != "" {
+		where += " AND scene_type=?"
+		args = append(args, sceneType)
+	}
+	if sceneSubType != "" {
+		where += " AND scene_subtype=?"
+		args = append(args, sceneSubType)
+	}
+	if eventType != "" {
+		where += " AND event_type=?"
+		args = append(args, eventType)
+	}
+	if status != "" {
+		where += " AND status=?"
+		args = append(args, status)
+	}
+	if refID != "" {
+		where += " AND ref_id=?"
+		args = append(args, refID)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (process_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ?)"
+		args = append(args, like, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM fin_process_events WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
+		 FROM fin_process_events WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID             int64           `json:"id"`
+		ProcessID      string          `json:"process_id"`
+		SceneType      string          `json:"scene_type"`
+		SceneSubType   string          `json:"scene_subtype"`
+		EventType      string          `json:"event_type"`
+		Status         string          `json:"status"`
+		RefID          string          `json:"ref_id"`
+		OccurredAtUnix int64           `json:"occurred_at_unix"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Note           string          `json:"note"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.ID, &it.ProcessID, &it.SceneType, &it.SceneSubType, &it.EventType, &it.Status, &it.RefID, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFinanceProcessEventDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID             int64           `json:"id"`
+		ProcessID      string          `json:"process_id"`
+		SceneType      string          `json:"scene_type"`
+		SceneSubType   string          `json:"scene_subtype"`
+		EventType      string          `json:"event_type"`
+		Status         string          `json:"status"`
+		RefID          string          `json:"ref_id"`
+		OccurredAtUnix int64           `json:"occurred_at_unix"`
+		IdempotencyKey string          `json:"idempotency_key"`
+		Note           string          `json:"note"`
+		Payload        json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(
+		`SELECT id,process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
+		 FROM fin_process_events WHERE id=?`,
+		id,
+	).Scan(&it.ID, &it.ProcessID, &it.SceneType, &it.SceneSubType, &it.EventType, &it.Status, &it.RefID, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFinanceBreakdowns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := make([]any, 0, 12)
+	if businessID != "" {
+		where += " AND business_id=?"
+		args = append(args, businessID)
+	}
+	if txid != "" {
+		where += " AND txid=?"
+		args = append(args, txid)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (business_id LIKE ? OR txid LIKE ? OR note LIKE ?)"
+		args = append(args, like, like, like)
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM fin_tx_breakdown WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,business_id,txid,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+		 FROM fin_tx_breakdown WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID                 int64           `json:"id"`
+		BusinessID         string          `json:"business_id"`
+		TxID               string          `json:"txid"`
+		GrossInputSatoshi  int64           `json:"gross_input_satoshi"`
+		ChangeBackSatoshi  int64           `json:"change_back_satoshi"`
+		ExternalInSatoshi  int64           `json:"external_in_satoshi"`
+		CounterpartyOutSat int64           `json:"counterparty_out_satoshi"`
+		MinerFeeSatoshi    int64           `json:"miner_fee_satoshi"`
+		NetOutSatoshi      int64           `json:"net_out_satoshi"`
+		NetInSatoshi       int64           `json:"net_in_satoshi"`
+		CreatedAtUnix      int64           `json:"created_at_unix"`
+		Note               string          `json:"note"`
+		Payload            json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(
+			&it.ID, &it.BusinessID, &it.TxID, &it.GrossInputSatoshi, &it.ChangeBackSatoshi, &it.ExternalInSatoshi, &it.CounterpartyOutSat,
+			&it.MinerFeeSatoshi, &it.NetOutSatoshi, &it.NetInSatoshi, &it.CreatedAtUnix, &it.Note, &payload,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFinanceBreakdownDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID                 int64           `json:"id"`
+		BusinessID         string          `json:"business_id"`
+		TxID               string          `json:"txid"`
+		GrossInputSatoshi  int64           `json:"gross_input_satoshi"`
+		ChangeBackSatoshi  int64           `json:"change_back_satoshi"`
+		ExternalInSatoshi  int64           `json:"external_in_satoshi"`
+		CounterpartyOutSat int64           `json:"counterparty_out_satoshi"`
+		MinerFeeSatoshi    int64           `json:"miner_fee_satoshi"`
+		NetOutSatoshi      int64           `json:"net_out_satoshi"`
+		NetInSatoshi       int64           `json:"net_in_satoshi"`
+		CreatedAtUnix      int64           `json:"created_at_unix"`
+		Note               string          `json:"note"`
+		Payload            json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(
+		`SELECT id,business_id,txid,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+		 FROM fin_tx_breakdown WHERE id=?`,
+		id,
+	).Scan(
+		&it.ID, &it.BusinessID, &it.TxID, &it.GrossInputSatoshi, &it.ChangeBackSatoshi, &it.ExternalInSatoshi, &it.CounterpartyOutSat,
+		&it.MinerFeeSatoshi, &it.NetOutSatoshi, &it.NetInSatoshi, &it.CreatedAtUnix, &it.Note, &payload,
+	)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFinanceUTXOLinks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
+	utxoID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("utxo_id")))
+	role := strings.TrimSpace(r.URL.Query().Get("role"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	where := ""
+	args := make([]any, 0, 12)
+	if businessID != "" {
+		where += " AND business_id=?"
+		args = append(args, businessID)
+	}
+	if txid != "" {
+		where += " AND txid=?"
+		args = append(args, txid)
+	}
+	if utxoID != "" {
+		where += " AND utxo_id=?"
+		args = append(args, utxoID)
+	}
+	if role != "" {
+		where += " AND role=?"
+		args = append(args, role)
+	}
+	if q != "" {
+		like := "%" + q + "%"
+		where += " AND (business_id LIKE ? OR txid LIKE ? OR utxo_id LIKE ? OR note LIKE ?)"
+		args = append(args, like, like, like, like)
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM biz_utxo_links WHERE 1=1"+where, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	rows, err := s.db.Query(
+		`SELECT id,business_id,txid,utxo_id,role,amount_satoshi,created_at_unix,note,payload_json
+		 FROM biz_utxo_links WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		append(args, limit, offset)...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type item struct {
+		ID            int64           `json:"id"`
+		BusinessID    string          `json:"business_id"`
+		TxID          string          `json:"txid"`
+		UTXOID        string          `json:"utxo_id"`
+		Role          string          `json:"role"`
+		AmountSatoshi int64           `json:"amount_satoshi"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		Note          string          `json:"note"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	items := make([]item, 0, limit)
+	for rows.Next() {
+		var it item
+		var payload string
+		if err := rows.Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.Role, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.Payload = json.RawMessage(payload)
+		items = append(items, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+}
+
+func (s *httpAPIServer) handleAdminFinanceUTXOLinkDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	type item struct {
+		ID            int64           `json:"id"`
+		BusinessID    string          `json:"business_id"`
+		TxID          string          `json:"txid"`
+		UTXOID        string          `json:"utxo_id"`
+		Role          string          `json:"role"`
+		AmountSatoshi int64           `json:"amount_satoshi"`
+		CreatedAtUnix int64           `json:"created_at_unix"`
+		Note          string          `json:"note"`
+		Payload       json.RawMessage `json:"payload"`
+	}
+	var it item
+	var payload string
+	err := s.db.QueryRow(`SELECT id,business_id,txid,utxo_id,role,amount_satoshi,created_at_unix,note,payload_json FROM biz_utxo_links WHERE id=?`, id).
+		Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.Role, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	it.Payload = json.RawMessage(payload)
+	writeJSON(w, http.StatusOK, it)
 }
 
 func (s *httpAPIServer) handleGetFileStart(w http.ResponseWriter, r *http.Request) {

@@ -70,6 +70,10 @@ const (
 	defaultListenTickTestSec           = 1
 	defaultListenTickMainSec           = 30
 	seedBlockSize                      = 65536
+
+	// app_config 采用 KV 结构，避免“整表单行文档”在配置扩展时产生耦合。
+	AppConfigKeyRuntimeConfigTOML           = "runtime_config_toml"
+	AppConfigKeyEncryptionMasterKeyEnvelope = "encryption_master_key_envelope"
 )
 
 type healthReq struct{}
@@ -591,6 +595,7 @@ type Runtime struct {
 	masterGWMu sync.RWMutex
 	kernel     *clientKernel
 	orch       *orchestrator
+	chainMaint *chainMaintainer
 
 	closeOnce sync.Once
 	closeFn   func() error
@@ -913,6 +918,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	if rt.orch != nil {
 		rt.orch.Start(ctx)
 	}
+	// 链维护进程：统一串行调度链 API 查询，业务侧只读本地快照。
+	startChainMaintainer(ctx, rt)
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
 	if cfg.HTTP.Enabled {
@@ -1003,9 +1010,8 @@ func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error
 		return Config{}, false, err
 	}
 
-	var raw string
-	err = db.QueryRow(`SELECT config_toml FROM app_config WHERE id=1`).Scan(&raw)
-	if errors.Is(err, sql.ErrNoRows) {
+	raw, exists, err := LoadAppConfigValue(db, AppConfigKeyRuntimeConfigTOML)
+	if !exists {
 		cfg := defaultCfg
 		// 私钥仅允许保留在配置文件，不写入 DB。
 		cfg.Keys.PrivkeyHex = ""
@@ -1013,9 +1019,6 @@ func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error
 			return Config{}, false, err
 		}
 		return cfg, true, nil
-	}
-	if err != nil {
-		return Config{}, false, err
 	}
 	cfg, err := ParseConfigTOML([]byte(raw))
 	if err != nil {
@@ -1052,13 +1055,7 @@ func SaveConfigInDB(db *sql.DB, cfg Config) error {
 	raw := stripTOMLSections(string(data), map[string]struct{}{
 		"index": {},
 	})
-	_, err = db.Exec(
-		`INSERT INTO app_config(id,config_toml,updated_at_unix) VALUES(1,?,?)
-		 ON CONFLICT(id) DO UPDATE SET config_toml=excluded.config_toml,updated_at_unix=excluded.updated_at_unix`,
-		raw,
-		time.Now().Unix(),
-	)
-	return err
+	return SaveAppConfigValue(db, AppConfigKeyRuntimeConfigTOML, raw)
 }
 
 func ApplyConfigDefaults(cfg *Config) error {
@@ -1433,8 +1430,8 @@ func applySQLitePragmas(db *sql.DB) error {
 func initIndexDB(db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS app_config(
-			id INTEGER PRIMARY KEY CHECK(id=1),
-			config_toml TEXT NOT NULL,
+			key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
+			value TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, seed_locked INTEGER NOT NULL DEFAULT 0, updated_at_unix INTEGER)`,
@@ -1673,6 +1670,146 @@ func initIndexDB(db *sql.DB) error {
 			payload_json TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_utxo(
+			utxo_id TEXT PRIMARY KEY,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			vout INTEGER NOT NULL,
+			value_satoshi INTEGER NOT NULL,
+			state TEXT NOT NULL,
+			origin_type TEXT NOT NULL,
+			income_eligible INTEGER NOT NULL,
+			created_txid TEXT NOT NULL,
+			spent_txid TEXT NOT NULL,
+			reserved_by TEXT NOT NULL,
+			reserved_at_unix INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			spent_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_events(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			utxo_id TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			ref_txid TEXT NOT NULL,
+			ref_business_id TEXT NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_sync_state(
+			address TEXT PRIMARY KEY,
+			wallet_id TEXT NOT NULL,
+			utxo_count INTEGER NOT NULL,
+			balance_satoshi INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			last_updated_by TEXT NOT NULL,
+			last_trigger TEXT NOT NULL,
+			last_duration_ms INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS fin_business(
+			business_id TEXT PRIMARY KEY,
+			scene_type TEXT NOT NULL,
+			scene_subtype TEXT NOT NULL,
+			from_party_id TEXT NOT NULL,
+			to_party_id TEXT NOT NULL,
+			ref_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS fin_process_events(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			process_id TEXT NOT NULL,
+			scene_type TEXT NOT NULL,
+			scene_subtype TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			status TEXT NOT NULL,
+			ref_id TEXT NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			idempotency_key TEXT NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS fin_tx_breakdown(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			business_id TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			gross_input_satoshi INTEGER NOT NULL,
+			change_back_satoshi INTEGER NOT NULL,
+			external_in_satoshi INTEGER NOT NULL,
+			counterparty_out_satoshi INTEGER NOT NULL,
+			miner_fee_satoshi INTEGER NOT NULL,
+			net_out_satoshi INTEGER NOT NULL,
+			net_in_satoshi INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS biz_utxo_links(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			business_id TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			utxo_id TEXT NOT NULL,
+			role TEXT NOT NULL,
+			amount_satoshi INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS chain_tip_snapshot(
+			id INTEGER PRIMARY KEY CHECK(id=1),
+			tip_height INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			last_updated_by TEXT NOT NULL,
+			last_trigger TEXT NOT NULL,
+			last_duration_ms INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_snapshot(
+			address TEXT PRIMARY KEY,
+			utxo_count INTEGER NOT NULL,
+			balance_satoshi INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			last_updated_by TEXT NOT NULL,
+			last_trigger TEXT NOT NULL,
+			last_duration_ms INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_items(
+			address TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			vout INTEGER NOT NULL,
+			value_satoshi INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			PRIMARY KEY(address,txid,vout)
+		)`,
+		`CREATE TABLE IF NOT EXISTS chain_tip_worker_logs(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			triggered_at_unix INTEGER NOT NULL,
+			started_at_unix INTEGER NOT NULL,
+			ended_at_unix INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			trigger_source TEXT NOT NULL,
+			status TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			result_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS chain_utxo_worker_logs(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			triggered_at_unix INTEGER NOT NULL,
+			started_at_unix INTEGER NOT NULL,
+			ended_at_unix INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			trigger_source TEXT NOT NULL,
+			status TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			result_json TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS static_file_prices(
 			path TEXT PRIMARY KEY,
 			floor_unit_price_sat_per_64k INTEGER NOT NULL,
@@ -1748,6 +1885,26 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_txid ON wallet_ledger_entries(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_direction_category ON wallet_ledger_entries(direction, category, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_chain_tx_raw_height ON wallet_chain_tx_raw(block_height DESC, txid DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_origin ON wallet_utxo(origin_type, income_eligible, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_business_scene ON fin_business(scene_type, scene_subtype, occurred_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_scene ON fin_process_events(scene_type, scene_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_process ON fin_process_events(process_id, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_process_events_idempotency ON fin_process_events(idempotency_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_utxo_links_business ON biz_utxo_links(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_utxo_links_utxo ON biz_utxo_links(utxo_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_items_address ON wallet_utxo_items(address, value_satoshi DESC, txid, vout)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_started ON chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_status ON chain_tip_worker_logs(status, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_started ON chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_status ON chain_utxo_worker_logs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_static_file_prices_updated ON static_file_prices(updated_at_unix DESC)`,
 	}
 	for _, s := range stmts {
@@ -1770,6 +1927,10 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureAppConfigTable(db); err != nil {
 		return err
 	}
+	// 口径纠偏：cycle_pay 是过程事件，不应存在于财务主表。
+	if err := cleanupLegacyCyclePayFinanceRows(db); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -1777,11 +1938,216 @@ func ensureAppConfigTable(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	_, err := db.Exec(`CREATE TABLE IF NOT EXISTS app_config(
-		id INTEGER PRIMARY KEY CHECK(id=1),
-		config_toml TEXT NOT NULL,
+	return EnsureAppConfigKVSchema(db)
+}
+
+func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(
+		`DELETE FROM fin_tx_breakdown
+		 WHERE business_id IN (
+			 SELECT business_id FROM fin_business
+			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
+		 )`,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(
+		`DELETE FROM biz_utxo_links
+		 WHERE business_id IN (
+			 SELECT business_id FROM fin_business
+			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
+		 )`,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM fin_business WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
+		return err
+	}
+	err = tx.Commit()
+	return err
+}
+
+// EnsureAppConfigKVSchema 保证 app_config 是 KV 结构；若检测到旧单行结构会自动迁移。
+func EnsureAppConfigKVSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	exists, err := hasTable(db, "app_config")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		if _, err := db.Exec(`CREATE TABLE app_config(
+			key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
+			value TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`); err != nil {
+			return err
+		}
+	} else {
+		cols, err := tableColumns(db, "app_config")
+		if err != nil {
+			return err
+		}
+		_, hasKey := cols["key"]
+		_, hasValue := cols["value"]
+		_, hasUpdated := cols["updated_at_unix"]
+		_, hasID := cols["id"]
+		_, hasConfigTOML := cols["config_toml"]
+		switch {
+		case hasKey && hasValue && hasUpdated:
+			// 已是新结构，不需要处理。
+		case hasID && hasConfigTOML && hasUpdated:
+			if err := migrateAppConfigLegacyRowToKV(db); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("unsupported app_config schema")
+		}
+	}
+	// 兼容清理：旧密钥表迁移后必须删除，避免后续设计继续依赖旧地基。
+	return migrateAndDropLegacyKeyringTable(db)
+}
+
+// LoadAppConfigValue 从 app_config KV 读取单个配置。
+func LoadAppConfigValue(db *sql.DB, key string) (string, bool, error) {
+	if err := EnsureAppConfigKVSchema(db); err != nil {
+		return "", false, err
+	}
+	var value string
+	err := db.QueryRow(`SELECT value FROM app_config WHERE key=?`, strings.TrimSpace(key)).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return value, true, nil
+}
+
+// SaveAppConfigValue 写入 app_config KV 单值配置。
+func SaveAppConfigValue(db *sql.DB, key string, value string) error {
+	if err := EnsureAppConfigKVSchema(db); err != nil {
+		return err
+	}
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return fmt.Errorf("app_config key is empty")
+	}
+	_, err := db.Exec(
+		`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
+		 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
+		key,
+		value,
+		time.Now().Unix(),
+	)
+	return err
+}
+
+func hasTable(db *sql.DB, name string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
+	}
+	return out, rows.Err()
+}
+
+func migrateAppConfigLegacyRowToKV(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(`CREATE TABLE app_config_kv_new(
+		key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
+		value TEXT NOT NULL,
 		updated_at_unix INTEGER NOT NULL
-	)`)
+	)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(
+		`INSERT INTO app_config_kv_new(key,value,updated_at_unix)
+		 SELECT ?,config_toml,updated_at_unix FROM app_config
+		 WHERE id=1 AND trim(config_toml)<>''`,
+		AppConfigKeyRuntimeConfigTOML,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DROP TABLE app_config`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`ALTER TABLE app_config_kv_new RENAME TO app_config`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func migrateAndDropLegacyKeyringTable(db *sql.DB) error {
+	exists, err := hasTable(db, "keyring_singleton")
+	if err != nil || !exists {
+		return err
+	}
+	var cipherJSON string
+	var updatedAt int64
+	err = db.QueryRow(`SELECT cipher_json,updated_at_unix FROM keyring_singleton WHERE id=1`).Scan(&cipherJSON, &updatedAt)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if err == nil && strings.TrimSpace(cipherJSON) != "" {
+		_, err = db.Exec(
+			`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
+			 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
+			AppConfigKeyEncryptionMasterKeyEnvelope,
+			cipherJSON,
+			updatedAt,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = db.Exec(`DROP TABLE IF EXISTS keyring_singleton`)
 	return err
 }
 
@@ -2124,24 +2490,6 @@ func listEnabledWorkspacePaths(db *sql.DB, fallback string) ([]string, error) {
 		return nil, fmt.Errorf("no workspace configured")
 	}
 	return []string{fallback}, nil
-}
-
-func runPeriodicScan(ctx context.Context, mgr *workspaceManager) {
-	interval := time.Duration(mgr.cfg.Scan.RescanIntervalSeconds) * time.Second
-	t := time.NewTicker(interval)
-	defer t.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-t.C:
-			_, err := mgr.SyncOnce(ctx)
-			if err != nil {
-				obs.Error("bitcast-client", "workspace_scan_failed", map[string]any{"error": err.Error()})
-				continue
-			}
-		}
-	}
 }
 
 func errString(err error) string {
