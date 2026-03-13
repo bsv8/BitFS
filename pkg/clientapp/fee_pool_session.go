@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"strings"
 	"sync"
 )
 
@@ -68,4 +69,27 @@ func (r *Runtime) walletAllocMutex() *sync.Mutex {
 		return &sync.Mutex{}
 	}
 	return &r.walletAllocMu
+}
+
+// feePoolPayMutex 返回“按网关维度”的费用池扣费串行锁。
+// 设计约束：所有会推进 sequence/server_amount 的扣费路径必须走同一把锁。
+func (r *Runtime) feePoolPayMutex(gatewayPeerID string) *sync.Mutex {
+	if r == nil {
+		return &sync.Mutex{}
+	}
+	key := strings.TrimSpace(gatewayPeerID)
+	if key == "" {
+		key = "__default__"
+	}
+	r.feePoolPayLocksMu.Lock()
+	defer r.feePoolPayLocksMu.Unlock()
+	if r.feePoolPayLocks == nil {
+		r.feePoolPayLocks = map[string]*sync.Mutex{}
+	}
+	if mu, ok := r.feePoolPayLocks[key]; ok && mu != nil {
+		return mu
+	}
+	mu := &sync.Mutex{}
+	r.feePoolPayLocks[key] = mu
+	return mu
 }

@@ -26,6 +26,12 @@ func TestClientIDFromPrivHex_StableAndLowercase(t *testing.T) {
 	if id1 != strings.ToLower(id1) {
 		t.Fatalf("derived client_pubkey_hex should be lowercase: %q", id1)
 	}
+	if len(id1) != 66 {
+		t.Fatalf("derived client_pubkey_hex should be compressed 33-byte hex, got len=%d", len(id1))
+	}
+	if !strings.HasPrefix(id1, "02") && !strings.HasPrefix(id1, "03") {
+		t.Fatalf("derived client_pubkey_hex should start with 02/03: %q", id1)
+	}
 }
 
 func TestValidateClientIdentityConsistency_Mismatch(t *testing.T) {

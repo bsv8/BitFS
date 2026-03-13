@@ -12,9 +12,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/libp2p/go-libp2p"
-	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
 
 func TestHandleAdminStrategyDebugLog(t *testing.T) {
@@ -708,23 +705,9 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	pubHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new publisher host: %v", err)
-	}
+	pubHost, _ := newSecpHost(t)
 	defer pubHost.Close()
-	subHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new subscriber host: %v", err)
-	}
+	subHost, _ := newSecpHost(t)
 	defer subHost.Close()
 
 	pubCfg := Config{}
@@ -842,14 +825,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	h, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new host: %v", err)
-	}
+	h, _ := newSecpHost(t)
 	defer h.Close()
 
 	cfg := Config{}
@@ -949,23 +925,9 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	pubHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new publisher host: %v", err)
-	}
+	pubHost, _ := newSecpHost(t)
 	defer pubHost.Close()
-	subHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new subscriber host: %v", err)
-	}
+	subHost, _ := newSecpHost(t)
 	defer subHost.Close()
 
 	pubCfg := Config{}

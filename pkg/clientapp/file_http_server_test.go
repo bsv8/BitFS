@@ -12,8 +12,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/libp2p/go-libp2p"
 )
 
 func TestParseSingleRange(t *testing.T) {
@@ -227,10 +225,7 @@ func TestFileHTTPServerRejectMultiRange(t *testing.T) {
 func TestFileHTTPServerServeLivePlaylistAndMedia(t *testing.T) {
 	t.Parallel()
 	srv, _, _ := newLocalOnlyTestServer(t, nil)
-	h, err := libp2p.New()
-	if err != nil {
-		t.Fatalf("new host: %v", err)
-	}
+	h, _ := newSecpHost(t)
 	defer h.Close()
 	srv.rt = &Runtime{Host: h}
 

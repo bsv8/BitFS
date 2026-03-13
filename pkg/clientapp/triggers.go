@@ -178,6 +178,9 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 			return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
+	payMu := rt.feePoolPayMutex(gw.ID.String())
+	payMu.Lock()
+	defer payMu.Unlock()
 	session, ok := rt.getFeePool(gw.ID.String())
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
 		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
@@ -242,6 +245,8 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
 	if resp.Success {
+		// 发布扣费成功后必须推进本地会话，否则下次请求会重复旧 sequence/server_amount。
+		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
 		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
@@ -305,6 +310,9 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 			return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
+	payMu := rt.feePoolPayMutex(gw.ID.String())
+	payMu.Lock()
+	defer payMu.Unlock()
 	session, ok := rt.getFeePool(gw.ID.String())
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
 		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
@@ -361,6 +369,8 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
 	if resp.Success {
+		// 直播需求发布同样会推进费用池状态，必须同步回写本地会话。
+		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
 		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
@@ -377,6 +387,22 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		})
 	}
 	return resp, nil
+}
+
+// applyFeePoolChargeToSession 在扣费成功后推进本地费用池会话。
+// 设计约束：以“池总额 - 服务器额 - fee”回算 client_amount，避免累计误差。
+func applyFeePoolChargeToSession(session *feePoolSession, nextSeq uint32, nextServerAmount uint64, updatedTxHex string) {
+	if session == nil {
+		return
+	}
+	session.Sequence = nextSeq
+	session.ServerAmount = nextServerAmount
+	session.CurrentTxHex = strings.TrimSpace(updatedTxHex)
+	if session.PoolAmountSat >= session.ServerAmount+session.SpendTxFeeSat {
+		session.ClientAmount = session.PoolAmountSat - session.ServerAmount - session.SpendTxFeeSat
+		return
+	}
+	session.ClientAmount = 0
 }
 
 // validateDemandPublishPaidResp 统一校验网关 publish_demand 业务响应。
@@ -715,7 +741,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
-	sellerPubHex, err := dual2of2.Libp2pMarshalPubHexToSecpCompressedHex(strings.TrimSpace(p.SellerPeerID))
+	sellerPubHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(p.SellerPeerID))
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
@@ -940,8 +966,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"demand_id":               strings.TrimSpace(p.DemandID),
 			"deal_id":                 dealID,
 			"session_id":              curSessionID,
-			"seller_pubkey_hex":          strings.TrimSpace(p.SellerPeerID),
-			"arbiter_pubkey_hex":         req.ArbiterPeerID,
+			"seller_pubkey_hex":       strings.TrimSpace(p.SellerPeerID),
+			"arbiter_pubkey_hex":      req.ArbiterPeerID,
 			"open_sequence":           req.Sequence,
 			"open_base_txid":          baseTxID,
 			"pool_amount_satoshi":     req.PoolAmount,
@@ -1234,8 +1260,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"demand_id":           strings.TrimSpace(session.DemandID),
 		"deal_id":             strings.TrimSpace(session.DealID),
 		"session_id":          session.SessionID,
-		"seller_pubkey_hex":      strings.TrimSpace(session.SellerPeerID),
-		"arbiter_pubkey_hex":     strings.TrimSpace(session.ArbiterPeerID),
+		"seller_pubkey_hex":   strings.TrimSpace(session.SellerPeerID),
+		"arbiter_pubkey_hex":  strings.TrimSpace(session.ArbiterPeerID),
 		"seed_hash":           seedHash,
 		"chunk_hash":          chunkHash,
 		"chunk_index":         p.ChunkIndex,
@@ -1372,8 +1398,8 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 		"demand_id":             strings.TrimSpace(session.DemandID),
 		"deal_id":               strings.TrimSpace(session.DealID),
 		"session_id":            session.SessionID,
-		"seller_pubkey_hex":        strings.TrimSpace(session.SellerPeerID),
-		"arbiter_pubkey_hex":       strings.TrimSpace(session.ArbiterPeerID),
+		"seller_pubkey_hex":     strings.TrimSpace(session.SellerPeerID),
+		"arbiter_pubkey_hex":    strings.TrimSpace(session.ArbiterPeerID),
 		"open_sequence":         session.OpenSequence,
 		"open_base_txid":        strings.TrimSpace(session.BaseTxID),
 		"pool_amount_satoshi":   session.PoolAmountSat,
@@ -1687,15 +1713,15 @@ func localAdvertiseAddrs(rt *Runtime) []string {
 }
 
 func peerIDFromClientID(clientID string) (peer.ID, error) {
-	clientID = strings.TrimSpace(clientID)
-	if clientID == "" {
-		return "", fmt.Errorf("client_pubkey_hex required")
+	pubHex, err := normalizeCompressedPubKeyHex(clientID)
+	if err != nil {
+		return "", fmt.Errorf("client_pubkey_hex invalid: %w", err)
 	}
-	b, err := hex.DecodeString(clientID)
+	b, err := hex.DecodeString(pubHex)
 	if err != nil {
 		return "", fmt.Errorf("decode client_pubkey_hex: %w", err)
 	}
-	pub, err := crypto.UnmarshalPublicKey(b)
+	pub, err := crypto.UnmarshalSecp256k1PublicKey(b)
 	if err != nil {
 		return "", fmt.Errorf("unmarshal client pubkey: %w", err)
 	}

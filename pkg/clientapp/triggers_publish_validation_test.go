@@ -77,3 +77,43 @@ func TestValidateLiveDemandPublishPaidResp(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyFeePoolChargeToSession(t *testing.T) {
+	t.Run("advance session by next seq and server amount", func(t *testing.T) {
+		sess := &feePoolSession{
+			PoolAmountSat: 30,
+			SpendTxFeeSat: 1,
+			Sequence:      2,
+			ServerAmount:  10,
+			ClientAmount:  19,
+			CurrentTxHex:  "old_tx_hex",
+		}
+		applyFeePoolChargeToSession(sess, 3, 15, "new_tx_hex")
+		if sess.Sequence != 3 {
+			t.Fatalf("sequence mismatch: got=%d want=3", sess.Sequence)
+		}
+		if sess.ServerAmount != 15 {
+			t.Fatalf("server_amount mismatch: got=%d want=15", sess.ServerAmount)
+		}
+		if sess.ClientAmount != 14 {
+			t.Fatalf("client_amount mismatch: got=%d want=14", sess.ClientAmount)
+		}
+		if sess.CurrentTxHex != "new_tx_hex" {
+			t.Fatalf("current_tx_hex mismatch: got=%s want=new_tx_hex", sess.CurrentTxHex)
+		}
+	})
+
+	t.Run("clamp client amount when pool insufficient", func(t *testing.T) {
+		sess := &feePoolSession{
+			PoolAmountSat: 5,
+			SpendTxFeeSat: 2,
+			Sequence:      1,
+			ServerAmount:  1,
+			ClientAmount:  2,
+		}
+		applyFeePoolChargeToSession(sess, 2, 10, "tx")
+		if sess.ClientAmount != 0 {
+			t.Fatalf("client_amount should clamp to zero, got=%d", sess.ClientAmount)
+		}
+	})
+}

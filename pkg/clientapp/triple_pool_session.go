@@ -12,7 +12,6 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -154,7 +153,10 @@ func (r *Runtime) releaseTransferPoolSessionMutex(sessionID string) {
 func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 	sessionID := strings.TrimSpace(req.SessionID)
 	dealID := strings.TrimSpace(req.DealID)
-	buyerPeerID := strings.ToLower(strings.TrimSpace(req.BuyerPeerID))
+	buyerPeerID, err := normalizeCompressedPubKeyHex(req.BuyerPeerID)
+	if err != nil {
+		return directTransferPoolOpenResp{SessionID: strings.TrimSpace(req.SessionID), Status: "rejected", Error: "invalid buyer pubkey"}, nil
+	}
 	arbiterPeerID := strings.TrimSpace(req.ArbiterPeerID)
 	arbiterPubHex := strings.ToLower(strings.TrimSpace(req.ArbiterPubKey))
 	if sessionID == "" || dealID == "" || buyerPeerID == "" || arbiterPeerID == "" || arbiterPubHex == "" {
@@ -199,11 +201,7 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
 	}
-	buyerPubHex, err := dual2of2.Libp2pMarshalPubHexToSecpCompressedHex(buyerPeerID)
-	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer pubkey"}, nil
-	}
-	buyerPub, err := ec.PublicKeyFromString(buyerPubHex)
+	buyerPub, err := ec.PublicKeyFromString(buyerPeerID)
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer secp256k1 pubkey"}, nil
 	}
@@ -253,7 +251,7 @@ func handleDirectTransferPoolOpen(h host.Host, db *sql.DB, cfg Config, req direc
 			fee_rate_sat_byte=excluded.fee_rate_sat_byte,
 			lock_blocks=excluded.lock_blocks,
 		updated_at_unix=excluded.updated_at_unix`,
-		sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPeerID,
+		sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPubHex,
 		req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
 	); err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil

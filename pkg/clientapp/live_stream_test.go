@@ -7,13 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/libp2p/go-libp2p"
-	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
 
 func TestLiveSubscribeURI_RoundTrip(t *testing.T) {
-	raw, err := BuildLiveSubscribeURI(strings.Repeat("ab", 33), strings.Repeat("cd", 32))
+	raw, err := BuildLiveSubscribeURI("02"+strings.Repeat("ab", 32), strings.Repeat("cd", 32))
 	if err != nil {
 		t.Fatalf("build uri failed: %v", err)
 	}
@@ -21,7 +18,7 @@ func TestLiveSubscribeURI_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse uri failed: %v", err)
 	}
-	if parsed.PublisherPubKey != strings.Repeat("ab", 33) {
+	if parsed.PublisherPubKey != "02"+strings.Repeat("ab", 32) {
 		t.Fatalf("unexpected publisher_pubkey: %s", parsed.PublisherPubKey)
 	}
 	if parsed.StreamID != strings.Repeat("cd", 32) {
@@ -30,10 +27,7 @@ func TestLiveSubscribeURI_RoundTrip(t *testing.T) {
 }
 
 func TestBuildAndVerifyLiveSegment(t *testing.T) {
-	h, err := libp2p.New()
-	if err != nil {
-		t.Fatalf("new host failed: %v", err)
-	}
+	h, _ := newSecpHost(t)
 	defer h.Close()
 
 	rt := &Runtime{Host: h}
@@ -88,23 +82,9 @@ func TestBuildAndVerifyLiveSegment(t *testing.T) {
 }
 
 func TestLiveSubscribeAndPublishLatest(t *testing.T) {
-	pubHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new publisher host failed: %v", err)
-	}
+	pubHost, _ := newSecpHost(t)
 	defer pubHost.Close()
-	subHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new subscriber host failed: %v", err)
-	}
+	subHost, _ := newSecpHost(t)
 	defer subHost.Close()
 
 	pubRT := &Runtime{Host: pubHost, live: newLiveRuntime()}
@@ -163,23 +143,9 @@ func TestLiveQuoteSubmitAndList(t *testing.T) {
 	if err := initIndexDB(buyerDB); err != nil {
 		t.Fatalf("init db: %v", err)
 	}
-	buyerHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new buyer host failed: %v", err)
-	}
+	buyerHost, _ := newSecpHost(t)
 	defer buyerHost.Close()
-	sellerHost, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new seller host failed: %v", err)
-	}
+	sellerHost, _ := newSecpHost(t)
 	defer sellerHost.Close()
 
 	buyerRT := &Runtime{Host: buyerHost, DB: buyerDB, live: newLiveRuntime()}

@@ -8,42 +8,18 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/libp2p/go-libp2p"
-	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
 
 func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 	t.Parallel()
 
-	hClient, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new client host: %v", err)
-	}
+	hClient, _ := newSecpHost(t)
 	defer hClient.Close()
 
-	hGw1, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new gw1 host: %v", err)
-	}
+	hGw1, _ := newSecpHost(t)
 	defer hGw1.Close()
 
-	hGw2, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new gw2 host: %v", err)
-	}
+	hGw2, _ := newSecpHost(t)
 	defer hGw2.Close()
 
 	gw1Pub, err := localPubKeyHex(hGw1)
@@ -132,24 +108,10 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing.T) {
 	t.Parallel()
 
-	hClient, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new client host: %v", err)
-	}
+	hClient, _ := newSecpHost(t)
 	defer hClient.Close()
 
-	hGw1, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new gw1 host: %v", err)
-	}
+	hGw1, _ := newSecpHost(t)
 	defer hGw1.Close()
 
 	gw1Pub, err := localPubKeyHex(hGw1)
@@ -201,14 +163,7 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 	}
 	rt.gwManager.SetRuntimeError(hGw1.ID(), "fee_pool_open", fmt.Errorf("query utxos failed"))
 
-	hGw2, err := libp2p.New(
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	)
-	if err != nil {
-		t.Fatalf("new gw2 host: %v", err)
-	}
+	hGw2, _ := newSecpHost(t)
 	// 关闭 gw2，构造一个可解析但不可连接的地址，验证失败网关不会影响已连接网关。
 	gw2PeerID := hGw2.ID().String()
 	_ = hGw2.Close()

@@ -239,8 +239,8 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 	if !shouldRunListenBillingLoop(openRes) {
 		return map[string]any{
 			"gateway_pubkey_hex": gw.ID.String(),
-			"result":          "skip_not_active",
-			"trigger":         trigger,
+			"result":             "skip_not_active",
+			"trigger":            trigger,
 		}, nil
 	}
 	if orch := getClientOrchestrator(rt); orch != nil {
@@ -254,8 +254,8 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 		})
 		return map[string]any{
 			"gateway_pubkey_hex": gw.ID.String(),
-			"result":          "signal_emitted",
-			"trigger":         "billing_tick",
+			"result":             "signal_emitted",
+			"trigger":            "billing_tick",
 		}, nil
 	}
 	tickRes := kernel.dispatch(ctx, clientKernelCommand{
@@ -269,8 +269,8 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 	if tickRes.Status == "paused" {
 		return map[string]any{
 			"gateway_pubkey_hex": gw.ID.String(),
-			"result":          "paused",
-			"trigger":         "billing_tick",
+			"result":             "paused",
+			"trigger":            "billing_tick",
 		}, nil
 	}
 	if strings.TrimSpace(tickRes.Status) == "failed" {
@@ -278,8 +278,8 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 	}
 	return map[string]any{
 		"gateway_pubkey_hex": gw.ID.String(),
-		"result":          "applied",
-		"trigger":         "billing_tick",
+		"result":             "applied",
+		"trigger":            "billing_tick",
 	}, nil
 }
 
@@ -608,6 +608,16 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	if rt == nil || s == nil {
 		return fmt.Errorf("session missing")
 	}
+	payMu := rt.feePoolPayMutex(gw.String())
+	payMu.Lock()
+	defer payMu.Unlock()
+
+	latest, ok := rt.getFeePool(gw.String())
+	if !ok || latest == nil || strings.TrimSpace(latest.SpendTxID) == "" {
+		return fmt.Errorf("session missing")
+	}
+	// 统一以 runtime 当前会话为准，避免轮换后持有旧指针继续扣费。
+	s = latest
 	if s.Status != "active" {
 		return fmt.Errorf("session status %s", s.Status)
 	}
@@ -675,10 +685,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 
 	// client 侧保存“本次更新的 tx hex”（不需要 server merge 结果）。
-	s.CurrentTxHex = updatedTx.Hex()
-	s.Sequence = out.Sequence
-	s.ServerAmount = out.ServerAmount
-	s.ClientAmount = out.ClientAmount
+	applyFeePoolChargeToSession(s, out.Sequence, out.ServerAmount, updatedTx.Hex())
 
 	appendTxHistory(rt.DB, txHistoryEntry{
 		GatewayPeerID: s.GatewayPeerID,

@@ -256,9 +256,6 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 	if err != nil {
 		return nil, err
 	}
-	if m.catalog != nil {
-		m.catalog.Replace(seeds)
-	}
 	return seeds, nil
 }
 
@@ -553,9 +550,6 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		ChunkCount: meta.ChunkCount,
 		ChunkPrice: unit,
 		SeedPrice:  total,
-	}
-	if m.catalog != nil {
-		m.catalog.Upsert(seed)
 	}
 	return seed, nil
 }

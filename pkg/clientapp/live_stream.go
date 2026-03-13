@@ -87,7 +87,7 @@ func BuildLiveSubscribeURI(publisherPubKey, streamID string) (string, error) {
 	if publisherPubKey == "" || streamID == "" {
 		return "", fmt.Errorf("publisher_pubkey and stream_id required")
 	}
-	if _, err := hex.DecodeString(publisherPubKey); err != nil {
+	if _, err := normalizeCompressedPubKeyHex(publisherPubKey); err != nil {
 		return "", fmt.Errorf("invalid publisher_pubkey")
 	}
 	if !isSeedHashHex(streamID) {
@@ -109,7 +109,7 @@ func ParseLiveSubscribeURI(raw string) (LiveSubscribeURI, error) {
 		PublisherPubKey: strings.ToLower(strings.TrimSpace(parts[2])),
 		StreamID:        strings.ToLower(strings.TrimSpace(parts[3])),
 	}
-	if _, err := hex.DecodeString(out.PublisherPubKey); err != nil {
+	if _, err := normalizeCompressedPubKeyHex(out.PublisherPubKey); err != nil {
 		return LiveSubscribeURI{}, fmt.Errorf("invalid publisher_pubkey")
 	}
 	if !isSeedHashHex(out.StreamID) {
@@ -516,11 +516,15 @@ func VerifyLiveSegment(segmentBytes []byte) (liveSegmentDataPB, []byte, string, 
 	if pubHex == "" {
 		return liveSegmentDataPB{}, nil, "", fmt.Errorf("publisher_pubkey required")
 	}
+	pubHex, err := normalizeCompressedPubKeyHex(pubHex)
+	if err != nil {
+		return liveSegmentDataPB{}, nil, "", fmt.Errorf("invalid publisher_pubkey")
+	}
 	rawPub, err := hex.DecodeString(pubHex)
 	if err != nil {
 		return liveSegmentDataPB{}, nil, "", fmt.Errorf("invalid publisher_pubkey")
 	}
-	pub, err := crypto.UnmarshalPublicKey(rawPub)
+	pub, err := crypto.UnmarshalSecp256k1PublicKey(rawPub)
 	if err != nil {
 		return liveSegmentDataPB{}, nil, "", err
 	}
@@ -633,9 +637,9 @@ func TriggerLivePublishLatest(ctx context.Context, rt *Runtime, streamID string,
 		var resp liveHeadPushResp
 		if err := p2prpc.CallProto(ctx, rt.Host, subscriberID, ProtoLiveHeadPush, clientSec(rt.rpcTrace), req, &resp); err != nil {
 			obs.Error("bitcast-client", "live_head_push_failed", map[string]any{
-				"stream_id": streamID,
-				"transport_peer_id":   target.PeerID,
-				"error":     err.Error(),
+				"stream_id":         streamID,
+				"transport_peer_id": target.PeerID,
+				"error":             err.Error(),
 			})
 			continue
 		}

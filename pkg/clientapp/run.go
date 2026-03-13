@@ -567,8 +567,12 @@ type Runtime struct {
 	Chain      dual2of2.ChainClient
 	feePoolsMu sync.RWMutex
 	feePools   map[string]*feePoolSession
-	tripleMu   sync.RWMutex
-	triplePool map[string]*triplePoolSession
+	// feePoolPayLocks 按 gateway 串行化费用池扣费路径（listen cycle / publish demand / publish live demand）。
+	// 设计约束：同一 gateway 只能有一个扣费请求在飞，避免 sequence/server_amount 并发竞争。
+	feePoolPayLocksMu sync.Mutex
+	feePoolPayLocks   map[string]*sync.Mutex
+	tripleMu          sync.RWMutex
+	triplePool        map[string]*triplePoolSession
 
 	// 设计说明：
 	// - open 阶段涉及 deal/session 建立与钱包输入准备，仍用全局锁保证顺序；
@@ -889,6 +893,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		Chain:                    in.Chain,
 		live:                     newLiveRuntime(),
 		feePools:                 map[string]*feePoolSession{},
+		feePoolPayLocks:          map[string]*sync.Mutex{},
 		triplePool:               map[string]*triplePoolSession{},
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 trace,
@@ -897,8 +902,9 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
+	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
-		registerSellerHandlers(h, db, catalog, rt.live, trace, cfg)
+		registerSellerHandlers(h, db, rt.live, trace, cfg)
 	}
 	if rt.Chain == nil {
 		// 设计约束：业务组件不直连 WOC，上链调用统一走 guard。
@@ -2389,11 +2395,87 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureAppConfigTable(db); err != nil {
 		return err
 	}
+	if err := normalizeClientPubKeyColumns(db); err != nil {
+		return err
+	}
 	// 口径纠偏：cycle_pay 是过程事件，不应存在于财务主表。
 	if err := cleanupLegacyCyclePayFinanceRows(db); err != nil {
 		return err
 	}
 	return nil
+}
+
+// normalizeClientPubKeyColumns 把历史库里的旧格式公钥统一迁移为压缩公钥 hex（02/03）。
+func normalizeClientPubKeyColumns(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	targets := []struct {
+		table      string
+		column     string
+		allowEmpty bool
+	}{
+		{table: "direct_quotes", column: "seller_pubkey_hex"},
+		{table: "direct_deals", column: "buyer_pubkey_hex"},
+		{table: "direct_deals", column: "seller_pubkey_hex"},
+		{table: "direct_transfer_pools", column: "buyer_pubkey_hex"},
+		{table: "direct_transfer_pools", column: "seller_pubkey_hex"},
+		{table: "live_quotes", column: "seller_pubkey_hex"},
+		{table: "live_follows", column: "last_quote_seller_pubkey_hex", allowEmpty: true},
+		{table: "file_download_chunks", column: "seller_pubkey_hex", allowEmpty: true},
+	}
+	for _, t := range targets {
+		if err := normalizeClientPubKeyColumn(db, t.table, t.column, t.allowEmpty); err != nil {
+			return fmt.Errorf("normalize %s.%s failed: %w", t.table, t.column, err)
+		}
+	}
+	return nil
+}
+
+func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bool) error {
+	rows, err := db.Query(fmt.Sprintf("SELECT rowid,%s FROM %s", strings.TrimSpace(column), strings.TrimSpace(table)))
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var rowID int64
+		var raw string
+		if err := rows.Scan(&rowID, &raw); err != nil {
+			return err
+		}
+		raw = strings.TrimSpace(raw)
+		if raw == "" && allowEmpty {
+			continue
+		}
+		norm, err := normalizeCompressedPubKeyHexLegacyAware(raw)
+		if err != nil {
+			if allowEmpty && raw == "" {
+				continue
+			}
+			return err
+		}
+		if strings.EqualFold(raw, norm) {
+			continue
+		}
+		_, err = db.Exec(
+			fmt.Sprintf("UPDATE %s SET %s=? WHERE rowid=?", strings.TrimSpace(table), strings.TrimSpace(column)),
+			norm,
+			rowID,
+		)
+		if err == nil {
+			continue
+		}
+		// 处理唯一键冲突：同一业务行已存在新格式时，删除旧格式重复行。
+		if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
+			if _, delErr := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rowid=?", strings.TrimSpace(table)), rowID); delErr != nil {
+				return delErr
+			}
+			continue
+		}
+		return err
+	}
+	return rows.Err()
 }
 
 func ensureAppConfigTable(db *sql.DB) error {
@@ -2925,7 +3007,57 @@ func cfgBool(v *bool, def bool) bool {
 	return *v
 }
 
-func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, live *liveRuntime, trace p2prpc.TraceSink, cfg Config) {
+// registerDirectQuoteSubmitHandler 注册买方接收报价入口。
+// 设计说明：
+// - direct quote 是“卖方 -> 买方”回推路径，买方即便不是 seller 模式也必须可接收；
+// - 该入口只负责落库 direct_quotes，不涉及卖方资源读取，因此可全端默认启用。
+func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace p2prpc.TraceSink) {
+	p2prpc.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
+		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
+			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
+		}
+		sellerPubHex, err := normalizeCompressedPubKeyHex(req.SellerPeerID)
+		if err != nil {
+			return directQuoteSubmitResp{}, fmt.Errorf("invalid seller pubkey")
+		}
+		if req.ExpiresAtUnix > 0 && req.ExpiresAtUnix < time.Now().Unix() {
+			return directQuoteSubmitResp{}, fmt.Errorf("direct quote expired")
+		}
+		arbIDs := normalizePeerIDList(req.ArbiterPeerIDs)
+		arbIDsJSON, err := json.Marshal(arbIDs)
+		if err != nil {
+			return directQuoteSubmitResp{}, err
+		}
+		availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
+		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
+		if _, err := db.Exec(
+			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
+			 VALUES(?,?,?,?,?,?,?,?,?)
+			 ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
+			 seed_price=excluded.seed_price,
+			 chunk_price=excluded.chunk_price,
+			 expires_at_unix=excluded.expires_at_unix,
+			 recommended_file_name=excluded.recommended_file_name,
+			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
+			 seller_arbiter_pubkey_hexes_json=excluded.seller_arbiter_pubkey_hexes_json,
+			 created_at_unix=excluded.created_at_unix`,
+			strings.TrimSpace(req.DemandID),
+			sellerPubHex,
+			req.SeedPrice,
+			req.ChunkPrice,
+			req.ExpiresAtUnix,
+			recommendedName,
+			availableChunkBitmapHex,
+			string(arbIDsJSON),
+			time.Now().Unix(),
+		); err != nil {
+			return directQuoteSubmitResp{}, err
+		}
+		return directQuoteSubmitResp{Status: "stored"}, nil
+	})
+}
+
+func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2prpc.TraceSink, cfg Config) {
 	p2prpc.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
@@ -2941,7 +3073,10 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 		); err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
-		seed, ok := catalog.Get(seedHash)
+		seed, ok, err := loadSellerSeedFromDB(db, seedHash)
+		if err != nil {
+			return dealprod.DemandAnnounceResp{}, err
+		}
 		if !ok {
 			obs.Business("bitcast-client", "demand_announce_ignored_no_seed", map[string]any{
 				"demand_id":   demandID,
@@ -2950,6 +3085,12 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 				"chunk_count": req.ChunkCount,
 			})
 			return dealprod.DemandAnnounceResp{Status: "ignored_no_seed"}, nil
+		}
+		if seed.ChunkPrice == 0 {
+			seed.ChunkPrice = cfg.Seller.Pricing.FloorPriceSatPer64K
+		}
+		if seed.SeedPrice == 0 {
+			seed.SeedPrice = seed.ChunkPrice * uint64(seed.ChunkCount)
 		}
 		if liveMeta, ok := live.segment(seedHash); ok {
 			seed = ComputeLiveQuotePrices(seed, liveMeta, LiveSellerPricing{
@@ -3058,48 +3199,17 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 		}
 		return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
 	})
-	p2prpc.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
-		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
-			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
-		}
-		if req.ExpiresAtUnix > 0 && req.ExpiresAtUnix < time.Now().Unix() {
-			return directQuoteSubmitResp{}, fmt.Errorf("direct quote expired")
-		}
-		arbIDs := normalizePeerIDList(req.ArbiterPeerIDs)
-		arbIDsJSON, err := json.Marshal(arbIDs)
-		if err != nil {
-			return directQuoteSubmitResp{}, err
-		}
-		availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
-		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
-		if _, err := db.Exec(
-			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
-			 seed_price=excluded.seed_price,
-			 chunk_price=excluded.chunk_price,
-			 expires_at_unix=excluded.expires_at_unix,
-			 recommended_file_name=excluded.recommended_file_name,
-			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
-			 seller_arbiter_pubkey_hexes_json=excluded.seller_arbiter_pubkey_hexes_json,
-			 created_at_unix=excluded.created_at_unix`,
-			strings.TrimSpace(req.DemandID),
-			strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
-			req.SeedPrice,
-			req.ChunkPrice,
-			req.ExpiresAtUnix,
-			recommendedName,
-			availableChunkBitmapHex,
-			string(arbIDsJSON),
-			time.Now().Unix(),
-		); err != nil {
-			return directQuoteSubmitResp{}, err
-		}
-		return directQuoteSubmitResp{Status: "stored"}, nil
-	})
 	p2prpc.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(_ context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.BuyerPeerID) == "" || strings.TrimSpace(req.SeedHash) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directDealAcceptResp{}, fmt.Errorf("invalid direct deal accept")
+		}
+		buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPeerID)
+		if err != nil {
+			return directDealAcceptResp{}, fmt.Errorf("invalid buyer pubkey")
+		}
+		sellerPubHex, err := normalizeCompressedPubKeyHex(localPubHex(h))
+		if err != nil {
+			return directDealAcceptResp{}, fmt.Errorf("invalid seller pubkey")
 		}
 		if req.ExpiresAtUnix > 0 && req.ExpiresAtUnix < time.Now().Unix() {
 			return directDealAcceptResp{}, fmt.Errorf("direct quote expired")
@@ -3110,8 +3220,8 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			dealID,
 			strings.TrimSpace(req.DemandID),
-			strings.ToLower(strings.TrimSpace(req.BuyerPeerID)),
-			strings.ToLower(strings.TrimSpace(localPubHex(h))),
+			buyerPubHex,
+			sellerPubHex,
 			strings.ToLower(strings.TrimSpace(req.SeedHash)),
 			req.SeedPrice,
 			req.ChunkPrice,
@@ -3123,7 +3233,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, catalog *sellerCatalog, liv
 		}
 		return directDealAcceptResp{
 			DealID:       dealID,
-			SellerPeerID: strings.ToLower(strings.TrimSpace(localPubHex(h))),
+			SellerPeerID: sellerPubHex,
 			ChunkPrice:   req.ChunkPrice,
 			Status:       "accepted",
 		}, nil
@@ -3361,7 +3471,11 @@ func localPubHex(h host.Host) string {
 	if err != nil {
 		return ""
 	}
-	return hex.EncodeToString(raw)
+	out, err := normalizeCompressedPubKeyHex(hex.EncodeToString(raw))
+	if err != nil {
+		return ""
+	}
+	return out
 }
 
 func connectGateways(ctx context.Context, h host.Host, gateways []PeerNode) ([]peer.AddrInfo, error) {
@@ -3791,6 +3905,37 @@ func listSeedAvailableChunks(db *sql.DB, seedHash string) ([]uint32, error) {
 	return contiguousChunkIndexes(have), nil
 }
 
+// loadSellerSeedFromDB 从数据库读取卖方报价所需 seed 快照。
+// 设计约束：卖方侧是否可报价以 DB 为唯一真相，不依赖内存镜像状态。
+func loadSellerSeedFromDB(db *sql.DB, seedHash string) (sellerSeed, bool, error) {
+	if db == nil {
+		return sellerSeed{}, false, fmt.Errorf("db is nil")
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return sellerSeed{}, false, nil
+	}
+	var out sellerSeed
+	var unitPrice uint64
+	err := db.QueryRow(
+		`SELECT s.seed_hash,s.chunk_count,COALESCE(p.unit_price_sat_per_64k,0)
+		   FROM seeds s
+		   LEFT JOIN seed_price_state p ON p.seed_hash=s.seed_hash
+		  WHERE s.seed_hash=?`,
+		seedHash,
+	).Scan(&out.SeedHash, &out.ChunkCount, &unitPrice)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return sellerSeed{}, false, nil
+		}
+		return sellerSeed{}, false, err
+	}
+	out.SeedHash = seedHash
+	out.ChunkPrice = unitPrice
+	out.SeedPrice = unitPrice * uint64(out.ChunkCount)
+	return out, true, nil
+}
+
 func isSeedChunkAvailable(db *sql.DB, seedHash string, chunkIndex uint32) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
@@ -4033,11 +4178,11 @@ func clientIDFromPrivHex(privHex string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	pubRaw, err := crypto.MarshalPublicKey(priv.GetPublic())
+	pubRaw, err := priv.GetPublic().Raw()
 	if err != nil {
-		return "", fmt.Errorf("marshal public key: %w", err)
+		return "", fmt.Errorf("read public key raw bytes: %w", err)
 	}
-	return strings.ToLower(hex.EncodeToString(pubRaw)), nil
+	return normalizeCompressedPubKeyHex(hex.EncodeToString(pubRaw))
 }
 
 func parsePrivHex(s string) (crypto.PrivKey, error) {
@@ -4057,11 +4202,11 @@ func localPubKeyHex(h host.Host) (string, error) {
 	if pub == nil {
 		return "", fmt.Errorf("missing host public key")
 	}
-	raw, err := crypto.MarshalPublicKey(pub)
+	raw, err := pub.Raw()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("read host public key raw bytes: %w", err)
 	}
-	return strings.ToLower(hex.EncodeToString(raw)), nil
+	return normalizeCompressedPubKeyHex(hex.EncodeToString(raw))
 }
 
 // must 已移除：库代码不应 panic。
