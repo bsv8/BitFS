@@ -64,11 +64,11 @@ func TestNetworkInitDefaults(t *testing.T) {
 	if got, want := testDefaults.FSHTTPPrefetchDistanceChunks, uint32(8); got != want {
 		t.Fatalf("test fs_http.prefetch_distance_chunks=%d, want %d", got, want)
 	}
-	if got := len(testDefaults.DefaultGateways); got != 0 {
-		t.Fatalf("test default_gateways len=%d, want 0", got)
+	if got := len(testDefaults.DefaultGateways); got != 1 {
+		t.Fatalf("test default_gateways len=%d, want 1", got)
 	}
-	if got := len(testDefaults.DefaultArbiters); got != 0 {
-		t.Fatalf("test default_arbiters len=%d, want 0", got)
+	if got := len(testDefaults.DefaultArbiters); got != 1 {
+		t.Fatalf("test default_arbiters len=%d, want 1", got)
 	}
 
 	mainDefaults, err := networkInitDefaults("main")
@@ -93,11 +93,11 @@ func TestNetworkInitDefaults(t *testing.T) {
 	if got, want := mainDefaults.FSHTTPPrefetchDistanceChunks, uint32(8); got != want {
 		t.Fatalf("main fs_http.prefetch_distance_chunks=%d, want %d", got, want)
 	}
-	if got := len(mainDefaults.DefaultGateways); got != 0 {
-		t.Fatalf("main default_gateways len=%d, want 0", got)
+	if got := len(mainDefaults.DefaultGateways); got != 1 {
+		t.Fatalf("main default_gateways len=%d, want 1", got)
 	}
-	if got := len(mainDefaults.DefaultArbiters); got != 0 {
-		t.Fatalf("main default_arbiters len=%d, want 0", got)
+	if got := len(mainDefaults.DefaultArbiters); got != 1 {
+		t.Fatalf("main default_arbiters len=%d, want 1", got)
 	}
 }
 
