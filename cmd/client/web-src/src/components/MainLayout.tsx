@@ -233,16 +233,10 @@ export function MainLayout({ route, onLock, children }: MainLayoutProps) {
             UTXO 事件
           </button>
           <button
-            className={route.path === "/admin/chain-tip-logs" ? "menu active" : "menu"}
-            onClick={() => setHash("/admin/chain-tip-logs", new URLSearchParams("page=1&pageSize=20"))}
+            className={route.path === "/admin/scheduler-tasks" ? "menu active" : "menu"}
+            onClick={() => setHash("/admin/scheduler-tasks")}
           >
-            链高度日志
-          </button>
-          <button
-            className={route.path === "/admin/chain-utxo-logs" ? "menu active" : "menu"}
-            onClick={() => setHash("/admin/chain-utxo-logs", new URLSearchParams("page=1&pageSize=20"))}
-          >
-            UTXO 轮询日志
+            调度器任务
           </button>
           <button
             className={route.path === "/admin/finance-business" ? "menu active" : "menu"}

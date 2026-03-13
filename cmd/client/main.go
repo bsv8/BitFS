@@ -23,11 +23,12 @@ var version = "dev"
 var cliLang = detectCLILanguage()
 
 type cliOptions struct {
-	appName    string
-	newKey     bool
-	importPath string
-	exportPath string
-	showVer    bool
+	appName     string
+	initNetwork string
+	newKey      bool
+	importPath  string
+	exportPath  string
+	showVer     bool
 }
 
 type startupSummary struct {
@@ -63,13 +64,17 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	initNetwork, err := clientapp.NormalizeBSVNetwork(opts.initNetwork)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	dbPath, err := defaultConfigDBPath(appName)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(appName, dbPath)
+	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(appName, dbPath, initNetwork)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -100,7 +105,7 @@ func main() {
 		}
 		return
 	case actionRun:
-		if err := runManagedDaemon(appName, cfg, startup, dbPath); err != nil {
+		if err := runManagedDaemon(appName, cfg, startup, dbPath, initNetwork); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -112,6 +117,7 @@ func main() {
 func parseFlags() cliOptions {
 	var opts cliOptions
 	flag.StringVar(&opts.appName, "appname", "bitfs", msg("flag_appname"))
+	flag.StringVar(&opts.initNetwork, "network", "main", msg("flag_network"))
 	flag.BoolVar(&opts.newKey, "new", false, msg("flag_new"))
 	flag.StringVar(&opts.importPath, "import", "", msg("flag_import"))
 	flag.StringVar(&opts.exportPath, "export", "", msg("flag_export"))
@@ -311,8 +317,8 @@ func newDefaultConfig(appName, network string) (clientapp.Config, error) {
 	return cfg, nil
 }
 
-func loadRuntimeConfigOrInit(appName, dbPath string) (clientapp.Config, bool, error) {
-	defaultCfg, err := newDefaultConfig(appName, "test")
+func loadRuntimeConfigOrInit(appName, dbPath, initNetwork string) (clientapp.Config, bool, error) {
+	defaultCfg, err := newDefaultConfig(appName, initNetwork)
 	if err != nil {
 		return clientapp.Config{}, false, err
 	}
@@ -411,7 +417,7 @@ type appPaths struct {
 }
 
 func defaultConfigDBPath(appName string) (string, error) {
-	paths, err := defaultPaths(appName, "test")
+	paths, err := defaultPaths(appName, "main")
 	if err != nil {
 		return "", err
 	}
@@ -425,7 +431,7 @@ func defaultPaths(appName, network string) (appPaths, error) {
 		return appPaths{}, fmt.Errorf("appname cannot be empty")
 	}
 	if network == "" {
-		network = "test"
+		network = "main"
 	}
 
 	switch runtime.GOOS {
@@ -533,6 +539,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs version %s",
 		"usage_line":                     "Usage: bitfs [flags]",
 		"flag_appname":                   "app instance name",
+		"flag_network":                   "initial bsv network for first run only: test/main",
 		"flag_new":                       "create encrypted private key in db",
 		"flag_import":                    "import encrypted key json file into db",
 		"flag_export":                    "export encrypted key json file from db",
@@ -557,6 +564,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags]",
 		"flag_appname":                   "应用实例名",
+		"flag_network":                   "首次初始化使用的 bsv 网络：test/main（仅首次生效）",
 		"flag_new":                       "新建并加密私钥到 db",
 		"flag_import":                    "从 json 文件导入密文私钥到 db",
 		"flag_export":                    "从 db 导出密文私钥到 json 文件",
@@ -581,6 +589,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags]",
 		"flag_appname":                   "應用實例名",
+		"flag_network":                   "首次初始化使用的 bsv 網路：test/main（僅首次生效）",
 		"flag_new":                       "新建並加密私鑰到 db",
 		"flag_import":                    "從 json 檔案匯入密文私鑰到 db",
 		"flag_export":                    "從 db 匯出密文私鑰到 json 檔案",
@@ -605,6 +614,7 @@ var cliMessages = map[string]map[string]string{
 		"version_line":                   "bitfs バージョン %s",
 		"usage_line":                     "使い方: bitfs [flags]",
 		"flag_appname":                   "アプリインスタンス名",
+		"flag_network":                   "初回初期化のみで使う bsv ネットワーク: test/main",
 		"flag_new":                       "DB に暗号化秘密鍵を新規作成",
 		"flag_import":                    "json から暗号化秘密鍵を DB にインポート",
 		"flag_export":                    "DB から暗号化秘密鍵を json にエクスポート",

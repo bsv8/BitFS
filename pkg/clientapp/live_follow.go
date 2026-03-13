@@ -282,12 +282,36 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		return LiveFollowStatus{}, err
 	}
 	streamID := strings.ToLower(strings.TrimSpace(subRes.StreamID))
-	followCtx, cancel := context.WithCancel(context.Background())
-	rt.live.setFollowCancel(streamID, cancel)
 	persisted, found, err := loadLiveFollowStatus(rt.DB, streamID)
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
+	tick := time.Duration(rt.runIn.Live.Publish.BroadcastIntervalSec) * time.Second
+	if tick <= 0 {
+		tick = 3 * time.Second
+	}
+	scheduler := ensureRuntimeTaskScheduler(rt)
+	if scheduler == nil {
+		return LiveFollowStatus{}, fmt.Errorf("task scheduler not initialized")
+	}
+	taskName := liveFollowTaskName(streamID)
+	registered := false
+	if err := scheduler.RegisterOrReplacePeriodicTask(context.Background(), periodicTaskSpec{
+		Name:      taskName,
+		Owner:     "live_follow",
+		Mode:      "dynamic",
+		Interval:  tick,
+		Immediate: true,
+		Run: func(runCtx context.Context, _ string) (map[string]any, error) {
+			return runLiveFollowLoop(runCtx, rt, streamID)
+		},
+	}); err != nil {
+		return LiveFollowStatus{}, err
+	}
+	registered = true
+	rt.live.setFollowCancel(streamID, func() {
+		scheduler.CancelTask(taskName)
+	})
 	rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
 		st.StreamURI = rawURI
 		st.StreamID = streamID
@@ -302,44 +326,42 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		st.Status = "running"
 		st.LastError = ""
 	})
-	go runLiveFollowLoop(followCtx, rt, streamID)
 	st, ok := rt.live.followStatus(streamID)
 	if !ok {
+		if registered {
+			scheduler.CancelTask(taskName)
+		}
 		return LiveFollowStatus{}, fmt.Errorf("follow state missing")
 	}
 	if err := persistLiveFollowStatus(rt.DB, st); err != nil {
+		if registered {
+			scheduler.CancelTask(taskName)
+		}
 		return LiveFollowStatus{}, err
 	}
 	return st, nil
 }
 
-func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) {
-	tick := time.Duration(rt.runIn.Live.Publish.BroadcastIntervalSec) * time.Second
-	if tick <= 0 {
-		tick = 3 * time.Second
+func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) (map[string]any, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
 	}
-	for {
-		if err := liveFollowOnce(ctx, rt, streamID); err != nil {
-			rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
-				st.Status = "running"
-				st.LastError = err.Error()
-			})
-			if st, ok := rt.live.followStatus(streamID); ok {
-				_ = persistLiveFollowStatus(rt.DB, st)
-			}
+	if err := liveFollowOnce(ctx, rt, streamID); err != nil {
+		rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
+			st.Status = "running"
+			st.LastError = err.Error()
+		})
+		if st, ok := rt.live.followStatus(streamID); ok {
+			_ = persistLiveFollowStatus(rt.DB, st)
 		}
-		select {
-		case <-ctx.Done():
-			rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
-				st.Status = "stopped"
-			})
-			if st, ok := rt.live.followStatus(streamID); ok {
-				_ = persistLiveFollowStatus(rt.DB, st)
-			}
-			return
-		case <-time.After(tick):
-		}
+		return nil, err
 	}
+	return map[string]any{
+		"stream_id": streamID,
+		"result":    "tick_ok",
+	}, nil
 }
 
 func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
@@ -522,4 +544,12 @@ func restorePersistedLiveFollows(ctx context.Context, rt *Runtime) {
 			"have_segment_index": it.HaveSegmentIndex,
 		})
 	}
+}
+
+func liveFollowTaskName(streamID string) string {
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
+	if streamID == "" {
+		streamID = "unknown"
+	}
+	return "live_follow_tick:" + streamID
 }

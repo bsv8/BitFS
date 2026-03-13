@@ -55,20 +55,6 @@ const (
 	ProtoLiveHeadPush       protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
 
 	defaultIndexRelPath      = "db/client-index.sqlite"
-	defaultRescanIntervalSec = 300
-	defaultFloorSatPer64K    = 10
-	defaultDiscountBPS       = 8000
-	defaultMinFreeBytes      = 128 * 1024 * 1024
-	defaultHTTPListenAddr    = "127.0.0.1:18080"
-	defaultFSHTTPListenAddr  = "127.0.0.1:18090"
-	// listen 默认值：
-	// - auto_renew_rounds 采用单一默认值，落库后由管理员统一配置；
-	// - renew_threshold/tick 仍按网络给默认值，避免主网/测试网节奏差异过大。
-	defaultListenRenewThresholdTestSec = 5
-	defaultListenRenewThresholdMainSec = 1800
-	defaultListenAutoRenewRounds       = 5
-	defaultListenTickTestSec           = 1
-	defaultListenTickMainSec           = 30
 	seedBlockSize                      = 65536
 
 	// app_config 采用 KV 结构，避免“整表单行文档”在配置扩展时产生耦合。
@@ -590,12 +576,14 @@ type Runtime struct {
 	live     *liveRuntime
 
 	// 运行时状态
-	gwManager  *gatewayManager
-	masterGW   peer.ID
-	masterGWMu sync.RWMutex
-	kernel     *clientKernel
-	orch       *orchestrator
-	chainMaint *chainMaintainer
+	gwManager   *gatewayManager
+	masterGW    peer.ID
+	masterGWMu  sync.RWMutex
+	kernel      *clientKernel
+	orch        *orchestrator
+	chainMaint  *chainMaintainer
+	taskSched   *taskScheduler
+	taskSchedMu sync.Mutex
 
 	closeOnce sync.Once
 	closeFn   func() error
@@ -897,6 +885,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 trace,
 	}
+	rt.taskSched = newTaskScheduler(db, "bitcast-client")
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
@@ -1064,101 +1053,97 @@ func ApplyConfigDefaults(cfg *Config) error {
 	}
 	// BSV：仅支持 test/main 两种网络；默认 test。
 	{
-		n := strings.ToLower(strings.TrimSpace(cfg.BSV.Network))
-		switch n {
-		case "", "testnet":
-			n = "test"
-		case "mainnet":
-			n = "main"
-		}
-		if n != "test" && n != "main" {
-			return fmt.Errorf("bsv.network must be test or main")
+		n, err := NormalizeBSVNetwork(cfg.BSV.Network)
+		if err != nil {
+			return err
 		}
 		cfg.BSV.Network = n
 	}
+	networkDefaults, err := networkInitDefaults(cfg.BSV.Network)
+	if err != nil {
+		return err
+	}
+	if len(cfg.Network.Gateways) == 0 {
+		cfg.Network.Gateways = initPeerNodesToPeerNodes(networkDefaults.DefaultGateways)
+	}
+	if len(cfg.Network.Arbiters) == 0 {
+		cfg.Network.Arbiters = initPeerNodesToPeerNodes(networkDefaults.DefaultArbiters)
+	}
 	if cfg.Index.Backend == "" {
-		cfg.Index.Backend = "sqlite"
+		cfg.Index.Backend = networkDefaults.IndexBackend
 	}
 	if cfg.Index.SQLitePath == "" {
-		cfg.Index.SQLitePath = defaultIndexRelPath
+		cfg.Index.SQLitePath = networkDefaults.IndexSQLitePath
 	}
 	if cfg.Seller.Pricing.FloorPriceSatPer64K == 0 {
-		cfg.Seller.Pricing.FloorPriceSatPer64K = defaultFloorSatPer64K
+		cfg.Seller.Pricing.FloorPriceSatPer64K = networkDefaults.SellerFloorPriceSatPer64K
 	}
 	if cfg.Seller.Pricing.ResaleDiscountBPS == 0 {
-		cfg.Seller.Pricing.ResaleDiscountBPS = defaultDiscountBPS
+		cfg.Seller.Pricing.ResaleDiscountBPS = networkDefaults.SellerResaleDiscountBPS
 	}
 	if cfg.Seller.Pricing.LiveBasePriceSatPer64K == 0 {
-		cfg.Seller.Pricing.LiveBasePriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K * 4
+		cfg.Seller.Pricing.LiveBasePriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K * networkDefaults.SellerLiveBaseMultiplier
 		if cfg.Seller.Pricing.LiveBasePriceSatPer64K == 0 {
-			cfg.Seller.Pricing.LiveBasePriceSatPer64K = defaultFloorSatPer64K * 4
+			cfg.Seller.Pricing.LiveBasePriceSatPer64K = networkDefaults.SellerFloorPriceSatPer64K * networkDefaults.SellerLiveBaseMultiplier
 		}
 	}
 	if cfg.Seller.Pricing.LiveFloorPriceSatPer64K == 0 {
 		cfg.Seller.Pricing.LiveFloorPriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K
 	}
 	if cfg.Seller.Pricing.LiveDecayPerMinuteBPS == 0 {
-		cfg.Seller.Pricing.LiveDecayPerMinuteBPS = 1000
+		cfg.Seller.Pricing.LiveDecayPerMinuteBPS = networkDefaults.SellerLiveDecayPerMinuteBPS
 	}
 	if cfg.Live.Buyer.TargetLagSegments == 0 {
-		cfg.Live.Buyer.TargetLagSegments = 3
+		cfg.Live.Buyer.TargetLagSegments = networkDefaults.LiveBuyerTargetLagSegments
 	}
 	if cfg.Live.Publish.BroadcastWindow == 0 {
-		cfg.Live.Publish.BroadcastWindow = 10
+		cfg.Live.Publish.BroadcastWindow = networkDefaults.LivePublishBroadcastWindow
 	}
 	if cfg.Live.Publish.BroadcastIntervalSec == 0 {
-		cfg.Live.Publish.BroadcastIntervalSec = 3
+		cfg.Live.Publish.BroadcastIntervalSec = networkDefaults.LivePublishIntervalSeconds
 	}
 	if cfg.Listen.Enabled == nil {
-		v := true
+		v := networkDefaults.ListenEnabled
 		cfg.Listen.Enabled = &v
 	}
 	if cfg.Listen.RenewThresholdSeconds == 0 {
-		if cfg.BSV.Network == "main" {
-			cfg.Listen.RenewThresholdSeconds = defaultListenRenewThresholdMainSec
-		} else {
-			cfg.Listen.RenewThresholdSeconds = defaultListenRenewThresholdTestSec
-		}
+		cfg.Listen.RenewThresholdSeconds = networkDefaults.ListenRenewThresholdSeconds
 	}
 	if cfg.Listen.AutoRenewRounds == 0 {
-		cfg.Listen.AutoRenewRounds = defaultListenAutoRenewRounds
+		cfg.Listen.AutoRenewRounds = networkDefaults.ListenAutoRenewRounds
 	}
 	if cfg.Listen.TickSeconds == 0 {
-		if cfg.BSV.Network == "main" {
-			cfg.Listen.TickSeconds = defaultListenTickMainSec
-		} else {
-			cfg.Listen.TickSeconds = defaultListenTickTestSec
-		}
+		cfg.Listen.TickSeconds = networkDefaults.ListenTickSeconds
 	}
 	if cfg.Scan.RescanIntervalSeconds == 0 {
-		cfg.Scan.RescanIntervalSeconds = defaultRescanIntervalSec
+		cfg.Scan.RescanIntervalSeconds = networkDefaults.ScanRescanIntervalSeconds
 	}
 	if cfg.Storage.MinFreeBytes == 0 {
-		cfg.Storage.MinFreeBytes = defaultMinFreeBytes
+		cfg.Storage.MinFreeBytes = networkDefaults.StorageMinFreeBytes
 	}
 	if strings.TrimSpace(cfg.HTTP.ListenAddr) == "" {
-		cfg.HTTP.ListenAddr = defaultHTTPListenAddr
+		cfg.HTTP.ListenAddr = networkDefaults.HTTPListenAddr
 	}
 	if strings.TrimSpace(cfg.FSHTTP.ListenAddr) == "" {
-		cfg.FSHTTP.ListenAddr = defaultFSHTTPListenAddr
+		cfg.FSHTTP.ListenAddr = networkDefaults.FSHTTPListenAddr
 	}
 	if cfg.FSHTTP.DownloadWaitTimeoutSeconds == 0 {
-		cfg.FSHTTP.DownloadWaitTimeoutSeconds = 60
+		cfg.FSHTTP.DownloadWaitTimeoutSeconds = networkDefaults.FSHTTPDownloadWaitSeconds
 	}
 	if cfg.FSHTTP.MaxConcurrentSessions == 0 {
-		cfg.FSHTTP.MaxConcurrentSessions = 4
+		cfg.FSHTTP.MaxConcurrentSessions = networkDefaults.FSHTTPMaxConcurrentSessions
 	}
 	if cfg.FSHTTP.QuoteWaitSeconds == 0 {
-		cfg.FSHTTP.QuoteWaitSeconds = 60
+		cfg.FSHTTP.QuoteWaitSeconds = networkDefaults.FSHTTPQuoteWaitSeconds
 	}
 	if cfg.FSHTTP.QuotePollSeconds == 0 {
-		cfg.FSHTTP.QuotePollSeconds = 2
+		cfg.FSHTTP.QuotePollSeconds = networkDefaults.FSHTTPQuotePollSeconds
 	}
 	if cfg.FSHTTP.PrefetchDistanceChunks == 0 {
-		cfg.FSHTTP.PrefetchDistanceChunks = 8
+		cfg.FSHTTP.PrefetchDistanceChunks = networkDefaults.FSHTTPPrefetchDistanceChunks
 	}
 	if strings.TrimSpace(cfg.Log.ConsoleMinLevel) == "" {
-		cfg.Log.ConsoleMinLevel = obs.LevelNone
+		cfg.Log.ConsoleMinLevel = networkDefaults.LogConsoleMinLevel
 	}
 	return nil
 }
@@ -1250,9 +1235,9 @@ func ResolveLogConfig(cfg *Config) (string, string) {
 }
 
 func validateConfig(cfg *Config) error {
-	n := strings.ToLower(strings.TrimSpace(cfg.BSV.Network))
-	if n != "test" && n != "main" {
-		return errors.New("bsv.network must be test or main")
+	n, err := NormalizeBSVNetwork(cfg.BSV.Network)
+	if err != nil {
+		return err
 	}
 	cfg.BSV.Network = n
 
@@ -1810,6 +1795,41 @@ func initIndexDB(db *sql.DB) error {
 			error_message TEXT NOT NULL,
 			result_json TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS scheduler_tasks(
+			task_name TEXT PRIMARY KEY,
+			owner TEXT NOT NULL,
+			mode TEXT NOT NULL,
+			status TEXT NOT NULL,
+			interval_seconds INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			closed_at_unix INTEGER NOT NULL,
+			last_trigger TEXT NOT NULL,
+			last_started_at_unix INTEGER NOT NULL,
+			last_ended_at_unix INTEGER NOT NULL,
+			last_duration_ms INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			in_flight INTEGER NOT NULL,
+			run_count INTEGER NOT NULL,
+			success_count INTEGER NOT NULL,
+			failure_count INTEGER NOT NULL,
+			last_summary_json TEXT NOT NULL,
+			meta_json TEXT NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS scheduler_task_runs(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			task_name TEXT NOT NULL,
+			owner TEXT NOT NULL,
+			mode TEXT NOT NULL,
+			trigger TEXT NOT NULL,
+			started_at_unix INTEGER NOT NULL,
+			ended_at_unix INTEGER NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			summary_json TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS static_file_prices(
 			path TEXT PRIMARY KEY,
 			floor_unit_price_sat_per_64k INTEGER NOT NULL,
@@ -1905,6 +1925,11 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_status ON chain_tip_worker_logs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_started ON chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_status ON chain_utxo_worker_logs(status, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_status ON scheduler_tasks(status, updated_at_unix DESC, task_name ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_owner_mode ON scheduler_tasks(owner, mode, task_name ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_task ON scheduler_task_runs(task_name, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_status ON scheduler_task_runs(status, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_started ON scheduler_task_runs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_static_file_prices_updated ON static_file_prices(updated_at_unix DESC)`,
 	}
 	for _, s := range stmts {

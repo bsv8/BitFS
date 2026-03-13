@@ -71,9 +71,9 @@ import type {
   FinanceBreakdown,
   FinanceUTXOLinksResp,
   FinanceUTXOLink,
-  // 链轮询日志类型
-  ChainTipLogsResp,
-  ChainUTXOLogsResp,
+  // 调度器任务类型
+  SchedulerTasksResp,
+  SchedulerTaskRunsResp,
 } from "../types";
 
 /**
@@ -611,10 +611,23 @@ export function getOrchestratorLogDetail(eventId: string): Promise<OrchestratorE
 
 /**
  * 获取调度器状态
- * GET /api/v1/admin/orchestrator/status
+ * GET /api/v1/admin/scheduler/tasks
  */
-export function getOrchestratorStatus(): Promise<OrchestratorStatus> {
-  return api<OrchestratorStatus>("api/v1/admin/orchestrator/status");
+export async function getOrchestratorStatus(): Promise<OrchestratorStatus> {
+  const resp = await api<{
+    summary?: {
+      task_count?: number;
+      active_task_count?: number;
+      in_flight_count?: number;
+    };
+  }>("api/v1/admin/scheduler/tasks");
+  const summary = resp?.summary ?? {};
+  return {
+    enabled: (summary.active_task_count ?? summary.task_count ?? 0) > 0,
+    status: "scheduler_tasks",
+    active_signals: summary.in_flight_count ?? 0,
+    pending_tasks: summary.task_count ?? 0,
+  };
 }
 
 // ========== ClientKernel API ==========
@@ -852,26 +865,26 @@ export function getFinanceUTXOLinkDetail(id: number): Promise<FinanceUTXOLink> {
   return api<FinanceUTXOLink>(`api/v1/admin/finance/utxo-links/detail?id=${id}`);
 }
 
-// ========== 链轮询日志 API ==========
+// ========== 调度器任务 API ==========
 
 /**
- * 获取链高度轮询日志列表
- * GET /api/v1/admin/chain/tip/logs
+ * 获取调度器任务列表
+ * GET /api/v1/admin/scheduler/tasks
  * 
- * @param params - 查询参数（分页、过滤等）
+ * @param params - 查询参数（mode, owner, name_prefix, in_flight, has_error）
  */
-export function getChainTipLogs(params?: URLSearchParams): Promise<ChainTipLogsResp> {
+export function getSchedulerTasks(params?: URLSearchParams): Promise<SchedulerTasksResp> {
   const query = params ? `?${params.toString()}` : "";
-  return api<ChainTipLogsResp>(`api/v1/admin/chain/tip/logs${query}`);
+  return api<SchedulerTasksResp>(`api/v1/admin/scheduler/tasks${query}`);
 }
 
 /**
- * 获取 UTXO 轮询日志列表
- * GET /api/v1/admin/chain/utxo/logs
+ * 获取任务执行流水
+ * GET /api/v1/admin/scheduler/runs
  * 
- * @param params - 查询参数（分页、过滤等）
+ * @param params - 查询参数（task_name, owner, mode, status, limit, offset）
  */
-export function getChainUTXOLogs(params?: URLSearchParams): Promise<ChainUTXOLogsResp> {
+export function getSchedulerTaskRuns(params?: URLSearchParams): Promise<SchedulerTaskRunsResp> {
   const query = params ? `?${params.toString()}` : "";
-  return api<ChainUTXOLogsResp>(`api/v1/admin/chain/utxo/logs${query}`);
+  return api<SchedulerTaskRunsResp>(`api/v1/admin/scheduler/runs${query}`);
 }

@@ -40,13 +40,17 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	if intervalSec == 0 {
 		intervalSec = 5
 	}
+	scheduler := ensureRuntimeTaskScheduler(rt)
+	if scheduler == nil {
+		return
+	}
+
 	type loopHandle struct {
-		cancel context.CancelFunc
-		runID  uint64
+		taskName string
+		cycleSec uint32
 	}
 	var mu sync.Mutex
 	running := map[string]loopHandle{}
-	var nextRunID uint64
 	// waitRechargeState 记录“该网关是否已输出过等待充值日志”，用于触发式日志节流。
 	waitRechargeState := map[string]bool{}
 
@@ -56,27 +60,47 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 			return
 		}
 		mu.Lock()
-		if _, ok := running[gwID]; ok {
+		cur, ok := running[gwID]
+		cycleSec := uint32(60)
+		if sess, exists := rt.getFeePool(gwID); exists && sess != nil && sess.BillingCycleSeconds > 0 {
+			cycleSec = sess.BillingCycleSeconds
+		}
+		taskName := listenBillingTaskName(gwID)
+		needReplace := ok && cur.cycleSec != cycleSec
+		if ok && !needReplace {
 			mu.Unlock()
 			return
 		}
-		loopCtx, cancel := context.WithCancel(ctx)
-		nextRunID++
-		runID := nextRunID
-		running[gwID] = loopHandle{cancel: cancel, runID: runID}
+		running[gwID] = loopHandle{taskName: taskName, cycleSec: cycleSec}
 		mu.Unlock()
 
-		go func() {
-			defer func() {
-				mu.Lock()
-				// 仅移除当前实例，避免覆盖新一轮重连创建的 loop。
-				if cur, ok := running[gwID]; ok && cur.runID == runID {
-					delete(running, gwID)
-				}
-				mu.Unlock()
-			}()
-			runListenLoop(loopCtx, rt, gw)
-		}()
+		spec := periodicTaskSpec{
+			Name:      taskName,
+			Owner:     "listen_loop",
+			Mode:      "dynamic",
+			Interval:  time.Duration(cycleSec) * time.Second,
+			Immediate: false,
+			Run: func(runCtx context.Context, trigger string) (map[string]any, error) {
+				return runListenLoop(runCtx, rt, gw, trigger)
+			},
+		}
+		var err error
+		if needReplace {
+			err = scheduler.RegisterOrReplacePeriodicTask(ctx, spec)
+		} else {
+			err = scheduler.RegisterPeriodicTask(ctx, spec)
+		}
+		if err != nil {
+			obs.Error("bitcast-client", "listen_billing_task_register_failed", map[string]any{
+				"gateway":   gwID,
+				"task_name": taskName,
+				"error":     err.Error(),
+			})
+			mu.Lock()
+			delete(running, gwID)
+			mu.Unlock()
+			return
+		}
 	}
 
 	stopMissing := func(active map[string]struct{}) {
@@ -86,7 +110,7 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 			if _, ok := active[gwID]; ok {
 				continue
 			}
-			h.cancel()
+			scheduler.CancelTask(h.taskName)
 			delete(running, gwID)
 		}
 	}
@@ -134,26 +158,20 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 		stopMissing(active)
 	}
 
-	// 启动立即对齐一次，之后按 tick 秒持续自动对齐。
-	reconcile()
-	go func() {
-		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				mu.Lock()
-				for gwID, h := range running {
-					h.cancel()
-					delete(running, gwID)
-				}
-				mu.Unlock()
-				return
-			case <-ticker.C:
-				reconcile()
-			}
-		}
-	}()
+	// 监听协调器进入统一任务框架：启动立即对齐，后续按 listen.tick_seconds 周期对齐。
+	if err := scheduler.RegisterOrReplacePeriodicTask(ctx, periodicTaskSpec{
+		Name:      "listen_loop_reconcile",
+		Owner:     "listen_loop",
+		Mode:      "static",
+		Interval:  time.Duration(intervalSec) * time.Second,
+		Immediate: true,
+		Run: func(_ context.Context, _ string) (map[string]any, error) {
+			reconcile()
+			return map[string]any{"action": "reconcile_gateways"}, nil
+		},
+	}); err != nil {
+		obs.Error("bitcast-client", "listen_reconcile_task_register_failed", map[string]any{"error": err.Error()})
+	}
 }
 
 func snapshotHealthyGateways(rt *Runtime) []peer.AddrInfo {
@@ -204,57 +222,73 @@ func shouldRunListenBillingLoop(openRes clientKernelResult) bool {
 	return openRes.Accepted && strings.TrimSpace(openRes.Status) == "applied"
 }
 
-func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo) {
+func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger string) (map[string]any, error) {
 	kernel := ensureClientKernel(rt)
 	if rt == nil || kernel == nil {
-		return
+		return nil, fmt.Errorf("runtime not initialized")
 	}
 	openRes := kernel.dispatch(ctx, clientKernelCommand{
 		CommandType:   clientKernelCommandFeePoolEnsureActive,
 		GatewayPeerID: gw.ID.String(),
 		RequestedBy:   "listen_loop",
-		Payload:       map[string]any{"trigger": "listen_loop_start"},
+		Payload:       map[string]any{"trigger": trigger},
 	})
-	// 只有首次建池成功才进入周期 loop；失败/暂停都交给外层 reconcile 再拉起。
+	// 任务触发语义：
+	// - ensure_active 失败/暂停交给外层 reconcile 再调度；
+	// - 这里只做“一次计费 tick”，周期由统一任务框架负责。
 	if !shouldRunListenBillingLoop(openRes) {
-		return
+		return map[string]any{
+			"gateway_peer_id": gw.ID.String(),
+			"result":          "skip_not_active",
+			"trigger":         trigger,
+		}, nil
 	}
-	cycleSec := uint32(60)
-	if sess, ok := rt.getFeePool(gw.ID.String()); ok && sess != nil && sess.BillingCycleSeconds > 0 {
-		cycleSec = sess.BillingCycleSeconds
+	if orch := getClientOrchestrator(rt); orch != nil {
+		orch.EmitSignal(orchestratorSignal{
+			Source:       "listen_loop",
+			Type:         orchestratorSignalFeePoolTick,
+			AggregateKey: gw.ID.String(),
+			Payload: map[string]any{
+				"trigger": "billing_tick",
+			},
+		})
+		return map[string]any{
+			"gateway_peer_id": gw.ID.String(),
+			"result":          "signal_emitted",
+			"trigger":         "billing_tick",
+		}, nil
 	}
-	ticker := time.NewTicker(time.Duration(cycleSec) * time.Second)
-	defer ticker.Stop()
+	tickRes := kernel.dispatch(ctx, clientKernelCommand{
+		CommandType:   clientKernelCommandFeePoolMaintain,
+		GatewayPeerID: gw.ID.String(),
+		RequestedBy:   "listen_loop",
+		Payload: map[string]any{
+			"trigger": "billing_tick",
+		},
+	})
+	if tickRes.Status == "paused" {
+		return map[string]any{
+			"gateway_peer_id": gw.ID.String(),
+			"result":          "paused",
+			"trigger":         "billing_tick",
+		}, nil
+	}
+	if strings.TrimSpace(tickRes.Status) == "failed" {
+		return nil, fmt.Errorf("listen billing tick failed: %s", strings.TrimSpace(tickRes.ErrorMessage))
+	}
+	return map[string]any{
+		"gateway_peer_id": gw.ID.String(),
+		"result":          "applied",
+		"trigger":         "billing_tick",
+	}, nil
+}
 
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			if orch := getClientOrchestrator(rt); orch != nil {
-				orch.EmitSignal(orchestratorSignal{
-					Source:       "listen_loop",
-					Type:         orchestratorSignalFeePoolTick,
-					AggregateKey: gw.ID.String(),
-					Payload: map[string]any{
-						"trigger": "billing_tick",
-					},
-				})
-				continue
-			}
-			tickRes := kernel.dispatch(ctx, clientKernelCommand{
-				CommandType:   clientKernelCommandFeePoolMaintain,
-				GatewayPeerID: gw.ID.String(),
-				RequestedBy:   "listen_loop",
-				Payload: map[string]any{
-					"trigger": "billing_tick",
-				},
-			})
-			if tickRes.Status == "paused" {
-				return
-			}
-		}
+func listenBillingTaskName(gatewayPeerID string) string {
+	gatewayPeerID = strings.TrimSpace(gatewayPeerID)
+	if gatewayPeerID == "" {
+		gatewayPeerID = "unknown"
 	}
+	return "listen_billing_tick:" + gatewayPeerID
 }
 
 func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {

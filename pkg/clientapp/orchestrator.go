@@ -97,7 +97,12 @@ func newOrchestrator(rt *Runtime) *orchestrator {
 	}
 	workspaceTick := int64(rt.runIn.Scan.RescanIntervalSeconds)
 	if workspaceTick <= 0 {
-		workspaceTick = defaultRescanIntervalSec
+		d, err := networkInitDefaults(rt.runIn.BSV.Network)
+		if err != nil {
+			workspaceTick = 300
+		} else {
+			workspaceTick = int64(d.ScanRescanIntervalSeconds)
+		}
 	}
 	return &orchestrator{
 		rt:             rt,
@@ -139,7 +144,7 @@ func (o *orchestrator) Start(ctx context.Context) {
 	go o.run(ctx)
 	// 设计约束：workspace 周期扫描只走 orchestrator 信号入口，
 	// 不再保留 run.go 的直连扫描循环，避免出现双调度语义。
-	go o.runWorkspaceSignalWorker(ctx)
+	o.runWorkspaceSignalWorker(ctx)
 }
 
 func (o *orchestrator) SnapshotStatus() OrchestratorStatus {
@@ -203,15 +208,32 @@ func (o *orchestrator) runWorkspaceSignalWorker(ctx context.Context) {
 	}
 	// 唯一入口：按扫描间隔发 workspace.tick，后续统一进入 kernel 执行 SyncOnce。
 	interval := time.Duration(o.rt.runIn.Scan.RescanIntervalSeconds) * time.Second
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			o.EmitSignal(orchestratorSignal{Source: "workspace_worker", Type: orchestratorSignalWorkspaceTick, AggregateKey: "workspace:default", Payload: map[string]any{"trigger": "periodic_tick"}})
-		}
+	scheduler := ensureRuntimeTaskScheduler(o.rt)
+	if scheduler == nil {
+		return
+	}
+	if err := scheduler.RegisterPeriodicTask(ctx, periodicTaskSpec{
+		Name:      "workspace_tick",
+		Owner:     "orchestrator",
+		Mode:      "static",
+		Interval:  interval,
+		Immediate: false,
+		Run: func(_ context.Context, trigger string) (map[string]any, error) {
+			o.EmitSignal(orchestratorSignal{
+				Source:       "workspace_worker",
+				Type:         orchestratorSignalWorkspaceTick,
+				AggregateKey: "workspace:default",
+				Payload: map[string]any{
+					"trigger": trigger,
+				},
+			})
+			return map[string]any{
+				"signal_type": orchestratorSignalWorkspaceTick,
+				"trigger":     trigger,
+			}, nil
+		},
+	}); err != nil {
+		obs.Error("bitcast-client", "workspace_signal_task_register_failed", map[string]any{"error": err.Error()})
 	}
 }
 

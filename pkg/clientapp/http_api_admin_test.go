@@ -108,7 +108,7 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	}
 }
 
-func TestHandleAdminOrchestratorStatus(t *testing.T) {
+func TestHandleAdminSchedulerTasks(t *testing.T) {
 	t.Parallel()
 
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
@@ -133,21 +133,215 @@ func TestHandleAdminOrchestratorStatus(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
-	rt.orch = newOrchestrator(rt)
+	scheduler := ensureRuntimeTaskScheduler(rt)
+	if scheduler == nil {
+		t.Fatalf("scheduler not initialized")
+	}
+	taskCtx, taskCancel := context.WithCancel(context.Background())
+	defer taskCancel()
+	if err := scheduler.RegisterPeriodicTask(taskCtx, periodicTaskSpec{
+		Name:      "workspace_tick",
+		Owner:     "orchestrator",
+		Mode:      "static",
+		Interval:  time.Hour,
+		Immediate: false,
+		Run: func(ctx context.Context, trigger string) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register workspace task: %v", err)
+	}
+	if err := scheduler.RegisterPeriodicTask(taskCtx, periodicTaskSpec{
+		Name:      "listen_billing_tick:gw-1",
+		Owner:     "listen_loop",
+		Mode:      "dynamic",
+		Interval:  time.Hour,
+		Immediate: false,
+		Run: func(ctx context.Context, trigger string) (map[string]any, error) {
+			return map[string]any{"ok": true}, nil
+		},
+	}); err != nil {
+		t.Fatalf("register listen task: %v", err)
+	}
+	if _, err := db.Exec(`UPDATE scheduler_tasks SET last_error='mock error', failure_count=2 WHERE task_name=?`, "listen_billing_tick:gw-1"); err != nil {
+		t.Fatalf("update scheduler task mock error: %v", err)
+	}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/status", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
-	srv.handleAdminOrchestratorStatus(rec, req)
+	srv.handleAdminSchedulerTasks(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	var out map[string]any
+	var out struct {
+		Summary map[string]any `json:"summary"`
+		Items   []struct {
+			Name      string `json:"name"`
+			Owner     string `json:"owner"`
+			Mode      string `json:"mode"`
+			LastError string `json:"last_error"`
+		} `json:"items"`
+	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if got, ok := out["global_concurrency"].(float64); !ok || int(got) != 1 {
-		t.Fatalf("global_concurrency mismatch: got=%v", out["global_concurrency"])
+	if len(out.Items) != 2 {
+		t.Fatalf("item count mismatch: got=%d want=2", len(out.Items))
+	}
+	if got, ok := out.Summary["task_count"].(float64); !ok || int(got) != 2 {
+		t.Fatalf("task_count mismatch: got=%v", out.Summary["task_count"])
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks?mode=dynamic&owner=listen_loop&name_prefix=listen_billing_tick:&has_error=true", nil)
+	srv.handleAdminSchedulerTasks(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("filtered status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	out = struct {
+		Summary map[string]any `json:"summary"`
+		Items   []struct {
+			Name      string `json:"name"`
+			Owner     string `json:"owner"`
+			Mode      string `json:"mode"`
+			LastError string `json:"last_error"`
+		} `json:"items"`
+	}{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode filtered response: %v", err)
+	}
+	if len(out.Items) != 1 {
+		t.Fatalf("filtered item count mismatch: got=%d want=1", len(out.Items))
+	}
+	if out.Items[0].Name != "listen_billing_tick:gw-1" {
+		t.Fatalf("filtered task mismatch: got=%s", out.Items[0].Name)
+	}
+	if out.Items[0].Mode != "dynamic" || out.Items[0].Owner != "listen_loop" {
+		t.Fatalf("filtered task fields mismatch: mode=%s owner=%s", out.Items[0].Mode, out.Items[0].Owner)
+	}
+	if strings.TrimSpace(out.Items[0].LastError) == "" {
+		t.Fatalf("expected filtered task has error")
+	}
+}
+
+func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	now := time.Now().Unix()
+	_, err = db.Exec(
+		`INSERT INTO scheduler_tasks(
+			task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
+			last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
+			run_count,success_count,failure_count,last_summary_json,meta_json
+		) VALUES
+		('active_b','o','static','active',10,?,?,0,'',100,0,0,'',0,0,0,0,'{}','{}'),
+		('active_a','o','static','active',10,?,?,0,'',200,0,0,'',0,0,0,0,'{}','{}'),
+		('stopped_old','o','dynamic','stopped',10,?,?,150,'',0,0,0,'',0,0,0,0,'{}','{}'),
+		('stopped_new','o','dynamic','stopped',10,?,?,300,'',0,0,0,'',0,0,0,0,'{}','{}')`,
+		now, now, now, now, now, now, now, now,
+	)
+	if err != nil {
+		t.Fatalf("seed scheduler tasks: %v", err)
+	}
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir()
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminSchedulerTasks(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var out struct {
+		Items []struct {
+			Name string `json:"name"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(out.Items) < 4 {
+		t.Fatalf("item count mismatch: got=%d want>=4", len(out.Items))
+	}
+	got := []string{out.Items[0].Name, out.Items[1].Name, out.Items[2].Name, out.Items[3].Name}
+	want := []string{"active_a", "active_b", "stopped_new", "stopped_old"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("default order mismatch: got=%v want=%v", got, want)
+	}
+}
+
+func TestHandleAdminSchedulerRuns(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO scheduler_task_runs(task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix)
+		 VALUES
+		 ('workspace_tick','orchestrator','static','periodic_tick',100,101,1000,'success','','{"trigger":"periodic_tick"}',101),
+		 ('live_follow_tick:abc','live_follow','dynamic','periodic_tick',200,201,1000,'failed','mock err','{"stream_id":"abc"}',201)`,
+	)
+	if err != nil {
+		t.Fatalf("seed scheduler runs: %v", err)
+	}
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir()
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/runs?status=failed&mode=dynamic", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminSchedulerRuns(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var out struct {
+		Total int `json:"total"`
+		Items []struct {
+			TaskName string `json:"task_name"`
+			Status   string `json:"status"`
+			Mode     string `json:"mode"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if out.Total != 1 || len(out.Items) != 1 {
+		t.Fatalf("runs count mismatch: total=%d items=%d", out.Total, len(out.Items))
+	}
+	if out.Items[0].TaskName != "live_follow_tick:abc" || out.Items[0].Status != "failed" || out.Items[0].Mode != "dynamic" {
+		t.Fatalf("run item mismatch: %+v", out.Items[0])
 	}
 }
 

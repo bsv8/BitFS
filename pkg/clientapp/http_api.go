@@ -429,8 +429,8 @@ func (s *httpAPIServer) Start() error {
 		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands/detail", s.withAuth(s.handleAdminClientKernelCommandDetail))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs/detail", s.withAuth(s.handleAdminOrchestratorLogDetail))
-		mux.HandleFunc(prefix+"/v1/admin/orchestrator/status", s.withAuth(s.handleAdminOrchestratorStatus))
-		mux.HandleFunc(prefix+"/v1/admin/chain/scheduler/status", s.withAuth(s.handleAdminChainSchedulerStatus))
+		mux.HandleFunc(prefix+"/v1/admin/scheduler/tasks", s.withAuth(s.handleAdminSchedulerTasks))
+		mux.HandleFunc(prefix+"/v1/admin/scheduler/runs", s.withAuth(s.handleAdminSchedulerRuns))
 		mux.HandleFunc(prefix+"/v1/admin/chain/tip/status", s.withAuth(s.handleAdminChainTipStatus))
 		mux.HandleFunc(prefix+"/v1/admin/chain/tip/logs", s.withAuth(s.handleAdminChainTipLogs))
 		mux.HandleFunc(prefix+"/v1/admin/chain/utxo/status", s.withAuth(s.handleAdminChainUTXOStatus))
@@ -2783,33 +2783,329 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 	})
 }
 
-func (s *httpAPIServer) handleAdminOrchestratorStatus(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleAdminSchedulerTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	orch := getClientOrchestrator(s.rt)
-	if orch == nil {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"enabled": false,
-			"status":  "not_initialized",
-		})
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	writeJSON(w, http.StatusOK, orch.SnapshotStatus())
+	query := r.URL.Query()
+	modeFilter := strings.ToLower(strings.TrimSpace(query.Get("mode")))
+	ownerFilter := strings.TrimSpace(query.Get("owner"))
+	namePrefix := strings.TrimSpace(query.Get("name_prefix"))
+	statusFilter := strings.ToLower(strings.TrimSpace(query.Get("status")))
+	inFlightFilterRaw := strings.TrimSpace(query.Get("in_flight"))
+	hasErrorFilterRaw := strings.TrimSpace(query.Get("has_error"))
+	orderBy := strings.ToLower(strings.TrimSpace(query.Get("order_by")))
+	parseOptionalBool := func(raw string) (bool, bool, error) {
+		raw = strings.ToLower(strings.TrimSpace(raw))
+		if raw == "" {
+			return false, false, nil
+		}
+		switch raw {
+		case "1", "true", "yes":
+			return true, true, nil
+		case "0", "false", "no":
+			return false, true, nil
+		default:
+			return false, false, fmt.Errorf("invalid bool value: %s", raw)
+		}
+	}
+	inFlightFilter, inFlightSet, err := parseOptionalBool(inFlightFilterRaw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid in_flight"})
+		return
+	}
+	hasErrorFilter, hasErrorSet, err := parseOptionalBool(hasErrorFilterRaw)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid has_error"})
+		return
+	}
+	if modeFilter != "" && modeFilter != "static" && modeFilter != "dynamic" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid mode"})
+		return
+	}
+	if statusFilter != "" && statusFilter != "active" && statusFilter != "stopped" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
+		return
+	}
+	orderClause := "CASE WHEN status='active' THEN 0 ELSE 1 END ASC, CASE WHEN status='active' THEN last_started_at_unix ELSE COALESCE(NULLIF(closed_at_unix,0),updated_at_unix) END DESC, task_name ASC"
+	switch orderBy {
+	case "", "default":
+	case "name_asc":
+		orderClause = "task_name ASC"
+	case "updated_desc":
+		orderClause = "updated_at_unix DESC, task_name ASC"
+	default:
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid order_by"})
+		return
+	}
+
+	where := make([]string, 0, 8)
+	args := make([]any, 0, 8)
+	if modeFilter != "" {
+		where = append(where, "mode=?")
+		args = append(args, modeFilter)
+	}
+	if ownerFilter != "" {
+		where = append(where, "owner=?")
+		args = append(args, ownerFilter)
+	}
+	if statusFilter != "" {
+		where = append(where, "status=?")
+		args = append(args, statusFilter)
+	}
+	if namePrefix != "" {
+		where = append(where, "task_name LIKE ?")
+		args = append(args, namePrefix+"%")
+	}
+	if inFlightSet {
+		where = append(where, "in_flight=?")
+		if inFlightFilter {
+			args = append(args, 1)
+		} else {
+			args = append(args, 0)
+		}
+	}
+	if hasErrorSet {
+		if hasErrorFilter {
+			where = append(where, "length(trim(last_error))>0")
+		} else {
+			where = append(where, "length(trim(last_error))=0")
+		}
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+
+	var enabledTaskCount int
+	if err := s.db.QueryRow(`SELECT COUNT(1) FROM scheduler_tasks`).Scan(&enabledTaskCount); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+
+	type schedulerTaskItem struct {
+		Name              string `json:"name"`
+		Owner             string `json:"owner"`
+		Mode              string `json:"mode"`
+		Status            string `json:"status"`
+		IntervalSeconds   int64  `json:"interval_seconds"`
+		CreatedAtUnix     int64  `json:"created_at_unix"`
+		UpdatedAtUnix     int64  `json:"updated_at_unix"`
+		ClosedAtUnix      int64  `json:"closed_at_unix"`
+		LastTrigger       string `json:"last_trigger"`
+		LastStartedAtUnix int64  `json:"last_started_at_unix"`
+		LastEndedAtUnix   int64  `json:"last_ended_at_unix"`
+		LastDurationMS    int64  `json:"last_duration_ms"`
+		LastError         string `json:"last_error"`
+		InFlight          bool   `json:"in_flight"`
+		RunCount          uint64 `json:"run_count"`
+		SuccessCount      uint64 `json:"success_count"`
+		FailureCount      uint64 `json:"failure_count"`
+		LastSummary       any    `json:"last_summary"`
+	}
+	rows, err := s.db.Query(
+		`SELECT
+			task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
+			last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
+			run_count,success_count,failure_count,last_summary_json
+		FROM scheduler_tasks`+whereSQL+` ORDER BY `+orderClause,
+		args...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	items := make([]schedulerTaskItem, 0, 64)
+	var inFlightCount int
+	var failureTotal uint64
+	var activeCount int
+	var stoppedCount int
+	for rows.Next() {
+		var it schedulerTaskItem
+		var inFlightInt int64
+		var lastSummaryRaw string
+		if err := rows.Scan(
+			&it.Name, &it.Owner, &it.Mode, &it.Status, &it.IntervalSeconds, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.ClosedAtUnix,
+			&it.LastTrigger, &it.LastStartedAtUnix, &it.LastEndedAtUnix, &it.LastDurationMS, &it.LastError, &inFlightInt,
+			&it.RunCount, &it.SuccessCount, &it.FailureCount, &lastSummaryRaw,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		it.InFlight = inFlightInt != 0
+		if strings.TrimSpace(lastSummaryRaw) != "" {
+			var decoded any
+			if err := json.Unmarshal([]byte(lastSummaryRaw), &decoded); err == nil {
+				it.LastSummary = decoded
+			} else {
+				it.LastSummary = map[string]any{}
+			}
+		} else {
+			it.LastSummary = map[string]any{}
+		}
+		if it.InFlight {
+			inFlightCount++
+		}
+		if strings.EqualFold(strings.TrimSpace(it.Status), "active") {
+			activeCount++
+		} else {
+			stoppedCount++
+		}
+		failureTotal += it.FailureCount
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	filterAppliedCount := 0
+	if modeFilter != "" {
+		filterAppliedCount++
+	}
+	if ownerFilter != "" {
+		filterAppliedCount++
+	}
+	if namePrefix != "" {
+		filterAppliedCount++
+	}
+	if statusFilter != "" {
+		filterAppliedCount++
+	}
+	if inFlightSet {
+		filterAppliedCount++
+	}
+	if hasErrorSet {
+		filterAppliedCount++
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"summary": map[string]any{
+			"task_count":           len(items),
+			"in_flight_count":      inFlightCount,
+			"failure_count_total":  failureTotal,
+			"enabled_task_count":   enabledTaskCount,
+			"filtered_task_count":  len(items),
+			"active_task_count":    activeCount,
+			"stopped_task_count":   stoppedCount,
+			"scheduler_available":  true,
+			"filter_applied_count": filterAppliedCount,
+		},
+		"items": items,
+	})
 }
 
-func (s *httpAPIServer) handleAdminChainSchedulerStatus(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleAdminSchedulerRuns(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	cm := getChainMaintainer(s.rt)
-	if cm == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "status": "not_initialized"})
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	writeJSON(w, http.StatusOK, cm.snapshotStatus())
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 20, 1, 200)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	taskName := strings.TrimSpace(r.URL.Query().Get("task_name"))
+	owner := strings.TrimSpace(r.URL.Query().Get("owner"))
+	mode := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("mode")))
+	status := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	if mode != "" && mode != "static" && mode != "dynamic" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid mode"})
+		return
+	}
+	if status != "" && status != "success" && status != "failed" && status != "canceled" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid status"})
+		return
+	}
+	where := make([]string, 0, 6)
+	args := make([]any, 0, 8)
+	if taskName != "" {
+		where = append(where, "task_name=?")
+		args = append(args, taskName)
+	}
+	if owner != "" {
+		where = append(where, "owner=?")
+		args = append(args, owner)
+	}
+	if mode != "" {
+		where = append(where, "mode=?")
+		args = append(args, mode)
+	}
+	if status != "" {
+		where = append(where, "status=?")
+		args = append(args, status)
+	}
+	whereSQL := ""
+	if len(where) > 0 {
+		whereSQL = " WHERE " + strings.Join(where, " AND ")
+	}
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(1) FROM scheduler_task_runs"+whereSQL, args...).Scan(&total); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	args = append(args, limit, offset)
+	rows, err := s.db.Query(
+		`SELECT id,task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
+		 FROM scheduler_task_runs`+whereSQL+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		args...,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	defer rows.Close()
+	type runItem struct {
+		ID            int64  `json:"id"`
+		TaskName      string `json:"task_name"`
+		Owner         string `json:"owner"`
+		Mode          string `json:"mode"`
+		Trigger       string `json:"trigger"`
+		StartedAtUnix int64  `json:"started_at_unix"`
+		EndedAtUnix   int64  `json:"ended_at_unix"`
+		DurationMS    int64  `json:"duration_ms"`
+		Status        string `json:"status"`
+		ErrorMessage  string `json:"error_message"`
+		Summary       any    `json:"summary"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+	}
+	items := make([]runItem, 0, limit)
+	for rows.Next() {
+		var it runItem
+		var summaryRaw string
+		if err := rows.Scan(
+			&it.ID, &it.TaskName, &it.Owner, &it.Mode, &it.Trigger, &it.StartedAtUnix, &it.EndedAtUnix, &it.DurationMS,
+			&it.Status, &it.ErrorMessage, &summaryRaw, &it.CreatedAtUnix,
+		); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if strings.TrimSpace(summaryRaw) != "" {
+			var summary any
+			if err := json.Unmarshal([]byte(summaryRaw), &summary); err == nil {
+				it.Summary = summary
+			} else {
+				it.Summary = map[string]any{}
+			}
+		} else {
+			it.Summary = map[string]any{}
+		}
+		items = append(items, it)
+	}
+	if err := rows.Err(); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total": total,
+		"items": items,
+	})
 }
 
 func (s *httpAPIServer) handleAdminChainTipStatus(w http.ResponseWriter, r *http.Request) {

@@ -28,10 +28,11 @@ import (
 )
 
 type managedDaemon struct {
-	appName string
-	cfg     clientapp.Config
-	startup startupSummary
-	dbPath  string
+	appName     string
+	initNetwork string
+	cfg         clientapp.Config
+	startup     startupSummary
+	dbPath      string
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -46,7 +47,7 @@ type managedDaemon struct {
 	guardStop func()
 }
 
-func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSummary, dbPath string) error {
+func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSummary, dbPath string, initNetwork string) error {
 	rootCtx, rootCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer rootCancel()
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
@@ -60,13 +61,14 @@ func runManagedDaemon(appName string, cfg clientapp.Config, startup startupSumma
 		return err
 	}
 	d := &managedDaemon{
-		appName:    appName,
-		cfg:        cfg,
-		startup:    startup,
-		dbPath:     dbPath,
-		rootCtx:    rootCtx,
-		rootCancel: rootCancel,
-		db:         db,
+		appName:     appName,
+		initNetwork: initNetwork,
+		cfg:         cfg,
+		startup:     startup,
+		dbPath:      dbPath,
+		rootCtx:     rootCtx,
+		rootCancel:  rootCancel,
+		db:          db,
 	}
 	if err := d.startHTTPServer(); err != nil {
 		_ = db.Close()
@@ -373,7 +375,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		return err
 	}
 
-	runCfg, _, err := loadRuntimeConfigOrInit(d.appName, d.dbPath)
+	runCfg, _, err := loadRuntimeConfigOrInit(d.appName, d.dbPath, d.initNetwork)
 	if err != nil {
 		stopGuard()
 		return err

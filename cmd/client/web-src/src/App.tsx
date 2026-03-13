@@ -70,9 +70,10 @@ import type {
   FinanceBreakdown,
   FinanceUTXOLinksResp,
   FinanceUTXOLink,
-  // 链轮询日志类型
-  ChainTipLogsResp,
-  ChainUTXOLogsResp,
+  // 调度器任务类型
+  SchedulerTasksResp,
+  SchedulerTaskRunsResp,
+  SchedulerTaskRun,
 } from "./types";
 
 // ========== API 导入 ==========
@@ -139,9 +140,9 @@ import {
   getFinanceBreakdownDetail,
   getFinanceUTXOLinks,
   getFinanceUTXOLinkDetail,
-  // 链轮询日志 API
-  getChainTipLogs,
-  getChainUTXOLogs,
+  // 调度器任务 API
+  getSchedulerTasks,
+  getSchedulerTaskRuns,
 } from "./api";
 
 // ========== 工具函数导入 ==========
@@ -300,9 +301,9 @@ export default function App() {
   const [financeUTXOLinkDetail, setFinanceUTXOLinkDetail] = useState<FinanceUTXOLink | null>(null);
   const [financeDetailModalOpen, setFinanceDetailModalOpen] = useState(false);
 
-  // ========== 链轮询日志状态 ==========
-  const [chainTipLogs, setChainTipLogs] = useState<ChainTipLogsResp | null>(null);
-  const [chainUTXOLogs, setChainUTXOLogs] = useState<ChainUTXOLogsResp | null>(null);
+  // ========== 调度器任务状态 ==========
+  const [schedulerTasks, setSchedulerTasks] = useState<SchedulerTasksResp | null>(null);
+  const [schedulerTaskRuns, setSchedulerTaskRuns] = useState<SchedulerTaskRunsResp | null>(null);
 
   // ========== 工作区管理状态 ==========
   const [workspaces, setWorkspaces] = useState<WorkspacesResp | null>(null);
@@ -457,12 +458,12 @@ export default function App() {
           case "/admin/finance-utxo-links":
             await loadFinanceUTXOLinks();
             break;
-          // 链轮询日志模块
-          case "/admin/chain-tip-logs":
-            await loadChainTipLogs();
+          // 调度器任务模块
+          case "/admin/scheduler-tasks":
+            await loadSchedulerTasks();
             break;
-          case "/admin/chain-utxo-logs":
-            await loadChainUTXOLogs();
+          case "/admin/scheduler-tasks/runs":
+            await loadSchedulerTaskRuns();
             break;
           default:
             setHash("/finance");
@@ -548,9 +549,9 @@ export default function App() {
       setFinanceUTXOLinks(null);
       setFinanceUTXOLinkDetail(null);
       setFinanceDetailModalOpen(false);
-      // 链轮询日志状态重置
-      setChainTipLogs(null);
-      setChainUTXOLogs(null);
+      // 调度器任务状态重置
+      setSchedulerTasks(null);
+      setSchedulerTaskRuns(null);
     });
   }, []);
 
@@ -1047,22 +1048,34 @@ export default function App() {
   };
 
   // ----- 链轮询日志模块 -----
-  const loadChainTipLogs = async () => {
-    const page = toInt(route.query.get("page"), 1);
-    const pageSize = toInt(route.query.get("pageSize"), 20);
-    const status = route.query.get("status") || "";
-    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
-    if (status) params.set("status", status);
-    setChainTipLogs(await getChainTipLogs(params));
+  const loadSchedulerTasks = async () => {
+    const mode = route.query.get("mode") || "";
+    const owner = route.query.get("owner") || "";
+    const namePrefix = route.query.get("name_prefix") || "";
+    const inFlight = route.query.get("in_flight") || "";
+    const hasError = route.query.get("has_error") || "";
+    const params = new URLSearchParams();
+    if (mode) params.set("mode", mode);
+    if (owner) params.set("owner", owner);
+    if (namePrefix) params.set("name_prefix", namePrefix);
+    if (inFlight) params.set("in_flight", inFlight);
+    if (hasError) params.set("has_error", hasError);
+    setSchedulerTasks(await getSchedulerTasks(params));
   };
 
-  const loadChainUTXOLogs = async () => {
+  const loadSchedulerTaskRuns = async () => {
+    const taskName = route.query.get("task_name") || "";
     const page = toInt(route.query.get("page"), 1);
     const pageSize = toInt(route.query.get("pageSize"), 20);
     const status = route.query.get("status") || "";
-    const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
+    if (!taskName) return;
+    const params = new URLSearchParams({
+      task_name: taskName,
+      limit: String(pageSize),
+      offset: String((page - 1) * pageSize),
+    });
     if (status) params.set("status", status);
-    setChainUTXOLogs(await getChainUTXOLogs(params));
+    setSchedulerTaskRuns(await getSchedulerTaskRuns(params));
   };
 
   // ----- 静态文件管理模块 -----
@@ -3271,90 +3284,163 @@ export default function App() {
         </section>
       ) : null}
 
-      {/* ========== 链轮询日志页面 ========== */}
-      {/* 链高度轮询日志 */}
-      {route.path === "/admin/chain-tip-logs" && chainTipLogs ? (() => {
-        const page = toInt(route.query.get("page"), 1);
-        const pageSize = toInt(route.query.get("pageSize"), 20);
-        const status = route.query.get("status") || "";
-        return (
-          <section className="panel">
-            <div className="panel-head">
-              <h3>链高度轮询日志</h3>
-              <div className="hint">区块链高度轮询任务执行记录（60秒间隔）</div>
-            </div>
-            <div className="filters">
-              <select
-                className="input small"
-                value={status}
-                onChange={(e) => updateQuery({ status: e.target.value, page: 1 })}
-              >
-                <option value="">全部状态</option>
-                <option value="success">成功</option>
-                <option value="failed">失败</option>
-                <option value="skipped_running">跳过（运行中）</option>
-              </select>
-              <button className="btn" onClick={() => updateQuery({ page: 1 })}>
-                查询
-              </button>
-            </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>ID</th>
-                    <th>触发时间</th>
-                    <th>开始时间</th>
-                    <th>结束时间</th>
-                    <th>耗时</th>
-                    <th>触发源</th>
-                    <th>状态</th>
-                    <th>高度变化</th>
-                    <th>信号触发</th>
-                    <th>错误信息</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {chainTipLogs.items.map((log) => (
-                    <tr key={log.id}>
-                      <td>{log.id}</td>
-                      <td>{t(log.triggered_at_unix)}</td>
-                      <td>{t(log.started_at_unix)}</td>
-                      <td>{t(log.ended_at_unix)}</td>
-                      <td>{log.duration_ms}ms</td>
-                      <td>{log.trigger_source}</td>
-                      <td>
-                        <span className={`badge ${log.status === "success" ? "ok" : log.status === "failed" ? "err" : "warn"}`}>
-                          {log.status}
-                        </span>
-                      </td>
-                      <td>
-                        {log.result?.tip_from !== undefined && log.result?.tip_to !== undefined
-                          ? `${log.result.tip_from} → ${log.result.tip_to}`
-                          : "-"}
-                      </td>
-                      <td>{log.result?.signal_emit ? "✅" : "-"}</td>
-                      <td title={log.error_message}>{log.error_message ? short(log.error_message, 20) : "-"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <Pager total={chainTipLogs.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
-          </section>
-        );
-      })() : null}
+      {/* ========== 调度器任务页面 ========== */}
+      {route.path === "/admin/scheduler-tasks" && schedulerTasks ? (
+        <section className="panel">
+          <div className="panel-head">
+            <h3>调度器任务</h3>
+            <div className="hint">周期性任务执行状态监控（支持多维度过滤）</div>
+          </div>
+          
+          {/* 汇总统计 */}
+          <div className="stats-grid" style={{ marginBottom: 16 }}>
+            <article className="stat">
+              <p>总任务数</p>
+              <h3>{schedulerTasks.summary.enabled_task_count}</h3>
+            </article>
+            <article className="stat">
+              <p>匹配任务</p>
+              <h3>{schedulerTasks.summary.filtered_task_count}</h3>
+            </article>
+            <article className="stat">
+              <p>执行中</p>
+              <h3 style={{ color: schedulerTasks.summary.in_flight_count > 0 ? "#e6a23c" : "inherit" }}>
+                {schedulerTasks.summary.in_flight_count}
+              </h3>
+            </article>
+            <article className="stat">
+              <p>累计失败</p>
+              <h3 style={{ color: schedulerTasks.summary.failure_count_total > 0 ? "#f56c6c" : "inherit" }}>
+                {schedulerTasks.summary.failure_count_total}
+              </h3>
+            </article>
+          </div>
 
-      {/* UTXO 轮询日志 */}
-      {route.path === "/admin/chain-utxo-logs" && chainUTXOLogs ? (() => {
+          {/* 过滤器 */}
+          <div className="filters">
+            <select
+              className="input small"
+              value={route.query.get("mode") || ""}
+              onChange={(e) => updateQuery({ mode: e.target.value })}
+            >
+              <option value="">全部模式</option>
+              <option value="static">Static</option>
+              <option value="dynamic">Dynamic</option>
+            </select>
+            <input
+              className="input small"
+              placeholder="Owner"
+              value={route.query.get("owner") || ""}
+              onChange={(e) => updateQuery({ owner: e.target.value })}
+            />
+            <input
+              className="input small"
+              placeholder="Name 前缀"
+              value={route.query.get("name_prefix") || ""}
+              onChange={(e) => updateQuery({ name_prefix: e.target.value })}
+            />
+            <select
+              className="input small"
+              value={route.query.get("in_flight") || ""}
+              onChange={(e) => updateQuery({ in_flight: e.target.value })}
+            >
+              <option value="">全部状态</option>
+              <option value="true">执行中</option>
+              <option value="false">空闲</option>
+            </select>
+            <select
+              className="input small"
+              value={route.query.get("has_error") || ""}
+              onChange={(e) => updateQuery({ has_error: e.target.value })}
+            >
+              <option value="">全部</option>
+              <option value="true">有错误</option>
+              <option value="false">无错误</option>
+            </select>
+            <button className="btn" onClick={() => loadSchedulerTasks()}>
+              刷新
+            </button>
+          </div>
+
+          {/* 任务列表 */}
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>任务名称</th>
+                  <th>Owner</th>
+                  <th>模式</th>
+                  <th>间隔</th>
+                  <th>状态</th>
+                  <th>运行次数</th>
+                  <th>成功</th>
+                  <th>失败</th>
+                  <th>最后执行</th>
+                  <th>耗时</th>
+                  <th>最后错误</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {schedulerTasks.items.map((task) => (
+                  <tr key={task.name}>
+                    <td title={task.name}>{task.name}</td>
+                    <td>{task.owner}</td>
+                    <td>
+                      <span className={`badge ${task.mode === "static" ? "ok" : "warn"}`}>
+                        {task.mode}
+                      </span>
+                    </td>
+                    <td>{task.interval_seconds}s</td>
+                    <td>
+                      {task.in_flight ? (
+                        <span className="badge" style={{ background: "#e6a23c" }}>执行中</span>
+                      ) : (
+                        <span className="badge" style={{ background: "#67c23a" }}>空闲</span>
+                      )}
+                    </td>
+                    <td>{task.run_count}</td>
+                    <td>{task.success_count}</td>
+                    <td style={{ color: task.failure_count > 0 ? "#f56c6c" : "inherit" }}>
+                      {task.failure_count}
+                    </td>
+                    <td>{task.last_started_at_unix > 0 ? t(task.last_started_at_unix) : "-"}</td>
+                    <td>{task.last_duration_ms > 0 ? `${task.last_duration_ms}ms` : "-"}</td>
+                    <td title={task.last_error}>
+                      {task.last_error ? short(task.last_error, 20) : "-"}
+                    </td>
+                    <td>
+                      <button
+                        className="btn btn-light"
+                        onClick={() => setHash("/admin/scheduler-tasks/runs", new URLSearchParams({ task_name: task.name, page: "1", pageSize: "20" }))}
+                      >
+                        查看历史
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {schedulerTasks.items.length === 0 && (
+            <div className="hint" style={{ textAlign: "center", padding: 32 }}>
+              暂无匹配的任务
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {/* 调度器任务历史页面 */}
+      {route.path === "/admin/scheduler-tasks/runs" && schedulerTaskRuns ? (() => {
+        const taskName = route.query.get("task_name") || "";
         const page = toInt(route.query.get("page"), 1);
         const pageSize = toInt(route.query.get("pageSize"), 20);
         const status = route.query.get("status") || "";
         return (
           <section className="panel">
             <div className="panel-head">
-              <h3>UTXO 轮询日志</h3>
-              <div className="hint">钱包 UTXO 同步轮询任务执行记录（10秒间隔）</div>
+              <h3>任务历史: {taskName}</h3>
+              <div className="hint">周期性任务执行流水记录</div>
             </div>
             <div className="filters">
               <select
@@ -3365,10 +3451,16 @@ export default function App() {
                 <option value="">全部状态</option>
                 <option value="success">成功</option>
                 <option value="failed">失败</option>
-                <option value="skipped_running">跳过（运行中）</option>
+                <option value="canceled">取消</option>
               </select>
-              <button className="btn" onClick={() => updateQuery({ page: 1 })}>
-                查询
+              <button className="btn" onClick={() => loadSchedulerTaskRuns()}>
+                刷新
+              </button>
+              <button
+                className="btn btn-light"
+                onClick={() => setHash("/admin/scheduler-tasks")}
+              >
+                返回任务列表
               </button>
             </div>
             <div className="table-wrap">
@@ -3376,42 +3468,57 @@ export default function App() {
                 <thead>
                   <tr>
                     <th>ID</th>
-                    <th>触发时间</th>
+                    <th>触发源</th>
                     <th>开始时间</th>
                     <th>结束时间</th>
                     <th>耗时</th>
-                    <th>触发源</th>
                     <th>状态</th>
-                    <th>地址</th>
-                    <th>UTXO 数量</th>
-                    <th>余额</th>
                     <th>错误信息</th>
+                    <th>摘要</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {chainUTXOLogs.items.map((log) => (
-                    <tr key={log.id}>
-                      <td>{log.id}</td>
-                      <td>{t(log.triggered_at_unix)}</td>
-                      <td>{t(log.started_at_unix)}</td>
-                      <td>{t(log.ended_at_unix)}</td>
-                      <td>{log.duration_ms}ms</td>
-                      <td>{log.trigger_source}</td>
+                  {schedulerTaskRuns.items.map((run) => (
+                    <tr key={run.id}>
+                      <td>{run.id}</td>
+                      <td>{run.trigger}</td>
+                      <td>{t(run.started_at_unix)}</td>
+                      <td>{run.ended_at_unix > 0 ? t(run.ended_at_unix) : "-"}</td>
+                      <td>{run.duration_ms > 0 ? `${run.duration_ms}ms` : "-"}</td>
                       <td>
-                        <span className={`badge ${log.status === "success" ? "ok" : log.status === "failed" ? "err" : "warn"}`}>
-                          {log.status}
+                        <span className={`badge ${run.status === "success" ? "ok" : run.status === "failed" ? "err" : "warn"}`}>
+                          {run.status}
                         </span>
                       </td>
-                      <td title={log.result?.address}>{log.result?.address ? shortHex(log.result.address, 12) : "-"}</td>
-                      <td>{log.result?.utxo_count ?? "-"}</td>
-                      <td>{log.result?.balance_satoshi !== undefined ? sat(log.result.balance_satoshi) : "-"}</td>
-                      <td title={log.error_message}>{log.error_message ? short(log.error_message, 20) : "-"}</td>
+                      <td title={run.error_message}>
+                        {run.error_message ? short(run.error_message, 30) : "-"}
+                      </td>
+                      <td>
+                        {run.summary && Object.keys(run.summary).length > 0 ? (
+                          <pre className="detail-pre" style={{ maxWidth: 300, maxHeight: 120, overflow: "auto", fontSize: 11 }}>
+                            {JSON.stringify(run.summary, null, 2)}
+                          </pre>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
-            <Pager total={chainUTXOLogs.total} page={page} pageSize={pageSize} onPage={(p) => updateQuery({ page: p })} onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })} />
+            {schedulerTaskRuns.items.length === 0 && (
+              <div className="hint" style={{ textAlign: "center", padding: 32 }}>
+                暂无执行记录
+              </div>
+            )}
+            <Pager
+              total={schedulerTaskRuns.total}
+              page={page}
+              pageSize={pageSize}
+              onPage={(p) => updateQuery({ page: p })}
+              onPageSize={(s) => updateQuery({ pageSize: s, page: 1 })}
+            />
           </section>
         );
       })() : null}

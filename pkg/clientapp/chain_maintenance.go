@@ -131,8 +131,8 @@ func (m *chainMaintainer) start(ctx context.Context) {
 		ctx = context.Background()
 	}
 	go m.runScheduler(ctx)
-	go m.runTipWorker(ctx)
-	go m.runUTXOWorker(ctx)
+	m.runTipWorker(ctx)
+	m.runUTXOWorker(ctx)
 	m.enqueue(chainTaskTip, "startup")
 	m.enqueue(chainTaskUTXO, "startup")
 }
@@ -149,28 +149,48 @@ func (m *chainMaintainer) snapshotStatus() chainSchedulerStatus {
 }
 
 func (m *chainMaintainer) runTipWorker(ctx context.Context) {
-	ticker := time.NewTicker(chainTipWorkerInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.enqueue(chainTaskTip, "periodic_tick")
-		}
+	if m == nil || m.rt == nil {
+		return
+	}
+	scheduler := ensureRuntimeTaskScheduler(m.rt)
+	if scheduler == nil {
+		return
+	}
+	if err := scheduler.RegisterPeriodicTask(ctx, periodicTaskSpec{
+		Name:      "chain_tip_sync",
+		Owner:     "chain_maintenance",
+		Mode:      "static",
+		Interval:  chainTipWorkerInterval,
+		Immediate: false,
+		Run: func(_ context.Context, trigger string) (map[string]any, error) {
+			m.enqueue(chainTaskTip, trigger)
+			return map[string]any{"task_type": chainTaskTip, "trigger": trigger}, nil
+		},
+	}); err != nil {
+		obs.Error("bitcast-client", "chain_tip_task_register_failed", map[string]any{"error": err.Error()})
 	}
 }
 
 func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
-	ticker := time.NewTicker(chainUTXOWorkerInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			m.enqueue(chainTaskUTXO, "periodic_tick")
-		}
+	if m == nil || m.rt == nil {
+		return
+	}
+	scheduler := ensureRuntimeTaskScheduler(m.rt)
+	if scheduler == nil {
+		return
+	}
+	if err := scheduler.RegisterPeriodicTask(ctx, periodicTaskSpec{
+		Name:      "chain_utxo_sync",
+		Owner:     "chain_maintenance",
+		Mode:      "static",
+		Interval:  chainUTXOWorkerInterval,
+		Immediate: false,
+		Run: func(_ context.Context, trigger string) (map[string]any, error) {
+			m.enqueue(chainTaskUTXO, trigger)
+			return map[string]any{"task_type": chainTaskUTXO, "trigger": trigger}, nil
+		},
+	}); err != nil {
+		obs.Error("bitcast-client", "chain_utxo_task_register_failed", map[string]any{"error": err.Error()})
 	}
 }
 

@@ -723,56 +723,61 @@ export type FinanceUTXOLinksResp = {
   items: FinanceUTXOLink[];
 };
 
-// ========== 链轮询日志相关类型 ==========
+// ========== 调度器任务相关类型 ==========
 
-/** 链高度轮询日志 */
-export type ChainTipLog = {
+/** 周期性任务状态 */
+export type SchedulerTask = {
+  name: string;
+  owner: string;
+  mode: string;
+  interval_seconds: number;
+  started_at_unix: number;
+  last_trigger: string;
+  last_started_at_unix: number;
+  last_ended_at_unix: number;
+  last_duration_ms: number;
+  last_error: string;
+  in_flight: boolean;
+  run_count: number;
+  success_count: number;
+  failure_count: number;
+};
+
+export type SchedulerTasksResp = {
+  now_unix: number;
+  summary: {
+    task_count: number;
+    in_flight_count: number;
+    failure_count_total: number;
+    enabled_task_count: number;
+    filtered_task_count: number;
+    active_task_count: number;
+    stopped_task_count: number;
+    scheduler_available: boolean;
+    filter_applied_count: number;
+  };
+  items: SchedulerTask[];
+};
+
+/** 任务执行流水 */
+export type SchedulerTaskRun = {
   id: number;
-  triggered_at_unix: number;
+  task_name: string;
+  owner: string;
+  mode: string;
+  trigger: string;
   started_at_unix: number;
   ended_at_unix: number;
   duration_ms: number;
-  trigger_source: string;
   status: string;
   error_message: string;
-  result: {
-    task_type?: string;
-    tip_from?: number;
-    tip_to?: number;
-    signal_emit?: boolean;
-    [key: string]: unknown;
-  };
+  summary: Record<string, unknown>;
+  created_at_unix: number;
 };
 
-export type ChainTipLogsResp = {
+export type SchedulerTaskRunsResp = {
   total: number;
   limit: number;
   offset: number;
-  items: ChainTipLog[];
-};
-
-/** UTXO 轮询日志 */
-export type ChainUTXOLog = {
-  id: number;
-  triggered_at_unix: number;
-  started_at_unix: number;
-  ended_at_unix: number;
-  duration_ms: number;
-  trigger_source: string;
-  status: string;
-  error_message: string;
-  result: {
-    task_type?: string;
-    address?: string;
-    utxo_count?: number;
-    balance_satoshi?: number;
-    [key: string]: unknown;
-  };
-};
-
-export type ChainUTXOLogsResp = {
-  total: number;
-  limit: number;
-  offset: number;
-  items: ChainUTXOLog[];
+  items: SchedulerTaskRun[];
 };
