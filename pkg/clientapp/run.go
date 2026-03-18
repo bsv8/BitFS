@@ -2125,6 +2125,16 @@ func initIndexDB(db *sql.DB) error {
 			last_trigger TEXT NOT NULL,
 			last_duration_ms INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_history_cursor(
+			address TEXT PRIMARY KEY,
+			wallet_id TEXT NOT NULL,
+			next_confirmed_height INTEGER NOT NULL,
+			next_page_token TEXT NOT NULL,
+			anchor_height INTEGER NOT NULL,
+			round_tip_height INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			last_error TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS fin_business(
 			business_id TEXT PRIMARY KEY,
 			scene_type TEXT NOT NULL,
@@ -2323,6 +2333,7 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_origin ON wallet_utxo(origin_type, income_eligible, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_scene ON fin_business(scene_type, scene_subtype, occurred_at_unix DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_scene ON fin_process_events(scene_type, scene_subtype, occurred_at_unix DESC)`,

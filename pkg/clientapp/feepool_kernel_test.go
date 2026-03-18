@@ -2,7 +2,9 @@ package clientapp
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,10 +50,10 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)
 	}
-	if err := reconcileWalletUTXOSet(db, addr, []dual2of2.UTXO{
+	if err := seedWalletUTXOsForKernelTest(db, addr, []dual2of2.UTXO{
 		{TxID: "tx1", Vout: 0, Value: 50000},
 		{TxID: "tx2", Vout: 1, Value: 48560},
-	}, 98560, "", "test", time.Now().Unix(), 0); err != nil {
+	}); err != nil {
 		t.Fatalf("reconcile wallet utxo set failed: %v", err)
 	}
 	need, have, err := probeListenOpenNeedAndWallet(rt, dualInfo(1000, 20))
@@ -86,9 +88,9 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)
 	}
-	if err := reconcileWalletUTXOSet(db, addr, []dual2of2.UTXO{
+	if err := seedWalletUTXOsForKernelTest(db, addr, []dual2of2.UTXO{
 		{TxID: "tx1", Vout: 0, Value: 500},
-	}, 500, "", "test", time.Now().Unix(), 0); err != nil {
+	}); err != nil {
 		t.Fatalf("reconcile wallet utxo set failed: %v", err)
 	}
 	need, have, err := probeListenOpenNeedAndWallet(rt, dualInfo(100, 1000))
@@ -125,4 +127,34 @@ func newKernelTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("init index db failed: %v", err)
 	}
 	return db
+}
+
+func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []dual2of2.UTXO) error {
+	var balance uint64
+	live := make(map[string]dual2of2.UTXO, len(utxos))
+	for _, u := range utxos {
+		balance += u.Value
+		live[strings.ToLower(u.TxID)+":"+fmt.Sprint(u.Vout)] = u
+	}
+	return reconcileWalletUTXOSet(
+		db,
+		address,
+		liveWalletSnapshot{
+			Live:               live,
+			ConfirmedLiveTxIDs: map[string]struct{}{},
+			Balance:            balance,
+			Count:              len(utxos),
+		},
+		nil,
+		walletUTXOHistoryCursor{
+			WalletID:            walletIDByAddress(address),
+			Address:             address,
+			NextConfirmedHeight: 1,
+			UpdatedAtUnix:       time.Now().Unix(),
+		},
+		"",
+		"test",
+		time.Now().Unix(),
+		0,
+	)
 }
