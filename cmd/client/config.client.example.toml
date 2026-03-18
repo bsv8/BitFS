@@ -1,5 +1,5 @@
 [keys]
-# supports libp2p MarshalPrivateKey hex or raw 32-byte secp256k1 hex
+# raw 32-byte secp256k1 private key hex only
 privkey_hex = "REPLACE_32BYTE_SECP256K1_PRIVKEY_HEX"
 
 [seller]
