@@ -2,18 +2,12 @@ package clientapp
 
 import (
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"testing"
-
-	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
-	"github.com/bsv8/BFTP/pkg/woc"
-	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 )
 
 func newWalletAPITestDB(t *testing.T) *sql.DB {
@@ -223,8 +217,8 @@ func TestHandleWalletSummary(t *testing.T) {
 	if int64(body["ledger_total_out_satoshi"].(float64)) != 0 {
 		t.Fatalf("ledger_total_out_satoshi mismatch: got=%v want=0", body["ledger_total_out_satoshi"])
 	}
-	if got, _ := body["balance_source"].(string); got != "onchain_realtime" {
-		t.Fatalf("balance_source mismatch: got=%v want=onchain_realtime", body["balance_source"])
+	if got, _ := body["balance_source"].(string); got != "wallet_utxo_db" {
+		t.Fatalf("balance_source mismatch: got=%v want=wallet_utxo_db", body["balance_source"])
 	}
 }
 
@@ -300,102 +294,5 @@ func TestHandleWalletLedger_ListAndDetail(t *testing.T) {
 	srv.handleWalletLedgerDetail(detailRecOK, detailReqOK)
 	if detailRecOK.Code != http.StatusOK {
 		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRecOK.Code, http.StatusOK, detailRecOK.Body.String())
-	}
-}
-
-type walletSyncMockChain struct {
-	utxos   []woc.UTXO
-	history []woc.AddressHistoryItem
-	txs     map[string]woc.TxDetail
-}
-
-func (m *walletSyncMockChain) GetUTXOs(address string) ([]woc.UTXO, error) { return m.utxos, nil }
-func (m *walletSyncMockChain) GetTipHeight() (uint32, error)               { return 100, nil }
-func (m *walletSyncMockChain) Broadcast(txHex string) (string, error)      { return "mock-txid", nil }
-func (m *walletSyncMockChain) GetAddressHistory(address string) ([]woc.AddressHistoryItem, error) {
-	return m.history, nil
-}
-func (m *walletSyncMockChain) GetTxDetail(txid string) (woc.TxDetail, error) {
-	return m.txs[txid], nil
-}
-
-func TestWalletLedger_QueryAfterChainSync(t *testing.T) {
-	t.Parallel()
-	db := newWalletAPITestDB(t)
-	privHex := "1111111111111111111111111111111111111111111111111111111111111111"
-	actor, err := dual2of2.BuildActor("client", privHex, false)
-	if err != nil {
-		t.Fatalf("build actor: %v", err)
-	}
-	addr, err := kmlibs.GetAddressFromPubKey(actor.PubKey, false)
-	if err != nil {
-		t.Fatalf("derive addr: %v", err)
-	}
-	lock, err := p2pkh.Lock(addr)
-	if err != nil {
-		t.Fatalf("build lock: %v", err)
-	}
-	lockHex := hex.EncodeToString(lock.Bytes())
-	chain := &walletSyncMockChain{
-		utxos: []woc.UTXO{{TxID: "tx-in-1", Vout: 0, Value: 1000}},
-		history: []woc.AddressHistoryItem{
-			{TxID: "tx-in-1", Height: 88},
-		},
-		txs: map[string]woc.TxDetail{
-			"tx-in-1": {
-				TxID: "tx-in-1",
-				Vin:  []woc.TxInput{{TxID: "", Vout: 0}},
-				Vout: []woc.TxOutput{
-					{N: 0, Value: 0.00001, ScriptPubKey: woc.ScriptPubKey{Hex: lockHex}},
-				},
-			},
-		},
-	}
-	cfg := Config{}
-	cfg.BSV.Network = "test"
-	cfg.Keys.PrivkeyHex = privHex
-	srv := &httpAPIServer{
-		db: db,
-		rt: &Runtime{
-			runIn: NewRunInputFromConfig(cfg, privHex),
-			Chain: chain,
-		},
-	}
-	if err := srv.syncWalletLedgerFromChain(t.Context()); err != nil {
-		t.Fatalf("sync wallet ledger from chain: %v", err)
-	}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/ledger?limit=10&offset=0", nil)
-	rec := httptest.NewRecorder()
-	srv.handleWalletLedger(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("ledger status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var list struct {
-		Total int `json:"total"`
-		Items []struct {
-			Direction     string `json:"direction"`
-			Category      string `json:"category"`
-			AmountSatoshi int64  `json:"amount_satoshi"`
-			TxID          string `json:"txid"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
-		t.Fatalf("decode ledger list: %v", err)
-	}
-	if list.Total != 1 || len(list.Items) != 1 {
-		t.Fatalf("ledger item mismatch: total=%d len=%d", list.Total, len(list.Items))
-	}
-	if list.Items[0].Direction != "IN" {
-		t.Fatalf("direction mismatch: got=%s want=IN", list.Items[0].Direction)
-	}
-	if list.Items[0].Category != "REPAYMENT" {
-		t.Fatalf("category mismatch: got=%s want=REPAYMENT", list.Items[0].Category)
-	}
-	if list.Items[0].AmountSatoshi != 1000 {
-		t.Fatalf("amount mismatch: got=%d want=1000", list.Items[0].AmountSatoshi)
-	}
-	if list.Items[0].TxID != "tx-in-1" {
-		t.Fatalf("txid mismatch: got=%s want=tx-in-1", list.Items[0].TxID)
 	}
 }

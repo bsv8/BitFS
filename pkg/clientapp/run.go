@@ -2086,18 +2086,6 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_chain_tx_raw(
-			txid TEXT PRIMARY KEY,
-			block_height INTEGER NOT NULL,
-			status TEXT NOT NULL,
-			occurred_at_unix INTEGER NOT NULL,
-			wallet_input_satoshi INTEGER NOT NULL,
-			wallet_output_satoshi INTEGER NOT NULL,
-			net_amount_satoshi INTEGER NOT NULL,
-			category TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_utxo(
 			utxo_id TEXT PRIMARY KEY,
 			wallet_id TEXT NOT NULL,
@@ -2189,7 +2177,7 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS chain_tip_snapshot(
+		`CREATE TABLE IF NOT EXISTS chain_tip_state(
 			id INTEGER PRIMARY KEY CHECK(id=1),
 			tip_height INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
@@ -2197,24 +2185,6 @@ func initIndexDB(db *sql.DB) error {
 			last_updated_by TEXT NOT NULL,
 			last_trigger TEXT NOT NULL,
 			last_duration_ms INTEGER NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_utxo_snapshot(
-			address TEXT PRIMARY KEY,
-			utxo_count INTEGER NOT NULL,
-			balance_satoshi INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			last_error TEXT NOT NULL,
-			last_updated_by TEXT NOT NULL,
-			last_trigger TEXT NOT NULL,
-			last_duration_ms INTEGER NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_utxo_items(
-			address TEXT NOT NULL,
-			txid TEXT NOT NULL,
-			vout INTEGER NOT NULL,
-			value_satoshi INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			PRIMARY KEY(address,txid,vout)
 		)`,
 		`CREATE TABLE IF NOT EXISTS chain_tip_worker_logs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2347,7 +2317,6 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_occurred_at ON wallet_ledger_entries(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_txid ON wallet_ledger_entries(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_direction_category ON wallet_ledger_entries(direction, category, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_chain_tx_raw_height ON wallet_chain_tx_raw(block_height DESC, txid DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
@@ -2363,7 +2332,6 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_utxo_links_business ON biz_utxo_links(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_utxo_links_utxo ON biz_utxo_links(utxo_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_items_address ON wallet_utxo_items(address, value_satoshi DESC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_started ON chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_status ON chain_tip_worker_logs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_started ON chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
@@ -2393,6 +2361,9 @@ func initIndexDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureAppConfigTable(db); err != nil {
+		return err
+	}
+	if err := migrateLegacyChainTables(db); err != nil {
 		return err
 	}
 	if err := normalizeClientPubKeyColumns(db); err != nil {
@@ -2601,6 +2572,38 @@ func hasTable(db *sql.DB, name string) (bool, error) {
 		return false, err
 	}
 	return true, nil
+}
+
+func migrateLegacyChainTables(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	exists, err := hasTable(db, "chain_tip_snapshot")
+	if err != nil {
+		return err
+	}
+	if exists {
+		if _, err := db.Exec(
+			`INSERT OR REPLACE INTO chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
+			 SELECT id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms
+			 FROM chain_tip_snapshot`,
+		); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`DROP TABLE IF EXISTS chain_tip_snapshot`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS wallet_utxo_snapshot`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS wallet_utxo_items`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS wallet_chain_tx_raw`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {

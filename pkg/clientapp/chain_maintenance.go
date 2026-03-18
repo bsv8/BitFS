@@ -54,7 +54,7 @@ type chainMaintainer struct {
 	status         chainSchedulerStatus
 }
 
-type chainTipSnapshot struct {
+type chainTipState struct {
 	TipHeight      uint32 `json:"tip_height"`
 	UpdatedAtUnix  int64  `json:"updated_at_unix"`
 	LastError      string `json:"last_error"`
@@ -63,7 +63,7 @@ type chainTipSnapshot struct {
 	LastDurationMS int64  `json:"last_duration_ms"`
 }
 
-type walletUTXOSnapshot struct {
+type walletUTXOSyncState struct {
 	WalletID       string `json:"wallet_id"`
 	Address        string `json:"address"`
 	UTXOCount      int    `json:"utxo_count"`
@@ -325,13 +325,13 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 	if m.rt == nil || m.rt.Chain == nil {
 		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime chain not initialized")
 	}
-	before, _ := loadChainTipSnapshot(m.rt.DB)
+	before, _ := loadChainTipState(m.rt.DB)
 	tip, err := m.rt.Chain.GetTipHeight()
 	if err != nil {
-		updateChainTipSnapshotError(m.rt.DB, err.Error(), task.TriggerSource)
+		updateChainTipStateError(m.rt.DB, err.Error(), task.TriggerSource)
 		return map[string]any{"task_type": chainTaskTip}, err
 	}
-	if err := upsertChainTipSnapshot(m.rt.DB, tip, "", task.TriggerSource, time.Now().Unix(), 0); err != nil {
+	if err := upsertChainTipState(m.rt.DB, tip, "", task.TriggerSource, time.Now().Unix(), 0); err != nil {
 		return map[string]any{"task_type": chainTaskTip, "tip_height": tip}, err
 	}
 	emitted := false
@@ -363,12 +363,12 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	}
 	addr, err := clientWalletAddress(m.rt)
 	if err != nil {
-		updateWalletUTXOSnapshotError(m.rt.DB, "", err.Error(), task.TriggerSource)
+		updateWalletUTXOSyncStateError(m.rt.DB, "", err.Error(), task.TriggerSource)
 		return map[string]any{"task_type": chainTaskUTXO}, err
 	}
 	utxos, err := m.rt.Chain.GetUTXOs(addr)
 	if err != nil {
-		updateWalletUTXOSnapshotError(m.rt.DB, addr, err.Error(), task.TriggerSource)
+		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
 		return map[string]any{"task_type": chainTaskUTXO, "address": addr}, err
 	}
 	var sum uint64
@@ -414,32 +414,32 @@ func clientWalletAddress(rt *Runtime) (string, error) {
 	return strings.TrimSpace(actor.Addr), nil
 }
 
-func loadChainTipSnapshot(db *sql.DB) (chainTipSnapshot, error) {
+func loadChainTipState(db *sql.DB) (chainTipState, error) {
 	if db == nil {
-		return chainTipSnapshot{}, fmt.Errorf("db is nil")
+		return chainTipState{}, fmt.Errorf("db is nil")
 	}
-	var s chainTipSnapshot
-	err := db.QueryRow(`SELECT tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM chain_tip_snapshot WHERE id=1`).Scan(
+	var s chainTipState
+	err := db.QueryRow(`SELECT tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM chain_tip_state WHERE id=1`).Scan(
 		&s.TipHeight, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return chainTipSnapshot{}, nil
+			return chainTipState{}, nil
 		}
-		return chainTipSnapshot{}, err
+		return chainTipState{}, err
 	}
 	return s, nil
 }
 
-func upsertChainTipSnapshot(db *sql.DB, tip uint32, lastError string, updatedBy string, updatedAt int64, durationMS int64) error {
+func upsertChainTipState(db *sql.DB, tip uint32, lastError string, updatedBy string, updatedAt int64, durationMS int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	_, err := db.Exec(
-		`INSERT INTO chain_tip_snapshot(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
+		`INSERT INTO chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
 		 VALUES(1,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
-			tip_height=excluded.tip_height,
+				tip_height=excluded.tip_height,
 			updated_at_unix=excluded.updated_at_unix,
 			last_error=excluded.last_error,
 			last_updated_by=excluded.last_updated_by,
@@ -455,38 +455,58 @@ func upsertChainTipSnapshot(db *sql.DB, tip uint32, lastError string, updatedBy 
 	return err
 }
 
-func updateChainTipSnapshotError(db *sql.DB, errMsg string, trigger string) {
+func updateChainTipStateError(db *sql.DB, errMsg string, trigger string) {
 	now := time.Now().Unix()
-	cur, loadErr := loadChainTipSnapshot(db)
+	cur, loadErr := loadChainTipState(db)
 	if loadErr != nil {
-		obs.Error("bitcast-client", "chain_tip_snapshot_load_failed", map[string]any{"error": loadErr.Error()})
+		obs.Error("bitcast-client", "chain_tip_state_load_failed", map[string]any{"error": loadErr.Error()})
 		return
 	}
-	if err := upsertChainTipSnapshot(db, cur.TipHeight, errMsg, trigger, now, 0); err != nil {
-		obs.Error("bitcast-client", "chain_tip_snapshot_upsert_failed", map[string]any{"error": err.Error()})
+	if err := upsertChainTipState(db, cur.TipHeight, errMsg, trigger, now, 0); err != nil {
+		obs.Error("bitcast-client", "chain_tip_state_upsert_failed", map[string]any{"error": err.Error()})
 	}
 }
 
-func loadWalletUTXOSnapshot(db *sql.DB, address string) (walletUTXOSnapshot, error) {
+func loadWalletUTXOSyncState(db *sql.DB, address string) (walletUTXOSyncState, error) {
 	if db == nil {
-		return walletUTXOSnapshot{}, fmt.Errorf("db is nil")
+		return walletUTXOSyncState{}, fmt.Errorf("db is nil")
 	}
 	address = strings.TrimSpace(address)
 	if address == "" {
-		return walletUTXOSnapshot{}, fmt.Errorf("wallet address is empty")
+		return walletUTXOSyncState{}, fmt.Errorf("wallet address is empty")
 	}
-	var s walletUTXOSnapshot
+	var s walletUTXOSyncState
 	err := db.QueryRow(
 		`SELECT wallet_id,address,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM wallet_utxo_sync_state WHERE address=?`,
 		address,
 	).Scan(&s.WalletID, &s.Address, &s.UTXOCount, &s.BalanceSatoshi, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return walletUTXOSnapshot{}, nil
+			return walletUTXOSyncState{}, nil
 		}
-		return walletUTXOSnapshot{}, err
+		return walletUTXOSyncState{}, err
 	}
 	return s, nil
+}
+
+func loadWalletUTXOAggregate(db *sql.DB, address string) (int, uint64, error) {
+	if db == nil {
+		return 0, 0, fmt.Errorf("db is nil")
+	}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return 0, 0, fmt.Errorf("wallet address is empty")
+	}
+	walletID := walletIDByAddress(address)
+	var count int
+	var balance uint64
+	if err := db.QueryRow(
+		`SELECT COUNT(1),COALESCE(SUM(value_satoshi),0) FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent'`,
+		walletID, address,
+	).Scan(&count, &balance); err != nil {
+		return 0, 0, err
+	}
+	return count, balance, nil
 }
 
 type utxoStateRow struct {
@@ -674,7 +694,7 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, utxos []dual2of2.UTXO, b
 	return nil
 }
 
-func updateWalletUTXOSnapshotError(db *sql.DB, address string, errMsg string, trigger string) {
+func updateWalletUTXOSyncStateError(db *sql.DB, address string, errMsg string, trigger string) {
 	if db == nil {
 		return
 	}
@@ -697,7 +717,7 @@ func updateWalletUTXOSnapshotError(db *sql.DB, address string, errMsg string, tr
 		address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0,
 	)
 	if err != nil {
-		obs.Error("bitcast-client", "wallet_utxo_snapshot_upsert_failed", map[string]any{"error": err.Error(), "address": address})
+		obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": err.Error(), "address": address})
 	}
 }
 
@@ -705,15 +725,15 @@ func getTipHeightFromDB(rt *Runtime) (uint32, error) {
 	if rt == nil || rt.DB == nil {
 		return 0, fmt.Errorf("runtime not initialized")
 	}
-	s, err := loadChainTipSnapshot(rt.DB)
+	s, err := loadChainTipState(rt.DB)
 	if err != nil {
 		return 0, err
 	}
 	if s.UpdatedAtUnix <= 0 {
-		return 0, fmt.Errorf("chain tip snapshot not ready")
+		return 0, fmt.Errorf("chain tip state not ready")
 	}
 	if strings.TrimSpace(s.LastError) != "" {
-		return 0, fmt.Errorf("chain tip snapshot unavailable: %s", strings.TrimSpace(s.LastError))
+		return 0, fmt.Errorf("chain tip state unavailable: %s", strings.TrimSpace(s.LastError))
 	}
 	return s.TipHeight, nil
 }
@@ -726,15 +746,15 @@ func getWalletUTXOsFromDB(rt *Runtime) ([]dual2of2.UTXO, error) {
 	if err != nil {
 		return nil, err
 	}
-	s, err := loadWalletUTXOSnapshot(rt.DB, addr)
+	s, err := loadWalletUTXOSyncState(rt.DB, addr)
 	if err != nil {
 		return nil, err
 	}
 	if s.UpdatedAtUnix <= 0 {
-		return nil, fmt.Errorf("wallet utxo snapshot not ready")
+		return nil, fmt.Errorf("wallet utxo sync state not ready")
 	}
 	if strings.TrimSpace(s.LastError) != "" {
-		return nil, fmt.Errorf("wallet utxo snapshot unavailable: %s", strings.TrimSpace(s.LastError))
+		return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 	}
 	walletID := walletIDByAddress(addr)
 	rows, err := rt.DB.Query(`SELECT txid,vout,value_satoshi FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent' ORDER BY value_satoshi ASC,txid ASC,vout ASC`, walletID, addr)
@@ -764,15 +784,15 @@ func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	s, err := loadWalletUTXOSnapshot(rt.DB, addr)
+	s, err := loadWalletUTXOSyncState(rt.DB, addr)
 	if err != nil {
 		return addr, 0, err
 	}
 	if s.UpdatedAtUnix <= 0 {
-		return addr, 0, fmt.Errorf("wallet utxo snapshot not ready")
+		return addr, 0, fmt.Errorf("wallet utxo sync state not ready")
 	}
 	if strings.TrimSpace(s.LastError) != "" {
-		return addr, 0, fmt.Errorf("wallet utxo snapshot unavailable: %s", strings.TrimSpace(s.LastError))
+		return addr, 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 	}
 	walletID := walletIDByAddress(addr)
 	var balance uint64

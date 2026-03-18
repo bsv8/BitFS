@@ -21,11 +21,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
-	"github.com/bsv8/BFTP/pkg/woc"
-	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -304,9 +301,6 @@ type httpAPIServer struct {
 	getJobs   map[string]*fileGetJob
 	webAssets fs.FS
 	rpcTrace  p2prpc.TraceSink
-
-	ledgerSyncMu       sync.Mutex
-	ledgerLastSyncUnix int64
 }
 
 // 说明：
@@ -549,8 +543,8 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_pubkey_hex":           s.cfg.ClientID,
-		"transport_peer_id":             s.h.ID().String(),
+		"client_pubkey_hex":   s.cfg.ClientID,
+		"transport_peer_id":   s.h.ID().String(),
 		"pubkey_hex":          s.cfg.ClientID,
 		"seller_enabled":      s.cfg.Seller.Enabled,
 		"workspace_dir":       s.cfg.Storage.WorkspaceDir,
@@ -632,7 +626,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		"ledger_net_satoshi":       ledgerIn - ledgerOut,
 		"wallet_address":           walletAddr,
 		"onchain_balance_satoshi":  onchainBal,
-		"balance_source":           "onchain_realtime",
+		"balance_source":           "wallet_utxo_db",
 	}
 	if onchainBalErr != "" {
 		resp["onchain_balance_error"] = onchainBalErr
@@ -642,279 +636,6 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 
 func walletAddressAndOnchainBalance(rt *Runtime) (string, uint64, error) {
 	return getWalletBalanceFromDB(rt)
-}
-
-type walletHistoryClient interface {
-	GetAddressHistory(address string) ([]woc.AddressHistoryItem, error)
-	GetTxDetail(txid string) (woc.TxDetail, error)
-}
-
-func (s *httpAPIServer) syncWalletLedgerBestEffort(ctx context.Context) {
-	if s == nil || s.db == nil || s.rt == nil {
-		return
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	s.ledgerSyncMu.Lock()
-	defer s.ledgerSyncMu.Unlock()
-	now := time.Now().Unix()
-	if now-s.ledgerLastSyncUnix < 15 {
-		return
-	}
-	if err := s.syncWalletLedgerFromChain(ctx); err != nil {
-		obs.Error("bitcast-client", "wallet_ledger_sync_failed", map[string]any{"error": err.Error()})
-		return
-	}
-	s.ledgerLastSyncUnix = now
-}
-
-func (s *httpAPIServer) syncWalletLedgerFromChain(ctx context.Context) error {
-	if s == nil || s.rt == nil || s.db == nil {
-		return fmt.Errorf("runtime not initialized")
-	}
-	hc, ok := s.rt.Chain.(walletHistoryClient)
-	if !ok {
-		return fmt.Errorf("chain backend does not support history api")
-	}
-	actor, err := buildClientActorFromRunInput(s.rt.runIn)
-	if err != nil {
-		return err
-	}
-	isMainnet := strings.ToLower(strings.TrimSpace(s.rt.runIn.BSV.Network)) == "main"
-	clientAddr, err := kmlibs.GetAddressFromPubKey(actor.PubKey, isMainnet)
-	if err != nil {
-		return err
-	}
-	lockScript, err := p2pkh.Lock(clientAddr)
-	if err != nil {
-		return err
-	}
-	walletLockHex := strings.ToLower(hex.EncodeToString(lockScript.Bytes()))
-
-	history, err := hc.GetAddressHistory(actor.Addr)
-	if err != nil {
-		return err
-	}
-	if len(history) == 0 {
-		return nil
-	}
-	fundMap, err := buildFundFlowCategoryMap(s.db)
-	if err != nil {
-		return err
-	}
-	cache := map[string]woc.TxDetail{}
-	for _, it := range history {
-		txid := strings.ToLower(strings.TrimSpace(it.TxID))
-		if txid == "" {
-			continue
-		}
-		txj, ok := cache[txid]
-		if !ok {
-			txj, err = hc.GetTxDetail(txid)
-			if err != nil {
-				continue
-			}
-			cache[txid] = txj
-		}
-		inSat, outSat, err := calcWalletTxAmount(txj, walletLockHex, hc, cache)
-		if err != nil {
-			continue
-		}
-		net := outSat - inSat
-		if net == 0 {
-			continue
-		}
-		direction := "IN"
-		amount := net
-		if net < 0 {
-			direction = "OUT"
-			amount = -net
-		}
-		category := classifyWalletLedgerCategory(net, inSat, fundMap[txid])
-		status := "MEMPOOL"
-		if it.Height > 0 {
-			status = "CONFIRMED"
-		}
-		occurredAt := time.Now().Unix()
-		payload := map[string]any{
-			"wallet_input_satoshi":  inSat,
-			"wallet_output_satoshi": outSat,
-			"net_amount_satoshi":    net,
-			"fund_flow_hint":        fundMap[txid],
-			"block_height":          it.Height,
-		}
-		if err := upsertWalletChainRaw(s.db, txid, it.Height, status, occurredAt, inSat, outSat, net, category, payload); err != nil {
-			return err
-		}
-		if err := upsertWalletLedgerByTxID(s.db, walletLedgerEntry{
-			TxID:           txid,
-			Direction:      direction,
-			Category:       category,
-			AmountSatoshi:  amount,
-			Status:         status,
-			BlockHeight:    it.Height,
-			OccurredAtUnix: occurredAt,
-			RawRefID:       "wallet_chain_tx_raw:" + txid,
-			Payload:        payload,
-		}); err != nil {
-			return err
-		}
-		recordWalletChainAccounting(s.db, txid, category, inSat, outSat, net, payload)
-	}
-	return nil
-}
-
-func buildFundFlowCategoryMap(db *sql.DB) (map[string][]string, error) {
-	out := map[string][]string{}
-	rows, err := db.Query(`SELECT related_txid,flow_type,purpose,returned_satoshi FROM wallet_fund_flows WHERE related_txid<>''`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var txid, flowType, purpose string
-		var returned int64
-		if err := rows.Scan(&txid, &flowType, &purpose, &returned); err != nil {
-			return nil, err
-		}
-		txid = strings.ToLower(strings.TrimSpace(txid))
-		if txid == "" {
-			continue
-		}
-		hints := out[txid]
-		if strings.EqualFold(strings.TrimSpace(flowType), "fee_pool") {
-			hints = append(hints, "fee_pool")
-		}
-		if strings.Contains(strings.ToLower(strings.TrimSpace(purpose)), "close") && returned > 0 {
-			hints = append(hints, "repayment")
-		}
-		out[txid] = hints
-	}
-	return out, nil
-}
-
-func calcWalletTxAmount(txj woc.TxDetail, walletLockHex string, hc walletHistoryClient, cache map[string]woc.TxDetail) (int64, int64, error) {
-	var walletOutSat int64
-	for _, out := range txj.Vout {
-		if strings.EqualFold(strings.TrimSpace(out.ScriptPubKey.Hex), walletLockHex) {
-			walletOutSat += bsvToSatoshi(out.Value)
-		}
-	}
-	var walletInSat int64
-	for _, in := range txj.Vin {
-		prevID := strings.ToLower(strings.TrimSpace(in.TxID))
-		if prevID == "" {
-			continue
-		}
-		prev, ok := cache[prevID]
-		if !ok {
-			var err error
-			prev, err = hc.GetTxDetail(prevID)
-			if err != nil {
-				return 0, 0, err
-			}
-			cache[prevID] = prev
-		}
-		prevOut, ok := txOutputByN(prev, in.Vout)
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(prevOut.ScriptPubKey.Hex), walletLockHex) {
-			walletInSat += bsvToSatoshi(prevOut.Value)
-		}
-	}
-	return walletInSat, walletOutSat, nil
-}
-
-func txOutputByN(txj woc.TxDetail, n uint32) (woc.TxOutput, bool) {
-	for _, out := range txj.Vout {
-		if out.N == n {
-			return out, true
-		}
-	}
-	return woc.TxOutput{}, false
-}
-
-func bsvToSatoshi(v float64) int64 {
-	return int64(math.Round(v * 100_000_000))
-}
-
-func classifyWalletLedgerCategory(net, walletInSat int64, hints []string) string {
-	for _, h := range hints {
-		switch strings.ToLower(strings.TrimSpace(h)) {
-		case "fee_pool":
-			return "FEE_POOL"
-		case "repayment":
-			if net > 0 {
-				return "REPAYMENT"
-			}
-		}
-	}
-	if net > 0 && walletInSat > 0 {
-		return "CHANGE"
-	}
-	if net > 0 {
-		return "REPAYMENT"
-	}
-	if net < 0 {
-		return "THIRD_PARTY"
-	}
-	return "UNKNOWN"
-}
-
-func upsertWalletChainRaw(db *sql.DB, txid string, blockHeight int64, status string, occurredAt int64, inSat, outSat, net int64, category string, payload any) error {
-	rawPayload := "{}"
-	if payload != nil {
-		if b, err := json.Marshal(payload); err == nil {
-			rawPayload = string(b)
-		}
-	}
-	_, err := db.Exec(
-		`INSERT INTO wallet_chain_tx_raw(
-			txid,block_height,status,occurred_at_unix,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,category,payload_json,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(txid) DO UPDATE SET
-			block_height=excluded.block_height,
-			status=excluded.status,
-			occurred_at_unix=excluded.occurred_at_unix,
-			wallet_input_satoshi=excluded.wallet_input_satoshi,
-			wallet_output_satoshi=excluded.wallet_output_satoshi,
-			net_amount_satoshi=excluded.net_amount_satoshi,
-			category=excluded.category,
-			payload_json=excluded.payload_json,
-			updated_at_unix=excluded.updated_at_unix`,
-		txid, blockHeight, status, occurredAt, inSat, outSat, net, category, rawPayload, time.Now().Unix(),
-	)
-	return err
-}
-
-func upsertWalletLedgerByTxID(db *sql.DB, e walletLedgerEntry) error {
-	e.TxID = strings.ToLower(strings.TrimSpace(e.TxID))
-	if e.TxID == "" {
-		return fmt.Errorf("txid required")
-	}
-	payload := "{}"
-	if e.Payload != nil {
-		if b, err := json.Marshal(e.Payload); err == nil {
-			payload = string(b)
-		}
-	}
-	var id int64
-	err := db.QueryRow(`SELECT id FROM wallet_ledger_entries WHERE txid=? ORDER BY id DESC LIMIT 1`, e.TxID).Scan(&id)
-	now := time.Now().Unix()
-	if err == nil {
-		_, err = db.Exec(
-			`UPDATE wallet_ledger_entries SET created_at_unix=?,direction=?,category=?,amount_satoshi=?,counterparty_label=?,status=?,block_height=?,occurred_at_unix=?,raw_ref_id=?,note=?,payload_json=? WHERE id=?`,
-			now, strings.ToUpper(strings.TrimSpace(e.Direction)), strings.ToUpper(strings.TrimSpace(e.Category)), e.AmountSatoshi, strings.TrimSpace(e.CounterpartyLabel), strings.ToUpper(strings.TrimSpace(e.Status)), e.BlockHeight, e.OccurredAtUnix, strings.TrimSpace(e.RawRefID), e.Note, payload, id,
-		)
-		return err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	appendWalletLedgerEntry(db, e)
-	return nil
 }
 
 func (s *httpAPIServer) handleWalletLedger(w http.ResponseWriter, r *http.Request) {
@@ -2803,7 +2524,7 @@ func (s *httpAPIServer) handleAdminOrchestratorLogDetail(w http.ResponseWriter, 
 		"idempotency_key":    strings.TrimSpace(last.IdempotencyKey),
 		"aggregate_key":      strings.TrimSpace(last.AggregateKey),
 		"command_type":       strings.TrimSpace(last.CommandType),
-		"gateway_pubkey_hex":    strings.TrimSpace(last.GatewayPeerID),
+		"gateway_pubkey_hex": strings.TrimSpace(last.GatewayPeerID),
 		"started_at_unix":    first.CreatedAtUnix,
 		"ended_at_unix":      last.CreatedAtUnix,
 		"steps_count":        len(steps),
@@ -3148,12 +2869,12 @@ func (s *httpAPIServer) handleAdminChainTipStatus(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	snap, err := loadChainTipSnapshot(s.db)
+	state, err := loadChainTipState(s.db)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *http.Request) {
@@ -3170,15 +2891,23 @@ func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	snap, err := loadWalletUTXOSnapshot(s.db, addr)
+	state, err := loadWalletUTXOSyncState(s.db, addr)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if strings.TrimSpace(snap.Address) == "" {
-		snap.Address = addr
+	count, balance, err := loadWalletUTXOAggregate(s.db, addr)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
-	writeJSON(w, http.StatusOK, snap)
+	if strings.TrimSpace(state.Address) == "" {
+		state.Address = addr
+		state.WalletID = walletIDByAddress(addr)
+	}
+	state.UTXOCount = count
+	state.BalanceSatoshi = balance
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *httpAPIServer) handleAdminChainTipLogs(w http.ResponseWriter, r *http.Request) {
@@ -5449,9 +5178,9 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 			})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":             true,
+			"ok":                        true,
 			"master_gateway_pubkey_hex": targetID.String(),
-			"changed":        changed,
+			"changed":                   changed,
 		})
 
 	default:
@@ -5538,9 +5267,9 @@ func (s *httpAPIServer) handleGatewayHealth(w http.ResponseWriter, r *http.Reque
 			}
 			return c
 		}(),
-		"connected_total": connectedCount,
-		"master_gateway_pubkey_hex":  master,
-		"items":           items,
+		"connected_total":           connectedCount,
+		"master_gateway_pubkey_hex": master,
+		"items":                     items,
 	})
 }
 
