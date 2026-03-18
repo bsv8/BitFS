@@ -832,7 +832,7 @@ func upsertWalletUTXORowTx(tx *sql.Tx, existing map[string]utxoStateRow, walletI
 	if ok {
 		_, err := tx.Exec(
 			`UPDATE wallet_utxo
-			 SET txid=?,vout=?,value_satoshi=?,state=?,origin_type='chain_sync',income_eligible=0,created_txid=?,spent_txid=?,reserved_by='',reserved_at_unix=0,updated_at_unix=?,spent_at_unix=?
+			 SET txid=?,vout=?,value_satoshi=?,state=?,created_txid=?,spent_txid=?,updated_at_unix=?,spent_at_unix=?
 			 WHERE utxo_id=?`,
 			txid, vout, value, strings.TrimSpace(state), txid, spentTxID, updatedAt, spentAtUnix, utxoID,
 		)
@@ -850,9 +850,9 @@ func upsertWalletUTXORowTx(tx *sql.Tx, existing map[string]utxoStateRow, walletI
 	}
 	_, err := tx.Exec(
 		`INSERT INTO wallet_utxo(
-			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,origin_type,income_eligible,created_txid,spent_txid,reserved_by,reserved_at_unix,created_at_unix,updated_at_unix,spent_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		utxoID, walletID, address, txid, vout, value, strings.TrimSpace(state), "chain_sync", 0, txid, spentTxID, "", 0, createdAtUnix, updatedAt, spentAtUnix,
+			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, txid, vout, value, strings.TrimSpace(state), txid, spentTxID, createdAtUnix, updatedAt, spentAtUnix,
 	)
 	if err != nil {
 		return err

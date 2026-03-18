@@ -40,11 +40,21 @@ type finTxBreakdownEntry struct {
 	Payload            any
 }
 
-type bizUTXOLinkEntry struct {
+type finBusinessTxEntry struct {
+	BusinessID    string
+	TxID          string
+	TxRole        string
+	CreatedAtUnix int64
+	Note          string
+	Payload       any
+}
+
+type finTxUTXOLinkEntry struct {
 	BusinessID    string
 	TxID          string
 	UTXOID        string
-	Role          string
+	IOSide        string
+	UTXORole      string
 	AmountSatoshi int64
 	CreatedAtUnix int64
 	Note          string
@@ -66,6 +76,13 @@ type finProcessEventEntry struct {
 
 func mustJSONString(v any) string {
 	if v == nil {
+		return "{}"
+	}
+	if raw, ok := v.(rawJSONPayload); ok {
+		s := strings.TrimSpace(string(raw))
+		if s != "" {
+			return s
+		}
 		return "{}"
 	}
 	b, err := json.Marshal(v)
@@ -127,24 +144,43 @@ func appendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
 	return appendFinTxBreakdown(db, e)
 }
 
-func appendBizUTXOLinkIfAbsent(db *sql.DB, e bizUTXOLinkEntry) error {
+func appendFinBusinessTxIfAbsent(db *sql.DB, e finBusinessTxEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	var n int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM biz_utxo_links WHERE business_id=? AND txid=? AND utxo_id=? AND role=?`,
+		`SELECT COUNT(1) FROM fin_business_txs WHERE business_id=? AND txid=?`,
 		strings.TrimSpace(e.BusinessID),
 		strings.ToLower(strings.TrimSpace(e.TxID)),
-		strings.ToLower(strings.TrimSpace(e.UTXOID)),
-		strings.TrimSpace(e.Role),
 	).Scan(&n); err != nil {
 		return err
 	}
 	if n > 0 {
 		return nil
 	}
-	return appendBizUTXOLink(db, e)
+	return appendFinBusinessTx(db, e)
+}
+
+func appendFinTxUTXOLinkIfAbsent(db *sql.DB, e finTxUTXOLinkEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM fin_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+		strings.ToLower(strings.TrimSpace(e.UTXOID)),
+		strings.TrimSpace(e.IOSide),
+		strings.TrimSpace(e.UTXORole),
+	).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return appendFinTxUTXOLink(db, e)
 }
 
 func appendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
@@ -174,7 +210,7 @@ func appendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
 	return err
 }
 
-func appendBizUTXOLink(db *sql.DB, e bizUTXOLinkEntry) error {
+func appendFinBusinessTx(db *sql.DB, e finBusinessTxEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -182,17 +218,54 @@ func appendBizUTXOLink(db *sql.DB, e bizUTXOLinkEntry) error {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
 	_, err := db.Exec(
-		`INSERT INTO biz_utxo_links(business_id,txid,utxo_id,role,amount_satoshi,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
+		`INSERT INTO fin_business_txs(business_id,txid,tx_role,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?)`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+		strings.TrimSpace(e.TxRole),
+		e.CreatedAtUnix,
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func appendFinTxUTXOLink(db *sql.DB, e finTxUTXOLinkEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if e.CreatedAtUnix <= 0 {
+		e.CreatedAtUnix = time.Now().Unix()
+	}
+	_, err := db.Exec(
+		`INSERT INTO fin_tx_utxo_links(business_id,txid,utxo_id,io_side,utxo_role,amount_satoshi,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
 		strings.TrimSpace(e.BusinessID),
 		strings.ToLower(strings.TrimSpace(e.TxID)),
 		strings.ToLower(strings.TrimSpace(e.UTXOID)),
-		strings.TrimSpace(e.Role),
+		strings.TrimSpace(e.IOSide),
+		strings.TrimSpace(e.UTXORole),
 		e.AmountSatoshi,
 		e.CreatedAtUnix,
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
 	)
 	return err
+}
+
+func appendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLinkEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if err := appendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
+		BusinessID:    e.BusinessID,
+		TxID:          e.TxID,
+		TxRole:        strings.TrimSpace(txRole),
+		CreatedAtUnix: e.CreatedAtUnix,
+		Note:          e.Note,
+		Payload:       e.Payload,
+	}); err != nil {
+		return err
+	}
+	return appendFinTxUTXOLinkIfAbsent(db, e)
 }
 
 func appendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
@@ -268,11 +341,12 @@ func recordFeePoolOpenAccounting(db *sql.DB, in feePoolOpenAccountingInput) {
 					grossInput += int64(input.SourceTxOutput().Satoshis)
 					if input.SourceTXID != nil {
 						utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
-						_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+						_ = appendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
 							BusinessID:    businessID,
 							TxID:          baseTxID,
 							UTXOID:        utxoID,
-							Role:          "input",
+							IOSide:        "input",
+							UTXORole:      "wallet_input",
 							AmountSatoshi: int64(input.SourceTxOutput().Satoshis),
 							Note:          "fee pool open input",
 						})
@@ -283,11 +357,12 @@ func recordFeePoolOpenAccounting(db *sql.DB, in feePoolOpenAccountingInput) {
 				amount := int64(out.Satoshis)
 				if idx == 0 {
 					lockAmount += amount
-					_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+					_ = appendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
 						BusinessID:    businessID,
 						TxID:          baseTxID,
 						UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-						Role:          "lock",
+						IOSide:        "output",
+						UTXORole:      "pool_lock",
 						AmountSatoshi: amount,
 						Note:          "fee pool lock output",
 					})
@@ -295,11 +370,12 @@ func recordFeePoolOpenAccounting(db *sql.DB, in feePoolOpenAccountingInput) {
 				}
 				if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
 					changeBack += amount
-					_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+					_ = appendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
 						BusinessID:    businessID,
 						TxID:          baseTxID,
 						UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-						Role:          "change",
+						IOSide:        "output",
+						UTXORole:      "wallet_change",
 						AmountSatoshi: amount,
 						Note:          "wallet change output",
 					})
@@ -374,7 +450,7 @@ func recordFeePoolCycleEvent(db *sql.DB, spendTxID string, sequence uint32, amou
 		Payload: map[string]any{
 			"sequence":           sequence,
 			"charge_amount_sat":  amount,
-			"gateway_pubkey_hex":    strings.TrimSpace(gatewayPeerID),
+			"gateway_pubkey_hex": strings.TrimSpace(gatewayPeerID),
 			"financial_affected": false,
 		},
 	}); err != nil {
@@ -410,11 +486,12 @@ func recordDirectPoolOpenAccounting(db *sql.DB, in directPoolOpenAccountingInput
 			grossInput += int64(input.SourceTxOutput().Satoshis)
 			if input.SourceTXID != nil {
 				utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
-				_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+				_ = appendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
 					BusinessID:    businessID,
 					TxID:          baseTxID,
 					UTXOID:        utxoID,
-					Role:          "input",
+					IOSide:        "input",
+					UTXORole:      "wallet_input",
 					AmountSatoshi: int64(input.SourceTxOutput().Satoshis),
 					Note:          "direct pool open input",
 				})
@@ -424,11 +501,12 @@ func recordDirectPoolOpenAccounting(db *sql.DB, in directPoolOpenAccountingInput
 			amount := int64(out.Satoshis)
 			if idx == 0 {
 				lockAmount += amount
-				_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+				_ = appendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
 					BusinessID:    businessID,
 					TxID:          baseTxID,
 					UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-					Role:          "lock",
+					IOSide:        "output",
+					UTXORole:      "pool_lock",
 					AmountSatoshi: amount,
 					Note:          "direct pool lock output",
 				})
@@ -436,11 +514,12 @@ func recordDirectPoolOpenAccounting(db *sql.DB, in directPoolOpenAccountingInput
 			}
 			if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
 				changeBack += amount
-				_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+				_ = appendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
 					BusinessID:    businessID,
 					TxID:          baseTxID,
 					UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-					Role:          "change",
+					IOSide:        "output",
+					UTXORole:      "wallet_change",
 					AmountSatoshi: amount,
 					Note:          "wallet change output",
 				})
@@ -592,11 +671,12 @@ func recordDirectPoolCloseAccounting(db *sql.DB, sessionID string, finalTxID str
 			value = inputValueHint
 		}
 		utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
-		_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+		_ = appendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
 			BusinessID:    businessID,
 			TxID:          finalTxID,
 			UTXOID:        utxoID,
-			Role:          "settle_input",
+			IOSide:        "input",
+			UTXORole:      "pool_input",
 			AmountSatoshi: value,
 			Note:          "direct pool settle input",
 		})
@@ -609,22 +689,23 @@ func recordDirectPoolCloseAccounting(db *sql.DB, sessionID string, finalTxID str
 		if amount == 0 {
 			continue
 		}
-		role := "settle_other"
+		utxoRole := "settle_other"
 		note := "direct pool settle output"
 		if sellerLeft > 0 && amount == sellerLeft {
-			role = "settle_to_seller"
+			utxoRole = "settle_to_seller"
 			note = "direct pool settle output to seller"
 			sellerLeft = 0
 		} else if buyerLeft > 0 && amount == buyerLeft {
-			role = "settle_to_buyer"
+			utxoRole = "settle_to_buyer"
 			note = "direct pool settle output to buyer"
 			buyerLeft = 0
 		}
-		_ = appendBizUTXOLinkIfAbsent(db, bizUTXOLinkEntry{
+		_ = appendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
 			BusinessID:    businessID,
 			TxID:          finalTxID,
 			UTXOID:        finalTxID + ":" + fmt.Sprint(idx),
-			Role:          role,
+			IOSide:        "output",
+			UTXORole:      utxoRole,
 			AmountSatoshi: int64(amount),
 			Note:          note,
 		})

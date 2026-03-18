@@ -3040,10 +3040,7 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 	walletID := strings.TrimSpace(r.URL.Query().Get("wallet_id"))
 	address := strings.TrimSpace(r.URL.Query().Get("address"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
-	originType := strings.TrimSpace(r.URL.Query().Get("origin_type"))
-	incomeEligible := strings.TrimSpace(r.URL.Query().Get("income_eligible"))
 	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
-	reservedBy := strings.TrimSpace(r.URL.Query().Get("reserved_by"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	where := ""
@@ -3060,25 +3057,9 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 		where += " AND state=?"
 		args = append(args, state)
 	}
-	if originType != "" {
-		where += " AND origin_type=?"
-		args = append(args, originType)
-	}
-	if incomeEligible != "" {
-		v := strings.TrimSpace(strings.ToLower(incomeEligible))
-		if v == "1" || v == "true" || v == "yes" {
-			where += " AND income_eligible=1"
-		} else if v == "0" || v == "false" || v == "no" {
-			where += " AND income_eligible=0"
-		}
-	}
 	if txid != "" {
 		where += " AND txid=?"
 		args = append(args, txid)
-	}
-	if reservedBy != "" {
-		where += " AND reserved_by=?"
-		args = append(args, reservedBy)
 	}
 	if q != "" {
 		like := "%" + q + "%"
@@ -3092,7 +3073,7 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,origin_type,income_eligible,created_txid,spent_txid,reserved_by,reserved_at_unix,created_at_unix,updated_at_unix,spent_at_unix
+		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 		 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -3102,29 +3083,25 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 	}
 	defer rows.Close()
 	type item struct {
-		UTXOID         string `json:"utxo_id"`
-		WalletID       string `json:"wallet_id"`
-		Address        string `json:"address"`
-		TxID           string `json:"txid"`
-		Vout           uint32 `json:"vout"`
-		ValueSatoshi   uint64 `json:"value_satoshi"`
-		State          string `json:"state"`
-		OriginType     string `json:"origin_type"`
-		IncomeEligible int    `json:"income_eligible"`
-		CreatedTxID    string `json:"created_txid"`
-		SpentTxID      string `json:"spent_txid"`
-		ReservedBy     string `json:"reserved_by"`
-		ReservedAtUnix int64  `json:"reserved_at_unix"`
-		CreatedAtUnix  int64  `json:"created_at_unix"`
-		UpdatedAtUnix  int64  `json:"updated_at_unix"`
-		SpentAtUnix    int64  `json:"spent_at_unix"`
+		UTXOID        string `json:"utxo_id"`
+		WalletID      string `json:"wallet_id"`
+		Address       string `json:"address"`
+		TxID          string `json:"txid"`
+		Vout          uint32 `json:"vout"`
+		ValueSatoshi  uint64 `json:"value_satoshi"`
+		State         string `json:"state"`
+		CreatedTxID   string `json:"created_txid"`
+		SpentTxID     string `json:"spent_txid"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+		UpdatedAtUnix int64  `json:"updated_at_unix"`
+		SpentAtUnix   int64  `json:"spent_at_unix"`
 	}
 	items := make([]item, 0, limit)
 	for rows.Next() {
 		var it item
 		if err := rows.Scan(
-			&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.OriginType, &it.IncomeEligible,
-			&it.CreatedTxID, &it.SpentTxID, &it.ReservedBy, &it.ReservedAtUnix, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
+			&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State,
+			&it.CreatedTxID, &it.SpentTxID, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
 		); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -3145,31 +3122,27 @@ func (s *httpAPIServer) handleAdminWalletUTXODetail(w http.ResponseWriter, r *ht
 		return
 	}
 	type item struct {
-		UTXOID         string `json:"utxo_id"`
-		WalletID       string `json:"wallet_id"`
-		Address        string `json:"address"`
-		TxID           string `json:"txid"`
-		Vout           uint32 `json:"vout"`
-		ValueSatoshi   uint64 `json:"value_satoshi"`
-		State          string `json:"state"`
-		OriginType     string `json:"origin_type"`
-		IncomeEligible int    `json:"income_eligible"`
-		CreatedTxID    string `json:"created_txid"`
-		SpentTxID      string `json:"spent_txid"`
-		ReservedBy     string `json:"reserved_by"`
-		ReservedAtUnix int64  `json:"reserved_at_unix"`
-		CreatedAtUnix  int64  `json:"created_at_unix"`
-		UpdatedAtUnix  int64  `json:"updated_at_unix"`
-		SpentAtUnix    int64  `json:"spent_at_unix"`
+		UTXOID        string `json:"utxo_id"`
+		WalletID      string `json:"wallet_id"`
+		Address       string `json:"address"`
+		TxID          string `json:"txid"`
+		Vout          uint32 `json:"vout"`
+		ValueSatoshi  uint64 `json:"value_satoshi"`
+		State         string `json:"state"`
+		CreatedTxID   string `json:"created_txid"`
+		SpentTxID     string `json:"spent_txid"`
+		CreatedAtUnix int64  `json:"created_at_unix"`
+		UpdatedAtUnix int64  `json:"updated_at_unix"`
+		SpentAtUnix   int64  `json:"spent_at_unix"`
 	}
 	var it item
 	err := s.db.QueryRow(
-		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,origin_type,income_eligible,created_txid,spent_txid,reserved_by,reserved_at_unix,created_at_unix,updated_at_unix,spent_at_unix
+		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 		 FROM wallet_utxo WHERE utxo_id=?`,
 		utxoID,
 	).Scan(
-		&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.OriginType, &it.IncomeEligible,
-		&it.CreatedTxID, &it.SpentTxID, &it.ReservedBy, &it.ReservedAtUnix, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
+		&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State,
+		&it.CreatedTxID, &it.SpentTxID, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -3713,41 +3686,59 @@ func (s *httpAPIServer) handleAdminFinanceUTXOLinks(w http.ResponseWriter, r *ht
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
 	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
 	utxoID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("utxo_id")))
-	role := strings.TrimSpace(r.URL.Query().Get("role"))
+	txRole := strings.TrimSpace(r.URL.Query().Get("tx_role"))
+	ioSide := strings.TrimSpace(r.URL.Query().Get("io_side"))
+	utxoRole := strings.TrimSpace(r.URL.Query().Get("utxo_role"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	where := ""
 	args := make([]any, 0, 12)
 	if businessID != "" {
-		where += " AND business_id=?"
+		where += " AND l.business_id=?"
 		args = append(args, businessID)
 	}
 	if txid != "" {
-		where += " AND txid=?"
+		where += " AND l.txid=?"
 		args = append(args, txid)
 	}
 	if utxoID != "" {
-		where += " AND utxo_id=?"
+		where += " AND l.utxo_id=?"
 		args = append(args, utxoID)
 	}
-	if role != "" {
-		where += " AND role=?"
-		args = append(args, role)
+	if txRole != "" {
+		where += " AND bt.tx_role=?"
+		args = append(args, txRole)
+	}
+	if ioSide != "" {
+		where += " AND l.io_side=?"
+		args = append(args, ioSide)
+	}
+	if utxoRole != "" {
+		where += " AND l.utxo_role=?"
+		args = append(args, utxoRole)
 	}
 	if q != "" {
 		like := "%" + q + "%"
-		where += " AND (business_id LIKE ? OR txid LIKE ? OR utxo_id LIKE ? OR note LIKE ?)"
-		args = append(args, like, like, like, like)
+		where += " AND (l.business_id LIKE ? OR l.txid LIKE ? OR l.utxo_id LIKE ? OR l.note LIKE ? OR bt.tx_role LIKE ? OR l.utxo_role LIKE ?)"
+		args = append(args, like, like, like, like, like, like)
 	}
 
 	var total int
-	if err := s.db.QueryRow("SELECT COUNT(1) FROM biz_utxo_links WHERE 1=1"+where, args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(
+		`SELECT COUNT(1)
+		   FROM fin_tx_utxo_links l
+		   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+		  WHERE 1=1`+where,
+		args...,
+	).Scan(&total); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT id,business_id,txid,utxo_id,role,amount_satoshi,created_at_unix,note,payload_json
-		 FROM biz_utxo_links WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		`SELECT l.id,l.business_id,l.txid,l.utxo_id,bt.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
+		   FROM fin_tx_utxo_links l
+		   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+		  WHERE 1=1`+where+` ORDER BY l.id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
 	if err != nil {
@@ -3760,7 +3751,9 @@ func (s *httpAPIServer) handleAdminFinanceUTXOLinks(w http.ResponseWriter, r *ht
 		BusinessID    string          `json:"business_id"`
 		TxID          string          `json:"txid"`
 		UTXOID        string          `json:"utxo_id"`
-		Role          string          `json:"role"`
+		TxRole        string          `json:"tx_role"`
+		IOSide        string          `json:"io_side"`
+		UTXORole      string          `json:"utxo_role"`
 		AmountSatoshi int64           `json:"amount_satoshi"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		Note          string          `json:"note"`
@@ -3770,7 +3763,7 @@ func (s *httpAPIServer) handleAdminFinanceUTXOLinks(w http.ResponseWriter, r *ht
 	for rows.Next() {
 		var it item
 		var payload string
-		if err := rows.Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.Role, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload); err != nil {
+		if err := rows.Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.TxRole, &it.IOSide, &it.UTXORole, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -3795,7 +3788,9 @@ func (s *httpAPIServer) handleAdminFinanceUTXOLinkDetail(w http.ResponseWriter, 
 		BusinessID    string          `json:"business_id"`
 		TxID          string          `json:"txid"`
 		UTXOID        string          `json:"utxo_id"`
-		Role          string          `json:"role"`
+		TxRole        string          `json:"tx_role"`
+		IOSide        string          `json:"io_side"`
+		UTXORole      string          `json:"utxo_role"`
 		AmountSatoshi int64           `json:"amount_satoshi"`
 		CreatedAtUnix int64           `json:"created_at_unix"`
 		Note          string          `json:"note"`
@@ -3803,8 +3798,13 @@ func (s *httpAPIServer) handleAdminFinanceUTXOLinkDetail(w http.ResponseWriter, 
 	}
 	var it item
 	var payload string
-	err := s.db.QueryRow(`SELECT id,business_id,txid,utxo_id,role,amount_satoshi,created_at_unix,note,payload_json FROM biz_utxo_links WHERE id=?`, id).
-		Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.Role, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload)
+	err := s.db.QueryRow(
+		`SELECT l.id,l.business_id,l.txid,l.utxo_id,bt.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
+		   FROM fin_tx_utxo_links l
+		   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+		  WHERE l.id=?`,
+		id,
+	).Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.TxRole, &it.IOSide, &it.UTXORole, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})

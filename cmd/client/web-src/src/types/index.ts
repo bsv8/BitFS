@@ -617,12 +617,8 @@ export type WalletUTXO = {
   vout: number;
   value_satoshi: number;
   state: string;
-  origin_type: string;
-  income_eligible: number;
   created_txid: string;
   spent_txid: string;
-  reserved_by: string;
-  reserved_at_unix: number;
   created_at_unix: number;
   updated_at_unix: number;
   spent_at_unix: number;
@@ -709,7 +705,9 @@ export type FinanceUTXOLink = {
   business_id: string;
   txid: string;
   utxo_id: string;
-  role: string;
+  tx_role: string;
+  io_side: string;
+  utxo_role: string;
   amount_satoshi: number;
   created_at_unix: number;
   note: string;

@@ -2094,12 +2094,8 @@ func initIndexDB(db *sql.DB) error {
 			vout INTEGER NOT NULL,
 			value_satoshi INTEGER NOT NULL,
 			state TEXT NOT NULL,
-			origin_type TEXT NOT NULL,
-			income_eligible INTEGER NOT NULL,
 			created_txid TEXT NOT NULL,
 			spent_txid TEXT NOT NULL,
-			reserved_by TEXT NOT NULL,
-			reserved_at_unix INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
 			spent_at_unix INTEGER NOT NULL
@@ -2176,16 +2172,28 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS biz_utxo_links(
+		`CREATE TABLE IF NOT EXISTS fin_business_txs(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			business_id TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			tx_role TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			UNIQUE(business_id,txid)
+		)`,
+		`CREATE TABLE IF NOT EXISTS fin_tx_utxo_links(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			business_id TEXT NOT NULL,
 			txid TEXT NOT NULL,
 			utxo_id TEXT NOT NULL,
-			role TEXT NOT NULL,
+			io_side TEXT NOT NULL,
+			utxo_role TEXT NOT NULL,
 			amount_satoshi INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
+			payload_json TEXT NOT NULL,
+			UNIQUE(business_id,txid,utxo_id,io_side,utxo_role)
 		)`,
 		`CREATE TABLE IF NOT EXISTS chain_tip_state(
 			id INTEGER PRIMARY KEY CHECK(id=1),
@@ -2330,7 +2338,6 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_origin ON wallet_utxo(origin_type, income_eligible, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
@@ -2341,8 +2348,11 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_process_events_idempotency ON fin_process_events(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_utxo_links_business ON biz_utxo_links(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_utxo_links_utxo ON biz_utxo_links(utxo_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_business ON fin_business_txs(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_txid ON fin_business_txs(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_business ON fin_tx_utxo_links(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_utxo ON fin_tx_utxo_links(utxo_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_txid ON fin_tx_utxo_links(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_started ON chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_status ON chain_tip_worker_logs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_started ON chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
@@ -2375,6 +2385,12 @@ func initIndexDB(db *sql.DB) error {
 		return err
 	}
 	if err := migrateLegacyChainTables(db); err != nil {
+		return err
+	}
+	if err := ensureWalletUTXOSchema(db); err != nil {
+		return err
+	}
+	if err := migrateLegacyBizUTXOLinks(db); err != nil {
 		return err
 	}
 	if err := normalizeClientPubKeyColumns(db); err != nil {
@@ -2490,13 +2506,38 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 		return err
 	}
 	if _, err = tx.Exec(
-		`DELETE FROM biz_utxo_links
+		`DELETE FROM fin_tx_utxo_links
 		 WHERE business_id IN (
 			 SELECT business_id FROM fin_business
 			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
 		 )`,
 	); err != nil {
 		return err
+	}
+	if _, err = tx.Exec(
+		`DELETE FROM fin_business_txs
+		 WHERE business_id IN (
+			 SELECT business_id FROM fin_business
+			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
+		 )`,
+	); err != nil {
+		return err
+	}
+	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑。
+	legacyExists, legacyErr := hasTable(db, "biz_utxo_links")
+	if legacyErr != nil {
+		return legacyErr
+	}
+	if legacyExists {
+		if _, err = tx.Exec(
+			`DELETE FROM biz_utxo_links
+			 WHERE business_id IN (
+				 SELECT business_id FROM fin_business
+				 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
+			 )`,
+		); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.Exec(`DELETE FROM fin_business WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
 		return err
@@ -2616,6 +2657,192 @@ func migrateLegacyChainTables(db *sql.DB) error {
 	}
 	return nil
 }
+
+func ensureWalletUTXOSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	cols, err := tableColumns(db, "wallet_utxo")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, hasOrigin := cols["origin_type"]; !hasOrigin {
+		if _, err := db.Exec(`DROP INDEX IF EXISTS idx_wallet_utxo_origin`); err != nil {
+			return err
+		}
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(`ALTER TABLE wallet_utxo RENAME TO wallet_utxo_legacy_v2`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`CREATE TABLE wallet_utxo(
+		utxo_id TEXT PRIMARY KEY,
+		wallet_id TEXT NOT NULL,
+		address TEXT NOT NULL,
+		txid TEXT NOT NULL,
+		vout INTEGER NOT NULL,
+		value_satoshi INTEGER NOT NULL,
+		state TEXT NOT NULL,
+		created_txid TEXT NOT NULL,
+		spent_txid TEXT NOT NULL,
+		created_at_unix INTEGER NOT NULL,
+		updated_at_unix INTEGER NOT NULL,
+		spent_at_unix INTEGER NOT NULL
+	)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(
+		`INSERT INTO wallet_utxo(
+			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		)
+		SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,
+			CASE WHEN lower(trim(state))='reserved' THEN 'unspent' ELSE state END,
+			created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		FROM wallet_utxo_legacy_v2`,
+	); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DROP TABLE wallet_utxo_legacy_v2`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DROP INDEX IF EXISTS idx_wallet_utxo_origin`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func migrateLegacyBizUTXOLinks(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	exists, err := hasTable(db, "biz_utxo_links")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	rows, err := db.Query(
+		`SELECT l.business_id,l.txid,l.utxo_id,l.role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json,
+		        COALESCE(b.scene_type,''),COALESCE(b.scene_subtype,'')
+		   FROM biz_utxo_links l
+		   LEFT JOIN fin_business b ON b.business_id=l.business_id
+		   ORDER BY l.id ASC`,
+	)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var businessID string
+		var txid string
+		var utxoID string
+		var role string
+		var amount int64
+		var createdAtUnix int64
+		var note string
+		var payload string
+		var sceneType string
+		var sceneSubtype string
+		if err := rows.Scan(&businessID, &txid, &utxoID, &role, &amount, &createdAtUnix, &note, &payload, &sceneType, &sceneSubtype); err != nil {
+			return err
+		}
+		txRole, ioSide, utxoRole := mapLegacyBizUTXORole(sceneType, sceneSubtype, role)
+		if err := appendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
+			BusinessID:    businessID,
+			TxID:          txid,
+			TxRole:        txRole,
+			CreatedAtUnix: createdAtUnix,
+			Note:          note,
+			Payload:       rawJSONPayload(payload),
+		}); err != nil {
+			return err
+		}
+		if err := appendFinTxUTXOLinkIfAbsent(db, finTxUTXOLinkEntry{
+			BusinessID:    businessID,
+			TxID:          txid,
+			UTXOID:        utxoID,
+			IOSide:        ioSide,
+			UTXORole:      utxoRole,
+			AmountSatoshi: amount,
+			CreatedAtUnix: createdAtUnix,
+			Note:          note,
+			Payload:       rawJSONPayload(payload),
+		}); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS biz_utxo_links`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_biz_utxo_links_business`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_biz_utxo_links_utxo`); err != nil {
+		return err
+	}
+	return nil
+}
+
+func mapLegacyBizUTXORole(sceneType string, sceneSubtype string, legacyRole string) (string, string, string) {
+	sceneType = strings.TrimSpace(strings.ToLower(sceneType))
+	sceneSubtype = strings.TrimSpace(strings.ToLower(sceneSubtype))
+	legacyRole = strings.TrimSpace(strings.ToLower(legacyRole))
+	txRole := "business_tx"
+	switch {
+	case sceneType == "fee_pool" && sceneSubtype == "open":
+		txRole = "open_base"
+	case sceneType == "c2c_transfer" && sceneSubtype == "open":
+		txRole = "open_base"
+	case sceneType == "c2c_transfer" && sceneSubtype == "close":
+		txRole = "close_final"
+	}
+	switch legacyRole {
+	case "input":
+		return txRole, "input", "wallet_input"
+	case "lock":
+		return txRole, "output", "pool_lock"
+	case "change":
+		return txRole, "output", "wallet_change"
+	case "settle_input":
+		return txRole, "input", "pool_input"
+	case "settle_to_seller":
+		return txRole, "output", "settle_to_seller"
+	case "settle_to_buyer":
+		return txRole, "output", "settle_to_buyer"
+	default:
+		if strings.HasPrefix(legacyRole, "settle_") {
+			return txRole, "output", legacyRole
+		}
+		return txRole, "output", legacyRole
+	}
+}
+
+type rawJSONPayload string
 
 func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))

@@ -39,30 +39,35 @@ func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 		t.Fatalf("fin_tx_breakdown txid should not be empty")
 	}
 
-	type roleCheck struct {
-		role   string
-		amount int64
-		count  int
+	type linkCheck struct {
+		txRole   string
+		ioSide   string
+		utxoRole string
+		amount   int64
+		count    int
 	}
-	checks := []roleCheck{
-		{role: "settle_input", count: 1},
-		{role: "settle_to_seller", amount: 700, count: 1},
-		{role: "settle_to_buyer", amount: 290, count: 1},
+	checks := []linkCheck{
+		{txRole: "close_final", ioSide: "input", utxoRole: "pool_input", count: 1},
+		{txRole: "close_final", ioSide: "output", utxoRole: "settle_to_seller", amount: 700, count: 1},
+		{txRole: "close_final", ioSide: "output", utxoRole: "settle_to_buyer", amount: 290, count: 1},
 	}
 	for _, c := range checks {
 		var gotCount int
 		var gotAmount int64
 		if err := db.QueryRow(
-			`SELECT COUNT(1),COALESCE(SUM(amount_satoshi),0) FROM biz_utxo_links WHERE business_id=? AND txid=? AND role=?`,
-			"biz_c2c_close_sess_1", txid, c.role,
+			`SELECT COUNT(1),COALESCE(SUM(l.amount_satoshi),0)
+			   FROM fin_tx_utxo_links l
+			   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+			  WHERE l.business_id=? AND l.txid=? AND bt.tx_role=? AND l.io_side=? AND l.utxo_role=?`,
+			"biz_c2c_close_sess_1", txid, c.txRole, c.ioSide, c.utxoRole,
 		).Scan(&gotCount, &gotAmount); err != nil {
-			t.Fatalf("query biz_utxo_links role=%s failed: %v", c.role, err)
+			t.Fatalf("query fin_tx_utxo_links tx_role=%s io_side=%s utxo_role=%s failed: %v", c.txRole, c.ioSide, c.utxoRole, err)
 		}
 		if gotCount != c.count {
-			t.Fatalf("role=%s count mismatch: got=%d want=%d", c.role, gotCount, c.count)
+			t.Fatalf("tx_role=%s io_side=%s utxo_role=%s count mismatch: got=%d want=%d", c.txRole, c.ioSide, c.utxoRole, gotCount, c.count)
 		}
 		if c.amount > 0 && gotAmount != c.amount {
-			t.Fatalf("role=%s amount mismatch: got=%d want=%d", c.role, gotAmount, c.amount)
+			t.Fatalf("tx_role=%s io_side=%s utxo_role=%s amount mismatch: got=%d want=%d", c.txRole, c.ioSide, c.utxoRole, gotAmount, c.amount)
 		}
 	}
 }

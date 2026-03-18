@@ -90,11 +90,11 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 		t.Fatalf("seed wallet_utxo_sync_state: %v", err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,origin_type,income_eligible,created_txid,spent_txid,reserved_by,reserved_at_unix,created_at_unix,updated_at_unix,spent_at_unix)
+		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
 		 VALUES
-		 ('a:0',?,?,?,?,?,'unspent','external_in',1,'a','','',0,?,?,0),
-		 ('b:1',?,?,?,?,?,'unspent','external_in',1,'b','','',0,?,?,0),
-		 ('c:2',?,?,?,?,?,'spent','external_in',1,'c','','',0,?,?,?)`,
+		 ('a:0',?,?,?,?,?,'unspent','a','',?,?,0),
+		 ('b:1',?,?,?,?,?,'unspent','b','',?,?,0),
+		 ('c:2',?,?,?,?,?,'spent','c','',?,?,?)`,
 		walletID, addr, "a", 0, 100, now, now,
 		walletID, addr, "b", 1, 200, now, now,
 		walletID, addr, "c", 2, 300, now, now, now,

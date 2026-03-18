@@ -941,14 +941,12 @@ export default function App() {
     const walletId = route.query.get("wallet_id") || "";
     const address = route.query.get("address") || "";
     const state = route.query.get("state") || "";
-    const originType = route.query.get("origin_type") || "";
     const txid = route.query.get("txid") || "";
     const q = route.query.get("q") || "";
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
     if (walletId) params.set("wallet_id", walletId);
     if (address) params.set("address", address);
     if (state) params.set("state", state);
-    if (originType) params.set("origin_type", originType);
     if (txid) params.set("txid", txid);
     if (q) params.set("q", q);
     setWalletUTXOs(await getWalletUTXOs(params));
@@ -1030,13 +1028,17 @@ export default function App() {
     const businessId = route.query.get("business_id") || "";
     const txid = route.query.get("txid") || "";
     const utxoId = route.query.get("utxo_id") || "";
-    const role = route.query.get("role") || "";
+    const txRole = route.query.get("tx_role") || "";
+    const ioSide = route.query.get("io_side") || "";
+    const utxoRole = route.query.get("utxo_role") || "";
     const q = route.query.get("q") || "";
     const params = new URLSearchParams({ limit: String(pageSize), offset: String((page - 1) * pageSize) });
     if (businessId) params.set("business_id", businessId);
     if (txid) params.set("txid", txid);
     if (utxoId) params.set("utxo_id", utxoId);
-    if (role) params.set("role", role);
+    if (txRole) params.set("tx_role", txRole);
+    if (ioSide) params.set("io_side", ioSide);
+    if (utxoRole) params.set("utxo_role", utxoRole);
     if (q) params.set("q", q);
     setFinanceUTXOLinks(await getFinanceUTXOLinks(params));
   };
@@ -2880,17 +2882,6 @@ export default function App() {
                 <option value="">全部状态</option>
                 <option value="unspent">未花费</option>
                 <option value="spent">已花费</option>
-                <option value="reserved">已预留</option>
-              </select>
-              <select
-                className="input small"
-                value={route.query.get("origin_type") || ""}
-                onChange={(e) => updateQuery({ origin_type: e.target.value, page: 1 })}
-              >
-                <option value="">全部来源</option>
-                <option value="incoming">流入</option>
-                <option value="change">找零</option>
-                <option value="internal">内部</option>
               </select>
             </div>
           </div>
@@ -2902,9 +2893,6 @@ export default function App() {
                   <th>Address</th>
                   <th>Value</th>
                   <th>State</th>
-                  <th>Origin</th>
-                  <th>Income Eligible</th>
-                  <th>Reserved By</th>
                   <th>Updated</th>
                   <th>操作</th>
                 </tr>
@@ -2916,13 +2904,10 @@ export default function App() {
                     <td title={utxo.address}>{shortHex(utxo.address, 12)}</td>
                     <td>{sat(utxo.value_satoshi)}</td>
                     <td>
-                      <span className={`badge ${utxo.state === "unspent" ? "ok" : utxo.state === "spent" ? "err" : "warn"}`}>
+                      <span className={`badge ${utxo.state === "unspent" ? "ok" : "err"}`}>
                         {utxo.state}
                       </span>
                     </td>
-                    <td>{utxo.origin_type}</td>
-                    <td>{utxo.income_eligible ? "是" : "否"}</td>
-                    <td>{utxo.reserved_by || "-"}</td>
                     <td>{t(utxo.updated_at_unix)}</td>
                     <td>
                       <button className="btn btn-light" onClick={() => loadWalletUTXODetail(utxo.utxo_id)}>
@@ -3224,13 +3209,36 @@ export default function App() {
               />
               <select
                 className="input small"
-                value={route.query.get("role") || ""}
-                onChange={(e) => updateQuery({ role: e.target.value, page: 1 })}
+                value={route.query.get("tx_role") || ""}
+                onChange={(e) => updateQuery({ tx_role: e.target.value, page: 1 })}
               >
-                <option value="">全部角色</option>
-                <option value="input">输入</option>
-                <option value="output">输出</option>
-                <option value="fee">手续费</option>
+                <option value="">全部交易角色</option>
+                <option value="open_base">open_base</option>
+                <option value="close_final">close_final</option>
+                <option value="business_tx">business_tx</option>
+              </select>
+              <select
+                className="input small"
+                value={route.query.get("io_side") || ""}
+                onChange={(e) => updateQuery({ io_side: e.target.value, page: 1 })}
+              >
+                <option value="">全部方向</option>
+                <option value="input">input</option>
+                <option value="output">output</option>
+              </select>
+              <select
+                className="input small"
+                value={route.query.get("utxo_role") || ""}
+                onChange={(e) => updateQuery({ utxo_role: e.target.value, page: 1 })}
+              >
+                <option value="">全部资金角色</option>
+                <option value="wallet_input">wallet_input</option>
+                <option value="pool_input">pool_input</option>
+                <option value="pool_lock">pool_lock</option>
+                <option value="wallet_change">wallet_change</option>
+                <option value="settle_to_seller">settle_to_seller</option>
+                <option value="settle_to_buyer">settle_to_buyer</option>
+                <option value="settle_other">settle_other</option>
               </select>
             </div>
           </div>
@@ -3242,7 +3250,9 @@ export default function App() {
                   <th>Business ID</th>
                   <th>TXID</th>
                   <th>UTXO ID</th>
-                  <th>Role</th>
+                  <th>TX Role</th>
+                  <th>I/O</th>
+                  <th>UTXO Role</th>
                   <th>Amount</th>
                   <th>Created</th>
                   <th>操作</th>
@@ -3255,11 +3265,13 @@ export default function App() {
                     <td title={link.business_id}>{shortHex(link.business_id, 8)}</td>
                     <td title={link.txid}>{shortHex(link.txid, 12)}</td>
                     <td title={link.utxo_id}>{shortHex(link.utxo_id, 12)}</td>
+                    <td>{link.tx_role}</td>
                     <td>
-                      <span className={`badge ${link.role === "input" ? "warn" : link.role === "output" ? "ok" : ""}`}>
-                        {link.role}
+                      <span className={`badge ${link.io_side === "input" ? "warn" : "ok"}`}>
+                        {link.io_side}
                       </span>
                     </td>
+                    <td>{link.utxo_role}</td>
                     <td>{sat(link.amount_satoshi)}</td>
                     <td>{t(link.created_at_unix)}</td>
                     <td>
