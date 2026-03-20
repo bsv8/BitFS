@@ -113,4 +113,6 @@ replace github.com/bsv8/BFTP => ../BFTP
 
 replace github.com/bsv8/MultisigPool => ../MultisigPool
 
+replace github.com/bsv8/BSVChainAPI => ../BSVChainAPI
+
 replace github.com/libp2p/go-libp2p/core => github.com/libp2p/go-libp2p v0.45.0

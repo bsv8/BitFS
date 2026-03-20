@@ -292,7 +292,7 @@ func listenBillingTaskName(gatewayPeerID string) string {
 }
 
 func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
-	if rt == nil || rt.Host == nil || rt.DB == nil || rt.Chain == nil {
+	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	gwID := gw.ID.String()
@@ -305,7 +305,7 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, aut
 // createFeePoolSession 在链上创建新的费用池并注册为当前 active 会话。
 // 设计说明：监听轮换场景要求“先开新池再关旧池”，因此新池创建流程必须可复用。
 func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
-	if rt == nil || rt.Host == nil || rt.DB == nil || rt.Chain == nil {
+	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	gwID := gw.ID.String()

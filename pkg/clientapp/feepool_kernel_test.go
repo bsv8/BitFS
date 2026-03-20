@@ -9,16 +9,15 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
-	"github.com/bsv8/BFTP/pkg/woc"
 	_ "modernc.org/sqlite"
 )
 
 type feePoolKernelMockChain struct {
-	utxos []woc.UTXO
+	utxos []dual2of2.UTXO
 }
 
-func (m *feePoolKernelMockChain) GetUTXOs(address string) ([]woc.UTXO, error) {
-	return append([]woc.UTXO(nil), m.utxos...), nil
+func (m *feePoolKernelMockChain) GetUTXOs(address string) ([]dual2of2.UTXO, error) {
+	return append([]dual2of2.UTXO(nil), m.utxos...), nil
 }
 
 func (m *feePoolKernelMockChain) GetTipHeight() (uint32, error) {
@@ -37,8 +36,8 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 		runIn: RunInput{
 			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
 		},
-		Chain: &feePoolKernelMockChain{
-			utxos: []woc.UTXO{
+		ActionChain: &feePoolKernelMockChain{
+			utxos: []dual2of2.UTXO{
 				{TxID: "tx1", Vout: 0, Value: 50000},
 				{TxID: "tx2", Vout: 1, Value: 48560},
 			},
@@ -76,8 +75,8 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 		runIn: RunInput{
 			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
 		},
-		Chain: &feePoolKernelMockChain{
-			utxos: []woc.UTXO{
+		ActionChain: &feePoolKernelMockChain{
+			utxos: []dual2of2.UTXO{
 				{TxID: "tx1", Vout: 0, Value: 500},
 			},
 		},

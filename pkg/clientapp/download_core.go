@@ -101,10 +101,10 @@ func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownl
 	}
 	fileName := pickRecommendedFileName(quotes, seedHash)
 	doneStep(hooks, downloadStepListQuotes, map[string]string{
-		"seller_count":           strconv.Itoa(len(quotes)),
-		"selected_file_name":     fileName,
-		"first_seller_pubkey_hex":   quotes[0].SellerPeerID,
-		"first_recommended_name": quotes[0].RecommendedFileName,
+		"seller_count":            strconv.Itoa(len(quotes)),
+		"selected_file_name":      fileName,
+		"first_seller_pubkey_hex": quotes[0].SellerPeerID,
+		"first_recommended_name":  quotes[0].RecommendedFileName,
 	})
 
 	arbiter := strings.TrimSpace(p.ArbiterPeerID)

@@ -126,9 +126,9 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePo
 		RequestedBy:     requestedBy,
 		AllowWhenPaused: p.AllowWhenPaused,
 		Payload: map[string]any{
-			"trigger":           "manual_ensure_active",
-			"allow_when_paused": p.AllowWhenPaused,
-			"gateway_pubkey_hex":   gatewayID,
+			"trigger":            "manual_ensure_active",
+			"allow_when_paused":  p.AllowWhenPaused,
+			"gateway_pubkey_hex": gatewayID,
 		},
 	})
 	return FeePoolEnsureActiveResult{
@@ -346,7 +346,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	var resp dual2of2.CloseResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_begin", map[string]any{
 		"gateway_pubkey_hex": gatewayID,
-		"spend_txid":      spendTxID,
+		"spend_txid":         spendTxID,
 	})
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolClose, gwSec(rt.rpcTrace), dual2of2.CloseReq{
 		ClientID:     rt.runIn.ClientID,
@@ -359,9 +359,9 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_end", map[string]any{
 		"gateway_pubkey_hex": gatewayID,
-		"spend_txid":      spendTxID,
-		"final_txid":      resp.FinalSpendTxID,
-		"status":          resp.Status,
+		"spend_txid":         spendTxID,
+		"final_txid":         resp.FinalSpendTxID,
+		"status":             resp.Status,
 	})
 	if resp.Success && strings.TrimSpace(resp.Status) == "closed" {
 		appendWalletFundFlow(rt.DB, walletFundFlowEntry{

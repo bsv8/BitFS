@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/woc"
 	"github.com/bsv8/BitFS/pkg/clientapp"
@@ -391,7 +392,15 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	// managed 模式统一由单一入口承载 API，不再启动 runtime 内部 HTTP 监听。
 	runIn.DisableHTTPServer = true
 	runIn.WebAssets = webAssets
-	runIn.Chain = woc.NewGuardClient(guardURL)
+	actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
+		Network: d.cfg.BSV.Network,
+	}, 1*time.Second)
+	if err != nil {
+		stopGuard()
+		return err
+	}
+	runIn.ActionChain = actionChain
+	runIn.WalletChain = woc.NewGuardClient(guardURL)
 
 	runCtx, cancel := context.WithCancel(d.rootCtx)
 	rt, err := clientapp.Run(runCtx, runIn)

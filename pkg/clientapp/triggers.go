@@ -702,7 +702,7 @@ type directTransferPoolCloseResult struct {
 }
 
 func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
-	if buyer == nil || buyer.Host == nil || buyer.Chain == nil {
+	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")
 	}
 	lock := buyer.transferPoolOpenMutex()
@@ -917,7 +917,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		if err != nil {
 			return directTransferPoolOpenResult{}, err
 		}
-		baseTxID, err := buyer.Chain.Broadcast(baseResp.Tx.Hex())
+		baseTxID, err := buyer.ActionChain.Broadcast(baseResp.Tx.Hex())
 		if err != nil {
 			if isRetryableTransferPoolBaseTxBroadcastErr(err) && attempt < maxOpenAttempt {
 				lastErr = err
@@ -1016,7 +1016,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 }
 
 func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *dual2of2.Actor, selected []dual2of2.UTXO, target uint64, feeRate float64) ([]dual2of2.UTXO, string, error) {
-	if rt == nil || rt.Chain == nil {
+	if rt == nil || rt.ActionChain == nil {
 		return nil, "", fmt.Errorf("runtime chain not initialized")
 	}
 	if actor == nil {
@@ -1083,7 +1083,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 	}
 
 	localTxID := strings.ToLower(strings.TrimSpace(splitTx.TxID().String()))
-	broadcastTxID, err := rt.Chain.Broadcast(splitTx.Hex())
+	broadcastTxID, err := rt.ActionChain.Broadcast(splitTx.Hex())
 	if err != nil {
 		return nil, "", fmt.Errorf("broadcast split tx failed: %w", err)
 	}
@@ -1312,7 +1312,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 }
 
 func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p directTransferPoolCloseParams) (directTransferPoolCloseResult, error) {
-	if buyer == nil || buyer.Host == nil || buyer.Chain == nil {
+	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
 	lock := buyer.transferPoolSessionMutex(p.SessionID)
@@ -1386,7 +1386,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
-	finalTxID, err := buyer.Chain.Broadcast(merged.Hex())
+	finalTxID, err := buyer.ActionChain.Broadcast(merged.Hex())
 	if err != nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("broadcast transfer pool final tx failed: %w", err)
 	}

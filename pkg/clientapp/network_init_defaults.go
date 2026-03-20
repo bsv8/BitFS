@@ -12,31 +12,31 @@ import (
 // - 为了让运维/调参有单一入口，这里对 test/main 都完整列字段（即使当前值相同）；
 // - 业务入口（首启初始化、配置补齐）统一读取此处，避免多处散落常量。
 type NetworkInitDefaults struct {
-	IndexBackend                string
-	IndexSQLitePath             string
-	SellerFloorPriceSatPer64K   uint64
-	SellerResaleDiscountBPS     uint64
-	SellerLiveBaseMultiplier    uint64
-	SellerLiveDecayPerMinuteBPS uint64
-	LiveBuyerTargetLagSegments  uint32
-	LivePublishBroadcastWindow  uint32
-	LivePublishIntervalSeconds  uint32
-	ListenEnabled               bool
-	ListenRenewThresholdSeconds uint32
-	ListenAutoRenewRounds       uint64
-	ListenTickSeconds           uint32
-	ScanRescanIntervalSeconds   uint32
-	StorageMinFreeBytes         uint64
-	HTTPListenAddr              string
-	FSHTTPListenAddr            string
-	FSHTTPDownloadWaitSeconds   uint32
-	FSHTTPMaxConcurrentSessions uint32
-	FSHTTPQuoteWaitSeconds      uint32
-	FSHTTPQuotePollSeconds      uint32
+	IndexBackend                 string
+	IndexSQLitePath              string
+	SellerFloorPriceSatPer64K    uint64
+	SellerResaleDiscountBPS      uint64
+	SellerLiveBaseMultiplier     uint64
+	SellerLiveDecayPerMinuteBPS  uint64
+	LiveBuyerTargetLagSegments   uint32
+	LivePublishBroadcastWindow   uint32
+	LivePublishIntervalSeconds   uint32
+	ListenEnabled                bool
+	ListenRenewThresholdSeconds  uint32
+	ListenAutoRenewRounds        uint64
+	ListenTickSeconds            uint32
+	ScanRescanIntervalSeconds    uint32
+	StorageMinFreeBytes          uint64
+	HTTPListenAddr               string
+	FSHTTPListenAddr             string
+	FSHTTPDownloadWaitSeconds    uint32
+	FSHTTPMaxConcurrentSessions  uint32
+	FSHTTPQuoteWaitSeconds       uint32
+	FSHTTPQuotePollSeconds       uint32
 	FSHTTPPrefetchDistanceChunks uint32
-	LogConsoleMinLevel          string
-	DefaultGateways            []InitPeerNode
-	DefaultArbiters            []InitPeerNode
+	LogConsoleMinLevel           string
+	DefaultGateways              []InitPeerNode
+	DefaultArbiters              []InitPeerNode
 }
 
 // InitPeerNode 表示“初始化默认表”的节点模板。
@@ -51,29 +51,29 @@ type InitPeerNode struct {
 
 var networkInitDefaultsByNetwork = map[string]NetworkInitDefaults{
 	"test": {
-		IndexBackend:                "sqlite",
-		IndexSQLitePath:             defaultIndexRelPath,
-		SellerFloorPriceSatPer64K:   10,
-		SellerResaleDiscountBPS:     8000,
-		SellerLiveBaseMultiplier:    4,
-		SellerLiveDecayPerMinuteBPS: 1000,
-		LiveBuyerTargetLagSegments:  3,
-		LivePublishBroadcastWindow:  10,
-		LivePublishIntervalSeconds:  3,
-		ListenEnabled:               true,
-		ListenRenewThresholdSeconds: 5,
-		ListenAutoRenewRounds:       5,
-		ListenTickSeconds:           1,
-		ScanRescanIntervalSeconds:   300,
-		StorageMinFreeBytes:         128 * 1024 * 1024,
-		HTTPListenAddr:              "127.0.0.1:13000",
-		FSHTTPListenAddr:            "127.0.0.1:15000",
-		FSHTTPDownloadWaitSeconds:   60,
-		FSHTTPMaxConcurrentSessions: 4,
-		FSHTTPQuoteWaitSeconds:      60,
-		FSHTTPQuotePollSeconds:      2,
+		IndexBackend:                 "sqlite",
+		IndexSQLitePath:              defaultIndexRelPath,
+		SellerFloorPriceSatPer64K:    10,
+		SellerResaleDiscountBPS:      8000,
+		SellerLiveBaseMultiplier:     4,
+		SellerLiveDecayPerMinuteBPS:  1000,
+		LiveBuyerTargetLagSegments:   3,
+		LivePublishBroadcastWindow:   10,
+		LivePublishIntervalSeconds:   3,
+		ListenEnabled:                true,
+		ListenRenewThresholdSeconds:  5,
+		ListenAutoRenewRounds:        5,
+		ListenTickSeconds:            1,
+		ScanRescanIntervalSeconds:    300,
+		StorageMinFreeBytes:          128 * 1024 * 1024,
+		HTTPListenAddr:               "127.0.0.1:18080",
+		FSHTTPListenAddr:             "127.0.0.1:18090",
+		FSHTTPDownloadWaitSeconds:    60,
+		FSHTTPMaxConcurrentSessions:  4,
+		FSHTTPQuoteWaitSeconds:       60,
+		FSHTTPQuotePollSeconds:       2,
 		FSHTTPPrefetchDistanceChunks: 8,
-		LogConsoleMinLevel:          obs.LevelNone,
+		LogConsoleMinLevel:           obs.LevelNone,
 		// default_gateways:
 		// - addr:   libp2p multiaddr，必须包含 peer id（示例：/ip4/127.0.0.1/tcp/7001/p2p/12D3...）
 		// - pubkey: 节点 secp256k1 公钥 hex，必须与 addr 中 peer id 一一对应
@@ -98,29 +98,29 @@ var networkInitDefaultsByNetwork = map[string]NetworkInitDefaults{
 		},
 	},
 	"main": {
-		IndexBackend:                "sqlite",
-		IndexSQLitePath:             defaultIndexRelPath,
-		SellerFloorPriceSatPer64K:   10,
-		SellerResaleDiscountBPS:     8000,
-		SellerLiveBaseMultiplier:    4,
-		SellerLiveDecayPerMinuteBPS: 1000,
-		LiveBuyerTargetLagSegments:  3,
-		LivePublishBroadcastWindow:  10,
-		LivePublishIntervalSeconds:  3,
-		ListenEnabled:               true,
-		ListenRenewThresholdSeconds: 1800,
-		ListenAutoRenewRounds:       5,
-		ListenTickSeconds:           30,
-		ScanRescanIntervalSeconds:   300,
-		StorageMinFreeBytes:         128 * 1024 * 1024,
-		HTTPListenAddr:              "127.0.0.1:13000",
-		FSHTTPListenAddr:            "127.0.0.1:15000",
-		FSHTTPDownloadWaitSeconds:   60,
-		FSHTTPMaxConcurrentSessions: 4,
-		FSHTTPQuoteWaitSeconds:      60,
-		FSHTTPQuotePollSeconds:      2,
+		IndexBackend:                 "sqlite",
+		IndexSQLitePath:              defaultIndexRelPath,
+		SellerFloorPriceSatPer64K:    10,
+		SellerResaleDiscountBPS:      8000,
+		SellerLiveBaseMultiplier:     4,
+		SellerLiveDecayPerMinuteBPS:  1000,
+		LiveBuyerTargetLagSegments:   3,
+		LivePublishBroadcastWindow:   10,
+		LivePublishIntervalSeconds:   3,
+		ListenEnabled:                true,
+		ListenRenewThresholdSeconds:  1800,
+		ListenAutoRenewRounds:        5,
+		ListenTickSeconds:            30,
+		ScanRescanIntervalSeconds:    300,
+		StorageMinFreeBytes:          128 * 1024 * 1024,
+		HTTPListenAddr:               "127.0.0.1:18080",
+		FSHTTPListenAddr:             "127.0.0.1:18090",
+		FSHTTPDownloadWaitSeconds:    60,
+		FSHTTPMaxConcurrentSessions:  4,
+		FSHTTPQuoteWaitSeconds:       60,
+		FSHTTPQuotePollSeconds:       2,
 		FSHTTPPrefetchDistanceChunks: 8,
-		LogConsoleMinLevel:          obs.LevelNone,
+		LogConsoleMinLevel:           obs.LevelNone,
 		// default_gateways:
 		// - addr:   libp2p multiaddr，必须包含 peer id（示例：/ip4/127.0.0.1/tcp/7001/p2p/12D3...）
 		// - pubkey: 节点 secp256k1 公钥 hex，必须与 addr 中 peer id 一一对应

@@ -50,4 +50,3 @@ func TestLoadRuntimeConfigOrInit_ExistingConfigNotOverriddenByInitNetwork(t *tes
 		t.Fatalf("second bsv.network=%q, want %q", got, want)
 	}
 }
-

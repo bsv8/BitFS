@@ -337,11 +337,11 @@ func (m *chainMaintainer) runTask(ctx context.Context, task chainTask) {
 
 func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (map[string]any, error) {
 	_ = ctx
-	if m.rt == nil || m.rt.Chain == nil {
-		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime chain not initialized")
+	if m.rt == nil || m.rt.WalletChain == nil {
+		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime wallet chain not initialized")
 	}
 	before, _ := loadChainTipState(m.rt.DB)
-	tip, err := m.rt.Chain.GetTipHeight()
+	tip, err := m.rt.WalletChain.GetTipHeight()
 	if err != nil {
 		updateChainTipStateError(m.rt.DB, err.Error(), task.TriggerSource)
 		return map[string]any{"task_type": chainTaskTip}, err
@@ -373,8 +373,8 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 }
 
 func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (map[string]any, error) {
-	if m.rt == nil || m.rt.Chain == nil {
-		return map[string]any{"task_type": chainTaskUTXO}, fmt.Errorf("runtime chain not initialized")
+	if m.rt == nil || m.rt.WalletChain == nil {
+		return map[string]any{"task_type": chainTaskUTXO}, fmt.Errorf("runtime wallet chain not initialized")
 	}
 	chain, err := getWalletChainStateClient(m.rt)
 	if err != nil {
@@ -386,7 +386,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		return map[string]any{"task_type": chainTaskUTXO}, err
 	}
 	startedAt := time.Now()
-	tip, err := m.rt.Chain.GetTipHeight()
+	tip, err := m.rt.WalletChain.GetTipHeight()
 	if err != nil {
 		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
 		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
@@ -652,23 +652,11 @@ type liveWalletSnapshot struct {
 	OldestConfirmedHeight int64
 }
 
-type walletChainStateClient interface {
-	GetUTXOs(address string) ([]woc.UTXO, error)
-	GetTipHeight() (uint32, error)
-	GetConfirmedHistoryPageContext(ctx context.Context, address string, q woc.ConfirmedHistoryQuery) (woc.ConfirmedHistoryPage, error)
-	GetUnconfirmedHistoryContext(ctx context.Context, address string) ([]string, error)
-	GetTxDetailContext(ctx context.Context, txid string) (woc.TxDetail, error)
-}
-
-func getWalletChainStateClient(rt *Runtime) (walletChainStateClient, error) {
-	if rt == nil || rt.Chain == nil {
-		return nil, fmt.Errorf("runtime chain not initialized")
+func getWalletChainStateClient(rt *Runtime) (WalletChainClient, error) {
+	if rt == nil || rt.WalletChain == nil {
+		return nil, fmt.Errorf("runtime wallet chain not initialized")
 	}
-	chain, ok := rt.Chain.(walletChainStateClient)
-	if !ok {
-		return nil, fmt.Errorf("runtime chain missing wallet sync capabilities")
-	}
-	return chain, nil
+	return rt.WalletChain, nil
 }
 
 func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOHistoryCursor, lastError string, trigger string, updatedAt int64, durationMS int64) error {
@@ -893,7 +881,7 @@ func setWalletUTXOSpentTx(tx *sql.Tx, existing map[string]utxoStateRow, utxoID s
 	return appendWalletUTXOEventTx(tx, utxoID, eventType, spentTxID, "", "utxo spent by chain sync", nil)
 }
 
-func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainStateClient, address string) (liveWalletSnapshot, error) {
+func collectCurrentWalletSnapshot(ctx context.Context, chain WalletChainClient, address string) (liveWalletSnapshot, error) {
 	confirmedUTXOs, err := chain.GetUTXOs(address)
 	if err != nil {
 		return liveWalletSnapshot{}, err
@@ -955,7 +943,7 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainStateCli
 	}, nil
 }
 
-func loadOrderedTxDetails(ctx context.Context, chain walletChainStateClient, txids []string) ([]woc.TxDetail, error) {
+func loadOrderedTxDetails(ctx context.Context, chain WalletChainClient, txids []string) ([]woc.TxDetail, error) {
 	unique := map[string]woc.TxDetail{}
 	for _, txid := range txids {
 		txid = strings.ToLower(strings.TrimSpace(txid))
@@ -1009,7 +997,7 @@ func loadOrderedTxDetails(ctx context.Context, chain walletChainStateClient, txi
 	return out, nil
 }
 
-func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainStateClient, address string, txids map[string]struct{}) (int64, error) {
+func findOldestCurrentConfirmedHeight(ctx context.Context, chain WalletChainClient, address string, txids map[string]struct{}) (int64, error) {
 	if len(txids) == 0 {
 		return 0, nil
 	}
@@ -1045,7 +1033,7 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainStat
 	}
 }
 
-func collectConfirmedHistoryRange(ctx context.Context, chain walletChainStateClient, address string, cursor walletUTXOHistoryCursor, tip uint32) ([]walletHistoryTxRecord, walletUTXOHistoryCursor, error) {
+func collectConfirmedHistoryRange(ctx context.Context, chain WalletChainClient, address string, cursor walletUTXOHistoryCursor, tip uint32) ([]walletHistoryTxRecord, walletUTXOHistoryCursor, error) {
 	next := cursor
 	next.RoundTipHeight = int64(tip)
 	next.UpdatedAtUnix = time.Now().Unix()

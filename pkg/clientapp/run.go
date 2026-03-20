@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/dealprod"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -427,9 +428,13 @@ type RunInput struct {
 	ObsSink             obs.Sink
 	WebAssets           fs.FS
 
-	// Chain 允许在 E2E 中注入 fake 链后端，避免依赖公网 WOC。
-	// 生产环境默认使用 woc-guard（woc.GuardClient）。
-	Chain dual2of2.ChainClient
+	// ActionChain 承载真实上链动作与费用池最小读能力。
+	// 生产环境默认使用 BSVChainAPI 的嵌入式客户端。
+	ActionChain dual2of2.ChainClient
+
+	// WalletChain 只服务钱包同步与历史扫描。
+	// 生产环境默认继续使用旧 wallet 链客户端，避免把历史分页语义塞进 BSVChainAPI。
+	WalletChain WalletChainClient
 
 	// RPCTrace 仅用于集成测试：记录 client 自己的 p2prpc 收发报文（JSONL）。
 	// 正常运行默认不启用（nil）。
@@ -496,7 +501,8 @@ func (in *RunInput) applyConfig(cfg Config) {
 	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
 	next.ObsSink = in.ObsSink
 	next.WebAssets = in.WebAssets
-	next.Chain = in.Chain
+	next.ActionChain = in.ActionChain
+	next.WalletChain = in.WalletChain
 	next.RPCTrace = in.RPCTrace
 	next.DisableHTTPServer = disableHTTPServer
 	*in = next
@@ -564,9 +570,10 @@ type Runtime struct {
 	HTTP            *httpAPIServer
 	FSHTTP          *fileHTTPServer
 
-	Chain      dual2of2.ChainClient
-	feePoolsMu sync.RWMutex
-	feePools   map[string]*feePoolSession
+	ActionChain dual2of2.ChainClient
+	WalletChain WalletChainClient
+	feePoolsMu  sync.RWMutex
+	feePools    map[string]*feePoolSession
 	// feePoolPayLocks 按 gateway 串行化费用池扣费路径（listen cycle / publish demand / publish live demand）。
 	// 设计约束：同一 gateway 只能有一个扣费请求在飞，避免 sequence/server_amount 并发竞争。
 	feePoolPayLocksMu sync.Mutex
@@ -890,7 +897,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		HealthyArbiters:          healthyArbiters,
 		Workspace:                workspaceMgr,
 		Catalog:                  catalog,
-		Chain:                    in.Chain,
+		ActionChain:              in.ActionChain,
+		WalletChain:              in.WalletChain,
 		live:                     newLiveRuntime(),
 		feePools:                 map[string]*feePoolSession{},
 		feePoolPayLocks:          map[string]*sync.Mutex{},
@@ -906,9 +914,22 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	if cfg.Seller.Enabled {
 		registerSellerHandlers(h, db, rt.live, trace, cfg)
 	}
-	if rt.Chain == nil {
-		// 设计约束：业务组件不直连 WOC，上链调用统一走 guard。
-		rt.Chain = woc.NewGuardClient(woc.DefaultGuardBaseURL)
+	if rt.ActionChain == nil {
+		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
+			Network: in.BSV.Network,
+		}, 1*time.Second)
+		if err != nil {
+			_ = db.Close()
+			if removeObs != nil {
+				removeObs()
+			}
+			return nil, err
+		}
+		rt.ActionChain = actionChain
+	}
+	if rt.WalletChain == nil {
+		// 钱包同步仍保留旧链语义，后续单独迁移。
+		rt.WalletChain = woc.NewGuardClient(woc.DefaultGuardBaseURL)
 	}
 
 	// 初始化网关管理器

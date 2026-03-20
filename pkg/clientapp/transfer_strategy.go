@@ -186,10 +186,10 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 	}
 	logTransferStrategy("evt_transfer_strategy_open_session_begin", map[string]any{
 		"seller_pubkey_hex": shortID(w.quote.SellerPeerID),
-		"demand_id":      strings.TrimSpace(w.quote.DemandID),
-		"seed_hash":      shortID(w.seedHash),
-		"chunk_price":    w.quote.ChunkPrice,
-		"seed_price":     w.quote.SeedPrice,
+		"demand_id":         strings.TrimSpace(w.quote.DemandID),
+		"seed_hash":         shortID(w.seedHash),
+		"chunk_price":       w.quote.ChunkPrice,
+		"seed_price":        w.quote.SeedPrice,
 	})
 	openRes, err := triggerDirectTransferPoolOpen(ctx, w.buyer, directTransferPoolOpenParams{
 		SellerPeerID:  w.quote.SellerPeerID,
@@ -204,8 +204,8 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 	if err != nil {
 		logTransferStrategy("evt_transfer_strategy_open_session_failed", map[string]any{
 			"seller_pubkey_hex": shortID(w.quote.SellerPeerID),
-			"demand_id":      strings.TrimSpace(w.quote.DemandID),
-			"error":          err.Error(),
+			"demand_id":         strings.TrimSpace(w.quote.DemandID),
+			"error":             err.Error(),
 		})
 		return err
 	}
@@ -221,8 +221,8 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 	w.closeTxID = ""
 	logTransferStrategy("evt_transfer_strategy_open_session_ok", map[string]any{
 		"seller_pubkey_hex": shortID(w.quote.SellerPeerID),
-		"deal_id":        strings.TrimSpace(w.dealID),
-		"session_id":     strings.TrimSpace(w.sessionID),
+		"deal_id":           strings.TrimSpace(w.dealID),
+		"session_id":        strings.TrimSpace(w.sessionID),
 	})
 	return nil
 }
@@ -394,11 +394,11 @@ func (s *smartDispatchStrategy) pruneWorstSeller(workers []*transferSellerWorker
 	s.lastPrunedReason = "saturation_low_growth"
 	logTransferStrategy("evt_transfer_strategy_smart_pruned", map[string]any{
 		"seller_pubkey_hex": shortID(workers[worstIdx].quote.SellerPeerID),
-		"score":          worstScore,
-		"chunk_price":    workers[worstIdx].quote.ChunkPrice,
-		"ema_bps":        workers[worstIdx].emaBPS,
-		"failed_chunks":  workers[worstIdx].failedCount,
-		"success_chunks": workers[worstIdx].successCount,
+		"score":             worstScore,
+		"chunk_price":       workers[worstIdx].quote.ChunkPrice,
+		"ema_bps":           workers[worstIdx].emaBPS,
+		"failed_chunks":     workers[worstIdx].failedCount,
+		"success_chunks":    workers[worstIdx].successCount,
 	})
 }
 
@@ -446,16 +446,16 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 		p.MaxChunkRetries = defaultChunkRetryMax
 	}
 	logTransferStrategy("evt_transfer_strategy_begin", map[string]any{
-		"demand_id":         strings.TrimSpace(p.DemandID),
-		"seed_hash":         shortID(seedHash),
-		"chunk_count":       p.ChunkCount,
-		"strategy":          strategyNameOrDefault(p.Strategy),
-		"strategy_input":    strings.TrimSpace(p.Strategy),
-		"max_seed_price":    p.MaxSeedPrice,
-		"max_chunk_price":   p.MaxChunkPrice,
-		"pool_amount":       p.PoolAmount,
-		"max_chunk_retries": p.MaxChunkRetries,
-		"arbiter_pubkey_hex":   shortID(p.ArbiterPeerID),
+		"demand_id":          strings.TrimSpace(p.DemandID),
+		"seed_hash":          shortID(seedHash),
+		"chunk_count":        p.ChunkCount,
+		"strategy":           strategyNameOrDefault(p.Strategy),
+		"strategy_input":     strings.TrimSpace(p.Strategy),
+		"max_seed_price":     p.MaxSeedPrice,
+		"max_chunk_price":    p.MaxChunkPrice,
+		"pool_amount":        p.PoolAmount,
+		"max_chunk_retries":  p.MaxChunkRetries,
+		"arbiter_pubkey_hex": shortID(p.ArbiterPeerID),
 	})
 
 	quotes, err := TriggerClientListDirectQuotes(ctx, buyer, strings.TrimSpace(p.DemandID))
@@ -503,24 +503,24 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 			rejectedByArbiter++
 			logTransferStrategy("evt_transfer_strategy_quote_rejected_arbiter", map[string]any{
 				"seller_pubkey_hex": shortID(q.SellerPeerID),
-				"demand_id":      strings.TrimSpace(q.DemandID),
-				"error":          err.Error(),
+				"demand_id":         strings.TrimSpace(q.DemandID),
+				"error":             err.Error(),
 			})
 		},
 		OnQuoteAccepted: func(q DirectQuoteItem, arbiterPeerID string) {
 			logTransferStrategy("evt_transfer_strategy_seller_accepted", map[string]any{
 				"seller_pubkey_hex":  shortID(q.SellerPeerID),
-				"demand_id":       strings.TrimSpace(q.DemandID),
+				"demand_id":          strings.TrimSpace(q.DemandID),
 				"arbiter_pubkey_hex": shortID(arbiterPeerID),
-				"chunk_price":     q.ChunkPrice,
-				"seed_price":      q.SeedPrice,
-				"chunk_have":      len(q.AvailableChunkIndexes),
+				"chunk_price":        q.ChunkPrice,
+				"seed_price":         q.SeedPrice,
+				"chunk_have":         len(q.AvailableChunkIndexes),
 			})
 		},
 		OnSeedProbeFail: func(w *transferSellerWorker, reason string, err error) {
 			fields := map[string]any{
 				"seller_pubkey_hex": shortID(w.quote.SellerPeerID),
-				"reason":         reason,
+				"reason":            reason,
 			}
 			if err != nil {
 				fields["error"] = err.Error()
@@ -530,8 +530,8 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 		OnSeedProbeOK: func(w *transferSellerWorker, meta seedV1Meta) {
 			logTransferStrategy("evt_transfer_strategy_seed_probe_ok", map[string]any{
 				"seller_pubkey_hex": shortID(w.quote.SellerPeerID),
-				"chunk_count":    meta.ChunkCount,
-				"file_size":      meta.FileSize,
+				"chunk_count":       meta.ChunkCount,
+				"file_size":         meta.FileSize,
 			})
 		},
 	})
@@ -599,11 +599,11 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 			if chunks[chunkIndex] == nil {
 				chunks[chunkIndex] = chunk
 				logTransferStrategy("evt_transfer_strategy_chunk_ok", map[string]any{
-					"chunk_index":    chunkIndex,
+					"chunk_index":       chunkIndex,
 					"seller_pubkey_hex": shortID(w.quote.SellerPeerID),
-					"elapsed_ms":     elapsed.Milliseconds(),
-					"chunk_bytes":    len(chunk),
-					"ema_bps":        w.emaBPS,
+					"elapsed_ms":        elapsed.Milliseconds(),
+					"chunk_bytes":       len(chunk),
+					"ema_bps":           w.emaBPS,
 				})
 				return uint64(len(chunk)), nil
 			}
@@ -660,7 +660,7 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 			Broken:              w.broken,
 		})
 		sellerSessions = append(sellerSessions, map[string]any{
-			"seller_pubkey_hex":        strings.TrimSpace(w.quote.SellerPeerID),
+			"seller_pubkey_hex":     strings.TrimSpace(w.quote.SellerPeerID),
 			"demand_id":             strings.TrimSpace(w.quote.DemandID),
 			"deal_id":               strings.TrimSpace(w.dealID),
 			"session_id":            strings.TrimSpace(w.sessionID),
