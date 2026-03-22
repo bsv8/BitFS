@@ -22,6 +22,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/woc"
+	chainapi "github.com/bsv8/BSVChainAPI"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/sys/unix"
@@ -393,7 +394,8 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	runIn.DisableHTTPServer = true
 	runIn.WebAssets = webAssets
 	actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
-		Network: d.cfg.BSV.Network,
+		Provider: chainapi.WhatsOnChainProvider,
+		Network:  d.cfg.BSV.Network,
 	}, 1*time.Second)
 	if err != nil {
 		stopGuard()

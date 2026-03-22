@@ -27,6 +27,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
 	"github.com/bsv8/BFTP/pkg/woc"
+	chainapi "github.com/bsv8/BSVChainAPI"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -916,7 +917,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	if rt.ActionChain == nil {
 		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
-			Network: in.BSV.Network,
+			Provider: chainapi.WhatsOnChainProvider,
+			Network:  in.BSV.Network,
 		}, 1*time.Second)
 		if err != nil {
 			_ = db.Close()
