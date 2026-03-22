@@ -2,7 +2,6 @@ package main
 
 import (
 	"bufio"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -23,7 +22,7 @@ var version = "dev"
 var cliLang = detectCLILanguage()
 
 type cliOptions struct {
-	appName     string
+	vaultPath   string
 	initNetwork string
 	newKey      bool
 	importPath  string
@@ -32,8 +31,10 @@ type cliOptions struct {
 }
 
 type startupSummary struct {
-	AppName             string
-	RuntimeConfigDBPath string
+	VaultPath           string
+	ConfigPath          string
+	KeyPath             string
+	IndexDBPath         string
 	RuntimeConfigStatus string
 }
 
@@ -53,10 +54,6 @@ func main() {
 		return
 	}
 
-	appName := strings.TrimSpace(opts.appName)
-	if appName == "" {
-		log.Fatal(msg("err_appname_empty"))
-	}
 	if len(flag.Args()) > 0 {
 		log.Fatal(msg("err_unexpected_args"))
 	}
@@ -69,12 +66,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	dbPath, err := defaultConfigDBPath(appName)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(appName, dbPath, initNetwork)
+	vaultPath := clientapp.ResolveVaultPath(opts.vaultPath)
+	configPath := clientapp.ResolveConfigPath(vaultPath)
+	keyPath := clientapp.ResolveKeyFilePath(vaultPath)
+	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(configPath, initNetwork)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -83,29 +78,31 @@ func main() {
 		runtimeConfigStatus = "已创建（首次启动）"
 	}
 	startup := startupSummary{
-		AppName:             appName,
-		RuntimeConfigDBPath: dbPath,
+		VaultPath:           vaultPath,
+		ConfigPath:          configPath,
+		KeyPath:             keyPath,
+		IndexDBPath:         strings.TrimSpace(cfg.Index.SQLitePath),
 		RuntimeConfigStatus: runtimeConfigStatus,
 	}
 
 	switch action {
 	case actionNew:
-		if err := runCLIKeyNew(appName, dbPath); err != nil {
+		if err := runCLIKeyNew(keyPath); err != nil {
 			log.Fatal(err)
 		}
 		return
 	case actionImport:
-		if err := runCLIKeyImport(dbPath, opts.importPath); err != nil {
+		if err := runCLIKeyImport(keyPath, opts.importPath); err != nil {
 			log.Fatal(err)
 		}
 		return
 	case actionExport:
-		if err := runCLIKeyExport(dbPath, opts.exportPath); err != nil {
+		if err := runCLIKeyExport(keyPath, opts.exportPath); err != nil {
 			log.Fatal(err)
 		}
 		return
 	case actionRun:
-		if err := runManagedDaemon(appName, cfg, startup, dbPath, initNetwork); err != nil {
+		if err := runManagedDaemon(cfg, startup, initNetwork); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -116,7 +113,7 @@ func main() {
 
 func parseFlags() cliOptions {
 	var opts cliOptions
-	flag.StringVar(&opts.appName, "appname", "bitfs", msg("flag_appname"))
+	flag.StringVar(&opts.vaultPath, "path", ".vault", msg("flag_path"))
 	flag.StringVar(&opts.initNetwork, "network", "main", msg("flag_network"))
 	flag.BoolVar(&opts.newKey, "new", false, msg("flag_new"))
 	flag.StringVar(&opts.importPath, "import", "", msg("flag_import"))
@@ -156,13 +153,8 @@ func resolveCLIAction(opts cliOptions) (cliAction, error) {
 	return actionRun, nil
 }
 
-func runCLIKeyNew(appName, dbPath string) error {
-	db, err := openRuntimeDB(dbPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	if _, exists, err := loadEncryptedKeyEnvelope(db); err != nil {
+func runCLIKeyNew(keyPath string) error {
+	if _, exists, err := loadEncryptedKeyEnvelope(keyPath); err != nil {
 		return err
 	} else if exists {
 		return fmt.Errorf("%s", msg("err_key_exists"))
@@ -185,19 +177,19 @@ func runCLIKeyNew(appName, dbPath string) error {
 	if err != nil {
 		return err
 	}
-	env, err := encryptPrivateKeyEnvelope(appName, privHex, p1)
+	env, err := encryptPrivateKeyEnvelope(privHex, p1)
 	if err != nil {
 		return err
 	}
-	if err := saveEncryptedKeyEnvelope(db, env); err != nil {
+	if err := saveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return err
 	}
 	pubHex, _ := pubHexFromPrivHex(privHex)
-	fmt.Printf("%s\nappname: %s\npubkey: %s\n", msg("new_done"), appName, pubHex)
+	fmt.Printf("%s\nkey_path: %s\npubkey: %s\n", msg("new_done"), keyPath, pubHex)
 	return nil
 }
 
-func runCLIKeyImport(dbPath, importPath string) error {
+func runCLIKeyImport(keyPath, importPath string) error {
 	importPath = strings.TrimSpace(importPath)
 	if importPath == "" {
 		return fmt.Errorf("%s", msg("err_import_path_required"))
@@ -210,34 +202,24 @@ func runCLIKeyImport(dbPath, importPath string) error {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("invalid key envelope json: %w", err)
 	}
-	db, err := openRuntimeDB(dbPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	if _, exists, err := loadEncryptedKeyEnvelope(db); err != nil {
+	if _, exists, err := loadEncryptedKeyEnvelope(keyPath); err != nil {
 		return err
 	} else if exists {
 		return fmt.Errorf("%s", msg("err_key_exists"))
 	}
-	if err := saveEncryptedKeyEnvelope(db, env); err != nil {
+	if err := saveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return err
 	}
 	fmt.Printf("%s\nfile: %s\n", msg("import_done"), importPath)
 	return nil
 }
 
-func runCLIKeyExport(dbPath, exportPath string) error {
+func runCLIKeyExport(keyPath, exportPath string) error {
 	exportPath = strings.TrimSpace(exportPath)
 	if exportPath == "" {
 		return fmt.Errorf("%s", msg("err_export_path_required"))
 	}
-	db, err := openRuntimeDB(dbPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	env, exists, err := loadEncryptedKeyEnvelope(db)
+	env, exists, err := loadEncryptedKeyEnvelope(keyPath)
 	if err != nil {
 		return err
 	}
@@ -280,59 +262,31 @@ func readPassword(prompt string) (string, error) {
 	return strings.TrimSpace(line), nil
 }
 
-func openRuntimeDB(dbPath string) (*sql.DB, error) {
-	dbPath = filepath.Clean(strings.TrimSpace(dbPath))
-	if dbPath == "" {
-		return nil, fmt.Errorf("db path is empty")
-	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return nil, err
-	}
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return nil, err
-	}
-	if err := clientapp.EnsureAppConfigKVSchema(db); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
-	return db, nil
-}
-
-func newDefaultConfig(appName, network string) (clientapp.Config, error) {
-	paths, err := defaultPaths(appName, network)
-	if err != nil {
-		return clientapp.Config{}, err
-	}
+func newDefaultConfig(network string) clientapp.Config {
 	cfg := clientapp.Config{}
 	cfg.BSV.Network = network
-	cfg.Storage.WorkspaceDir = paths.WorkspaceDir
-	cfg.Storage.DataDir = paths.DataDir
 	cfg.HTTP.Enabled = true
 	cfg.FSHTTP.Enabled = true
-	cfg.Log.File = filepath.Join(paths.LogDir, "bitfs.log")
-	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
-		return clientapp.Config{}, err
-	}
-	return cfg, nil
+	cfg.Index.Backend = "sqlite"
+	cfg.Storage.WorkspaceDir = "workspace"
+	cfg.Storage.DataDir = "data"
+	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
+	cfg.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
+	return cfg
 }
 
-func loadRuntimeConfigOrInit(appName, dbPath, initNetwork string) (clientapp.Config, bool, error) {
-	defaultCfg, err := newDefaultConfig(appName, initNetwork)
+func loadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, bool, error) {
+	defaultCfg := newDefaultConfig(initNetwork)
+	res, err := clientapp.LoadOrInitConfigFile(configPath, defaultCfg)
 	if err != nil {
 		return clientapp.Config{}, false, err
 	}
-	defaultCfg.Index.Backend = "sqlite"
-	defaultCfg.Index.SQLitePath = dbPath
-
-	cfg, created, err := clientapp.LoadOrInitConfigInDB(dbPath, defaultCfg)
-	if err != nil {
-		return clientapp.Config{}, false, err
-	}
-	// DB 路径按 appname 推导，配置项不可覆盖。
+	cfg := res.Config
 	cfg.Index.Backend = "sqlite"
-	cfg.Index.SQLitePath = dbPath
-	return cfg, created, nil
+	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
+		cfg.Index.SQLitePath = filepath.Clean(filepath.Join(filepath.Dir(configPath), "data", "client-index.sqlite"))
+	}
+	return cfg, res.Created, nil
 }
 
 func generatePrivateKeyHex() (string, error) {
@@ -396,81 +350,6 @@ func parsePrivHex(s string) (crypto.PrivKey, error) {
 		return nil, err
 	}
 	return crypto.UnmarshalSecp256k1PrivateKey(b)
-}
-
-func absOrRaw(path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return ""
-	}
-	if v, err := filepath.Abs(path); err == nil {
-		return v
-	}
-	return path
-}
-
-type appPaths struct {
-	ConfigDBPath string
-	DataDir      string
-	WorkspaceDir string
-	LogDir       string
-}
-
-func defaultConfigDBPath(appName string) (string, error) {
-	paths, err := defaultPaths(appName, "main")
-	if err != nil {
-		return "", err
-	}
-	return paths.ConfigDBPath, nil
-}
-
-func defaultPaths(appName, network string) (appPaths, error) {
-	appName = strings.TrimSpace(appName)
-	network = strings.ToLower(strings.TrimSpace(network))
-	if appName == "" {
-		return appPaths{}, fmt.Errorf("appname cannot be empty")
-	}
-	if network == "" {
-		network = "main"
-	}
-
-	switch runtime.GOOS {
-	case "windows":
-		appData := firstNonEmpty(os.Getenv("APPDATA"), os.Getenv("USERPROFILE"))
-		if appData == "" {
-			return appPaths{}, fmt.Errorf("APPDATA is not set")
-		}
-		local := firstNonEmpty(os.Getenv("LOCALAPPDATA"), appData)
-		return appPaths{
-			ConfigDBPath: filepath.Join(local, appName, "config", "runtime-config.sqlite"),
-			DataDir:      filepath.Join(local, appName, network),
-			WorkspaceDir: filepath.Join(local, appName, "workspace"),
-			LogDir:       filepath.Join(local, appName, network, "Logs"),
-		}, nil
-	case "darwin":
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return appPaths{}, err
-		}
-		appSupport := filepath.Join(home, "Library", "Application Support")
-		return appPaths{
-			ConfigDBPath: filepath.Join(appSupport, appName, "config", "runtime-config.sqlite"),
-			DataDir:      filepath.Join(appSupport, appName, network),
-			WorkspaceDir: filepath.Join(appSupport, appName, "workspace"),
-			LogDir:       filepath.Join(home, "Library", "Logs", appName, network),
-		}, nil
-	default:
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return appPaths{}, err
-		}
-		return appPaths{
-			ConfigDBPath: filepath.Join(home, ".local", "state", appName, "runtime-config.sqlite"),
-			DataDir:      filepath.Join(home, ".local", "share", appName, network),
-			WorkspaceDir: filepath.Join(home, ".local", "share", appName, "workspace"),
-			LogDir:       filepath.Join(home, ".local", "state", appName, network),
-		}, nil
-	}
 }
 
 func detectCLILanguage() string {
@@ -538,13 +417,12 @@ var cliMessages = map[string]map[string]string{
 	"en": {
 		"version_line":                   "bitfs version %s",
 		"usage_line":                     "Usage: bitfs [flags]",
-		"flag_appname":                   "app instance name",
+		"flag_path":                      "vault directory path",
 		"flag_network":                   "initial bsv network for first run only: test/main",
-		"flag_new":                       "create encrypted private key in db",
-		"flag_import":                    "import encrypted key json file into db",
-		"flag_export":                    "export encrypted key json file from db",
+		"flag_new":                       "create encrypted private key in key.json",
+		"flag_import":                    "import encrypted key json file into key.json",
+		"flag_export":                    "export encrypted key json file from key.json",
 		"flag_version":                   "show version",
-		"err_appname_empty":              "-appname cannot be empty",
 		"err_unexpected_args":            "unexpected positional arguments",
 		"err_actions_mutually_exclusive": "action flags are mutually exclusive: choose one of -new/-import/-export",
 		"err_key_exists":                 "encrypted key already exists",
@@ -563,17 +441,16 @@ var cliMessages = map[string]map[string]string{
 	"zh-CN": {
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags]",
-		"flag_appname":                   "应用实例名",
+		"flag_path":                      "vault 目录路径",
 		"flag_network":                   "首次初始化使用的 bsv 网络：test/main（仅首次生效）",
-		"flag_new":                       "新建并加密私钥到 db",
-		"flag_import":                    "从 json 文件导入密文私钥到 db",
-		"flag_export":                    "从 db 导出密文私钥到 json 文件",
+		"flag_new":                       "新建并加密私钥到 key.json",
+		"flag_import":                    "从 json 文件导入密文私钥到 key.json",
+		"flag_export":                    "从 key.json 导出密文私钥到 json 文件",
 		"flag_version":                   "显示版本",
-		"err_appname_empty":              "-appname 不能为空",
 		"err_unexpected_args":            "不支持位置参数",
 		"err_actions_mutually_exclusive": "动作命令互斥：-new/-import/-export 只能选一个",
-		"err_key_exists":                 "db 中已存在密文私钥",
-		"err_key_not_found":              "db 中没有密文私钥，请先执行 -new 或 -import",
+		"err_key_exists":                 "key.json 中已存在密文私钥",
+		"err_key_not_found":              "key.json 中没有密文私钥，请先执行 -new 或 -import",
 		"err_import_path_required":       "-import 需要提供文件路径",
 		"err_export_path_required":       "-export 需要提供文件路径",
 		"prompt_password_new":            "输入密码: ",
@@ -588,17 +465,16 @@ var cliMessages = map[string]map[string]string{
 	"zh-TW": {
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags]",
-		"flag_appname":                   "應用實例名",
+		"flag_path":                      "vault 目錄路徑",
 		"flag_network":                   "首次初始化使用的 bsv 網路：test/main（僅首次生效）",
-		"flag_new":                       "新建並加密私鑰到 db",
-		"flag_import":                    "從 json 檔案匯入密文私鑰到 db",
-		"flag_export":                    "從 db 匯出密文私鑰到 json 檔案",
+		"flag_new":                       "新建並加密私鑰到 key.json",
+		"flag_import":                    "從 json 檔案匯入密文私鑰到 key.json",
+		"flag_export":                    "從 key.json 匯出密文私鑰到 json 檔案",
 		"flag_version":                   "顯示版本",
-		"err_appname_empty":              "-appname 不能為空",
 		"err_unexpected_args":            "不支援位置參數",
 		"err_actions_mutually_exclusive": "動作命令互斥：-new/-import/-export 只能選一個",
-		"err_key_exists":                 "db 中已存在密文私鑰",
-		"err_key_not_found":              "db 中沒有密文私鑰，請先執行 -new 或 -import",
+		"err_key_exists":                 "key.json 中已存在密文私鑰",
+		"err_key_not_found":              "key.json 中沒有密文私鑰，請先執行 -new 或 -import",
 		"err_import_path_required":       "-import 需要提供檔案路徑",
 		"err_export_path_required":       "-export 需要提供檔案路徑",
 		"prompt_password_new":            "輸入密碼: ",
@@ -613,17 +489,16 @@ var cliMessages = map[string]map[string]string{
 	"ja": {
 		"version_line":                   "bitfs バージョン %s",
 		"usage_line":                     "使い方: bitfs [flags]",
-		"flag_appname":                   "アプリインスタンス名",
+		"flag_path":                      "vault ディレクトリパス",
 		"flag_network":                   "初回初期化のみで使う bsv ネットワーク: test/main",
-		"flag_new":                       "DB に暗号化秘密鍵を新規作成",
-		"flag_import":                    "json から暗号化秘密鍵を DB にインポート",
-		"flag_export":                    "DB から暗号化秘密鍵を json にエクスポート",
+		"flag_new":                       "key.json に暗号化秘密鍵を新規作成",
+		"flag_import":                    "json から暗号化秘密鍵を key.json にインポート",
+		"flag_export":                    "key.json から暗号化秘密鍵を json にエクスポート",
 		"flag_version":                   "バージョンを表示",
-		"err_appname_empty":              "-appname は空にできません",
 		"err_unexpected_args":            "位置引数はサポートされていません",
 		"err_actions_mutually_exclusive": "アクションフラグは排他です: -new/-import/-export のいずれか1つのみ",
-		"err_key_exists":                 "暗号化秘密鍵は既に存在します",
-		"err_key_not_found":              "暗号化秘密鍵が見つかりません。先に -new か -import を実行してください",
+		"err_key_exists":                 "key.json に暗号化秘密鍵は既に存在します",
+		"err_key_not_found":              "key.json に暗号化秘密鍵が見つかりません。先に -new か -import を実行してください",
 		"err_import_path_required":       "-import にはファイルパスが必要です",
 		"err_export_path_required":       "-export にはファイルパスが必要です",
 		"prompt_password_new":            "パスワード入力: ",
@@ -635,14 +510,4 @@ var cliMessages = map[string]map[string]string{
 		"import_done":                    "暗号化秘密鍵をインポートしました",
 		"export_done":                    "暗号化秘密鍵をエクスポートしました",
 	},
-}
-
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		v = strings.TrimSpace(v)
-		if v != "" {
-			return v
-		}
-	}
-	return ""
 }

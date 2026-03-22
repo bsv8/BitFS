@@ -272,16 +272,16 @@ func (gm *gatewayManager) GetMasterGateway() peer.ID {
 	return gm.rt.masterGW
 }
 
-// SaveConfig 保存配置到 DB（不落地业务配置文件）。
+// SaveConfig 保存配置到配置文件。
 func (gm *gatewayManager) SaveConfig() error {
 	gm.mu.RLock()
 	cfg := gm.rt.runIn
 	gm.mu.RUnlock()
 
-	if err := SaveConfigInDB(gm.rt.DB, cfg.toConfig()); err != nil {
-		return fmt.Errorf("save config to db failed: %w", err)
+	if err := SaveConfigFile(gm.rt.runIn.ConfigPath, cfg.toConfig()); err != nil {
+		return fmt.Errorf("save config file failed: %w", err)
 	}
-	obs.Business("bitcast-client", "config_saved_to_db", map[string]any{})
+	obs.Business("bitcast-client", "config_saved_to_file", map[string]any{})
 	return nil
 }
 

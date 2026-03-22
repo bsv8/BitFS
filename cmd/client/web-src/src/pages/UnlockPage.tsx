@@ -99,9 +99,7 @@ export default function UnlockPage({
     <div className="login-shell">
       <div className="login-card">
         {/* 应用标题 */}
-        <p className="eyebrow">
-          BitFS Client {keyStatus?.appname ? `· ${keyStatus.appname}` : ""}
-        </p>
+        <p className="eyebrow">BitFS Client</p>
 
         {/* ========== 检查中状态 ========== */}
         {auth === "checking" && (

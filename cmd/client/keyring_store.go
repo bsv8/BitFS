@@ -2,14 +2,14 @@ package main
 
 import (
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/bsv8/BitFS/pkg/clientapp"
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
 )
@@ -19,6 +19,7 @@ const (
 	keyEnvelopeKDF     = "argon2id"
 	keyEnvelopeCipher  = "xchacha20poly1305"
 	keyEnvelopeKeyID   = "default"
+	keyEnvelopeDomain  = "client"
 )
 
 type encryptedKeyEnvelope struct {
@@ -40,46 +41,41 @@ type encryptedKeyEnvelopeKDF struct {
 	SaltHex     string `json:"salt_hex"`
 }
 
-func loadEncryptedKeyEnvelope(db *sql.DB) (*encryptedKeyEnvelope, bool, error) {
-	if db == nil {
-		return nil, false, fmt.Errorf("db is nil")
+func loadEncryptedKeyEnvelope(path string) (*encryptedKeyEnvelope, bool, error) {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return nil, false, fmt.Errorf("key file path is empty")
 	}
-	raw, exists, err := clientapp.LoadAppConfigValue(db, clientapp.AppConfigKeyEncryptionMasterKeyEnvelope)
+	raw, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
 		return nil, false, err
 	}
-	if !exists {
-		return nil, false, nil
-	}
 	var env encryptedKeyEnvelope
-	if err := json.Unmarshal([]byte(raw), &env); err != nil {
+	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, true, fmt.Errorf("decode encrypted key envelope: %w", err)
 	}
 	return &env, true, nil
 }
 
-func saveEncryptedKeyEnvelope(db *sql.DB, env encryptedKeyEnvelope) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func saveEncryptedKeyEnvelope(path string, env encryptedKeyEnvelope) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "" {
+		return fmt.Errorf("key file path is empty")
 	}
-	if err := clientapp.EnsureAppConfigKVSchema(db); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(env, "", "  ")
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(
-		`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
-		clientapp.AppConfigKeyEncryptionMasterKeyEnvelope,
-		string(data),
-		time.Now().Unix(),
-	)
-	return err
+	return os.WriteFile(path, data, 0o600)
 }
 
-func encryptPrivateKeyEnvelope(appName, privHex, password string) (encryptedKeyEnvelope, error) {
+func encryptPrivateKeyEnvelope(privHex, password string) (encryptedKeyEnvelope, error) {
 	privHex = strings.ToLower(strings.TrimSpace(privHex))
 	password = strings.TrimSpace(password)
 	if password == "" {
@@ -108,7 +104,7 @@ func encryptPrivateKeyEnvelope(appName, privHex, password string) (encryptedKeyE
 	if err != nil {
 		return encryptedKeyEnvelope{}, err
 	}
-	aad := fmt.Sprintf("bitfs-keyring|%s|%s|%s", strings.TrimSpace(appName), keyEnvelopeKeyID, keyEnvelopeVersion)
+	aad := fmt.Sprintf("bitfs-keyring|%s|%s", keyEnvelopeDomain, keyEnvelopeKeyID)
 	ciphertext := aead.Seal(nil, nonce, privRaw, []byte(aad))
 	for i := range k {
 		k[i] = 0
@@ -129,7 +125,7 @@ func encryptPrivateKeyEnvelope(appName, privHex, password string) (encryptedKeyE
 	}, nil
 }
 
-func decryptPrivateKeyEnvelope(appName string, env encryptedKeyEnvelope, password string) (string, error) {
+func decryptPrivateKeyEnvelope(env encryptedKeyEnvelope, password string) (string, error) {
 	if strings.TrimSpace(password) == "" {
 		return "", fmt.Errorf("password is required")
 	}
@@ -167,7 +163,7 @@ func decryptPrivateKeyEnvelope(appName string, env encryptedKeyEnvelope, passwor
 	}
 	aad := strings.TrimSpace(env.AAD)
 	if aad == "" {
-		aad = fmt.Sprintf("bitfs-keyring|%s|%s|%s", strings.TrimSpace(appName), keyEnvelopeKeyID, keyEnvelopeVersion)
+		aad = fmt.Sprintf("bitfs-keyring|%s|%s", keyEnvelopeDomain, keyEnvelopeKeyID)
 	}
 	plain, err := aead.Open(nil, nonce, ciphertext, []byte(aad))
 	for i := range k {

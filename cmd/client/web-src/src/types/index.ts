@@ -454,7 +454,6 @@ export type AdminLiveStorageSummary = {
  * GET /api/v1/key/status
  */
 export type KeyStatusResp = {
-  appname: string;
   has_key: boolean;
   unlocked: boolean;
 };

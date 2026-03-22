@@ -5325,7 +5325,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 		if s.cfg != nil {
 			*s.cfg = next.toConfig()
 		}
-		if err := SaveConfigInDB(s.db, next.toConfig()); err != nil {
+		if err := SaveConfigFile(s.rt.runIn.ConfigPath, next.toConfig()); err != nil {
 			obs.Error("bitcast-client", "arbiter_add_save_failed", map[string]any{"error": err.Error()})
 		}
 		s.refreshHealthyArbiters(r.Context())
@@ -5380,7 +5380,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 		if s.cfg != nil {
 			*s.cfg = next.toConfig()
 		}
-		if err := SaveConfigInDB(s.db, next.toConfig()); err != nil {
+		if err := SaveConfigFile(s.rt.runIn.ConfigPath, next.toConfig()); err != nil {
 			obs.Error("bitcast-client", "arbiter_update_save_failed", map[string]any{"error": err.Error()})
 		}
 		s.refreshHealthyArbiters(r.Context())
@@ -5410,7 +5410,7 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 		if s.cfg != nil {
 			*s.cfg = next.toConfig()
 		}
-		if err := SaveConfigInDB(s.db, next.toConfig()); err != nil {
+		if err := SaveConfigFile(s.rt.runIn.ConfigPath, next.toConfig()); err != nil {
 			obs.Error("bitcast-client", "arbiter_delete_save_failed", map[string]any{"error": err.Error()})
 		}
 		s.refreshHealthyArbiters(r.Context())
@@ -5646,8 +5646,8 @@ func (s *httpAPIServer) handleAdminResumeDownload(w http.ResponseWriter, r *http
 // handleAdminStrategyDebugLog 动态查询/更新 fs_http.strategy_debug_log_enabled。
 // 设计约束：
 // - POST 成功后立即影响运行态，无需重启；
-// - 同步写回 app_config，保证重启后状态一致；
-// - DB 持久化失败时回滚内存配置，避免运行态与持久态分叉。
+// - 同步写回 config.yaml，保证重启后状态一致；
+// - 文件持久化失败时回滚内存配置，避免运行态与持久态分叉。
 func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *http.Request) {
 	if s == nil || s.rt == nil || s.cfg == nil || s.db == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
@@ -5670,7 +5670,7 @@ func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *ht
 		s.cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
 		cfg := s.rt.runIn
 		cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
-		if err := SaveConfigInDB(s.db, cfg.toConfig()); err != nil {
+		if err := SaveConfigFile(s.rt.runIn.ConfigPath, cfg.toConfig()); err != nil {
 			s.cfg.FSHTTP.StrategyDebugLogEnabled = oldEnabled
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -6638,7 +6638,7 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
-		if err := SaveConfigInDB(s.db, nextCfg); err != nil {
+		if err := SaveConfigFile(s.rt.runIn.ConfigPath, nextCfg); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}

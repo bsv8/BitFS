@@ -17,6 +17,8 @@ import (
 func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	t.Parallel()
 
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -31,10 +33,10 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
-	cfg.Storage.DataDir = t.TempDir()
+	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace")
+	cfg.Storage.DataDir = filepath.Join(vaultDir, "data")
 	cfg.Index.Backend = "sqlite"
-	cfg.Index.SQLitePath = ":memory:"
+	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data", "client-index.sqlite")
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 10
 	cfg.FSHTTP.MaxConcurrentSessions = 4
@@ -42,11 +44,12 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	if err := SaveConfigInDB(db, cfg); err != nil {
+	if err := SaveConfigFile(configPath, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
 
 	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt.runIn.ConfigPath = configPath
 	srv := &httpAPIServer{
 		rt:  rt,
 		cfg: &cfg,
@@ -92,12 +95,12 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		t.Fatalf("runtime config should be updated")
 	}
 
-	var persisted string
-	if err := db.QueryRow(`SELECT value FROM app_config WHERE key='fs_http.strategy_debug_log_enabled'`).Scan(&persisted); err != nil {
-		t.Fatalf("query fs_http.strategy_debug_log_enabled: %v", err)
+	loaded, _, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("reload config: %v", err)
 	}
-	if persisted != "true" {
-		t.Fatalf("db persisted config should be true, got=%q", persisted)
+	if !loaded.FSHTTP.StrategyDebugLogEnabled {
+		t.Fatalf("config file should persist strategy_debug_log_enabled=true")
 	}
 }
 
@@ -571,6 +574,8 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	t.Parallel()
 
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
 	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
@@ -585,17 +590,18 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	}
 
 	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
-	cfg.Storage.DataDir = t.TempDir() + "-data"
+	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace")
+	cfg.Storage.DataDir = filepath.Join(vaultDir, "data")
 	cfg.Index.Backend = "sqlite"
-	cfg.Index.SQLitePath = ":memory:"
+	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data", "client-index.sqlite")
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	if err := SaveConfigInDB(db, cfg); err != nil {
+	if err := SaveConfigFile(configPath, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
 	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt.runIn.ConfigPath = configPath
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	schemaReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)

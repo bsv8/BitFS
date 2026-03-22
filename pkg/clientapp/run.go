@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -57,13 +56,8 @@ const (
 	ProtoLiveSubscribe      protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
 	ProtoLiveHeadPush       protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
 
-	defaultIndexRelPath = "db/client-index.sqlite"
+	defaultIndexRelPath = "data/client-index.sqlite"
 	seedBlockSize       = 65536
-
-	// app_config 采用 KV 结构，运行配置按“一字段一键”持久化。
-	AppConfigKeyConfigSchemaVersion         = "config.schema_version"
-	AppConfigValueConfigSchemaVersionV1     = "1"
-	AppConfigKeyEncryptionMasterKeyEnvelope = "encryption_master_key_envelope"
 )
 
 type healthReq struct{}
@@ -256,9 +250,9 @@ type liveQuoteSubmitResp struct {
 }
 
 type Config struct {
-	ClientID string `yaml:"client_pubkey_hex" toml:"client_pubkey_hex"`
+	ClientID string `yaml:"-" toml:"-"`
 	Keys     struct {
-		PrivkeyHex string `yaml:"privkey_hex" toml:"privkey_hex"`
+		PrivkeyHex string `yaml:"-" toml:"-"`
 	} `yaml:"keys" toml:"keys"`
 	BSV struct {
 		Network string `yaml:"network" toml:"network"` // "test" 或 "main"（默认 "test"）
@@ -349,8 +343,9 @@ type sellerCatalog struct {
 }
 
 type RunInput struct {
-	ClientID string
-	BSV      struct {
+	ClientID   string
+	ConfigPath string
+	BSV        struct {
 		Network string
 	}
 	Network struct {
@@ -500,6 +495,7 @@ func (in *RunInput) applyConfig(cfg Config) {
 	}
 	disableHTTPServer := in.DisableHTTPServer
 	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
+	next.ConfigPath = in.ConfigPath
 	next.ObsSink = in.ObsSink
 	next.WebAssets = in.WebAssets
 	next.ActionChain = in.ActionChain
@@ -999,523 +995,6 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	return rt, nil
 }
 
-func LoadConfig(path string) (Config, []byte, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return Config{}, nil, err
-	}
-	cfg, err := ParseConfigTOML(b)
-	if err != nil {
-		return Config{}, nil, err
-	}
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		return Config{}, nil, err
-	}
-	return cfg, b, nil
-}
-
-// LoadOrInitConfigInDB 读取 DB 中配置；若不存在则写入默认配置并返回。
-// 设计约束：运行期有效配置全部来自 DB；配置文件不承载业务配置。
-func LoadOrInitConfigInDB(dbPath string, defaultCfg Config) (Config, bool, error) {
-	dbPath = filepath.Clean(strings.TrimSpace(dbPath))
-	if dbPath == "" {
-		return Config{}, false, fmt.Errorf("db path is empty")
-	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		return Config{}, false, err
-	}
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		return Config{}, false, err
-	}
-	defer db.Close()
-	if err := applySQLitePragmas(db); err != nil {
-		return Config{}, false, err
-	}
-	if err := ensureAppConfigTable(db); err != nil {
-		return Config{}, false, err
-	}
-	cfg, exists, err := loadRuntimeConfigFromKV(db, defaultCfg)
-	if err != nil {
-		return Config{}, false, err
-	}
-	if !exists {
-		cfg := defaultCfg
-		// 私钥仅允许保留在配置文件，不写入 DB。
-		cfg.Keys.PrivkeyHex = ""
-		if err := SaveConfigInDB(db, cfg); err != nil {
-			return Config{}, false, err
-		}
-		return cfg, true, nil
-	}
-	return cfg, false, nil
-}
-
-// SaveConfigInDB 将运行配置写回 DB（会强制清空私钥字段）。
-func SaveConfigInDB(db *sql.DB, cfg Config) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if err := ensureAppConfigTable(db); err != nil {
-		return err
-	}
-	cfg.Keys.PrivkeyHex = ""
-	kv, err := encodeRuntimeConfigKV(cfg)
-	if err != nil {
-		return err
-	}
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-	// 清理旧地基：禁止继续保留 runtime_config_toml 单条模式。
-	if _, err = tx.Exec(`DELETE FROM app_config WHERE key='runtime_config_toml'`); err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	for _, key := range appConfigRuntimeManagedKeys() {
-		val, ok := kv[key]
-		if !ok {
-			continue
-		}
-		if _, err = tx.Exec(
-			`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
-			 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
-			key,
-			val,
-			now,
-		); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-func appConfigRuntimeManagedKeys() []string {
-	return []string{
-		AppConfigKeyConfigSchemaVersion,
-		"client_pubkey_hex",
-		"bsv.network",
-		"network.gateways",
-		"network.arbiters",
-		"storage.workspace_dir",
-		"storage.data_dir",
-		"storage.min_free_bytes",
-		"seller.enabled",
-		"seller.pricing.floor_price_sat_per_64k",
-		"seller.pricing.resale_discount_bps",
-		"seller.pricing.live_base_price_sat_per_64k",
-		"seller.pricing.live_floor_price_sat_per_64k",
-		"seller.pricing.live_decay_per_minute_bps",
-		"live.cache_max_bytes",
-		"live.buyer.target_lag_segments",
-		"live.buyer.max_budget_per_minute",
-		"live.buyer.prefer_older_segments",
-		"live.publish.broadcast_window",
-		"live.publish.broadcast_interval_seconds",
-		"listen.enabled",
-		"listen.renew_threshold_seconds",
-		"listen.auto_renew_rounds",
-		"listen.tick_seconds",
-		"scan.startup_full_scan",
-		"scan.fs_watch_enabled",
-		"scan.rescan_interval_seconds",
-		"http.enabled",
-		"http.listen_addr",
-		"fs_http.enabled",
-		"fs_http.listen_addr",
-		"fs_http.download_wait_timeout_seconds",
-		"fs_http.max_concurrent_sessions",
-		"fs_http.max_chunk_price_sat_per_64k",
-		"fs_http.quote_wait_seconds",
-		"fs_http.quote_poll_seconds",
-		"fs_http.prefetch_distance_chunks",
-		"fs_http.strategy_debug_log_enabled",
-		"log.file",
-		"log.console_min_level",
-	}
-}
-
-func encodeRuntimeConfigKV(cfg Config) (map[string]string, error) {
-	gatewaysJSON, err := json.Marshal(cfg.Network.Gateways)
-	if err != nil {
-		return nil, err
-	}
-	arbitersJSON, err := json.Marshal(cfg.Network.Arbiters)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]string{
-		AppConfigKeyConfigSchemaVersion:               AppConfigValueConfigSchemaVersionV1,
-		"client_pubkey_hex":                           strings.TrimSpace(cfg.ClientID),
-		"bsv.network":                                 strings.TrimSpace(cfg.BSV.Network),
-		"network.gateways":                            string(gatewaysJSON),
-		"network.arbiters":                            string(arbitersJSON),
-		"storage.workspace_dir":                       strings.TrimSpace(cfg.Storage.WorkspaceDir),
-		"storage.data_dir":                            strings.TrimSpace(cfg.Storage.DataDir),
-		"storage.min_free_bytes":                      strconv.FormatUint(cfg.Storage.MinFreeBytes, 10),
-		"seller.enabled":                              strconv.FormatBool(cfg.Seller.Enabled),
-		"seller.pricing.floor_price_sat_per_64k":      strconv.FormatUint(cfg.Seller.Pricing.FloorPriceSatPer64K, 10),
-		"seller.pricing.resale_discount_bps":          strconv.FormatUint(cfg.Seller.Pricing.ResaleDiscountBPS, 10),
-		"seller.pricing.live_base_price_sat_per_64k":  strconv.FormatUint(cfg.Seller.Pricing.LiveBasePriceSatPer64K, 10),
-		"seller.pricing.live_floor_price_sat_per_64k": strconv.FormatUint(cfg.Seller.Pricing.LiveFloorPriceSatPer64K, 10),
-		"seller.pricing.live_decay_per_minute_bps":    strconv.FormatUint(cfg.Seller.Pricing.LiveDecayPerMinuteBPS, 10),
-		"live.cache_max_bytes":                        strconv.FormatUint(cfg.Live.CacheMaxBytes, 10),
-		"live.buyer.target_lag_segments":              strconv.FormatUint(uint64(cfg.Live.Buyer.TargetLagSegments), 10),
-		"live.buyer.max_budget_per_minute":            strconv.FormatUint(cfg.Live.Buyer.MaxBudgetPerMinute, 10),
-		"live.buyer.prefer_older_segments":            strconv.FormatBool(cfg.Live.Buyer.PreferOlderSegments),
-		"live.publish.broadcast_window":               strconv.FormatUint(uint64(cfg.Live.Publish.BroadcastWindow), 10),
-		"live.publish.broadcast_interval_seconds":     strconv.FormatUint(uint64(cfg.Live.Publish.BroadcastIntervalSec), 10),
-		"listen.enabled":                              strconv.FormatBool(cfgBool(cfg.Listen.Enabled, true)),
-		"listen.renew_threshold_seconds":              strconv.FormatUint(uint64(cfg.Listen.RenewThresholdSeconds), 10),
-		"listen.auto_renew_rounds":                    strconv.FormatUint(cfg.Listen.AutoRenewRounds, 10),
-		"listen.tick_seconds":                         strconv.FormatUint(uint64(cfg.Listen.TickSeconds), 10),
-		"scan.startup_full_scan":                      strconv.FormatBool(cfg.Scan.StartupFullScan),
-		"scan.fs_watch_enabled":                       strconv.FormatBool(cfg.Scan.FSWatchEnabled),
-		"scan.rescan_interval_seconds":                strconv.FormatUint(uint64(cfg.Scan.RescanIntervalSeconds), 10),
-		"http.enabled":                                strconv.FormatBool(cfg.HTTP.Enabled),
-		"http.listen_addr":                            strings.TrimSpace(cfg.HTTP.ListenAddr),
-		"fs_http.enabled":                             strconv.FormatBool(cfg.FSHTTP.Enabled),
-		"fs_http.listen_addr":                         strings.TrimSpace(cfg.FSHTTP.ListenAddr),
-		"fs_http.download_wait_timeout_seconds":       strconv.FormatUint(uint64(cfg.FSHTTP.DownloadWaitTimeoutSeconds), 10),
-		"fs_http.max_concurrent_sessions":             strconv.FormatUint(uint64(cfg.FSHTTP.MaxConcurrentSessions), 10),
-		"fs_http.max_chunk_price_sat_per_64k":         strconv.FormatUint(cfg.FSHTTP.MaxChunkPriceSatPer64K, 10),
-		"fs_http.quote_wait_seconds":                  strconv.FormatUint(uint64(cfg.FSHTTP.QuoteWaitSeconds), 10),
-		"fs_http.quote_poll_seconds":                  strconv.FormatUint(uint64(cfg.FSHTTP.QuotePollSeconds), 10),
-		"fs_http.prefetch_distance_chunks":            strconv.FormatUint(uint64(cfg.FSHTTP.PrefetchDistanceChunks), 10),
-		"fs_http.strategy_debug_log_enabled":          strconv.FormatBool(cfg.FSHTTP.StrategyDebugLogEnabled),
-		"log.file":                                    strings.TrimSpace(cfg.Log.File),
-		"log.console_min_level":                       strings.TrimSpace(cfg.Log.ConsoleMinLevel),
-	}, nil
-}
-
-func loadRuntimeConfigFromKV(db *sql.DB, defaultCfg Config) (Config, bool, error) {
-	items, err := loadAllAppConfigValues(db)
-	if err != nil {
-		return Config{}, false, err
-	}
-	version, ok := items[AppConfigKeyConfigSchemaVersion]
-	if !ok {
-		return Config{}, false, nil
-	}
-	if strings.TrimSpace(version) != AppConfigValueConfigSchemaVersionV1 {
-		return Config{}, false, fmt.Errorf("unsupported config schema version: %s", strings.TrimSpace(version))
-	}
-	cfg := defaultCfg
-	cfg.Keys.PrivkeyHex = ""
-	if err := decodeRuntimeConfigKV(&cfg, items); err != nil {
-		return Config{}, false, err
-	}
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		return Config{}, false, err
-	}
-	// 设计约束：
-	// - index.* 由启动参数推导，不作为持久化配置的一部分；
-	// - 读回时若缺失，回填默认推导值，保证运行期语义完整。
-	if strings.TrimSpace(cfg.Index.Backend) == "" {
-		cfg.Index.Backend = strings.TrimSpace(defaultCfg.Index.Backend)
-	}
-	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
-		cfg.Index.SQLitePath = strings.TrimSpace(defaultCfg.Index.SQLitePath)
-	}
-	return cfg, true, nil
-}
-
-func loadAllAppConfigValues(db *sql.DB) (map[string]string, error) {
-	rows, err := db.Query(`SELECT key,value FROM app_config`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]string, 64)
-	for rows.Next() {
-		var key string
-		var value string
-		if err := rows.Scan(&key, &value); err != nil {
-			return nil, err
-		}
-		out[strings.TrimSpace(key)] = value
-	}
-	return out, rows.Err()
-}
-
-func decodeRuntimeConfigKV(cfg *Config, items map[string]string) error {
-	if cfg == nil {
-		return fmt.Errorf("config is nil")
-	}
-	if s, ok := items["client_pubkey_hex"]; ok {
-		cfg.ClientID = strings.TrimSpace(s)
-	}
-	if s, ok := items["bsv.network"]; ok {
-		cfg.BSV.Network = strings.TrimSpace(s)
-	}
-	if s, ok := items["network.gateways"]; ok && strings.TrimSpace(s) != "" {
-		var gateways []PeerNode
-		if err := json.Unmarshal([]byte(s), &gateways); err != nil {
-			return fmt.Errorf("decode network.gateways: %w", err)
-		}
-		cfg.Network.Gateways = gateways
-	}
-	if s, ok := items["network.arbiters"]; ok && strings.TrimSpace(s) != "" {
-		var arbiters []PeerNode
-		if err := json.Unmarshal([]byte(s), &arbiters); err != nil {
-			return fmt.Errorf("decode network.arbiters: %w", err)
-		}
-		cfg.Network.Arbiters = arbiters
-	}
-	if s, ok := items["storage.workspace_dir"]; ok {
-		cfg.Storage.WorkspaceDir = strings.TrimSpace(s)
-	}
-	if s, ok := items["storage.data_dir"]; ok {
-		cfg.Storage.DataDir = strings.TrimSpace(s)
-	}
-	if s, ok := items["storage.min_free_bytes"]; ok {
-		v, err := parseUint64KV("storage.min_free_bytes", s)
-		if err != nil {
-			return err
-		}
-		cfg.Storage.MinFreeBytes = v
-	}
-	if s, ok := items["seller.enabled"]; ok {
-		v, err := parseBoolKV("seller.enabled", s)
-		if err != nil {
-			return err
-		}
-		cfg.Seller.Enabled = v
-	}
-	if s, ok := items["seller.pricing.floor_price_sat_per_64k"]; ok {
-		v, err := parseUint64KV("seller.pricing.floor_price_sat_per_64k", s)
-		if err != nil {
-			return err
-		}
-		cfg.Seller.Pricing.FloorPriceSatPer64K = v
-	}
-	if s, ok := items["seller.pricing.resale_discount_bps"]; ok {
-		v, err := parseUint64KV("seller.pricing.resale_discount_bps", s)
-		if err != nil {
-			return err
-		}
-		cfg.Seller.Pricing.ResaleDiscountBPS = v
-	}
-	if s, ok := items["seller.pricing.live_base_price_sat_per_64k"]; ok {
-		v, err := parseUint64KV("seller.pricing.live_base_price_sat_per_64k", s)
-		if err != nil {
-			return err
-		}
-		cfg.Seller.Pricing.LiveBasePriceSatPer64K = v
-	}
-	if s, ok := items["seller.pricing.live_floor_price_sat_per_64k"]; ok {
-		v, err := parseUint64KV("seller.pricing.live_floor_price_sat_per_64k", s)
-		if err != nil {
-			return err
-		}
-		cfg.Seller.Pricing.LiveFloorPriceSatPer64K = v
-	}
-	if s, ok := items["seller.pricing.live_decay_per_minute_bps"]; ok {
-		v, err := parseUint64KV("seller.pricing.live_decay_per_minute_bps", s)
-		if err != nil {
-			return err
-		}
-		cfg.Seller.Pricing.LiveDecayPerMinuteBPS = v
-	}
-	if s, ok := items["live.cache_max_bytes"]; ok {
-		v, err := parseUint64KV("live.cache_max_bytes", s)
-		if err != nil {
-			return err
-		}
-		cfg.Live.CacheMaxBytes = v
-	}
-	if s, ok := items["live.buyer.target_lag_segments"]; ok {
-		v, err := parseUint32KV("live.buyer.target_lag_segments", s)
-		if err != nil {
-			return err
-		}
-		cfg.Live.Buyer.TargetLagSegments = v
-	}
-	if s, ok := items["live.buyer.max_budget_per_minute"]; ok {
-		v, err := parseUint64KV("live.buyer.max_budget_per_minute", s)
-		if err != nil {
-			return err
-		}
-		cfg.Live.Buyer.MaxBudgetPerMinute = v
-	}
-	if s, ok := items["live.buyer.prefer_older_segments"]; ok {
-		v, err := parseBoolKV("live.buyer.prefer_older_segments", s)
-		if err != nil {
-			return err
-		}
-		cfg.Live.Buyer.PreferOlderSegments = v
-	}
-	if s, ok := items["live.publish.broadcast_window"]; ok {
-		v, err := parseUint32KV("live.publish.broadcast_window", s)
-		if err != nil {
-			return err
-		}
-		cfg.Live.Publish.BroadcastWindow = v
-	}
-	if s, ok := items["live.publish.broadcast_interval_seconds"]; ok {
-		v, err := parseUint32KV("live.publish.broadcast_interval_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.Live.Publish.BroadcastIntervalSec = v
-	}
-	if s, ok := items["listen.enabled"]; ok {
-		v, err := parseBoolKV("listen.enabled", s)
-		if err != nil {
-			return err
-		}
-		cfg.Listen.Enabled = boolPtr(v)
-	}
-	if s, ok := items["listen.renew_threshold_seconds"]; ok {
-		v, err := parseUint32KV("listen.renew_threshold_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.Listen.RenewThresholdSeconds = v
-	}
-	if s, ok := items["listen.auto_renew_rounds"]; ok {
-		v, err := parseUint64KV("listen.auto_renew_rounds", s)
-		if err != nil {
-			return err
-		}
-		cfg.Listen.AutoRenewRounds = v
-	}
-	if s, ok := items["listen.tick_seconds"]; ok {
-		v, err := parseUint32KV("listen.tick_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.Listen.TickSeconds = v
-	}
-	if s, ok := items["scan.startup_full_scan"]; ok {
-		v, err := parseBoolKV("scan.startup_full_scan", s)
-		if err != nil {
-			return err
-		}
-		cfg.Scan.StartupFullScan = v
-	}
-	if s, ok := items["scan.fs_watch_enabled"]; ok {
-		v, err := parseBoolKV("scan.fs_watch_enabled", s)
-		if err != nil {
-			return err
-		}
-		cfg.Scan.FSWatchEnabled = v
-	}
-	if s, ok := items["scan.rescan_interval_seconds"]; ok {
-		v, err := parseUint32KV("scan.rescan_interval_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.Scan.RescanIntervalSeconds = v
-	}
-	if s, ok := items["http.enabled"]; ok {
-		v, err := parseBoolKV("http.enabled", s)
-		if err != nil {
-			return err
-		}
-		cfg.HTTP.Enabled = v
-	}
-	if s, ok := items["http.listen_addr"]; ok {
-		cfg.HTTP.ListenAddr = strings.TrimSpace(s)
-	}
-	if s, ok := items["fs_http.enabled"]; ok {
-		v, err := parseBoolKV("fs_http.enabled", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.Enabled = v
-	}
-	if s, ok := items["fs_http.listen_addr"]; ok {
-		cfg.FSHTTP.ListenAddr = strings.TrimSpace(s)
-	}
-	if s, ok := items["fs_http.download_wait_timeout_seconds"]; ok {
-		v, err := parseUint32KV("fs_http.download_wait_timeout_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.DownloadWaitTimeoutSeconds = v
-	}
-	if s, ok := items["fs_http.max_concurrent_sessions"]; ok {
-		v, err := parseUint32KV("fs_http.max_concurrent_sessions", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.MaxConcurrentSessions = v
-	}
-	if s, ok := items["fs_http.max_chunk_price_sat_per_64k"]; ok {
-		v, err := parseUint64KV("fs_http.max_chunk_price_sat_per_64k", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.MaxChunkPriceSatPer64K = v
-	}
-	if s, ok := items["fs_http.quote_wait_seconds"]; ok {
-		v, err := parseUint32KV("fs_http.quote_wait_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.QuoteWaitSeconds = v
-	}
-	if s, ok := items["fs_http.quote_poll_seconds"]; ok {
-		v, err := parseUint32KV("fs_http.quote_poll_seconds", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.QuotePollSeconds = v
-	}
-	if s, ok := items["fs_http.prefetch_distance_chunks"]; ok {
-		v, err := parseUint32KV("fs_http.prefetch_distance_chunks", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.PrefetchDistanceChunks = v
-	}
-	if s, ok := items["fs_http.strategy_debug_log_enabled"]; ok {
-		v, err := parseBoolKV("fs_http.strategy_debug_log_enabled", s)
-		if err != nil {
-			return err
-		}
-		cfg.FSHTTP.StrategyDebugLogEnabled = v
-	}
-	if s, ok := items["log.file"]; ok {
-		cfg.Log.File = strings.TrimSpace(s)
-	}
-	if s, ok := items["log.console_min_level"]; ok {
-		cfg.Log.ConsoleMinLevel = strings.TrimSpace(s)
-	}
-	return nil
-}
-
-func parseBoolKV(key, raw string) (bool, error) {
-	v, err := strconv.ParseBool(strings.TrimSpace(raw))
-	if err != nil {
-		return false, fmt.Errorf("%s parse bool failed: %w", key, err)
-	}
-	return v, nil
-}
-
-func parseUint32KV(key, raw string) (uint32, error) {
-	v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 32)
-	if err != nil {
-		return 0, fmt.Errorf("%s parse uint32 failed: %w", key, err)
-	}
-	return uint32(v), nil
-}
-
-func parseUint64KV(key, raw string) (uint64, error) {
-	v, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s parse uint64 failed: %w", key, err)
-	}
-	return v, nil
-}
-
 func ApplyConfigDefaults(cfg *Config) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
@@ -1691,9 +1170,9 @@ func EncodeConfigTOML(cfg Config) ([]byte, error) {
 func ResolveLogConfig(cfg *Config) (string, string) {
 	logFile := strings.TrimSpace(cfg.Log.File)
 	if logFile == "" {
-		logFile = ".vault/logs/bitcast-client.log"
+		logFile = filepath.Join("logs", "bitfs.log")
 		if strings.TrimSpace(cfg.Storage.DataDir) != "" {
-			logFile = filepath.Join(cfg.Storage.DataDir, "logs", "bitcast-client.log")
+			logFile = filepath.Join(cfg.Storage.DataDir, "logs", "bitfs.log")
 		}
 	}
 	consoleMin := strings.TrimSpace(cfg.Log.ConsoleMinLevel)
@@ -1883,11 +1362,6 @@ func applySQLitePragmas(db *sql.DB) error {
 
 func initIndexDB(db *sql.DB) error {
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS app_config(
-			key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
-			value TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, seed_locked INTEGER NOT NULL DEFAULT 0, updated_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS workspaces(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2404,9 +1878,6 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureLiveFollowsSchema(db); err != nil {
 		return err
 	}
-	if err := ensureAppConfigTable(db); err != nil {
-		return err
-	}
 	if err := migrateLegacyChainTables(db); err != nil {
 		return err
 	}
@@ -2499,13 +1970,6 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 	return rows.Err()
 }
 
-func ensureAppConfigTable(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	return EnsureAppConfigKVSchema(db)
-}
-
 func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -2566,74 +2030,6 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 		return err
 	}
 	err = tx.Commit()
-	return err
-}
-
-// EnsureAppConfigKVSchema 保证 app_config 是 KV 结构。
-func EnsureAppConfigKVSchema(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	exists, err := hasTable(db, "app_config")
-	if err != nil {
-		return err
-	}
-	if !exists {
-		if _, err := db.Exec(`CREATE TABLE app_config(
-			key TEXT PRIMARY KEY CHECK(length(key) BETWEEN 1 AND 64),
-			value TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`); err != nil {
-			return err
-		}
-	} else {
-		cols, err := tableColumns(db, "app_config")
-		if err != nil {
-			return err
-		}
-		_, hasKey := cols["key"]
-		_, hasValue := cols["value"]
-		_, hasUpdated := cols["updated_at_unix"]
-		if !(hasKey && hasValue && hasUpdated) {
-			return fmt.Errorf("unsupported app_config schema")
-		}
-	}
-	// 兼容清理：旧密钥表迁移后必须删除，避免后续设计继续依赖旧地基。
-	return migrateAndDropLegacyKeyringTable(db)
-}
-
-// LoadAppConfigValue 从 app_config KV 读取单个配置。
-func LoadAppConfigValue(db *sql.DB, key string) (string, bool, error) {
-	if err := EnsureAppConfigKVSchema(db); err != nil {
-		return "", false, err
-	}
-	var value string
-	err := db.QueryRow(`SELECT value FROM app_config WHERE key=?`, strings.TrimSpace(key)).Scan(&value)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return value, true, nil
-}
-
-// SaveAppConfigValue 写入 app_config KV 单值配置。
-func SaveAppConfigValue(db *sql.DB, key string, value string) error {
-	if err := EnsureAppConfigKVSchema(db); err != nil {
-		return err
-	}
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return fmt.Errorf("app_config key is empty")
-	}
-	_, err := db.Exec(
-		`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
-		 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
-		key,
-		value,
-		time.Now().Unix(),
-	)
 	return err
 }
 
@@ -2887,33 +2283,6 @@ func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 	}
 	return out, rows.Err()
-}
-
-func migrateAndDropLegacyKeyringTable(db *sql.DB) error {
-	exists, err := hasTable(db, "keyring_singleton")
-	if err != nil || !exists {
-		return err
-	}
-	var cipherJSON string
-	var updatedAt int64
-	err = db.QueryRow(`SELECT cipher_json,updated_at_unix FROM keyring_singleton WHERE id=1`).Scan(&cipherJSON, &updatedAt)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	if err == nil && strings.TrimSpace(cipherJSON) != "" {
-		_, err = db.Exec(
-			`INSERT INTO app_config(key,value,updated_at_unix) VALUES(?,?,?)
-			 ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at_unix=excluded.updated_at_unix`,
-			AppConfigKeyEncryptionMasterKeyEnvelope,
-			cipherJSON,
-			updatedAt,
-		)
-		if err != nil {
-			return err
-		}
-	}
-	_, err = db.Exec(`DROP TABLE IF EXISTS keyring_singleton`)
-	return err
 }
 
 func ensureDirectQuotesSchema(db *sql.DB) error {

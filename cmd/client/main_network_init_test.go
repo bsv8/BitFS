@@ -5,8 +5,8 @@ import "testing"
 func TestLoadRuntimeConfigOrInit_UsesInitNetworkOnFirstCreate(t *testing.T) {
 	t.Parallel()
 
-	dbPath := t.TempDir() + "/runtime-config.sqlite"
-	cfg, created, err := loadRuntimeConfigOrInit("bitfs-it-main", dbPath, "main")
+	vaultDir := t.TempDir()
+	cfg, created, err := loadRuntimeConfigOrInit(vaultDir+"/config.yaml", "main")
 	if err != nil {
 		t.Fatalf("loadRuntimeConfigOrInit create failed: %v", err)
 	}
@@ -27,8 +27,9 @@ func TestLoadRuntimeConfigOrInit_UsesInitNetworkOnFirstCreate(t *testing.T) {
 func TestLoadRuntimeConfigOrInit_ExistingConfigNotOverriddenByInitNetwork(t *testing.T) {
 	t.Parallel()
 
-	dbPath := t.TempDir() + "/runtime-config.sqlite"
-	cfg1, created1, err := loadRuntimeConfigOrInit("bitfs-it-main", dbPath, "main")
+	vaultDir := t.TempDir()
+	configPath := vaultDir + "/config.yaml"
+	cfg1, created1, err := loadRuntimeConfigOrInit(configPath, "main")
 	if err != nil {
 		t.Fatalf("first loadRuntimeConfigOrInit failed: %v", err)
 	}
@@ -39,7 +40,7 @@ func TestLoadRuntimeConfigOrInit_ExistingConfigNotOverriddenByInitNetwork(t *tes
 		t.Fatalf("first network=%q, want main", cfg1.BSV.Network)
 	}
 
-	cfg2, created2, err := loadRuntimeConfigOrInit("bitfs-it-main", dbPath, "test")
+	cfg2, created2, err := loadRuntimeConfigOrInit(configPath, "test")
 	if err != nil {
 		t.Fatalf("second loadRuntimeConfigOrInit failed: %v", err)
 	}
