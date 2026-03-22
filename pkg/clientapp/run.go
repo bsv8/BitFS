@@ -251,7 +251,10 @@ type liveQuoteSubmitResp struct {
 
 type Config struct {
 	ClientID string `yaml:"-" toml:"-"`
-	Keys     struct {
+	// Debug 打开后，client 会把 p2prpc 收发原文落盘到本地 raw 抓包目录。
+	// 注意：这里只抓 p2prpc 控制层原文，不抓更底层 libp2p/TCP 线包。
+	Debug bool `yaml:"debug" toml:"debug"`
+	Keys  struct {
 		PrivkeyHex string `yaml:"-" toml:"-"`
 	} `yaml:"keys" toml:"keys"`
 	BSV struct {
@@ -345,6 +348,7 @@ type sellerCatalog struct {
 type RunInput struct {
 	ClientID   string
 	ConfigPath string
+	Debug      bool
 	BSV        struct {
 		Network string
 	}
@@ -443,6 +447,7 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 		ClientID:            cfg.ClientID,
 		EffectivePrivKeyHex: effectivePrivKeyHex,
 	}
+	in.Debug = cfg.Debug
 	in.BSV.Network = cfg.BSV.Network
 	in.Network.Gateways = append([]PeerNode(nil), cfg.Network.Gateways...)
 	in.Network.Arbiters = append([]PeerNode(nil), cfg.Network.Arbiters...)
@@ -509,6 +514,7 @@ func (in RunInput) toConfig() Config {
 	cfg := Config{
 		ClientID: in.ClientID,
 	}
+	cfg.Debug = in.Debug
 	cfg.BSV.Network = in.BSV.Network
 	cfg.Network.Gateways = append([]PeerNode(nil), in.Network.Gateways...)
 	cfg.Network.Arbiters = append([]PeerNode(nil), in.Network.Arbiters...)
@@ -674,8 +680,6 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		return nil, fmt.Errorf("ctx is required")
 	}
 	cfg := in.toConfig()
-
-	trace := in.RPCTrace
 
 	var removeObs func()
 	if in.ObsSink != nil {
@@ -854,6 +858,22 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		return nil, err
 	}
 
+	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
+	trace := in.RPCTrace
+	var closeTrace func() error
+	if trace == nil && cfg.Debug {
+		localTrace, err := p2prpc.NewLocalRawTraceSink(logFile)
+		if err != nil {
+			_ = h.Close()
+			_ = db.Close()
+			if removeObs != nil {
+				removeObs()
+			}
+			return nil, err
+		}
+		trace = localTrace
+		closeTrace = localTrace.Close
+	}
 	healthyGWs := checkPeerHealth(ctx, h, activeGWs, ProtoHealth, gwSec(trace), "gateway")
 	if len(healthyGWs) == 0 {
 		obs.Error("bitcast-client", "gateway_health_all_failed", map[string]any{
@@ -869,7 +889,6 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		})
 	}
 
-	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
 	in.applyConfig(cfg)
 	obs.Important("bitcast-client", "started", map[string]any{
 		"transport_peer_id": h.ID().String(),
@@ -918,6 +937,9 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}, 1*time.Second)
 		if err != nil {
 			_ = db.Close()
+			if closeTrace != nil {
+				_ = closeTrace()
+			}
 			if removeObs != nil {
 				removeObs()
 			}
@@ -984,6 +1006,11 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		if err := db.Close(); err != nil && firstErr == nil {
 			firstErr = err
+		}
+		if closeTrace != nil {
+			if err := closeTrace(); err != nil && firstErr == nil {
+				firstErr = err
+			}
 		}
 		return firstErr
 	}
