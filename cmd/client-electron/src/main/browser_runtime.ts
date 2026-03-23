@@ -1,14 +1,16 @@
 import { EventEmitter } from "node:events";
 
-import type { PendingResource } from "../shared/shell_contract";
+import type { ShellResource } from "../shared/shell_contract";
 import { debugLogger } from "./debug_logger";
 
 export type BrowserRuntimeState = {
   currentURL: string;
+  currentRootSeedHash: string;
   staticSingleMaxSat: number;
   staticPageMaxSat: number;
   autoSpentSat: number;
-  pending: PendingResource[];
+  pendingCount: number;
+  resources: ShellResource[];
   lastError: string;
   clientAPIBase: string;
   viewerPreloadPath: string;
@@ -45,12 +47,15 @@ export class BitfsBrowserRuntime extends EventEmitter {
   private readonly clientAPIBase: string;
   private readonly viewerPreloadPath: string;
   private currentURL = "";
+  private currentRootSeedHash = "";
   private staticSingleMaxSat = 256;
   private staticPageMaxSat = 2048;
   private autoSpentSat = 0;
-  private pending = new Map<string, PendingResource>();
+  private pending = new Set<string>();
   private decisions = new Map<string, ResourceDecision>();
   private approved = new Set<string>();
+  private discoveryOrder = new Map<string, number>();
+  private nextDiscoveryOrder = 1;
   private lastError = "";
   private currentTraceID = "";
 
@@ -61,12 +66,25 @@ export class BitfsBrowserRuntime extends EventEmitter {
   }
 
   snapshot(): BrowserRuntimeState {
+    const resources = Array.from(this.decisions.entries())
+      .map(([seedHash, decision]) => this.toShellResource(seedHash, decision))
+      .sort((a, b) => {
+        if (a.estimatedTotalSat !== b.estimatedTotalSat) {
+          return b.estimatedTotalSat - a.estimatedTotalSat;
+        }
+        if (a.isRoot !== b.isRoot) {
+          return a.isRoot ? -1 : 1;
+        }
+        return a.discoveryOrder - b.discoveryOrder;
+      });
     return {
       currentURL: this.currentURL,
+      currentRootSeedHash: this.currentRootSeedHash,
       staticSingleMaxSat: this.staticSingleMaxSat,
       staticPageMaxSat: this.staticPageMaxSat,
       autoSpentSat: this.autoSpentSat,
-      pending: Array.from(this.pending.values()).sort((a, b) => b.estimatedTotalSat - a.estimatedTotalSat),
+      pendingCount: resources.filter((item) => item.mode === "pending").length,
+      resources,
       lastError: this.lastError,
       clientAPIBase: this.clientAPIBase,
       viewerPreloadPath: this.viewerPreloadPath
@@ -78,25 +96,29 @@ export class BitfsBrowserRuntime extends EventEmitter {
     if (normalized === "") {
       throw new Error("invalid seed hash");
     }
-    this.currentTraceID = createTraceID();
-    this.currentURL = `bitfs://${normalized}`;
-    this.autoSpentSat = 0;
-    this.pending.clear();
-    this.decisions.clear();
-    this.approved.clear();
-    this.lastError = "";
+    const url = `bitfs://${normalized}`;
+    this.resetPageSession(url, normalized, "open_root");
     debugLogger.log("runtime", "open_root", {
       seed_hash: normalized,
       url: this.currentURL,
       trace_id: this.currentTraceID
     });
-    this.emitState();
     return this.currentURL;
   }
 
   noteNavigation(url: string): void {
     const trimmed = String(url || "").trim();
     if (trimmed === "") {
+      return;
+    }
+    const nextRootSeedHash = parseBitfsURL(trimmed);
+    if (nextRootSeedHash && nextRootSeedHash !== this.currentRootSeedHash) {
+      this.resetPageSession(trimmed, nextRootSeedHash, "document_navigated");
+      debugLogger.log("runtime", "note_navigation_reset_page", {
+        url: trimmed,
+        seed_hash: nextRootSeedHash,
+        trace_id: this.currentTraceID
+      });
       return;
     }
     this.currentURL = trimmed;
@@ -118,22 +140,16 @@ export class BitfsBrowserRuntime extends EventEmitter {
     this.emitState();
   }
 
-  approvePendingResources(): void {
-    const approvedSeeds = Array.from(this.pending.keys());
-    for (const [seedHash] of this.pending) {
-      this.approved.add(seedHash);
-      const decision = this.decisions.get(seedHash);
-      if (decision) {
-        decision.mode = "approved";
-      }
+  approveResource(seedHash: string): void {
+    const normalized = normalizeSeedHash(seedHash);
+    if (normalized === "") {
+      throw new Error("invalid seed hash");
     }
-    this.pending.clear();
-    debugLogger.log("runtime", "approve_pending_resources", {
-      approved_count: approvedSeeds.length,
-      approved_seed_hashes: approvedSeeds,
+    this.approveSeedInternal(normalized, true);
+    debugLogger.log("runtime", "approve_resource", {
+      seed_hash: normalized,
       trace_id: this.currentTraceID
     });
-    this.emitState();
   }
 
   async resolveSeed(seedHash: string): Promise<{ allowed: boolean; seedHash: string; maxTotalSat: number; plan?: PlanItem }> {
@@ -224,8 +240,13 @@ export class BitfsBrowserRuntime extends EventEmitter {
       trace_id: this.currentTraceID
     });
     if (status.local_ready || status.status === "local") {
+      this.ensureDiscoveryOrder(normalized);
       this.pending.delete(normalized);
-      this.decisions.set(normalized, { mode: "local", estimatedTotalSat: 0, plan: status });
+      this.decisions.set(normalized, {
+        mode: "local",
+        estimatedTotalSat: Number(status.estimated_total_sat || 0),
+        plan: status
+      });
       this.emitState();
     }
     return status;
@@ -316,9 +337,14 @@ export class BitfsBrowserRuntime extends EventEmitter {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload)
     });
+    this.ensureDiscoveryOrder(normalized);
     this.pending.delete(normalized);
     this.approved.add(normalized);
-    this.decisions.set(normalized, { mode: "local", estimatedTotalSat: 0, plan: result });
+    this.decisions.set(normalized, {
+      mode: "local",
+      estimatedTotalSat: Number(result.estimated_total_sat || 0),
+      plan: result
+    });
     this.lastError = "";
     debugLogger.log("runtime.http", "ensure_seed_ok", {
       seed_hash: normalized,
@@ -469,13 +495,18 @@ export class BitfsBrowserRuntime extends EventEmitter {
   }
 
   private applyPlanDecision(seedHash: string, plan: PlanItem): void {
+    this.ensureDiscoveryOrder(seedHash);
     if (plan.local_ready || plan.status === "local") {
       debugLogger.log("runtime", "plan_decision_local", {
         seed_hash: seedHash,
         trace_id: this.currentTraceID
       });
       this.pending.delete(seedHash);
-      this.decisions.set(seedHash, { mode: "local", estimatedTotalSat: 0, plan });
+      this.decisions.set(seedHash, {
+        mode: "local",
+        estimatedTotalSat: Number(plan.estimated_total_sat || 0),
+        plan
+      });
       this.emitState();
       return;
     }
@@ -511,15 +542,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
         reason: String(plan.reason || plan.status || "pending approval"),
         trace_id: this.currentTraceID
       });
-      this.pending.set(seedHash, {
-        seedHash,
-        estimatedTotalSat: estimatedTotal,
-        fileSize: Number(plan.file_size || 0),
-        chunkCount: Number(plan.chunk_count || 0),
-        mimeHint: String(plan.mime_hint || ""),
-        recommendedFileName: String(plan.recommended_file_name || ""),
-        reason: String(plan.reason || plan.status || "pending approval")
-      });
+      this.pending.add(seedHash);
       this.decisions.set(seedHash, { mode: "pending", estimatedTotalSat: estimatedTotal, plan });
       this.emitState();
       return;
@@ -533,6 +556,69 @@ export class BitfsBrowserRuntime extends EventEmitter {
     });
     this.pending.delete(seedHash);
     this.decisions.set(seedHash, { mode: "blocked", estimatedTotalSat: estimatedTotal, plan });
+    this.emitState();
+  }
+
+  private approveSeedInternal(seedHash: string, emitState: boolean): void {
+    const decision = this.decisions.get(seedHash);
+    if (!decision || decision.mode !== "pending") {
+      return;
+    }
+    this.pending.delete(seedHash);
+    this.approved.add(seedHash);
+    decision.mode = "approved";
+    if (emitState) {
+      this.emitState();
+    }
+  }
+
+  private ensureDiscoveryOrder(seedHash: string): void {
+    if (this.discoveryOrder.has(seedHash)) {
+      return;
+    }
+    this.discoveryOrder.set(seedHash, this.nextDiscoveryOrder);
+    this.nextDiscoveryOrder += 1;
+  }
+
+  private toShellResource(seedHash: string, decision: ResourceDecision): ShellResource {
+    const plan = decision.plan;
+    return {
+      seedHash,
+      estimatedTotalSat: decision.estimatedTotalSat,
+      seedPriceSat: Number(plan.seed_price || 0),
+      chunkPriceSatPer64K: Number(plan.chunk_price_sat_per_64k || 0),
+      fileSize: Number(plan.file_size || 0),
+      chunkCount: Number(plan.chunk_count || 0),
+      mimeHint: String(plan.mime_hint || ""),
+      recommendedFileName: String(plan.recommended_file_name || ""),
+      reason: String(plan.reason || plan.status || ""),
+      mode: decision.mode,
+      allowed: decision.mode !== "pending" && decision.mode !== "blocked",
+      planStatus: String(plan.status || ""),
+      localReady: Boolean(plan.local_ready || plan.status === "local"),
+      isRoot: seedHash === this.currentRootSeedHash,
+      discoveryOrder: this.discoveryOrder.get(seedHash) || 0
+    };
+  }
+
+  private resetPageSession(url: string, rootSeedHash: string, reason: string): void {
+    this.currentTraceID = createTraceID();
+    this.currentURL = url;
+    this.currentRootSeedHash = rootSeedHash;
+    this.autoSpentSat = 0;
+    this.pending.clear();
+    this.decisions.clear();
+    this.approved.clear();
+    this.discoveryOrder.clear();
+    this.nextDiscoveryOrder = 1;
+    this.ensureDiscoveryOrder(rootSeedHash);
+    this.lastError = "";
+    debugLogger.log("runtime", "reset_page_session", {
+      reason,
+      url,
+      seed_hash: rootSeedHash,
+      trace_id: this.currentTraceID
+    });
     this.emitState();
   }
 

@@ -5,7 +5,9 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +16,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/woc"
+	"github.com/bsv8/BSVChainAPI/whatsonchain"
 )
 
 const (
@@ -68,15 +70,19 @@ type chainTipState struct {
 }
 
 type walletUTXOSyncState struct {
-	WalletID       string `json:"wallet_id"`
-	Address        string `json:"address"`
-	UTXOCount      int    `json:"utxo_count"`
-	BalanceSatoshi uint64 `json:"balance_satoshi"`
-	UpdatedAtUnix  int64  `json:"updated_at_unix"`
-	LastError      string `json:"last_error"`
-	LastUpdatedBy  string `json:"last_updated_by"`
-	LastTrigger    string `json:"last_trigger"`
-	LastDurationMS int64  `json:"last_duration_ms"`
+	WalletID         string `json:"wallet_id"`
+	Address          string `json:"address"`
+	UTXOCount        int    `json:"utxo_count"`
+	BalanceSatoshi   uint64 `json:"balance_satoshi"`
+	UpdatedAtUnix    int64  `json:"updated_at_unix"`
+	LastError        string `json:"last_error"`
+	LastUpdatedBy    string `json:"last_updated_by"`
+	LastTrigger      string `json:"last_trigger"`
+	LastDurationMS   int64  `json:"last_duration_ms"`
+	LastSyncRoundID  string `json:"last_sync_round_id"`
+	LastFailedStep   string `json:"last_failed_step"`
+	LastUpstreamPath string `json:"last_upstream_path"`
+	LastHTTPStatus   int    `json:"last_http_status"`
 }
 
 type walletUTXOHistoryCursor struct {
@@ -101,6 +107,38 @@ type chainWorkerLogEntry struct {
 	Result          any
 }
 
+type walletSyncRoundMeta struct {
+	RoundID        string
+	Address        string
+	TriggerSource  string
+	GuardBaseURL   string
+	StartedAtUnix  int64
+	StepStartedAt  time.Time
+	WalletChainTyp string
+}
+
+type walletSyncError struct {
+	RoundID      string
+	Step         string
+	UpstreamPath string
+	HTTPStatus   int
+	Cause        error
+}
+
+func (e *walletSyncError) Error() string {
+	if e == nil || e.Cause == nil {
+		return "wallet sync failed"
+	}
+	return e.Cause.Error()
+}
+
+func (e *walletSyncError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
 func newChainMaintainer(rt *Runtime) *chainMaintainer {
 	if rt == nil {
 		return nil
@@ -123,11 +161,17 @@ func startChainMaintainer(ctx context.Context, rt *Runtime) {
 	if rt == nil {
 		return
 	}
+	if err := resetChainMaintainerStartupState(rt); err != nil {
+		obs.Error("bitcast-client", "chain_maintainer_startup_reset_failed", map[string]any{"error": err.Error()})
+	}
 	cm := newChainMaintainer(rt)
 	if cm == nil {
 		return
 	}
 	rt.chainMaint = cm
+	obs.Info("bitcast-client", "chain_maintainer_started", map[string]any{
+		"runtime_started_at_unix": runtimeStartedAtUnix(rt),
+	})
 	cm.start(ctx)
 }
 
@@ -136,6 +180,41 @@ func getChainMaintainer(rt *Runtime) *chainMaintainer {
 		return nil
 	}
 	return rt.chainMaint
+}
+
+func runtimeStartedAtUnix(rt *Runtime) int64 {
+	if rt == nil {
+		return 0
+	}
+	return rt.StartedAtUnix
+}
+
+func resetChainMaintainerStartupState(rt *Runtime) error {
+	if rt == nil || rt.DB == nil {
+		return nil
+	}
+	scheduler := ensureRuntimeTaskScheduler(rt)
+	if scheduler != nil {
+		if err := scheduler.ResetTaskProfilesForStartup([]string{"chain_tip_sync", "chain_utxo_sync"}, runtimeStartedAtUnix(rt)); err != nil {
+			return err
+		}
+	}
+	if _, err := rt.DB.Exec(
+		`UPDATE wallet_utxo_sync_state SET
+			last_error='',
+			last_trigger='',
+			last_duration_ms=0,
+			last_sync_round_id='',
+			last_failed_step='',
+			last_upstream_path='',
+			last_http_status=0`,
+	); err != nil {
+		return err
+	}
+	obs.Info("bitcast-client", "chain_maintainer_startup_state_reset", map[string]any{
+		"runtime_started_at_unix": runtimeStartedAtUnix(rt),
+	})
+	return nil
 }
 
 func (m *chainMaintainer) start(ctx context.Context) {
@@ -183,7 +262,11 @@ func (m *chainMaintainer) runTipWorker(ctx context.Context) {
 		},
 	}); err != nil {
 		obs.Error("bitcast-client", "chain_tip_task_register_failed", map[string]any{"error": err.Error()})
+		return
 	}
+	obs.Info("bitcast-client", "chain_tip_task_registered", map[string]any{
+		"interval_sec": int64(chainTipWorkerInterval / time.Second),
+	})
 }
 
 func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
@@ -206,7 +289,11 @@ func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
 		},
 	}); err != nil {
 		obs.Error("bitcast-client", "chain_utxo_task_register_failed", map[string]any{"error": err.Error()})
+		return
 	}
+	obs.Info("bitcast-client", "chain_utxo_task_registered", map[string]any{
+		"interval_sec": int64(chainUTXOWorkerInterval / time.Second),
+	})
 }
 
 func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
@@ -245,6 +332,12 @@ func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
 	task := chainTask{TaskType: taskType, TriggerSource: triggerSource, TriggeredAt: now}
 	select {
 	case m.queue <- task:
+		if triggerSource == "startup" {
+			obs.Info("bitcast-client", "chain_task_startup_enqueued", map[string]any{
+				"task_type":      taskType,
+				"trigger_source": triggerSource,
+			})
+		}
 	default:
 		m.mu.Lock()
 		m.pendingByType[taskType] = false
@@ -272,6 +365,12 @@ func (m *chainMaintainer) runScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case task := <-m.queue:
+			obs.Info("bitcast-client", "chain_task_dequeued", map[string]any{
+				"task_type":               task.TaskType,
+				"trigger_source":          task.TriggerSource,
+				"triggered_at_unix":       task.TriggeredAt,
+				"runtime_started_at_unix": runtimeStartedAtUnix(m.rt),
+			})
 			m.runTask(ctx, task)
 		}
 	}
@@ -282,6 +381,13 @@ func (m *chainMaintainer) runTask(ctx context.Context, task chainTask) {
 		return
 	}
 	startedAt := time.Now()
+	obs.Info("bitcast-client", "chain_task_started", map[string]any{
+		"task_type":               task.TaskType,
+		"trigger_source":          task.TriggerSource,
+		"triggered_at_unix":       task.TriggeredAt,
+		"task_started_at_unix":    startedAt.Unix(),
+		"runtime_started_at_unix": runtimeStartedAtUnix(m.rt),
+	})
 	m.mu.Lock()
 	m.pendingByType[task.TaskType] = false
 	m.inFlightByType[task.TaskType] = true
@@ -341,7 +447,7 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime wallet chain not initialized")
 	}
 	before, _ := loadChainTipState(m.rt.DB)
-	tip, err := m.rt.WalletChain.GetTipHeight()
+	tip, err := m.rt.WalletChain.GetChainInfo()
 	if err != nil {
 		updateChainTipStateError(m.rt.DB, err.Error(), task.TriggerSource)
 		return map[string]any{"task_type": chainTaskTip}, err
@@ -376,34 +482,105 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if m.rt == nil || m.rt.WalletChain == nil {
 		return map[string]any{"task_type": chainTaskUTXO}, fmt.Errorf("runtime wallet chain not initialized")
 	}
+	obs.Info("bitcast-client", "chain_utxo_task_entered", map[string]any{
+		"trigger_source":          strings.TrimSpace(task.TriggerSource),
+		"triggered_at_unix":       task.TriggeredAt,
+		"runtime_started_at_unix": runtimeStartedAtUnix(m.rt),
+	})
+	meta := walletSyncRoundMeta{
+		RoundID:        createWalletSyncRoundID(),
+		TriggerSource:  strings.TrimSpace(task.TriggerSource),
+		StartedAtUnix:  time.Now().Unix(),
+		GuardBaseURL:   walletChainBaseURL(m.rt.WalletChain),
+		WalletChainTyp: fmt.Sprintf("%T", m.rt.WalletChain),
+	}
 	chain, err := getWalletChainStateClient(m.rt)
 	if err != nil {
-		return map[string]any{"task_type": chainTaskUTXO}, err
+		logWalletSyncStepError(meta, "resolve_wallet_chain", err, nil)
+		return map[string]any{
+			"task_type":         chainTaskUTXO,
+			"sync_round_id":     meta.RoundID,
+			"wallet_chain_type": meta.WalletChainTyp,
+			"guard_base_url":    meta.GuardBaseURL,
+		}, err
 	}
+	logWalletSyncStepInfo(meta, "resolve_wallet_chain", map[string]any{
+		"wallet_chain_type": meta.WalletChainTyp,
+		"guard_base_url":    meta.GuardBaseURL,
+	})
 	addr, err := clientWalletAddress(m.rt)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, "", err.Error(), task.TriggerSource)
-		return map[string]any{"task_type": chainTaskUTXO}, err
+		updateWalletUTXOSyncStateError(m.rt.DB, "", meta, wrapWalletSyncStepError(meta, "load_wallet_address", "", err), task.TriggerSource)
+		logWalletSyncStepError(meta, "load_wallet_address", err, nil)
+		return map[string]any{
+			"task_type":     chainTaskUTXO,
+			"sync_round_id": meta.RoundID,
+		}, err
 	}
+	meta.Address = addr
+	logWalletSyncStepInfo(meta, "load_wallet_address", map[string]any{
+		"address": addr,
+	})
 	startedAt := time.Now()
-	tip, err := m.rt.WalletChain.GetTipHeight()
+	stepStart := time.Now()
+	tipPath := walletChainTipUpstreamPath()
+	tip, err := m.rt.WalletChain.GetChainInfo()
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
+		wrappedErr := wrapWalletSyncStepError(meta, "wallet_chain_get_tip", tipPath, err)
+		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, wrappedErr, task.TriggerSource)
 		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
-		return map[string]any{"task_type": chainTaskUTXO, "address": addr}, err
+		logWalletSyncStepError(meta, "wallet_chain_get_tip", err, map[string]any{
+			"upstream_path":    tipPath,
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+		return map[string]any{
+			"task_type":     chainTaskUTXO,
+			"address":       addr,
+			"sync_round_id": meta.RoundID,
+		}, err
 	}
-	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr)
+	logWalletSyncStepInfo(meta, "wallet_chain_get_tip", map[string]any{
+		"upstream_path":    tipPath,
+		"tip_height":       tip,
+		"step_duration_ms": time.Since(stepStart).Milliseconds(),
+	})
+	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, meta)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
+		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, err, task.TriggerSource)
 		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
-		return map[string]any{"task_type": chainTaskUTXO, "address": addr}, err
+		return map[string]any{
+			"task_type":     chainTaskUTXO,
+			"address":       addr,
+			"sync_round_id": meta.RoundID,
+		}, err
 	}
+	logWalletSyncStepInfo(meta, "collect_wallet_snapshot", map[string]any{
+		"utxo_count":              snapshot.Count,
+		"balance_satoshi":         snapshot.Balance,
+		"observed_mempool_tx_cnt": len(snapshot.ObservedMempoolTxs),
+		"confirmed_live_txid_cnt": len(snapshot.ConfirmedLiveTxIDs),
+		"oldest_confirmed_height": snapshot.OldestConfirmedHeight,
+	})
+	stepStart = time.Now()
 	cursor, err := loadWalletUTXOHistoryCursor(m.rt.DB, addr)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
+		wrappedErr := wrapWalletSyncStepError(meta, "load_wallet_utxo_history_cursor", "", err)
+		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, wrappedErr, task.TriggerSource)
 		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
-		return map[string]any{"task_type": chainTaskUTXO, "address": addr}, err
+		logWalletSyncStepError(meta, "load_wallet_utxo_history_cursor", err, nil)
+		return map[string]any{
+			"task_type":     chainTaskUTXO,
+			"address":       addr,
+			"sync_round_id": meta.RoundID,
+		}, err
 	}
+	logWalletSyncStepInfo(meta, "load_wallet_utxo_history_cursor", map[string]any{
+		"next_confirmed_height": cursor.NextConfirmedHeight,
+		"next_page_token":       cursor.NextPageToken,
+		"anchor_height":         cursor.AnchorHeight,
+		"round_tip_height":      cursor.RoundTipHeight,
+		"step_duration_ms":      time.Since(stepStart).Milliseconds(),
+	})
 	cursor.WalletID = walletIDByAddress(addr)
 	cursor.Address = addr
 	if cursor.AnchorHeight <= 0 {
@@ -416,27 +593,58 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			cursor.NextConfirmedHeight = int64(tip) + 1
 		}
 	}
-	history, nextCursor, err := collectConfirmedHistoryRange(ctx, chain, addr, cursor, tip)
+	stepStart = time.Now()
+	history, nextCursor, err := collectConfirmedHistoryRange(ctx, chain, addr, cursor, tip, meta)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
+		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, err, task.TriggerSource)
 		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		logWalletSyncStepError(meta, "collect_confirmed_history_range", err, map[string]any{
+			"tip_height":           tip,
+			"cursor_anchor_height": cursor.AnchorHeight,
+			"cursor_next_height":   cursor.NextConfirmedHeight,
+			"step_duration_ms":     time.Since(stepStart).Milliseconds(),
+		})
 		return map[string]any{
-			"task_type": chainTaskUTXO,
-			"address":   addr,
-			"tip":       tip,
+			"task_type":     chainTaskUTXO,
+			"address":       addr,
+			"tip":           tip,
+			"sync_round_id": meta.RoundID,
 		}, err
 	}
+	logWalletSyncStepInfo(meta, "collect_confirmed_history_range", map[string]any{
+		"history_tx_cnt":        len(history),
+		"next_confirmed_height": nextCursor.NextConfirmedHeight,
+		"next_page_token":       nextCursor.NextPageToken,
+		"anchor_height":         nextCursor.AnchorHeight,
+		"step_duration_ms":      time.Since(stepStart).Milliseconds(),
+	})
 	durationMS := time.Since(startedAt).Milliseconds()
-	if err := reconcileWalletUTXOSet(m.rt.DB, addr, snapshot, history, nextCursor, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, err.Error(), task.TriggerSource)
+	stepStart = time.Now()
+	if err := reconcileWalletUTXOSet(m.rt.DB, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
+		wrappedErr := wrapWalletSyncStepError(meta, "reconcile_wallet_utxo_set", "", err)
+		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, wrappedErr, task.TriggerSource)
 		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		logWalletSyncStepError(meta, "reconcile_wallet_utxo_set", err, map[string]any{
+			"utxo_count":        snapshot.Count,
+			"history_tx_cnt":    len(history),
+			"step_duration_ms":  time.Since(stepStart).Milliseconds(),
+			"total_duration_ms": durationMS,
+		})
 		return map[string]any{
 			"task_type":      chainTaskUTXO,
 			"address":        addr,
 			"utxo_count":     snapshot.Count,
 			"history_tx_cnt": len(history),
+			"sync_round_id":  meta.RoundID,
 		}, err
 	}
+	logWalletSyncStepInfo(meta, "reconcile_wallet_utxo_set", map[string]any{
+		"utxo_count":        snapshot.Count,
+		"balance_satoshi":   snapshot.Balance,
+		"history_tx_cnt":    len(history),
+		"step_duration_ms":  time.Since(stepStart).Milliseconds(),
+		"total_duration_ms": durationMS,
+	})
 	select {
 	case <-ctx.Done():
 		return map[string]any{
@@ -444,18 +652,31 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"address":         addr,
 			"utxo_count":      snapshot.Count,
 			"balance_satoshi": snapshot.Balance,
+			"sync_round_id":   meta.RoundID,
 		}, ctx.Err()
 	default:
 	}
+	logWalletSyncStepInfo(meta, "wallet_sync_round_completed", map[string]any{
+		"utxo_count":        snapshot.Count,
+		"balance_satoshi":   snapshot.Balance,
+		"history_tx_cnt":    len(history),
+		"cursor_height":     nextCursor.NextConfirmedHeight,
+		"anchor_height":     nextCursor.AnchorHeight,
+		"tip_height":        tip,
+		"total_duration_ms": durationMS,
+	})
 	return map[string]any{
-		"task_type":       chainTaskUTXO,
-		"address":         addr,
-		"utxo_count":      snapshot.Count,
-		"balance_satoshi": snapshot.Balance,
-		"history_tx_cnt":  len(history),
-		"cursor_height":   nextCursor.NextConfirmedHeight,
-		"anchor_height":   nextCursor.AnchorHeight,
-		"tip_height":      tip,
+		"task_type":         chainTaskUTXO,
+		"address":           addr,
+		"utxo_count":        snapshot.Count,
+		"balance_satoshi":   snapshot.Balance,
+		"history_tx_cnt":    len(history),
+		"cursor_height":     nextCursor.NextConfirmedHeight,
+		"anchor_height":     nextCursor.AnchorHeight,
+		"tip_height":        tip,
+		"sync_round_id":     meta.RoundID,
+		"guard_base_url":    meta.GuardBaseURL,
+		"wallet_chain_type": meta.WalletChainTyp,
 	}, nil
 }
 
@@ -544,9 +765,9 @@ func loadWalletUTXOSyncState(db *sql.DB, address string) (walletUTXOSyncState, e
 	}
 	var s walletUTXOSyncState
 	err := db.QueryRow(
-		`SELECT wallet_id,address,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM wallet_utxo_sync_state WHERE address=?`,
+		`SELECT wallet_id,address,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status FROM wallet_utxo_sync_state WHERE address=?`,
 		address,
-	).Scan(&s.WalletID, &s.Address, &s.UTXOCount, &s.BalanceSatoshi, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS)
+	).Scan(&s.WalletID, &s.Address, &s.UTXOCount, &s.BalanceSatoshi, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS, &s.LastSyncRoundID, &s.LastFailedStep, &s.LastUpstreamPath, &s.LastHTTPStatus)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return walletUTXOSyncState{}, nil
@@ -640,12 +861,12 @@ func appendWalletUTXOEventTx(tx *sql.Tx, utxoID string, eventType string, refTxI
 type walletHistoryTxRecord struct {
 	TxID   string
 	Height int64
-	Tx     woc.TxDetail
+	Tx     whatsonchain.TxDetail
 }
 
 type liveWalletSnapshot struct {
 	Live                  map[string]dual2of2.UTXO
-	ObservedMempoolTxs    []woc.TxDetail
+	ObservedMempoolTxs    []whatsonchain.TxDetail
 	ConfirmedLiveTxIDs    map[string]struct{}
 	Balance               uint64
 	Count                 int
@@ -659,7 +880,158 @@ func getWalletChainStateClient(rt *Runtime) (WalletChainClient, error) {
 	return rt.WalletChain, nil
 }
 
-func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOHistoryCursor, lastError string, trigger string, updatedAt int64, durationMS int64) error {
+func createWalletSyncRoundID() string {
+	return fmt.Sprintf("wutxo-%d", time.Now().UnixNano())
+}
+
+func walletChainBaseURL(chain WalletChainClient) string {
+	type baseURLProvider interface {
+		BaseURL() string
+	}
+	if p, ok := chain.(baseURLProvider); ok && p != nil {
+		return strings.TrimSpace(p.BaseURL())
+	}
+	return ""
+}
+
+func logWalletSyncStepInfo(meta walletSyncRoundMeta, step string, fields map[string]any) {
+	logWalletSyncStep(obs.LevelInfo, meta, step, fields)
+}
+
+func logWalletSyncStepError(meta walletSyncRoundMeta, step string, err error, fields map[string]any) {
+	payload := cloneLogFields(fields)
+	if err != nil {
+		payload["error"] = err.Error()
+		if status := walletSyncHTTPStatus(err); status > 0 {
+			payload["http_status"] = status
+		}
+	}
+	logWalletSyncStep(obs.LevelError, meta, step, payload)
+}
+
+func logWalletSyncStep(level string, meta walletSyncRoundMeta, step string, fields map[string]any) {
+	payload := cloneLogFields(fields)
+	payload["sync_round_id"] = strings.TrimSpace(meta.RoundID)
+	payload["address"] = strings.TrimSpace(meta.Address)
+	payload["trigger_source"] = strings.TrimSpace(meta.TriggerSource)
+	payload["guard_base_url"] = strings.TrimSpace(meta.GuardBaseURL)
+	payload["wallet_chain_type"] = strings.TrimSpace(meta.WalletChainTyp)
+	payload["step"] = strings.TrimSpace(step)
+	if payload["started_at_unix"] == nil && meta.StartedAtUnix > 0 {
+		payload["started_at_unix"] = meta.StartedAtUnix
+	}
+	if level == obs.LevelError {
+		obs.Error("bitcast-client", "wallet_utxo_sync_step", payload)
+		return
+	}
+	obs.Info("bitcast-client", "wallet_utxo_sync_step", payload)
+}
+
+func cloneLogFields(fields map[string]any) map[string]any {
+	out := map[string]any{}
+	for key, value := range fields {
+		out[key] = value
+	}
+	return out
+}
+
+func wrapWalletSyncStepError(meta walletSyncRoundMeta, step string, upstreamPath string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var syncErr *walletSyncError
+	if errors.As(err, &syncErr) && syncErr != nil {
+		if strings.TrimSpace(syncErr.RoundID) == "" {
+			syncErr.RoundID = strings.TrimSpace(meta.RoundID)
+		}
+		if strings.TrimSpace(syncErr.Step) == "" {
+			syncErr.Step = strings.TrimSpace(step)
+		}
+		if strings.TrimSpace(syncErr.UpstreamPath) == "" {
+			syncErr.UpstreamPath = strings.TrimSpace(upstreamPath)
+		}
+		if syncErr.HTTPStatus <= 0 {
+			syncErr.HTTPStatus = walletSyncHTTPStatus(syncErr.Cause)
+		}
+		return syncErr
+	}
+	return &walletSyncError{
+		RoundID:      strings.TrimSpace(meta.RoundID),
+		Step:         strings.TrimSpace(step),
+		UpstreamPath: strings.TrimSpace(upstreamPath),
+		HTTPStatus:   walletSyncHTTPStatus(err),
+		Cause:        err,
+	}
+}
+
+func walletSyncFailureDetails(meta walletSyncRoundMeta, err error) (string, string, string, int) {
+	roundID := strings.TrimSpace(meta.RoundID)
+	failedStep := ""
+	upstreamPath := ""
+	httpStatus := walletSyncHTTPStatus(err)
+	var syncErr *walletSyncError
+	if errors.As(err, &syncErr) && syncErr != nil {
+		if strings.TrimSpace(syncErr.RoundID) != "" {
+			roundID = strings.TrimSpace(syncErr.RoundID)
+		}
+		failedStep = strings.TrimSpace(syncErr.Step)
+		upstreamPath = strings.TrimSpace(syncErr.UpstreamPath)
+		if syncErr.HTTPStatus > 0 {
+			httpStatus = syncErr.HTTPStatus
+		}
+	}
+	return roundID, failedStep, upstreamPath, httpStatus
+}
+
+func walletSyncHTTPStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	var status int
+	if _, scanErr := fmt.Sscanf(strings.TrimSpace(err.Error()), "http %d:", &status); scanErr == nil && status > 0 {
+		return status
+	}
+	return 0
+}
+
+func walletChainTipUpstreamPath() string {
+	return "/chain/info"
+}
+
+func walletChainUTXOsUpstreamPath(address string) string {
+	return fmt.Sprintf("/address/%s/confirmed/unspent", strings.TrimSpace(address))
+}
+
+func walletChainUnconfirmedHistoryUpstreamPath(address string) string {
+	return fmt.Sprintf("/address/%s/unconfirmed/history", strings.TrimSpace(address))
+}
+
+func walletChainTxDetailUpstreamPath(txid string) string {
+	return fmt.Sprintf("/tx/hash/%s", strings.TrimSpace(txid))
+}
+
+func walletChainConfirmedHistoryUpstreamPath(address string, q whatsonchain.ConfirmedHistoryQuery) string {
+	values := url.Values{}
+	if s := strings.TrimSpace(q.Order); s != "" {
+		values.Set("order", s)
+	}
+	if q.Limit > 0 {
+		values.Set("limit", fmt.Sprint(q.Limit))
+	}
+	if q.Height > 0 {
+		values.Set("height", fmt.Sprint(q.Height))
+	}
+	if s := strings.TrimSpace(q.Token); s != "" {
+		values.Set("token", s)
+	}
+	path := fmt.Sprintf("/address/%s/confirmed/history", strings.TrimSpace(address))
+	if encoded := values.Encode(); encoded != "" {
+		return path + "?" + encoded
+	}
+	return path
+}
+
+func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOHistoryCursor, syncRoundID string, lastError string, trigger string, updatedAt int64, durationMS int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -758,8 +1130,8 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 	}
 
 	if _, err = tx.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
-		 VALUES(?,?,?,?,?,?,?,?,?)
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(address) DO UPDATE SET
 			wallet_id=excluded.wallet_id,
 			utxo_count=excluded.utxo_count,
@@ -768,7 +1140,11 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 			last_error=excluded.last_error,
 			last_updated_by=excluded.last_updated_by,
 			last_trigger=excluded.last_trigger,
-			last_duration_ms=excluded.last_duration_ms`,
+			last_duration_ms=excluded.last_duration_ms,
+			last_sync_round_id=excluded.last_sync_round_id,
+			last_failed_step=excluded.last_failed_step,
+			last_upstream_path=excluded.last_upstream_path,
+			last_http_status=excluded.last_http_status`,
 		address, walletID,
 		snapshot.Count,
 		snapshot.Balance,
@@ -777,6 +1153,10 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 		"chain_utxo_worker",
 		strings.TrimSpace(trigger),
 		durationMS,
+		strings.TrimSpace(syncRoundID),
+		"",
+		"",
+		0,
 	); err != nil {
 		return err
 	}
@@ -881,11 +1261,22 @@ func setWalletUTXOSpentTx(tx *sql.Tx, existing map[string]utxoStateRow, utxoID s
 	return appendWalletUTXOEventTx(tx, utxoID, eventType, spentTxID, "", "utxo spent by chain sync", nil)
 }
 
-func collectCurrentWalletSnapshot(ctx context.Context, chain WalletChainClient, address string) (liveWalletSnapshot, error) {
-	confirmedUTXOs, err := chain.GetUTXOs(address)
+func collectCurrentWalletSnapshot(ctx context.Context, chain WalletChainClient, address string, meta walletSyncRoundMeta) (liveWalletSnapshot, error) {
+	stepStart := time.Now()
+	utxoPath := walletChainUTXOsUpstreamPath(address)
+	confirmedUTXOs, err := chain.GetAddressConfirmedUnspent(address)
 	if err != nil {
-		return liveWalletSnapshot{}, err
+		logWalletSyncStepError(meta, "wallet_chain_get_utxos", err, map[string]any{
+			"upstream_path":    utxoPath,
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "wallet_chain_get_utxos", utxoPath, err)
 	}
+	logWalletSyncStepInfo(meta, "wallet_chain_get_utxos", map[string]any{
+		"upstream_path":      utxoPath,
+		"confirmed_utxo_cnt": len(confirmedUTXOs),
+		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
+	})
 	current := map[string]dual2of2.UTXO{}
 	confirmedLiveTxIDs := map[string]struct{}{}
 	for _, u := range confirmedUTXOs {
@@ -894,15 +1285,26 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain WalletChainClient, 
 		current[utxoID] = dual2of2.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
 		confirmedLiveTxIDs[txid] = struct{}{}
 	}
-	unconfirmedTxIDs, err := chain.GetUnconfirmedHistoryContext(ctx, address)
+	stepStart = time.Now()
+	unconfirmedPath := walletChainUnconfirmedHistoryUpstreamPath(address)
+	unconfirmedTxIDs, err := chain.GetAddressUnconfirmedHistory(ctx, address)
 	if err != nil {
-		return liveWalletSnapshot{}, err
+		logWalletSyncStepError(meta, "wallet_chain_get_unconfirmed_history", err, map[string]any{
+			"upstream_path":    unconfirmedPath,
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "wallet_chain_get_unconfirmed_history", unconfirmedPath, err)
 	}
+	logWalletSyncStepInfo(meta, "wallet_chain_get_unconfirmed_history", map[string]any{
+		"upstream_path":      unconfirmedPath,
+		"unconfirmed_tx_cnt": len(unconfirmedTxIDs),
+		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
+	})
 	scriptHex, err := walletAddressLockScriptHex(address)
 	if err != nil {
 		return liveWalletSnapshot{}, err
 	}
-	details, err := loadOrderedTxDetails(ctx, chain, unconfirmedTxIDs)
+	details, err := loadOrderedTxDetails(ctx, chain, unconfirmedTxIDs, meta)
 	if err != nil {
 		return liveWalletSnapshot{}, err
 	}
@@ -921,11 +1323,11 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain WalletChainClient, 
 			current[utxoID] = dual2of2.UTXO{
 				TxID:  txid,
 				Vout:  out.N,
-				Value: satoshiFromTxOutputValue(out.Value),
+				Value: txOutputValueSatoshi(out),
 			}
 		}
 	}
-	oldestConfirmedHeight, err := findOldestCurrentConfirmedHeight(ctx, chain, address, confirmedLiveTxIDs)
+	oldestConfirmedHeight, err := findOldestCurrentConfirmedHeight(ctx, chain, address, confirmedLiveTxIDs, meta)
 	if err != nil {
 		return liveWalletSnapshot{}, err
 	}
@@ -943,8 +1345,8 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain WalletChainClient, 
 	}, nil
 }
 
-func loadOrderedTxDetails(ctx context.Context, chain WalletChainClient, txids []string) ([]woc.TxDetail, error) {
-	unique := map[string]woc.TxDetail{}
+func loadOrderedTxDetails(ctx context.Context, chain WalletChainClient, txids []string, meta walletSyncRoundMeta) ([]whatsonchain.TxDetail, error) {
+	unique := map[string]whatsonchain.TxDetail{}
 	for _, txid := range txids {
 		txid = strings.ToLower(strings.TrimSpace(txid))
 		if txid == "" {
@@ -953,18 +1355,32 @@ func loadOrderedTxDetails(ctx context.Context, chain WalletChainClient, txids []
 		if _, ok := unique[txid]; ok {
 			continue
 		}
-		detail, err := chain.GetTxDetailContext(ctx, txid)
+		stepStart := time.Now()
+		txPath := walletChainTxDetailUpstreamPath(txid)
+		detail, err := chain.GetTxHash(ctx, txid)
 		if err != nil {
-			return nil, err
+			logWalletSyncStepError(meta, "wallet_chain_get_tx_detail", err, map[string]any{
+				"upstream_path":    txPath,
+				"txid":             txid,
+				"step_duration_ms": time.Since(stepStart).Milliseconds(),
+			})
+			return nil, wrapWalletSyncStepError(meta, "wallet_chain_get_tx_detail", txPath, err)
 		}
+		logWalletSyncStepInfo(meta, "wallet_chain_get_tx_detail", map[string]any{
+			"upstream_path":    txPath,
+			"txid":             txid,
+			"vin_cnt":          len(detail.Vin),
+			"vout_cnt":         len(detail.Vout),
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
 		detail.TxID = txid
 		unique[txid] = detail
 	}
-	pending := map[string]woc.TxDetail{}
+	pending := map[string]whatsonchain.TxDetail{}
 	for txid, detail := range unique {
 		pending[txid] = detail
 	}
-	out := make([]woc.TxDetail, 0, len(unique))
+	out := make([]whatsonchain.TxDetail, 0, len(unique))
 	for len(pending) > 0 {
 		progressed := false
 		for txid, detail := range pending {
@@ -997,8 +1413,13 @@ func loadOrderedTxDetails(ctx context.Context, chain WalletChainClient, txids []
 	return out, nil
 }
 
-func findOldestCurrentConfirmedHeight(ctx context.Context, chain WalletChainClient, address string, txids map[string]struct{}) (int64, error) {
+func findOldestCurrentConfirmedHeight(ctx context.Context, chain WalletChainClient, address string, txids map[string]struct{}, meta walletSyncRoundMeta) (int64, error) {
 	if len(txids) == 0 {
+		logWalletSyncStepInfo(meta, "wallet_chain_find_oldest_confirmed_height", map[string]any{
+			"confirmed_live_txid_cnt": 0,
+			"oldest_confirmed_height": 0,
+			"page_cnt":                0,
+		})
 		return 0, nil
 	}
 	remaining := map[string]struct{}{}
@@ -1007,15 +1428,28 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain WalletChainClie
 	}
 	oldest := int64(0)
 	token := ""
+	pageCount := 0
+	stepStart := time.Now()
 	for {
-		page, err := chain.GetConfirmedHistoryPageContext(ctx, address, woc.ConfirmedHistoryQuery{
+		pagePath := walletChainConfirmedHistoryUpstreamPath(address, whatsonchain.ConfirmedHistoryQuery{
+			Order: "desc",
+			Limit: 1000,
+			Token: token,
+		})
+		page, err := chain.GetAddressConfirmedHistoryPage(ctx, address, whatsonchain.ConfirmedHistoryQuery{
 			Order: "desc",
 			Limit: 1000,
 			Token: token,
 		})
 		if err != nil {
-			return 0, err
+			logWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_desc", err, map[string]any{
+				"upstream_path":    pagePath,
+				"page_cnt":         pageCount,
+				"step_duration_ms": time.Since(stepStart).Milliseconds(),
+			})
+			return 0, wrapWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_desc", pagePath, err)
 		}
+		pageCount++
 		for _, item := range page.Items {
 			txid := strings.ToLower(strings.TrimSpace(item.TxID))
 			if _, ok := remaining[txid]; !ok {
@@ -1027,13 +1461,19 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain WalletChainClie
 			}
 		}
 		if len(remaining) == 0 || strings.TrimSpace(page.NextPageToken) == "" {
+			logWalletSyncStepInfo(meta, "wallet_chain_find_oldest_confirmed_height", map[string]any{
+				"confirmed_live_txid_cnt": len(txids),
+				"oldest_confirmed_height": oldest,
+				"page_cnt":                pageCount,
+				"step_duration_ms":        time.Since(stepStart).Milliseconds(),
+			})
 			return oldest, nil
 		}
 		token = strings.TrimSpace(page.NextPageToken)
 	}
 }
 
-func collectConfirmedHistoryRange(ctx context.Context, chain WalletChainClient, address string, cursor walletUTXOHistoryCursor, tip uint32) ([]walletHistoryTxRecord, walletUTXOHistoryCursor, error) {
+func collectConfirmedHistoryRange(ctx context.Context, chain WalletChainClient, address string, cursor walletUTXOHistoryCursor, tip uint32, meta walletSyncRoundMeta) ([]walletHistoryTxRecord, walletUTXOHistoryCursor, error) {
 	next := cursor
 	next.RoundTipHeight = int64(tip)
 	next.UpdatedAtUnix = time.Now().Unix()
@@ -1052,16 +1492,31 @@ func collectConfirmedHistoryRange(ctx context.Context, chain WalletChainClient, 
 	seen := map[string]struct{}{}
 	startHeight := next.NextConfirmedHeight
 	pageToken := strings.TrimSpace(next.NextPageToken)
+	pageCount := 0
+	stepStart := time.Now()
 	for {
-		page, err := chain.GetConfirmedHistoryPageContext(ctx, address, woc.ConfirmedHistoryQuery{
+		pagePath := walletChainConfirmedHistoryUpstreamPath(address, whatsonchain.ConfirmedHistoryQuery{
+			Order:  "asc",
+			Limit:  1000,
+			Height: startHeight,
+			Token:  pageToken,
+		})
+		page, err := chain.GetAddressConfirmedHistoryPage(ctx, address, whatsonchain.ConfirmedHistoryQuery{
 			Order:  "asc",
 			Limit:  1000,
 			Height: startHeight,
 			Token:  pageToken,
 		})
 		if err != nil {
-			return nil, next, err
+			logWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_asc", err, map[string]any{
+				"upstream_path":    pagePath,
+				"start_height":     startHeight,
+				"page_cnt":         pageCount,
+				"step_duration_ms": time.Since(stepStart).Milliseconds(),
+			})
+			return nil, next, wrapWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_asc", pagePath, err)
 		}
+		pageCount++
 		for _, item := range page.Items {
 			txid := strings.ToLower(strings.TrimSpace(item.TxID))
 			if txid == "" {
@@ -1071,10 +1526,25 @@ func collectConfirmedHistoryRange(ctx context.Context, chain WalletChainClient, 
 				continue
 			}
 			seen[txid] = struct{}{}
-			detail, err := chain.GetTxDetailContext(ctx, txid)
+			txStepStart := time.Now()
+			txPath := walletChainTxDetailUpstreamPath(txid)
+			detail, err := chain.GetTxHash(ctx, txid)
 			if err != nil {
-				return nil, next, err
+				logWalletSyncStepError(meta, "wallet_chain_get_tx_detail_for_history", err, map[string]any{
+					"upstream_path":    txPath,
+					"txid":             txid,
+					"step_duration_ms": time.Since(txStepStart).Milliseconds(),
+				})
+				return nil, next, wrapWalletSyncStepError(meta, "wallet_chain_get_tx_detail_for_history", txPath, err)
 			}
+			logWalletSyncStepInfo(meta, "wallet_chain_get_tx_detail_for_history", map[string]any{
+				"upstream_path":    txPath,
+				"txid":             txid,
+				"height":           item.Height,
+				"vin_cnt":          len(detail.Vin),
+				"vout_cnt":         len(detail.Vout),
+				"step_duration_ms": time.Since(txStepStart).Milliseconds(),
+			})
 			out = append(out, walletHistoryTxRecord{
 				TxID:   txid,
 				Height: item.Height,
@@ -1090,6 +1560,14 @@ func collectConfirmedHistoryRange(ctx context.Context, chain WalletChainClient, 
 		next.NextConfirmedHeight = int64(tip) + 1
 		next.NextPageToken = ""
 		next.LastError = ""
+		logWalletSyncStepInfo(meta, "wallet_chain_collect_confirmed_history", map[string]any{
+			"history_tx_cnt":        len(out),
+			"start_height":          startHeight,
+			"next_confirmed_height": next.NextConfirmedHeight,
+			"anchor_height":         next.AnchorHeight,
+			"page_cnt":              pageCount,
+			"step_duration_ms":      time.Since(stepStart).Milliseconds(),
+		})
 		return out, next, nil
 	}
 }
@@ -1106,14 +1584,21 @@ func walletAddressLockScriptHex(address string) (string, error) {
 	return strings.ToLower(hex.EncodeToString(lock.Bytes())), nil
 }
 
-func matchWalletOutput(txid string, out woc.TxOutput, scriptHex string) (string, uint64, bool) {
+func matchWalletOutput(txid string, out whatsonchain.TxOutput, scriptHex string) (string, uint64, bool) {
 	if strings.TrimSpace(txid) == "" {
 		return "", 0, false
 	}
 	if strings.TrimSpace(strings.ToLower(out.ScriptPubKey.Hex)) != strings.TrimSpace(strings.ToLower(scriptHex)) {
 		return "", 0, false
 	}
-	return strings.ToLower(strings.TrimSpace(txid)) + ":" + fmt.Sprint(out.N), satoshiFromTxOutputValue(out.Value), true
+	return strings.ToLower(strings.TrimSpace(txid)) + ":" + fmt.Sprint(out.N), txOutputValueSatoshi(out), true
+}
+
+func txOutputValueSatoshi(out whatsonchain.TxOutput) uint64 {
+	if out.ValueSatoshi > 0 {
+		return out.ValueSatoshi
+	}
+	return satoshiFromTxOutputValue(out.Value)
 }
 
 func satoshiFromTxOutputValue(v float64) uint64 {
@@ -1123,7 +1608,7 @@ func satoshiFromTxOutputValue(v float64) uint64 {
 	return uint64(v*100000000 + 0.5)
 }
 
-func updateWalletUTXOSyncStateError(db *sql.DB, address string, errMsg string, trigger string) {
+func updateWalletUTXOSyncStateError(db *sql.DB, address string, meta walletSyncRoundMeta, err error, trigger string) {
 	if db == nil {
 		return
 	}
@@ -1133,20 +1618,29 @@ func updateWalletUTXOSyncStateError(db *sql.DB, address string, errMsg string, t
 	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	_, err := db.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
-		 VALUES(?,?,?,?,?,?,?,?,?)
+	errMsg := ""
+	if err != nil {
+		errMsg = err.Error()
+	}
+	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
+	_, execErr := db.Exec(
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(address) DO UPDATE SET
 			wallet_id=excluded.wallet_id,
 			updated_at_unix=excluded.updated_at_unix,
 			last_error=excluded.last_error,
 			last_updated_by=excluded.last_updated_by,
 			last_trigger=excluded.last_trigger,
-			last_duration_ms=excluded.last_duration_ms`,
-		address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0,
+			last_duration_ms=excluded.last_duration_ms,
+			last_sync_round_id=excluded.last_sync_round_id,
+			last_failed_step=excluded.last_failed_step,
+			last_upstream_path=excluded.last_upstream_path,
+			last_http_status=excluded.last_http_status`,
+		address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
 	)
-	if err != nil {
-		obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": err.Error(), "address": address})
+	if execErr != nil {
+		obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": execErr.Error(), "address": address})
 	}
 }
 
@@ -1191,6 +1685,14 @@ func getTipHeightFromDB(rt *Runtime) (uint32, error) {
 	return s.TipHeight, nil
 }
 
+func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bool {
+	startedAtUnix := runtimeStartedAtUnix(rt)
+	if startedAtUnix <= 0 {
+		return false
+	}
+	return s.UpdatedAtUnix > 0 && s.UpdatedAtUnix < startedAtUnix
+}
+
 func getWalletUTXOsFromDB(rt *Runtime) ([]dual2of2.UTXO, error) {
 	if rt == nil || rt.DB == nil {
 		return nil, fmt.Errorf("runtime not initialized")
@@ -1205,6 +1707,9 @@ func getWalletUTXOsFromDB(rt *Runtime) ([]dual2of2.UTXO, error) {
 	}
 	if s.UpdatedAtUnix <= 0 {
 		return nil, fmt.Errorf("wallet utxo sync state not ready")
+	}
+	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+		return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
 	}
 	if strings.TrimSpace(s.LastError) != "" {
 		return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
@@ -1243,6 +1748,9 @@ func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
 	}
 	if s.UpdatedAtUnix <= 0 {
 		return addr, 0, fmt.Errorf("wallet utxo sync state not ready")
+	}
+	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+		return addr, 0, fmt.Errorf("wallet utxo sync state stale for current runtime")
 	}
 	if strings.TrimSpace(s.LastError) != "" {
 		return addr, 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))

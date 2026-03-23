@@ -151,6 +151,7 @@ func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []dual2of2.U
 			NextConfirmedHeight: 1,
 			UpdatedAtUnix:       time.Now().Unix(),
 		},
+		"kernel-seed",
 		"",
 		"test",
 		time.Now().Unix(),

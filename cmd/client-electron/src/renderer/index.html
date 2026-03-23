@@ -7,7 +7,7 @@
     <link rel="stylesheet" href="./app.css" />
   </head>
   <body>
-    <main class="browser-shell">
+    <main id="browser-shell" class="browser-shell is-hidden">
       <header class="browser-chrome">
         <div class="toolbar">
           <div class="toolbar-group nav-group">
@@ -33,31 +33,9 @@
 
           <div class="toolbar-group action-group">
             <button id="home-button" class="secondary-button" type="button">设为首页</button>
-            <button id="details-toggle-button" class="secondary-button" type="button">侧栏</button>
             <button id="lock-button" class="secondary-button is-hidden" type="button">锁定客户端</button>
           </div>
         </div>
-
-        <div class="browser-meta">
-          <div class="meta-left">
-            <span class="meta-pill">只允许 <code>bitfs://</code> 内容</span>
-            <span id="backend-phase-text" class="meta-text">正在等待内置客户端启动</span>
-          </div>
-          <div class="meta-right">
-            <span class="meta-text">自动花费 <strong id="auto-spent">0 sat</strong></span>
-          </div>
-        </div>
-
-        <section id="permission-bar" class="permission-bar is-hidden">
-          <div class="permission-copy">
-            <strong>资源等待许可</strong>
-            <p id="pending-summary">当前没有挂起资源</p>
-          </div>
-          <div class="permission-actions">
-            <button id="approve-button" class="primary-button" type="button">允许当前挂起资源</button>
-            <button id="permission-details-button" class="secondary-button" type="button">查看详情</button>
-          </div>
-        </section>
 
         <section id="error-banner" class="error-banner is-hidden">
           <div class="error-banner-copy">
@@ -69,66 +47,279 @@
       </header>
 
       <section class="workspace">
-        <aside id="details-drawer" class="details-drawer">
-          <div class="drawer-head">
-            <div>
-              <p class="drawer-kicker">浏览器控制</p>
-              <h2>侧栏</h2>
-            </div>
-            <button id="details-close-button" class="icon-button close-button" type="button" aria-label="关闭侧栏">×</button>
+        <aside id="shell-sidebar" class="shell-sidebar">
+          <nav class="panel-rail" aria-label="侧栏面板">
+            <button
+              id="panel-tab-resources"
+              class="panel-tab is-active"
+              data-panel="resources"
+              type="button"
+              title="资源面板"
+              aria-label="资源面板"
+            >R</button>
+            <button
+              id="panel-tab-wallet"
+              class="panel-tab"
+              data-panel="wallet"
+              type="button"
+              title="钱包面板"
+              aria-label="钱包面板"
+            >$</button>
+          </nav>
+
+          <div class="panel-stack">
+            <section id="panel-resources" class="sidebar-panel">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Current Page</p>
+                  <h2>资源</h2>
+                </div>
+                <div class="panel-head-badges">
+                  <span id="resource-total-badge" class="mini-badge" title="当前页面资源总数">0 项</span>
+                  <span id="resource-pending-badge" class="mini-badge" title="等待手动允许的资源数">0 待批</span>
+                </div>
+              </div>
+
+              <div class="panel-scroll">
+                <section class="compact-section">
+                  <div class="section-head">
+                    <h3>页面概览</h3>
+                  </div>
+                  <dl class="compact-grid">
+                    <div class="compact-row">
+                      <dt>当前地址</dt>
+                      <dd id="current-url">尚未打开</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>根文档</dt>
+                      <dd id="current-root-seed">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>浏览器首页</dt>
+                      <dd id="home-source">跟随客户端默认首页</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>客户端 API</dt>
+                      <dd id="client-api-base">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>自动已花费</dt>
+                      <dd id="auto-spent-total">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>等待允许</dt>
+                      <dd id="pending-count">0</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section class="compact-section">
+                  <div class="section-head">
+                    <h3>静态预算</h3>
+                  </div>
+                  <form id="budget-form" class="budget-form compact-form">
+                    <label>
+                      <span>单资源自动上限</span>
+                      <input id="single-budget-input" type="number" min="1" step="1" />
+                    </label>
+                    <label>
+                      <span>页面累计上限</span>
+                      <input id="page-budget-input" type="number" min="1" step="1" />
+                    </label>
+                    <button class="secondary-button compact-action" type="submit">保存预算</button>
+                  </form>
+                </section>
+
+                <section class="compact-section">
+                  <div class="section-head">
+                    <h3>资源账单</h3>
+                    <p id="resource-list-note">当前没有已规划资源。</p>
+                  </div>
+                  <div id="resource-list" class="resource-list"></div>
+                </section>
+              </div>
+            </section>
+
+            <section id="panel-wallet" class="sidebar-panel is-hidden">
+              <div class="panel-head">
+                <div>
+                  <p class="panel-kicker">Managed Wallet</p>
+                  <h2>钱包</h2>
+                </div>
+                <div class="panel-head-badges">
+                  <button id="wallet-refresh-button" class="secondary-button compact-action" type="button" title="刷新钱包摘要">刷新</button>
+                </div>
+              </div>
+
+              <div class="panel-scroll">
+                <section class="compact-section">
+                  <div class="section-head">
+                    <h3>摘要</h3>
+                    <p id="wallet-summary-note">等待读取钱包摘要。</p>
+                  </div>
+                  <dl class="compact-grid">
+                    <div class="compact-row">
+                      <dt>钱包地址</dt>
+                      <dd id="wallet-address">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>链上余额</dt>
+                      <dd id="wallet-balance">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>余额来源</dt>
+                      <dd id="wallet-balance-source">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>净入账</dt>
+                      <dd id="wallet-ledger-net">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>累计流入</dt>
+                      <dd id="wallet-total-in">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>累计流出</dt>
+                      <dd id="wallet-total-out">-</dd>
+                    </div>
+                  </dl>
+                </section>
+
+                <section class="compact-section">
+                  <div class="section-head">
+                    <h3>诊断</h3>
+                    <p id="wallet-diagnostic-note">这里会显示钱包摘要链路的关键诊断字段。</p>
+                  </div>
+                  <div class="compact-inline-actions">
+                    <button id="wallet-copy-diagnostics-button" class="secondary-button compact-action" type="button">复制诊断</button>
+                  </div>
+                  <dl class="compact-grid">
+                    <div class="compact-row">
+                      <dt>后端阶段</dt>
+                      <dd id="wallet-backend-phase">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>客户端 API</dt>
+                      <dd id="wallet-client-api-base">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>钱包链类型</dt>
+                      <dd id="wallet-chain-type">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>Guard Base</dt>
+                      <dd id="wallet-chain-base-url">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>摘要刷新</dt>
+                      <dd id="wallet-summary-updated-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>运行时启动</dt>
+                      <dd id="wallet-runtime-started-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>UTXO 同步时间</dt>
+                      <dd id="wallet-sync-updated-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>状态陈旧</dt>
+                      <dd id="wallet-sync-stale">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>陈旧原因</dt>
+                      <dd id="wallet-sync-stale-reason">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>UTXO 触发源</dt>
+                      <dd id="wallet-sync-trigger">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>UTXO 耗时</dt>
+                      <dd id="wallet-sync-duration">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>调度状态</dt>
+                      <dd id="wallet-sync-scheduler-status">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>调度中</dt>
+                      <dd id="wallet-sync-scheduler-in-flight">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>调度开始</dt>
+                      <dd id="wallet-sync-scheduler-started-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>调度结束</dt>
+                      <dd id="wallet-sync-scheduler-ended-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>调度错误</dt>
+                      <dd id="wallet-sync-scheduler-error">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>队列长度</dt>
+                      <dd id="chain-maint-queue-length">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>维护中</dt>
+                      <dd id="chain-maint-in-flight">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>维护任务</dt>
+                      <dd id="chain-maint-in-flight-task-type">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>任务开始</dt>
+                      <dd id="chain-maint-last-task-started-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>任务结束</dt>
+                      <dd id="chain-maint-last-task-ended-at">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>维护错误</dt>
+                      <dd id="chain-maint-last-error">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>同步轮次</dt>
+                      <dd id="wallet-sync-round-id">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>失败步骤</dt>
+                      <dd id="wallet-sync-failed-step">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>上游路径</dt>
+                      <dd id="wallet-sync-upstream-path">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>HTTP 状态</dt>
+                      <dd id="wallet-sync-http-status">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>链上余额错误</dt>
+                      <dd id="wallet-onchain-error">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>UTXO 同步错误</dt>
+                      <dd id="wallet-sync-error">-</dd>
+                    </div>
+                  </dl>
+                </section>
+              </div>
+            </section>
           </div>
-
-          <section class="drawer-section">
-            <div class="section-head">
-              <h3>当前状态</h3>
-              <p>壳层只保留浏览动作，细节都收在这里。</p>
-            </div>
-            <dl class="info-grid">
-              <div class="info-row">
-                <dt>当前地址</dt>
-                <dd id="current-url">尚未打开</dd>
-              </div>
-              <div class="info-row">
-                <dt>待许可资源</dt>
-                <dd id="pending-count">0</dd>
-              </div>
-              <div class="info-row">
-                <dt>客户端 API</dt>
-                <dd id="client-api-base">-</dd>
-              </div>
-              <div class="info-row">
-                <dt>浏览器首页</dt>
-                <dd id="home-source">跟随客户端默认首页</dd>
-              </div>
-            </dl>
-          </section>
-
-          <section class="drawer-section">
-            <div class="section-head">
-              <h3>静态预算</h3>
-              <p>单资源阀值和页面累计阀值统一放在侧栏管理。</p>
-            </div>
-            <form id="budget-form" class="budget-form">
-              <label>
-                <span>单资源自动加载上限</span>
-                <input id="single-budget-input" type="number" min="1" step="1" />
-              </label>
-              <label>
-                <span>页面累计自动加载上限</span>
-                <input id="page-budget-input" type="number" min="1" step="1" />
-              </label>
-              <button class="primary-button" type="submit">保存预算</button>
-            </form>
-          </section>
-
-          <section class="drawer-section">
-            <div class="section-head">
-              <h3>挂起资源</h3>
-              <p id="drawer-pending-note">当前没有挂起资源。</p>
-            </div>
-            <div id="pending-list" class="pending-list"></div>
-          </section>
         </aside>
+
+        <div
+          id="sidebar-resize-handle"
+          class="sidebar-resize-handle"
+          role="separator"
+          aria-label="调整侧栏宽度"
+          aria-orientation="vertical"
+        ></div>
 
         <section class="viewer-stage">
           <webview
@@ -137,70 +328,70 @@
             allowpopups="false"
             webpreferences="contextIsolation=yes,sandbox=yes,javascript=yes"
           ></webview>
-
-          <section id="backend-overlay" class="backend-overlay">
-            <article class="backend-card">
-              <p class="drawer-kicker">Managed Client</p>
-              <h2 id="backend-title">正在启动内置客户端</h2>
-              <p id="backend-summary" class="backend-summary">Electron 正在拉起 Go 客户端并等待管理 API 就绪。</p>
-              <p id="backend-detail" class="backend-detail"></p>
-              <p id="backend-step-note" class="backend-step-note is-hidden"></p>
-
-              <section id="backend-choose-panel" class="backend-step-panel is-hidden">
-                <div class="backend-choice-grid">
-                  <button id="choose-create-button" class="choice-card" type="button">
-                    <strong>新建密文私钥</strong>
-                    <span>生成新的私钥，并立即写入托管 vault 的 <code>key.json</code>。</span>
-                  </button>
-                  <button id="choose-import-button" class="choice-card" type="button">
-                    <strong>导入密文私钥</strong>
-                    <span>从已有的密文私钥 JSON 导入，不处理明文私钥。</span>
-                  </button>
-                </div>
-              </section>
-
-              <form id="create-key-form" class="backend-form is-hidden">
-                <label>
-                  <span>新密码</span>
-                  <input id="create-password-input" type="password" autocomplete="new-password" />
-                </label>
-                <label>
-                  <span>再次输入密码</span>
-                  <input id="create-password-confirm-input" type="password" autocomplete="new-password" />
-                </label>
-                <div class="backend-inline-actions">
-                  <button id="create-key-button" class="primary-button" type="submit">创建密钥并继续</button>
-                  <button id="create-back-button" class="secondary-button" type="button">返回上一步</button>
-                </div>
-              </form>
-
-              <form id="unlock-form" class="backend-form is-hidden">
-                <label>
-                  <span>解锁密码</span>
-                  <input id="unlock-password-input" type="password" autocomplete="current-password" />
-                </label>
-                <div class="backend-inline-actions">
-                  <button id="unlock-button" class="primary-button" type="submit">解锁客户端</button>
-                  <button id="export-key-button" class="secondary-button" type="button">导出密文私钥</button>
-                </div>
-              </form>
-
-              <div id="backend-restart-panel" class="backend-actions is-hidden">
-                <button id="restart-backend-button" class="secondary-button" type="button">重启内置客户端</button>
-              </div>
-
-              <section id="backend-error-banner" class="error-banner is-hidden">
-                <div class="error-banner-copy">
-                  <strong>后端错误</strong>
-                  <p id="backend-error-banner-text"></p>
-                </div>
-                <button id="backend-error-copy-button" class="secondary-button" type="button">复制</button>
-              </section>
-            </article>
-          </section>
         </section>
       </section>
     </main>
+
+    <section id="backend-gate" class="backend-gate">
+      <article class="backend-card">
+        <p class="drawer-kicker">Managed Client</p>
+        <h2 id="backend-title">正在启动内置客户端</h2>
+        <p id="backend-summary" class="backend-summary">Electron 正在拉起 Go 客户端并等待管理 API 就绪。</p>
+        <p id="backend-detail" class="backend-detail"></p>
+        <p id="backend-step-note" class="backend-step-note is-hidden"></p>
+
+        <section id="backend-choose-panel" class="backend-step-panel is-hidden">
+          <div class="backend-choice-grid">
+            <button id="choose-create-button" class="choice-card" type="button">
+              <strong>新建密文私钥</strong>
+              <span>生成新的私钥，并立即写入托管 vault 的 <code>key.json</code>。</span>
+            </button>
+            <button id="choose-import-button" class="choice-card" type="button">
+              <strong>导入密文私钥</strong>
+              <span>从已有的密文私钥 JSON 导入，不处理明文私钥。</span>
+            </button>
+          </div>
+        </section>
+
+        <form id="create-key-form" class="backend-form is-hidden">
+          <label>
+            <span>新密码</span>
+            <input id="create-password-input" type="password" autocomplete="new-password" />
+          </label>
+          <label>
+            <span>再次输入密码</span>
+            <input id="create-password-confirm-input" type="password" autocomplete="new-password" />
+          </label>
+          <div class="backend-inline-actions">
+            <button id="create-key-button" class="primary-button" type="submit">创建密钥并进入客户端</button>
+            <button id="create-back-button" class="secondary-button" type="button">返回上一步</button>
+          </div>
+        </form>
+
+        <form id="unlock-form" class="backend-form is-hidden">
+          <label>
+            <span>解锁密码</span>
+            <input id="unlock-password-input" type="password" autocomplete="current-password" />
+          </label>
+          <div class="backend-inline-actions">
+            <button id="unlock-button" class="primary-button" type="submit">解锁客户端</button>
+            <button id="export-key-button" class="secondary-button" type="button">导出密文私钥</button>
+          </div>
+        </form>
+
+        <div id="backend-restart-panel" class="backend-actions is-hidden">
+          <button id="restart-backend-button" class="secondary-button" type="button">重启内置客户端</button>
+        </div>
+
+        <section id="backend-error-banner" class="error-banner is-hidden">
+          <div class="error-banner-copy">
+            <strong>后端错误</strong>
+            <p id="backend-error-banner-text"></p>
+          </div>
+          <button id="backend-error-copy-button" class="secondary-button" type="button">复制</button>
+        </section>
+      </article>
+    </section>
 
     <section id="shell-error-modal" class="shell-error-modal is-hidden">
       <article class="shell-error-card">

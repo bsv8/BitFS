@@ -21,7 +21,6 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/woc"
 	chainapi "github.com/bsv8/BSVChainAPI"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -41,11 +40,10 @@ type managedDaemon struct {
 
 	srv *http.Server
 
-	mu        sync.RWMutex
-	rt        *clientapp.Runtime
-	rtCancel  context.CancelFunc
-	rtAPI     http.Handler
-	guardStop func()
+	mu       sync.RWMutex
+	rt       *clientapp.Runtime
+	rtCancel context.CancelFunc
+	rtAPI    http.Handler
 
 	systemHomepage *systemHomepageState
 }
@@ -89,11 +87,9 @@ func (d *managedDaemon) close() error {
 	d.mu.Lock()
 	cancel := d.rtCancel
 	rt := d.rt
-	guardStop := d.guardStop
 	d.rtCancel = nil
 	d.rt = nil
 	d.rtAPI = nil
-	d.guardStop = nil
 	d.mu.Unlock()
 
 	if cancel != nil {
@@ -101,9 +97,6 @@ func (d *managedDaemon) close() error {
 	}
 	if rt != nil {
 		_ = rt.Close()
-	}
-	if guardStop != nil {
-		guardStop()
 	}
 	if d.srv != nil {
 		ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
@@ -378,14 +371,8 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	}
 	d.mu.Unlock()
 
-	guardURL, stopGuard, err := woc.EnsureGuardRunning(d.rootCtx, woc.GuardRuntimeOptions{Network: d.cfg.BSV.Network})
-	if err != nil {
-		return err
-	}
-
 	runCfg, _, err := loadRuntimeConfigOrInit(d.startup.ConfigPath, d.initNetwork)
 	if err != nil {
-		stopGuard()
 		return err
 	}
 	d.applyDesktopRuntimeBootstrap(&runCfg)
@@ -402,24 +389,28 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		Network:  d.cfg.BSV.Network,
 	}, 1*time.Second)
 	if err != nil {
-		stopGuard()
+		return err
+	}
+	walletChain, err := clientapp.NewWalletRouteChainClient(chainapi.Route{
+		Provider: chainapi.WhatsOnChainProvider,
+		Network:  d.cfg.BSV.Network,
+	}, 1*time.Second)
+	if err != nil {
 		return err
 	}
 	runIn.ActionChain = actionChain
-	runIn.WalletChain = woc.NewGuardClient(guardURL)
+	runIn.WalletChain = walletChain
 
 	runCtx, cancel := context.WithCancel(d.rootCtx)
 	rt, err := clientapp.Run(runCtx, runIn)
 	if err != nil {
 		cancel()
-		stopGuard()
 		return err
 	}
 	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt, webAssets)
 	if err != nil {
 		_ = rt.Close()
 		cancel()
-		stopGuard()
 		return err
 	}
 
@@ -427,7 +418,6 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	d.rt = rt
 	d.rtCancel = cancel
 	d.rtAPI = runtimeAPI
-	d.guardStop = stopGuard
 	d.mu.Unlock()
 
 	// 控制台打印“解锁后运行摘要”。
@@ -554,11 +544,9 @@ func (d *managedDaemon) stopRuntime() error {
 	d.mu.Lock()
 	cancel := d.rtCancel
 	rt := d.rt
-	guardStop := d.guardStop
 	d.rtCancel = nil
 	d.rt = nil
 	d.rtAPI = nil
-	d.guardStop = nil
 	d.mu.Unlock()
 
 	if cancel != nil {
@@ -566,9 +554,6 @@ func (d *managedDaemon) stopRuntime() error {
 	}
 	if rt != nil {
 		_ = rt.Close()
-	}
-	if guardStop != nil {
-		guardStop()
 	}
 	obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 	return nil

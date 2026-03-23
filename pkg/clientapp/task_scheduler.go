@@ -501,3 +501,43 @@ func (s *taskScheduler) logTaskError(task string, trigger string, duration time.
 		"error":       err.Error(),
 	})
 }
+
+func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix int64) error {
+	if s == nil || s.db == nil || len(names) == 0 {
+		return nil
+	}
+	filtered := make([]string, 0, len(names))
+	args := make([]any, 0, len(names)+2)
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		filtered = append(filtered, name)
+		args = append(args, name)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	if startupUnix <= 0 {
+		startupUnix = time.Now().Unix()
+	}
+	placeholders := strings.TrimRight(strings.Repeat("?,", len(filtered)), ",")
+	args = append([]any{startupUnix, startupUnix}, args...)
+	_, err := s.db.Exec(
+		`UPDATE scheduler_tasks SET
+			status='stopped',
+			updated_at_unix=?,
+			closed_at_unix=?,
+			last_trigger='',
+			last_started_at_unix=0,
+			last_ended_at_unix=0,
+			last_duration_ms=0,
+			last_error='',
+			in_flight=0,
+			last_summary_json='{}'
+		WHERE task_name IN (`+placeholders+`)`,
+		args...,
+	)
+	return err
+}

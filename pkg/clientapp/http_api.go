@@ -90,6 +90,17 @@ type walletLedgerEntry struct {
 	Payload           any
 }
 
+type schedulerTaskSnapshot struct {
+	Name              string
+	Status            string
+	LastTrigger       string
+	LastStartedAtUnix int64
+	LastEndedAtUnix   int64
+	LastDurationMS    int64
+	LastError         string
+	InFlight          bool
+}
+
 func appendTxHistory(db *sql.DB, e txHistoryEntry) {
 	if db == nil {
 		return
@@ -546,6 +557,12 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	startedAtUnix := int64(0)
+	if s != nil && s.rt != nil && s.rt.StartedAtUnix > 0 {
+		startedAtUnix = s.rt.StartedAtUnix
+	} else if s != nil && !s.startedAt.IsZero() {
+		startedAtUnix = s.startedAt.Unix()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"client_pubkey_hex":   s.cfg.ClientID,
 		"transport_peer_id":   s.h.ID().String(),
@@ -556,7 +573,7 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"gateway_count":       len(s.gateways),
 		"arbiter_count":       len(s.cfg.Network.Arbiters),
 		"rescan_interval_sec": s.cfg.Scan.RescanIntervalSeconds,
-		"started_at_unix":     s.startedAt.Unix(),
+		"started_at_unix":     startedAtUnix,
 	})
 }
 
@@ -605,41 +622,236 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 	walletAddr := ""
 	onchainBal := int64(0)
 	onchainBalErr := ""
+	walletUTXOSyncUpdatedAtUnix := int64(0)
+	walletUTXOSyncLastError := ""
+	walletUTXOSyncLastTrigger := ""
+	walletUTXOSyncLastDurationMS := int64(0)
+	walletUTXOSyncLastRoundID := ""
+	walletUTXOSyncLastFailedStep := ""
+	walletUTXOSyncLastUpstreamPath := ""
+	walletUTXOSyncLastHTTPStatus := 0
+	runtimeStartedAtUnix := int64(0)
+	walletUTXOSyncStateIsStale := false
+	walletUTXOSyncStateStaleReason := ""
+	walletUTXOSyncSchedulerStatus := ""
+	walletUTXOSyncSchedulerLastTrigger := ""
+	walletUTXOSyncSchedulerLastStartedAtUnix := int64(0)
+	walletUTXOSyncSchedulerLastEndedAtUnix := int64(0)
+	walletUTXOSyncSchedulerLastDurationMS := int64(0)
+	walletUTXOSyncSchedulerLastError := ""
+	walletUTXOSyncSchedulerInFlight := false
+	chainMaintQueueLength := 0
+	chainMaintInFlight := false
+	chainMaintInFlightTaskType := ""
+	chainMaintLastTaskStartedAtUnix := int64(0)
+	chainMaintLastTaskEndedAtUnix := int64(0)
+	chainMaintLastError := ""
+	walletChainBaseURL := ""
+	walletChainType := ""
+	if s != nil && s.rt != nil && s.rt.StartedAtUnix > 0 {
+		runtimeStartedAtUnix = s.rt.StartedAtUnix
+	} else if s != nil && !s.startedAt.IsZero() {
+		runtimeStartedAtUnix = s.startedAt.Unix()
+	}
 	if s != nil && s.rt != nil {
+		walletChainBaseURL = walletChainBaseURLOfRuntime(s.rt)
+		walletChainType = walletChainTypeOfRuntime(s.rt)
 		addr, bal, err := walletAddressAndOnchainBalance(s.rt)
 		walletAddr = addr
 		onchainBal = int64(bal)
 		if err != nil {
 			onchainBalErr = err.Error()
 		}
+		if strings.TrimSpace(walletAddr) != "" {
+			if syncState, syncErr := loadWalletUTXOSyncState(s.db, walletAddr); syncErr == nil {
+				walletUTXOSyncUpdatedAtUnix = syncState.UpdatedAtUnix
+				walletUTXOSyncLastError = strings.TrimSpace(syncState.LastError)
+				walletUTXOSyncLastTrigger = strings.TrimSpace(syncState.LastTrigger)
+				walletUTXOSyncLastDurationMS = syncState.LastDurationMS
+				walletUTXOSyncLastRoundID = strings.TrimSpace(syncState.LastSyncRoundID)
+				walletUTXOSyncLastFailedStep = strings.TrimSpace(syncState.LastFailedStep)
+				walletUTXOSyncLastUpstreamPath = strings.TrimSpace(syncState.LastUpstreamPath)
+				walletUTXOSyncLastHTTPStatus = syncState.LastHTTPStatus
+				walletUTXOSyncStateIsStale, walletUTXOSyncStateStaleReason = walletUTXOSyncStateStaleness(syncState, runtimeStartedAtUnix)
+			}
+		}
+	}
+	if s != nil && s.db != nil {
+		if schedulerState, err := loadSchedulerTaskSnapshot(s.db, "chain_utxo_sync"); err == nil {
+			walletUTXOSyncSchedulerStatus = strings.TrimSpace(schedulerState.Status)
+			walletUTXOSyncSchedulerLastTrigger = strings.TrimSpace(schedulerState.LastTrigger)
+			walletUTXOSyncSchedulerLastStartedAtUnix = schedulerState.LastStartedAtUnix
+			walletUTXOSyncSchedulerLastEndedAtUnix = schedulerState.LastEndedAtUnix
+			walletUTXOSyncSchedulerLastDurationMS = schedulerState.LastDurationMS
+			walletUTXOSyncSchedulerLastError = strings.TrimSpace(schedulerState.LastError)
+			walletUTXOSyncSchedulerInFlight = schedulerState.InFlight
+		}
+	}
+	if s != nil && s.rt != nil {
+		maintStatus := getChainMaintainer(s.rt).snapshotStatus()
+		chainMaintQueueLength = maintStatus.QueueLength
+		chainMaintInFlight = maintStatus.InFlight
+		chainMaintInFlightTaskType = strings.TrimSpace(maintStatus.InFlightTaskType)
+		chainMaintLastTaskStartedAtUnix = maintStatus.LastTaskStartedAt
+		chainMaintLastTaskEndedAtUnix = maintStatus.LastTaskEndedAt
+		chainMaintLastError = strings.TrimSpace(maintStatus.LastError)
 	}
 	resp := map[string]any{
-		"flow_count":               flowCount,
-		"tx_event_count":           txCount,
-		"sale_count":               saleCount,
-		"gateway_event_count":      gatewayEventCount,
-		"total_in_satoshi":         totalIn,
-		"total_out_satoshi":        totalOut,
-		"total_used_satoshi":       totalUsed,
-		"total_returned_satoshi":   totalReturned,
-		"net_spent_satoshi":        totalUsed - totalReturned,
-		"net_amount_delta_satoshi": totalIn - totalOut,
-		"ledger_count":             ledgerCount,
-		"ledger_total_in_satoshi":  ledgerIn,
-		"ledger_total_out_satoshi": ledgerOut,
-		"ledger_net_satoshi":       ledgerIn - ledgerOut,
-		"wallet_address":           walletAddr,
-		"onchain_balance_satoshi":  onchainBal,
-		"balance_source":           "wallet_utxo_db",
+		"flow_count":                                      flowCount,
+		"tx_event_count":                                  txCount,
+		"sale_count":                                      saleCount,
+		"gateway_event_count":                             gatewayEventCount,
+		"total_in_satoshi":                                totalIn,
+		"total_out_satoshi":                               totalOut,
+		"total_used_satoshi":                              totalUsed,
+		"total_returned_satoshi":                          totalReturned,
+		"net_spent_satoshi":                               totalUsed - totalReturned,
+		"net_amount_delta_satoshi":                        totalIn - totalOut,
+		"ledger_count":                                    ledgerCount,
+		"ledger_total_in_satoshi":                         ledgerIn,
+		"ledger_total_out_satoshi":                        ledgerOut,
+		"ledger_net_satoshi":                              ledgerIn - ledgerOut,
+		"wallet_address":                                  walletAddr,
+		"onchain_balance_satoshi":                         onchainBal,
+		"balance_source":                                  "wallet_utxo_db",
+		"wallet_utxo_sync_updated_at_unix":                walletUTXOSyncUpdatedAtUnix,
+		"wallet_utxo_sync_last_error":                     walletUTXOSyncLastError,
+		"wallet_utxo_sync_last_trigger":                   walletUTXOSyncLastTrigger,
+		"wallet_utxo_sync_last_duration_ms":               walletUTXOSyncLastDurationMS,
+		"wallet_utxo_sync_last_round_id":                  walletUTXOSyncLastRoundID,
+		"wallet_utxo_sync_last_failed_step":               walletUTXOSyncLastFailedStep,
+		"wallet_utxo_sync_last_upstream_path":             walletUTXOSyncLastUpstreamPath,
+		"wallet_utxo_sync_last_http_status":               walletUTXOSyncLastHTTPStatus,
+		"runtime_started_at_unix":                         runtimeStartedAtUnix,
+		"wallet_utxo_sync_state_is_stale":                 walletUTXOSyncStateIsStale,
+		"wallet_utxo_sync_state_stale_reason":             walletUTXOSyncStateStaleReason,
+		"wallet_utxo_sync_scheduler_status":               walletUTXOSyncSchedulerStatus,
+		"wallet_utxo_sync_scheduler_last_trigger":         walletUTXOSyncSchedulerLastTrigger,
+		"wallet_utxo_sync_scheduler_last_started_at_unix": walletUTXOSyncSchedulerLastStartedAtUnix,
+		"wallet_utxo_sync_scheduler_last_ended_at_unix":   walletUTXOSyncSchedulerLastEndedAtUnix,
+		"wallet_utxo_sync_scheduler_last_duration_ms":     walletUTXOSyncSchedulerLastDurationMS,
+		"wallet_utxo_sync_scheduler_last_error":           walletUTXOSyncSchedulerLastError,
+		"wallet_utxo_sync_scheduler_in_flight":            walletUTXOSyncSchedulerInFlight,
+		"chain_maintainer_queue_length":                   chainMaintQueueLength,
+		"chain_maintainer_in_flight":                      chainMaintInFlight,
+		"chain_maintainer_in_flight_task_type":            chainMaintInFlightTaskType,
+		"chain_maintainer_last_task_started_at_unix":      chainMaintLastTaskStartedAtUnix,
+		"chain_maintainer_last_task_ended_at_unix":        chainMaintLastTaskEndedAtUnix,
+		"chain_maintainer_last_error":                     chainMaintLastError,
+		"wallet_chain_base_url":                           walletChainBaseURL,
+		"wallet_chain_type":                               walletChainType,
 	}
 	if onchainBalErr != "" {
 		resp["onchain_balance_error"] = onchainBalErr
+		obs.Error("bitcast-client", "wallet_summary_degraded", map[string]any{
+			"wallet_address":                                  walletAddr,
+			"wallet_chain_type":                               walletChainType,
+			"wallet_chain_base_url":                           walletChainBaseURL,
+			"wallet_utxo_sync_updated_at_unix":                walletUTXOSyncUpdatedAtUnix,
+			"wallet_utxo_sync_last_trigger":                   walletUTXOSyncLastTrigger,
+			"wallet_utxo_sync_last_duration_ms":               walletUTXOSyncLastDurationMS,
+			"wallet_utxo_sync_last_error":                     walletUTXOSyncLastError,
+			"wallet_utxo_sync_last_round_id":                  walletUTXOSyncLastRoundID,
+			"wallet_utxo_sync_last_failed_step":               walletUTXOSyncLastFailedStep,
+			"wallet_utxo_sync_last_upstream_path":             walletUTXOSyncLastUpstreamPath,
+			"wallet_utxo_sync_last_http_status":               walletUTXOSyncLastHTTPStatus,
+			"runtime_started_at_unix":                         runtimeStartedAtUnix,
+			"wallet_utxo_sync_state_is_stale":                 walletUTXOSyncStateIsStale,
+			"wallet_utxo_sync_state_stale_reason":             walletUTXOSyncStateStaleReason,
+			"wallet_utxo_sync_scheduler_status":               walletUTXOSyncSchedulerStatus,
+			"wallet_utxo_sync_scheduler_last_trigger":         walletUTXOSyncSchedulerLastTrigger,
+			"wallet_utxo_sync_scheduler_last_started_at_unix": walletUTXOSyncSchedulerLastStartedAtUnix,
+			"wallet_utxo_sync_scheduler_last_ended_at_unix":   walletUTXOSyncSchedulerLastEndedAtUnix,
+			"wallet_utxo_sync_scheduler_last_duration_ms":     walletUTXOSyncSchedulerLastDurationMS,
+			"wallet_utxo_sync_scheduler_last_error":           walletUTXOSyncSchedulerLastError,
+			"wallet_utxo_sync_scheduler_in_flight":            walletUTXOSyncSchedulerInFlight,
+			"chain_maintainer_queue_length":                   chainMaintQueueLength,
+			"chain_maintainer_in_flight":                      chainMaintInFlight,
+			"chain_maintainer_in_flight_task_type":            chainMaintInFlightTaskType,
+			"chain_maintainer_last_task_started_at_unix":      chainMaintLastTaskStartedAtUnix,
+			"chain_maintainer_last_task_ended_at_unix":        chainMaintLastTaskEndedAtUnix,
+			"chain_maintainer_last_error":                     chainMaintLastError,
+			"onchain_balance_error":                           onchainBalErr,
+		})
+	} else {
+		obs.Info("bitcast-client", "wallet_summary_served", map[string]any{
+			"wallet_address":                    walletAddr,
+			"wallet_chain_type":                 walletChainType,
+			"wallet_chain_base_url":             walletChainBaseURL,
+			"wallet_utxo_sync_updated_at_unix":  walletUTXOSyncUpdatedAtUnix,
+			"wallet_utxo_sync_last_trigger":     walletUTXOSyncLastTrigger,
+			"wallet_utxo_sync_last_duration_ms": walletUTXOSyncLastDurationMS,
+			"wallet_utxo_sync_last_round_id":    walletUTXOSyncLastRoundID,
+			"wallet_utxo_sync_state_is_stale":   walletUTXOSyncStateIsStale,
+			"wallet_utxo_sync_scheduler_status": walletUTXOSyncSchedulerStatus,
+			"chain_maintainer_queue_length":     chainMaintQueueLength,
+			"chain_maintainer_in_flight":        chainMaintInFlight,
+			"onchain_balance_satoshi":           onchainBal,
+		})
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
+func walletUTXOSyncStateStaleness(syncState walletUTXOSyncState, runtimeStartedAtUnix int64) (bool, string) {
+	if syncState.UpdatedAtUnix <= 0 {
+		return true, "sync_state_missing"
+	}
+	if runtimeStartedAtUnix > 0 && syncState.UpdatedAtUnix < runtimeStartedAtUnix {
+		return true, "sync_state_older_than_runtime"
+	}
+	if strings.TrimSpace(syncState.LastError) != "" && strings.TrimSpace(syncState.LastSyncRoundID) == "" {
+		return true, "sync_error_missing_round_id"
+	}
+	return false, ""
+}
+
+func loadSchedulerTaskSnapshot(db *sql.DB, taskName string) (schedulerTaskSnapshot, error) {
+	if db == nil {
+		return schedulerTaskSnapshot{}, fmt.Errorf("db is nil")
+	}
+	taskName = strings.TrimSpace(taskName)
+	if taskName == "" {
+		return schedulerTaskSnapshot{}, fmt.Errorf("task name is empty")
+	}
+	var out schedulerTaskSnapshot
+	var inFlightInt int
+	err := db.QueryRow(
+		`SELECT task_name,status,last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight
+		 FROM scheduler_tasks WHERE task_name=?`,
+		taskName,
+	).Scan(&out.Name, &out.Status, &out.LastTrigger, &out.LastStartedAtUnix, &out.LastEndedAtUnix, &out.LastDurationMS, &out.LastError, &inFlightInt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return schedulerTaskSnapshot{}, nil
+		}
+		return schedulerTaskSnapshot{}, err
+	}
+	out.InFlight = inFlightInt != 0
+	return out, nil
+}
+
 func walletAddressAndOnchainBalance(rt *Runtime) (string, uint64, error) {
 	return getWalletBalanceFromDB(rt)
+}
+
+func walletChainBaseURLOfRuntime(rt *Runtime) string {
+	if rt == nil || rt.WalletChain == nil {
+		return ""
+	}
+	type baseURLProvider interface {
+		BaseURL() string
+	}
+	if p, ok := rt.WalletChain.(baseURLProvider); ok && p != nil {
+		return strings.TrimSpace(p.BaseURL())
+	}
+	return ""
+}
+
+func walletChainTypeOfRuntime(rt *Runtime) string {
+	if rt == nil || rt.WalletChain == nil {
+		return ""
+	}
+	return fmt.Sprintf("%T", rt.WalletChain)
 }
 
 func (s *httpAPIServer) handleWalletLedger(w http.ResponseWriter, r *http.Request) {

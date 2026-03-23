@@ -17,10 +17,13 @@ export function registerShellIPC(
   const buildShellState = (): ShellState => {
     const runtimeState = runtime.snapshot();
     const backendState = supervisor.snapshot();
+    const settingsState = settings.snapshot();
     return {
       ...runtimeState,
       lastError: runtimeState.lastError || backendState.lastError,
-      userHomeSeedHash: settings.snapshot().userHomeSeedHash,
+      userHomeSeedHash: settingsState.userHomeSeedHash,
+      sidebarWidthPx: settingsState.sidebarWidthPx,
+      activePanel: settingsState.activePanel,
       backend: backendState
     };
   };
@@ -46,9 +49,11 @@ export function registerShellIPC(
     runtime.setStaticBudget(payload.singleMaxSat, payload.pageMaxSat);
     return buildShellState();
   });
-  ipcMain.handle("bitfs-shell:approve-pending", () => {
-    debugLogger.log("ipc", "approve_pending");
-    runtime.approvePendingResources();
+  ipcMain.handle("bitfs-shell:approve-resource", (_event, payload: { seedHash: string }) => {
+    debugLogger.log("ipc", "approve_resource", {
+      seed_hash: String(payload?.seedHash || "")
+    });
+    runtime.approveResource(String(payload?.seedHash || ""));
     return buildShellState();
   });
   ipcMain.handle("bitfs-shell:create-key", (_event, payload: { password: string }) => {
@@ -85,6 +90,17 @@ export function registerShellIPC(
   ipcMain.handle("bitfs-shell:clear-user-homepage", () => {
     debugLogger.log("ipc", "clear_user_homepage");
     settings.clearUserHomeSeedHash();
+    return buildShellState();
+  });
+  ipcMain.handle("bitfs-shell:set-sidebar-layout", (_event, payload: { sidebarWidthPx?: number; activePanel?: string }) => {
+    debugLogger.log("ipc", "set_sidebar_layout", {
+      sidebar_width_px: Number(payload?.sidebarWidthPx || 0),
+      active_panel: String(payload?.activePanel || "")
+    });
+    settings.setSidebarLayout({
+      sidebarWidthPx: payload?.sidebarWidthPx,
+      activePanel: payload?.activePanel
+    });
     return buildShellState();
   });
   ipcMain.handle("bitfs-shell:plan-resources", (_event, payload: { refs: string[]; baseURL?: string }) => {

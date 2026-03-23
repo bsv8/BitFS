@@ -100,7 +100,8 @@
           static_single_max_sat: state.staticSingleMaxSat,
           static_page_max_sat: state.staticPageMaxSat,
           auto_spent_sat: state.autoSpentSat,
-          pending_count: Array.isArray(state.pending) ? state.pending.length : 0,
+          resource_pending_count: Number(state.pendingCount || 0),
+          resource_total_count: Array.isArray(state.resources) ? state.resources.length : 0,
           last_error: state.lastError || "",
           backend_phase: state.backend?.phase || "",
           backend_has_key: Boolean(state.backend?.hasKey),
@@ -115,9 +116,6 @@
           singleMaxSat: Number(singleMaxSat || 0),
           pageMaxSat: Number(pageMaxSat || 0)
         });
-      },
-      async approvePending() {
-        return ipcRenderer.invoke("bitfs-shell:approve-pending");
       },
       onState(listener) {
         if (typeof listener !== "function") {

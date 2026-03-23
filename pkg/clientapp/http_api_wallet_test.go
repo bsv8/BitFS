@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func newWalletAPITestDB(t *testing.T) *sql.DB {
@@ -219,6 +220,145 @@ func TestHandleWalletSummary(t *testing.T) {
 	}
 	if got, _ := body["balance_source"].(string); got != "wallet_utxo_db" {
 		t.Fatalf("balance_source mismatch: got=%v want=wallet_utxo_db", body["balance_source"])
+	}
+}
+
+func TestHandleWalletSummary_IncludesSyncFailureAnchors(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAPITestDB(t)
+	rt := &Runtime{DB: db, runIn: RunInput{
+		EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
+	}}
+	rt.runIn.BSV.Network = "test"
+	addr, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress failed: %v", err)
+	}
+	walletID := walletIDByAddress(addr)
+	now := time.Now().Unix()
+	if _, err := db.Exec(
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		addr, walletID, 0, 0, now, `http 502: {"error":"http 404: Not Found"}`, "chain_utxo_worker", "periodic_tick", 0, "round-http-1", "wallet_chain_get_unconfirmed_history", walletChainUnconfirmedHistoryUpstreamPath(addr), 502,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo_sync_state failed: %v", err)
+	}
+
+	srv := &httpAPIServer{db: db, rt: rt}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/summary", nil)
+	rec := httptest.NewRecorder()
+	srv.handleWalletSummary(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if got, _ := body["wallet_utxo_sync_last_round_id"].(string); got != "round-http-1" {
+		t.Fatalf("wallet_utxo_sync_last_round_id mismatch: got=%v want=round-http-1", body["wallet_utxo_sync_last_round_id"])
+	}
+	if got, _ := body["wallet_utxo_sync_last_failed_step"].(string); got != "wallet_chain_get_unconfirmed_history" {
+		t.Fatalf("wallet_utxo_sync_last_failed_step mismatch: got=%v", body["wallet_utxo_sync_last_failed_step"])
+	}
+	if got, _ := body["wallet_utxo_sync_last_upstream_path"].(string); got != walletChainUnconfirmedHistoryUpstreamPath(addr) {
+		t.Fatalf("wallet_utxo_sync_last_upstream_path mismatch: got=%v want=%v", body["wallet_utxo_sync_last_upstream_path"], walletChainUnconfirmedHistoryUpstreamPath(addr))
+	}
+	if got := int(body["wallet_utxo_sync_last_http_status"].(float64)); got != 502 {
+		t.Fatalf("wallet_utxo_sync_last_http_status mismatch: got=%d want=502", got)
+	}
+}
+
+func TestHandleWalletSummary_IncludesStaleAndSchedulerDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAPITestDB(t)
+	rt := &Runtime{DB: db, runIn: RunInput{
+		EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
+	}}
+	rt.runIn.BSV.Network = "test"
+	addr, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress failed: %v", err)
+	}
+	walletID := walletIDByAddress(addr)
+	now := time.Now().Unix()
+	runtimeStartedAt := now + 600
+	if _, err := db.Exec(
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		addr, walletID, 0, 0, now, `http 502: {"error":"context canceled"}`, "chain_utxo_worker", "periodic_tick", 0, "", "", "", 0,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo_sync_state failed: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO scheduler_tasks(
+			task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
+			last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
+			run_count,success_count,failure_count,last_summary_json,meta_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"chain_utxo_sync", "chain_maintenance", "static", "active", 10, now, now, 0,
+		"periodic_tick", now+10, now+10, 0, "context canceled", 1,
+		1, 0, 1, "{}", "{}",
+	); err != nil {
+		t.Fatalf("seed scheduler_tasks failed: %v", err)
+	}
+
+	rt.StartedAtUnix = runtimeStartedAt
+	rt.chainMaint = &chainMaintainer{
+		queue: make(chan chainTask, 2),
+		status: chainSchedulerStatus{
+			InFlight:          false,
+			InFlightTaskType:  "",
+			LastTaskStartedAt: now + 20,
+			LastTaskEndedAt:   now + 21,
+			LastError:         "",
+		},
+	}
+	rt.chainMaint.queue <- chainTask{TaskType: chainTaskUTXO}
+	srv := &httpAPIServer{db: db, rt: rt, startedAt: time.Unix(runtimeStartedAt+60, 0)}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/summary", nil)
+	rec := httptest.NewRecorder()
+	srv.handleWalletSummary(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if got := int64(body["runtime_started_at_unix"].(float64)); got != runtimeStartedAt {
+		t.Fatalf("runtime_started_at_unix mismatch: got=%d want=%d", got, runtimeStartedAt)
+	}
+	if stale, _ := body["wallet_utxo_sync_state_is_stale"].(bool); !stale {
+		t.Fatalf("wallet_utxo_sync_state_is_stale mismatch: got=%v want=true", body["wallet_utxo_sync_state_is_stale"])
+	}
+	if got, _ := body["wallet_utxo_sync_state_stale_reason"].(string); got != "sync_state_older_than_runtime" {
+		t.Fatalf("wallet_utxo_sync_state_stale_reason mismatch: got=%v want=sync_state_older_than_runtime", body["wallet_utxo_sync_state_stale_reason"])
+	}
+	if got, _ := body["wallet_utxo_sync_scheduler_status"].(string); got != "active" {
+		t.Fatalf("wallet_utxo_sync_scheduler_status mismatch: got=%v want=active", body["wallet_utxo_sync_scheduler_status"])
+	}
+	if inFlight, _ := body["wallet_utxo_sync_scheduler_in_flight"].(bool); !inFlight {
+		t.Fatalf("wallet_utxo_sync_scheduler_in_flight mismatch: got=%v want=true", body["wallet_utxo_sync_scheduler_in_flight"])
+	}
+	if got, _ := body["wallet_utxo_sync_scheduler_last_error"].(string); got != "context canceled" {
+		t.Fatalf("wallet_utxo_sync_scheduler_last_error mismatch: got=%v want=context canceled", body["wallet_utxo_sync_scheduler_last_error"])
+	}
+	if got := int(body["chain_maintainer_queue_length"].(float64)); got != 1 {
+		t.Fatalf("chain_maintainer_queue_length mismatch: got=%d want=1", got)
+	}
+	if inFlight, _ := body["chain_maintainer_in_flight"].(bool); inFlight {
+		t.Fatalf("chain_maintainer_in_flight mismatch: got=%v want=false", body["chain_maintainer_in_flight"])
+	}
+	if got, _ := body["chain_maintainer_in_flight_task_type"].(string); got != "" {
+		t.Fatalf("chain_maintainer_in_flight_task_type mismatch: got=%q want=\"\"", got)
+	}
+	if got := int64(body["chain_maintainer_last_task_started_at_unix"].(float64)); got != now+20 {
+		t.Fatalf("chain_maintainer_last_task_started_at_unix mismatch: got=%d want=%d", got, now+20)
 	}
 }
 

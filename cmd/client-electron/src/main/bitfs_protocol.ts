@@ -57,7 +57,7 @@ export function createBitfsProtocolHandler(runtime: BitfsBrowserRuntime) {
 // 设计说明：
 // - 这里把浏览器真实请求统一转成“预算判断 -> 内容获取”两段式；
 // - 是否允许自动加载由 runtime 维护，协议层只负责执行结果；
-// - 第一版如果资源被预算闸门挡住，就先返回占位内容，并让壳顶部的许可条接住用户动作。
+// - 资源被预算闸门挡住时，壳层右侧资源面板负责展示价格和手动允许动作。
 export function parseBitfsRequest(requestURL: string): string {
   let url: URL;
   try {
@@ -195,7 +195,7 @@ function blockedResponse(request: Request, message: string): Response {
     <article>
       <h1>资源暂未放行</h1>
       <p>${escapeHTML(message)}</p>
-      <p>如果这是一个超过静态阀值的子资源，请回到浏览器壳顶部的预算许可条，允许后再重新装载页面。</p>
+      <p>如果这是一个超过静态阀值的资源，请回到浏览器壳右侧的资源面板，允许后再重新装载页面。</p>
       <p>当前协议只允许 <code>bitfs://&lt;seed_hash&gt;</code>，不会自动放行传统 URL。</p>
       <textarea id="error-report" class="report-box" readonly>${escapeHTML(reportText)}</textarea>
       <div class="actions">

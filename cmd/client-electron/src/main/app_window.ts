@@ -27,7 +27,7 @@ export function createAppWindow(appRootDir: string): BrowserWindow {
   });
 
   // 设计说明：
-  // - 外层壳页面仍由本地可信 renderer 承载，负责地址栏、预算条、锁定层等系统级 UI；
+  // - 外层壳页面仍由本地可信 renderer 承载，负责地址栏、右侧面板、锁定层等系统级 UI；
   // - 真正的 bitfs 内容页则放进 webview，并在 will-attach-webview 里强制收回 Electron / Node 直连；
   // - 这样页面世界保留标准浏览器能力和 `window.bitfs`，但无法串到宿主壳。
   window.webContents.on("will-attach-webview", (event, preferences, params) => {

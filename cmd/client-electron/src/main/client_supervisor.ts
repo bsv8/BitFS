@@ -159,7 +159,11 @@ export class ManagedClientSupervisor extends EventEmitter {
     await this.ensureReachable();
     await this.postJSON("/api/v1/key/new", { password: requirePassword(password) });
     await this.refreshStatus();
-    return this.waitForState((state) => state.phase === "locked" && state.hasKey, READY_TIMEOUT_MS);
+    // 设计说明：
+    // - 当前 Go managed API 在 key/new 后通常先落到 hasKey + locked；
+    // - renderer 会继续复用同一密码自动解锁；
+    // - 这里同时兼容未来 key/new 直接进入 ready 的实现，避免壳层把状态机写死。
+    return this.waitForState((state) => state.hasKey && (state.phase === "locked" || state.phase === "ready"), READY_TIMEOUT_MS);
   }
 
   async importKeyCipher(cipher: Record<string, unknown>): Promise<ManagedClientState> {

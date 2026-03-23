@@ -26,7 +26,6 @@ import (
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
-	"github.com/bsv8/BFTP/pkg/woc"
 	chainapi "github.com/bsv8/BSVChainAPI"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -580,6 +579,7 @@ type Runtime struct {
 	Host            host.Host
 	DB              *sql.DB
 	runIn           RunInput
+	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
 	HealthyArbiters []peer.AddrInfo
 	Workspace       *workspaceManager
@@ -932,6 +932,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		Host:                     h,
 		DB:                       db,
 		runIn:                    in,
+		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,
 		HealthyArbiters:          healthyArbiters,
 		Workspace:                workspaceMgr,
@@ -971,8 +972,21 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		rt.ActionChain = actionChain
 	}
 	if rt.WalletChain == nil {
-		// 钱包同步仍保留旧链语义，后续单独迁移。
-		rt.WalletChain = woc.NewGuardClient(woc.DefaultGuardBaseURL)
+		walletChain, err := NewWalletRouteChainClient(chainapi.Route{
+			Provider: chainapi.WhatsOnChainProvider,
+			Network:  in.BSV.Network,
+		}, 1*time.Second)
+		if err != nil {
+			_ = db.Close()
+			if closeTrace != nil {
+				_ = closeTrace()
+			}
+			if removeObs != nil {
+				removeObs()
+			}
+			return nil, err
+		}
+		rt.WalletChain = walletChain
 	}
 
 	// 初始化网关管理器
@@ -1669,7 +1683,11 @@ func initIndexDB(db *sql.DB) error {
 			last_error TEXT NOT NULL,
 			last_updated_by TEXT NOT NULL,
 			last_trigger TEXT NOT NULL,
-			last_duration_ms INTEGER NOT NULL
+			last_duration_ms INTEGER NOT NULL,
+			last_sync_round_id TEXT NOT NULL DEFAULT '',
+			last_failed_step TEXT NOT NULL DEFAULT '',
+			last_upstream_path TEXT NOT NULL DEFAULT '',
+			last_http_status INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_utxo_history_cursor(
 			address TEXT PRIMARY KEY,
@@ -1940,6 +1958,9 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureWalletUTXOSchema(db); err != nil {
 		return err
 	}
+	if err := ensureWalletUTXOSyncStateSchema(db); err != nil {
+		return err
+	}
 	if err := migrateLegacyBizUTXOLinks(db); err != nil {
 		return err
 	}
@@ -2205,6 +2226,40 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 		return err
 	}
 	return tx.Commit()
+}
+
+func ensureWalletUTXOSyncStateSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	cols, err := tableColumns(db, "wallet_utxo_sync_state")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, ok := cols["last_sync_round_id"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_sync_round_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, ok := cols["last_failed_step"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_failed_step TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, ok := cols["last_upstream_path"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_upstream_path TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, ok := cols["last_http_status"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_http_status INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func migrateLegacyBizUTXOLinks(db *sql.DB) error {

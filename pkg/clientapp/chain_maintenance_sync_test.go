@@ -3,52 +3,53 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
-	"github.com/bsv8/BFTP/pkg/woc"
+	"github.com/bsv8/BSVChainAPI/whatsonchain"
 )
 
 type walletSyncMockChain struct {
-	confirmedUTXOs        []woc.UTXO
+	confirmedUTXOs        []whatsonchain.UTXO
 	unconfirmedHistory    []string
-	txDetails             map[string]woc.TxDetail
-	confirmedHistoryPages map[string]woc.ConfirmedHistoryPage
+	txDetails             map[string]whatsonchain.TxDetail
+	confirmedHistoryPages map[string]whatsonchain.ConfirmedHistoryPage
 	tipHeight             uint32
 }
 
-func (m *walletSyncMockChain) GetUTXOs(address string) ([]woc.UTXO, error) {
-	return append([]woc.UTXO(nil), m.confirmedUTXOs...), nil
+func (m *walletSyncMockChain) BaseURL() string {
+	return "mock://wallet-chain"
 }
 
-func (m *walletSyncMockChain) GetTipHeight() (uint32, error) {
+func (m *walletSyncMockChain) GetAddressConfirmedUnspent(address string) ([]whatsonchain.UTXO, error) {
+	return append([]whatsonchain.UTXO(nil), m.confirmedUTXOs...), nil
+}
+
+func (m *walletSyncMockChain) GetChainInfo() (uint32, error) {
 	if m.tipHeight == 0 {
 		return 100, nil
 	}
 	return m.tipHeight, nil
 }
 
-func (m *walletSyncMockChain) Broadcast(txHex string) (string, error) {
-	return "mock-txid", nil
-}
-
-func (m *walletSyncMockChain) GetConfirmedHistoryPageContext(ctx context.Context, address string, q woc.ConfirmedHistoryQuery) (woc.ConfirmedHistoryPage, error) {
+func (m *walletSyncMockChain) GetAddressConfirmedHistoryPage(ctx context.Context, address string, q whatsonchain.ConfirmedHistoryQuery) (whatsonchain.ConfirmedHistoryPage, error) {
 	_ = ctx
 	key := strings.ToLower(strings.TrimSpace(q.Order)) + "|" + strings.TrimSpace(q.Token)
 	if page, ok := m.confirmedHistoryPages[key]; ok {
 		return page, nil
 	}
-	return woc.ConfirmedHistoryPage{}, nil
+	return whatsonchain.ConfirmedHistoryPage{}, nil
 }
 
-func (m *walletSyncMockChain) GetUnconfirmedHistoryContext(ctx context.Context, address string) ([]string, error) {
+func (m *walletSyncMockChain) GetAddressUnconfirmedHistory(ctx context.Context, address string) ([]string, error) {
 	_ = ctx
 	return append([]string(nil), m.unconfirmedHistory...), nil
 }
 
-func (m *walletSyncMockChain) GetTxDetailContext(ctx context.Context, txid string) (woc.TxDetail, error) {
+func (m *walletSyncMockChain) GetTxHash(ctx context.Context, txid string) (whatsonchain.TxDetail, error) {
 	_ = ctx
 	return m.txDetails[strings.ToLower(strings.TrimSpace(txid))], nil
 }
@@ -69,29 +70,29 @@ func TestCollectCurrentWalletSnapshot_TracksMempoolLifecycle(t *testing.T) {
 		t.Fatalf("walletAddressLockScriptHex failed: %v", err)
 	}
 	chain := &walletSyncMockChain{
-		confirmedUTXOs: []woc.UTXO{
+		confirmedUTXOs: []whatsonchain.UTXO{
 			{TxID: "txc1", Vout: 0, Value: 1000},
 			{TxID: "txc2", Vout: 0, Value: 2000},
 		},
 		unconfirmedHistory: []string{"txm1", "txm2"},
-		txDetails: map[string]woc.TxDetail{
+		txDetails: map[string]whatsonchain.TxDetail{
 			"txm1": {
 				TxID: "txm1",
-				Vin:  []woc.TxInput{{TxID: "txc2", Vout: 0}},
-				Vout: []woc.TxOutput{{N: 0, Value: 0.000015, ScriptPubKey: woc.ScriptPubKey{Hex: scriptHex}}},
+				Vin:  []whatsonchain.TxInput{{TxID: "txc2", Vout: 0}},
+				Vout: []whatsonchain.TxOutput{{N: 0, ValueSatoshi: 1500, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: scriptHex}}},
 			},
 			"txm2": {
 				TxID: "txm2",
-				Vin:  []woc.TxInput{{TxID: "txm1", Vout: 0}},
-				Vout: []woc.TxOutput{{N: 1, Value: 0.000012, ScriptPubKey: woc.ScriptPubKey{Hex: scriptHex}}},
+				Vin:  []whatsonchain.TxInput{{TxID: "txm1", Vout: 0}},
+				Vout: []whatsonchain.TxOutput{{N: 1, ValueSatoshi: 1200, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: scriptHex}}},
 			},
 		},
-		confirmedHistoryPages: map[string]woc.ConfirmedHistoryPage{
-			"desc|": {Items: []woc.AddressHistoryItem{{TxID: "txc1", Height: 10}}},
+		confirmedHistoryPages: map[string]whatsonchain.ConfirmedHistoryPage{
+			"desc|": {Items: []whatsonchain.AddressHistoryItem{{TxID: "txc1", Height: 10}}},
 		},
 	}
 
-	snapshot, err := collectCurrentWalletSnapshot(context.Background(), chain, addr)
+	snapshot, err := collectCurrentWalletSnapshot(context.Background(), chain, addr, walletSyncRoundMeta{})
 	if err != nil {
 		t.Fatalf("collectCurrentWalletSnapshot failed: %v", err)
 	}
@@ -143,14 +144,14 @@ func TestReconcileWalletUTXOSet_PersistsSpentTracking(t *testing.T) {
 		Live: map[string]dual2of2.UTXO{
 			"curtx:0": {TxID: "curtx", Vout: 0, Value: 3000},
 		},
-		ObservedMempoolTxs: []woc.TxDetail{
+		ObservedMempoolTxs: []whatsonchain.TxDetail{
 			{
 				TxID: "unconf1",
-				Vout: []woc.TxOutput{{N: 0, Value: 0.000007, ScriptPubKey: woc.ScriptPubKey{Hex: scriptHex}}},
+				Vout: []whatsonchain.TxOutput{{N: 0, ValueSatoshi: 700, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: scriptHex}}},
 			},
 			{
 				TxID: "unconf2",
-				Vin:  []woc.TxInput{{TxID: "unconf1", Vout: 0}},
+				Vin:  []whatsonchain.TxInput{{TxID: "unconf1", Vout: 0}},
 			},
 		},
 		Balance: 3000,
@@ -160,17 +161,17 @@ func TestReconcileWalletUTXOSet_PersistsSpentTracking(t *testing.T) {
 		{
 			TxID:   "hist1",
 			Height: 20,
-			Tx: woc.TxDetail{
+			Tx: whatsonchain.TxDetail{
 				TxID: "hist1",
-				Vout: []woc.TxOutput{{N: 0, Value: 0.00001, ScriptPubKey: woc.ScriptPubKey{Hex: scriptHex}}},
+				Vout: []whatsonchain.TxOutput{{N: 0, ValueSatoshi: 1000, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: scriptHex}}},
 			},
 		},
 		{
 			TxID:   "hist2",
 			Height: 21,
-			Tx: woc.TxDetail{
+			Tx: whatsonchain.TxDetail{
 				TxID: "hist2",
-				Vin:  []woc.TxInput{{TxID: "hist1", Vout: 0}},
+				Vin:  []whatsonchain.TxInput{{TxID: "hist1", Vout: 0}},
 			},
 		},
 	}
@@ -183,7 +184,7 @@ func TestReconcileWalletUTXOSet_PersistsSpentTracking(t *testing.T) {
 		UpdatedAtUnix:       now,
 	}
 
-	if err := reconcileWalletUTXOSet(db, addr, snapshot, history, cursor, "", "test", now, 9); err != nil {
+	if err := reconcileWalletUTXOSet(db, addr, snapshot, history, cursor, "round-test", "", "test", now, 9); err != nil {
 		t.Fatalf("reconcileWalletUTXOSet failed: %v", err)
 	}
 
@@ -199,12 +200,55 @@ func TestReconcileWalletUTXOSet_PersistsSpentTracking(t *testing.T) {
 	if state.UTXOCount != 1 || state.BalanceSatoshi != 3000 {
 		t.Fatalf("unexpected sync state: %+v", state)
 	}
+	if state.LastSyncRoundID != "round-test" || state.LastFailedStep != "" || state.LastUpstreamPath != "" || state.LastHTTPStatus != 0 {
+		t.Fatalf("unexpected sync diagnostics: %+v", state)
+	}
 	cur, err := loadWalletUTXOHistoryCursor(db, addr)
 	if err != nil {
 		t.Fatalf("loadWalletUTXOHistoryCursor failed: %v", err)
 	}
 	if cur.NextConfirmedHeight != 101 || cur.AnchorHeight != 20 {
 		t.Fatalf("unexpected history cursor: %+v", cur)
+	}
+}
+
+func TestUpdateWalletUTXOSyncStateError_PersistsFailureAnchors(t *testing.T) {
+	t.Parallel()
+
+	db := newKernelTestDB(t)
+	rt := &Runtime{runIn: RunInput{
+		EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
+	}}
+	rt.runIn.BSV.Network = "test"
+	addr, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress failed: %v", err)
+	}
+
+	meta := walletSyncRoundMeta{RoundID: "round-fail-1"}
+	updateWalletUTXOSyncStateError(
+		db,
+		addr,
+		meta,
+		wrapWalletSyncStepError(meta, "wallet_chain_get_unconfirmed_history", walletChainUnconfirmedHistoryUpstreamPath(addr), fmt.Errorf("http 502: {\"error\":\"http 404: Not Found\"}")),
+		"periodic_tick",
+	)
+
+	state, err := loadWalletUTXOSyncState(db, addr)
+	if err != nil {
+		t.Fatalf("loadWalletUTXOSyncState failed: %v", err)
+	}
+	if state.LastSyncRoundID != "round-fail-1" {
+		t.Fatalf("unexpected last sync round id: %+v", state)
+	}
+	if state.LastFailedStep != "wallet_chain_get_unconfirmed_history" {
+		t.Fatalf("unexpected last failed step: %+v", state)
+	}
+	if state.LastUpstreamPath != walletChainUnconfirmedHistoryUpstreamPath(addr) {
+		t.Fatalf("unexpected last upstream path: %+v", state)
+	}
+	if state.LastHTTPStatus != 502 {
+		t.Fatalf("unexpected last http status: %+v", state)
 	}
 }
 
