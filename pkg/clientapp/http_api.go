@@ -937,7 +937,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	rows, err := s.db.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -953,6 +953,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 		FileSize                uint64          `json:"file_size"`
 		ExpiresAtUnix           int64           `json:"expires_at_unix"`
 		RecommendedFileName     string          `json:"recommended_file_name"`
+		MIMEHint                string          `json:"mime_hint,omitempty"`
 		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
 		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_pubkey_hexes"`
 		CreatedAtUnix           int64           `json:"created_at_unix"`
@@ -961,7 +962,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var it quoteItem
 		var arbiterIDs string
-		if err := rows.Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix); err != nil {
+		if err := rows.Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.MIMEHint, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -996,14 +997,15 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 		FileSize                uint64          `json:"file_size"`
 		ExpiresAtUnix           int64           `json:"expires_at_unix"`
 		RecommendedFileName     string          `json:"recommended_file_name"`
+		MIMEHint                string          `json:"mime_hint,omitempty"`
 		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
 		SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_pubkey_hexes"`
 		CreatedAtUnix           int64           `json:"created_at_unix"`
 	}
 	var it quoteItem
 	var arbiterIDs string
-	err := s.db.QueryRow(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
-		Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix)
+	err := s.db.QueryRow(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
+		Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.MIMEHint, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})

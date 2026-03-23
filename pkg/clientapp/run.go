@@ -446,6 +446,13 @@ type RunInput struct {
 	// RPCTrace 仅用于集成测试：记录 client 自己的 p2prpc 收发报文（JSONL）。
 	// 正常运行默认不启用（nil）。
 	RPCTrace p2prpc.TraceSink
+
+	// PostWorkspaceBootstrap 在 workspace 初始化完成后、运行期后台协程启动前执行。
+	// 设计说明：
+	// - 这里给上层产品壳预留“本次启动专属”的 DB 引导钩子；
+	// - 典型用途是桌面版把系统首页的元信息/默认价格固化进索引；
+	// - 放在这个时机可以复用 startup_full_scan 的结果，同时避开运行期并发写数据库带来的锁竞争。
+	PostWorkspaceBootstrap func(db *sql.DB) error
 }
 
 // NewRunInputFromConfig 在 Run 外完成配置复制，避免 RunInput 直接携带 Config。
@@ -777,6 +784,15 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			removeObs()
 		}
 		return nil, err
+	}
+	if in.PostWorkspaceBootstrap != nil {
+		if err := in.PostWorkspaceBootstrap(db); err != nil {
+			_ = db.Close()
+			if removeObs != nil {
+				removeObs()
+			}
+			return nil, err
+		}
 	}
 
 	// 强制仅启用 TCP 传输，规避 QUIC 在当前工具链环境下的 TLS session ticket panic。

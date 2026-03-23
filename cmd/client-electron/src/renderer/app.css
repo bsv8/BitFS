@@ -3,12 +3,16 @@
 }
 
 :root {
-  --chrome-bg: #d9dfe7;
-  --chrome-panel: rgba(245, 247, 250, 0.94);
-  --chrome-line: #c5ccd6;
-  --chrome-line-strong: #aeb7c4;
+  --chrome-bg-top: #eef2f6;
+  --chrome-bg-bottom: #d5dce5;
+  --chrome-toolbar-top: #f4f7fb;
+  --chrome-toolbar-bottom: #d7dfe8;
+  --chrome-panel-top: #ebf0f5;
+  --chrome-panel-bottom: #dbe3ec;
+  --chrome-line: #b8c1cc;
+  --chrome-line-strong: #9fa9b6;
   --chrome-text: #1f2833;
-  --chrome-muted: #5c6674;
+  --chrome-muted: #586373;
   --chrome-accent: #2d6cdf;
   --chrome-accent-dark: #1e57ba;
   --chrome-danger-bg: #fff3ec;
@@ -20,15 +24,15 @@
 html,
 body {
   margin: 0;
+  height: 100%;
   min-height: 100%;
 }
 
 body {
+  overflow: hidden;
   font-family: "Noto Sans SC", "Segoe UI", sans-serif;
   color: var(--chrome-text);
-  background:
-    linear-gradient(180deg, rgba(248, 249, 251, 0.96) 0%, rgba(228, 233, 239, 0.94) 100%),
-    linear-gradient(135deg, rgba(87, 115, 153, 0.08), transparent 38%);
+  background: linear-gradient(180deg, var(--chrome-bg-top) 0%, var(--chrome-bg-bottom) 100%);
 }
 
 code {
@@ -41,12 +45,13 @@ input {
 }
 
 button {
-  min-height: 40px;
-  border-radius: 12px;
+  min-height: 38px;
+  border-radius: 10px;
   border: 1px solid var(--chrome-line);
   padding: 0 14px;
   color: var(--chrome-text);
-  background: linear-gradient(180deg, #fbfcfd 0%, #eef1f5 100%);
+  background: linear-gradient(180deg, #fbfcfd 0%, #e3e9f0 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
   cursor: pointer;
 }
 
@@ -59,10 +64,15 @@ button:disabled {
   opacity: 0.48;
 }
 
+button.is-active {
+  border-color: #8ea4c6;
+  background: linear-gradient(180deg, #e8eef7 0%, #d7e2f4 100%);
+}
+
 input {
   border: 1px solid var(--chrome-line);
-  border-radius: 12px;
-  min-height: 42px;
+  border-radius: 10px;
+  min-height: 40px;
   padding: 0 14px;
   color: var(--chrome-text);
   background: #fff;
@@ -75,11 +85,11 @@ input {
 }
 
 .secondary-button {
-  background: linear-gradient(180deg, #fbfcfd 0%, #eef1f5 100%);
+  background: linear-gradient(180deg, #fbfcfd 0%, #e3e9f0 100%);
 }
 
 .icon-button {
-  min-width: 40px;
+  min-width: 38px;
   padding: 0;
   display: inline-grid;
   place-items: center;
@@ -90,43 +100,61 @@ input {
   font-size: 18px;
 }
 
+/* 壳层直接贴住窗口边界，避免再出现整体悬浮的卡片感。 */
 .browser-shell {
   height: 100vh;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  padding: 10px;
-  gap: 10px;
+  background: linear-gradient(180deg, var(--chrome-bg-top) 0%, var(--chrome-bg-bottom) 100%);
 }
 
 .browser-chrome {
+  position: relative;
+  z-index: 10;
   display: grid;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 18px;
-  border: 1px solid rgba(160, 170, 182, 0.7);
+  gap: 8px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid var(--chrome-line-strong);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(236, 240, 245, 0.96) 100%);
-  box-shadow: var(--chrome-shadow);
+    linear-gradient(180deg, rgba(245, 248, 251, 0.98) 0%, rgba(224, 231, 239, 0.98) 58%, rgba(210, 219, 229, 0.99) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    inset 0 -1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .toolbar {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .toolbar-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid rgba(155, 166, 179, 0.9);
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(244, 247, 250, 0.94) 0%, rgba(222, 229, 237, 0.96) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
+/* 地址栏是嵌入工具条的工作槽位，不是独立悬浮面板。 */
 .address-form {
+  min-width: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
+  padding: 4px;
+  border: 1px solid rgba(148, 159, 173, 0.94);
+  border-radius: 16px;
+  background: linear-gradient(180deg, rgba(206, 216, 226, 0.94) 0%, rgba(234, 239, 245, 0.96) 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.58),
+    inset 0 -1px 0 rgba(161, 171, 184, 0.22);
 }
 
 .address-box {
@@ -135,19 +163,21 @@ input {
   grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  min-height: 44px;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid var(--chrome-line-strong);
-  background: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  min-height: 40px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(152, 162, 174, 0.72);
+  background: linear-gradient(180deg, #fcfdff 0%, #eef3f8 100%);
+  box-shadow:
+    inset 0 1px 2px rgba(129, 141, 158, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.92);
 }
 
 .address-prefix {
   padding: 4px 9px;
   border-radius: 999px;
   color: var(--chrome-accent-dark);
-  background: rgba(45, 108, 223, 0.1);
+  background: rgba(45, 108, 223, 0.11);
   font-size: 12px;
   font-weight: 700;
   letter-spacing: 0.04em;
@@ -169,7 +199,8 @@ input {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  padding: 0 4px;
+  min-height: 28px;
+  padding: 0 2px;
 }
 
 .meta-left,
@@ -184,10 +215,10 @@ input {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
-  padding: 0 12px;
-  border-radius: 999px;
-  border: 1px solid #cfe0ff;
-  background: rgba(45, 108, 223, 0.08);
+  padding: 0 10px;
+  border-radius: 10px;
+  border: 1px solid #c8d6eb;
+  background: rgba(235, 241, 250, 0.88);
   color: #204f9d;
   font-size: 13px;
 }
@@ -198,16 +229,17 @@ input {
   line-height: 1.4;
 }
 
+/* 提示条改成壳层里的 infobar，而不是另一张提示卡。 */
 .permission-bar {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
-  padding: 12px 14px;
-  border-radius: 14px;
-  border: 1px solid #d8c485;
-  background:
-    linear-gradient(180deg, rgba(255, 246, 216, 0.98) 0%, rgba(247, 234, 189, 0.96) 100%);
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid #ceb875;
+  background: linear-gradient(180deg, rgba(252, 242, 202, 0.96) 0%, rgba(244, 229, 175, 0.98) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.46);
 }
 
 .permission-copy strong {
@@ -232,7 +264,7 @@ input {
 .error-banner {
   margin: 0;
   padding: 10px 12px;
-  border-radius: 12px;
+  border-radius: 10px;
   border: 1px solid var(--chrome-danger-line);
   background: var(--chrome-danger-bg);
   color: var(--chrome-danger-text);
@@ -259,38 +291,41 @@ input {
   user-select: text;
 }
 
+/* 侧栏与 viewer 共享同一个工作区平面，像真正的 docked pane。 */
 .workspace {
+  height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 0;
-  gap: 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  align-items: stretch;
+  background: linear-gradient(180deg, #dde5ed 0%, #d3dbe4 100%);
 }
 
 .details-drawer {
-  overflow: hidden;
+  min-height: 0;
   width: 0;
-  opacity: 0;
+  padding: 0;
+  overflow: hidden;
+  opacity: 1;
   pointer-events: none;
-  border-radius: 18px 0 0 18px;
-  border: 1px solid transparent;
-  background: var(--chrome-panel);
-  box-shadow: none;
+  border-right: 1px solid transparent;
+  background: linear-gradient(180deg, rgba(235, 240, 245, 0.97) 0%, rgba(221, 228, 236, 0.99) 100%);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.28);
   transition:
     width 180ms ease,
-    opacity 180ms ease,
-    margin-right 180ms ease,
-    border-color 180ms ease,
-    box-shadow 180ms ease;
+    padding 180ms ease,
+    border-color 180ms ease;
 }
 
 .details-drawer.is-open {
-  width: 360px;
-  opacity: 1;
+  width: 352px;
+  padding: 16px 14px 16px 16px;
   pointer-events: auto;
-  margin-right: 10px;
-  padding: 16px;
-  border-color: rgba(172, 182, 194, 0.84);
-  box-shadow: var(--chrome-shadow);
+  border-color: rgba(165, 176, 189, 0.92);
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  align-content: stretch;
 }
 
 .drawer-head {
@@ -298,7 +333,8 @@ input {
   justify-content: space-between;
   align-items: flex-start;
   gap: 10px;
-  margin-bottom: 14px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(193, 201, 211, 0.92);
 }
 
 .drawer-kicker {
@@ -318,13 +354,17 @@ input {
 .drawer-section {
   display: grid;
   gap: 12px;
-  padding: 16px 0;
-  border-top: 1px solid rgba(197, 204, 214, 0.8);
+  padding: 14px 0 0;
+  border-top: 1px solid rgba(197, 204, 214, 0.76);
 }
 
 .drawer-section:first-of-type {
   border-top: 0;
-  padding-top: 0;
+}
+
+.drawer-section:last-of-type {
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .section-head p {
@@ -344,9 +384,9 @@ input {
   display: grid;
   gap: 6px;
   padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(201, 208, 218, 0.9);
-  background: rgba(255, 255, 255, 0.75);
+  border-radius: 10px;
+  border: 1px solid rgba(197, 205, 215, 0.94);
+  background: rgba(248, 250, 252, 0.82);
 }
 
 .info-row dt {
@@ -379,10 +419,12 @@ input {
 }
 
 .pending-list {
+  min-height: 0;
   display: grid;
+  align-content: start;
   gap: 10px;
-  max-height: 320px;
   overflow: auto;
+  padding-right: 2px;
 }
 
 .pending-item {
@@ -390,9 +432,9 @@ input {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 12px;
   padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(201, 208, 218, 0.9);
-  background: rgba(255, 255, 255, 0.82);
+  border-radius: 10px;
+  border: 1px solid rgba(197, 205, 215, 0.94);
+  background: rgba(248, 250, 252, 0.88);
 }
 
 .pending-copy {
@@ -432,19 +474,29 @@ input {
 
 .viewer-stage {
   position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
   min-width: 0;
   min-height: 0;
-  border-radius: 18px;
   overflow: hidden;
-  border: 1px solid rgba(172, 182, 194, 0.84);
   background: #fff;
-  box-shadow: var(--chrome-shadow);
 }
 
 .content-view {
+  /* 设计说明：
+   * - Electron 官方要求 webview 保持内部的 flex 布局语义，guest iframe 才能稳定吃满宿主容器；
+   * - 这里显式保留 flex，而不是 block，避免 guest 视口退回默认 150px 高度。
+   */
+  display: flex;
   width: 100%;
   height: 100%;
-  min-height: 0;
+  min-height: 100%;
+  align-self: stretch;
+  justify-self: stretch;
+  border: 0;
+  border-radius: 0;
   background: #fff;
 }
 
@@ -454,8 +506,8 @@ input {
   display: grid;
   place-items: center;
   padding: 24px;
-  background:
-    linear-gradient(180deg, rgba(236, 240, 245, 0.96) 0%, rgba(225, 230, 237, 0.98) 100%);
+  border-radius: 0;
+  background: linear-gradient(180deg, rgba(236, 240, 245, 0.96) 0%, rgba(225, 230, 237, 0.98) 100%);
   backdrop-filter: blur(12px);
 }
 
@@ -595,66 +647,60 @@ input {
 }
 
 @media (max-width: 1180px) {
-  .browser-shell {
-    height: auto;
-    min-height: 100vh;
-  }
-
   .toolbar {
     grid-template-columns: 1fr;
   }
 
   .nav-group,
-  .action-group {
+  .action-group,
+  .permission-actions,
+  .meta-left,
+  .meta-right {
     flex-wrap: wrap;
   }
 
-  .address-form {
-    grid-template-columns: 1fr;
-  }
-
-  .browser-meta,
-  .permission-bar,
   .workspace {
-    grid-template-columns: 1fr;
+    position: relative;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .details-drawer {
-    width: 100%;
-    max-height: 0;
-    margin-right: 0;
-    border-radius: 18px;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 20;
+    border-right-color: rgba(165, 176, 189, 0.92);
   }
 
   .details-drawer.is-open {
-    width: 100%;
-    max-height: 60vh;
-    margin-right: 0;
-    margin-bottom: 10px;
-  }
-
-  .viewer-stage {
-    min-height: 72vh;
+    width: min(352px, 100%);
   }
 }
 
 @media (max-width: 720px) {
-  .browser-shell {
-    padding: 8px;
-    gap: 8px;
+  .browser-chrome {
+    padding: 10px 10px 8px;
   }
 
-  .browser-chrome,
-  .viewer-stage,
-  .details-drawer.is-open,
-  .backend-card {
-    border-radius: 16px;
+  .address-form,
+  .permission-bar,
+  .error-banner {
+    grid-template-columns: 1fr;
   }
 
-  .permission-actions,
-  .meta-left,
-  .meta-right,
-  .toolbar-group {
-    flex-wrap: wrap;
+  .browser-meta {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .content-view,
+  .backend-overlay {
+    border-radius: 0;
+  }
+
+  .details-drawer.is-open {
+    width: min(100%, 320px);
+    padding: 14px 12px 14px 14px;
   }
 }

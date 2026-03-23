@@ -12,10 +12,10 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
-		VALUES(?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?)`,
-		"dmd_1", "seller_1", 1000, 10, 1700000100, "f1.bin", "ff", `["arb_1","arb_2"]`, 1700000001,
-		"dmd_2", "seller_2", 2000, 20, 1700000200, "f2.bin", "0f", `["arb_3"]`, 1700000002,
+	_, err := db.Exec(`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?,?)`,
+		"dmd_1", "seller_1", 1000, 10, 1700000100, "f1.bin", "application/javascript", "ff", `["arb_1","arb_2"]`, 1700000001,
+		"dmd_2", "seller_2", 2000, 20, 1700000200, "f2.bin", "text/css", "0f", `["arb_3"]`, 1700000002,
 	)
 	if err != nil {
 		t.Fatalf("insert direct_quotes: %v", err)
@@ -56,6 +56,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 				ID           int64  `json:"id"`
 				DemandID     string `json:"demand_id"`
 				SellerPeerID string `json:"seller_pubkey_hex"`
+				MIMEHint     string `json:"mime_hint"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -64,12 +65,25 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		if body.Total != 1 || len(body.Items) != 1 || body.Items[0].DemandID != "dmd_1" {
 			t.Fatalf("unexpected quotes list body: %+v", body)
 		}
+		if body.Items[0].MIMEHint != "application/javascript" {
+			t.Fatalf("quote list mime_hint mismatch: got=%q", body.Items[0].MIMEHint)
+		}
 
 		reqDetail := httptest.NewRequest(http.MethodGet, "/api/v1/direct/quotes/detail?id=1", nil)
 		recDetail := httptest.NewRecorder()
 		srv.handleDirectQuoteDetail(recDetail, reqDetail)
 		if recDetail.Code != http.StatusOK {
 			t.Fatalf("quotes detail status mismatch: got=%d want=%d body=%s", recDetail.Code, http.StatusOK, recDetail.Body.String())
+		}
+		var detail struct {
+			ID       int64  `json:"id"`
+			MIMEHint string `json:"mime_hint"`
+		}
+		if err := json.Unmarshal(recDetail.Body.Bytes(), &detail); err != nil {
+			t.Fatalf("decode quotes detail: %v", err)
+		}
+		if detail.ID != 1 || detail.MIMEHint != "application/javascript" {
+			t.Fatalf("unexpected quotes detail body: %+v", detail)
 		}
 	}
 

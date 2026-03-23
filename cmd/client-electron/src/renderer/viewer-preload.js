@@ -161,4 +161,5 @@
   // - 这里只把稳定的 `window.bitfs` 能力桥暴露给页面，React/Vue 等传统框架仍按普通浏览器心智工作；
   // - 页面即便完全可信，也不应该拥有壳层 renderer 的宿主控制权。
   contextBridge.exposeInMainWorld("bitfs", bitfsBridge);
+
 })();

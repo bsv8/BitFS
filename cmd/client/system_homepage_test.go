@@ -120,3 +120,69 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 		t.Fatalf("child floor=%d, want %d", got, want)
 	}
 }
+
+func TestSystemHomepageApplySeedMetadataOnlyFillsMissingOrLowConfidenceFields(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "homepage-meta.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE seeds(
+		seed_hash TEXT PRIMARY KEY,
+		seed_file_path TEXT NOT NULL,
+		chunk_count INTEGER,
+		file_size INTEGER,
+		recommended_file_name TEXT NOT NULL DEFAULT '',
+		mime_hint TEXT NOT NULL DEFAULT '',
+		created_at_unix INTEGER
+	)`); err != nil {
+		t.Fatalf("create seeds: %v", err)
+	}
+
+	rootHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
+	childHash := "052b8d352bbab7129389974c9734b6bf0b6661a55b25cadb2a0b947dfb063ce0"
+	if _, err := db.Exec(
+		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?),(?,?,?,?,?,?,?)`,
+		rootHash, filepath.Join(root, rootHash), 1, 10, rootHash, "application/octet-stream", 1,
+		childHash, filepath.Join(root, childHash), 1, 11, "keep.css", "text/css", 1,
+	); err != nil {
+		t.Fatalf("insert seeds: %v", err)
+	}
+
+	state := &systemHomepageState{
+		DefaultSeedHash: rootHash,
+		SeedHashes:      []string{rootHash, childHash},
+		FileMetaBySeed: map[string]systemHomepageFileMeta{
+			rootHash: {
+				OriginalName: "index.html",
+				MIME:         "text/html",
+			},
+			childHash: {
+				OriginalName: "override.js",
+				MIME:         "application/javascript",
+			},
+		},
+	}
+	if err := state.ApplySeedMetadata(db); err != nil {
+		t.Fatalf("apply metadata: %v", err)
+	}
+
+	var rootName, rootMIME string
+	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, rootHash).Scan(&rootName, &rootMIME); err != nil {
+		t.Fatalf("query root seed: %v", err)
+	}
+	if rootName != "index.html" || rootMIME != "text/html" {
+		t.Fatalf("root seed metadata mismatch: name=%q mime=%q", rootName, rootMIME)
+	}
+
+	var childName, childMIME string
+	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, childHash).Scan(&childName, &childMIME); err != nil {
+		t.Fatalf("query child seed: %v", err)
+	}
+	if childName != "keep.css" || childMIME != "text/css" {
+		t.Fatalf("child seed metadata should not be overwritten: name=%q mime=%q", childName, childMIME)
+	}
+}

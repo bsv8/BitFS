@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -391,6 +392,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	d.overrides.apply(&runCfg)
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
 	runIn.ConfigPath = d.startup.ConfigPath
+	runIn.PostWorkspaceBootstrap = d.systemHomepageBootstrapHook()
 	// 设计说明：
 	// managed 模式统一由单一入口承载 API，不再启动 runtime 内部 HTTP 监听。
 	runIn.DisableHTTPServer = true
@@ -427,18 +429,6 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	d.rtAPI = runtimeAPI
 	d.guardStop = stopGuard
 	d.mu.Unlock()
-	if err := d.ensureSystemHomepageSeedPrices(); err != nil {
-		_ = rt.Close()
-		cancel()
-		stopGuard()
-		d.mu.Lock()
-		d.rt = nil
-		d.rtCancel = nil
-		d.rtAPI = nil
-		d.guardStop = nil
-		d.mu.Unlock()
-		return err
-	}
 
 	// 控制台打印“解锁后运行摘要”。
 	// 设计约束：统一放在 startRuntime 成功路径，保证 CLI/API 两种解锁方式输出一致。
@@ -465,20 +455,20 @@ func (d *managedDaemon) prepareSystemHomepage() error {
 	return nil
 }
 
-func (d *managedDaemon) ensureSystemHomepageSeedPrices() error {
-	if d.systemHomepage == nil {
+func (d *managedDaemon) systemHomepageBootstrapHook() func(db *sql.DB) error {
+	if d == nil || d.systemHomepage == nil {
 		return nil
 	}
-	d.mu.RLock()
-	rt := d.rt
-	d.mu.RUnlock()
-	if rt == nil || rt.DB == nil {
-		return fmt.Errorf("runtime db not ready for system homepage pricing")
+	resaleDiscountBPS := d.cfg.Seller.Pricing.ResaleDiscountBPS
+	return func(db *sql.DB) error {
+		if db == nil {
+			return fmt.Errorf("runtime db not ready for system homepage bootstrap")
+		}
+		if err := d.systemHomepage.ApplySeedMetadata(db); err != nil {
+			return err
+		}
+		return d.systemHomepage.EnsureSeedPrices(db, resaleDiscountBPS)
 	}
-	if err := d.systemHomepage.ApplySeedMetadata(rt.DB); err != nil {
-		return err
-	}
-	return d.systemHomepage.EnsureSeedPrices(rt.DB, d.cfg.Seller.Pricing.ResaleDiscountBPS)
 }
 
 func (d *managedDaemon) applyDesktopRuntimeBootstrap(cfg *clientapp.Config) {

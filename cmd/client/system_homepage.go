@@ -170,18 +170,24 @@ func (s *systemHomepageState) ApplySeedMetadata(db *sql.DB) error {
 	}
 	for _, seedHash := range s.SeedHashes {
 		meta := s.FileMetaBySeed[seedHash]
+		normalizedSeedHash := normalizeSeedHashHex(seedHash)
 		if _, err := db.Exec(
 			`UPDATE seeds
 			    SET recommended_file_name=CASE
 			          WHEN TRIM(COALESCE(recommended_file_name,''))='' THEN ?
+			          WHEN LOWER(TRIM(COALESCE(recommended_file_name,'')))=LOWER(?) THEN ?
 			          ELSE recommended_file_name
 			        END,
 			        mime_hint=CASE
 			          WHEN TRIM(COALESCE(mime_hint,''))='' THEN ?
+			          WHEN LOWER(TRIM(COALESCE(mime_hint,'')))='application/octet-stream' THEN ?
 			          ELSE mime_hint
 			        END
 			  WHERE seed_hash=?`,
 			meta.OriginalName,
+			normalizedSeedHash,
+			meta.OriginalName,
+			meta.MIME,
 			meta.MIME,
 			seedHash,
 		); err != nil {

@@ -1,6 +1,9 @@
 package main
 
 import (
+	"database/sql"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/bsv8/BitFS/pkg/clientapp"
@@ -74,5 +77,90 @@ func TestApplyDesktopRuntimeBootstrap_NoHomepageKeepsScanConfig(t *testing.T) {
 
 	if cfg.Scan.StartupFullScan {
 		t.Fatalf("startup_full_scan should stay unchanged when no system homepage bundle is active")
+	}
+}
+
+func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	db, err := sql.Open("sqlite", filepath.Join(root, "bootstrap.db"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE seeds(
+		seed_hash TEXT PRIMARY KEY,
+		seed_file_path TEXT NOT NULL,
+		chunk_count INTEGER,
+		file_size INTEGER,
+		recommended_file_name TEXT NOT NULL DEFAULT '',
+		mime_hint TEXT NOT NULL DEFAULT '',
+		created_at_unix INTEGER
+	)`); err != nil {
+		t.Fatalf("create seeds: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE seed_price_state(
+		seed_hash TEXT PRIMARY KEY,
+		last_buy_unit_price_sat_per_64k INTEGER,
+		floor_unit_price_sat_per_64k INTEGER,
+		resale_discount_bps INTEGER,
+		unit_price_sat_per_64k INTEGER,
+		updated_at_unix INTEGER
+	)`); err != nil {
+		t.Fatalf("create seed_price_state: %v", err)
+	}
+
+	seedHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
+	seedPath := filepath.Join(root, seedHash)
+	if err := os.WriteFile(seedPath, []byte("homepage"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?)`,
+		seedHash, seedPath, 1, 128, "", "", 1,
+	); err != nil {
+		t.Fatalf("insert seed: %v", err)
+	}
+
+	var cfg clientapp.Config
+	cfg.Seller.Pricing.ResaleDiscountBPS = 4321
+
+	d := &managedDaemon{
+		cfg: cfg,
+		systemHomepage: &systemHomepageState{
+			DefaultSeedHash: seedHash,
+			SeedHashes:      []string{seedHash},
+			FileMetaBySeed: map[string]systemHomepageFileMeta{
+				seedHash: {
+					OriginalName: "index.html",
+					MIME:         "text/html",
+				},
+			},
+		},
+	}
+
+	hook := d.systemHomepageBootstrapHook()
+	if hook == nil {
+		t.Fatalf("expected non-nil bootstrap hook")
+	}
+	if err := hook(db); err != nil {
+		t.Fatalf("run bootstrap hook: %v", err)
+	}
+
+	var name, mime string
+	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, seedHash).Scan(&name, &mime); err != nil {
+		t.Fatalf("query seed metadata: %v", err)
+	}
+	if name != "index.html" || mime != "text/html" {
+		t.Fatalf("seed metadata mismatch: name=%q mime=%q", name, mime)
+	}
+
+	var floorPrice uint64
+	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&floorPrice); err != nil {
+		t.Fatalf("query seed price: %v", err)
+	}
+	if floorPrice != systemHomepageFloorPriceSatPer64K {
+		t.Fatalf("seed floor price mismatch: got=%d want=%d", floorPrice, systemHomepageFloorPriceSatPer64K)
 	}
 }

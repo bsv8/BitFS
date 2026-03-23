@@ -58,7 +58,6 @@
   const shellErrorCopyButton = document.getElementById("shell-error-copy-button");
   const shellErrorSelectButton = document.getElementById("shell-error-select-button");
   const shellErrorCloseButton = document.getElementById("shell-error-close-button");
-
   if (
     !bridge || !addressForm || !addressInput || !backButton || !forwardButton || !reloadButton ||
     !goHomeButton || !openButton || !homeButton || !detailsToggleButton || !detailsCloseButton ||
@@ -85,7 +84,6 @@
   let lastRenderedURL = "";
   let lastPendingCount = -1;
   let lastShellError = "";
-
   function debugLog(scope, event, fields) {
     if (!bridge || typeof bridge.debugLog !== "function") {
       return;
@@ -760,6 +758,9 @@
   });
 
   const unsubscribe = bridge.onState(renderState);
+  window.addEventListener("resize", function handleResize() {
+    refreshNavigationButtons();
+  });
   window.addEventListener("beforeunload", function cleanup() {
     debugLog("shell", "beforeunload");
     unsubscribe();
