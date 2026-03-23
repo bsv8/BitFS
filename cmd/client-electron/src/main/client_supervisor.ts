@@ -267,13 +267,13 @@ export class ManagedClientSupervisor extends EventEmitter {
       unlocked: state.unlocked
     });
     if (state.phase === "error" || state.phase === "startup_error") {
-      throw new Error(state.lastError || "managed client start failed");
+      throw new Error(state.lastError || "managed backend start failed");
     }
   }
 
   private async startInternal(): Promise<ManagedClientState> {
     if (!fs.existsSync(this.launch.binaryPath)) {
-      const message = `managed client binary not found: ${this.launch.binaryPath}`;
+      const message = `managed backend binary not found: ${this.launch.binaryPath}`;
       debugLogger.log("supervisor", "binary_missing", {
         binary_path: this.launch.binaryPath
       });
@@ -330,8 +330,8 @@ export class ManagedClientSupervisor extends EventEmitter {
         return;
       }
       const message = signal
-        ? `managed client exited by signal ${signal}`
-        : `managed client exited with code ${String(code ?? 0)}`;
+        ? `managed backend exited by signal ${signal}`
+        : `managed backend exited with code ${String(code ?? 0)}`;
       debugLogger.log("supervisor", "child_exit_unexpected", {
         code: code ?? 0,
         signal: signal || "",
@@ -518,7 +518,7 @@ export class ManagedClientSupervisor extends EventEmitter {
       }
       await delay(250);
     }
-    const message = `managed client did not become reachable within ${timeoutMs}ms`;
+    const message = `managed backend did not become reachable within ${timeoutMs}ms`;
     debugLogger.log("supervisor", "reachability_timeout", {
       timeout_ms: timeoutMs
     });
@@ -540,7 +540,7 @@ export class ManagedClientSupervisor extends EventEmitter {
         debugLogger.log("supervisor", "wait_state_timeout", {
           timeout_ms: timeoutMs
         });
-        reject(new Error(`managed client state wait timed out after ${timeoutMs}ms`));
+        reject(new Error(`managed backend state wait timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       const handle = (state: ManagedClientState) => {
         if (!predicate(state)) {
@@ -622,7 +622,9 @@ function resolveManagedClientBinaryPath(appRootDir: string, packaged: boolean): 
     return path.resolve(override);
   }
   const platformKey = `${process.platform}-${process.arch}`;
-  const binaryName = process.platform === "win32" ? "bitfs-client.exe" : "bitfs-client";
+  const binaryName = process.platform === "win32"
+    ? "bitfs-client-electron-backend.exe"
+    : "bitfs-client-electron-backend";
   if (packaged) {
     return path.join(process.resourcesPath, "bin", platformKey, binaryName);
   }

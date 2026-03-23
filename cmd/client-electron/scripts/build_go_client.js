@@ -9,9 +9,10 @@ const electronRoot = path.resolve(scriptDir, "..");
 const bitfsRoot = path.resolve(electronRoot, "..", "..");
 const preferredGo = "/home/david/.gvm/gos/go1.26.0/bin/go";
 const fallbackGo = "/usr/bin/go";
+const backendEntry = "./cmd/client-electron/backend";
 
 function getBinaryName() {
-  return process.platform === "win32" ? "bitfs-client.exe" : "bitfs-client";
+  return process.platform === "win32" ? "bitfs-client-electron-backend.exe" : "bitfs-client-electron-backend";
 }
 
 function getPlatformKey() {
@@ -41,7 +42,7 @@ function main() {
   ensureDir(outputDir);
 
   const go = resolveGoBinary();
-  const args = ["build", "-o", outputPath, "./cmd/client"];
+  const args = ["build", "-o", outputPath, backendEntry];
   const child = spawnSync(go.command, args, {
     cwd: bitfsRoot,
     env: go.env,
@@ -53,6 +54,7 @@ function main() {
   if (child.status !== 0) {
     process.exit(child.status || 1);
   }
+  process.stdout.write(`[build-go-client] backend: ${backendEntry}\n`);
   process.stdout.write(`[build-go-client] output: ${outputPath}\n`);
 }
 

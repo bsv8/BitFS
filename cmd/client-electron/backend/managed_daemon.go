@@ -7,13 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"mime"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -180,7 +177,10 @@ func (d *managedDaemon) startHTTPServer() error {
 	mux.HandleFunc("/api/v1/key/lock", d.handleKeyLock)
 	mux.HandleFunc("/api", d.handleAPIProxyOrLocked)
 	mux.HandleFunc("/api/", d.handleAPIProxyOrLocked)
-	mux.HandleFunc("/", d.handleWebAsset)
+	// 设计说明：
+	// Electron 专用 backend 不再携带后台管理网页；
+	// 非 /api 请求统一按不存在处理，避免继续暴露过时的管理界面入口。
+	mux.HandleFunc("/", d.handleNonAPIRequest)
 
 	d.srv = &http.Server{
 		Addr:              d.cfg.HTTP.ListenAddr,
@@ -212,37 +212,8 @@ func (d *managedDaemon) startHTTPServer() error {
 	return nil
 }
 
-func (d *managedDaemon) handleWebAsset(w http.ResponseWriter, r *http.Request) {
-	sub, err := fs.Sub(webAssets, "web")
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-		return
-	}
-	name := strings.TrimPrefix(pathClean(r.URL.Path), "/")
-	if name == "" {
-		name = "index.html"
-	}
-	if strings.Contains(name, "..") {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-		return
-	}
-	data, err := fs.ReadFile(sub, name)
-	if err != nil {
-		if name != "index.html" {
-			data, err = fs.ReadFile(sub, "index.html")
-		}
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-			return
-		}
-		name = "index.html"
-	}
-	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+func (d *managedDaemon) handleNonAPIRequest(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 }
 
 func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Request) {
@@ -489,7 +460,6 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	// 设计说明：
 	// managed 模式统一由单一入口承载 API，不再启动 runtime 内部 HTTP 监听。
 	runIn.DisableHTTPServer = true
-	runIn.WebAssets = webAssets
 	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
@@ -525,7 +495,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		cancel()
 		return err
 	}
-	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt, webAssets)
+	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt, nil)
 	if err != nil {
 		_ = rt.Close()
 		cancel()
@@ -1036,14 +1006,4 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func pathClean(p string) string {
-	if p == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return filepath.ToSlash(filepath.Clean(p))
 }
