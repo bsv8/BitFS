@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>BitFS Browser</title>
+    <link rel="stylesheet" href="./app.css" />
+  </head>
+  <body>
+    <main class="browser-shell">
+      <header class="browser-chrome">
+        <div class="toolbar">
+          <div class="toolbar-group nav-group">
+            <button id="back-button" class="icon-button" type="button" aria-label="后退">←</button>
+            <button id="forward-button" class="icon-button" type="button" aria-label="前进">→</button>
+            <button id="reload-button" class="icon-button" type="button" aria-label="重新装载">↻</button>
+            <button id="go-home-button" class="icon-button" type="button" aria-label="打开首页">⌂</button>
+          </div>
+
+          <form id="address-form" class="address-form">
+            <label class="address-box" for="address-input">
+              <span class="address-prefix">bitfs</span>
+              <input
+                id="address-input"
+                class="address-input"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="输入 64 位 seed hash 或 bitfs://&lt;seed_hash&gt;"
+              />
+            </label>
+            <button id="open-button" class="primary-button" type="submit">打开</button>
+          </form>
+
+          <div class="toolbar-group action-group">
+            <button id="home-button" class="secondary-button" type="button">设为首页</button>
+            <button id="details-toggle-button" class="secondary-button" type="button">侧栏</button>
+            <button id="lock-button" class="secondary-button is-hidden" type="button">锁定客户端</button>
+          </div>
+        </div>
+
+        <div class="browser-meta">
+          <div class="meta-left">
+            <span class="meta-pill">只允许 <code>bitfs://</code> 内容</span>
+            <span id="backend-phase-text" class="meta-text">正在等待内置客户端启动</span>
+          </div>
+          <div class="meta-right">
+            <span class="meta-text">自动花费 <strong id="auto-spent">0 sat</strong></span>
+          </div>
+        </div>
+
+        <section id="permission-bar" class="permission-bar is-hidden">
+          <div class="permission-copy">
+            <strong>资源等待许可</strong>
+            <p id="pending-summary">当前没有挂起资源</p>
+          </div>
+          <div class="permission-actions">
+            <button id="approve-button" class="primary-button" type="button">允许当前挂起资源</button>
+            <button id="permission-details-button" class="secondary-button" type="button">查看详情</button>
+          </div>
+        </section>
+
+        <section id="error-banner" class="error-banner is-hidden">
+          <div class="error-banner-copy">
+            <strong>壳层错误</strong>
+            <p id="error-banner-text"></p>
+          </div>
+          <button id="error-banner-copy-button" class="secondary-button" type="button">复制</button>
+        </section>
+      </header>
+
+      <section class="workspace">
+        <aside id="details-drawer" class="details-drawer">
+          <div class="drawer-head">
+            <div>
+              <p class="drawer-kicker">浏览器控制</p>
+              <h2>侧栏</h2>
+            </div>
+            <button id="details-close-button" class="icon-button close-button" type="button" aria-label="关闭侧栏">×</button>
+          </div>
+
+          <section class="drawer-section">
+            <div class="section-head">
+              <h3>当前状态</h3>
+              <p>壳层只保留浏览动作，细节都收在这里。</p>
+            </div>
+            <dl class="info-grid">
+              <div class="info-row">
+                <dt>当前地址</dt>
+                <dd id="current-url">尚未打开</dd>
+              </div>
+              <div class="info-row">
+                <dt>待许可资源</dt>
+                <dd id="pending-count">0</dd>
+              </div>
+              <div class="info-row">
+                <dt>客户端 API</dt>
+                <dd id="client-api-base">-</dd>
+              </div>
+              <div class="info-row">
+                <dt>浏览器首页</dt>
+                <dd id="home-source">跟随客户端默认首页</dd>
+              </div>
+            </dl>
+          </section>
+
+          <section class="drawer-section">
+            <div class="section-head">
+              <h3>静态预算</h3>
+              <p>单资源阀值和页面累计阀值统一放在侧栏管理。</p>
+            </div>
+            <form id="budget-form" class="budget-form">
+              <label>
+                <span>单资源自动加载上限</span>
+                <input id="single-budget-input" type="number" min="1" step="1" />
+              </label>
+              <label>
+                <span>页面累计自动加载上限</span>
+                <input id="page-budget-input" type="number" min="1" step="1" />
+              </label>
+              <button class="primary-button" type="submit">保存预算</button>
+            </form>
+          </section>
+
+          <section class="drawer-section">
+            <div class="section-head">
+              <h3>挂起资源</h3>
+              <p id="drawer-pending-note">当前没有挂起资源。</p>
+            </div>
+            <div id="pending-list" class="pending-list"></div>
+          </section>
+        </aside>
+
+        <section class="viewer-stage">
+          <webview
+            id="content-view"
+            class="content-view"
+            allowpopups="false"
+            webpreferences="contextIsolation=yes,sandbox=yes,javascript=yes"
+          ></webview>
+
+          <section id="backend-overlay" class="backend-overlay">
+            <article class="backend-card">
+              <p class="drawer-kicker">Managed Client</p>
+              <h2 id="backend-title">正在启动内置客户端</h2>
+              <p id="backend-summary" class="backend-summary">Electron 正在拉起 Go 客户端并等待管理 API 就绪。</p>
+              <p id="backend-detail" class="backend-detail"></p>
+              <p id="backend-step-note" class="backend-step-note is-hidden"></p>
+
+              <section id="backend-choose-panel" class="backend-step-panel is-hidden">
+                <div class="backend-choice-grid">
+                  <button id="choose-create-button" class="choice-card" type="button">
+                    <strong>新建密文私钥</strong>
+                    <span>生成新的私钥，并立即写入托管 vault 的 <code>key.json</code>。</span>
+                  </button>
+                  <button id="choose-import-button" class="choice-card" type="button">
+                    <strong>导入密文私钥</strong>
+                    <span>从已有的密文私钥 JSON 导入，不处理明文私钥。</span>
+                  </button>
+                </div>
+              </section>
+
+              <form id="create-key-form" class="backend-form is-hidden">
+                <label>
+                  <span>新密码</span>
+                  <input id="create-password-input" type="password" autocomplete="new-password" />
+                </label>
+                <label>
+                  <span>再次输入密码</span>
+                  <input id="create-password-confirm-input" type="password" autocomplete="new-password" />
+                </label>
+                <div class="backend-inline-actions">
+                  <button id="create-key-button" class="primary-button" type="submit">创建密钥并继续</button>
+                  <button id="create-back-button" class="secondary-button" type="button">返回上一步</button>
+                </div>
+              </form>
+
+              <form id="unlock-form" class="backend-form is-hidden">
+                <label>
+                  <span>解锁密码</span>
+                  <input id="unlock-password-input" type="password" autocomplete="current-password" />
+                </label>
+                <div class="backend-inline-actions">
+                  <button id="unlock-button" class="primary-button" type="submit">解锁客户端</button>
+                  <button id="export-key-button" class="secondary-button" type="button">导出密文私钥</button>
+                </div>
+              </form>
+
+              <div id="backend-restart-panel" class="backend-actions is-hidden">
+                <button id="restart-backend-button" class="secondary-button" type="button">重启内置客户端</button>
+              </div>
+
+              <section id="backend-error-banner" class="error-banner is-hidden">
+                <div class="error-banner-copy">
+                  <strong>后端错误</strong>
+                  <p id="backend-error-banner-text"></p>
+                </div>
+                <button id="backend-error-copy-button" class="secondary-button" type="button">复制</button>
+              </section>
+            </article>
+          </section>
+        </section>
+      </section>
+    </main>
+
+    <section id="shell-error-modal" class="shell-error-modal is-hidden">
+      <article class="shell-error-card">
+        <div class="shell-error-head">
+          <div>
+            <p class="drawer-kicker">Shell Error</p>
+            <h2 id="shell-error-title">操作失败</h2>
+          </div>
+          <button id="shell-error-close-button" class="icon-button close-button" type="button" aria-label="关闭错误面板">×</button>
+        </div>
+        <p id="shell-error-summary" class="backend-summary">错误内容已经整理成可复制文本。</p>
+        <textarea id="shell-error-text" class="shell-error-text" readonly></textarea>
+        <div class="backend-inline-actions">
+          <button id="shell-error-copy-button" class="primary-button" type="button">复制错误内容</button>
+          <button id="shell-error-select-button" class="secondary-button" type="button">全选文本</button>
+        </div>
+      </article>
+    </section>
+
+    <script src="./app.js"></script>
+  </body>
+</html>

@@ -1,0 +1,54 @@
+{
+  "name": "bitfs-client-electron",
+  "private": true,
+  "version": "0.1.0",
+  "description": "BitFS 客户端 Electron 壳",
+  "main": "dist/main/index.js",
+  "scripts": {
+    "build:homepage": "npm --prefix ./hash-homepage run build",
+    "build:go-client": "node ./scripts/build_go_client.js",
+    "build:ts": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p ./tsconfig.json",
+    "build": "npm run build:homepage && npm run build:go-client && npm run build:ts",
+    "check": "tsc -p ./tsconfig.json --noEmit",
+    "electron": "node ./scripts/electron_launcher.js .",
+    "run": "npm run electron",
+    "start": "npm run run",
+    "dev": "npm run build && npm run run",
+    "package:dir": "npm run build && electron-builder --dir",
+    "dist:linux": "npm run build && electron-builder --linux"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "electron": "^36.3.2",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.8.3"
+  },
+  "build": {
+    "appId": "com.bsv8.bitfs.client",
+    "productName": "BitFS Client",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "src/renderer/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "resources/bin",
+        "to": "bin"
+      },
+      {
+        "from": "hash-homepage/dist-hash",
+        "to": "homepage/dist-hash"
+      }
+    ],
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Network"
+    }
+  }
+}

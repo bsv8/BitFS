@@ -371,6 +371,10 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/gateways/events", s.withAuth(s.handleGatewayEvents))
 		mux.HandleFunc(prefix+"/v1/gateways/events/detail", s.withAuth(s.handleGatewayEventDetail))
 		mux.HandleFunc(prefix+"/v1/files/get-file", s.withAuth(s.handleGetFileStart))
+		mux.HandleFunc(prefix+"/v1/files/get-file/plan", s.withAuth(s.handleGetFilePlan))
+		mux.HandleFunc(prefix+"/v1/files/get-file/status", s.withAuth(s.handleGetFileStatus))
+		mux.HandleFunc(prefix+"/v1/files/get-file/ensure", s.withAuth(s.handleGetFileEnsure))
+		mux.HandleFunc(prefix+"/v1/files/get-file/content", s.withAuth(s.handleGetFileContent))
 		mux.HandleFunc(prefix+"/v1/files/get-file/job", s.withAuth(s.handleGetFileJob))
 		mux.HandleFunc(prefix+"/v1/files/get-file/jobs", s.withAuth(s.handleGetFileJobs))
 		mux.HandleFunc(prefix+"/v1/files/get-file/cancel", s.withAuth(s.handleGetFileCancel))
@@ -933,7 +937,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	rows, err := s.db.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+	rows, err := s.db.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE 1=1`+buildWhere+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -945,6 +949,8 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 		SellerPeerID            string          `json:"seller_pubkey_hex"`
 		SeedPrice               uint64          `json:"seed_price"`
 		ChunkPrice              uint64          `json:"chunk_price"`
+		ChunkCount              uint32          `json:"chunk_count"`
+		FileSize                uint64          `json:"file_size"`
 		ExpiresAtUnix           int64           `json:"expires_at_unix"`
 		RecommendedFileName     string          `json:"recommended_file_name"`
 		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
@@ -955,7 +961,7 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 	for rows.Next() {
 		var it quoteItem
 		var arbiterIDs string
-		if err := rows.Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix); err != nil {
+		if err := rows.Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -986,6 +992,8 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 		SellerPeerID            string          `json:"seller_pubkey_hex"`
 		SeedPrice               uint64          `json:"seed_price"`
 		ChunkPrice              uint64          `json:"chunk_price"`
+		ChunkCount              uint32          `json:"chunk_count"`
+		FileSize                uint64          `json:"file_size"`
 		ExpiresAtUnix           int64           `json:"expires_at_unix"`
 		RecommendedFileName     string          `json:"recommended_file_name"`
 		AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
@@ -994,8 +1002,8 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 	}
 	var it quoteItem
 	var arbiterIDs string
-	err := s.db.QueryRow(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
-		Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix)
+	err := s.db.QueryRow(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE id=?`, id).
+		Scan(&it.ID, &it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.AvailableChunkBitmapHex, &arbiterIDs, &it.CreatedAtUnix)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -4076,6 +4084,8 @@ func (s *httpAPIServer) runGetFileJob(parentCtx context.Context, jobID, seedHash
 		FilePath:              outPath,
 		Seed:                  download.Transfer.Seed,
 		AvailableChunkIndexes: contiguousChunkIndexes(download.Transfer.ChunkCount),
+		RecommendedFileName:   download.FileName,
+		MIMEHint:              pickRecommendedMIMEHint(download.Quotes),
 	}); err != nil {
 		endStep(step, "failed", map[string]string{"error": err.Error()})
 		fail("workspace register failed: " + err.Error())
@@ -4589,6 +4599,8 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		FilePath:              outPath,
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
+		RecommendedFileName:   filepath.Base(outPath),
+		MIMEHint:              "",
 	}); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

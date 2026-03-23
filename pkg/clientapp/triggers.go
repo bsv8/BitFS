@@ -76,6 +76,16 @@ type PublishDemandParams struct {
 	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 }
 
+type PublishDemandBatchItem struct {
+	SeedHash   string `json:"seed_hash"`
+	ChunkCount uint32 `json:"chunk_count"`
+}
+
+type PublishDemandBatchParams struct {
+	Items         []PublishDemandBatchItem `json:"items,omitempty"`
+	GatewayPeerID string                   `json:"gateway_pubkey_hex,omitempty"`
+}
+
 type PublishLiveDemandParams struct {
 	StreamID         string `json:"stream_id"`
 	HaveSegmentIndex int64  `json:"have_segment_index"`
@@ -271,6 +281,157 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	return resp, nil
 }
 
+func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p PublishDemandBatchParams) (dual2of2.DemandPublishBatchPaidResp, error) {
+	if rt == nil || rt.Host == nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
+	}
+	items, err := normalizeDemandBatchItems(p.Items)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+
+	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	var info dual2of2.InfoResp
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	if kernel := ensureClientKernel(rt); kernel != nil {
+		payloadItems := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			payloadItems = append(payloadItems, map[string]any{
+				"seed_hash":   item.SeedHash,
+				"chunk_count": item.ChunkCount,
+			})
+		}
+		kres := kernel.dispatch(ctx, clientKernelCommand{
+			CommandType:   clientKernelCommandFeePoolEnsureActive,
+			GatewayPeerID: gw.ID.String(),
+			RequestedBy:   "trigger_publish_demand_batch",
+			Payload: map[string]any{
+				"trigger":    "demand_publish_batch",
+				"item_count": len(items),
+				"items":      payloadItems,
+			},
+			AllowWhenPaused: true,
+		})
+		if kres.Status != "applied" {
+			if strings.TrimSpace(kres.ErrorMessage) != "" {
+				return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
+			}
+			return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
+		}
+	}
+	payMu := rt.feePoolPayMutex(gw.ID.String())
+	payMu.Lock()
+	defer payMu.Unlock()
+	session, ok := rt.getFeePool(gw.ID.String())
+	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
+		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
+	}
+	charge := info.SinglePublishFeeSatoshi
+	if charge == 0 {
+		charge = 1
+	}
+	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
+	if gwPub == nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("missing gateway pubkey")
+	}
+	raw, err := gwPub.Raw()
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	nextSeq := session.Sequence + 1
+	nextServerAmount := session.ServerAmount + charge
+	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	reqItems := make([]*dual2of2.DemandPublishBatchPaidItem, 0, len(items))
+	for _, item := range items {
+		reqItems = append(reqItems, &dual2of2.DemandPublishBatchPaidItem{
+			SeedHash:   item.SeedHash,
+			ChunkCount: item.ChunkCount,
+		})
+	}
+	req := dual2of2.DemandPublishBatchPaidReq{
+		ClientID:            rt.runIn.ClientID,
+		Items:               reqItems,
+		BuyerAddrs:          localAdvertiseAddrs(rt),
+		SpendTxID:           session.SpendTxID,
+		SequenceNumber:      nextSeq,
+		ServerAmount:        nextServerAmount,
+		ChargeAmountSatoshi: charge,
+		Fee:                 session.SpendTxFeeSat,
+		ClientSignature:     append([]byte(nil), (*clientSig)...),
+		ChargeReason:        "demand_publish_batch_fee",
+	}
+	var resp dual2of2.DemandPublishBatchPaidResp
+	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoDemandPublishBatchPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
+		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	if err := validateDemandPublishBatchPaidResp(resp); err != nil {
+		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{
+			"error":   err.Error(),
+			"status":  strings.TrimSpace(resp.Status),
+			"success": resp.Success,
+		})
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	if resp.Success {
+		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+		demandIDs := make([]string, 0, len(resp.Items))
+		for _, item := range resp.Items {
+			if item == nil {
+				continue
+			}
+			if id := strings.TrimSpace(item.DemandID); id != "" {
+				demandIDs = append(demandIDs, id)
+			}
+		}
+		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + session.SpendTxID,
+			FlowType:        "fee_pool",
+			RefID:           session.SpendTxID,
+			Stage:           "use_publish",
+			Direction:       "out",
+			Purpose:         "demand_publish_batch_fee",
+			AmountSatoshi:   -int64(charge),
+			UsedSatoshi:     int64(charge),
+			ReturnedSatoshi: 0,
+			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
+			Note:            fmt.Sprintf("published=%d demand_ids=%s", len(demandIDs), strings.Join(demandIDs, ",")),
+			Payload:         resp,
+		})
+	}
+	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_end", map[string]any{
+		"published_count": resp.PublishedCount,
+		"status":          resp.Status,
+		"success":         resp.Success,
+		"error":           strings.TrimSpace(resp.Error),
+	})
+	return resp, nil
+}
+
 func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p PublishLiveDemandParams) (dual2of2.LiveDemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
@@ -423,6 +584,28 @@ func validateDemandPublishPaidResp(resp dual2of2.DemandPublishPaidResp) error {
 	return nil
 }
 
+func validateDemandPublishBatchPaidResp(resp dual2of2.DemandPublishBatchPaidResp) error {
+	if !resp.Success {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			msg = "gateway publish demand batch failed"
+		}
+		return fmt.Errorf("gateway demand batch publish rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
+	}
+	if len(resp.Items) == 0 {
+		return fmt.Errorf("gateway demand batch publish returned empty items")
+	}
+	for _, item := range resp.Items {
+		if item == nil {
+			return fmt.Errorf("gateway demand batch publish returned nil item")
+		}
+		if strings.TrimSpace(item.DemandID) == "" {
+			return fmt.Errorf("gateway demand batch publish returned empty demand_id")
+		}
+	}
+	return nil
+}
+
 // validateLiveDemandPublishPaidResp 统一校验网关 publish_live_demand 业务响应。
 func validateLiveDemandPublishPaidResp(resp dual2of2.LiveDemandPublishPaidResp) error {
 	if !resp.Success {
@@ -436,6 +619,29 @@ func validateLiveDemandPublishPaidResp(resp dual2of2.LiveDemandPublishPaidResp) 
 		return fmt.Errorf("gateway live demand publish returned empty demand_id")
 	}
 	return nil
+}
+
+func normalizeDemandBatchItems(items []PublishDemandBatchItem) ([]PublishDemandBatchItem, error) {
+	if len(items) == 0 {
+		return nil, fmt.Errorf("invalid params")
+	}
+	out := make([]PublishDemandBatchItem, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		seedHash := strings.ToLower(strings.TrimSpace(item.SeedHash))
+		if seedHash == "" || item.ChunkCount == 0 {
+			return nil, fmt.Errorf("invalid params")
+		}
+		if _, ok := seen[seedHash]; ok {
+			continue
+		}
+		seen[seedHash] = struct{}{}
+		out = append(out, PublishDemandBatchItem{
+			SeedHash:   seedHash,
+			ChunkCount: item.ChunkCount,
+		})
+	}
+	return out, nil
 }
 
 func pickGatewayForBusiness(rt *Runtime, gatewayPeerID string) (peer.AddrInfo, error) {
@@ -484,8 +690,11 @@ type DirectQuoteParams struct {
 	BuyerAddrs              []string `json:"buyer_addrs"`
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
+	ChunkCount              uint32   `json:"chunk_count"`
+	FileSize                uint64   `json:"file_size"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
+	MIMEHint                string   `json:"mime_hint,omitempty"`
 	ArbiterPeerIDs          []string `json:"arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 }
@@ -502,8 +711,11 @@ type DirectQuoteItem struct {
 	SellerPeerID            string   `json:"seller_pubkey_hex"`
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
+	ChunkCount              uint32   `json:"chunk_count"`
+	FileSize                uint64   `json:"file_size"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
+	MIMEHint                string   `json:"mime_hint,omitempty"`
 	SellerArbiterPeerIDs    []string `json:"seller_arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 	AvailableChunkIndexes   []uint32 `json:"available_chunk_indexes,omitempty"`
@@ -542,7 +754,7 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	rows, err := rt.DB.Query(`SELECT demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,seller_arbiter_pubkey_hexes_json,available_chunk_bitmap_hex FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+	rows, err := rt.DB.Query(`SELECT demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,seller_arbiter_pubkey_hexes_json,available_chunk_bitmap_hex FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 	if err != nil {
 		return nil, err
 	}
@@ -552,10 +764,11 @@ func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID st
 	for rows.Next() {
 		var it DirectQuoteItem
 		var sellerArbitersJSON string
-		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ExpiresAtUnix, &it.RecommendedFileName, &sellerArbitersJSON, &it.AvailableChunkBitmapHex); err != nil {
+		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.MIMEHint, &sellerArbitersJSON, &it.AvailableChunkBitmapHex); err != nil {
 			return nil, err
 		}
 		it.RecommendedFileName = sanitizeRecommendedFileName(it.RecommendedFileName)
+		it.MIMEHint = sanitizeMIMEHint(it.MIMEHint)
 		if strings.TrimSpace(sellerArbitersJSON) != "" {
 			var ids []string
 			if err := json.Unmarshal([]byte(sellerArbitersJSON), &ids); err == nil {

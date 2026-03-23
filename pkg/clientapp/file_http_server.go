@@ -553,6 +553,8 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 		FilePath:              outPath,
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: contiguousChunkIndexes(meta.ChunkCount),
+		RecommendedFileName:   outName,
+		MIMEHint:              pickRecommendedMIMEHint(quotes),
 	}); err != nil {
 		return err
 	}

@@ -22,12 +22,15 @@ var version = "dev"
 var cliLang = detectCLILanguage()
 
 type cliOptions struct {
-	vaultPath   string
-	initNetwork string
-	newKey      bool
-	importPath  string
-	exportPath  string
-	showVer     bool
+	vaultPath            string
+	initNetwork          string
+	httpListenAddr       string
+	fsHTTPListen         string
+	systemHomepageBundle string
+	newKey               bool
+	importPath           string
+	exportPath           string
+	showVer              bool
 }
 
 type startupSummary struct {
@@ -39,6 +42,15 @@ type startupSummary struct {
 }
 
 type cliAction string
+
+type runtimeListenOverrides struct {
+	httpListenAddr   string
+	fsHTTPListenAddr string
+}
+
+type desktopBootstrapOptions struct {
+	systemHomepageBundle string
+}
 
 const (
 	actionRun    cliAction = "run"
@@ -65,6 +77,13 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	overrides := runtimeListenOverrides{
+		httpListenAddr:   strings.TrimSpace(opts.httpListenAddr),
+		fsHTTPListenAddr: strings.TrimSpace(opts.fsHTTPListen),
+	}
+	desktopOptions := desktopBootstrapOptions{
+		systemHomepageBundle: strings.TrimSpace(opts.systemHomepageBundle),
+	}
 
 	vaultPath := clientapp.ResolveVaultPath(opts.vaultPath)
 	configPath := clientapp.ResolveConfigPath(vaultPath)
@@ -73,6 +92,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	overrides.apply(&cfg)
 	runtimeConfigStatus := "已加载"
 	if runtimeCfgCreated {
 		runtimeConfigStatus = "已创建（首次启动）"
@@ -102,7 +122,7 @@ func main() {
 		}
 		return
 	case actionRun:
-		if err := runManagedDaemon(cfg, startup, initNetwork); err != nil {
+		if err := runManagedDaemon(cfg, startup, initNetwork, overrides, desktopOptions); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -115,6 +135,9 @@ func parseFlags() cliOptions {
 	var opts cliOptions
 	flag.StringVar(&opts.vaultPath, "path", ".vault", msg("flag_path"))
 	flag.StringVar(&opts.initNetwork, "network", "main", msg("flag_network"))
+	flag.StringVar(&opts.httpListenAddr, "http-listen", "", msg("flag_http_listen"))
+	flag.StringVar(&opts.fsHTTPListen, "fs-http-listen", "", msg("flag_fs_http_listen"))
+	flag.StringVar(&opts.systemHomepageBundle, "system-homepage-bundle", "", msg("flag_system_homepage_bundle"))
 	flag.BoolVar(&opts.newKey, "new", false, msg("flag_new"))
 	flag.StringVar(&opts.importPath, "import", "", msg("flag_import"))
 	flag.StringVar(&opts.exportPath, "export", "", msg("flag_export"))
@@ -125,6 +148,21 @@ func parseFlags() cliOptions {
 	}
 	flag.Parse()
 	return opts
+}
+
+func (o runtimeListenOverrides) apply(cfg *clientapp.Config) {
+	if cfg == nil {
+		return
+	}
+	// 设计说明：
+	// Electron 托管模式会把 HTTP / fs_http 端口作为桌面层分配的运行态资源；
+	// 这些地址不应该写回 config.yaml，而应该在启动和每次解锁时重新覆盖。
+	if addr := strings.TrimSpace(o.httpListenAddr); addr != "" {
+		cfg.HTTP.ListenAddr = addr
+	}
+	if addr := strings.TrimSpace(o.fsHTTPListenAddr); addr != "" {
+		cfg.FSHTTP.ListenAddr = addr
+	}
 }
 
 func resolveCLIAction(opts cliOptions) (cliAction, error) {
@@ -419,6 +457,9 @@ var cliMessages = map[string]map[string]string{
 		"usage_line":                     "Usage: bitfs [flags]",
 		"flag_path":                      "vault directory path",
 		"flag_network":                   "initial bsv network for first run only: test/main",
+		"flag_http_listen":               "override managed api listen address for current run only",
+		"flag_fs_http_listen":            "override fs_http listen address for current run only",
+		"flag_system_homepage_bundle":    "install system homepage bundle into workspace for current desktop product run",
 		"flag_new":                       "create encrypted private key in key.json",
 		"flag_import":                    "import encrypted key json file into key.json",
 		"flag_export":                    "export encrypted key json file from key.json",
@@ -443,6 +484,9 @@ var cliMessages = map[string]map[string]string{
 		"usage_line":                     "用法: bitfs [flags]",
 		"flag_path":                      "vault 目录路径",
 		"flag_network":                   "首次初始化使用的 bsv 网络：test/main（仅首次生效）",
+		"flag_http_listen":               "仅本次运行覆盖 managed api 监听地址",
+		"flag_fs_http_listen":            "仅本次运行覆盖 fs_http 监听地址",
+		"flag_system_homepage_bundle":    "仅桌面产品本次运行使用的系统首页 bundle 目录",
 		"flag_new":                       "新建并加密私钥到 key.json",
 		"flag_import":                    "从 json 文件导入密文私钥到 key.json",
 		"flag_export":                    "从 key.json 导出密文私钥到 json 文件",
@@ -467,6 +511,9 @@ var cliMessages = map[string]map[string]string{
 		"usage_line":                     "用法: bitfs [flags]",
 		"flag_path":                      "vault 目錄路徑",
 		"flag_network":                   "首次初始化使用的 bsv 網路：test/main（僅首次生效）",
+		"flag_http_listen":               "僅本次執行覆蓋 managed api 監聽位址",
+		"flag_fs_http_listen":            "僅本次執行覆蓋 fs_http 監聽位址",
+		"flag_system_homepage_bundle":    "僅桌面產品本次執行使用的系統首頁 bundle 目錄",
 		"flag_new":                       "新建並加密私鑰到 key.json",
 		"flag_import":                    "從 json 檔案匯入密文私鑰到 key.json",
 		"flag_export":                    "從 key.json 匯出密文私鑰到 json 檔案",
@@ -491,6 +538,9 @@ var cliMessages = map[string]map[string]string{
 		"usage_line":                     "使い方: bitfs [flags]",
 		"flag_path":                      "vault ディレクトリパス",
 		"flag_network":                   "初回初期化のみで使う bsv ネットワーク: test/main",
+		"flag_http_listen":               "今回の起動だけ managed api の待受アドレスを上書き",
+		"flag_fs_http_listen":            "今回の起動だけ fs_http の待受アドレスを上書き",
+		"flag_system_homepage_bundle":    "今回のデスクトップ起動だけ使うシステムホームページ bundle ディレクトリ",
 		"flag_new":                       "key.json に暗号化秘密鍵を新規作成",
 		"flag_import":                    "json から暗号化秘密鍵を key.json にインポート",
 		"flag_export":                    "key.json から暗号化秘密鍵を json にエクスポート",

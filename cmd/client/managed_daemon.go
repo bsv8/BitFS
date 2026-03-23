@@ -32,6 +32,8 @@ type managedDaemon struct {
 	initNetwork string
 	cfg         clientapp.Config
 	startup     startupSummary
+	overrides   runtimeListenOverrides
+	desktop     desktopBootstrapOptions
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -43,9 +45,11 @@ type managedDaemon struct {
 	rtCancel  context.CancelFunc
 	rtAPI     http.Handler
 	guardStop func()
+
+	systemHomepage *systemHomepageState
 }
 
-func runManagedDaemon(cfg clientapp.Config, startup startupSummary, initNetwork string) error {
+func runManagedDaemon(cfg clientapp.Config, startup startupSummary, initNetwork string, overrides runtimeListenOverrides, desktop desktopBootstrapOptions) error {
 	rootCtx, rootCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer rootCancel()
 	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
@@ -58,8 +62,13 @@ func runManagedDaemon(cfg clientapp.Config, startup startupSummary, initNetwork 
 		initNetwork: initNetwork,
 		cfg:         cfg,
 		startup:     startup,
+		overrides:   overrides,
+		desktop:     desktop,
 		rootCtx:     rootCtx,
 		rootCancel:  rootCancel,
+	}
+	if err := d.prepareSystemHomepage(); err != nil {
+		return err
 	}
 	if err := d.startHTTPServer(); err != nil {
 		return err
@@ -200,12 +209,14 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	unlocked := d.rt != nil
 	d.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"vault_path":    d.startup.VaultPath,
-		"config_path":   d.startup.ConfigPath,
-		"key_path":      d.startup.KeyPath,
-		"index_db_path": d.startup.IndexDBPath,
-		"has_key":       exists,
-		"unlocked":      unlocked,
+		"vault_path":             d.startup.VaultPath,
+		"config_path":            d.startup.ConfigPath,
+		"key_path":               d.startup.KeyPath,
+		"index_db_path":          d.startup.IndexDBPath,
+		"has_key":                exists,
+		"unlocked":               unlocked,
+		"has_system_home_bundle": d.systemHomepage != nil && d.systemHomepage.HasBundle(),
+		"default_home_seed_hash": d.defaultHomeSeedHash(),
 	})
 }
 
@@ -376,6 +387,8 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		stopGuard()
 		return err
 	}
+	d.applyDesktopRuntimeBootstrap(&runCfg)
+	d.overrides.apply(&runCfg)
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
 	runIn.ConfigPath = d.startup.ConfigPath
 	// 设计说明：
@@ -414,6 +427,18 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	d.rtAPI = runtimeAPI
 	d.guardStop = stopGuard
 	d.mu.Unlock()
+	if err := d.ensureSystemHomepageSeedPrices(); err != nil {
+		_ = rt.Close()
+		cancel()
+		stopGuard()
+		d.mu.Lock()
+		d.rt = nil
+		d.rtCancel = nil
+		d.rtAPI = nil
+		d.guardStop = nil
+		d.mu.Unlock()
+		return err
+	}
 
 	// 控制台打印“解锁后运行摘要”。
 	// 设计约束：统一放在 startRuntime 成功路径，保证 CLI/API 两种解锁方式输出一致。
@@ -422,6 +447,59 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		"transport_peer_id": rt.Host.ID().String(),
 	})
 	return nil
+}
+
+func (d *managedDaemon) prepareSystemHomepage() error {
+	state, err := loadSystemHomepageState(d.desktop.systemHomepageBundle, d.cfg.Storage.WorkspaceDir)
+	if err != nil {
+		return err
+	}
+	if state == nil {
+		return nil
+	}
+	if err := state.InstallIntoWorkspace(); err != nil {
+		return err
+	}
+	d.systemHomepage = state
+	logSystemHomepageInstalled(state)
+	return nil
+}
+
+func (d *managedDaemon) ensureSystemHomepageSeedPrices() error {
+	if d.systemHomepage == nil {
+		return nil
+	}
+	d.mu.RLock()
+	rt := d.rt
+	d.mu.RUnlock()
+	if rt == nil || rt.DB == nil {
+		return fmt.Errorf("runtime db not ready for system homepage pricing")
+	}
+	if err := d.systemHomepage.ApplySeedMetadata(rt.DB); err != nil {
+		return err
+	}
+	return d.systemHomepage.EnsureSeedPrices(rt.DB, d.cfg.Seller.Pricing.ResaleDiscountBPS)
+}
+
+func (d *managedDaemon) applyDesktopRuntimeBootstrap(cfg *clientapp.Config) {
+	if d == nil || cfg == nil {
+		return
+	}
+	if d.systemHomepage == nil {
+		return
+	}
+	// 设计说明：
+	// - 桌面托管模式要求“系统首页”在解锁后立刻可本地命中；
+	// - 因此这次 runtime 启动必须先完成 workspace 首次全量扫描，再进入首页补价与首页打开阶段；
+	// - 这里作为“本次运行覆盖”强制打开 startup_full_scan，不修改用户长期配置文件。
+	cfg.Scan.StartupFullScan = true
+}
+
+func (d *managedDaemon) defaultHomeSeedHash() string {
+	if d.systemHomepage == nil {
+		return ""
+	}
+	return strings.TrimSpace(d.systemHomepage.DefaultSeedHash)
 }
 
 func (d *managedDaemon) printLockedStartupSummary() {

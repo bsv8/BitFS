@@ -32,6 +32,8 @@ type registerDownloadedFileParams struct {
 	FilePath              string
 	Seed                  []byte
 	AvailableChunkIndexes []uint32
+	RecommendedFileName   string
+	MIMEHint              string
 }
 
 type liveCacheStreamStat struct {
@@ -469,6 +471,11 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 	if seedHash == "" {
 		return sellerSeed{}, fmt.Errorf("invalid seed hash")
 	}
+	recommendedName := sanitizeRecommendedFileName(p.RecommendedFileName)
+	if recommendedName == "" {
+		recommendedName = sanitizeRecommendedFileName(filepath.Base(abs))
+	}
+	mimeHint := sanitizeMIMEHint(p.MIMEHint)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -497,13 +504,15 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		return sellerSeed{}, err
 	}
 	if _, err := m.db.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix)
-		 VALUES(?,?,?,?,?)
+		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix)
+		 VALUES(?,?,?,?,?,?,?)
 		 ON CONFLICT(seed_hash) DO UPDATE SET
 		 seed_file_path=excluded.seed_file_path,
 		 chunk_count=excluded.chunk_count,
-		 file_size=excluded.file_size`,
-		seedHash, seedPath, meta.ChunkCount, meta.FileSize, now,
+		 file_size=excluded.file_size,
+		 recommended_file_name=excluded.recommended_file_name,
+		 mime_hint=excluded.mime_hint`,
+		seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, now,
 	); err != nil {
 		return sellerSeed{}, err
 	}
@@ -546,10 +555,13 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		return sellerSeed{}, err
 	}
 	seed := sellerSeed{
-		SeedHash:   seedHash,
-		ChunkCount: meta.ChunkCount,
-		ChunkPrice: unit,
-		SeedPrice:  total,
+		SeedHash:            seedHash,
+		FileSize:            meta.FileSize,
+		ChunkCount:          meta.ChunkCount,
+		ChunkPrice:          unit,
+		SeedPrice:           total,
+		RecommendedFileName: recommendedName,
+		MIMEHint:            mimeHint,
 	}
 	return seed, nil
 }

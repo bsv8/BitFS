@@ -256,6 +256,8 @@ func liveAutoBuySegment(ctx context.Context, rt *Runtime, decision LivePurchaseD
 		FilePath:              outPath,
 		Seed:                  download.Transfer.Seed,
 		AvailableChunkIndexes: contiguousChunkIndexes(download.Transfer.ChunkCount),
+		RecommendedFileName:   filepath.Base(outPath),
+		MIMEHint:              "",
 	}); err != nil {
 		return liveAutoBuyResult{}, err
 	}

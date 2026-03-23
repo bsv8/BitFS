@@ -219,6 +219,38 @@ func pickRecommendedFileName(quotes []DirectQuoteItem, seedHash string) string {
 	return defaultName
 }
 
+func pickRecommendedMIMEHint(quotes []DirectQuoteItem) string {
+	if len(quotes) == 0 {
+		return ""
+	}
+	type mimeStat struct {
+		count    int
+		firstPos int
+	}
+	stats := map[string]mimeStat{}
+	bestMime := ""
+	bestCount := -1
+	bestPos := 1 << 30
+	for i, q := range quotes {
+		mimeHint := sanitizeMIMEHint(q.MIMEHint)
+		if mimeHint == "" {
+			continue
+		}
+		st, ok := stats[mimeHint]
+		if !ok {
+			st = mimeStat{count: 0, firstPos: i}
+		}
+		st.count++
+		stats[mimeHint] = st
+		if st.count > bestCount || (st.count == bestCount && st.firstPos < bestPos) {
+			bestMime = mimeHint
+			bestCount = st.count
+			bestPos = st.firstPos
+		}
+	}
+	return bestMime
+}
+
 func startStep(h directDownloadCoreHooks, name string, detail map[string]string) {
 	if h.OnStepStart != nil {
 		h.OnStepStart(name, cloneStepDetail(detail))

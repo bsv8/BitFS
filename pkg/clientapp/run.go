@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"mime"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,6 +81,9 @@ type directQuoteSubmitReq struct {
 	RecommendedFileName  string   `protobuf:"bytes,6,opt,name=recommended_file_name,json=recommendedFileName,proto3" json:"recommended_file_name,omitempty"`
 	ArbiterPeerIDs       []string `protobuf:"bytes,7,rep,name=arbiter_pubkey_hexes,json=arbiterPeerIds,proto3" json:"arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmap []byte   `protobuf:"bytes,8,opt,name=available_chunk_bitmap,json=availableChunkBitmap,proto3" json:"available_chunk_bitmap,omitempty"`
+	ChunkCount           uint32   `protobuf:"varint,9,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
+	FileSize             uint64   `protobuf:"varint,10,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"`
+	MIMEHint             string   `protobuf:"bytes,11,opt,name=mime_hint,json=mimeHint,proto3" json:"mime_hint,omitempty"`
 }
 type directQuoteSubmitResp struct {
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
@@ -334,10 +338,13 @@ type PeerNode struct {
 }
 
 type sellerSeed struct {
-	SeedHash   string
-	ChunkCount uint32
-	SeedPrice  uint64
-	ChunkPrice uint64
+	SeedHash            string
+	FileSize            uint64
+	ChunkCount          uint32
+	SeedPrice           uint64
+	ChunkPrice          uint64
+	RecommendedFileName string
+	MIMEHint            string
 }
 
 type sellerCatalog struct {
@@ -1398,7 +1405,7 @@ func initIndexDB(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, created_at_unix INTEGER)`,
+		`CREATE TABLE IF NOT EXISTS seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, recommended_file_name TEXT NOT NULL DEFAULT '', mime_hint TEXT NOT NULL DEFAULT '', created_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS seed_available_chunks(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
@@ -1449,8 +1456,11 @@ func initIndexDB(db *sql.DB) error {
 			seller_pubkey_hex TEXT NOT NULL,
 			seed_price INTEGER NOT NULL,
 			chunk_price INTEGER NOT NULL,
+			chunk_count INTEGER NOT NULL DEFAULT 0,
+			file_size INTEGER NOT NULL DEFAULT 0,
 			expires_at_unix INTEGER NOT NULL,
 			recommended_file_name TEXT NOT NULL DEFAULT '',
+			mime_hint TEXT NOT NULL DEFAULT '',
 			available_chunk_bitmap_hex TEXT NOT NULL DEFAULT '',
 			seller_arbiter_pubkey_hexes_json TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
@@ -1896,6 +1906,9 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureDirectQuotesSchema(db); err != nil {
 		return err
 	}
+	if err := ensureSeedsSchema(db); err != nil {
+		return err
+	}
 	if err := ensureWorkspaceFilesSchema(db); err != nil {
 		return err
 	}
@@ -2319,8 +2332,11 @@ func ensureDirectQuotesSchema(db *sql.DB) error {
 	}
 	defer rows.Close()
 	hasRecommendedFileName := false
+	hasMIMEHint := false
 	hasAvailableChunkBitmapHex := false
 	hasAvailableChunksJSON := false
+	hasChunkCount := false
+	hasFileSize := false
 	for rows.Next() {
 		var cid int
 		var name string
@@ -2334,15 +2350,39 @@ func ensureDirectQuotesSchema(db *sql.DB) error {
 		if strings.EqualFold(strings.TrimSpace(name), "recommended_file_name") {
 			hasRecommendedFileName = true
 		}
+		if strings.EqualFold(strings.TrimSpace(name), "mime_hint") {
+			hasMIMEHint = true
+		}
 		if strings.EqualFold(strings.TrimSpace(name), "available_chunk_bitmap_hex") {
 			hasAvailableChunkBitmapHex = true
 		}
 		if strings.EqualFold(strings.TrimSpace(name), "available_chunk_indexes_json") {
 			hasAvailableChunksJSON = true
 		}
+		if strings.EqualFold(strings.TrimSpace(name), "chunk_count") {
+			hasChunkCount = true
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "file_size") {
+			hasFileSize = true
+		}
+	}
+	if !hasChunkCount {
+		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if !hasFileSize {
+		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
 	}
 	if !hasRecommendedFileName {
 		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN recommended_file_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !hasMIMEHint {
+		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN mime_hint TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}
@@ -2375,6 +2415,44 @@ func ensureDirectQuotesSchema(db *sql.DB) error {
 			if _, err := db.Exec(`UPDATE direct_quotes SET available_chunk_bitmap_hex=? WHERE id=?`, bitmap, id); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+func ensureSeedsSchema(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(seeds)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	hasRecommendedFileName := false
+	hasMIMEHint := false
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "recommended_file_name") {
+			hasRecommendedFileName = true
+		}
+		if strings.EqualFold(strings.TrimSpace(name), "mime_hint") {
+			hasMIMEHint = true
+		}
+	}
+	if !hasRecommendedFileName {
+		if _, err := db.Exec(`ALTER TABLE seeds ADD COLUMN recommended_file_name TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if !hasMIMEHint {
+		if _, err := db.Exec(`ALTER TABLE seeds ADD COLUMN mime_hint TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -2531,12 +2609,21 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 				}
 				var chunkCount uint32
 				var seedPath string
-				if err := db.QueryRow(`SELECT chunk_count,seed_file_path FROM seeds WHERE seed_hash=?`, ref.SeedHash).Scan(&chunkCount, &seedPath); err == nil {
+				var recommendedName string
+				var mimeHint string
+				if err := db.QueryRow(`SELECT chunk_count,seed_file_path,recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, ref.SeedHash).Scan(&chunkCount, &seedPath, &recommendedName, &mimeHint); err == nil {
 					unit, total, err := upsertSeedPriceState(db, ref.SeedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
 					if err != nil {
 						return err
 					}
-					catalog[ref.SeedHash] = sellerSeed{SeedHash: ref.SeedHash, ChunkCount: chunkCount, ChunkPrice: unit, SeedPrice: total}
+					catalog[ref.SeedHash] = sellerSeed{
+						SeedHash:            ref.SeedHash,
+						ChunkCount:          chunkCount,
+						ChunkPrice:          unit,
+						SeedPrice:           total,
+						RecommendedFileName: sanitizeRecommendedFileName(recommendedName),
+						MIMEHint:            sanitizeMIMEHint(mimeHint),
+					}
 					return nil
 				} else if !errors.Is(err, sql.ErrNoRows) {
 					return err
@@ -2554,7 +2641,9 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), seedHash, 0, now); err != nil {
 				return err
 			}
-			if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET seed_file_path=excluded.seed_file_path,chunk_count=excluded.chunk_count,file_size=excluded.file_size`, seedHash, seedPath, chunkCount, st.Size(), now); err != nil {
+			recommendedName := sanitizeRecommendedFileName(filepath.Base(abs))
+			mimeHint := sanitizeMIMEHint(guessContentType(abs, nil))
+			if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET seed_file_path=excluded.seed_file_path,chunk_count=excluded.chunk_count,file_size=excluded.file_size,recommended_file_name=excluded.recommended_file_name,mime_hint=excluded.mime_hint`, seedHash, seedPath, chunkCount, st.Size(), recommendedName, mimeHint, now); err != nil {
 				return err
 			}
 			if err := replaceSeedAvailableChunks(db, seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
@@ -2564,7 +2653,14 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			if err != nil {
 				return err
 			}
-			catalog[seedHash] = sellerSeed{SeedHash: seedHash, ChunkCount: chunkCount, ChunkPrice: unit, SeedPrice: total}
+			catalog[seedHash] = sellerSeed{
+				SeedHash:            seedHash,
+				ChunkCount:          chunkCount,
+				ChunkPrice:          unit,
+				SeedPrice:           total,
+				RecommendedFileName: recommendedName,
+				MIMEHint:            mimeHint,
+			}
 			return nil
 		})
 		if err != nil {
@@ -2690,14 +2786,18 @@ func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace p2prpc.Trac
 		}
 		availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
 		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
+		mimeHint := sanitizeMIMEHint(req.MIMEHint)
 		if _, err := db.Exec(
-			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?,?)
+			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
 			 seed_price=excluded.seed_price,
 			 chunk_price=excluded.chunk_price,
+			 chunk_count=excluded.chunk_count,
+			 file_size=excluded.file_size,
 			 expires_at_unix=excluded.expires_at_unix,
 			 recommended_file_name=excluded.recommended_file_name,
+			 mime_hint=excluded.mime_hint,
 			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
 			 seller_arbiter_pubkey_hexes_json=excluded.seller_arbiter_pubkey_hexes_json,
 			 created_at_unix=excluded.created_at_unix`,
@@ -2705,8 +2805,11 @@ func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace p2prpc.Trac
 			sellerPubHex,
 			req.SeedPrice,
 			req.ChunkPrice,
+			req.ChunkCount,
+			req.FileSize,
 			req.ExpiresAtUnix,
 			recommendedName,
+			mimeHint,
 			availableChunkBitmapHex,
 			string(arbIDsJSON),
 			time.Now().Unix(),
@@ -2777,8 +2880,11 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 			BuyerAddrs:          req.BuyerAddrs,
 			SeedPrice:           seed.SeedPrice,
 			ChunkPrice:          seed.ChunkPrice,
+			ChunkCount:          seed.ChunkCount,
+			FileSize:            seed.FileSize,
 			ExpiresAtUnix:       time.Now().Add(10 * time.Minute).Unix(),
-			RecommendedFileName: recommendedFileNameBySeedHash(db, seedHash),
+			RecommendedFileName: seed.RecommendedFileName,
+			MIMEHint:            seed.MIMEHint,
 			ArbiterPeerIDs:      configuredArbiterPeerIDs(cfg),
 			AvailableChunkBitmapHex: chunkBitmapHexFromIndexes(
 				availableChunks,
@@ -2979,8 +3085,11 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink,
 		SellerPeerID:         strings.ToLower(strings.TrimSpace(sellerClientID)),
 		SeedPrice:            p.SeedPrice,
 		ChunkPrice:           p.ChunkPrice,
+		ChunkCount:           p.ChunkCount,
+		FileSize:             p.FileSize,
 		ExpiresAtUnix:        p.ExpiresAtUnix,
 		RecommendedFileName:  sanitizeRecommendedFileName(p.RecommendedFileName),
+		MIMEHint:             sanitizeMIMEHint(p.MIMEHint),
 		ArbiterPeerIDs:       normalizePeerIDList(p.ArbiterPeerIDs),
 		AvailableChunkBitmap: bitmapBytes,
 	}, &resp); err != nil {
@@ -3060,6 +3169,22 @@ func sanitizeRecommendedFileName(name string) string {
 	return name
 }
 
+func sanitizeMIMEHint(raw string) string {
+	value := strings.TrimSpace(strings.ToLower(raw))
+	if value == "" {
+		return ""
+	}
+	mediaType, _, err := mime.ParseMediaType(value)
+	if err != nil {
+		return ""
+	}
+	mediaType = strings.TrimSpace(strings.ToLower(mediaType))
+	if mediaType == "" || !strings.Contains(mediaType, "/") {
+		return ""
+	}
+	return mediaType
+}
+
 func recommendedFileNameBySeedHash(db *sql.DB, seedHash string) string {
 	if db == nil {
 		return ""
@@ -3068,11 +3193,32 @@ func recommendedFileNameBySeedHash(db *sql.DB, seedHash string) string {
 	if seedHash == "" {
 		return ""
 	}
+	var stored string
+	if err := db.QueryRow(`SELECT recommended_file_name FROM seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err == nil {
+		if normalized := sanitizeRecommendedFileName(stored); normalized != "" {
+			return normalized
+		}
+	}
 	var p string
 	if err := db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC, path ASC LIMIT 1`, seedHash).Scan(&p); err != nil {
 		return ""
 	}
 	return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(p)))
+}
+
+func mimeHintBySeedHash(db *sql.DB, seedHash string) string {
+	if db == nil {
+		return ""
+	}
+	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	if seedHash == "" {
+		return ""
+	}
+	var stored string
+	if err := db.QueryRow(`SELECT mime_hint FROM seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err != nil {
+		return ""
+	}
+	return sanitizeMIMEHint(stored)
 }
 
 func configuredArbiterPeerIDs(cfg Config) []string {
@@ -3578,12 +3724,12 @@ func loadSellerSeedFromDB(db *sql.DB, seedHash string) (sellerSeed, bool, error)
 	var out sellerSeed
 	var unitPrice uint64
 	err := db.QueryRow(
-		`SELECT s.seed_hash,s.chunk_count,COALESCE(p.unit_price_sat_per_64k,0)
+		`SELECT s.seed_hash,s.chunk_count,COALESCE(p.unit_price_sat_per_64k,0),s.file_size,s.recommended_file_name,s.mime_hint
 		   FROM seeds s
 		   LEFT JOIN seed_price_state p ON p.seed_hash=s.seed_hash
 		  WHERE s.seed_hash=?`,
 		seedHash,
-	).Scan(&out.SeedHash, &out.ChunkCount, &unitPrice)
+	).Scan(&out.SeedHash, &out.ChunkCount, &unitPrice, &out.FileSize, &out.RecommendedFileName, &out.MIMEHint)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return sellerSeed{}, false, nil
@@ -3593,6 +3739,8 @@ func loadSellerSeedFromDB(db *sql.DB, seedHash string) (sellerSeed, bool, error)
 	out.SeedHash = seedHash
 	out.ChunkPrice = unitPrice
 	out.SeedPrice = unitPrice * uint64(out.ChunkCount)
+	out.RecommendedFileName = sanitizeRecommendedFileName(out.RecommendedFileName)
+	out.MIMEHint = sanitizeMIMEHint(out.MIMEHint)
 	return out, true, nil
 }
 

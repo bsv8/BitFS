@@ -78,6 +78,48 @@ func TestValidateLiveDemandPublishPaidResp(t *testing.T) {
 	})
 }
 
+func TestValidateDemandPublishBatchPaidResp(t *testing.T) {
+	t.Run("success false", func(t *testing.T) {
+		err := validateDemandPublishBatchPaidResp(dual2of2.DemandPublishBatchPaidResp{
+			Success: false,
+			Status:  "active",
+			Error:   "charge rejected",
+		})
+		if err == nil {
+			t.Fatalf("expected error when success=false")
+		}
+		if !strings.Contains(err.Error(), "gateway demand batch publish rejected") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("success true with empty items", func(t *testing.T) {
+		err := validateDemandPublishBatchPaidResp(dual2of2.DemandPublishBatchPaidResp{
+			Success: true,
+			Status:  "ok",
+		})
+		if err == nil {
+			t.Fatalf("expected error when items are empty")
+		}
+		if !strings.Contains(err.Error(), "empty items") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("success true with items", func(t *testing.T) {
+		err := validateDemandPublishBatchPaidResp(dual2of2.DemandPublishBatchPaidResp{
+			Success: true,
+			Status:  "ok",
+			Items: []*dual2of2.DemandPublishBatchPaidResult{
+				{SeedHash: strings.Repeat("a", 64), ChunkCount: 1, DemandID: "dmd_batch_1", Status: "open"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("expected nil error, got %v", err)
+		}
+	})
+}
+
 func TestApplyFeePoolChargeToSession(t *testing.T) {
 	t.Run("advance session by next seq and server amount", func(t *testing.T) {
 		sess := &feePoolSession{
