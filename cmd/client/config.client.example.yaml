@@ -66,6 +66,8 @@ fs_http:
   prefetch_distance_chunks: 2
   strategy_debug_log_enabled: false
 
+woc_api_key: ""
+
 log:
   file: "logs/bitfs.log"
   console_min_level: "none"

@@ -652,6 +652,12 @@
       backendTitle.textContent = "客户端已锁定";
       backendSummary.textContent = "输入密码后解锁 Go 客户端，BitFS 页面才会真正装载。";
       backendStepNote.textContent = "如果你还没有备份当前密文私钥，可以先导出到安全位置。";
+    } else if (phase === "startup_error") {
+      setOnboardingStep("checking");
+      backendTitle.textContent = "内置客户端启动失败";
+      backendSummary.textContent = "Go 后台没有完成受管资源监听，当前不会进入私钥解锁流程。";
+      backendStepNote.textContent = "请先处理端口占用或托管链访问设置，再点击重启后端。";
+      restartPanel.classList.remove("is-hidden");
     } else if (phase === "error") {
       setOnboardingStep("checking");
       backendTitle.textContent = "内置客户端启动失败";
@@ -668,6 +674,12 @@
       backend.vaultPath ? `vault: ${backend.vaultPath}` : "",
       backend.binaryPath ? `binary: ${backend.binaryPath}` : "",
       backend.apiBase ? `api: ${backend.apiBase}` : "",
+      backend.fsHTTPListenAddr ? `fs_http: ${backend.fsHTTPListenAddr}` : "",
+      backend.chainAccessMode ? `chain_access: ${backend.chainAccessMode}` : "",
+      backend.walletChainBaseURL ? `wallet_chain: ${backend.walletChainBaseURL}` : "",
+      backend.wocProxyEnabled && backend.wocProxyListenAddr ? `woc_proxy: ${backend.wocProxyListenAddr}` : "",
+      backend.startupErrorService ? `startup_service: ${backend.startupErrorService}` : "",
+      backend.startupErrorListenAddr ? `startup_listen: ${backend.startupErrorListenAddr}` : "",
       backend.pid ? `pid: ${backend.pid}` : ""
     ].filter(Boolean).join(" | ");
 

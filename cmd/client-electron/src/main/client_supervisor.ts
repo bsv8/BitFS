@@ -12,6 +12,7 @@ const STATUS_POLL_INTERVAL_MS = 1500;
 const START_TIMEOUT_MS = 20_000;
 const READY_TIMEOUT_MS = 30_000;
 const LOG_BUFFER_LIMIT = 80;
+const BOOTSTRAP_PREFIX = "BITFS_MANAGED_STATE ";
 
 type ManagedClientSupervisorInit = {
   appRootDir: string;
@@ -30,14 +31,38 @@ type ManagedClientLaunchConfig = {
 };
 
 type KeyStatusResponse = {
+  phase?: ManagedClientPhase;
   has_key?: boolean;
   unlocked?: boolean;
   has_system_home_bundle?: boolean;
   default_home_seed_hash?: string;
+  startup_error_service?: string;
+  startup_error_listen?: string;
+  startup_error_message?: string;
+  chain_access_mode?: string;
+  wallet_chain_base_url?: string;
+  woc_proxy_enabled?: boolean;
+  woc_proxy_listen_addr?: string;
+  woc_upstream_root_url?: string;
+  woc_min_interval?: string;
 };
 
 type ExportKeyResponse = {
   cipher?: Record<string, unknown>;
+};
+
+type BootstrapStateEvent = {
+  type?: string;
+  phase?: ManagedClientPhase;
+  startup_error_service?: string;
+  startup_error_listen?: string;
+  startup_error_message?: string;
+  chain_access_mode?: string;
+  wallet_chain_base_url?: string;
+  woc_proxy_enabled?: boolean;
+  woc_proxy_listen_addr?: string;
+  woc_upstream_root_url?: string;
+  woc_min_interval?: string;
 };
 
 export class ManagedClientSupervisor extends EventEmitter {
@@ -47,6 +72,8 @@ export class ManagedClientSupervisor extends EventEmitter {
   private state: ManagedClientState;
   private startPromise: Promise<ManagedClientState> | null = null;
   private stopping = false;
+  private stdoutLineRemainder = "";
+  private stderrLineRemainder = "";
 
   private constructor(launch: ManagedClientLaunchConfig) {
     super();
@@ -63,6 +90,14 @@ export class ManagedClientSupervisor extends EventEmitter {
       vaultPath: launch.vaultPath,
       binaryPath: launch.binaryPath,
       lastError: "",
+      startupErrorService: "",
+      startupErrorListenAddr: "",
+      chainAccessMode: "",
+      walletChainBaseURL: "",
+      wocProxyEnabled: false,
+      wocProxyListenAddr: "",
+      wocUpstreamRootURL: "",
+      wocMinInterval: "",
       recentLogs: []
     };
   }
@@ -130,7 +165,16 @@ export class ManagedClientSupervisor extends EventEmitter {
     this.stopPolling();
     const child = this.child;
     if (!child) {
-      this.setState({ phase: "stopped", pid: 0, unlocked: false, hasSystemHomeBundle: false, defaultHomeSeedHash: "" });
+      this.setState({
+        phase: "stopped",
+        pid: 0,
+        unlocked: false,
+        hasSystemHomeBundle: false,
+        defaultHomeSeedHash: "",
+        lastError: "",
+        startupErrorService: "",
+        startupErrorListenAddr: ""
+      });
       this.stopping = false;
       return;
     }
@@ -144,7 +188,16 @@ export class ManagedClientSupervisor extends EventEmitter {
       await exitPromise.catch(() => undefined);
     }
     this.child = null;
-    this.setState({ phase: "stopped", pid: 0, unlocked: false, hasSystemHomeBundle: false, defaultHomeSeedHash: "" });
+    this.setState({
+      phase: "stopped",
+      pid: 0,
+      unlocked: false,
+      hasSystemHomeBundle: false,
+      defaultHomeSeedHash: "",
+      lastError: "",
+      startupErrorService: "",
+      startupErrorListenAddr: ""
+    });
     this.stopping = false;
   }
 
@@ -213,7 +266,7 @@ export class ManagedClientSupervisor extends EventEmitter {
       has_key: state.hasKey,
       unlocked: state.unlocked
     });
-    if (state.phase === "error") {
+    if (state.phase === "error" || state.phase === "startup_error") {
       throw new Error(state.lastError || "managed client start failed");
     }
   }
@@ -244,7 +297,9 @@ export class ManagedClientSupervisor extends EventEmitter {
       hasSystemHomeBundle: false,
       defaultHomeSeedHash: "",
       pid: 0,
-      lastError: ""
+      lastError: "",
+      startupErrorService: "",
+      startupErrorListenAddr: ""
     });
     const child = spawn(this.launch.binaryPath, this.buildManagedArgs(), {
       cwd: path.dirname(this.launch.vaultPath),
@@ -307,19 +362,56 @@ export class ManagedClientSupervisor extends EventEmitter {
 
   private attachChildIO(child: ChildProcessByStdio<null, Readable, Readable>): void {
     child.stdout.on("data", (chunk: Buffer | string) => {
-      const lines = chunkToLines(chunk);
+      const extracted = extractLines(chunk, this.stdoutLineRemainder);
+      this.stdoutLineRemainder = extracted.remainder;
+      const lines = extracted.lines;
       this.appendLogs(lines);
       for (const line of lines) {
         debugLogger.log("supervisor.stdout", "line", { line });
+        this.handleBootstrapLine(line);
       }
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
-      const lines = chunkToLines(chunk);
+      const extracted = extractLines(chunk, this.stderrLineRemainder);
+      this.stderrLineRemainder = extracted.remainder;
+      const lines = extracted.lines;
       this.appendLogs(lines);
       for (const line of lines) {
         debugLogger.log("supervisor.stderr", "line", { line });
+        this.handleBootstrapLine(line);
       }
     });
+  }
+
+  private handleBootstrapLine(line: string): void {
+    const trimmed = String(line || "").trim();
+    if (!trimmed.startsWith(BOOTSTRAP_PREFIX)) {
+      return;
+    }
+    const raw = trimmed.slice(BOOTSTRAP_PREFIX.length);
+    try {
+      const event = JSON.parse(raw) as BootstrapStateEvent;
+      if (String(event.type || "") !== "bootstrap_state") {
+        return;
+      }
+      this.setState({
+        phase: event.phase || this.state.phase,
+        lastError: String(event.startup_error_message || "").trim(),
+        startupErrorService: String(event.startup_error_service || "").trim(),
+        startupErrorListenAddr: String(event.startup_error_listen || "").trim(),
+        chainAccessMode: String(event.chain_access_mode || "").trim(),
+        walletChainBaseURL: String(event.wallet_chain_base_url || "").trim(),
+        wocProxyEnabled: Boolean(event.woc_proxy_enabled),
+        wocProxyListenAddr: String(event.woc_proxy_listen_addr || "").trim(),
+        wocUpstreamRootURL: String(event.woc_upstream_root_url || "").trim(),
+        wocMinInterval: String(event.woc_min_interval || "").trim()
+      });
+    } catch (error) {
+      debugLogger.log("supervisor", "bootstrap_line_parse_failed", {
+        line: trimmed,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
   }
 
   private appendLogs(lines: string[]): void {
@@ -362,10 +454,14 @@ export class ManagedClientSupervisor extends EventEmitter {
     if (!this.child) {
       return this.snapshot();
     }
+    if (this.state.phase === "startup_error") {
+      return this.snapshot();
+    }
     try {
       const status = await this.fetchJSON<KeyStatusResponse>("/api/v1/key/status");
       const unlocked = Boolean(status.unlocked);
-      const phase: ManagedClientPhase = unlocked ? "ready" : "locked";
+      const statusPhase = status.phase;
+      const phase: ManagedClientPhase = statusPhase || (unlocked ? "ready" : "locked");
       this.setState({
         phase,
         hasKey: Boolean(status.has_key),
@@ -373,7 +469,15 @@ export class ManagedClientSupervisor extends EventEmitter {
         hasSystemHomeBundle: Boolean(status.has_system_home_bundle),
         defaultHomeSeedHash: normalizeSeedHash(status.default_home_seed_hash),
         pid: this.child.pid ?? 0,
-        lastError: ""
+        lastError: String(status.startup_error_message || "").trim(),
+        startupErrorService: String(status.startup_error_service || "").trim(),
+        startupErrorListenAddr: String(status.startup_error_listen || "").trim(),
+        chainAccessMode: String(status.chain_access_mode || "").trim(),
+        walletChainBaseURL: String(status.wallet_chain_base_url || "").trim(),
+        wocProxyEnabled: Boolean(status.woc_proxy_enabled),
+        wocProxyListenAddr: String(status.woc_proxy_listen_addr || "").trim(),
+        wocUpstreamRootURL: String(status.woc_upstream_root_url || "").trim(),
+        wocMinInterval: String(status.woc_min_interval || "").trim()
       });
       debugLogger.log("supervisor", "status_refreshed", {
         phase,
@@ -381,7 +485,10 @@ export class ManagedClientSupervisor extends EventEmitter {
         unlocked,
         has_system_home_bundle: Boolean(status.has_system_home_bundle),
         default_home_seed_hash: normalizeSeedHash(status.default_home_seed_hash),
-        pid: this.child.pid ?? 0
+        pid: this.child.pid ?? 0,
+        startup_error_service: String(status.startup_error_service || "").trim(),
+        startup_error_listen: String(status.startup_error_listen || "").trim(),
+        chain_access_mode: String(status.chain_access_mode || "").trim()
       });
     } catch (error) {
       if (this.state.phase === "starting") {
@@ -403,7 +510,7 @@ export class ManagedClientSupervisor extends EventEmitter {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
       const state = await this.refreshStatus();
-      if (state.phase === "locked" || state.phase === "ready") {
+      if (state.phase === "locked" || state.phase === "ready" || state.phase === "startup_error") {
         return state;
       }
       if (state.phase === "error") {
@@ -582,11 +689,14 @@ async function pickFreePort(): Promise<number> {
   });
 }
 
-function chunkToLines(chunk: Buffer | string): string[] {
-  return String(chunk)
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter((line) => line !== "");
+function extractLines(chunk: Buffer | string, remainder: string): { lines: string[]; remainder: string } {
+  const text = remainder + String(chunk);
+  const parts = text.split(/\r?\n/);
+  const nextRemainder = parts.pop() ?? "";
+  return {
+    lines: parts.map((line) => line.trim()).filter((line) => line !== ""),
+    remainder: nextRemainder
+  };
 }
 
 function requirePassword(password: string): string {
@@ -624,5 +734,13 @@ function stateChanged(previous: ManagedClientState, next: ManagedClientState): b
     previous.hasSystemHomeBundle !== next.hasSystemHomeBundle ||
     previous.defaultHomeSeedHash !== next.defaultHomeSeedHash ||
     previous.pid !== next.pid ||
-    previous.lastError !== next.lastError;
+    previous.lastError !== next.lastError ||
+    previous.startupErrorService !== next.startupErrorService ||
+    previous.startupErrorListenAddr !== next.startupErrorListenAddr ||
+    previous.chainAccessMode !== next.chainAccessMode ||
+    previous.walletChainBaseURL !== next.walletChainBaseURL ||
+    previous.wocProxyEnabled !== next.wocProxyEnabled ||
+    previous.wocProxyListenAddr !== next.wocProxyListenAddr ||
+    previous.wocUpstreamRootURL !== next.wocUpstreamRootURL ||
+    previous.wocMinInterval !== next.wocMinInterval;
 }

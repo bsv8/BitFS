@@ -21,12 +21,45 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/obs"
-	chainapi "github.com/bsv8/BSVChainAPI"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
+	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 )
+
+const managedBootstrapPrefix = "BITFS_MANAGED_STATE "
+
+type managedPhase string
+
+const (
+	managedPhaseStarting     managedPhase = "starting"
+	managedPhaseStartupError managedPhase = "startup_error"
+	managedPhaseLocked       managedPhase = "locked"
+	managedPhaseReady        managedPhase = "ready"
+	managedPhaseStopped      managedPhase = "stopped"
+
+	managedWOCProxyListenAddr = "127.0.0.1:19183"
+	managedWOCUpstreamRootURL = wocproxy.DefaultUpstreamRootURL
+)
+
+type startupErrorState struct {
+	Service    string
+	ListenAddr string
+	Message    string
+}
+
+type chainAccessState struct {
+	Mode            string
+	BaseURL         string
+	RouteAuth       chainbridge.AuthConfig
+	WalletAuth      whatsonchain.AuthConfig
+	WOCProxyEnabled bool
+	WOCProxyAddr    string
+	UpstreamRootURL string
+	MinInterval     time.Duration
+}
 
 type managedDaemon struct {
 	initNetwork string
@@ -40,10 +73,17 @@ type managedDaemon struct {
 
 	srv *http.Server
 
+	fsHTTPReserved net.Listener
+	wocProxySrv    *http.Server
+
 	mu       sync.RWMutex
 	rt       *clientapp.Runtime
 	rtCancel context.CancelFunc
 	rtAPI    http.Handler
+
+	phase        managedPhase
+	startupError startupErrorState
+	chainAccess  chainAccessState
 
 	systemHomepage *systemHomepageState
 }
@@ -65,19 +105,32 @@ func runManagedDaemon(cfg clientapp.Config, startup startupSummary, initNetwork 
 		desktop:     desktop,
 		rootCtx:     rootCtx,
 		rootCancel:  rootCancel,
+		phase:       managedPhaseStarting,
 	}
+	d.chainAccess = d.resolveChainAccessState()
+	d.emitBootstrapState()
 	if err := d.prepareSystemHomepage(); err != nil {
-		return err
+		d.setStartupError("system_homepage", "", err)
+		<-rootCtx.Done()
+		return d.close()
 	}
 	if err := d.startHTTPServer(); err != nil {
-		return err
+		d.setStartupError("managed_api", d.cfg.HTTP.ListenAddr, err)
+		<-rootCtx.Done()
+		return d.close()
 	}
-	// 控制台先打印“解锁前可见运行摘要”，再进入密码输入阶段。
+	if err := d.reserveFSHTTPListener(); err != nil {
+		d.setStartupError("fs_http", d.cfg.FSHTTP.ListenAddr, err)
+		<-rootCtx.Done()
+		return d.close()
+	}
+	if err := d.startManagedWOCProxy(); err != nil {
+		d.setStartupError("woc_proxy", managedWOCProxyListenAddr, err)
+		<-rootCtx.Done()
+		return d.close()
+	}
+	d.setPhase(managedPhaseLocked)
 	d.printLockedStartupSummary()
-	// 缺省启动路径进入“命令行解锁循环”：
-	// - locked + 有密钥：提示输入密码；
-	// - API 若先解锁：命令行输入会自动取消并提示已解锁；
-	// - API 再次 lock：会重新进入等待密码状态。
 	go d.cliUnlockLoop()
 	<-rootCtx.Done()
 	return d.close()
@@ -90,6 +143,8 @@ func (d *managedDaemon) close() error {
 	d.rtCancel = nil
 	d.rt = nil
 	d.rtAPI = nil
+	fsHTTPReserved := d.fsHTTPReserved
+	d.fsHTTPReserved = nil
 	d.mu.Unlock()
 
 	if cancel != nil {
@@ -103,6 +158,15 @@ func (d *managedDaemon) close() error {
 		_ = d.srv.Shutdown(ctx)
 		stop()
 	}
+	if d.wocProxySrv != nil {
+		ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = d.wocProxySrv.Shutdown(ctx)
+		stop()
+	}
+	if fsHTTPReserved != nil {
+		_ = fsHTTPReserved.Close()
+	}
+	d.setPhase(managedPhaseStopped)
 	return nil
 }
 
@@ -131,12 +195,13 @@ func (d *managedDaemon) startHTTPServer() error {
 	// 导致前台仅看到“解锁提示后退出”而没有明确错误。
 	ln, err := net.Listen("tcp", d.cfg.HTTP.ListenAddr)
 	if err != nil {
-		return fmt.Errorf("start managed api listen failed: %w", err)
+		return err
 	}
+	d.cfg.HTTP.ListenAddr = ln.Addr().String()
 	obs.Important("bitcast-client", "managed_api_started", map[string]any{
-		"listen_addr": d.cfg.HTTP.ListenAddr,
+		"listen_addr": ln.Addr().String(),
 		"config_path": d.startup.ConfigPath,
-		"locked":      true,
+		"phase":       string(d.currentPhase()),
 	})
 	go func() {
 		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -181,6 +246,15 @@ func (d *managedDaemon) handleWebAsset(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Request) {
+	if phase := d.currentPhase(); phase == managedPhaseStartupError {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"error":       d.currentStartupError().Message,
+			"phase":       string(phase),
+			"service":     d.currentStartupError().Service,
+			"listen_addr": d.currentStartupError().ListenAddr,
+		})
+		return
+	}
 	api := d.currentRuntimeAPI()
 	if api == nil {
 		writeJSON(w, http.StatusLocked, map[string]any{"error": "client is locked"})
@@ -201,6 +275,9 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	d.mu.RLock()
 	unlocked := d.rt != nil
+	phase := d.phase
+	startupErr := d.startupError
+	chainAccess := d.chainAccess
 	d.mu.RUnlock()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"vault_path":             d.startup.VaultPath,
@@ -209,6 +286,16 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 		"index_db_path":          d.startup.IndexDBPath,
 		"has_key":                exists,
 		"unlocked":               unlocked,
+		"phase":                  string(phase),
+		"startup_error_service":  startupErr.Service,
+		"startup_error_listen":   startupErr.ListenAddr,
+		"startup_error_message":  startupErr.Message,
+		"chain_access_mode":      chainAccess.Mode,
+		"wallet_chain_base_url":  chainAccess.BaseURL,
+		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
+		"woc_proxy_listen_addr":  chainAccess.WOCProxyAddr,
+		"woc_upstream_root_url":  chainAccess.UpstreamRootURL,
+		"woc_min_interval":       chainAccess.MinInterval.String(),
 		"has_system_home_bundle": d.systemHomepage != nil && d.systemHomepage.HasBundle(),
 		"default_home_seed_hash": d.defaultHomeSeedHash(),
 	})
@@ -217,6 +304,10 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
 	if d.isUnlocked() {
@@ -262,6 +353,10 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
 	if d.isUnlocked() {
@@ -315,6 +410,10 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
 	if d.isUnlocked() {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
 		return
@@ -356,6 +455,10 @@ func (d *managedDaemon) handleKeyLock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
 	if err := d.stopRuntime(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -364,6 +467,9 @@ func (d *managedDaemon) handleKeyLock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (d *managedDaemon) startRuntime(privHex string) error {
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	if d.rt != nil {
 		d.mu.Unlock()
@@ -384,18 +490,27 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	// managed 模式统一由单一入口承载 API，不再启动 runtime 内部 HTTP 监听。
 	runIn.DisableHTTPServer = true
 	runIn.WebAssets = webAssets
-	actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
-		Provider: chainapi.WhatsOnChainProvider,
+	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()
+	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
+		Provider: chainbridge.WhatsOnChainProvider,
 		Network:  d.cfg.BSV.Network,
-	}, 1*time.Second)
+		BaseURL:  d.chainAccess.BaseURL,
+		Auth:     d.chainAccess.RouteAuth,
+	})
 	if err != nil {
+		if runIn.FSHTTPListener != nil {
+			_ = runIn.FSHTTPListener.Close()
+		}
 		return err
 	}
-	walletChain, err := clientapp.NewWalletRouteChainClient(chainapi.Route{
-		Provider: chainapi.WhatsOnChainProvider,
+	walletChain, err := clientapp.NewWalletChainClientWithBaseURL(chainbridge.Route{
+		Provider: chainbridge.WhatsOnChainProvider,
 		Network:  d.cfg.BSV.Network,
-	}, 1*time.Second)
+	}, d.chainAccess.BaseURL, d.chainAccess.WalletAuth)
 	if err != nil {
+		if runIn.FSHTTPListener != nil {
+			_ = runIn.FSHTTPListener.Close()
+		}
 		return err
 	}
 	runIn.ActionChain = actionChain
@@ -404,6 +519,9 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	runCtx, cancel := context.WithCancel(d.rootCtx)
 	rt, err := clientapp.Run(runCtx, runIn)
 	if err != nil {
+		if runIn.FSHTTPListener != nil {
+			_ = runIn.FSHTTPListener.Close()
+		}
 		cancel()
 		return err
 	}
@@ -422,6 +540,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 
 	// 控制台打印“解锁后运行摘要”。
 	// 设计约束：统一放在 startRuntime 成功路径，保证 CLI/API 两种解锁方式输出一致。
+	d.setPhase(managedPhaseReady)
 	d.printUnlockedRuntimeSummary(runCfg, rt)
 	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
 		"transport_peer_id": rt.Host.ID().String(),
@@ -483,12 +602,19 @@ func (d *managedDaemon) defaultHomeSeedHash() string {
 }
 
 func (d *managedDaemon) printLockedStartupSummary() {
+	chainAccess := d.currentChainAccess()
 	fmt.Fprintf(os.Stderr, "=== BitFS 客户端启动信息（待解锁）===\n")
 	fmt.Fprintf(os.Stderr, "vault_path: %s\n", d.startup.VaultPath)
 	fmt.Fprintf(os.Stderr, "config_path: %s\n", d.startup.ConfigPath)
 	fmt.Fprintf(os.Stderr, "key_path: %s\n", d.startup.KeyPath)
 	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
 	fmt.Fprintf(os.Stderr, "managed_api.listen_addr: %s\n", strings.TrimSpace(d.cfg.HTTP.ListenAddr))
+	fmt.Fprintf(os.Stderr, "fs_http.listen_addr: %s\n", strings.TrimSpace(d.cfg.FSHTTP.ListenAddr))
+	fmt.Fprintf(os.Stderr, "chain_access.mode: %s\n", strings.TrimSpace(chainAccess.Mode))
+	fmt.Fprintf(os.Stderr, "wallet_chain.base_url: %s\n", strings.TrimSpace(chainAccess.BaseURL))
+	if chainAccess.WOCProxyEnabled {
+		fmt.Fprintf(os.Stderr, "woc_proxy.listen_addr: %s\n", strings.TrimSpace(chainAccess.WOCProxyAddr))
+	}
 	fmt.Fprintf(os.Stderr, "index_db_path: %s\n", strings.TrimSpace(d.startup.IndexDBPath))
 	fmt.Fprintf(os.Stderr, "runtime_config.status: %s\n", strings.TrimSpace(d.startup.RuntimeConfigStatus))
 	fmt.Fprintf(os.Stderr, "状态: 已启动（锁定），等待解锁密码或管理 API 解锁。\n")
@@ -498,6 +624,7 @@ func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt 
 	if rt == nil {
 		return
 	}
+	chainAccess := d.currentChainAccess()
 	pubHex, pubErr := runtimePubKeyHex(rt)
 	pubLine := pubHex
 	if pubErr != nil {
@@ -512,6 +639,11 @@ func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt 
 	fmt.Fprintf(os.Stderr, "transport_peer_id: %s\n", strings.TrimSpace(rt.Host.ID().String()))
 	fmt.Fprintf(os.Stderr, "managed_api.listen_addr: %s\n", strings.TrimSpace(d.cfg.HTTP.ListenAddr))
 	fmt.Fprintf(os.Stderr, "fs_http.listen_addr: %s\n", strings.TrimSpace(runCfg.FSHTTP.ListenAddr))
+	fmt.Fprintf(os.Stderr, "chain_access.mode: %s\n", strings.TrimSpace(chainAccess.Mode))
+	fmt.Fprintf(os.Stderr, "wallet_chain.base_url: %s\n", strings.TrimSpace(chainAccess.BaseURL))
+	if chainAccess.WOCProxyEnabled {
+		fmt.Fprintf(os.Stderr, "woc_proxy.listen_addr: %s\n", strings.TrimSpace(chainAccess.WOCProxyAddr))
+	}
 	fmt.Fprintf(os.Stderr, "index_db_path: %s\n", strings.TrimSpace(d.startup.IndexDBPath))
 }
 
@@ -540,6 +672,194 @@ func (d *managedDaemon) currentNetworkName() string {
 	return "unknown"
 }
 
+func (d *managedDaemon) resolveChainAccessState() chainAccessState {
+	auth := chainbridge.AuthConfig{
+		Mode:  "bearer",
+		Value: strings.TrimSpace(d.cfg.WOCAPIKey),
+	}
+	state := chainAccessState{
+		Mode:            "proxy",
+		UpstreamRootURL: managedWOCUpstreamRootURL,
+		MinInterval:     1 * time.Second,
+		RouteAuth:       auth,
+		WalletAuth: whatsonchain.AuthConfig{
+			Mode:  auth.Mode,
+			Name:  auth.Name,
+			Value: auth.Value,
+		},
+	}
+	if strings.TrimSpace(auth.Value) != "" {
+		state.Mode = "direct_woc"
+		state.BaseURL = wocproxy.BaseURLForNetwork(state.UpstreamRootURL, d.currentNetworkName())
+		return state
+	}
+	state.WOCProxyEnabled = true
+	state.WOCProxyAddr = managedWOCProxyListenAddr
+	state.BaseURL = wocproxy.BaseURLForNetwork("http://"+state.WOCProxyAddr, d.currentNetworkName())
+	state.RouteAuth = chainbridge.AuthConfig{}
+	state.WalletAuth = whatsonchain.AuthConfig{}
+	return state
+}
+
+func (d *managedDaemon) currentPhase() managedPhase {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.phase
+}
+
+func (d *managedDaemon) currentStartupError() startupErrorState {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.startupError
+}
+
+func (d *managedDaemon) currentChainAccess() chainAccessState {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.chainAccess
+}
+
+func (d *managedDaemon) setPhase(phase managedPhase) {
+	d.mu.Lock()
+	d.phase = phase
+	if phase != managedPhaseStartupError {
+		d.startupError = startupErrorState{}
+	}
+	d.mu.Unlock()
+	d.emitBootstrapState()
+}
+
+func (d *managedDaemon) setStartupError(service, listenAddr string, err error) {
+	message := ""
+	if err != nil {
+		message = strings.TrimSpace(err.Error())
+	}
+	d.mu.Lock()
+	d.phase = managedPhaseStartupError
+	d.startupError = startupErrorState{
+		Service:    strings.TrimSpace(service),
+		ListenAddr: strings.TrimSpace(listenAddr),
+		Message:    message,
+	}
+	d.mu.Unlock()
+	obs.Error("bitcast-client", "managed_startup_failed", map[string]any{
+		"service":     strings.TrimSpace(service),
+		"listen_addr": strings.TrimSpace(listenAddr),
+		"error":       message,
+	})
+	d.emitBootstrapState()
+}
+
+func (d *managedDaemon) emitBootstrapState() {
+	d.mu.RLock()
+	payload := map[string]any{
+		"type":                  "bootstrap_state",
+		"phase":                 string(d.phase),
+		"startup_error_service": d.startupError.Service,
+		"startup_error_listen":  d.startupError.ListenAddr,
+		"startup_error_message": d.startupError.Message,
+		"chain_access_mode":     d.chainAccess.Mode,
+		"wallet_chain_base_url": d.chainAccess.BaseURL,
+		"woc_proxy_enabled":     d.chainAccess.WOCProxyEnabled,
+		"woc_proxy_listen_addr": d.chainAccess.WOCProxyAddr,
+		"woc_upstream_root_url": d.chainAccess.UpstreamRootURL,
+		"woc_min_interval":      d.chainAccess.MinInterval.String(),
+	}
+	d.mu.RUnlock()
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	fmt.Fprintf(os.Stdout, "%s%s\n", managedBootstrapPrefix, string(raw))
+}
+
+func (d *managedDaemon) ensureKeyWorkflowReady() error {
+	switch d.currentPhase() {
+	case managedPhaseLocked, managedPhaseReady:
+		return nil
+	case managedPhaseStartupError:
+		se := d.currentStartupError()
+		if se.Message != "" {
+			return fmt.Errorf("client startup failed: %s", se.Message)
+		}
+		return fmt.Errorf("client startup failed")
+	default:
+		return fmt.Errorf("client is still starting")
+	}
+}
+
+func (d *managedDaemon) reserveFSHTTPListener() error {
+	d.mu.Lock()
+	if d.fsHTTPReserved != nil {
+		d.mu.Unlock()
+		return nil
+	}
+	d.mu.Unlock()
+
+	ln, err := net.Listen("tcp", strings.TrimSpace(d.cfg.FSHTTP.ListenAddr))
+	if err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.fsHTTPReserved = ln
+	d.cfg.FSHTTP.ListenAddr = ln.Addr().String()
+	d.mu.Unlock()
+	return nil
+}
+
+func (d *managedDaemon) takeReservedFSHTTPListener() net.Listener {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ln := d.fsHTTPReserved
+	d.fsHTTPReserved = nil
+	return ln
+}
+
+func (d *managedDaemon) startManagedWOCProxy() error {
+	d.mu.Lock()
+	if d.wocProxySrv != nil || !d.chainAccess.WOCProxyEnabled {
+		d.mu.Unlock()
+		return nil
+	}
+	d.mu.Unlock()
+
+	proxy, err := wocproxy.New(wocproxy.Config{
+		UpstreamRootURL: managedWOCUpstreamRootURL,
+		MinInterval:     d.currentChainAccess().MinInterval,
+	})
+	if err != nil {
+		return err
+	}
+	ln, err := net.Listen("tcp", managedWOCProxyListenAddr)
+	if err != nil {
+		return err
+	}
+	srv := &http.Server{
+		Handler:           proxy.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	d.mu.Lock()
+	d.wocProxySrv = srv
+	d.chainAccess.WOCProxyAddr = ln.Addr().String()
+	d.chainAccess.BaseURL = wocproxy.BaseURLForNetwork("http://"+ln.Addr().String(), d.currentNetworkName())
+	d.mu.Unlock()
+	obs.Important("bitcast-client", "managed_woc_proxy_started", map[string]any{
+		"listen_addr":       ln.Addr().String(),
+		"upstream_root_url": proxy.UpstreamRootURL(),
+		"min_interval":      d.currentChainAccess().MinInterval.String(),
+		"chain_access_mode": "proxy",
+		"wallet_chain_base": wocproxy.BaseURLForNetwork("http://"+ln.Addr().String(), d.currentNetworkName()),
+	})
+	go func() {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			obs.Error("bitcast-client", "managed_woc_proxy_stopped", map[string]any{"error": err.Error()})
+			d.setStartupError("woc_proxy", ln.Addr().String(), err)
+		}
+	}()
+	d.emitBootstrapState()
+	return nil
+}
+
 func (d *managedDaemon) stopRuntime() error {
 	d.mu.Lock()
 	cancel := d.rtCancel
@@ -555,6 +875,11 @@ func (d *managedDaemon) stopRuntime() error {
 	if rt != nil {
 		_ = rt.Close()
 	}
+	if err := d.reserveFSHTTPListener(); err != nil {
+		d.setStartupError("fs_http", d.cfg.FSHTTP.ListenAddr, err)
+		return err
+	}
+	d.setPhase(managedPhaseLocked)
 	obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 	return nil
 }
@@ -570,6 +895,10 @@ func (d *managedDaemon) cliUnlockLoop() {
 		case <-d.rootCtx.Done():
 			return
 		default:
+		}
+		if phase := d.currentPhase(); phase != managedPhaseLocked && phase != managedPhaseReady {
+			time.Sleep(200 * time.Millisecond)
+			continue
 		}
 		if d.isUnlocked() {
 			time.Sleep(200 * time.Millisecond)

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -81,6 +82,14 @@ func newFileHTTPServer(rt *Runtime, cfg *Config, db *sql.DB, workspace *workspac
 }
 
 func (s *fileHTTPServer) Start() error {
+	return s.startOnListener(nil)
+}
+
+func (s *fileHTTPServer) StartOnListener(ln net.Listener) error {
+	return s.startOnListener(ln)
+}
+
+func (s *fileHTTPServer) startOnListener(ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
 	s.srv = &http.Server{
@@ -92,7 +101,12 @@ func (s *fileHTTPServer) Start() error {
 		IdleTimeout:       60 * time.Second,
 	}
 	obs.Important("bitcast-client", "fs_http_started", map[string]any{"listen_addr": s.cfg.FSHTTP.ListenAddr})
-	err := s.srv.ListenAndServe()
+	var err error
+	if ln != nil {
+		err = s.srv.Serve(ln)
+	} else {
+		err = s.srv.ListenAndServe()
+	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}

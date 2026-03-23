@@ -838,13 +838,7 @@ func walletChainBaseURLOfRuntime(rt *Runtime) string {
 	if rt == nil || rt.WalletChain == nil {
 		return ""
 	}
-	type baseURLProvider interface {
-		BaseURL() string
-	}
-	if p, ok := rt.WalletChain.(baseURLProvider); ok && p != nil {
-		return strings.TrimSpace(p.BaseURL())
-	}
-	return ""
+	return strings.TrimSpace(rt.WalletChain.BaseURL())
 }
 
 func walletChainTypeOfRuntime(rt *Runtime) string {
@@ -6745,6 +6739,7 @@ func adminConfigRules() []adminConfigRule {
 	return []adminConfigRule{
 		{Key: "http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "管理 API 监听地址"},
 		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
+		{Key: "woc_api_key", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "WOC API key（非空时直连 WOC）"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
 		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
@@ -6885,6 +6880,7 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 	return map[string]any{
 		"http.listen_addr":                            cfg.HTTP.ListenAddr,
 		"fs_http.listen_addr":                         cfg.FSHTTP.ListenAddr,
+		"woc_api_key":                                 maskSecretForAdminConfig(cfg.WOCAPIKey),
 		"listen.enabled":                              cfgBool(cfg.Listen.Enabled, true),
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
 		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
@@ -7019,6 +7015,8 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 		cfg.HTTP.ListenAddr = v
 	case "fs_http.listen_addr":
 		cfg.FSHTTP.ListenAddr = v
+	case "woc_api_key":
+		cfg.WOCAPIKey = v
 	default:
 		return fmt.Errorf("unsupported string key: %s", key)
 	}
@@ -7087,4 +7085,15 @@ func adminConfigSetBool(cfg *Config, key string, v bool) error {
 func boolPtr(v bool) *bool {
 	b := v
 	return &b
+}
+
+func maskSecretForAdminConfig(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if len(value) <= 8 {
+		return "********"
+	}
+	return value[:4] + "..." + value[len(value)-4:]
 }

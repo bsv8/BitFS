@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"mime"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,7 +27,6 @@ import (
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
-	chainapi "github.com/bsv8/BSVChainAPI"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -324,7 +324,8 @@ type Config struct {
 		PrefetchDistanceChunks     uint32 `yaml:"prefetch_distance_chunks" toml:"prefetch_distance_chunks"`
 		StrategyDebugLogEnabled    bool   `yaml:"strategy_debug_log_enabled" toml:"strategy_debug_log_enabled"`
 	} `yaml:"fs_http" toml:"fs_http"`
-	Log struct {
+	WOCAPIKey string `yaml:"woc_api_key" toml:"woc_api_key"`
+	Log       struct {
 		File            string `yaml:"file" toml:"file"`
 		ConsoleMinLevel string `yaml:"console_min_level" toml:"console_min_level"`
 	} `yaml:"log" toml:"log"`
@@ -419,7 +420,8 @@ type RunInput struct {
 		PrefetchDistanceChunks     uint32
 		StrategyDebugLogEnabled    bool
 	}
-	Log struct {
+	WOCAPIKey string
+	Log       struct {
 		File            string
 		ConsoleMinLevel string
 	}
@@ -428,6 +430,11 @@ type RunInput struct {
 	// managed 模式使用单入口时设为 true，避免 runtime 内部再开启 HTTP 监听。
 	DisableHTTPServer bool
 
+	// FSHTTPListener 仅用于桌面托管模式：
+	// - 解锁前主进程先把 fs_http 端口真实监听住，提前暴露端口占用错误；
+	// - 解锁后把同一个 listener 交给真正文件服务，避免“先说可启动，解锁时才 bind 失败”。
+	FSHTTPListener net.Listener
+
 	// EffectivePrivKeyHex 是启动前已确定的“唯一运行时私钥”。
 	// 设计约束：Host 身份与费用池签名必须都来自这把私钥。
 	EffectivePrivKeyHex string
@@ -435,12 +442,14 @@ type RunInput struct {
 	WebAssets           fs.FS
 
 	// ActionChain 承载真实上链动作与费用池最小读能力。
-	// 生产环境默认使用 BSVChainAPI 的嵌入式客户端。
+	// 生产环境默认使用 chainbridge 的嵌入式费用池客户端。
 	ActionChain dual2of2.ChainClient
 
 	// WalletChain 只服务钱包同步与历史扫描。
-	// 生产环境默认继续使用旧 wallet 链客户端，避免把历史分页语义塞进 BSVChainAPI。
-	WalletChain WalletChainClient
+	// 设计约束：
+	// - 钱包同步明确接受 whatsonchain 语义，不再复制一层同构接口；
+	// - 运行时只持有已装配好的最小 WOC 客户端，不再依赖历史中间层。
+	WalletChain walletChainClient
 
 	// RPCTrace 仅用于集成测试：记录 client 自己的 p2prpc 收发报文（JSONL）。
 	// 正常运行默认不启用（nil）。
@@ -502,6 +511,7 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 	in.FSHTTP.QuotePollSeconds = cfg.FSHTTP.QuotePollSeconds
 	in.FSHTTP.PrefetchDistanceChunks = cfg.FSHTTP.PrefetchDistanceChunks
 	in.FSHTTP.StrategyDebugLogEnabled = cfg.FSHTTP.StrategyDebugLogEnabled
+	in.WOCAPIKey = cfg.WOCAPIKey
 	in.Log.File = cfg.Log.File
 	in.Log.ConsoleMinLevel = cfg.Log.ConsoleMinLevel
 	return in
@@ -520,6 +530,7 @@ func (in *RunInput) applyConfig(cfg Config) {
 	next.WalletChain = in.WalletChain
 	next.RPCTrace = in.RPCTrace
 	next.DisableHTTPServer = disableHTTPServer
+	next.FSHTTPListener = in.FSHTTPListener
 	*in = next
 }
 
@@ -569,6 +580,7 @@ func (in RunInput) toConfig() Config {
 	cfg.FSHTTP.QuotePollSeconds = in.FSHTTP.QuotePollSeconds
 	cfg.FSHTTP.PrefetchDistanceChunks = in.FSHTTP.PrefetchDistanceChunks
 	cfg.FSHTTP.StrategyDebugLogEnabled = in.FSHTTP.StrategyDebugLogEnabled
+	cfg.WOCAPIKey = in.WOCAPIKey
 	cfg.Log.File = in.Log.File
 	cfg.Log.ConsoleMinLevel = in.Log.ConsoleMinLevel
 	cfg.Keys.PrivkeyHex = strings.TrimSpace(in.EffectivePrivKeyHex)
@@ -588,7 +600,7 @@ type Runtime struct {
 	FSHTTP          *fileHTTPServer
 
 	ActionChain dual2of2.ChainClient
-	WalletChain WalletChainClient
+	WalletChain walletChainClient
 	feePoolsMu  sync.RWMutex
 	feePools    map[string]*feePoolSession
 	// feePoolPayLocks 按 gateway 串行化费用池扣费路径（listen cycle / publish demand / publish live demand）。
@@ -956,9 +968,9 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	if rt.ActionChain == nil {
 		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
-			Provider: chainapi.WhatsOnChainProvider,
+			Provider: chainbridge.WhatsOnChainProvider,
 			Network:  in.BSV.Network,
-		}, 1*time.Second)
+		})
 		if err != nil {
 			_ = db.Close()
 			if closeTrace != nil {
@@ -972,10 +984,10 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		rt.ActionChain = actionChain
 	}
 	if rt.WalletChain == nil {
-		walletChain, err := NewWalletRouteChainClient(chainapi.Route{
-			Provider: chainapi.WhatsOnChainProvider,
+		walletChain, err := NewWalletChainClient(chainbridge.Route{
+			Provider: chainbridge.WhatsOnChainProvider,
 			Network:  in.BSV.Network,
-		}, 1*time.Second)
+		})
 		if err != nil {
 			_ = db.Close()
 			if closeTrace != nil {
@@ -1015,10 +1027,18 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	if cfg.FSHTTP.Enabled {
 		rt.FSHTTP = newFileHTTPServer(rt, &cfg, db, workspaceMgr)
+		fsHTTPListener := in.FSHTTPListener
+		in.FSHTTPListener = nil
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := rt.FSHTTP.Start(); err != nil {
+			var err error
+			if fsHTTPListener != nil {
+				err = rt.FSHTTP.StartOnListener(fsHTTPListener)
+			} else {
+				err = rt.FSHTTP.Start()
+			}
+			if err != nil {
 				obs.Error("bitcast-client", "fs_http_stopped", map[string]any{"error": err.Error()})
 			}
 		}()

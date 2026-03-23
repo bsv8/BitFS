@@ -20,7 +20,7 @@ export type ShellResource = {
   discoveryOrder: number;
 };
 
-export type ManagedClientPhase = "starting" | "locked" | "ready" | "error" | "stopped";
+export type ManagedClientPhase = "starting" | "startup_error" | "locked" | "ready" | "error" | "stopped";
 
 export type ManagedClientState = {
   phase: ManagedClientPhase;
@@ -34,6 +34,14 @@ export type ManagedClientState = {
   vaultPath: string;
   binaryPath: string;
   lastError: string;
+  startupErrorService: string;
+  startupErrorListenAddr: string;
+  chainAccessMode: string;
+  walletChainBaseURL: string;
+  wocProxyEnabled: boolean;
+  wocProxyListenAddr: string;
+  wocUpstreamRootURL: string;
+  wocMinInterval: string;
   recentLogs: string[];
 };
 
