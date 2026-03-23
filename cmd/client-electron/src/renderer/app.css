@@ -38,6 +38,8 @@ body {
 
 body.is-resizing-sidebar {
   cursor: col-resize;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 code {
@@ -522,6 +524,23 @@ input {
     linear-gradient(180deg, rgba(164, 188, 225, 0.98) 0%, rgba(141, 170, 214, 0.98) 100%);
 }
 
+.sidebar-drag-overlay {
+  /* 设计说明：
+   * - 侧栏拖拽时，右侧是 Electron webview，鼠标一旦进入 guest 页面，宿主 renderer 可能收不到 move/up；
+   * - 这里显式铺一层透明遮罩，并在拖拽期间禁用 webview 命中，把拖拽事件收回宿主页面统一处理。
+   */
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: none;
+  cursor: col-resize;
+  background: transparent;
+}
+
+body.is-resizing-sidebar .sidebar-drag-overlay {
+  display: block;
+}
+
 .viewer-stage {
   position: relative;
   display: grid;
@@ -532,6 +551,10 @@ input {
   min-height: 0;
   overflow: hidden;
   background: #fff;
+}
+
+body.is-resizing-sidebar .content-view {
+  pointer-events: none;
 }
 
 .content-view {

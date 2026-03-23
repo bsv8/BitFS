@@ -28,6 +28,7 @@
   const panelResources = document.getElementById("panel-resources");
   const panelWallet = document.getElementById("panel-wallet");
   const sidebarResizeHandle = document.getElementById("sidebar-resize-handle");
+  const sidebarDragOverlay = document.getElementById("sidebar-drag-overlay");
   const walletRefreshButton = document.getElementById("wallet-refresh-button");
   const walletSummaryNote = document.getElementById("wallet-summary-note");
   const walletDiagnosticNote = document.getElementById("wallet-diagnostic-note");
@@ -104,6 +105,7 @@
     !pageBudgetInput || !currentURL || !currentRootSeed || !pendingCount || !clientAPIBase || !homeSource ||
     !autoSpentTotal || !resourceTotalBadge || !resourcePendingBadge || !resourceListNote || !resourceList ||
     !panelTabResources || !panelTabWallet || !panelResources || !panelWallet || !sidebarResizeHandle ||
+    !sidebarDragOverlay ||
     !walletRefreshButton || !walletSummaryNote || !walletDiagnosticNote || !walletCopyDiagnosticsButton ||
     !walletAddress || !walletBalance || !walletBalanceSource || !walletLedgerNet || !walletTotalIn ||
     !walletTotalOut || !walletBackendPhase || !walletClientAPIBase || !walletChainType || !walletChainBaseURL ||
@@ -233,6 +235,42 @@
     }).catch((error) => {
       showShellError(error instanceof Error ? error.message : String(error), "保存侧栏失败");
     });
+  }
+
+  function beginSidebarResize(startX) {
+    resizeState = {
+      startX,
+      startWidth: sidebarWidthPx
+    };
+    sidebarResizeHandle.classList.add("is-dragging");
+    document.body.classList.add("is-resizing-sidebar");
+    debugLog("shell", "sidebar_resize_start", {
+      width: sidebarWidthPx
+    });
+  }
+
+  function updateSidebarResize(clientX, buttons) {
+    if (!resizeState) {
+      return;
+    }
+    if (buttons === 0) {
+      endSidebarResize();
+      return;
+    }
+    applySidebarWidth(resizeState.startWidth + (clientX - resizeState.startX));
+  }
+
+  function endSidebarResize() {
+    if (!resizeState) {
+      return;
+    }
+    resizeState = null;
+    sidebarResizeHandle.classList.remove("is-dragging");
+    document.body.classList.remove("is-resizing-sidebar");
+    debugLog("shell", "sidebar_resize_end", {
+      width: sidebarWidthPx
+    });
+    persistSidebarLayout();
   }
 
   function setActivePanel(panel, options) {
@@ -1166,35 +1204,20 @@
   });
 
   sidebarResizeHandle.addEventListener("mousedown", function handleResizeStart(event) {
-    resizeState = {
-      startX: event.clientX,
-      startWidth: sidebarWidthPx
-    };
-    sidebarResizeHandle.classList.add("is-dragging");
-    document.body.classList.add("is-resizing-sidebar");
-    debugLog("shell", "sidebar_resize_start", {
-      width: sidebarWidthPx
-    });
+    event.preventDefault();
+    beginSidebarResize(event.clientX);
   });
 
-  window.addEventListener("mousemove", function handleResizeMove(event) {
-    if (!resizeState) {
-      return;
-    }
-    applySidebarWidth(resizeState.startWidth + (event.clientX - resizeState.startX));
+  sidebarDragOverlay.addEventListener("mousemove", function handleResizeMove(event) {
+    updateSidebarResize(event.clientX, event.buttons);
   });
 
-  window.addEventListener("mouseup", function handleResizeEnd() {
-    if (!resizeState) {
-      return;
-    }
-    resizeState = null;
-    sidebarResizeHandle.classList.remove("is-dragging");
-    document.body.classList.remove("is-resizing-sidebar");
-    debugLog("shell", "sidebar_resize_end", {
-      width: sidebarWidthPx
-    });
-    persistSidebarLayout();
+  sidebarDragOverlay.addEventListener("mouseup", function handleResizeEnd() {
+    endSidebarResize();
+  });
+
+  window.addEventListener("blur", function handleResizeAbort() {
+    endSidebarResize();
   });
 
   chooseCreateButton.addEventListener("click", function handleChooseCreate() {

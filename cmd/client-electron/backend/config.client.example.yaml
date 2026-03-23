@@ -1,0 +1,73 @@
+# BitFS 客户端运行配置示例。
+# 说明：
+# - 实际运行入口读取的是 config.yaml，不再使用旧的 TOML 示例；
+# - debug 仅控制 p2prpc 控制层 raw 抓包，不抓更底层 libp2p/TCP 线包；
+# - 身份私钥不进此文件，统一走同目录 key.json。
+
+debug: false
+
+bsv:
+  network: "test"
+
+network:
+  gateways: []
+  arbiters: []
+
+storage:
+  workspace_dir: "workspace"
+  data_dir: "data"
+  min_free_bytes: 0
+
+seller:
+  enabled: true
+  pricing:
+    floor_price_sat_per_64k: 10
+    resale_discount_bps: 8000
+    live_base_price_sat_per_64k: 40
+    live_floor_price_sat_per_64k: 10
+    live_decay_per_minute_bps: 1000
+
+live:
+  cache_max_bytes: 0
+  buyer:
+    target_lag_segments: 3
+    max_budget_per_minute: 0
+    prefer_older_segments: true
+  publish:
+    broadcast_window: 10
+    broadcast_interval_seconds: 3
+
+listen:
+  renew_threshold_seconds: 0
+  auto_renew_rounds: 0
+  tick_seconds: 0
+
+scan:
+  startup_full_scan: false
+  fs_watch_enabled: true
+  rescan_interval_seconds: 0
+
+index:
+  backend: "sqlite"
+  sqlite_path: "data/client-index.sqlite"
+
+http:
+  enabled: true
+  listen_addr: "127.0.0.1:19181"
+
+fs_http:
+  enabled: true
+  listen_addr: "127.0.0.1:19182"
+  download_wait_timeout_seconds: 30
+  max_concurrent_sessions: 4
+  max_chunk_price_sat_per_64k: 0
+  quote_wait_seconds: 8
+  quote_poll_seconds: 2
+  prefetch_distance_chunks: 2
+  strategy_debug_log_enabled: false
+
+woc_api_key: ""
+
+log:
+  file: "logs/bitfs.log"
+  console_min_level: "none"
