@@ -95,6 +95,12 @@ input {
   background: linear-gradient(180deg, #fbfcfd 0%, #e3e9f0 100%);
 }
 
+.secondary-button.is-active {
+  border-color: rgba(58, 93, 138, 0.92);
+  background: linear-gradient(180deg, rgba(234, 242, 251, 0.98) 0%, rgba(216, 228, 243, 0.98) 100%);
+  color: #173456;
+}
+
 .icon-button {
   min-width: 31px;
   padding: 0;

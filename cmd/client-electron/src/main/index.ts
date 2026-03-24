@@ -10,6 +10,7 @@ import { debugLogger } from "./debug_logger";
 import { ElectronE2EController } from "./e2e_controller";
 import { registerShellIPC } from "./ipc_bridge";
 import { isTrustedNavigationURL, isTrustedRequestURL } from "./navigation_guard";
+import { resolveShellAssetPaths } from "./shell_assets";
 
 const e2eConfig = resolveE2EConfig();
 
@@ -78,10 +79,12 @@ async function bootstrap(): Promise<void> {
     log_file_path: debugLogger.getLogFilePath()
   });
   installTrustedWorldGuards();
-  const viewerPreloadPath = path.join(app.getAppPath(), "src", "renderer", "viewer-preload.js");
+  const shellAssets = resolveShellAssetPaths(app.getAppPath());
   settings = new BrowserSettingsStore(app.getPath("userData"));
   debugLogger.log("bootstrap", "settings_ready", {
-    viewer_preload_path: viewerPreloadPath
+    viewer_preload_path: shellAssets.viewerPreloadPath,
+    settings_preload_path: shellAssets.settingsPreloadPath,
+    settings_page_url: shellAssets.settingsPageURL
   });
   supervisor = await ManagedClientSupervisor.create({
     appRootDir: app.getAppPath(),
@@ -89,7 +92,7 @@ async function bootstrap(): Promise<void> {
     userDataDir: app.getPath("userData")
   });
   debugLogger.log("bootstrap", "supervisor_created", supervisor.snapshot());
-  runtime = new BitfsBrowserRuntime(supervisor.snapshot().apiBase, viewerPreloadPath);
+  runtime = new BitfsBrowserRuntime(supervisor.snapshot().apiBase, shellAssets.viewerPreloadPath);
   protocol.handle("bitfs", createBitfsProtocolHandler(runtime));
   debugLogger.log("bootstrap", "protocol_registered", {
     scheme: "bitfs"
@@ -103,7 +106,7 @@ async function bootstrap(): Promise<void> {
       }
       mainWindowCreated = false;
     });
-    registerShellIPC(window, runtime, supervisor, settings);
+    registerShellIPC(window, runtime, supervisor, settings, shellAssets);
     mainWindowCreated = true;
     debugLogger.log("bootstrap", "main_window_created", {
       window_id: window.id
@@ -182,6 +185,7 @@ app.on("activate", () => {
   if (mainWindowCreated || runtime === null || supervisor === null || settings === null) {
     return;
   }
+  const shellAssets = resolveShellAssetPaths(app.getAppPath());
   const window = createAppWindow(app.getAppPath());
   mainWindow = window;
   window.on("closed", () => {
@@ -190,7 +194,7 @@ app.on("activate", () => {
     }
     mainWindowCreated = false;
   });
-  registerShellIPC(window, runtime, supervisor, settings);
+  registerShellIPC(window, runtime, supervisor, settings, shellAssets);
   mainWindowCreated = true;
   debugLogger.log("bootstrap", "main_window_recreated", {
     window_id: window.id

@@ -42,6 +42,32 @@
     };
   }
 
+  function onViewerEvent(topics, listener) {
+    const allowedTopics = normalizeTopics(topics);
+    const handler = function handleViewerEvent(_event, runtimeEvent) {
+      if (allowedTopics.size > 0 && !allowedTopics.has(String(runtimeEvent && runtimeEvent.topic || ""))) {
+        return;
+      }
+      listener(runtimeEvent);
+    };
+    ipcRenderer.on("bitfs-viewer:event", handler);
+    return function unsubscribe() {
+      ipcRenderer.removeListener("bitfs-viewer:event", handler);
+    };
+  }
+
+  function normalizeTopics(raw) {
+    const values = Array.isArray(raw) ? raw : [raw];
+    const out = new Set();
+    for (const value of values) {
+      const topic = String(value || "").trim();
+      if (topic) {
+        out.add(topic);
+      }
+    }
+    return out;
+  }
+
   const bitfsBridge = {
     version: "0.1.0",
     trustedProtocol: "bitfs://",
@@ -141,13 +167,13 @@
     },
     events: {
       subscribe(name, handler) {
-        if (name !== "state") {
-          throw new Error("unsupported event");
-        }
         if (typeof handler !== "function") {
           throw new Error("event handler is required");
         }
-        return onShellState(handler);
+        if (name === "state") {
+          return onShellState(handler);
+        }
+        return onViewerEvent(name, handler);
       }
     }
   };

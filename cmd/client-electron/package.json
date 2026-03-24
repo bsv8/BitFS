@@ -6,9 +6,10 @@
   "main": "dist/main/index.js",
   "scripts": {
     "build:homepage": "npm --prefix ./hash-homepage run build",
+    "build:settings-page": "npm --prefix ./settings-page run build",
     "build:go-client": "node ./scripts/build_go_client.js",
     "build:ts": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p ./tsconfig.json",
-    "build": "npm run build:homepage && npm run build:go-client && npm run build:ts",
+    "build": "npm run build:homepage && npm run build:settings-page && npm run build:go-client && npm run build:ts",
     "check": "tsc -p ./tsconfig.json --noEmit",
     "electron": "node ./scripts/electron_launcher.js .",
     "run": "npm run electron",
@@ -32,6 +33,7 @@
     "files": [
       "dist/**/*",
       "src/renderer/**/*",
+      "settings-page/dist-settings/**/*",
       "package.json"
     ],
     "extraResources": [

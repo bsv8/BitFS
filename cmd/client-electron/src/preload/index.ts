@@ -1,5 +1,5 @@
 import { ipcRenderer } from "electron";
-import type { KeyFileActionResult, ShellState } from "../shared/shell_contract";
+import type { BitfsRuntimeEvent, KeyFileActionResult, ShellState } from "../shared/shell_contract";
 
 type Unsubscribe = () => void;
 
@@ -21,6 +21,9 @@ type BitfsShellBridge = {
   noteNavigation(url: string): void;
   debugLog(scope: string, event: string, fields?: Record<string, unknown>): void;
   onState(listener: (state: ShellState) => void): Unsubscribe;
+  events: {
+    subscribe(topics: string | string[], listener: (event: BitfsRuntimeEvent) => void): Unsubscribe;
+  };
 };
 
 declare global {
@@ -93,7 +96,37 @@ window.bitfsShell = {
     return () => {
       ipcRenderer.removeListener("bitfs-shell:state", handler);
     };
+  },
+  events: {
+    subscribe(topics: string | string[], listener: (event: BitfsRuntimeEvent) => void): Unsubscribe {
+      if (typeof listener !== "function") {
+        throw new Error("event listener is required");
+      }
+      const allowedTopics = normalizeTopics(topics);
+      const handler = (_event: unknown, runtimeEvent: BitfsRuntimeEvent) => {
+        if (allowedTopics.size > 0 && !allowedTopics.has(String(runtimeEvent?.topic || ""))) {
+          return;
+        }
+        listener(runtimeEvent);
+      };
+      ipcRenderer.on("bitfs-shell:event", handler);
+      return () => {
+        ipcRenderer.removeListener("bitfs-shell:event", handler);
+      };
+    }
   }
 };
+
+function normalizeTopics(raw: string | string[]): Set<string> {
+  const values = Array.isArray(raw) ? raw : [raw];
+  const topics = new Set<string>();
+  for (const value of values) {
+    const topic = String(value || "").trim();
+    if (topic !== "") {
+      topics.add(topic);
+    }
+  }
+  return topics;
+}
 
 export {};

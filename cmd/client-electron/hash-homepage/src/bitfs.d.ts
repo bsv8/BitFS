@@ -53,6 +53,17 @@ type BitfsWalletHistoryQuery = {
   direction?: BitfsWalletHistoryDirection;
 };
 
+type BitfsRuntimeEvent = {
+  seq: number;
+  runtime_epoch: string;
+  topic: string;
+  scope: "private" | "public";
+  occurred_at_unix: number;
+  producer: string;
+  trace_id: string;
+  payload: Record<string, unknown>;
+};
+
 type BitfsBridge = {
   trustedProtocol: "bitfs://";
   navigation: {
@@ -69,6 +80,12 @@ type BitfsBridge = {
     history: {
       list: (query?: BitfsWalletHistoryQuery) => Promise<BitfsWalletHistoryList>;
     };
+  };
+  events: {
+    subscribe: (
+      topics: string | string[],
+      listener: (event: BitfsRuntimeEvent) => void
+    ) => () => void;
   };
 };
 

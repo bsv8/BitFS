@@ -9,6 +9,7 @@
   const goHomeButton = document.getElementById("go-home-button");
   const openButton = document.getElementById("open-button");
   const homeButton = document.getElementById("home-button");
+  const settingsButton = document.getElementById("settings-button");
   const lockButton = document.getElementById("lock-button");
   const budgetForm = document.getElementById("budget-form");
   const singleBudgetInput = document.getElementById("single-budget-input");
@@ -71,6 +72,7 @@
   const errorBannerText = document.getElementById("error-banner-text");
   const errorBannerCopyButton = document.getElementById("error-banner-copy-button");
   const webview = document.getElementById("content-view");
+  const settingsView = document.getElementById("settings-view");
   const backendGate = document.getElementById("backend-gate");
   const backendTitle = document.getElementById("backend-title");
   const backendSummary = document.getElementById("backend-summary");
@@ -101,7 +103,7 @@
 
   if (
     !bridge || !browserShell || !addressForm || !addressInput || !backButton || !forwardButton || !reloadButton ||
-    !goHomeButton || !openButton || !homeButton || !lockButton || !budgetForm || !singleBudgetInput ||
+    !goHomeButton || !openButton || !homeButton || !settingsButton || !lockButton || !budgetForm || !singleBudgetInput ||
     !pageBudgetInput || !currentURL || !currentRootSeed || !pendingCount || !clientAPIBase || !homeSource ||
     !autoSpentTotal || !resourceTotalBadge || !resourcePendingBadge || !resourceListNote || !resourceList ||
     !panelTabResources || !panelTabWallet || !panelResources || !panelWallet || !sidebarResizeHandle ||
@@ -116,7 +118,7 @@
     !chainMaintLastTaskStartedAt || !chainMaintLastTaskEndedAt || !chainMaintLastError ||
     !walletSyncRoundID || !walletSyncFailedStep || !walletSyncUpstreamPath || !walletSyncHTTPStatus ||
     !walletOnchainError || !walletSyncError || !errorBanner || !errorBannerText || !errorBannerCopyButton ||
-    !webview || !backendGate || !backendTitle || !backendSummary || !backendDetail ||
+    !webview || !settingsView || !backendGate || !backendTitle || !backendSummary || !backendDetail ||
     !backendStepNote || !backendErrorBanner || !backendErrorBannerText || !backendErrorCopyButton ||
     !choosePanel || !chooseCreateButton || !chooseImportButton || !createKeyForm || !createPasswordInput ||
     !createPasswordConfirmInput || !createBackButton || !unlockForm || !unlockPasswordInput || !exportKeyButton ||
@@ -128,10 +130,18 @@
 
   const PANEL_RESOURCES = "resources";
   const PANEL_WALLET = "wallet";
+  const CONTENT_MODE_BROWSER = "browser";
+  const CONTENT_MODE_SETTINGS = "settings";
   const DEFAULT_SIDEBAR_WIDTH = 388;
-  const WALLET_AUTO_REFRESH_INTERVAL_MS = 3000;
+  const WALLET_REFRESH_TOPICS = new Set([
+    "backend.phase.changed",
+    "wallet.sync.changed",
+    "wallet.changed",
+    "client.status.changed"
+  ]);
 
   let viewerDOMReady = false;
+  let settingsDOMReady = false;
   let currentState = null;
   let onboardingStep = "choose-init";
   let lastBackendPhase = "";
@@ -140,9 +150,9 @@
   let lastShellError = "";
   let activePanel = PANEL_RESOURCES;
   let sidebarWidthPx = DEFAULT_SIDEBAR_WIDTH;
+  let contentMode = CONTENT_MODE_BROWSER;
   let resizeState = null;
   let walletFetchSequence = 0;
-  let walletAutoRefreshTimer = 0;
   const walletState = {
     loading: false,
     loaded: false,
@@ -158,44 +168,23 @@
     bridge.debugLog(scope, event, fields || {});
   }
 
-  function shouldAutoRefreshWallet() {
-    if (!currentState || !isBackendReady(currentState) || walletState.loading) {
-      return false;
-    }
-    if (activePanel === PANEL_WALLET) {
-      return true;
-    }
-    if (!walletState.loaded || walletState.error) {
-      return true;
-    }
-    const payload = walletState.data || {};
-    const onchainError = String(payload.onchain_balance_error || "").trim();
-    const syncError = String(payload.wallet_utxo_sync_last_error || "").trim();
-    return onchainError !== "" || syncError !== "" || Boolean(payload.wallet_utxo_sync_state_is_stale);
-  }
-
-  function ensureWalletAutoRefreshLoop() {
-    if (walletAutoRefreshTimer !== 0) {
+  function handleRuntimeEvent(runtimeEvent) {
+    const topic = String(runtimeEvent?.topic || "");
+    if (topic === "") {
       return;
     }
-    // 设计说明：
-    // - 钱包摘要第一次读取可能撞上 utxo 同步还没收敛；
-    // - 自动刷新只在“未加载 / 有错误 / 仍旧 stale / 用户正停留在钱包页”时触发，
-    //   让侧栏最终追上真实余额，又避免长期无意义轮询。
-    walletAutoRefreshTimer = window.setInterval(() => {
-      if (!shouldAutoRefreshWallet()) {
-        return;
-      }
-      void loadWalletSummary(false);
-    }, WALLET_AUTO_REFRESH_INTERVAL_MS);
-  }
-
-  function stopWalletAutoRefreshLoop() {
-    if (walletAutoRefreshTimer === 0) {
+    debugLog("events", "received", {
+      topic,
+      producer: String(runtimeEvent?.producer || ""),
+      scope: String(runtimeEvent?.scope || "")
+    });
+    if (!WALLET_REFRESH_TOPICS.has(topic)) {
       return;
     }
-    window.clearInterval(walletAutoRefreshTimer);
-    walletAutoRefreshTimer = 0;
+    if (!currentState || !isBackendReady(currentState)) {
+      return;
+    }
+    void loadWalletSummary(false);
   }
 
   async function copyPlainText(text) {
@@ -391,6 +380,60 @@
 
   function formatBoolCN(value) {
     return value ? "是" : "否";
+  }
+
+  function isBrowserContentMode() {
+    return contentMode === CONTENT_MODE_BROWSER;
+  }
+
+  function ensureSettingsViewReady(state) {
+    if (!state) {
+      return;
+    }
+    const preloadPath = String(state.settingsPreloadPath || "").trim();
+    const pageURL = String(state.settingsPageURL || "").trim();
+    if (preloadPath && settingsView.getAttribute("preload") !== preloadPath) {
+      settingsView.setAttribute("preload", preloadPath);
+      debugLog("shell", "settings_preload_set", {
+        preload: preloadPath
+      });
+    }
+    if (pageURL && settingsView.getAttribute("src") !== pageURL) {
+      settingsView.setAttribute("src", pageURL);
+      debugLog("shell", "settings_src_set", {
+        url: pageURL
+      });
+    }
+  }
+
+  function syncContentMode() {
+    const showSettings = contentMode === CONTENT_MODE_SETTINGS && currentState && isBackendReady(currentState);
+    webview.classList.toggle("is-hidden", Boolean(showSettings));
+    settingsView.classList.toggle("is-hidden", !showSettings);
+    settingsButton.classList.toggle("is-active", Boolean(showSettings));
+    settingsButton.textContent = showSettings ? "返回浏览" : "打开设置";
+  }
+
+  function setContentMode(mode) {
+    const next = mode === CONTENT_MODE_SETTINGS ? CONTENT_MODE_SETTINGS : CONTENT_MODE_BROWSER;
+    if (next === CONTENT_MODE_SETTINGS && (!currentState || !isBackendReady(currentState))) {
+      return;
+    }
+    if (next === contentMode) {
+      syncContentMode();
+      refreshNavigationButtons();
+      return;
+    }
+    contentMode = next;
+    if (contentMode === CONTENT_MODE_SETTINGS && currentState) {
+      ensureSettingsViewReady(currentState);
+    }
+    debugLog("shell", "content_mode_changed", {
+      mode: contentMode
+    });
+    syncContentMode();
+    setInteractiveEnabled(Boolean(currentState && isBackendReady(currentState)));
+    refreshNavigationButtons();
   }
 
   function escapeHTML(raw) {
@@ -639,16 +682,19 @@
   }
 
   function setInteractiveEnabled(enabled) {
-    addressInput.disabled = !enabled;
-    openButton.disabled = !enabled;
-    homeButton.disabled = !enabled;
-    goHomeButton.disabled = !enabled;
+    const browserMode = isBrowserContentMode();
+    addressInput.disabled = !enabled || !browserMode;
+    openButton.disabled = !enabled || !browserMode;
+    homeButton.disabled = !enabled || !browserMode;
+    goHomeButton.disabled = !enabled || !browserMode;
     reloadButton.disabled = !enabled;
+    settingsButton.disabled = !enabled;
     singleBudgetInput.disabled = !enabled;
     pageBudgetInput.disabled = !enabled;
     lockButton.disabled = !enabled;
     walletRefreshButton.disabled = !enabled || walletState.loading;
     refreshNavigationButtons(enabled);
+    syncContentMode();
   }
 
   function setShellMode(mode) {
@@ -659,6 +705,11 @@
 
   function refreshNavigationButtons(assumeBackendReady) {
     const ready = typeof assumeBackendReady === "boolean" ? assumeBackendReady : isBackendReady(currentState);
+    if (!isBrowserContentMode()) {
+      backButton.disabled = true;
+      forwardButton.disabled = true;
+      return;
+    }
     const currentViewerURL = viewerDOMReady ? webview.getURL() : "";
     const hasPage = ready && Boolean(currentViewerURL || webview.getAttribute("src"));
     backButton.disabled = !hasPage || !viewerDOMReady || !webview.canGoBack();
@@ -781,7 +832,9 @@
     }
 
     applySidebarWidth(state.sidebarWidthPx || sidebarWidthPx);
+    ensureSettingsViewReady(state);
     if (!isBackendReady(state)) {
+      contentMode = CONTENT_MODE_BROWSER;
       walletState.loading = false;
       walletState.loaded = false;
       walletState.error = "内置客户端尚未就绪。";
@@ -852,6 +905,7 @@
     renderBackendState(state);
     renderWalletSummary();
     syncViewerURL(state);
+    syncContentMode();
   }
 
   async function openFromInput() {
@@ -1117,6 +1171,30 @@
     handleViewerNavigation((viewerDOMReady ? webview.getURL() : "") || "");
   });
 
+  settingsView.addEventListener("did-attach", function handleSettingsAttach() {
+    settingsDOMReady = false;
+    debugLog("settings", "did_attach");
+  });
+
+  settingsView.addEventListener("dom-ready", function handleSettingsReady() {
+    settingsDOMReady = true;
+    debugLog("settings", "dom_ready", {
+      url: settingsView.getAttribute("src") || ""
+    });
+  });
+
+  settingsView.addEventListener("did-fail-load", function handleSettingsLoadFail(event) {
+    if (event.errorCode === -3) {
+      return;
+    }
+    debugLog("settings", "did_fail_load", {
+      error_code: event.errorCode,
+      error_description: event.errorDescription,
+      validated_url: event.validatedURL
+    });
+    showShellError(event.errorDescription || "settings load failed", "设置页加载失败");
+  });
+
   addressForm.addEventListener("submit", function handleAddressSubmit(event) {
     event.preventDefault();
     debugLog("shell", "address_submit", {
@@ -1151,6 +1229,15 @@
     if (!currentState || !isBackendReady(currentState)) {
       return;
     }
+    if (!isBrowserContentMode()) {
+      if (settingsView.getURL()) {
+        debugLog("settings", "reload", {
+          url: settingsView.getURL()
+        });
+        settingsView.reload();
+      }
+      return;
+    }
     if (viewerDOMReady && webview.getURL()) {
       debugLog("webview", "reload", {
         url: webview.getURL()
@@ -1169,6 +1256,13 @@
   lockButton.addEventListener("click", function handleLockClick() {
     debugLog("shell", "lock_click");
     void withAction(() => bridge.lock());
+  });
+
+  settingsButton.addEventListener("click", function handleSettingsToggle() {
+    if (!currentState || !isBackendReady(currentState)) {
+      return;
+    }
+    setContentMode(isBrowserContentMode() ? CONTENT_MODE_SETTINGS : CONTENT_MODE_BROWSER);
   });
 
   homeButton.addEventListener("click", function handleHomeClick() {
@@ -1364,14 +1458,14 @@
   });
 
   const unsubscribe = bridge.onState(renderState);
-  ensureWalletAutoRefreshLoop();
+  const unsubscribeEvents = bridge.events.subscribe(Array.from(WALLET_REFRESH_TOPICS), handleRuntimeEvent);
   window.addEventListener("resize", function handleResize() {
     applySidebarWidth(sidebarWidthPx);
     refreshNavigationButtons();
   });
   window.addEventListener("beforeunload", function cleanup() {
     debugLog("shell", "beforeunload");
-    stopWalletAutoRefreshLoop();
+    unsubscribeEvents();
     unsubscribe();
   });
 
@@ -1382,6 +1476,7 @@
         preload: state.viewerPreloadPath
       });
     }
+    ensureSettingsViewReady(state);
     debugLog("shell", "initial_state_loaded", {
       backend_phase: String(state?.backend?.phase || ""),
       current_url: String(state?.currentURL || "")

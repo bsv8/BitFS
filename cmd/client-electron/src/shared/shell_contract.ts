@@ -2,6 +2,19 @@ export type ShellResourceMode = "local" | "auto" | "approved" | "pending" | "blo
 
 export type ShellSidebarPanel = "resources" | "wallet";
 
+export type BitfsEventScope = "private" | "public";
+
+export type BitfsRuntimeEvent = {
+  seq: number;
+  runtime_epoch: string;
+  topic: string;
+  scope: BitfsEventScope;
+  occurred_at_unix: number;
+  producer: string;
+  trace_id: string;
+  payload: Record<string, unknown>;
+};
+
 export type ShellResource = {
   seedHash: string;
   estimatedTotalSat: number;
@@ -111,6 +124,8 @@ export type ShellState = {
   lastError: string;
   clientAPIBase: string;
   viewerPreloadPath: string;
+  settingsPageURL: string;
+  settingsPreloadPath: string;
   userHomeSeedHash: string;
   sidebarWidthPx: number;
   activePanel: ShellSidebarPanel;

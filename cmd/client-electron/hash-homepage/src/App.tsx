@@ -3,7 +3,6 @@ import { FormEvent, startTransition, useEffect, useState } from "react";
 import orbitMarkURL from "./assets/orbit-mark.svg";
 
 const historyLimit = 8;
-const publicViewRefreshIntervalMs = 3_000;
 
 type PageMode = "loading" | "connected" | "preview" | "error";
 
@@ -21,7 +20,7 @@ export default function App() {
   useEffect(() => {
     let cancelled = false;
     let inFlight = false;
-    let refreshTimer = 0;
+    let unsubscribeEvents = () => undefined;
 
     async function loadPublicWalletView(isBackgroundRefresh: boolean) {
       const bridge = window.bitfs;
@@ -85,18 +84,13 @@ export default function App() {
 
     void loadPublicWalletView(false);
     if (window.bitfs) {
-      // 设计说明：
-      // - 首页展示的是公开钱包视图，启动期第一次读取可能会撞上链上余额同步未完成；
-      // - 这里做轻量轮询，让首页最终追上真实 wallet summary，而不是把启动期的 0 固化在页面里。
-      refreshTimer = window.setInterval(() => {
+      unsubscribeEvents = window.bitfs.events.subscribe(["wallet.changed", "client.status.changed"], () => {
         void loadPublicWalletView(true);
-      }, publicViewRefreshIntervalMs);
+      });
     }
     return () => {
       cancelled = true;
-      if (refreshTimer !== 0) {
-        window.clearInterval(refreshTimer);
-      }
+      unsubscribeEvents();
     };
   }, [refreshToken]);
 

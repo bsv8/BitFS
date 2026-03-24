@@ -2,10 +2,11 @@ import { spawn, type ChildProcessByStdio } from "node:child_process";
 import type { Readable } from "node:stream";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
-import type { ManagedClientPhase, ManagedClientState } from "../shared/shell_contract";
+import type { BitfsRuntimeEvent, ManagedClientPhase, ManagedClientState } from "../shared/shell_contract";
 import { debugLogger } from "./debug_logger";
 
 const STATUS_POLL_INTERVAL_MS = 1500;
@@ -13,6 +14,7 @@ const START_TIMEOUT_MS = 20_000;
 const READY_TIMEOUT_MS = 30_000;
 const LOG_BUFFER_LIMIT = 80;
 const BOOTSTRAP_PREFIX = "BITFS_MANAGED_STATE ";
+const MANAGED_EVENT_PREFIX = "BITFS_EVENT ";
 
 type ManagedClientSupervisorInit = {
   appRootDir: string;
@@ -49,6 +51,19 @@ type KeyStatusResponse = {
 
 type ExportKeyResponse = {
   cipher?: Record<string, unknown>;
+};
+
+type ManagedJSONRequest = {
+  method?: string;
+  pathname: string;
+  body?: unknown;
+};
+
+type StaticUploadRequest = {
+  filePath: string;
+  fileName?: string;
+  targetDir: string;
+  overwrite: boolean;
 };
 
 type BootstrapStateEvent = {
@@ -259,6 +274,32 @@ export class ManagedClientSupervisor extends EventEmitter {
     return this.waitForState((state) => state.phase === "locked" && !state.unlocked, READY_TIMEOUT_MS);
   }
 
+  async requestManagedJSON<T>(request: ManagedJSONRequest): Promise<T> {
+    await this.ensureReachable();
+    return this.fetchJSON<T>(request.pathname, buildJSONRequestInit(request.method, request.body));
+  }
+
+  async uploadStaticFile<T>(request: StaticUploadRequest): Promise<T> {
+    const filePath = path.resolve(String(request.filePath || "").trim());
+    const targetDir = String(request.targetDir || "").trim() || "/";
+    const overwrite = Boolean(request.overwrite);
+    const fileName = String(request.fileName || path.basename(filePath)).trim();
+    if (fileName === "") {
+      throw new Error("file name is required");
+    }
+    await this.ensureReachable();
+    const data = await fsPromises.readFile(filePath);
+    const form = new FormData();
+    form.append("file", new Blob([data]), fileName);
+    form.append("file_name", fileName);
+    form.append("target_dir", targetDir);
+    form.append("overwrite", overwrite ? "1" : "0");
+    return this.fetchJSON<T>("/api/v1/admin/static/upload", {
+      method: "POST",
+      body: form
+    });
+  }
+
   private async ensureReachable(): Promise<void> {
     const state = await this.start();
     debugLogger.log("supervisor", "ensure_reachable_result", {
@@ -365,22 +406,27 @@ export class ManagedClientSupervisor extends EventEmitter {
       const extracted = extractLines(chunk, this.stdoutLineRemainder);
       this.stdoutLineRemainder = extracted.remainder;
       const lines = extracted.lines;
-      this.appendLogs(lines);
+      this.appendLogs(lines.filter((line) => !isManagedControlLine(line)));
       for (const line of lines) {
         debugLogger.log("supervisor.stdout", "line", { line });
-        this.handleBootstrapLine(line);
+        this.handleManagedControlLine(line);
       }
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
       const extracted = extractLines(chunk, this.stderrLineRemainder);
       this.stderrLineRemainder = extracted.remainder;
       const lines = extracted.lines;
-      this.appendLogs(lines);
+      this.appendLogs(lines.filter((line) => !isManagedControlLine(line)));
       for (const line of lines) {
         debugLogger.log("supervisor.stderr", "line", { line });
-        this.handleBootstrapLine(line);
+        this.handleManagedControlLine(line);
       }
     });
+  }
+
+  private handleManagedControlLine(line: string): void {
+    this.handleBootstrapLine(line);
+    this.handleManagedEventLine(line);
   }
 
   private handleBootstrapLine(line: string): void {
@@ -412,6 +458,52 @@ export class ManagedClientSupervisor extends EventEmitter {
         message: error instanceof Error ? error.message : String(error)
       });
     }
+  }
+
+  private handleManagedEventLine(line: string): void {
+    const trimmed = String(line || "").trim();
+    if (!trimmed.startsWith(MANAGED_EVENT_PREFIX)) {
+      return;
+    }
+    const raw = trimmed.slice(MANAGED_EVENT_PREFIX.length);
+    try {
+      const event = JSON.parse(raw) as BitfsRuntimeEvent;
+      if (!event || typeof event !== "object" || typeof event.topic !== "string" || event.topic.trim() === "") {
+        return;
+      }
+      if (event.topic === "backend.phase.changed" && event.scope === "private") {
+        this.applyManagedPhaseEvent(event);
+      }
+      this.emit("event", event);
+    } catch (error) {
+      debugLogger.log("supervisor", "managed_event_parse_failed", {
+        line: trimmed,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  private applyManagedPhaseEvent(event: BitfsRuntimeEvent): void {
+    const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+    this.setState({
+      phase: normalizeManagedPhase(payload.phase, this.state.phase),
+      unlocked: Boolean(payload.unlocked ?? this.state.unlocked),
+      lastError: readStringRecordField(payload, "startup_error_message") || this.state.lastError,
+      startupErrorService: readStringRecordField(payload, "startup_error_service") || this.state.startupErrorService,
+      startupErrorListenAddr: readStringRecordField(payload, "startup_error_listen") || this.state.startupErrorListenAddr,
+      chainAccessMode: readStringRecordField(payload, "chain_access_mode") || this.state.chainAccessMode,
+      walletChainBaseURL: readStringRecordField(payload, "wallet_chain_base_url") || this.state.walletChainBaseURL,
+      wocProxyEnabled: hasRecordField(payload, "woc_proxy_enabled")
+        ? readBooleanRecordField(payload, "woc_proxy_enabled")
+        : this.state.wocProxyEnabled,
+      wocProxyListenAddr: readStringRecordField(payload, "woc_proxy_listen_addr") || this.state.wocProxyListenAddr,
+      wocUpstreamRootURL: readStringRecordField(payload, "woc_upstream_root_url") || this.state.wocUpstreamRootURL,
+      wocMinInterval: readStringRecordField(payload, "woc_min_interval") || this.state.wocMinInterval,
+      hasSystemHomeBundle: hasRecordField(payload, "has_system_home_bundle")
+        ? readBooleanRecordField(payload, "has_system_home_bundle")
+        : this.state.hasSystemHomeBundle,
+      defaultHomeSeedHash: normalizeSeedHash(readStringRecordField(payload, "default_home_seed_hash") || this.state.defaultHomeSeedHash)
+    });
   }
 
   private appendLogs(lines: string[]): void {
@@ -576,14 +668,22 @@ export class ManagedClientSupervisor extends EventEmitter {
         status: response.status,
         body: text
       });
-      throw new Error(text || `request failed: ${response.status}`);
+      throw new Error(normalizeManagedHTTPError(text, response.status));
     }
     debugLogger.log("supervisor.http", "response_ok", {
       method,
       url: target,
       status: response.status
     });
-    return response.json() as Promise<T>;
+    const text = (await response.text()).trim();
+    if (text === "") {
+      return {} as T;
+    }
+    try {
+      return JSON.parse(text) as T;
+    } catch {
+      return text as T;
+    }
   }
 
   private async postJSON(pathname: string, body: Record<string, unknown>): Promise<unknown> {
@@ -600,6 +700,9 @@ export class ManagedClientSupervisor extends EventEmitter {
       ...this.state,
       ...next
     };
+    if (this.state.phase !== "starting") {
+      this.stopPolling();
+    }
     if (stateChanged(previous, this.state)) {
       debugLogger.log("supervisor", "state_changed", {
         from_phase: previous.phase,
@@ -631,11 +734,88 @@ function resolveManagedClientBinaryPath(appRootDir: string, packaged: boolean): 
   return path.join(appRootDir, "resources", "bin", platformKey, binaryName);
 }
 
+function buildJSONRequestInit(method: string | undefined, body: unknown): RequestInit {
+  const normalizedMethod = String(method || "GET").trim().toUpperCase() || "GET";
+  const init: RequestInit = {
+    method: normalizedMethod
+  };
+  if (body !== undefined) {
+    init.headers = { "content-type": "application/json" };
+    init.body = JSON.stringify(body);
+  }
+  return init;
+}
+
+function normalizeManagedHTTPError(text: string, status: number): string {
+  const value = String(text || "").trim();
+  if (value === "") {
+    return `request failed: ${status}`;
+  }
+  try {
+    const parsed = JSON.parse(value) as Record<string, unknown>;
+    const message = typeof parsed.error === "string" ? parsed.error.trim() : "";
+    if (message !== "") {
+      return message;
+    }
+  } catch {
+    // 保留原始文本
+  }
+  return value;
+}
+
 function buildManagedChildEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   env.BITFS_ELECTRON_MANAGED = "1";
+  env.BITFS_MANAGED_CONTROL_STREAM = "1";
   return env;
+}
+
+function isManagedControlLine(line: string): boolean {
+  const trimmed = String(line || "").trim();
+  return trimmed.startsWith(BOOTSTRAP_PREFIX) || trimmed.startsWith(MANAGED_EVENT_PREFIX);
+}
+
+function normalizeManagedPhase(value: unknown, fallback: ManagedClientPhase): ManagedClientPhase {
+  const phase = String(value || "").trim();
+  switch (phase) {
+    case "starting":
+    case "startup_error":
+    case "locked":
+    case "ready":
+    case "error":
+    case "stopped":
+      return phase;
+    default:
+      return fallback;
+  }
+}
+
+function readStringRecordField(source: Record<string, unknown>, key: string): string {
+  const value = source[key];
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  return "";
+}
+
+function hasRecordField(source: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(source, key);
+}
+
+function readBooleanRecordField(source: Record<string, unknown>, key: string): boolean {
+  const value = source[key];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "1" || normalized === "true" || normalized === "yes";
+  }
+  return false;
 }
 
 function parseOptionalPort(raw: string | undefined): number | null {

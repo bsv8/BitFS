@@ -114,6 +114,7 @@ func main() {
 			Overrides:            overrides,
 			Desktop:              desktopOptions,
 			UnlockPasswordPrompt: msg("prompt_password_unlock"),
+			ControlStream:        managedclient.NewManagedControlStreamFromEnv(),
 		}); err != nil {
 			log.Fatal(err)
 		}

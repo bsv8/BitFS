@@ -4,10 +4,11 @@ import { fileURLToPath } from "node:url";
 
 import { debugLogger } from "./debug_logger";
 import { isTrustedNavigationURL } from "./navigation_guard";
+import { resolveShellAssetPaths } from "./shell_assets";
 
 export function createAppWindow(appRootDir: string): BrowserWindow {
   const preloadPath = path.join(appRootDir, "dist", "preload", "index.js");
-  const viewerPreloadPath = path.join(appRootDir, "src", "renderer", "viewer-preload.js");
+  const shellAssets = resolveShellAssetPaths(appRootDir);
   const window = new BrowserWindow({
     width: 1440,
     height: 960,
@@ -32,36 +33,68 @@ export function createAppWindow(appRootDir: string): BrowserWindow {
   // - 这样页面世界保留标准浏览器能力和 `window.bitfs`，但无法串到宿主壳。
   window.webContents.on("will-attach-webview", (event, preferences, params) => {
     const preload = normalizePreloadPath(String(params.preload || ""));
-    const expectedPreload = path.resolve(viewerPreloadPath);
+    const expectedViewerPreload = path.resolve(shellAssets.viewerPreloadPath);
+    const expectedSettingsPreload = path.resolve(shellAssets.settingsPreloadPath);
+    const normalizedSrc = String(params.src || "").trim();
     debugLogger.log("app_window", "will_attach_webview", {
       preload,
       raw_preload: String(params.preload || ""),
-      expected_preload: expectedPreload,
-      src: String(params.src || "")
+      expected_viewer_preload: expectedViewerPreload,
+      expected_settings_preload: expectedSettingsPreload,
+      src: normalizedSrc
     });
-    if (preload !== expectedPreload) {
+    if (preload === expectedViewerPreload) {
+      preferences.preload = shellAssets.viewerPreloadPath;
+      preferences.nodeIntegration = false;
+      preferences.nodeIntegrationInSubFrames = false;
+      preferences.contextIsolation = true;
+      preferences.sandbox = true;
+      preferences.webSecurity = true;
+      delete preferences.enableBlinkFeatures;
+      delete preferences.disableBlinkFeatures;
+      debugLogger.log("app_window", "webview_attach_allowed", {
+        kind: "viewer",
+        preload: shellAssets.viewerPreloadPath,
+        src: normalizedSrc
+      });
+      return;
+    }
+    if (preload === expectedSettingsPreload && isTrustedSettingsPageURL(normalizedSrc, shellAssets.settingsPageRootDir)) {
+      preferences.preload = shellAssets.settingsPreloadPath;
+      preferences.nodeIntegration = false;
+      preferences.nodeIntegrationInSubFrames = false;
+      preferences.contextIsolation = true;
+      preferences.sandbox = true;
+      preferences.webSecurity = true;
+      delete preferences.enableBlinkFeatures;
+      delete preferences.disableBlinkFeatures;
+      debugLogger.log("app_window", "webview_attach_allowed", {
+        kind: "settings",
+        preload: shellAssets.settingsPreloadPath,
+        src: normalizedSrc
+      });
+      return;
+    }
+    if (preload === expectedSettingsPreload) {
       debugLogger.log("app_window", "webview_attach_blocked", {
-        reason: "unexpected_preload",
+        reason: "unexpected_settings_src",
         preload,
         raw_preload: String(params.preload || ""),
-        expected_preload: expectedPreload,
-        src: String(params.src || "")
+        expected_settings_preload: expectedSettingsPreload,
+        src: normalizedSrc
       });
       event.preventDefault();
       return;
     }
-    preferences.preload = viewerPreloadPath;
-    preferences.nodeIntegration = false;
-    preferences.nodeIntegrationInSubFrames = false;
-    preferences.contextIsolation = true;
-    preferences.sandbox = true;
-    preferences.webSecurity = true;
-    delete preferences.enableBlinkFeatures;
-    delete preferences.disableBlinkFeatures;
-    debugLogger.log("app_window", "webview_attach_allowed", {
-      preload: viewerPreloadPath,
-      src: String(params.src || "")
+    debugLogger.log("app_window", "webview_attach_blocked", {
+      reason: "unexpected_preload",
+      preload,
+      raw_preload: String(params.preload || ""),
+      expected_viewer_preload: expectedViewerPreload,
+      expected_settings_preload: expectedSettingsPreload,
+      src: normalizedSrc
     });
+    event.preventDefault();
   });
   window.webContents.on("will-navigate", (event, targetURL) => {
     if (isTrustedNavigationURL(targetURL)) {
@@ -94,4 +127,18 @@ function normalizePreloadPath(raw: string): string {
     }
   }
   return path.resolve(value);
+}
+
+function isTrustedSettingsPageURL(rawURL: string, settingsPageRootDir: string): boolean {
+  const value = String(rawURL || "").trim();
+  if (!value.startsWith("file://")) {
+    return false;
+  }
+  try {
+    const targetPath = path.resolve(fileURLToPath(value));
+    const rootDir = path.resolve(settingsPageRootDir);
+    return targetPath === path.join(rootDir, "index.html") || targetPath.startsWith(rootDir + path.sep);
+  } catch {
+    return false;
+  }
 }

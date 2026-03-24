@@ -55,6 +55,7 @@ type DaemonOptions struct {
 	Overrides            RuntimeListenOverrides
 	Desktop              DesktopBootstrapOptions
 	UnlockPasswordPrompt string
+	ControlStream        ManagedControlStream
 }
 
 func ReadPassword(prompt string) (string, error) {

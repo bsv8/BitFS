@@ -65,6 +65,7 @@ type managedDaemon struct {
 	overrides            RuntimeListenOverrides
 	desktop              DesktopBootstrapOptions
 	unlockPasswordPrompt string
+	controlStream        ManagedControlStream
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -102,9 +103,13 @@ func RunManagedDaemon(opts DaemonOptions) error {
 		overrides:            opts.Overrides,
 		desktop:              opts.Desktop,
 		unlockPasswordPrompt: strings.TrimSpace(opts.UnlockPasswordPrompt),
+		controlStream:        opts.ControlStream,
 		rootCtx:              rootCtx,
 		rootCancel:           rootCancel,
 		phase:                managedPhaseStarting,
+	}
+	if d.controlStream == nil {
+		d.controlStream = NewManagedControlStreamFromEnv()
 	}
 	if d.unlockPasswordPrompt == "" {
 		d.unlockPasswordPrompt = "Unlock password: "
@@ -459,6 +464,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	runIn.PostWorkspaceBootstrap = d.systemHomepageBootstrapHook()
 	runIn.DisableHTTPServer = true
 	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()
+	runIn.ObsSink = d.controlStream.ObsSink()
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
 		Network:  d.cfg.BSV.Network,
@@ -689,6 +695,7 @@ func (d *managedDaemon) setPhase(phase managedPhase) {
 	}
 	d.mu.Unlock()
 	d.emitBootstrapState()
+	d.emitPhaseEvent()
 }
 
 func (d *managedDaemon) setStartupError(service, listenAddr string, err error) {
@@ -710,6 +717,7 @@ func (d *managedDaemon) setStartupError(service, listenAddr string, err error) {
 		"error":       message,
 	})
 	d.emitBootstrapState()
+	d.emitPhaseEvent()
 }
 
 func (d *managedDaemon) emitBootstrapState() {
@@ -733,6 +741,41 @@ func (d *managedDaemon) emitBootstrapState() {
 		return
 	}
 	fmt.Fprintf(os.Stdout, "%s%s\n", managedBootstrapPrefix, string(raw))
+}
+
+func (d *managedDaemon) emitPhaseEvent() {
+	if d == nil || d.controlStream == nil {
+		return
+	}
+	d.mu.RLock()
+	phase := string(d.phase)
+	startupErr := d.startupError
+	chainAccess := d.chainAccess
+	unlocked := d.rt != nil
+	hasSystemHomeBundle := d.systemHomepage != nil && d.systemHomepage.HasBundle()
+	defaultHomeSeedHash := d.defaultHomeSeedHash()
+	d.mu.RUnlock()
+
+	privatePayload := map[string]any{
+		"phase":                  phase,
+		"unlocked":               unlocked,
+		"startup_error_service":  strings.TrimSpace(startupErr.Service),
+		"startup_error_listen":   strings.TrimSpace(startupErr.ListenAddr),
+		"startup_error_message":  strings.TrimSpace(startupErr.Message),
+		"chain_access_mode":      strings.TrimSpace(chainAccess.Mode),
+		"wallet_chain_base_url":  strings.TrimSpace(chainAccess.BaseURL),
+		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
+		"woc_proxy_listen_addr":  strings.TrimSpace(chainAccess.WOCProxyAddr),
+		"woc_upstream_root_url":  strings.TrimSpace(chainAccess.UpstreamRootURL),
+		"woc_min_interval":       chainAccess.MinInterval.String(),
+		"has_system_home_bundle": hasSystemHomeBundle,
+		"default_home_seed_hash": strings.TrimSpace(defaultHomeSeedHash),
+	}
+	d.controlStream.Emit("backend.phase.changed", "private", "managed_daemon", "", privatePayload)
+	d.controlStream.Emit("client.status.changed", "public", "managed_daemon", "", map[string]any{
+		"phase":    phase,
+		"unlocked": unlocked,
+	})
 }
 
 func (d *managedDaemon) ensureKeyWorkflowReady() error {
