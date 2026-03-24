@@ -46,6 +46,10 @@ export function registerShellIPC(
   supervisor.on("event", (event: BitfsRuntimeEvent) => {
     if (event.scope === "public") {
       broadcastPublicEvent(event);
+      // 设计说明：
+      // - 壳页面属于受信上下文，除了私有事件，也应该能看到公开事件；
+      // - 这样壳与 `window.bitfs` 可以共享同一类公开变化信号，避免 topic 一致但壳收不到。
+      broadcastPrivateEvent(event);
       return;
     }
     broadcastPrivateEvent(event);

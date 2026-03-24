@@ -1,14 +1,18 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
 func newWalletAPITestDB(t *testing.T) *sql.DB {
@@ -268,6 +272,123 @@ func TestHandleWalletSummary_IncludesSyncFailureAnchors(t *testing.T) {
 	}
 	if got := int(body["wallet_utxo_sync_last_http_status"].(float64)); got != 502 {
 		t.Fatalf("wallet_utxo_sync_last_http_status mismatch: got=%d want=502", got)
+	}
+}
+
+func TestHandleWalletSummary_ReturnsDBBalanceWhenSyncStateHasError(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAPITestDB(t)
+	rt := &Runtime{DB: db, runIn: RunInput{
+		EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
+	}}
+	rt.runIn.BSV.Network = "test"
+	addr, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress failed: %v", err)
+	}
+	walletID := walletIDByAddress(addr)
+	now := time.Now().Unix()
+	if _, err := db.Exec(
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		addr, walletID, 1, 99904, now, "http 404: Not Found", "chain_utxo_worker", "periodic_tick", 0, "round-http-balance", "wallet_chain_get_confirmed_history_asc", walletChainConfirmedHistoryUpstreamPath(addr, whatsonchain.ConfirmedHistoryQuery{Order: "asc", Limit: 1000, Height: 1726038}), 404,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo_sync_state failed: %v", err)
+	}
+	if _, err := db.Exec(
+		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"utxo-1", walletID, addr, "99cb8465b03fd016974a17b0fc05abf93718fdc02bda82d09f5ee4d5ac29156e", 0, 99904, "unspent", "", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo failed: %v", err)
+	}
+
+	srv := &httpAPIServer{db: db, rt: rt}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/summary", nil)
+	rec := httptest.NewRecorder()
+	srv.handleWalletSummary(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("summary status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode summary: %v", err)
+	}
+	if got := uint64(body["onchain_balance_satoshi"].(float64)); got != 99904 {
+		t.Fatalf("onchain_balance_satoshi mismatch: got=%d want=99904", got)
+	}
+	if got, ok := body["onchain_balance_error"].(string); ok && got != "" {
+		t.Fatalf("onchain_balance_error mismatch: got=%q want empty", got)
+	}
+	if got, _ := body["wallet_utxo_sync_last_error"].(string); got != "http 404: Not Found" {
+		t.Fatalf("wallet_utxo_sync_last_error mismatch: got=%v want=http 404: Not Found", body["wallet_utxo_sync_last_error"])
+	}
+}
+
+type walletChainHistory404Stub struct{}
+
+func (walletChainHistory404Stub) BaseURL() string {
+	return "http://127.0.0.1:19183/v1/bsv/test"
+}
+
+func (walletChainHistory404Stub) GetAddressConfirmedUnspent(context.Context, string) ([]whatsonchain.UTXO, error) {
+	return nil, errors.New("unexpected call")
+}
+
+func (walletChainHistory404Stub) GetChainInfo(context.Context) (uint32, error) {
+	return 0, errors.New("unexpected call")
+}
+
+func (walletChainHistory404Stub) GetAddressConfirmedHistory(context.Context, string) ([]whatsonchain.AddressHistoryItem, error) {
+	return nil, errors.New("unexpected call")
+}
+
+func (walletChainHistory404Stub) GetAddressConfirmedHistoryPage(context.Context, string, whatsonchain.ConfirmedHistoryQuery) (whatsonchain.ConfirmedHistoryPage, error) {
+	return whatsonchain.ConfirmedHistoryPage{}, &whatsonchain.HTTPError{StatusCode: http.StatusNotFound, Body: "Not Found"}
+}
+
+func (walletChainHistory404Stub) GetAddressUnconfirmedHistory(context.Context, string) ([]string, error) {
+	return nil, errors.New("unexpected call")
+}
+
+func (walletChainHistory404Stub) GetTxHash(context.Context, string) (whatsonchain.TxDetail, error) {
+	return whatsonchain.TxDetail{}, errors.New("unexpected call")
+}
+
+func TestCollectConfirmedHistoryRange_TreatsEmptyHTTP404AsDone(t *testing.T) {
+	t.Parallel()
+
+	meta := walletSyncRoundMeta{
+		RoundID:        "round-empty-404",
+		Address:        "mpH3Cxe4RZDWzwyZWxTqosoBrVKNgbJrjb",
+		TriggerSource:  "periodic_tick",
+		APIBaseURL:     "http://127.0.0.1:19183/v1/bsv/test",
+		WalletChainTyp: "*whatsonchain.Client",
+		StartedAtUnix:  time.Now().Unix(),
+	}
+	cursor := walletUTXOHistoryCursor{
+		Address:             meta.Address,
+		AnchorHeight:        1725947,
+		NextConfirmedHeight: 1726038,
+	}
+
+	items, next, err := collectConfirmedHistoryRange(context.Background(), walletChainHistory404Stub{}, meta.Address, cursor, 1726051, meta)
+	if err != nil {
+		t.Fatalf("collectConfirmedHistoryRange failed: %v", err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("history item count mismatch: got=%d want=0", len(items))
+	}
+	if next.NextConfirmedHeight != 1726052 {
+		t.Fatalf("next.NextConfirmedHeight mismatch: got=%d want=1726052", next.NextConfirmedHeight)
+	}
+	if next.NextPageToken != "" {
+		t.Fatalf("next.NextPageToken mismatch: got=%q want empty", next.NextPageToken)
+	}
+	if next.LastError != "" {
+		t.Fatalf("next.LastError mismatch: got=%q want empty", next.LastError)
 	}
 }
 

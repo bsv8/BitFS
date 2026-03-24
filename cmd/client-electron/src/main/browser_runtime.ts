@@ -796,7 +796,6 @@ export class BitfsBrowserRuntime extends EventEmitter {
         body: text,
         trace_id: this.currentTraceID
       });
-      this.emitState();
       throw new Error(text || `request failed: ${response.status}`);
     }
     const body = await response.json() as T;
@@ -807,7 +806,6 @@ export class BitfsBrowserRuntime extends EventEmitter {
       status: response.status,
       trace_id: this.currentTraceID
     });
-    this.emitState();
     return body;
   }
 }

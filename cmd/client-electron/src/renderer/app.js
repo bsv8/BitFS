@@ -10,6 +10,7 @@
   const openButton = document.getElementById("open-button");
   const homeButton = document.getElementById("home-button");
   const settingsButton = document.getElementById("settings-button");
+  const closeSettingsButton = document.getElementById("close-settings-button");
   const lockButton = document.getElementById("lock-button");
   const budgetForm = document.getElementById("budget-form");
   const singleBudgetInput = document.getElementById("single-budget-input");
@@ -72,7 +73,7 @@
   const errorBannerText = document.getElementById("error-banner-text");
   const errorBannerCopyButton = document.getElementById("error-banner-copy-button");
   const webview = document.getElementById("content-view");
-  const settingsView = document.getElementById("settings-view");
+  const viewerStage = webview.parentElement;
   const backendGate = document.getElementById("backend-gate");
   const backendTitle = document.getElementById("backend-title");
   const backendSummary = document.getElementById("backend-summary");
@@ -103,7 +104,7 @@
 
   if (
     !bridge || !browserShell || !addressForm || !addressInput || !backButton || !forwardButton || !reloadButton ||
-    !goHomeButton || !openButton || !homeButton || !settingsButton || !lockButton || !budgetForm || !singleBudgetInput ||
+    !goHomeButton || !openButton || !homeButton || !settingsButton || !closeSettingsButton || !lockButton || !budgetForm || !singleBudgetInput ||
     !pageBudgetInput || !currentURL || !currentRootSeed || !pendingCount || !clientAPIBase || !homeSource ||
     !autoSpentTotal || !resourceTotalBadge || !resourcePendingBadge || !resourceListNote || !resourceList ||
     !panelTabResources || !panelTabWallet || !panelResources || !panelWallet || !sidebarResizeHandle ||
@@ -118,7 +119,7 @@
     !chainMaintLastTaskStartedAt || !chainMaintLastTaskEndedAt || !chainMaintLastError ||
     !walletSyncRoundID || !walletSyncFailedStep || !walletSyncUpstreamPath || !walletSyncHTTPStatus ||
     !walletOnchainError || !walletSyncError || !errorBanner || !errorBannerText || !errorBannerCopyButton ||
-    !webview || !settingsView || !backendGate || !backendTitle || !backendSummary || !backendDetail ||
+    !webview || !viewerStage || !backendGate || !backendTitle || !backendSummary || !backendDetail ||
     !backendStepNote || !backendErrorBanner || !backendErrorBannerText || !backendErrorCopyButton ||
     !choosePanel || !chooseCreateButton || !chooseImportButton || !createKeyForm || !createPasswordInput ||
     !createPasswordConfirmInput || !createBackButton || !unlockForm || !unlockPasswordInput || !exportKeyButton ||
@@ -135,13 +136,17 @@
   const DEFAULT_SIDEBAR_WIDTH = 388;
   const WALLET_REFRESH_TOPICS = new Set([
     "backend.phase.changed",
-    "wallet.sync.changed",
-    "wallet.changed",
-    "client.status.changed"
+    "wallet.changed"
+  ]);
+  const WALLET_CHANGED_REFRESH_STEPS = new Set([
+    "collect_wallet_snapshot",
+    "reconcile_wallet_utxo_set",
+    "wallet_sync_round_completed"
   ]);
 
   let viewerDOMReady = false;
   let settingsDOMReady = false;
+  let settingsView = null;
   let currentState = null;
   let onboardingStep = "choose-init";
   let lastBackendPhase = "";
@@ -184,7 +189,22 @@
     if (!currentState || !isBackendReady(currentState)) {
       return;
     }
+    if (topic === "wallet.changed" && !shouldRefreshWalletSummary(runtimeEvent)) {
+      return;
+    }
     void loadWalletSummary(false);
+  }
+
+  function shouldRefreshWalletSummary(runtimeEvent) {
+    if (String(runtimeEvent?.topic || "") !== "wallet.changed") {
+      return true;
+    }
+    const payload = runtimeEvent?.payload && typeof runtimeEvent.payload === "object" ? runtimeEvent.payload : {};
+    const step = String(payload.step || "").trim();
+    if (Boolean(payload.has_error)) {
+      return true;
+    }
+    return WALLET_CHANGED_REFRESH_STEPS.has(step);
   }
 
   async function copyPlainText(text) {
@@ -386,9 +406,50 @@
     return contentMode === CONTENT_MODE_BROWSER;
   }
 
+  function createSettingsView() {
+    const next = document.createElement("webview");
+    next.id = "settings-view";
+    next.className = "content-view";
+    next.setAttribute("allowpopups", "false");
+    next.setAttribute("webpreferences", "contextIsolation=yes,sandbox=yes,javascript=yes");
+    bindSettingsViewEvents(next);
+    viewerStage.append(next);
+    debugLog("shell", "settings_view_created");
+    return next;
+  }
+
+  function bindSettingsViewEvents(view) {
+    view.addEventListener("did-attach", function handleSettingsAttach() {
+      settingsDOMReady = false;
+      debugLog("settings", "did_attach");
+    });
+
+    view.addEventListener("dom-ready", function handleSettingsReady() {
+      settingsDOMReady = true;
+      debugLog("settings", "dom_ready", {
+        url: view.getAttribute("src") || ""
+      });
+    });
+
+    view.addEventListener("did-fail-load", function handleSettingsLoadFail(event) {
+      if (event.errorCode === -3) {
+        return;
+      }
+      debugLog("settings", "did_fail_load", {
+        error_code: event.errorCode,
+        error_description: event.errorDescription,
+        validated_url: event.validatedURL
+      });
+      showShellError(event.errorDescription || "settings load failed", "设置页加载失败");
+    });
+  }
+
   function ensureSettingsViewReady(state) {
-    if (!state) {
-      return;
+    if (!state || !isBackendReady(state)) {
+      return null;
+    }
+    if (!settingsView) {
+      settingsView = createSettingsView();
     }
     const preloadPath = String(state.settingsPreloadPath || "").trim();
     const pageURL = String(state.settingsPageURL || "").trim();
@@ -404,14 +465,49 @@
         url: pageURL
       });
     }
+    return settingsView;
+  }
+
+  function destroySettingsView(reason) {
+    if (!settingsView) {
+      settingsDOMReady = false;
+      return;
+    }
+    const currentURL = settingsDOMReady && typeof settingsView.getURL === "function"
+      ? settingsView.getURL()
+      : String(settingsView.getAttribute("src") || "");
+    debugLog("shell", "settings_view_destroyed", {
+      reason: String(reason || ""),
+      url: currentURL
+    });
+    settingsDOMReady = false;
+    settingsView.remove();
+    settingsView = null;
+  }
+
+  function closeSettingsView(reason) {
+    if (contentMode !== CONTENT_MODE_SETTINGS && !settingsView) {
+      return;
+    }
+    contentMode = CONTENT_MODE_BROWSER;
+    destroySettingsView(reason);
+    debugLog("shell", "content_mode_changed", {
+      mode: contentMode
+    });
+    syncContentMode();
+    setInteractiveEnabled(Boolean(currentState && isBackendReady(currentState)));
+    refreshNavigationButtons();
   }
 
   function syncContentMode() {
     const showSettings = contentMode === CONTENT_MODE_SETTINGS && currentState && isBackendReady(currentState);
     webview.classList.toggle("is-hidden", Boolean(showSettings));
-    settingsView.classList.toggle("is-hidden", !showSettings);
+    if (settingsView) {
+      settingsView.classList.toggle("is-hidden", !showSettings);
+    }
     settingsButton.classList.toggle("is-active", Boolean(showSettings));
-    settingsButton.textContent = showSettings ? "返回浏览" : "打开设置";
+    settingsButton.textContent = "打开设置";
+    closeSettingsButton.classList.toggle("is-hidden", !showSettings);
   }
 
   function setContentMode(mode) {
@@ -422,6 +518,10 @@
     if (next === contentMode) {
       syncContentMode();
       refreshNavigationButtons();
+      return;
+    }
+    if (next === CONTENT_MODE_BROWSER) {
+      closeSettingsView("switch_to_browser");
       return;
     }
     contentMode = next;
@@ -717,6 +817,9 @@
   }
 
   function setOnboardingStep(nextStep) {
+    if (onboardingStep === nextStep) {
+      return;
+    }
     onboardingStep = nextStep;
     choosePanel.classList.toggle("is-hidden", onboardingStep !== "choose-init");
     createKeyForm.classList.toggle("is-hidden", onboardingStep !== "create-key");
@@ -832,13 +935,15 @@
     }
 
     applySidebarWidth(state.sidebarWidthPx || sidebarWidthPx);
-    ensureSettingsViewReady(state);
     if (!isBackendReady(state)) {
+      destroySettingsView("backend_not_ready");
       contentMode = CONTENT_MODE_BROWSER;
       walletState.loading = false;
       walletState.loaded = false;
       walletState.error = "内置客户端尚未就绪。";
       walletState.data = null;
+    } else if (contentMode === CONTENT_MODE_SETTINGS) {
+      ensureSettingsViewReady(state);
     }
 
     if (String(state.activePanel || "") !== activePanel) {
@@ -922,6 +1027,7 @@
     debugLog("shell", "open_from_input", {
       seed_hash: normalized
     });
+    closeSettingsView("open_from_input");
     await bridge.open(normalized);
     return bridge.getState();
   }
@@ -938,6 +1044,7 @@
     debugLog("shell", "open_home", {
       seed_hash: homeSeedHash
     });
+    closeSettingsView("open_home");
     await bridge.open(homeSeedHash);
     return bridge.getState();
   }
@@ -1171,30 +1278,6 @@
     handleViewerNavigation((viewerDOMReady ? webview.getURL() : "") || "");
   });
 
-  settingsView.addEventListener("did-attach", function handleSettingsAttach() {
-    settingsDOMReady = false;
-    debugLog("settings", "did_attach");
-  });
-
-  settingsView.addEventListener("dom-ready", function handleSettingsReady() {
-    settingsDOMReady = true;
-    debugLog("settings", "dom_ready", {
-      url: settingsView.getAttribute("src") || ""
-    });
-  });
-
-  settingsView.addEventListener("did-fail-load", function handleSettingsLoadFail(event) {
-    if (event.errorCode === -3) {
-      return;
-    }
-    debugLog("settings", "did_fail_load", {
-      error_code: event.errorCode,
-      error_description: event.errorDescription,
-      validated_url: event.validatedURL
-    });
-    showShellError(event.errorDescription || "settings load failed", "设置页加载失败");
-  });
-
   addressForm.addEventListener("submit", function handleAddressSubmit(event) {
     event.preventDefault();
     debugLog("shell", "address_submit", {
@@ -1230,7 +1313,7 @@
       return;
     }
     if (!isBrowserContentMode()) {
-      if (settingsView.getURL()) {
+      if (settingsView && settingsView.getURL()) {
         debugLog("settings", "reload", {
           url: settingsView.getURL()
         });
@@ -1263,6 +1346,10 @@
       return;
     }
     setContentMode(isBrowserContentMode() ? CONTENT_MODE_SETTINGS : CONTENT_MODE_BROWSER);
+  });
+
+  closeSettingsButton.addEventListener("click", function handleCloseSettings() {
+    closeSettingsView("close_button");
   });
 
   homeButton.addEventListener("click", function handleHomeClick() {
@@ -1476,7 +1563,6 @@
         preload: state.viewerPreloadPath
       });
     }
-    ensureSettingsViewReady(state);
     debugLog("shell", "initial_state_loaded", {
       backend_phase: String(state?.backend?.phase || ""),
       current_url: String(state?.currentURL || "")

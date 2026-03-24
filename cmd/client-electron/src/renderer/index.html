@@ -34,6 +34,7 @@
           <div class="toolbar-group action-group">
             <button id="home-button" class="secondary-button" type="button">设为首页</button>
             <button id="settings-button" class="secondary-button" type="button">打开设置</button>
+            <button id="close-settings-button" class="icon-button close-button is-hidden" type="button" aria-label="关闭设置">×</button>
             <button id="lock-button" class="secondary-button is-hidden" type="button">锁定客户端</button>
           </div>
         </div>
@@ -326,12 +327,6 @@
           <webview
             id="content-view"
             class="content-view"
-            allowpopups="false"
-            webpreferences="contextIsolation=yes,sandbox=yes,javascript=yes"
-          ></webview>
-          <webview
-            id="settings-view"
-            class="content-view is-hidden"
             allowpopups="false"
             webpreferences="contextIsolation=yes,sandbox=yes,javascript=yes"
           ></webview>

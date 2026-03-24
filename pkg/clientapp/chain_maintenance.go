@@ -960,6 +960,18 @@ func wrapWalletSyncStepError(meta walletSyncRoundMeta, step string, upstreamPath
 	}
 }
 
+func isWalletChainEmptyConfirmedHistoryPage(err error) bool {
+	if err == nil {
+		return false
+	}
+	var httpErr *whatsonchain.HTTPError
+	if !errors.As(err, &httpErr) || httpErr == nil || httpErr.HTTPStatus() != 404 {
+		return false
+	}
+	body := strings.TrimSpace(httpErr.HTTPBody())
+	return body == "" || strings.EqualFold(body, "not found")
+}
+
 func walletSyncFailureDetails(meta walletSyncRoundMeta, err error) (string, string, string, int) {
 	roundID := strings.TrimSpace(meta.RoundID)
 	failedStep := ""
@@ -1504,6 +1516,25 @@ func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, 
 			Token:  pageToken,
 		})
 		if err != nil {
+			// 设计说明：
+			// - WOC 对“从某个高度开始已经没有 confirmed history”会返回 404 Not Found；
+			// - 对钱包同步来说，这表示“历史范围已经到头”，不是致命失败；
+			// - 这里把它收敛成空页，避免已同步到 DB 的余额被 last_error 毒化成 0。
+			if isWalletChainEmptyConfirmedHistoryPage(err) {
+				next.NextConfirmedHeight = int64(tip) + 1
+				next.NextPageToken = ""
+				next.LastError = ""
+				logWalletSyncStepInfo(meta, "wallet_chain_collect_confirmed_history", map[string]any{
+					"history_tx_cnt":        len(out),
+					"start_height":          startHeight,
+					"next_confirmed_height": next.NextConfirmedHeight,
+					"anchor_height":         next.AnchorHeight,
+					"page_cnt":              pageCount,
+					"empty_range_http_404":  true,
+					"step_duration_ms":      time.Since(stepStart).Milliseconds(),
+				})
+				return out, next, nil
+			}
 			logWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_asc", err, map[string]any{
 				"upstream_path":    pagePath,
 				"start_height":     startHeight,
@@ -1748,14 +1779,18 @@ func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
 	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
 		return addr, 0, fmt.Errorf("wallet utxo sync state stale for current runtime")
 	}
-	if strings.TrimSpace(s.LastError) != "" {
-		return addr, 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
-	}
 	walletID := walletIDByAddress(addr)
 	var balance uint64
 	if err := rt.DB.QueryRow(`SELECT COALESCE(SUM(value_satoshi),0) FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent'`, walletID, addr).Scan(&balance); err != nil {
 		return addr, 0, err
 	}
+	if strings.TrimSpace(s.LastError) != "" && balance == 0 {
+		return addr, 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
+	}
+	// 设计说明：
+	// - wallet_utxo 表是链上未花费输出的本地投影；
+	// - 只要这张表里已经有余额，就不应该因为后续某个 history 游标请求失败而把余额清零；
+	// - 同步错误仍然保留在 wallet_utxo_sync_last_error 等诊断字段里，前端可以继续展示告警。
 	return addr, balance, nil
 }
 

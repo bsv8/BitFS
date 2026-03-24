@@ -34,7 +34,12 @@ import type { ArbitersResp, GatewaysResp, StaticItem, StaticTreeResp, WalletSumm
 import { formatSat, normalizeSeedHash, shortHex } from "./utils";
 
 type NavSection = "security" | "network" | "storage";
-const walletRefreshTopics = ["backend.phase.changed", "wallet.sync.changed", "wallet.changed", "client.status.changed"];
+const walletRefreshTopics = ["backend.phase.changed", "wallet.changed", "client.status.changed"];
+const walletChangedRefreshSteps = new Set([
+  "collect_wallet_snapshot",
+  "reconcile_wallet_utxo_set",
+  "wallet_sync_round_completed"
+]);
 
 export default function App() {
   const [activeSection, setActiveSection] = useState<NavSection>("security");
@@ -91,7 +96,10 @@ export default function App() {
     const unsubscribeState = window.bitfsSettings.onShellState((state) => {
       setShellState(state);
     });
-    const unsubscribeEvents = window.bitfsSettings.events.subscribe(walletRefreshTopics, () => {
+    const unsubscribeEvents = window.bitfsSettings.events.subscribe(walletRefreshTopics, (runtimeEvent) => {
+      if (!shouldRefreshWalletSummary(runtimeEvent)) {
+        return;
+      }
       void getWalletSummary().then((summary) => {
         setWalletSummary(summary);
       }).catch(() => undefined);
@@ -101,6 +109,19 @@ export default function App() {
       unsubscribeState();
     };
   }, []);
+
+  function shouldRefreshWalletSummary(runtimeEvent: BitfsRuntimeEvent | null | undefined) {
+    const topic = String(runtimeEvent?.topic || "");
+    if (topic !== "wallet.changed") {
+      return true;
+    }
+    const payload = runtimeEvent?.payload && typeof runtimeEvent.payload === "object" ? runtimeEvent.payload : {};
+    const step = String(payload.step || "").trim();
+    if (Boolean(payload.has_error)) {
+      return true;
+    }
+    return walletChangedRefreshSteps.has(step);
+  }
 
   async function runBusyTask(task: () => Promise<void>) {
     setBusy(true);

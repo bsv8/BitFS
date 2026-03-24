@@ -3,6 +3,11 @@ import { FormEvent, startTransition, useEffect, useState } from "react";
 import orbitMarkURL from "./assets/orbit-mark.svg";
 
 const historyLimit = 8;
+const walletChangedRefreshSteps = new Set([
+  "collect_wallet_snapshot",
+  "reconcile_wallet_utxo_set",
+  "wallet_sync_round_completed"
+]);
 
 type PageMode = "loading" | "connected" | "preview" | "error";
 
@@ -82,10 +87,79 @@ export default function App() {
       }
     }
 
+    async function refreshPublicWalletProjection() {
+      const bridge = window.bitfs;
+      if (!bridge || inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const [nextWalletSummary, nextWalletHistory] = await Promise.all([
+          bridge.wallet.summary(),
+          bridge.wallet.history.list({ limit: historyLimit, offset: 0 })
+        ]);
+        if (cancelled) {
+          return;
+        }
+        startTransition(() => {
+          setWalletSummary(nextWalletSummary);
+          setWalletHistory(nextWalletHistory);
+          setPageMode("connected");
+          setPageError("");
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        startTransition(() => {
+          setPageMode((current) => current === "connected" ? current : "error");
+          setPageError(error instanceof Error ? error.message : String(error));
+        });
+      } finally {
+        inFlight = false;
+      }
+    }
+
+    async function refreshPublicClientStatus() {
+      const bridge = window.bitfs;
+      if (!bridge || inFlight) {
+        return;
+      }
+      inFlight = true;
+      try {
+        const nextClientStatus = await bridge.client.getStatus();
+        if (cancelled) {
+          return;
+        }
+        startTransition(() => {
+          setClientStatus(nextClientStatus);
+          setPageMode("connected");
+          setPageError("");
+        });
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        startTransition(() => {
+          setPageMode((current) => current === "connected" ? current : "error");
+          setPageError(error instanceof Error ? error.message : String(error));
+        });
+      } finally {
+        inFlight = false;
+      }
+    }
+
     void loadPublicWalletView(false);
     if (window.bitfs) {
-      unsubscribeEvents = window.bitfs.events.subscribe(["wallet.changed", "client.status.changed"], () => {
-        void loadPublicWalletView(true);
+      unsubscribeEvents = window.bitfs.events.subscribe(["wallet.changed", "client.status.changed"], (runtimeEvent) => {
+        const topic = String(runtimeEvent?.topic || "");
+        if (topic === "wallet.changed" && shouldRefreshPublicWalletProjection(runtimeEvent)) {
+          void refreshPublicWalletProjection();
+          return;
+        }
+        if (topic === "client.status.changed") {
+          void refreshPublicClientStatus();
+        }
       });
     }
     return () => {
@@ -93,6 +167,18 @@ export default function App() {
       unsubscribeEvents();
     };
   }, [refreshToken]);
+
+  function shouldRefreshPublicWalletProjection(runtimeEvent: BitfsRuntimeEvent | null | undefined) {
+    if (String(runtimeEvent?.topic || "") !== "wallet.changed") {
+      return true;
+    }
+    const payload = runtimeEvent?.payload && typeof runtimeEvent.payload === "object" ? runtimeEvent.payload : {};
+    const step = String(payload.step || "").trim();
+    if (Boolean(payload.has_error)) {
+      return true;
+    }
+    return walletChangedRefreshSteps.has(step);
+  }
 
   function handleOpenTarget(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
