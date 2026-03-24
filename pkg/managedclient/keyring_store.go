@@ -1,4 +1,4 @@
-package main
+package managedclient
 
 import (
 	"crypto/rand"
@@ -22,11 +22,11 @@ const (
 	keyEnvelopeDomain  = "client"
 )
 
-type encryptedKeyEnvelope struct {
+type EncryptedKeyEnvelope struct {
 	Version       string                  `json:"version"`
 	KeyID         string                  `json:"key_id"`
 	KDF           string                  `json:"kdf"`
-	KDFParams     encryptedKeyEnvelopeKDF `json:"kdf_params"`
+	KDFParams     EncryptedKeyEnvelopeKDF `json:"kdf_params"`
 	Cipher        string                  `json:"cipher"`
 	NonceHex      string                  `json:"nonce_hex"`
 	CiphertextHex string                  `json:"ciphertext_hex"`
@@ -34,14 +34,14 @@ type encryptedKeyEnvelope struct {
 	CreatedAtUnix int64                   `json:"created_at_unix"`
 }
 
-type encryptedKeyEnvelopeKDF struct {
+type EncryptedKeyEnvelopeKDF struct {
 	MemoryKiB   uint32 `json:"memory_kib"`
 	TimeCost    uint32 `json:"time_cost"`
 	Parallelism uint8  `json:"parallelism"`
 	SaltHex     string `json:"salt_hex"`
 }
 
-func loadEncryptedKeyEnvelope(path string) (*encryptedKeyEnvelope, bool, error) {
+func LoadEncryptedKeyEnvelope(path string) (*EncryptedKeyEnvelope, bool, error) {
 	path = filepath.Clean(strings.TrimSpace(path))
 	if path == "" {
 		return nil, false, fmt.Errorf("key file path is empty")
@@ -53,14 +53,14 @@ func loadEncryptedKeyEnvelope(path string) (*encryptedKeyEnvelope, bool, error) 
 		}
 		return nil, false, err
 	}
-	var env encryptedKeyEnvelope
+	var env EncryptedKeyEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return nil, true, fmt.Errorf("decode encrypted key envelope: %w", err)
 	}
 	return &env, true, nil
 }
 
-func saveEncryptedKeyEnvelope(path string, env encryptedKeyEnvelope) error {
+func SaveEncryptedKeyEnvelope(path string, env EncryptedKeyEnvelope) error {
 	path = filepath.Clean(strings.TrimSpace(path))
 	if path == "" {
 		return fmt.Errorf("key file path is empty")
@@ -75,22 +75,22 @@ func saveEncryptedKeyEnvelope(path string, env encryptedKeyEnvelope) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
-func encryptPrivateKeyEnvelope(privHex, password string) (encryptedKeyEnvelope, error) {
+func EncryptPrivateKeyEnvelope(privHex, password string) (EncryptedKeyEnvelope, error) {
 	privHex = strings.ToLower(strings.TrimSpace(privHex))
 	password = strings.TrimSpace(password)
 	if password == "" {
-		return encryptedKeyEnvelope{}, fmt.Errorf("password is required")
+		return EncryptedKeyEnvelope{}, fmt.Errorf("password is required")
 	}
-	if _, err := normalizeRawSecp256k1PrivKeyHex(privHex); err != nil {
-		return encryptedKeyEnvelope{}, err
+	if _, err := NormalizeRawSecp256k1PrivKeyHex(privHex); err != nil {
+		return EncryptedKeyEnvelope{}, err
 	}
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
-		return encryptedKeyEnvelope{}, err
+		return EncryptedKeyEnvelope{}, err
 	}
 	nonce := make([]byte, chacha20poly1305.NonceSizeX)
 	if _, err := rand.Read(nonce); err != nil {
-		return encryptedKeyEnvelope{}, err
+		return EncryptedKeyEnvelope{}, err
 	}
 	memKiB := uint32(64 * 1024)
 	timeCost := uint32(3)
@@ -98,11 +98,11 @@ func encryptPrivateKeyEnvelope(privHex, password string) (encryptedKeyEnvelope, 
 	k := argon2.IDKey([]byte(password), salt, timeCost, memKiB, parallelism, chacha20poly1305.KeySize)
 	aead, err := chacha20poly1305.NewX(k)
 	if err != nil {
-		return encryptedKeyEnvelope{}, err
+		return EncryptedKeyEnvelope{}, err
 	}
 	privRaw, err := hex.DecodeString(privHex)
 	if err != nil {
-		return encryptedKeyEnvelope{}, err
+		return EncryptedKeyEnvelope{}, err
 	}
 	aad := fmt.Sprintf("bitfs-keyring|%s|%s", keyEnvelopeDomain, keyEnvelopeKeyID)
 	ciphertext := aead.Seal(nil, nonce, privRaw, []byte(aad))
@@ -112,11 +112,11 @@ func encryptPrivateKeyEnvelope(privHex, password string) (encryptedKeyEnvelope, 
 	for i := range privRaw {
 		privRaw[i] = 0
 	}
-	return encryptedKeyEnvelope{
+	return EncryptedKeyEnvelope{
 		Version:       keyEnvelopeVersion,
 		KeyID:         keyEnvelopeKeyID,
 		KDF:           keyEnvelopeKDF,
-		KDFParams:     encryptedKeyEnvelopeKDF{MemoryKiB: memKiB, TimeCost: timeCost, Parallelism: parallelism, SaltHex: hex.EncodeToString(salt)},
+		KDFParams:     EncryptedKeyEnvelopeKDF{MemoryKiB: memKiB, TimeCost: timeCost, Parallelism: parallelism, SaltHex: hex.EncodeToString(salt)},
 		Cipher:        keyEnvelopeCipher,
 		NonceHex:      hex.EncodeToString(nonce),
 		CiphertextHex: hex.EncodeToString(ciphertext),
@@ -125,7 +125,7 @@ func encryptPrivateKeyEnvelope(privHex, password string) (encryptedKeyEnvelope, 
 	}, nil
 }
 
-func decryptPrivateKeyEnvelope(env encryptedKeyEnvelope, password string) (string, error) {
+func DecryptPrivateKeyEnvelope(env EncryptedKeyEnvelope, password string) (string, error) {
 	if strings.TrimSpace(password) == "" {
 		return "", fmt.Errorf("password is required")
 	}
@@ -180,5 +180,5 @@ func decryptPrivateKeyEnvelope(env encryptedKeyEnvelope, password string) (strin
 	if len(plain) != 32 {
 		return "", fmt.Errorf("invalid password or corrupted key material")
 	}
-	return normalizeRawSecp256k1PrivKeyHex(hex.EncodeToString(plain))
+	return NormalizeRawSecp256k1PrivKeyHex(hex.EncodeToString(plain))
 }

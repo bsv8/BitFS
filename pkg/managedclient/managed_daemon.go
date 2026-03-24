@@ -1,4 +1,4 @@
-package main
+package managedclient
 
 import (
 	"context"
@@ -7,13 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
-	"mime"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -62,11 +59,12 @@ type chainAccessState struct {
 }
 
 type managedDaemon struct {
-	initNetwork string
-	cfg         clientapp.Config
-	startup     startupSummary
-	overrides   runtimeListenOverrides
-	desktop     desktopBootstrapOptions
+	initNetwork          string
+	cfg                  clientapp.Config
+	startup              StartupSummary
+	overrides            RuntimeListenOverrides
+	desktop              DesktopBootstrapOptions
+	unlockPasswordPrompt string
 
 	rootCtx    context.Context
 	rootCancel context.CancelFunc
@@ -88,24 +86,28 @@ type managedDaemon struct {
 	systemHomepage *systemHomepageState
 }
 
-func runManagedDaemon(cfg clientapp.Config, startup startupSummary, initNetwork string, overrides runtimeListenOverrides, desktop desktopBootstrapOptions) error {
+func RunManagedDaemon(opts DaemonOptions) error {
 	rootCtx, rootCancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer rootCancel()
-	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&cfg)
+	logFile, logConsoleMinLevel := clientapp.ResolveLogConfig(&opts.Config)
 	if err := obs.Init(logFile, logConsoleMinLevel); err != nil {
 		return err
 	}
 	defer func() { _ = obs.Close() }()
 
 	d := &managedDaemon{
-		initNetwork: initNetwork,
-		cfg:         cfg,
-		startup:     startup,
-		overrides:   overrides,
-		desktop:     desktop,
-		rootCtx:     rootCtx,
-		rootCancel:  rootCancel,
-		phase:       managedPhaseStarting,
+		initNetwork:          opts.InitNetwork,
+		cfg:                  opts.Config,
+		startup:              opts.Startup,
+		overrides:            opts.Overrides,
+		desktop:              opts.Desktop,
+		unlockPasswordPrompt: strings.TrimSpace(opts.UnlockPasswordPrompt),
+		rootCtx:              rootCtx,
+		rootCancel:           rootCancel,
+		phase:                managedPhaseStarting,
+	}
+	if d.unlockPasswordPrompt == "" {
+		d.unlockPasswordPrompt = "Unlock password: "
 	}
 	d.chainAccess = d.resolveChainAccessState()
 	d.emitBootstrapState()
@@ -180,7 +182,7 @@ func (d *managedDaemon) startHTTPServer() error {
 	mux.HandleFunc("/api/v1/key/lock", d.handleKeyLock)
 	mux.HandleFunc("/api", d.handleAPIProxyOrLocked)
 	mux.HandleFunc("/api/", d.handleAPIProxyOrLocked)
-	mux.HandleFunc("/", d.handleWebAsset)
+	mux.HandleFunc("/", d.handleNonAPIRequest)
 
 	d.srv = &http.Server{
 		Addr:              d.cfg.HTTP.ListenAddr,
@@ -191,8 +193,6 @@ func (d *managedDaemon) startHTTPServer() error {
 		IdleTimeout:       60 * time.Second,
 	}
 
-	// 启动阶段先完成端口预绑定，避免异步 ListenAndServe 把绑定失败吞进后台日志，
-	// 导致前台仅看到“解锁提示后退出”而没有明确错误。
 	ln, err := net.Listen("tcp", d.cfg.HTTP.ListenAddr)
 	if err != nil {
 		return err
@@ -212,37 +212,8 @@ func (d *managedDaemon) startHTTPServer() error {
 	return nil
 }
 
-func (d *managedDaemon) handleWebAsset(w http.ResponseWriter, r *http.Request) {
-	sub, err := fs.Sub(webAssets, "web")
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-		return
-	}
-	name := strings.TrimPrefix(pathClean(r.URL.Path), "/")
-	if name == "" {
-		name = "index.html"
-	}
-	if strings.Contains(name, "..") {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-		return
-	}
-	data, err := fs.ReadFile(sub, name)
-	if err != nil {
-		if name != "index.html" {
-			data, err = fs.ReadFile(sub, "index.html")
-		}
-		if err != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-			return
-		}
-		name = "index.html"
-	}
-	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
-		w.Header().Set("Content-Type", ct)
-	}
-	w.Header().Set("Cache-Control", "no-store, max-age=0")
-	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+func (d *managedDaemon) handleNonAPIRequest(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 }
 
 func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Request) {
@@ -268,7 +239,7 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	_, exists, err := loadEncryptedKeyEnvelope(d.startup.KeyPath)
+	_, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -314,7 +285,7 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "client is unlocked, lock first"})
 		return
 	}
-	if _, exists, err := loadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
+	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	} else if exists {
@@ -332,21 +303,21 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password is required"})
 		return
 	}
-	privHex, err := generatePrivateKeyHex()
+	privHex, err := GeneratePrivateKeyHex()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	env, err := encryptPrivateKeyEnvelope(privHex, req.Password)
+	env, err := EncryptPrivateKeyEnvelope(privHex, req.Password)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := saveEncryptedKeyEnvelope(d.startup.KeyPath, env); err != nil {
+	if err := SaveEncryptedKeyEnvelope(d.startup.KeyPath, env); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	pubHex, _ := pubHexFromPrivHex(privHex)
+	pubHex, _ := PubHexFromPrivHex(privHex)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pubkey_hex": pubHex})
 }
 
@@ -363,7 +334,7 @@ func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "client is unlocked, lock first"})
 		return
 	}
-	if _, exists, err := loadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
+	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	} else if exists {
@@ -371,7 +342,7 @@ func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var req struct {
-		Cipher *encryptedKeyEnvelope `json:"cipher"`
+		Cipher *EncryptedKeyEnvelope `json:"cipher"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -381,7 +352,7 @@ func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cipher is required"})
 		return
 	}
-	if err := saveEncryptedKeyEnvelope(d.startup.KeyPath, *req.Cipher); err != nil {
+	if err := SaveEncryptedKeyEnvelope(d.startup.KeyPath, *req.Cipher); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -393,7 +364,7 @@ func (d *managedDaemon) handleKeyExport(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	env, exists, err := loadEncryptedKeyEnvelope(d.startup.KeyPath)
+	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -418,7 +389,7 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
 		return
 	}
-	env, exists, err := loadEncryptedKeyEnvelope(d.startup.KeyPath)
+	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -434,7 +405,7 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	privHex, err := decryptPrivateKeyEnvelope(*env, req.Password)
+	privHex, err := DecryptPrivateKeyEnvelope(*env, req.Password)
 	if err != nil {
 		obs.Error("bitcast-client", "api_unlock_decrypt_failed", map[string]any{"error": err.Error()})
 		fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
@@ -477,19 +448,16 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	}
 	d.mu.Unlock()
 
-	runCfg, _, err := loadRuntimeConfigOrInit(d.startup.ConfigPath, d.initNetwork)
+	runCfg, _, err := LoadRuntimeConfigOrInit(d.startup.ConfigPath, d.initNetwork)
 	if err != nil {
 		return err
 	}
 	d.applyDesktopRuntimeBootstrap(&runCfg)
-	d.overrides.apply(&runCfg)
+	d.overrides.Apply(&runCfg)
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
 	runIn.ConfigPath = d.startup.ConfigPath
 	runIn.PostWorkspaceBootstrap = d.systemHomepageBootstrapHook()
-	// 设计说明：
-	// managed 模式统一由单一入口承载 API，不再启动 runtime 内部 HTTP 监听。
 	runIn.DisableHTTPServer = true
-	runIn.WebAssets = webAssets
 	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
@@ -525,7 +493,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 		cancel()
 		return err
 	}
-	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt, webAssets)
+	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt)
 	if err != nil {
 		_ = rt.Close()
 		cancel()
@@ -538,8 +506,6 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	d.rtAPI = runtimeAPI
 	d.mu.Unlock()
 
-	// 控制台打印“解锁后运行摘要”。
-	// 设计约束：统一放在 startRuntime 成功路径，保证 CLI/API 两种解锁方式输出一致。
 	d.setPhase(managedPhaseReady)
 	d.printUnlockedRuntimeSummary(runCfg, rt)
 	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
@@ -549,7 +515,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 }
 
 func (d *managedDaemon) prepareSystemHomepage() error {
-	state, err := loadSystemHomepageState(d.desktop.systemHomepageBundle, d.cfg.Storage.WorkspaceDir)
+	state, err := loadSystemHomepageState(d.desktop.SystemHomepageBundle, d.cfg.Storage.WorkspaceDir)
 	if err != nil {
 		return err
 	}
@@ -587,10 +553,6 @@ func (d *managedDaemon) applyDesktopRuntimeBootstrap(cfg *clientapp.Config) {
 	if d.systemHomepage == nil {
 		return
 	}
-	// 设计说明：
-	// - 桌面托管模式要求“系统首页”在解锁后立刻可本地命中；
-	// - 因此这次 runtime 启动必须先完成 workspace 首次全量扫描，再进入首页补价与首页打开阶段；
-	// - 这里作为“本次运行覆盖”强制打开 startup_full_scan，不修改用户长期配置文件。
 	cfg.Scan.StartupFullScan = true
 }
 
@@ -904,7 +866,7 @@ func (d *managedDaemon) cliUnlockLoop() {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		env, exists, err := loadEncryptedKeyEnvelope(d.startup.KeyPath)
+		env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
 		if err != nil {
 			obs.Error("bitcast-client", "cli_unlock_load_key_failed", map[string]any{"error": err.Error()})
 			time.Sleep(300 * time.Millisecond)
@@ -914,14 +876,13 @@ func (d *managedDaemon) cliUnlockLoop() {
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
-		password, cancelled, err := d.readPasswordCancelable(msg("prompt_password_unlock"))
+		password, cancelled, err := d.readPasswordCancelable(d.unlockPasswordPrompt)
 		if err != nil {
 			obs.Error("bitcast-client", "cli_unlock_read_password_failed", map[string]any{"error": err.Error()})
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
 		if cancelled {
-			// 管理 API 已解锁，等待下一轮状态变化（例如再次 lock）。
 			time.Sleep(150 * time.Millisecond)
 			continue
 		}
@@ -934,7 +895,7 @@ func (d *managedDaemon) cliUnlockLoop() {
 			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
 			continue
 		}
-		privHex, err := decryptPrivateKeyEnvelope(*env, password)
+		privHex, err := DecryptPrivateKeyEnvelope(*env, password)
 		if err != nil {
 			obs.Error("bitcast-client", "cli_unlock_decrypt_failed", map[string]any{"error": err.Error()})
 			fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
@@ -949,12 +910,10 @@ func (d *managedDaemon) cliUnlockLoop() {
 	}
 }
 
-// readPasswordCancelable 在终端输入密码时支持“被 API 解锁后取消等待”。
-// 返回 cancelled=true 表示输入过程中检测到已解锁，调用方应停止本次输入流程。
 func (d *managedDaemon) readPasswordCancelable(prompt string) (password string, cancelled bool, err error) {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		p, e := readPassword(prompt)
+		p, e := ReadPassword(prompt)
 		return p, false, e
 	}
 	fmt.Fprint(os.Stderr, prompt)
@@ -1012,7 +971,6 @@ func (d *managedDaemon) readPasswordCancelable(prompt string) (password string, 
 		case 3:
 			return "", false, context.Canceled
 		default:
-			// 忽略控制字符，仅收集可见输入。
 			if ch >= 32 && ch <= 126 {
 				buf = append(buf, ch)
 			}
@@ -1036,14 +994,4 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func pathClean(p string) string {
-	if p == "" {
-		return "/"
-	}
-	if !strings.HasPrefix(p, "/") {
-		p = "/" + p
-	}
-	return filepath.ToSlash(filepath.Clean(p))
 }

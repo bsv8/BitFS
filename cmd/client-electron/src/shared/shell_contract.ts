@@ -51,6 +51,55 @@ export type KeyFileActionResult = {
   state: ShellState;
 };
 
+export type BitfsPublicClientInfo = {
+  trusted_protocol: "bitfs://";
+  pubkey_hex: string;
+  started_at_unix: number;
+  seller_enabled: boolean;
+};
+
+export type BitfsPublicClientStatus = {
+  trusted_protocol: "bitfs://";
+  current_url: string;
+  current_root_seed_hash: string;
+  wallet_ready: boolean;
+  wallet_unlocked: boolean;
+};
+
+export type BitfsPublicWalletAddress = {
+  address: string;
+  encoding: "base58";
+  purpose: "default_receive";
+  pubkey_hex: string;
+};
+
+export type BitfsPublicWalletSummary = {
+  trusted_protocol: "bitfs://";
+  pubkey_hex: string;
+  wallet_address: string;
+  addresses: BitfsPublicWalletAddress[];
+  balance_satoshi: number;
+};
+
+export type BitfsPublicWalletHistoryDirection = "in" | "out" | "unknown";
+
+export type BitfsPublicWalletHistoryItem = {
+  id: number;
+  txid: string;
+  direction: BitfsPublicWalletHistoryDirection;
+  amount_satoshi: number;
+  status: string;
+  block_height: number;
+  occurred_at_unix: number;
+};
+
+export type BitfsPublicWalletHistoryList = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsPublicWalletHistoryItem[];
+};
+
 export type ShellState = {
   currentURL: string;
   currentRootSeedHash: string;

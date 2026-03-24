@@ -129,6 +129,7 @@
   const PANEL_RESOURCES = "resources";
   const PANEL_WALLET = "wallet";
   const DEFAULT_SIDEBAR_WIDTH = 388;
+  const WALLET_AUTO_REFRESH_INTERVAL_MS = 3000;
 
   let viewerDOMReady = false;
   let currentState = null;
@@ -141,6 +142,7 @@
   let sidebarWidthPx = DEFAULT_SIDEBAR_WIDTH;
   let resizeState = null;
   let walletFetchSequence = 0;
+  let walletAutoRefreshTimer = 0;
   const walletState = {
     loading: false,
     loaded: false,
@@ -154,6 +156,46 @@
       return;
     }
     bridge.debugLog(scope, event, fields || {});
+  }
+
+  function shouldAutoRefreshWallet() {
+    if (!currentState || !isBackendReady(currentState) || walletState.loading) {
+      return false;
+    }
+    if (activePanel === PANEL_WALLET) {
+      return true;
+    }
+    if (!walletState.loaded || walletState.error) {
+      return true;
+    }
+    const payload = walletState.data || {};
+    const onchainError = String(payload.onchain_balance_error || "").trim();
+    const syncError = String(payload.wallet_utxo_sync_last_error || "").trim();
+    return onchainError !== "" || syncError !== "" || Boolean(payload.wallet_utxo_sync_state_is_stale);
+  }
+
+  function ensureWalletAutoRefreshLoop() {
+    if (walletAutoRefreshTimer !== 0) {
+      return;
+    }
+    // 设计说明：
+    // - 钱包摘要第一次读取可能撞上 utxo 同步还没收敛；
+    // - 自动刷新只在“未加载 / 有错误 / 仍旧 stale / 用户正停留在钱包页”时触发，
+    //   让侧栏最终追上真实余额，又避免长期无意义轮询。
+    walletAutoRefreshTimer = window.setInterval(() => {
+      if (!shouldAutoRefreshWallet()) {
+        return;
+      }
+      void loadWalletSummary(false);
+    }, WALLET_AUTO_REFRESH_INTERVAL_MS);
+  }
+
+  function stopWalletAutoRefreshLoop() {
+    if (walletAutoRefreshTimer === 0) {
+      return;
+    }
+    window.clearInterval(walletAutoRefreshTimer);
+    walletAutoRefreshTimer = 0;
   }
 
   async function copyPlainText(text) {
@@ -289,7 +331,7 @@
         persisted: persist
       });
     }
-    if (nextPanel === PANEL_WALLET && (!walletState.loaded || walletState.error)) {
+    if (nextPanel === PANEL_WALLET) {
       void loadWalletSummary(false);
     }
     if (persist && !syncState) {
@@ -659,7 +701,9 @@
       backendErrorBanner.classList.add("is-hidden");
       setOnboardingStep("checking");
       setInteractiveEnabled(true);
-      if (activePanel === PANEL_WALLET && (!walletState.loaded || walletState.error)) {
+      if (!walletState.loaded && !walletState.loading) {
+        void loadWalletSummary(false);
+      } else if (activePanel === PANEL_WALLET && walletState.error) {
         void loadWalletSummary(false);
       }
       return;
@@ -1320,12 +1364,14 @@
   });
 
   const unsubscribe = bridge.onState(renderState);
+  ensureWalletAutoRefreshLoop();
   window.addEventListener("resize", function handleResize() {
     applySidebarWidth(sidebarWidthPx);
     refreshNavigationButtons();
   });
   window.addEventListener("beforeunload", function cleanup() {
     debugLog("shell", "beforeunload");
+    stopWalletAutoRefreshLoop();
     unsubscribe();
   });
 

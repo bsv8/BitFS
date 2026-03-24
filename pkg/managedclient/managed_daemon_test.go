@@ -1,7 +1,10 @@
-package main
+package managedclient
 
 import (
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,11 +19,11 @@ func TestRuntimeListenOverridesApply(t *testing.T) {
 	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
 
-	overrides := runtimeListenOverrides{
-		httpListenAddr:   "127.0.0.1:19181",
-		fsHTTPListenAddr: "127.0.0.1:19182",
+	overrides := RuntimeListenOverrides{
+		HTTPListenAddr:   "127.0.0.1:19181",
+		FSHTTPListenAddr: "127.0.0.1:19182",
 	}
-	overrides.apply(&cfg)
+	overrides.Apply(&cfg)
 
 	if got, want := cfg.HTTP.ListenAddr, "127.0.0.1:19181"; got != want {
 		t.Fatalf("http.listen_addr=%q, want %q", got, want)
@@ -37,8 +40,8 @@ func TestRuntimeListenOverridesApply_EmptyKeepsConfig(t *testing.T) {
 	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
 
-	var overrides runtimeListenOverrides
-	overrides.apply(&cfg)
+	var overrides RuntimeListenOverrides
+	overrides.Apply(&cfg)
 
 	if got, want := cfg.HTTP.ListenAddr, "127.0.0.1:18080"; got != want {
 		t.Fatalf("http.listen_addr=%q, want %q", got, want)
@@ -77,6 +80,30 @@ func TestApplyDesktopRuntimeBootstrap_NoHomepageKeepsScanConfig(t *testing.T) {
 
 	if cfg.Scan.StartupFullScan {
 		t.Fatalf("startup_full_scan should stay unchanged when no system homepage bundle is active")
+	}
+}
+
+func TestHandleNonAPIRequest_ReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	req := httptest.NewRequest(http.MethodGet, "/index.html", nil)
+	rec := httptest.NewRecorder()
+
+	var d managedDaemon
+	d.handleNonAPIRequest(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status=%d, want %d", rec.Code, http.StatusNotFound)
+	}
+
+	var payload struct {
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response json: %v", err)
+	}
+	if payload.Error != "not found" {
+		t.Fatalf("error=%q, want %q", payload.Error, "not found")
 	}
 }
 

@@ -9,9 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"math"
-	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -310,7 +308,6 @@ type httpAPIServer struct {
 	startedAt time.Time
 	jobsMu    sync.RWMutex
 	getJobs   map[string]*fileGetJob
-	webAssets fs.FS
 	rpcTrace  p2prpc.TraceSink
 }
 
@@ -342,7 +339,7 @@ type fileGetJob struct {
 	cancel          context.CancelFunc `json:"-"`
 }
 
-func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, webAssets fs.FS, trace p2prpc.TraceSink) *httpAPIServer {
+func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace p2prpc.TraceSink) *httpAPIServer {
 	return &httpAPIServer{
 		rt:        rt,
 		cfg:       cfg,
@@ -352,7 +349,6 @@ func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateway
 		workspace: workspace,
 		startedAt: time.Now(),
 		getJobs:   map[string]*fileGetJob{},
-		webAssets: webAssets,
 		rpcTrace:  trace,
 	}
 }
@@ -462,48 +458,12 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 	registerAPI("/api")
 	registerAPI("")
 
-	var sub fs.FS
-	if s.webAssets != nil {
-		var err error
-		sub, err = fs.Sub(s.webAssets, "web")
-		if err != nil {
-			return nil, err
-		}
-	}
-	serveAsset := func(w http.ResponseWriter, r *http.Request, name string) bool {
-		if sub == nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-			return false
-		}
-		b, readErr := fs.ReadFile(sub, name)
-		if readErr != nil {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "asset not found"})
-			return false
-		}
-		w.Header().Set("Cache-Control", "no-store, max-age=0")
-		w.Header().Set("Pragma", "no-cache")
-		if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
-			w.Header().Set("Content-Type", ct)
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(b)
-		return true
-	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api" || r.URL.Path == "/api/" || strings.HasPrefix(r.URL.Path, "/api/") {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "api not found"})
 			return
 		}
-		if r.URL.Path == "/" {
-			_ = serveAsset(w, r, "index.html")
-			return
-		}
-		name := strings.TrimPrefix(pathClean(r.URL.Path), "/")
-		if name == "" || strings.Contains(name, "..") {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
-			return
-		}
-		_ = serveAsset(w, r, name)
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 	})
 	return mux, nil
 }

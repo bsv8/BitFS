@@ -17,10 +17,10 @@ import (
 )
 
 type getFilePlanRequest struct {
-	SeedHashes     []string `json:"seed_hashes"`
-	GatewayPeerID  string   `json:"gateway_pubkey_hex,omitempty"`
-	ResourceKind   string   `json:"resource_kind,omitempty"`
-	RootSeedHash   string   `json:"root_seed_hash,omitempty"`
+	SeedHashes    []string `json:"seed_hashes"`
+	GatewayPeerID string   `json:"gateway_pubkey_hex,omitempty"`
+	ResourceKind  string   `json:"resource_kind,omitempty"`
+	RootSeedHash  string   `json:"root_seed_hash,omitempty"`
 }
 
 type getFileEnsureRequest struct {
@@ -75,9 +75,9 @@ func (s *httpAPIServer) handleGetFilePlan(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"items":         items,
-		"total":         len(items),
-		"resource_kind": strings.TrimSpace(req.ResourceKind),
+		"items":          items,
+		"total":          len(items),
+		"resource_kind":  strings.TrimSpace(req.ResourceKind),
 		"root_seed_hash": strings.ToLower(strings.TrimSpace(req.RootSeedHash)),
 	})
 }
@@ -567,11 +567,11 @@ func guessContentType(name string, head []byte) string {
 }
 
 // 设计说明：
-// - BitFS 浏览器里的静态资源通常会被改写成“纯 seed hash 文件名”，天然没有扩展名；
-// - 仅靠 filepath.Ext() 或 http.DetectContentType()，JS/CSS 往往会退化成 text/plain；
-// - 这里补一层轻量文本探测，让首页这类 extensionless web 资源仍然能回正确 MIME；
-// - 判断顺序必须先偏向 JavaScript，再偏向 CSS，因为现代打包后的压缩 JS 会同时含有 `{}` 和 `:`，
-//   如果 CSS 规则过早命中，就会把模块脚本误发成样式表，页面只剩背景却没有正文。
+//   - BitFS 浏览器里的静态资源通常会被改写成“纯 seed hash 文件名”，天然没有扩展名；
+//   - 仅靠 filepath.Ext() 或 http.DetectContentType()，JS/CSS 往往会退化成 text/plain；
+//   - 这里补一层轻量文本探测，让首页这类 extensionless web 资源仍然能回正确 MIME；
+//   - 判断顺序必须先偏向 JavaScript，再偏向 CSS，因为现代打包后的压缩 JS 会同时含有 `{}` 和 `:`，
+//     如果 CSS 规则过早命中，就会把模块脚本误发成样式表，页面只剩背景却没有正文。
 func guessContentTypeFromTextHead(head []byte) string {
 	trimmed := strings.TrimSpace(string(head))
 	if trimmed == "" {

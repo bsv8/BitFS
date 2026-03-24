@@ -1,4 +1,4 @@
-package main
+package managedclient
 
 import "testing"
 
@@ -6,7 +6,7 @@ func TestLoadRuntimeConfigOrInit_UsesInitNetworkOnFirstCreate(t *testing.T) {
 	t.Parallel()
 
 	vaultDir := t.TempDir()
-	cfg, created, err := loadRuntimeConfigOrInit(vaultDir+"/config.yaml", "main")
+	cfg, created, err := LoadRuntimeConfigOrInit(vaultDir+"/config.yaml", "main")
 	if err != nil {
 		t.Fatalf("loadRuntimeConfigOrInit create failed: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestLoadRuntimeConfigOrInit_ExistingConfigNotOverriddenByInitNetwork(t *tes
 
 	vaultDir := t.TempDir()
 	configPath := vaultDir + "/config.yaml"
-	cfg1, created1, err := loadRuntimeConfigOrInit(configPath, "main")
+	cfg1, created1, err := LoadRuntimeConfigOrInit(configPath, "main")
 	if err != nil {
 		t.Fatalf("first loadRuntimeConfigOrInit failed: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestLoadRuntimeConfigOrInit_ExistingConfigNotOverriddenByInitNetwork(t *tes
 		t.Fatalf("first network=%q, want main", cfg1.BSV.Network)
 	}
 
-	cfg2, created2, err := loadRuntimeConfigOrInit(configPath, "test")
+	cfg2, created2, err := LoadRuntimeConfigOrInit(configPath, "test")
 	if err != nil {
 		t.Fatalf("second loadRuntimeConfigOrInit failed: %v", err)
 	}

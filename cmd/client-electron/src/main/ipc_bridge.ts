@@ -6,7 +6,7 @@ import type { BitfsBrowserRuntime } from "./browser_runtime";
 import type { BrowserSettingsStore } from "./browser_settings";
 import type { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
-import type { KeyFileActionResult, ShellState } from "../shared/shell_contract";
+import type { BitfsPublicClientStatus, KeyFileActionResult, ShellState } from "../shared/shell_contract";
 
 export function registerShellIPC(
   window: BrowserWindow,
@@ -135,6 +135,33 @@ export function registerShellIPC(
     debugLogger.log("ipc", "wallet_summary");
     return runtime.getWalletSummary();
   });
+  // 设计说明：
+  // - `window.bitfs` 是给外部 bitfs 页面用的公开协议，不能把壳层内部状态原样透出去；
+  // - 因此 viewer 走独立的 IPC 名字空间，只返回已经裁剪过的公开画像字段。
+  ipcMain.handle("bitfs-viewer:client-info", () => {
+    debugLogger.log("ipc", "viewer_client_info");
+    return runtime.getPublicClientInfo();
+  });
+  ipcMain.handle("bitfs-viewer:client-status", () => {
+    debugLogger.log("ipc", "viewer_client_status");
+    return buildPublicClientStatus(buildShellState());
+  });
+  ipcMain.handle("bitfs-viewer:wallet-summary", () => {
+    debugLogger.log("ipc", "viewer_wallet_summary");
+    return runtime.getPublicWalletSummary();
+  });
+  ipcMain.handle("bitfs-viewer:wallet-addresses", () => {
+    debugLogger.log("ipc", "viewer_wallet_addresses");
+    return runtime.getPublicWalletAddresses();
+  });
+  ipcMain.handle("bitfs-viewer:wallet-history", (_event, payload: { limit?: number; offset?: number; direction?: string }) => {
+    debugLogger.log("ipc", "viewer_wallet_history", {
+      limit: Number(payload?.limit || 0),
+      offset: Number(payload?.offset || 0),
+      direction: String(payload?.direction || "")
+    });
+    return runtime.listPublicWalletHistory(payload || {});
+  });
   ipcMain.handle("bitfs-shell:live-latest", (_event, payload: { streamID: string }) => {
     debugLogger.log("ipc", "live_latest", {
       stream_id: String(payload?.streamID || "")
@@ -157,6 +184,16 @@ export function registerShellIPC(
   ipcMain.on("bitfs-shell:debug-log", (_event, payload: { scope?: string; event?: string; fields?: Record<string, unknown> }) => {
     debugLogger.log(`renderer.${String(payload?.scope || "shell")}`, String(payload?.event || "log"), payload?.fields);
   });
+}
+
+function buildPublicClientStatus(state: ShellState): BitfsPublicClientStatus {
+  return {
+    trusted_protocol: "bitfs://",
+    current_url: String(state.currentURL || ""),
+    current_root_seed_hash: String(state.currentRootSeedHash || ""),
+    wallet_ready: state.backend.phase === "ready" && state.backend.unlocked,
+    wallet_unlocked: Boolean(state.backend.unlocked)
+  };
 }
 
 async function importKeyFile(

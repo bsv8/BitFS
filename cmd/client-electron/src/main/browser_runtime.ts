@@ -1,6 +1,14 @@
 import { EventEmitter } from "node:events";
 
-import type { ShellResource } from "../shared/shell_contract";
+import type {
+  BitfsPublicClientInfo,
+  BitfsPublicWalletAddress,
+  BitfsPublicWalletHistoryDirection,
+  BitfsPublicWalletHistoryItem,
+  BitfsPublicWalletHistoryList,
+  BitfsPublicWalletSummary,
+  ShellResource
+} from "../shared/shell_contract";
 import { debugLogger } from "./debug_logger";
 
 export type BrowserRuntimeState = {
@@ -422,11 +430,86 @@ export class BitfsBrowserRuntime extends EventEmitter {
     return this.fetchJSON<Record<string, unknown>>("/api/v1/info");
   }
 
+  async getPublicClientInfo(): Promise<BitfsPublicClientInfo> {
+    debugLogger.log("runtime", "get_public_client_info", {
+      trace_id: this.currentTraceID
+    });
+    const info = await this.fetchJSON<Record<string, unknown>>("/api/v1/info");
+    return {
+      trusted_protocol: "bitfs://",
+      pubkey_hex: normalizeSeedHash(readStringField(info, "pubkey_hex", "client_pubkey_hex")),
+      started_at_unix: readIntegerField(info, "started_at_unix"),
+      seller_enabled: readBooleanField(info, "seller_enabled")
+    };
+  }
+
   async getWalletSummary(): Promise<Record<string, unknown>> {
     debugLogger.log("runtime", "get_wallet_summary", {
       trace_id: this.currentTraceID
     });
     return this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary");
+  }
+
+  async getPublicWalletSummary(): Promise<BitfsPublicWalletSummary> {
+    debugLogger.log("runtime", "get_public_wallet_summary", {
+      trace_id: this.currentTraceID
+    });
+    const [info, summary] = await Promise.all([
+      this.fetchJSON<Record<string, unknown>>("/api/v1/info"),
+      this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary")
+    ]);
+    const pubkeyHex = normalizeSeedHash(readStringField(info, "pubkey_hex", "client_pubkey_hex"));
+    const walletAddress = readStringField(summary, "wallet_address");
+    const addresses = walletAddress === ""
+      ? []
+      : [{
+          address: walletAddress,
+          encoding: "base58",
+          purpose: "default_receive",
+          pubkey_hex: pubkeyHex
+        }] satisfies BitfsPublicWalletAddress[];
+    return {
+      trusted_protocol: "bitfs://",
+      pubkey_hex: pubkeyHex,
+      wallet_address: walletAddress,
+      addresses,
+      balance_satoshi: Math.max(0, readIntegerField(summary, "onchain_balance_satoshi"))
+    };
+  }
+
+  async getPublicWalletAddresses(): Promise<BitfsPublicWalletAddress[]> {
+    debugLogger.log("runtime", "get_public_wallet_addresses", {
+      trace_id: this.currentTraceID
+    });
+    const summary = await this.getPublicWalletSummary();
+    return summary.addresses;
+  }
+
+  async listPublicWalletHistory(query: { limit?: number; offset?: number; direction?: string }): Promise<BitfsPublicWalletHistoryList> {
+    const limit = clampBoundInt(query?.limit, 12, 1, 100);
+    const offset = clampBoundInt(query?.offset, 0, 0, 1_000_000);
+    const direction = normalizePublicWalletHistoryDirection(String(query?.direction || ""));
+    debugLogger.log("runtime", "list_public_wallet_history", {
+      limit,
+      offset,
+      direction,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    search.set("limit", String(limit));
+    search.set("offset", String(offset));
+    if (direction === "in") {
+      search.set("direction", "IN");
+    } else if (direction === "out") {
+      search.set("direction", "OUT");
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/ledger?${search.toString()}`);
+    return {
+      total: Math.max(0, readIntegerField(payload, "total")),
+      limit,
+      offset,
+      items: readHistoryItems(payload)
+    };
   }
 
   async getLiveLatest(streamID: string): Promise<Record<string, unknown>> {
@@ -679,6 +762,14 @@ function normalizeBudget(raw: number, fallback: number): number {
   return Math.max(1, Math.floor(value));
 }
 
+function clampBoundInt(raw: unknown, fallback: number, min: number, max: number): number {
+  const value = Number(raw);
+  if (!Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
 function normalizeSeedHashList(seedHashes: string[]): string[] {
   const out: string[] = [];
   const seen = new Set<string>();
@@ -728,6 +819,77 @@ function resolveBitfsTarget(raw: string, baseURL = ""): string {
     }
   }
   throw new Error("invalid bitfs target");
+}
+
+function readStringField(source: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = source[key];
+    if (typeof value === "string") {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function readIntegerField(source: Record<string, unknown>, key: string): number {
+  const value = source[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.trunc(parsed);
+    }
+  }
+  return 0;
+}
+
+function readBooleanField(source: Record<string, unknown>, key: string): boolean {
+  const value = source[key];
+  if (typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return value !== 0;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1" || normalized === "yes";
+  }
+  return false;
+}
+
+function normalizePublicWalletHistoryDirection(raw: string): BitfsPublicWalletHistoryDirection {
+  const value = raw.trim().toLowerCase();
+  if (value === "in") {
+    return "in";
+  }
+  if (value === "out") {
+    return "out";
+  }
+  return "unknown";
+}
+
+function readHistoryItems(payload: Record<string, unknown>): BitfsPublicWalletHistoryItem[] {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: BitfsPublicWalletHistoryItem[] = [];
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    const item = rawItem as Record<string, unknown>;
+    items.push({
+      id: Math.max(0, readIntegerField(item, "id")),
+      txid: readStringField(item, "txid").toLowerCase(),
+      direction: normalizePublicWalletHistoryDirection(readStringField(item, "direction")),
+      amount_satoshi: Math.abs(readIntegerField(item, "amount_satoshi")),
+      status: readStringField(item, "status").toLowerCase(),
+      block_height: Math.max(0, readIntegerField(item, "block_height")),
+      occurred_at_unix: Math.max(0, readIntegerField(item, "occurred_at_unix"))
+    });
+  }
+  return items;
 }
 
 function parseBitfsURL(rawURL: string): string {

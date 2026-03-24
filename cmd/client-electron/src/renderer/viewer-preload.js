@@ -36,9 +36,9 @@
     const handler = function handleShellState(_event, state) {
       listener(state);
     };
-    ipcRenderer.on("bitfs-shell:state", handler);
+    ipcRenderer.on("bitfs-viewer:state", handler);
     return function unsubscribe() {
-      ipcRenderer.removeListener("bitfs-shell:state", handler);
+      ipcRenderer.removeListener("bitfs-viewer:state", handler);
     };
   }
 
@@ -90,26 +90,10 @@
     },
     client: {
       async info() {
-        return ipcRenderer.invoke("bitfs-shell:client-info");
+        return ipcRenderer.invoke("bitfs-viewer:client-info");
       },
       async getStatus() {
-        const state = await ipcRenderer.invoke("bitfs-shell:get-state");
-        return {
-          trusted_protocol: "bitfs://",
-          current_url: state.currentURL,
-          static_single_max_sat: state.staticSingleMaxSat,
-          static_page_max_sat: state.staticPageMaxSat,
-          auto_spent_sat: state.autoSpentSat,
-          resource_pending_count: Number(state.pendingCount || 0),
-          resource_total_count: Array.isArray(state.resources) ? state.resources.length : 0,
-          last_error: state.lastError || "",
-          backend_phase: state.backend?.phase || "",
-          backend_has_key: Boolean(state.backend?.hasKey),
-          backend_unlocked: Boolean(state.backend?.unlocked),
-          client_api_base: state.backend?.apiBase || state.clientAPIBase || "",
-          backend_default_home_seed_hash: state.backend?.defaultHomeSeedHash || "",
-          user_home_seed_hash: state.userHomeSeedHash || ""
-        };
+        return ipcRenderer.invoke("bitfs-viewer:client-status");
       },
       async setStaticBudget(singleMaxSat, pageMaxSat) {
         return ipcRenderer.invoke("bitfs-shell:set-budget", {
@@ -126,7 +110,20 @@
     },
     wallet: {
       async summary() {
-        return ipcRenderer.invoke("bitfs-shell:wallet-summary");
+        return ipcRenderer.invoke("bitfs-viewer:wallet-summary");
+      },
+      async addresses() {
+        return ipcRenderer.invoke("bitfs-viewer:wallet-addresses");
+      },
+      history: {
+        async list(query) {
+          const payload = query && typeof query === "object" ? query : {};
+          return ipcRenderer.invoke("bitfs-viewer:wallet-history", {
+            limit: Number(payload.limit || 0),
+            offset: Number(payload.offset || 0),
+            direction: String(payload.direction || "")
+          });
+        }
       }
     },
     live: {

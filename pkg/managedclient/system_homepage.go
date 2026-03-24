@@ -1,4 +1,4 @@
-package main
+package managedclient
 
 import (
 	"database/sql"
@@ -258,44 +258,53 @@ func sanitizeHomepageMIMEHint(raw string) string {
 	if !strings.Contains(value, "/") {
 		return ""
 	}
-	if semi := strings.IndexByte(value, ';'); semi >= 0 {
-		value = strings.TrimSpace(value[:semi])
-	}
 	return value
 }
 
 func upsertSystemHomepageSeedPriceState(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, seedPath string) (uint64, uint64, error) {
-	var lastBuy sql.NullInt64
-	_ = db.QueryRow(`SELECT last_buy_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&lastBuy)
-	resale := uint64(0)
-	if lastBuy.Valid && lastBuy.Int64 > 0 {
-		resale = uint64(lastBuy.Int64) * discountBPS / 10000
+	if db == nil {
+		return 0, 0, fmt.Errorf("db is nil")
 	}
-	unit := floorUnit
-	if resale > unit {
-		unit = resale
+	seedHash = normalizeSeedHashHex(seedHash)
+	if seedHash == "" {
+		return 0, 0, fmt.Errorf("invalid seed hash")
 	}
-	seedInfo, err := os.Stat(seedPath)
-	if err != nil {
+	var chunkCount uint64
+	if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 		return 0, 0, err
 	}
-	seedChunks := ceilDivUint64(uint64(seedInfo.Size()), seedBlockSizeBytes)
-	total := unit * seedChunks
+	if chunkCount == 0 {
+		if strings.TrimSpace(seedPath) == "" {
+			return 0, 0, fmt.Errorf("seed path is empty")
+		}
+		stat, err := os.Stat(seedPath)
+		if err != nil {
+			return 0, 0, err
+		}
+		size := uint64(stat.Size())
+		if size == 0 {
+			chunkCount = 1
+		} else {
+			chunkCount = (size + seedBlockSizeBytes - 1) / seedBlockSizeBytes
+		}
+	}
+	unitPrice := floorUnit
 	now := time.Now().Unix()
-	_, err = db.Exec(`INSERT INTO seed_price_state(seed_hash,last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps,unit_price_sat_per_64k,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k,resale_discount_bps=excluded.resale_discount_bps,unit_price_sat_per_64k=excluded.unit_price_sat_per_64k,updated_at_unix=excluded.updated_at_unix`, seedHash, nullInt64OrNil(lastBuy), floorUnit, discountBPS, unit, now)
-	return unit, total, err
-}
-
-func nullInt64OrNil(v sql.NullInt64) any {
-	if v.Valid {
-		return v.Int64
+	if _, err := db.Exec(
+		`INSERT INTO seed_price_state(seed_hash,last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps,unit_price_sat_per_64k,updated_at_unix)
+		 VALUES(?,?,?,?,?,?)
+		 ON CONFLICT(seed_hash) DO UPDATE SET
+		   floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k,
+		   resale_discount_bps=excluded.resale_discount_bps,
+		   unit_price_sat_per_64k=CASE
+		     WHEN COALESCE(seed_price_state.last_buy_unit_price_sat_per_64k,0) > excluded.floor_unit_price_sat_per_64k
+		       THEN COALESCE(seed_price_state.last_buy_unit_price_sat_per_64k,0)
+		     ELSE excluded.floor_unit_price_sat_per_64k
+		   END,
+		   updated_at_unix=excluded.updated_at_unix`,
+		seedHash, nil, floorUnit, discountBPS, unitPrice, now,
+	); err != nil {
+		return 0, 0, err
 	}
-	return nil
-}
-
-func ceilDivUint64(v uint64, d uint64) uint64 {
-	if v == 0 {
-		return 0
-	}
-	return (v + d - 1) / d
+	return floorUnit, chunkCount, nil
 }

@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"fmt"
-	"io/fs"
 	"net/http"
 )
 
@@ -10,7 +9,7 @@ import (
 // 设计说明：
 // - managed 模式下统一由单一入口接收请求；
 // - runtime 仅提供业务处理函数，不再依赖内部 HTTP 反向代理链路。
-func NewRuntimeAPIHandler(rt *Runtime, webAssets fs.FS) (http.Handler, error) {
+func NewRuntimeAPIHandler(rt *Runtime) (http.Handler, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime is nil")
 	}
@@ -24,6 +23,6 @@ func NewRuntimeAPIHandler(rt *Runtime, webAssets fs.FS) (http.Handler, error) {
 		return nil, fmt.Errorf("runtime workspace is nil")
 	}
 	cfg := rt.runIn.toConfig()
-	srv := newHTTPAPIServer(rt, &cfg, rt.DB, rt.Host, rt.HealthyGWs, rt.Workspace, webAssets, rt.rpcTrace)
+	srv := newHTTPAPIServer(rt, &cfg, rt.DB, rt.Host, rt.HealthyGWs, rt.Workspace, rt.rpcTrace)
 	return srv.Handler()
 }

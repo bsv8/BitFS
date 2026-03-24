@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bufio"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -13,8 +11,7 @@ import (
 	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp"
-	crypto "github.com/libp2p/go-libp2p/core/crypto"
-	"golang.org/x/term"
+	"github.com/bsv8/BitFS/pkg/managedclient"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,24 +30,12 @@ type cliOptions struct {
 	showVer              bool
 }
 
-type startupSummary struct {
-	VaultPath           string
-	ConfigPath          string
-	KeyPath             string
-	IndexDBPath         string
-	RuntimeConfigStatus string
-}
-
 type cliAction string
 
-type runtimeListenOverrides struct {
-	httpListenAddr   string
-	fsHTTPListenAddr string
-}
-
-type desktopBootstrapOptions struct {
-	systemHomepageBundle string
-}
+type startupSummary = managedclient.StartupSummary
+type runtimeListenOverrides = managedclient.RuntimeListenOverrides
+type desktopBootstrapOptions = managedclient.DesktopBootstrapOptions
+type encryptedKeyEnvelope = managedclient.EncryptedKeyEnvelope
 
 const (
 	actionRun    cliAction = "run"
@@ -78,21 +63,21 @@ func main() {
 		log.Fatal(err)
 	}
 	overrides := runtimeListenOverrides{
-		httpListenAddr:   strings.TrimSpace(opts.httpListenAddr),
-		fsHTTPListenAddr: strings.TrimSpace(opts.fsHTTPListen),
+		HTTPListenAddr:   strings.TrimSpace(opts.httpListenAddr),
+		FSHTTPListenAddr: strings.TrimSpace(opts.fsHTTPListen),
 	}
 	desktopOptions := desktopBootstrapOptions{
-		systemHomepageBundle: strings.TrimSpace(opts.systemHomepageBundle),
+		SystemHomepageBundle: strings.TrimSpace(opts.systemHomepageBundle),
 	}
 
 	vaultPath := clientapp.ResolveVaultPath(opts.vaultPath)
 	configPath := clientapp.ResolveConfigPath(vaultPath)
 	keyPath := clientapp.ResolveKeyFilePath(vaultPath)
-	cfg, runtimeCfgCreated, err := loadRuntimeConfigOrInit(configPath, initNetwork)
+	cfg, runtimeCfgCreated, err := managedclient.LoadRuntimeConfigOrInit(configPath, initNetwork)
 	if err != nil {
 		log.Fatal(err)
 	}
-	overrides.apply(&cfg)
+	overrides.Apply(&cfg)
 	runtimeConfigStatus := "已加载"
 	if runtimeCfgCreated {
 		runtimeConfigStatus = "已创建（首次启动）"
@@ -122,7 +107,14 @@ func main() {
 		}
 		return
 	case actionRun:
-		if err := runManagedDaemon(cfg, startup, initNetwork, overrides, desktopOptions); err != nil {
+		if err := managedclient.RunManagedDaemon(managedclient.DaemonOptions{
+			Config:               cfg,
+			Startup:              startup,
+			InitNetwork:          initNetwork,
+			Overrides:            overrides,
+			Desktop:              desktopOptions,
+			UnlockPasswordPrompt: msg("prompt_password_unlock"),
+		}); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -148,21 +140,6 @@ func parseFlags() cliOptions {
 	}
 	flag.Parse()
 	return opts
-}
-
-func (o runtimeListenOverrides) apply(cfg *clientapp.Config) {
-	if cfg == nil {
-		return
-	}
-	// 设计说明：
-	// Electron 托管模式会把 HTTP / fs_http 端口作为桌面层分配的运行态资源；
-	// 这些地址不应该写回 config.yaml，而应该在启动和每次解锁时重新覆盖。
-	if addr := strings.TrimSpace(o.httpListenAddr); addr != "" {
-		cfg.HTTP.ListenAddr = addr
-	}
-	if addr := strings.TrimSpace(o.fsHTTPListenAddr); addr != "" {
-		cfg.FSHTTP.ListenAddr = addr
-	}
 }
 
 func resolveCLIAction(opts cliOptions) (cliAction, error) {
@@ -192,16 +169,16 @@ func resolveCLIAction(opts cliOptions) (cliAction, error) {
 }
 
 func runCLIKeyNew(keyPath string) error {
-	if _, exists, err := loadEncryptedKeyEnvelope(keyPath); err != nil {
+	if _, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath); err != nil {
 		return err
 	} else if exists {
 		return fmt.Errorf("%s", msg("err_key_exists"))
 	}
-	p1, err := readPassword(msg("prompt_password_new"))
+	p1, err := managedclient.ReadPassword(msg("prompt_password_new"))
 	if err != nil {
 		return err
 	}
-	p2, err := readPassword(msg("prompt_password_confirm"))
+	p2, err := managedclient.ReadPassword(msg("prompt_password_confirm"))
 	if err != nil {
 		return err
 	}
@@ -211,18 +188,18 @@ func runCLIKeyNew(keyPath string) error {
 	if strings.TrimSpace(p1) == "" {
 		return fmt.Errorf("%s", msg("err_password_empty"))
 	}
-	privHex, err := generatePrivateKeyHex()
+	privHex, err := managedclient.GeneratePrivateKeyHex()
 	if err != nil {
 		return err
 	}
-	env, err := encryptPrivateKeyEnvelope(privHex, p1)
+	env, err := managedclient.EncryptPrivateKeyEnvelope(privHex, p1)
 	if err != nil {
 		return err
 	}
-	if err := saveEncryptedKeyEnvelope(keyPath, env); err != nil {
+	if err := managedclient.SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return err
 	}
-	pubHex, _ := pubHexFromPrivHex(privHex)
+	pubHex, _ := managedclient.PubHexFromPrivHex(privHex)
 	fmt.Printf("%s\nkey_path: %s\npubkey: %s\n", msg("new_done"), keyPath, pubHex)
 	return nil
 }
@@ -240,12 +217,12 @@ func runCLIKeyImport(keyPath, importPath string) error {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("invalid key envelope json: %w", err)
 	}
-	if _, exists, err := loadEncryptedKeyEnvelope(keyPath); err != nil {
+	if _, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath); err != nil {
 		return err
 	} else if exists {
 		return fmt.Errorf("%s", msg("err_key_exists"))
 	}
-	if err := saveEncryptedKeyEnvelope(keyPath, env); err != nil {
+	if err := managedclient.SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return err
 	}
 	fmt.Printf("%s\nfile: %s\n", msg("import_done"), importPath)
@@ -257,7 +234,7 @@ func runCLIKeyExport(keyPath, exportPath string) error {
 	if exportPath == "" {
 		return fmt.Errorf("%s", msg("err_export_path_required"))
 	}
-	env, exists, err := loadEncryptedKeyEnvelope(keyPath)
+	env, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath)
 	if err != nil {
 		return err
 	}
@@ -276,118 +253,6 @@ func runCLIKeyExport(keyPath, exportPath string) error {
 	}
 	fmt.Printf("%s\nfile: %s\n", msg("export_done"), exportPath)
 	return nil
-}
-
-func readPassword(prompt string) (string, error) {
-	if prompt == "" {
-		prompt = "password"
-	}
-	fmt.Fprint(os.Stderr, prompt)
-	fd := int(os.Stdin.Fd())
-	if term.IsTerminal(fd) {
-		b, err := term.ReadPassword(fd)
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return "", err
-		}
-		return strings.TrimSpace(string(b)), nil
-	}
-	reader := bufio.NewReader(os.Stdin)
-	line, err := reader.ReadString('\n')
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(line), nil
-}
-
-func newDefaultConfig(network string) clientapp.Config {
-	cfg := clientapp.Config{}
-	cfg.BSV.Network = network
-	cfg.HTTP.Enabled = true
-	cfg.FSHTTP.Enabled = true
-	cfg.Index.Backend = "sqlite"
-	cfg.Storage.WorkspaceDir = "workspace"
-	cfg.Storage.DataDir = "data"
-	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
-	cfg.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
-	return cfg
-}
-
-func loadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, bool, error) {
-	defaultCfg := newDefaultConfig(initNetwork)
-	res, err := clientapp.LoadOrInitConfigFile(configPath, defaultCfg)
-	if err != nil {
-		return clientapp.Config{}, false, err
-	}
-	cfg := res.Config
-	cfg.Index.Backend = "sqlite"
-	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
-		cfg.Index.SQLitePath = filepath.Clean(filepath.Join(filepath.Dir(configPath), "data", "client-index.sqlite"))
-	}
-	return cfg, res.Created, nil
-}
-
-func generatePrivateKeyHex() (string, error) {
-	k, _, err := crypto.GenerateKeyPair(crypto.Secp256k1, -1)
-	if err != nil {
-		return "", err
-	}
-	b, err := k.Raw()
-	if err != nil {
-		return "", err
-	}
-	if len(b) != 32 {
-		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(b))
-	}
-	return strings.ToLower(hex.EncodeToString(b)), nil
-}
-
-func normalizeRawSecp256k1PrivKeyHex(in string) (string, error) {
-	hexKey := strings.ToLower(strings.TrimSpace(in))
-	if len(hexKey) != 64 {
-		return "", fmt.Errorf("invalid private key format: expect 32-byte secp256k1 hex (len=64)")
-	}
-	b, err := hex.DecodeString(hexKey)
-	if err != nil {
-		return "", fmt.Errorf("invalid private key hex: %w", err)
-	}
-	priv, err := crypto.UnmarshalSecp256k1PrivateKey(b)
-	if err != nil {
-		return "", fmt.Errorf("invalid secp256k1 private key: %w", err)
-	}
-	raw, err := priv.Raw()
-	if err != nil {
-		return "", fmt.Errorf("read private key raw bytes: %w", err)
-	}
-	if len(raw) != 32 {
-		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(raw))
-	}
-	return strings.ToLower(hex.EncodeToString(raw)), nil
-}
-
-func pubHexFromPrivHex(privHex string) (string, error) {
-	k, err := parsePrivHex(privHex)
-	if err != nil {
-		return "", err
-	}
-	pub := k.GetPublic()
-	raw, err := crypto.MarshalPublicKey(pub)
-	if err != nil {
-		return "", err
-	}
-	return strings.ToLower(hex.EncodeToString(raw)), nil
-}
-
-func parsePrivHex(s string) (crypto.PrivKey, error) {
-	hexKey, err := normalizeRawSecp256k1PrivKeyHex(s)
-	if err != nil {
-		return nil, err
-	}
-	b, err := hex.DecodeString(hexKey)
-	if err != nil {
-		return nil, err
-	}
-	return crypto.UnmarshalSecp256k1PrivateKey(b)
 }
 
 func detectCLILanguage() string {

@@ -439,7 +439,6 @@ type RunInput struct {
 	// 设计约束：Host 身份与费用池签名必须都来自这把私钥。
 	EffectivePrivKeyHex string
 	ObsSink             obs.Sink
-	WebAssets           fs.FS
 
 	// ActionChain 承载真实上链动作与费用池最小读能力。
 	// 生产环境默认使用 chainbridge 的嵌入式费用池客户端。
@@ -525,7 +524,6 @@ func (in *RunInput) applyConfig(cfg Config) {
 	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
 	next.ConfigPath = in.ConfigPath
 	next.ObsSink = in.ObsSink
-	next.WebAssets = in.WebAssets
 	next.ActionChain = in.ActionChain
 	next.WalletChain = in.WalletChain
 	next.RPCTrace = in.RPCTrace
@@ -1016,7 +1014,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
 	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
-		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, in.WebAssets, trace)
+		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
