@@ -11,7 +11,7 @@ import (
 func TestNodeReachabilityCacheAndSelfState(t *testing.T) {
 	t.Parallel()
 
-	db := openPostGetTestDB(t)
+	db := openResolveCallTestDB(t)
 	hNode, nodePubkeyHex := newSecpHost(t)
 	defer hNode.Close()
 	hGateway, gatewayPubkeyHex := newSecpHost(t)

@@ -85,19 +85,19 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		if kind == "resp" {
 			return &liveHeadPushResp{}, true
 		}
-	case string(ProtoClientPost):
+	case string(ProtoClientCall):
 		if kind == "req" {
-			return &postReq{}, true
+			return &callReq{}, true
 		}
 		if kind == "resp" {
-			return &postResp{}, true
+			return &callResp{}, true
 		}
-	case string(ProtoClientGet):
+	case string(ProtoClientResolve):
 		if kind == "req" {
-			return &getReq{}, true
+			return &resolveReq{}, true
 		}
 		if kind == "resp" {
-			return &getResp{}, true
+			return &resolveResp{}, true
 		}
 	case string(ProtoResolverResolve):
 		if kind == "req" {

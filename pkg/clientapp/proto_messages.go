@@ -114,21 +114,21 @@ func (m *liveQuoteSubmitResp) Reset()         { *m = liveQuoteSubmitResp{} }
 func (m *liveQuoteSubmitResp) String() string { return oldproto.CompactTextString(m) }
 func (*liveQuoteSubmitResp) ProtoMessage()    {}
 
-func (m *postReq) Reset()         { *m = postReq{} }
-func (m *postReq) String() string { return oldproto.CompactTextString(m) }
-func (*postReq) ProtoMessage()    {}
+func (m *callReq) Reset()         { *m = callReq{} }
+func (m *callReq) String() string { return oldproto.CompactTextString(m) }
+func (*callReq) ProtoMessage()    {}
 
-func (m *postResp) Reset()         { *m = postResp{} }
-func (m *postResp) String() string { return oldproto.CompactTextString(m) }
-func (*postResp) ProtoMessage()    {}
+func (m *callResp) Reset()         { *m = callResp{} }
+func (m *callResp) String() string { return oldproto.CompactTextString(m) }
+func (*callResp) ProtoMessage()    {}
 
-func (m *getReq) Reset()         { *m = getReq{} }
-func (m *getReq) String() string { return oldproto.CompactTextString(m) }
-func (*getReq) ProtoMessage()    {}
+func (m *resolveReq) Reset()         { *m = resolveReq{} }
+func (m *resolveReq) String() string { return oldproto.CompactTextString(m) }
+func (*resolveReq) ProtoMessage()    {}
 
-func (m *getResp) Reset()         { *m = getResp{} }
-func (m *getResp) String() string { return oldproto.CompactTextString(m) }
-func (*getResp) ProtoMessage()    {}
+func (m *resolveResp) Reset()         { *m = resolveResp{} }
+func (m *resolveResp) String() string { return oldproto.CompactTextString(m) }
+func (*resolveResp) ProtoMessage()    {}
 
 func (m *resolverResolveReq) Reset()         { *m = resolverResolveReq{} }
 func (m *resolverResolveReq) String() string { return oldproto.CompactTextString(m) }

@@ -28,8 +28,11 @@ export type LocatorVisitContext = {
 };
 
 export type LocatorHandlerSet = {
-  openNodeLocator?: (locator: ParsedNodeLocator, visit: LocatorVisitContext) => Promise<{ seedHash: string }>;
-  openResolverLocator?: (locator: ParsedResolverLocator, visit: LocatorVisitContext) => Promise<{ seedHash: string }>;
+  resolveNodeLocator?: (locator: ParsedNodeLocator, visit: LocatorVisitContext) => Promise<{ seedHash: string }>;
+  resolveResolverLocator?: (
+    locator: ParsedResolverLocator,
+    visit: LocatorVisitContext
+  ) => Promise<{ seedHash: string; targetPubkeyHex?: string }>;
 };
 
 const seedHashPattern = /^[0-9a-f]{64}$/;

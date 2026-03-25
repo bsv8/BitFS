@@ -84,9 +84,9 @@ type requestVisitMeta struct {
 type requestVisitContextKey string
 
 const (
-	headerVisitID               = "X-BitFS-Visit-ID"
-	headerVisitLocator          = "X-BitFS-Visit-Locator"
-	requestVisitMetaContextKey  = requestVisitContextKey("bitfs_request_visit_meta")
+	headerVisitID              = "X-BitFS-Visit-ID"
+	headerVisitLocator         = "X-BitFS-Visit-Locator"
+	requestVisitMetaContextKey = requestVisitContextKey("bitfs_request_visit_meta")
 )
 
 type walletLedgerEntry struct {
@@ -471,8 +471,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/files/get-file/job", s.withAuth(s.handleGetFileJob))
 		mux.HandleFunc(prefix+"/v1/files/get-file/jobs", s.withAuth(s.handleGetFileJobs))
 		mux.HandleFunc(prefix+"/v1/files/get-file/cancel", s.withAuth(s.handleGetFileCancel))
-		mux.HandleFunc(prefix+"/v1/post", s.withAuth(s.handlePost))
-		mux.HandleFunc(prefix+"/v1/get", s.withAuth(s.handleGet))
+		mux.HandleFunc(prefix+"/v1/call", s.withAuth(s.handleCall))
+		mux.HandleFunc(prefix+"/v1/resolve", s.withAuth(s.handleResolve))
 		mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
 		mux.HandleFunc(prefix+"/v1/inbox/messages", s.withAuth(s.handleInboxMessages))
 		mux.HandleFunc(prefix+"/v1/inbox/messages/detail", s.withAuth(s.handleInboxMessageDetail))

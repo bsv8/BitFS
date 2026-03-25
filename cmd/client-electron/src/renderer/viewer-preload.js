@@ -84,9 +84,9 @@
     return value;
   }
 
-  function normalizePostInput(input) {
+  function normalizePeerCallInput(input) {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
-      throw new Error("post payload is required");
+      throw new Error("peer call payload is required");
     }
     const payload = {
       to: normalizeTarget(input.to),
@@ -110,37 +110,33 @@
     return payload;
   }
 
-  function normalizeGetInput(input, maybeRoute) {
-    if (typeof input === "string") {
-      return {
-        to: normalizeTarget(input),
-        route: normalizeRoute(maybeRoute, true)
-      };
+  function normalizeLocatorInput(raw) {
+    const locator = String(raw || "").trim();
+    if (!locator) {
+      throw new Error("bitfs locator is required");
     }
-    if (!input || typeof input !== "object" || Array.isArray(input)) {
-      throw new Error("get payload is required");
-    }
-    return {
-      to: normalizeTarget(input.to),
-      route: normalizeRoute(input.route, true)
-    };
+    return { locator };
   }
 
   const bitfsBridge = {
-    version: "0.1.0",
+    version: "0.2.0",
     trustedProtocol: "bitfs://",
-    async post(input) {
-      return ipcRenderer.invoke("bitfs-viewer:post", normalizePostInput(input));
-    },
-    async get(input, maybeRoute) {
-      return ipcRenderer.invoke("bitfs-viewer:get", normalizeGetInput(input, maybeRoute));
-    },
     navigation: {
       open(raw) {
         window.location.assign(resolveBitfsRef(raw));
       },
       reload() {
         window.location.reload();
+      }
+    },
+    locator: {
+      async resolve(raw) {
+        return ipcRenderer.invoke("bitfs-viewer:locator-resolve", normalizeLocatorInput(raw));
+      }
+    },
+    peer: {
+      async call(input) {
+        return ipcRenderer.invoke("bitfs-viewer:peer-call", normalizePeerCallInput(input));
       }
     },
     resource: {

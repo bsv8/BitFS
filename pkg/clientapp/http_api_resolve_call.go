@@ -18,7 +18,7 @@ type apiRouteCallRequest struct {
 	BodyBase64  string          `json:"body_base64,omitempty"`
 }
 
-func (s *httpAPIServer) handlePost(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -37,7 +37,7 @@ func (s *httpAPIServer) handlePost(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	resp, err := TriggerClientPost(r.Context(), s.rt, TriggerClientPostParams{
+	resp, err := TriggerClientCall(r.Context(), s.rt, TriggerClientCallParams{
 		To:          req.To,
 		Route:       req.Route,
 		ContentType: req.ContentType,
@@ -50,7 +50,7 @@ func (s *httpAPIServer) handlePost(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, routeCallHTTPResponse(resp.Ok, resp.Code, resp.Message, resp.ContentType, resp.Body))
 }
 
-func (s *httpAPIServer) handleGet(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -67,7 +67,7 @@ func (s *httpAPIServer) handleGet(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerClientGet(r.Context(), s.rt, TriggerClientGetParams{To: req.To, Route: req.Route})
+	resp, err := TriggerClientResolve(r.Context(), s.rt, TriggerClientResolveParams{To: req.To, Route: req.Route})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return

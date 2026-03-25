@@ -81,7 +81,7 @@ func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverR
 	if err != nil {
 		return out, err
 	}
-	_, resolverPeerID, err := resolvePostGetTarget(resolverPubkeyHex)
+	_, resolverPeerID, err := resolveClientTarget(resolverPubkeyHex)
 	if err != nil {
 		return out, err
 	}

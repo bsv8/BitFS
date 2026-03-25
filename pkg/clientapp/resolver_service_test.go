@@ -13,11 +13,11 @@ import (
 func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	t.Parallel()
 
-	callerDB := openPostGetTestDB(t)
+	callerDB := openResolveCallTestDB(t)
 	defer callerDB.Close()
-	resolverDB := openPostGetTestDB(t)
+	resolverDB := openResolveCallTestDB(t)
 	defer resolverDB.Close()
-	targetDB := openPostGetTestDB(t)
+	targetDB := openResolveCallTestDB(t)
 	defer targetDB.Close()
 
 	callerHost, _ := newSecpHost(t)
@@ -31,7 +31,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	resolverRT := &Runtime{Host: resolverHost, DB: resolverDB}
 	targetRT := &Runtime{Host: targetHost, DB: targetDB}
 	registerResolverHandlers(resolverRT)
-	registerPostGetHandlers(targetRT)
+	registerResolveCallHandlers(targetRT)
 
 	callerHost.Peerstore().AddAddrs(resolverHost.ID(), resolverHost.Addrs(), time.Minute)
 	callerHost.Peerstore().AddAddrs(targetHost.ID(), targetHost.Addrs(), time.Minute)
@@ -65,18 +65,18 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected resolver response: %+v", resolveResp)
 	}
 
-	getResp, err := TriggerClientGet(context.Background(), callerRT, TriggerClientGetParams{
+	resolveRespFromTarget, err := TriggerClientResolve(context.Background(), callerRT, TriggerClientResolveParams{
 		To:    resolveResp.TargetPubkeyHex,
 		Route: "album",
 	})
 	if err != nil {
-		t.Fatalf("trigger client get failed: %v", err)
+		t.Fatalf("trigger client resolve failed: %v", err)
 	}
-	if !getResp.Ok {
-		t.Fatalf("get response not ok: %+v", getResp)
+	if !resolveRespFromTarget.Ok {
+		t.Fatalf("resolve response not ok: %+v", resolveRespFromTarget)
 	}
 	var manifest routeIndexManifest
-	if err := json.Unmarshal(getResp.Body, &manifest); err != nil {
+	if err := json.Unmarshal(resolveRespFromTarget.Body, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	if manifest.SeedHash != strings.Repeat("ef", 32) {
@@ -87,9 +87,9 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 func TestHTTPAPIResolverResolveAndAdminRecords(t *testing.T) {
 	t.Parallel()
 
-	callerDB := openPostGetTestDB(t)
+	callerDB := openResolveCallTestDB(t)
 	defer callerDB.Close()
-	resolverDB := openPostGetTestDB(t)
+	resolverDB := openResolveCallTestDB(t)
 	defer resolverDB.Close()
 
 	callerHost, _ := newSecpHost(t)

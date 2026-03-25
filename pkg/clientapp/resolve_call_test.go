@@ -13,12 +13,12 @@ import (
 	"time"
 )
 
-func TestPostAndGetRoundTripOverP2P(t *testing.T) {
+func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	t.Parallel()
 
-	senderDB := openPostGetTestDB(t)
+	senderDB := openResolveCallTestDB(t)
 	defer senderDB.Close()
-	receiverDB := openPostGetTestDB(t)
+	receiverDB := openResolveCallTestDB(t)
 	defer receiverDB.Close()
 
 	senderHost, _ := newSecpHost(t)
@@ -28,7 +28,7 @@ func TestPostAndGetRoundTripOverP2P(t *testing.T) {
 
 	senderRT := &Runtime{Host: senderHost, DB: senderDB}
 	receiverRT := &Runtime{Host: receiverHost, DB: receiverDB}
-	registerPostGetHandlers(receiverRT)
+	registerResolveCallHandlers(receiverRT)
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
@@ -43,21 +43,21 @@ func TestPostAndGetRoundTripOverP2P(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := upsertPublishedRouteIndex(receiverDB, defaultClientGetRoute, strings.Repeat("ab", 32)); err != nil {
+	if _, err := upsertPublishedRouteIndex(receiverDB, defaultClientResolveRoute, strings.Repeat("ab", 32)); err != nil {
 		t.Fatalf("upsert route index: %v", err)
 	}
 
-	postOut, err := TriggerClientPost(context.Background(), senderRT, TriggerClientPostParams{
+	callOut, err := TriggerClientCall(context.Background(), senderRT, TriggerClientCallParams{
 		To:          receiverPubKeyHex,
 		Route:       routeInboxMessage,
 		ContentType: "application/json",
 		Body:        []byte(`{"subject":"hello","message":"world"}`),
 	})
 	if err != nil {
-		t.Fatalf("post failed: %v", err)
+		t.Fatalf("call failed: %v", err)
 	}
-	if !postOut.Ok || postOut.Code != "OK" {
-		t.Fatalf("unexpected post response: %+v", postOut)
+	if !callOut.Ok || callOut.Code != "OK" {
+		t.Fatalf("unexpected call response: %+v", callOut)
 	}
 	senderPubKeyHex, err := localPubKeyHex(senderHost)
 	if err != nil {
@@ -73,33 +73,33 @@ func TestPostAndGetRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected inbox row: sender=%s target=%s", gotSenderPubKeyHex, gotTargetInput)
 	}
 
-	getOut, err := TriggerClientGet(context.Background(), senderRT, TriggerClientGetParams{
+	resolveOut, err := TriggerClientResolve(context.Background(), senderRT, TriggerClientResolveParams{
 		To: receiverPubKeyHex,
 	})
 	if err != nil {
-		t.Fatalf("get failed: %v", err)
+		t.Fatalf("resolve failed: %v", err)
 	}
-	if !getOut.Ok || getOut.Code != "OK" {
-		t.Fatalf("unexpected get response: %+v", getOut)
+	if !resolveOut.Ok || resolveOut.Code != "OK" {
+		t.Fatalf("unexpected resolve response: %+v", resolveOut)
 	}
 	var manifest routeIndexManifest
-	if err := json.Unmarshal(getOut.Body, &manifest); err != nil {
+	if err := json.Unmarshal(resolveOut.Body, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	if manifest.SeedHash != strings.Repeat("ab", 32) {
 		t.Fatalf("unexpected seed hash: %s", manifest.SeedHash)
 	}
-	if manifest.Route != defaultClientGetRoute {
+	if manifest.Route != defaultClientResolveRoute {
 		t.Fatalf("unexpected route: %s", manifest.Route)
 	}
 }
 
-func TestHTTPAPIPostGetInboxAndRouteIndex(t *testing.T) {
+func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	t.Parallel()
 
-	senderDB := openPostGetTestDB(t)
+	senderDB := openResolveCallTestDB(t)
 	defer senderDB.Close()
-	receiverDB := openPostGetTestDB(t)
+	receiverDB := openResolveCallTestDB(t)
 	defer receiverDB.Close()
 
 	senderHost, _ := newSecpHost(t)
@@ -109,7 +109,7 @@ func TestHTTPAPIPostGetInboxAndRouteIndex(t *testing.T) {
 
 	senderRT := &Runtime{Host: senderHost, DB: senderDB}
 	receiverRT := &Runtime{Host: receiverHost, DB: receiverDB}
-	registerPostGetHandlers(receiverRT)
+	registerResolveCallHandlers(receiverRT)
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
@@ -138,18 +138,18 @@ func TestHTTPAPIPostGetInboxAndRouteIndex(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/post", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"inbox.message","content_type":"application/json","body":{"hello":"world"}}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/call", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"inbox.message","content_type":"application/json","body":{"hello":"world"}}`))
 		rec := httptest.NewRecorder()
-		senderSrv.handlePost(rec, req)
+		senderSrv.handleCall(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("post api status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+			t.Fatalf("call api status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
 		}
 		var body map[string]any
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode post api response: %v", err)
+			t.Fatalf("decode call api response: %v", err)
 		}
 		if ok, _ := body["ok"].(bool); !ok {
-			t.Fatalf("expected post ok response: %s", rec.Body.String())
+			t.Fatalf("expected call ok response: %s", rec.Body.String())
 		}
 	}
 
@@ -185,19 +185,19 @@ func TestHTTPAPIPostGetInboxAndRouteIndex(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/get", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"index.mp3"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/resolve", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"index.mp3"}`))
 		rec := httptest.NewRecorder()
-		senderSrv.handleGet(rec, req)
+		senderSrv.handleResolve(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("get api status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+			t.Fatalf("resolve api status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
 		}
 		if !strings.Contains(rec.Body.String(), strings.Repeat("cd", 32)) {
-			t.Fatalf("expected seed hash in get body: %s", rec.Body.String())
+			t.Fatalf("expected seed hash in resolve body: %s", rec.Body.String())
 		}
 	}
 }
 
-func openPostGetTestDB(t *testing.T) *sql.DB {
+func openResolveCallTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
 	db, err := sql.Open("sqlite", dbPath)

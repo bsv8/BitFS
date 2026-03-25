@@ -15,21 +15,21 @@ import (
 )
 
 const (
-	ProtoClientPost protocol.ID = "/bsv-transfer/client/post/1.0.0"
-	ProtoClientGet  protocol.ID = "/bsv-transfer/client/get/1.0.0"
+	ProtoClientCall    protocol.ID = "/bsv-transfer/client/call/1.0.0"
+	ProtoClientResolve protocol.ID = "/bsv-transfer/client/resolve/1.0.0"
 
-	defaultClientGetRoute = "index"
-	routeInboxMessage     = "inbox.message"
+	defaultClientResolveRoute = "index"
+	routeInboxMessage         = "inbox.message"
 )
 
-type postReq struct {
+type callReq struct {
 	To          string `protobuf:"bytes,1,opt,name=to,proto3" json:"to"`
 	Route       string `protobuf:"bytes,2,opt,name=route,proto3" json:"route"`
 	ContentType string `protobuf:"bytes,3,opt,name=content_type,json=contentType,proto3" json:"content_type"`
 	Body        []byte `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
 }
 
-type postResp struct {
+type callResp struct {
 	Ok          bool   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok"`
 	Code        string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
 	Message     string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
@@ -37,12 +37,12 @@ type postResp struct {
 	Body        []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 }
 
-type getReq struct {
+type resolveReq struct {
 	To    string `protobuf:"bytes,1,opt,name=to,proto3" json:"to"`
 	Route string `protobuf:"bytes,2,opt,name=route,proto3" json:"route,omitempty"`
 }
 
-type getResp struct {
+type resolveResp struct {
 	Ok          bool   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok"`
 	Code        string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
 	Message     string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
@@ -50,14 +50,14 @@ type getResp struct {
 	Body        []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
 }
 
-type TriggerClientPostParams struct {
+type TriggerClientCallParams struct {
 	To          string
 	Route       string
 	ContentType string
 	Body        []byte
 }
 
-type TriggerClientGetParams struct {
+type TriggerClientResolveParams struct {
 	To    string
 	Route string
 }
@@ -76,52 +76,52 @@ type routeIndexManifest struct {
 	UpdatedAtUnix       int64  `json:"updated_at_unix"`
 }
 
-// registerPostGetHandlers 把节点级 post/get 能力挂到现有 client p2prpc 上。
+// registerResolveCallHandlers 把节点级 resolve/call 能力挂到现有 client p2prpc 上。
 // 设计说明：
 // - v1 只做“裸公钥可直连”的最小闭环，短名解析明确留空，避免伪解析；
-// - get 只返回资源声明（hash/元信息），不返回文件内容；
-// - post 先内建 inbox.message，其它 route 以后继续加，不先发明注册框架。
-func registerPostGetHandlers(rt *Runtime) {
+// - resolve 只返回资源声明（hash/元信息），不返回文件内容；
+// - call 先内建 inbox.message，其它 route 以后继续加，不先发明注册框架。
+func registerResolveCallHandlers(rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.DB == nil {
 		return
 	}
 	h := rt.Host
 	db := rt.DB
 	trace := rt.rpcTrace
-	p2prpc.HandleProto[postReq, postResp](h, ProtoClientPost, clientSec(trace), func(ctx context.Context, req postReq) (postResp, error) {
-		route, bad := normalizePostRoute(req.Route)
+	p2prpc.HandleProto[callReq, callResp](h, ProtoClientCall, clientSec(trace), func(ctx context.Context, req callReq) (callResp, error) {
+		route, bad := normalizeCallRoute(req.Route)
 		if bad != "" {
-			return postResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
+			return callResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		contentType, bad := normalizeContentType(req.ContentType)
 		if bad != "" {
-			return postResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
+			return callResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		senderPubKeyHex, ok := p2prpc.SenderPubkeyHexFromContext(ctx)
 		if !ok {
-			return postResp{Ok: false, Code: "UNAUTHORIZED", Message: "sender identity missing"}, nil
+			return callResp{Ok: false, Code: "UNAUTHORIZED", Message: "sender identity missing"}, nil
 		}
 		messageID, ok := p2prpc.MessageIDFromContext(ctx)
 		if !ok {
-			return postResp{Ok: false, Code: "BAD_REQUEST", Message: "message id missing"}, nil
+			return callResp{Ok: false, Code: "BAD_REQUEST", Message: "message id missing"}, nil
 		}
 		switch route {
 		case routeInboxMessage:
 			return storeInboxMessage(db, messageID, senderPubKeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
-			return postResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+			return callResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
 	})
-	p2prpc.HandleProto[getReq, getResp](h, ProtoClientGet, clientSec(trace), func(_ context.Context, req getReq) (getResp, error) {
-		route := normalizeGetRoute(req.Route)
+	p2prpc.HandleProto[resolveReq, resolveResp](h, ProtoClientResolve, clientSec(trace), func(_ context.Context, req resolveReq) (resolveResp, error) {
+		route := normalizeResolveRoute(req.Route)
 		body, err := buildRouteIndexManifest(db, route)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return getResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
+				return resolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
 			}
-			return getResp{}, err
+			return resolveResp{}, err
 		}
-		return getResp{
+		return resolveResp{
 			Ok:          true,
 			Code:        "OK",
 			ContentType: "application/json",
@@ -130,19 +130,19 @@ func registerPostGetHandlers(rt *Runtime) {
 	})
 }
 
-func TriggerClientPost(ctx context.Context, rt *Runtime, p TriggerClientPostParams) (postResp, error) {
-	var out postResp
+func TriggerClientCall(ctx context.Context, rt *Runtime, p TriggerClientCallParams) (callResp, error) {
+	var out callResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	to, peerID, err := resolvePostGetTarget(strings.TrimSpace(p.To))
+	to, peerID, err := resolveClientTarget(strings.TrimSpace(p.To))
 	if err != nil {
 		return out, err
 	}
 	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
 		return out, err
 	}
-	err = p2prpc.CallProto(ctx, rt.Host, peerID, ProtoClientPost, clientSec(rt.rpcTrace), postReq{
+	err = p2prpc.CallProto(ctx, rt.Host, peerID, ProtoClientCall, clientSec(rt.rpcTrace), callReq{
 		To:          to,
 		Route:       strings.TrimSpace(p.Route),
 		ContentType: strings.TrimSpace(p.ContentType),
@@ -151,26 +151,26 @@ func TriggerClientPost(ctx context.Context, rt *Runtime, p TriggerClientPostPara
 	return out, err
 }
 
-func TriggerClientGet(ctx context.Context, rt *Runtime, p TriggerClientGetParams) (getResp, error) {
-	var out getResp
+func TriggerClientResolve(ctx context.Context, rt *Runtime, p TriggerClientResolveParams) (resolveResp, error) {
+	var out resolveResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	to, peerID, err := resolvePostGetTarget(strings.TrimSpace(p.To))
+	to, peerID, err := resolveClientTarget(strings.TrimSpace(p.To))
 	if err != nil {
 		return out, err
 	}
 	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
 		return out, err
 	}
-	err = p2prpc.CallProto(ctx, rt.Host, peerID, ProtoClientGet, clientSec(rt.rpcTrace), getReq{
+	err = p2prpc.CallProto(ctx, rt.Host, peerID, ProtoClientResolve, clientSec(rt.rpcTrace), resolveReq{
 		To:    to,
-		Route: normalizeGetRoute(p.Route),
+		Route: normalizeResolveRoute(p.Route),
 	}, &out)
 	return out, err
 }
 
-func resolvePostGetTarget(raw string) (string, peer.ID, error) {
+func resolveClientTarget(raw string) (string, peer.ID, error) {
 	target := strings.TrimSpace(raw)
 	if target == "" {
 		return "", "", fmt.Errorf("target is required")
@@ -189,7 +189,7 @@ func resolvePostGetTarget(raw string) (string, peer.ID, error) {
 	return pubKeyHex, pid, nil
 }
 
-func normalizePostRoute(raw string) (string, string) {
+func normalizeCallRoute(raw string) (string, string) {
 	route := strings.TrimSpace(raw)
 	if route == "" {
 		return "", "route is required"
@@ -197,10 +197,10 @@ func normalizePostRoute(raw string) (string, string) {
 	return route, ""
 }
 
-func normalizeGetRoute(raw string) string {
+func normalizeResolveRoute(raw string) string {
 	route := strings.TrimSpace(raw)
 	if route == "" {
-		return defaultClientGetRoute
+		return defaultClientResolveRoute
 	}
 	return route
 }
@@ -213,9 +213,9 @@ func normalizeContentType(raw string) (string, string) {
 	return contentType, ""
 }
 
-func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (postResp, error) {
+func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (callResp, error) {
 	if db == nil {
-		return postResp{}, fmt.Errorf("db is nil")
+		return callResp{}, fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
 	result, err := db.Exec(
@@ -241,16 +241,16 @@ func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, rout
 			strings.TrimSpace(messageID),
 		)
 		if scanErr := row.Scan(&inboxID, &now); scanErr != nil {
-			return postResp{}, scanErr
+			return callResp{}, scanErr
 		}
 	default:
-		return postResp{}, err
+		return callResp{}, err
 	}
 	ack, err := json.Marshal(inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
 	if err != nil {
-		return postResp{}, err
+		return callResp{}, err
 	}
-	return postResp{
+	return callResp{
 		Ok:          true,
 		Code:        "OK",
 		ContentType: "application/json",

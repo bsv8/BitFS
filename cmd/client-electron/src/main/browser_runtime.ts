@@ -66,6 +66,17 @@ type ResourceDecision = {
 
 export type EnsureSeedResult = FileStatus;
 
+export type LocatorResolveResult = {
+  kind: "bitfs" | "node" | "resolver";
+  locator: string;
+  route: string;
+  seedHash: string;
+  viewerURL: string;
+  nodePubkeyHex: string;
+  resolverPubkeyHex: string;
+  name: string;
+};
+
 type WalletFundFlowItem = {
   id: number;
   created_at_unix?: number;
@@ -192,6 +203,49 @@ export class BitfsBrowserRuntime extends EventEmitter {
       this.finishVisitFailure(visitID, error instanceof Error ? error.message : String(error));
       await this.refreshVisitAccounting(visitID, "open_failed");
       throw error;
+    }
+  }
+
+  async resolveLocator(rawLocator: string): Promise<LocatorResolveResult> {
+    const locator = parseLocator(rawLocator);
+    switch (locator.kind) {
+      case "bitfs":
+        return {
+          kind: "bitfs",
+          locator: locator.locator,
+          route: "",
+          seedHash: locator.seedHash,
+          viewerURL: locator.viewerURL,
+          nodePubkeyHex: "",
+          resolverPubkeyHex: "",
+          name: ""
+        };
+      case "node": {
+        const resolved = await this.resolveNodeLocatorSeed(locator);
+        return {
+          kind: "node",
+          locator: locator.locator,
+          route: locator.route,
+          seedHash: resolved.seedHash,
+          viewerURL: buildBitfsViewerURL(resolved.seedHash),
+          nodePubkeyHex: locator.nodePubkeyHex,
+          resolverPubkeyHex: "",
+          name: ""
+        };
+      }
+      case "resolver": {
+        const resolved = await this.resolveResolverLocatorSeed(locator);
+        return {
+          kind: "resolver",
+          locator: locator.locator,
+          route: locator.route,
+          seedHash: resolved.seedHash,
+          viewerURL: buildBitfsViewerURL(resolved.seedHash),
+          nodePubkeyHex: resolved.targetPubkeyHex,
+          resolverPubkeyHex: locator.resolverPubkeyHex,
+          name: locator.name
+        };
+      }
     }
   }
 
@@ -852,15 +906,8 @@ export class BitfsBrowserRuntime extends EventEmitter {
   }
 
   private async openNodeLocator(locator: ParsedNodeLocator, visitID: string): Promise<string> {
-    const handler = this.locatorHandlers.openNodeLocator;
-    if (!handler) {
-      throw new Error("node locator open is not implemented yet");
-    }
-    const result = await handler(locator, this.getCurrentVisitContext());
-    const seedHash = normalizeSeedHash(result.seedHash);
-    if (seedHash === "") {
-      throw new Error("node locator returned invalid seed hash");
-    }
+    const result = await this.resolveNodeLocatorSeed(locator);
+    const seedHash = result.seedHash;
     this.resetPageSession(locator.locator, buildBitfsViewerURL(seedHash), seedHash, "open_locator_node");
     this.finishVisitSuccess(visitID, "node locator opened");
     debugLogger.log("runtime", "open_locator_node", {
@@ -875,15 +922,8 @@ export class BitfsBrowserRuntime extends EventEmitter {
   }
 
   private async openResolverLocator(locator: ParsedResolverLocator, visitID: string): Promise<string> {
-    const handler = this.locatorHandlers.openResolverLocator;
-    if (!handler) {
-      throw new Error("resolver locator open is not implemented yet");
-    }
-    const result = await handler(locator, this.getCurrentVisitContext());
-    const seedHash = normalizeSeedHash(result.seedHash);
-    if (seedHash === "") {
-      throw new Error("resolver locator returned invalid seed hash");
-    }
+    const result = await this.resolveResolverLocatorSeed(locator);
+    const seedHash = result.seedHash;
     this.resetPageSession(locator.locator, buildBitfsViewerURL(seedHash), seedHash, "open_locator_resolver");
     this.finishVisitSuccess(visitID, "resolver locator opened");
     debugLogger.log("runtime", "open_locator_resolver", {
@@ -896,6 +936,35 @@ export class BitfsBrowserRuntime extends EventEmitter {
     });
     await this.refreshVisitAccounting(visitID, "open_locator_resolver");
     return this.currentURL;
+  }
+
+  private async resolveNodeLocatorSeed(locator: ParsedNodeLocator): Promise<{ seedHash: string }> {
+    const handler = this.locatorHandlers.resolveNodeLocator;
+    if (!handler) {
+      throw new Error("node locator resolve is not implemented yet");
+    }
+    const result = await handler(locator, this.getCurrentVisitContext());
+    const seedHash = normalizeSeedHash(result.seedHash);
+    if (seedHash === "") {
+      throw new Error("node locator returned invalid seed hash");
+    }
+    return { seedHash };
+  }
+
+  private async resolveResolverLocatorSeed(locator: ParsedResolverLocator): Promise<{ seedHash: string; targetPubkeyHex: string }> {
+    const handler = this.locatorHandlers.resolveResolverLocator;
+    if (!handler) {
+      throw new Error("resolver locator resolve is not implemented yet");
+    }
+    const result = await handler(locator, this.getCurrentVisitContext());
+    const seedHash = normalizeSeedHash(result.seedHash);
+    if (seedHash === "") {
+      throw new Error("resolver locator returned invalid seed hash");
+    }
+    return {
+      seedHash,
+      targetPubkeyHex: String(result.targetPubkeyHex || "").trim().toLowerCase()
+    };
   }
 
   private resetPageSession(locator: string, viewerURL: string, rootSeedHash: string, reason: string): void {

@@ -64,11 +64,38 @@ type BitfsRuntimeEvent = {
   payload: Record<string, unknown>;
 };
 
+type BitfsLocatorResolveResult = {
+  kind: "bitfs" | "node" | "resolver";
+  locator: string;
+  route: string;
+  seedHash: string;
+  viewerURL: string;
+  nodePubkeyHex: string;
+  resolverPubkeyHex: string;
+  name: string;
+};
+
+type BitfsPeerCallRequest = {
+  to: string;
+  route: string;
+  contentType?: string;
+  content_type?: string;
+  body?: unknown;
+};
+
+type BitfsPeerCallResponse = Record<string, unknown>;
+
 type BitfsBridge = {
   trustedProtocol: "bitfs://";
   navigation: {
     open: (raw: string) => void;
     reload: () => void;
+  };
+  locator: {
+    resolve: (locator: string) => Promise<BitfsLocatorResolveResult>;
+  };
+  peer: {
+    call: (request: BitfsPeerCallRequest) => Promise<BitfsPeerCallResponse>;
   };
   client: {
     info: () => Promise<BitfsClientInfo>;

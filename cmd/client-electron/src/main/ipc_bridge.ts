@@ -182,18 +182,18 @@ export function registerShellIPC(
     });
     return runtime.listPublicWalletHistory(payload || {});
   });
-  ipcMain.handle("bitfs-viewer:post", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string }) => {
-    const normalized = normalizeViewerPostRequest(payload);
-    debugLogger.log("ipc", "viewer_post", {
+  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string }) => {
+    const normalized = normalizeViewerPeerCallRequest(payload);
+    debugLogger.log("ipc", "viewer_peer_call", {
       to: normalized.to,
       route: normalized.route,
       content_type: normalized.content_type,
       has_body_json: Object.prototype.hasOwnProperty.call(normalized, "body"),
       has_body_base64: Object.prototype.hasOwnProperty.call(normalized, "body_base64")
     });
-    return confirmViewerPost(window, normalized).then((approved) => {
+    return confirmViewerPeerCall(window, normalized).then((approved) => {
       if (!approved) {
-        debugLogger.log("ipc", "viewer_post_denied", {
+        debugLogger.log("ipc", "viewer_peer_call_denied", {
           to: normalized.to,
           route: normalized.route,
           content_type: normalized.content_type
@@ -201,31 +201,26 @@ export function registerShellIPC(
         return {
           ok: false,
           code: "USER_DENIED",
-          message: "post permission denied"
+          message: "peer call permission denied"
         };
       }
-      debugLogger.log("ipc", "viewer_post_approved", {
+      debugLogger.log("ipc", "viewer_peer_call_approved", {
         to: normalized.to,
         route: normalized.route,
         content_type: normalized.content_type
       });
       return supervisor.requestManagedJSON({
         method: "POST",
-        pathname: "/api/v1/post",
+        pathname: "/api/v1/call",
         body: normalized,
         headers: runtime.getCurrentVisitHeaders()
       });
     });
   });
-  ipcMain.handle("bitfs-viewer:get", (_event, payload: { to?: string; route?: string }) => {
-    const normalized = normalizeViewerGetRequest(payload);
-    debugLogger.log("ipc", "viewer_get", normalized);
-    return supervisor.requestManagedJSON({
-      method: "POST",
-      pathname: "/api/v1/get",
-      body: normalized,
-      headers: runtime.getCurrentVisitHeaders()
-    });
+  ipcMain.handle("bitfs-viewer:locator-resolve", (_event, payload: { locator?: string }) => {
+    const normalized = normalizeViewerLocatorResolveRequest(payload);
+    debugLogger.log("ipc", "viewer_locator_resolve", normalized);
+    return runtime.resolveLocator(normalized.locator);
   });
   ipcMain.handle("bitfs-shell:live-latest", (_event, payload: { streamID: string }) => {
     debugLogger.log("ipc", "live_latest", {
@@ -446,7 +441,7 @@ function normalizeManagedSettingsMethod(raw: string | undefined): "GET" | "POST"
   return "GET";
 }
 
-function normalizeViewerPostRequest(payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string }): {
+function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string }): {
   to: string;
   route: string;
   content_type: string;
@@ -487,22 +482,18 @@ function normalizeViewerPostRequest(payload: { to?: string; route?: string; cont
   return out;
 }
 
-function normalizeViewerGetRequest(payload: { to?: string; route?: string }): { to: string; route?: string } {
-  const to = String(payload?.to || "").trim();
-  if (to === "") {
-    throw new Error("bitfs target is required");
+function normalizeViewerLocatorResolveRequest(payload: { locator?: string }): { locator: string } {
+  const locator = String(payload?.locator || "").trim();
+  if (locator === "") {
+    throw new Error("bitfs locator is required");
   }
-  const route = String(payload?.route || "").trim();
-  if (route === "") {
-    return { to };
-  }
-  return { to, route };
+  return { locator };
 }
 
 // 设计说明：
-// - post 会让网页驱动本地身份向外部节点发消息，风险明显高于只读 get；
+// - peer.call 会让网页驱动本地身份向外部节点发消息，风险明显高于 locator.resolve；
 // - 这里先走壳弹框逐次确认，后续如果加侧栏策略，也可以复用同一摘要口径。
-async function confirmViewerPost(
+async function confirmViewerPeerCall(
   window: BrowserWindow,
   payload: { to: string; route: string; content_type: string; body?: unknown; body_base64?: string }
 ): Promise<boolean> {
@@ -510,7 +501,7 @@ async function confirmViewerPost(
     `目标: ${payload.to}`,
     `路由: ${payload.route}`,
     `类型: ${payload.content_type}`,
-    `大小: ${estimateViewerPostBodyBytes(payload)} bytes`
+    `大小: ${estimateViewerPeerCallBodyBytes(payload)} bytes`
   ];
   const result = await dialog.showMessageBox(window, {
     type: "question",
@@ -519,13 +510,13 @@ async function confirmViewerPost(
     cancelId: 1,
     noLink: true,
     title: "确认页面发消息",
-    message: "当前页面请求使用 window.bitfs.post 向外部节点发送消息。",
+    message: "当前页面请求使用 window.bitfs.peer.call 向外部节点发送消息。",
     detail: detailLines.join("\n")
   });
   return result.response === 0;
 }
 
-function estimateViewerPostBodyBytes(payload: { body?: unknown; body_base64?: string }): number {
+function estimateViewerPeerCallBodyBytes(payload: { body?: unknown; body_base64?: string }): number {
   const bodyBase64 = String(payload.body_base64 || "").trim();
   if (bodyBase64 !== "") {
     try {

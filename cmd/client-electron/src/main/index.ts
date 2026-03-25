@@ -94,15 +94,16 @@ async function bootstrap(): Promise<void> {
   });
   debugLogger.log("bootstrap", "supervisor_created", supervisor.snapshot());
   runtime = new BitfsBrowserRuntime(supervisor.snapshot().apiBase, shellAssets.viewerPreloadPath, {
-    openNodeLocator: async (locator, visit) => {
+    resolveNodeLocator: async (locator, visit) => {
       return {
         seedHash: await fetchSeedHashFromNodeRoute(locator.nodePubkeyHex, locator.route, visit)
       };
     },
-    openResolverLocator: async (locator, visit) => {
+    resolveResolverLocator: async (locator, visit) => {
       const targetPubkeyHex = await resolveLocatorName(locator.resolverPubkeyHex, locator.name, visit);
       return {
-        seedHash: await fetchSeedHashFromNodeRoute(targetPubkeyHex, locator.route, visit)
+        seedHash: await fetchSeedHashFromNodeRoute(targetPubkeyHex, locator.route, visit),
+        targetPubkeyHex
       };
     }
   });
@@ -224,17 +225,17 @@ void bootstrap().catch((error: unknown) => {
 });
 
 async function fetchSeedHashFromNodeRoute(targetPubkeyHex: string, route: string, visit?: LocatorVisitContext): Promise<string> {
-  const body = await postJSON("/api/v1/get", {
+  const body = await postJSON("/api/v1/resolve", {
     to: targetPubkeyHex,
     route
   }, visit);
   if (!body.ok) {
-    throw new Error(String(body.message || body.error || "node locator get failed"));
+    throw new Error(String(body.message || body.error || "node locator resolve failed"));
   }
   const manifest = body.body_json as Record<string, unknown> | undefined;
   const seedHash = String(manifest?.seed_hash || "").trim();
   if (!/^[0-9a-f]{64}$/i.test(seedHash)) {
-    throw new Error("node locator get returned invalid seed hash");
+    throw new Error("node locator resolve returned invalid seed hash");
   }
   return seedHash;
 }

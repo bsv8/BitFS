@@ -983,7 +983,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
-	registerPostGetHandlers(rt)
+	registerResolveCallHandlers(rt)
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
