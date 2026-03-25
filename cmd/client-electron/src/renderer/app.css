@@ -748,6 +748,16 @@ body.is-resizing-sidebar .content-view {
   font-size: 13px;
 }
 
+.backend-form-notice {
+  margin: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--chrome-danger-line);
+  border-radius: 2px;
+  background: var(--chrome-danger-bg);
+  color: var(--chrome-danger-text);
+  line-height: 1.5;
+}
+
 .backend-actions {
   margin-top: 18px;
 }

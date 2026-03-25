@@ -72,6 +72,7 @@
   const createBackButton = document.getElementById("create-back-button");
   const unlockForm = document.getElementById("unlock-form");
   const unlockPasswordInput = document.getElementById("unlock-password-input");
+  const unlockBusinessNotice = document.getElementById("unlock-business-notice");
   const exportKeyButton = document.getElementById("export-key-button");
   const restartPanel = document.getElementById("backend-restart-panel");
   const restartBackendButton = document.getElementById("restart-backend-button");
@@ -99,7 +100,7 @@
     !webview || !viewerStage || !backendGate || !backendTitle || !backendSummary || !backendDetail ||
     !backendStepNote || !backendErrorBanner || !backendErrorBannerText || !backendErrorCopyButton ||
     !choosePanel || !chooseCreateButton || !chooseImportButton || !createKeyForm || !createPasswordInput ||
-    !createPasswordConfirmInput || !createBackButton || !unlockForm || !unlockPasswordInput || !exportKeyButton ||
+    !createPasswordConfirmInput || !createBackButton || !unlockForm || !unlockPasswordInput || !unlockBusinessNotice || !exportKeyButton ||
     !restartPanel || !restartBackendButton || !shellErrorModal || !shellErrorTitle || !shellErrorSummary ||
     !shellErrorText || !shellErrorCopyButton || !shellErrorSelectButton || !shellErrorCloseButton
   ) {
@@ -223,6 +224,26 @@
       title: shellErrorTitle.textContent,
       message: shellErrorText.value
     });
+  }
+
+  function hideUnlockBusinessNotice() {
+    unlockBusinessNotice.textContent = "";
+    unlockBusinessNotice.classList.add("is-hidden");
+  }
+
+  function showUnlockBusinessNotice(message) {
+    unlockBusinessNotice.textContent = String(message || "").trim() || "解锁失败";
+    unlockBusinessNotice.classList.remove("is-hidden");
+  }
+
+  function isUnlockBusinessError(message) {
+    const normalized = String(message || "").trim().toLowerCase();
+    if (normalized === "") {
+      return false;
+    }
+    return normalized.includes("invalid password or corrupted key material") ||
+      normalized.includes("unauthorized") ||
+      normalized.includes("status 401");
   }
 
   function normalizeSeedHash(raw) {
@@ -820,6 +841,7 @@
     if (phase === "ready") {
       setShellMode("browser");
       backendErrorBanner.classList.add("is-hidden");
+      hideUnlockBusinessNotice();
       setOnboardingStep("checking");
       setInteractiveEnabled(true);
       if (!walletState.loaded && !walletState.loading) {
@@ -1414,17 +1436,39 @@
   unlockForm.addEventListener("submit", function handleUnlock(event) {
     event.preventDefault();
     const password = String(unlockPasswordInput.value || "");
+    hideUnlockBusinessNotice();
     if (password === "") {
       showShellError("请输入解锁密码", "密码不能为空");
       unlockPasswordInput.focus();
       return;
     }
     debugLog("shell", "unlock_submit");
-    void withAction(async function unlock() {
-      const next = await bridge.unlock(password);
-      unlockPasswordInput.value = "";
-      return next;
-    });
+    void (async function unlock() {
+      try {
+        const next = await bridge.unlock(password);
+        unlockPasswordInput.value = "";
+        hideUnlockBusinessNotice();
+        if (next) {
+          renderState(next);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        debugLog("shell", "unlock_failed", {
+          message
+        });
+        if (isUnlockBusinessError(message)) {
+          showUnlockBusinessNotice("解锁密码错误，请重新输入。");
+          unlockPasswordInput.focus();
+          unlockPasswordInput.select();
+          return;
+        }
+        showShellError(message || "operation failed");
+      }
+    })();
+  });
+
+  unlockPasswordInput.addEventListener("input", function handleUnlockInput() {
+    hideUnlockBusinessNotice();
   });
 
   exportKeyButton.addEventListener("click", function handleExportKey() {
