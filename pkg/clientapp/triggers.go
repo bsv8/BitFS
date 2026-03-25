@@ -257,7 +257,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	if resp.Success {
 		// 发布扣费成功后必须推进本地会话，否则下次请求会重复旧 sequence/server_amount。
 		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
-		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
 			RefID:           session.SpendTxID,
@@ -408,7 +408,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 				demandIDs = append(demandIDs, id)
 			}
 		}
-		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
 			RefID:           session.SpendTxID,
@@ -532,7 +532,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if resp.Success {
 		// 直播需求发布同样会推进费用池状态，必须同步回写本地会话。
 		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
-		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
 			RefID:           session.SpendTxID,
@@ -1189,7 +1189,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"lock_blocks":             req.LockBlocks,
 			"recommended_file_source": "direct_transfer_pool_open",
 		})
-		appendWalletFundFlow(buyer.DB, walletFundFlowEntry{
+		appendWalletFundFlowFromContext(ctx, buyer.DB, walletFundFlowEntry{
 			FlowID:          "direct_pool:" + curSessionID,
 			FlowType:        "direct_transfer_pool",
 			RefID:           curSessionID,
@@ -1305,7 +1305,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 		splitTxID = localTxID
 	}
 	change := int64(total - target - fee)
-	appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 		FlowID:          flowID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           strings.TrimPrefix(flowID, "direct_pool:"),
@@ -1487,7 +1487,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"pool_amount_satoshi": session.PoolAmountSat,
 		"chunk_price_satoshi": p.Amount,
 	})
-	appendWalletFundFlow(buyer.DB, walletFundFlowEntry{
+	appendWalletFundFlowFromContext(ctx, buyer.DB, walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           session.SessionID,
@@ -1626,7 +1626,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 		"transfer_state":        "closed",
 		"transfer_entry_source": "direct_transfer_pool_close",
 	})
-	appendWalletFundFlow(buyer.DB, walletFundFlowEntry{
+	appendWalletFundFlowFromContext(ctx, buyer.DB, walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           session.SessionID,

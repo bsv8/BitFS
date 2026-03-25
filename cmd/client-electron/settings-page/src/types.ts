@@ -68,4 +68,36 @@ export type WalletSummary = {
   balance_source?: string;
   wallet_chain_type?: string;
   wallet_chain_base_url?: string;
+  ledger_net_satoshi?: number;
+  total_in_satoshi?: number;
+  total_out_satoshi?: number;
+  total_used_satoshi?: number;
+  total_returned_satoshi?: number;
+  wallet_fund_flow_count?: number;
+};
+
+export type WalletFundFlowItem = {
+  id: number;
+  created_at_unix: number;
+  visit_id: string;
+  visit_locator: string;
+  flow_id: string;
+  flow_type: string;
+  ref_id: string;
+  stage: string;
+  direction: string;
+  purpose: string;
+  amount_satoshi: number;
+  used_satoshi: number;
+  returned_satoshi: number;
+  related_txid: string;
+  note: string;
+  payload: unknown;
+};
+
+export type WalletFundFlowListResp = {
+  total: number;
+  limit: number;
+  offset: number;
+  items: WalletFundFlowItem[];
 };

@@ -2,6 +2,8 @@ export type ShellResourceMode = "local" | "auto" | "approved" | "pending" | "blo
 
 export type ShellSidebarPanel = "resources" | "wallet";
 
+export type ShellVisitStatus = "idle" | "opening" | "open" | "failed";
+
 export type BitfsEventScope = "private" | "public";
 
 export type BitfsRuntimeEvent = {
@@ -31,6 +33,31 @@ export type ShellResource = {
   localReady: boolean;
   isRoot: boolean;
   discoveryOrder: number;
+};
+
+export type ShellVisitAccountingBucket = {
+  purpose: string;
+  label: string;
+  usedSatoshi: number;
+  count: number;
+};
+
+export type ShellVisitAccounting = {
+  visitID: string;
+  locator: string;
+  status: ShellVisitStatus;
+  startedAtUnix: number;
+  lastUpdatedAtUnix: number;
+  finishedAtUnix: number;
+  note: string;
+  totalUsedSatoshi: number;
+  totalReturnedSatoshi: number;
+  resolverUsedSatoshi: number;
+  reachabilityUsedSatoshi: number;
+  contentUsedSatoshi: number;
+  otherUsedSatoshi: number;
+  itemCount: number;
+  buckets: ShellVisitAccountingBucket[];
 };
 
 export type ManagedClientPhase = "starting" | "startup_error" | "locked" | "ready" | "error" | "stopped";
@@ -115,7 +142,9 @@ export type BitfsPublicWalletHistoryList = {
 
 export type ShellState = {
   currentURL: string;
+  currentViewerURL: string;
   currentRootSeedHash: string;
+  currentVisit: ShellVisitAccounting;
   staticSingleMaxSat: number;
   staticPageMaxSat: number;
   autoSpentSat: number;

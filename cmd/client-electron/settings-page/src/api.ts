@@ -5,12 +5,18 @@ import type {
   Gateway,
   GatewaysResp,
   StaticTreeResp,
+  WalletFundFlowItem,
+  WalletFundFlowListResp,
   WalletSummary,
   Workspace,
   WorkspacesResp
 } from "./types";
 
 type RequestMethod = "GET" | "POST" | "PUT" | "DELETE";
+type AdminConfigItem = {
+  key: string;
+  value: unknown;
+};
 
 async function requestJSON<T>(method: RequestMethod, path: string, body?: unknown): Promise<T> {
   const payload = await window.bitfsSettings.request(method, path, body);
@@ -23,6 +29,61 @@ export function getShellState(): Promise<ShellState> {
 
 export function getWalletSummary(): Promise<WalletSummary> {
   return window.bitfsSettings.getWalletSummary() as Promise<WalletSummary>;
+}
+
+export function getWalletFundFlows(query?: {
+  limit?: number;
+  offset?: number;
+  visitID?: string;
+  flowID?: string;
+  flowType?: string;
+  refID?: string;
+  stage?: string;
+  direction?: string;
+  purpose?: string;
+  relatedTxID?: string;
+  q?: string;
+}): Promise<WalletFundFlowListResp> {
+  const search = new URLSearchParams();
+  if (query?.limit && query.limit > 0) {
+    search.set("limit", String(query.limit));
+  }
+  if (query?.offset && query.offset >= 0) {
+    search.set("offset", String(query.offset));
+  }
+  if (query?.visitID) {
+    search.set("visit_id", query.visitID);
+  }
+  if (query?.flowID) {
+    search.set("flow_id", query.flowID);
+  }
+  if (query?.flowType) {
+    search.set("flow_type", query.flowType);
+  }
+  if (query?.refID) {
+    search.set("ref_id", query.refID);
+  }
+  if (query?.stage) {
+    search.set("stage", query.stage);
+  }
+  if (query?.direction) {
+    search.set("direction", query.direction);
+  }
+  if (query?.purpose) {
+    search.set("purpose", query.purpose);
+  }
+  if (query?.relatedTxID) {
+    search.set("related_txid", query.relatedTxID);
+  }
+  if (query?.q) {
+    search.set("q", query.q);
+  }
+  const suffix = search.toString();
+  return requestJSON<WalletFundFlowListResp>("GET", `/api/v1/wallet/fund-flows${suffix ? `?${suffix}` : ""}`);
+}
+
+export function getWalletFundFlowDetail(id: number): Promise<WalletFundFlowItem> {
+  return requestJSON<WalletFundFlowItem>("GET", `/api/v1/wallet/fund-flows/detail?id=${id}`);
 }
 
 export function setUserHomepage(seedHash: string): Promise<ShellState> {
@@ -77,6 +138,16 @@ export function deleteArbiter(id: number): Promise<unknown> {
 
 export function getWorkspaces(): Promise<WorkspacesResp> {
   return requestJSON<WorkspacesResp>("GET", "/api/v1/admin/workspaces");
+}
+
+export function getAdminConfig(): Promise<Record<string, unknown>> {
+  return requestJSON<{ config: Record<string, unknown> }>("GET", "/api/v1/admin/config").then((resp) => resp.config || {});
+}
+
+export function setAdminConfigItems(items: AdminConfigItem[]): Promise<Record<string, unknown>> {
+  return requestJSON<{ config: Record<string, unknown> }>("POST", "/api/v1/admin/config", {
+    items
+  }).then((resp) => resp.config || {});
 }
 
 export function addWorkspace(path: string, maxBytes: number): Promise<unknown> {

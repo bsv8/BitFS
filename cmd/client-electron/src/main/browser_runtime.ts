@@ -8,13 +8,27 @@ import type {
   BitfsPublicWalletHistoryItem,
   BitfsPublicWalletHistoryList,
   BitfsPublicWalletSummary,
-  ShellResource
+  ShellResource,
+  ShellVisitAccounting,
+  ShellVisitAccountingBucket,
+  ShellVisitStatus
 } from "../shared/shell_contract";
 import { debugLogger } from "./debug_logger";
+import {
+  buildBitfsViewerURL,
+  canonicalBitfsLocator,
+  type LocatorHandlerSet,
+  type LocatorVisitContext,
+  type ParsedNodeLocator,
+  type ParsedResolverLocator,
+  parseLocator
+} from "./locator";
 
 export type BrowserRuntimeState = {
   currentURL: string;
+  currentViewerURL: string;
   currentRootSeedHash: string;
+  currentVisit: ShellVisitAccounting;
   staticSingleMaxSat: number;
   staticPageMaxSat: number;
   autoSpentSat: number;
@@ -52,10 +66,37 @@ type ResourceDecision = {
 
 export type EnsureSeedResult = FileStatus;
 
+type WalletFundFlowItem = {
+  id: number;
+  created_at_unix?: number;
+  visit_id?: string;
+  visit_locator?: string;
+  flow_id?: string;
+  flow_type?: string;
+  ref_id?: string;
+  stage?: string;
+  direction?: string;
+  purpose?: string;
+  amount_satoshi?: number;
+  used_satoshi?: number;
+  returned_satoshi?: number;
+  related_txid?: string;
+  note?: string;
+};
+
+type WalletFundFlowListResponse = {
+  total?: number;
+  limit?: number;
+  offset?: number;
+  items?: WalletFundFlowItem[];
+};
+
 export class BitfsBrowserRuntime extends EventEmitter {
   private readonly clientAPIBase: string;
   private readonly viewerPreloadPath: string;
+  private locatorHandlers: LocatorHandlerSet;
   private currentURL = "";
+  private currentViewerURL = "";
   private currentRootSeedHash = "";
   private staticSingleMaxSat = 256;
   private staticPageMaxSat = 2048;
@@ -67,13 +108,16 @@ export class BitfsBrowserRuntime extends EventEmitter {
   private nextDiscoveryOrder = 1;
   private lastError = "";
   private currentTraceID = "";
+  private currentVisit = createEmptyVisitAccounting();
+  private currentVisitBaselineFlowID = 0;
   private eventSeq = 0;
   private readonly runtimeEpoch = `shell-${Date.now().toString(36)}`;
 
-  constructor(clientAPIBase: string, viewerPreloadPath: string) {
+  constructor(clientAPIBase: string, viewerPreloadPath: string, locatorHandlers: LocatorHandlerSet = {}) {
     super();
     this.clientAPIBase = clientAPIBase.replace(/\/+$/, "");
     this.viewerPreloadPath = viewerPreloadPath;
+    this.locatorHandlers = locatorHandlers;
   }
 
   snapshot(): BrowserRuntimeState {
@@ -90,7 +134,9 @@ export class BitfsBrowserRuntime extends EventEmitter {
       });
     return {
       currentURL: this.currentURL,
+      currentViewerURL: this.currentViewerURL,
       currentRootSeedHash: this.currentRootSeedHash,
+      currentVisit: cloneVisitAccounting(this.currentVisit),
       staticSingleMaxSat: this.staticSingleMaxSat,
       staticPageMaxSat: this.staticPageMaxSat,
       autoSpentSat: this.autoSpentSat,
@@ -107,14 +153,101 @@ export class BitfsBrowserRuntime extends EventEmitter {
     if (normalized === "") {
       throw new Error("invalid seed hash");
     }
-    const url = `bitfs://${normalized}`;
-    this.resetPageSession(url, normalized, "open_root");
+    const visitID = this.beginVisit(canonicalBitfsLocator(normalized), "open_root");
+    this.resetPageSession(canonicalBitfsLocator(normalized), buildBitfsViewerURL(normalized), normalized, "open_root");
+    this.finishVisitSuccess(visitID, "bitfs root opened");
+    void this.captureVisitBaseline(visitID).then(() => this.refreshVisitAccounting(visitID, "open_root"));
     debugLogger.log("runtime", "open_root", {
       seed_hash: normalized,
-      url: this.currentURL,
+      locator: this.currentURL,
+      viewer_url: this.currentViewerURL,
       trace_id: this.currentTraceID
     });
     return this.currentURL;
+  }
+
+  async open(rawLocator: string): Promise<string> {
+    const locator = parseLocator(rawLocator);
+    const visitID = this.beginVisit(locator.locator, `open_locator_${locator.kind}`);
+    try {
+      await this.captureVisitBaseline(visitID);
+      switch (locator.kind) {
+        case "bitfs":
+          this.resetPageSession(locator.locator, locator.viewerURL, locator.seedHash, "open_locator_bitfs");
+          this.finishVisitSuccess(visitID, "bitfs locator opened");
+          debugLogger.log("runtime", "open_locator_bitfs", {
+            locator: locator.locator,
+            viewer_url: locator.viewerURL,
+            seed_hash: locator.seedHash,
+            trace_id: this.currentTraceID
+          });
+          await this.refreshVisitAccounting(visitID, "open_locator_bitfs");
+          return this.currentURL;
+        case "node":
+          return await this.openNodeLocator(locator, visitID);
+        case "resolver":
+          return await this.openResolverLocator(locator, visitID);
+      }
+    } catch (error) {
+      this.finishVisitFailure(visitID, error instanceof Error ? error.message : String(error));
+      await this.refreshVisitAccounting(visitID, "open_failed");
+      throw error;
+    }
+  }
+
+  async refreshVisitAccounting(visitID = this.currentVisit.visitID, reason = "manual"): Promise<void> {
+    const activeVisitID = String(visitID || "").trim();
+    if (activeVisitID === "" || this.currentVisit.visitID !== activeVisitID) {
+      return;
+    }
+    const flows = await this.fetchVisitFundFlowsSilent(activeVisitID);
+    if (this.currentVisit.visitID !== activeVisitID) {
+      return;
+    }
+    const summary = summarizeVisitFundFlows(this.currentVisit, flows, this.currentVisitBaselineFlowID);
+    this.currentVisit = {
+      ...this.currentVisit,
+      lastUpdatedAtUnix: Math.max(this.currentVisit.lastUpdatedAtUnix, Math.floor(Date.now() / 1000)),
+      totalUsedSatoshi: summary.totalUsedSatoshi,
+      totalReturnedSatoshi: summary.totalReturnedSatoshi,
+      resolverUsedSatoshi: summary.resolverUsedSatoshi,
+      reachabilityUsedSatoshi: summary.reachabilityUsedSatoshi,
+      contentUsedSatoshi: summary.contentUsedSatoshi,
+      otherUsedSatoshi: summary.otherUsedSatoshi,
+      itemCount: summary.itemCount,
+      buckets: summary.buckets
+    };
+    debugLogger.log("runtime", "visit_accounting_refreshed", {
+      reason,
+      visit_id: activeVisitID,
+      item_count: this.currentVisit.itemCount,
+      total_used_satoshi: this.currentVisit.totalUsedSatoshi,
+      total_returned_satoshi: this.currentVisit.totalReturnedSatoshi
+    });
+    this.emitState();
+  }
+
+  getCurrentVisitContext(): LocatorVisitContext {
+    return {
+      visitID: String(this.currentVisit.visitID || "").trim(),
+      visitLocator: String(this.currentVisit.locator || "").trim()
+    };
+  }
+
+  getCurrentVisitHeaders(): Record<string, string> {
+    const visit = this.getCurrentVisitContext();
+    const headers: Record<string, string> = {};
+    if (visit.visitID !== "") {
+      headers["X-BitFS-Visit-ID"] = visit.visitID;
+    }
+    if (visit.visitLocator !== "") {
+      headers["X-BitFS-Visit-Locator"] = visit.visitLocator;
+    }
+    return headers;
+  }
+
+  setLocatorHandlers(handlers: LocatorHandlerSet): void {
+    this.locatorHandlers = handlers;
   }
 
   noteNavigation(url: string): void {
@@ -124,7 +257,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
     }
     const nextRootSeedHash = parseBitfsURL(trimmed);
     if (nextRootSeedHash && nextRootSeedHash !== this.currentRootSeedHash) {
-      this.resetPageSession(trimmed, nextRootSeedHash, "document_navigated");
+      this.resetPageSession(canonicalBitfsLocator(nextRootSeedHash), trimmed, nextRootSeedHash, "document_navigated");
       debugLogger.log("runtime", "note_navigation_reset_page", {
         url: trimmed,
         seed_hash: nextRootSeedHash,
@@ -132,14 +265,16 @@ export class BitfsBrowserRuntime extends EventEmitter {
       });
       return;
     }
-    this.currentURL = trimmed;
+    this.currentViewerURL = trimmed;
     debugLogger.log("runtime", "note_navigation", {
       url: trimmed,
+      locator: this.currentURL,
       trace_id: this.currentTraceID
     });
     this.emitState();
     this.emitRuntimeEvent("shell.page.navigated", {
       url: trimmed,
+      current_locator: this.currentURL,
       current_root_seed_hash: this.currentRootSeedHash
     });
   }
@@ -217,7 +352,10 @@ export class BitfsBrowserRuntime extends EventEmitter {
       max_total_sat: maxTotalSat,
       trace_id: this.currentTraceID
     });
-    const response = await fetch(url, { method: "GET" });
+    const response = await fetch(url, {
+      method: "GET",
+      headers: this.getCurrentVisitHeaders()
+    });
     if (!response.ok) {
       const text = await response.text();
       this.lastError = text || `content fetch failed: ${response.status}`;
@@ -350,7 +488,10 @@ export class BitfsBrowserRuntime extends EventEmitter {
     }
     const result = await this.fetchJSON<EnsureSeedResult>("/api/v1/files/get-file/ensure", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
       body: JSON.stringify(payload)
     });
     this.ensureDiscoveryOrder(normalized);
@@ -545,7 +686,10 @@ export class BitfsBrowserRuntime extends EventEmitter {
     });
     return this.fetchJSON<Record<string, unknown>>("/api/v1/live/plan", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
       body: JSON.stringify({
         stream_id: normalized,
         have_segment_index: Math.max(-1, Math.floor(Number(haveSegmentIndex || -1)))
@@ -560,7 +704,10 @@ export class BitfsBrowserRuntime extends EventEmitter {
     });
     const response = await fetch(`${this.clientAPIBase}/api/v1/files/get-file/plan`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
       body: JSON.stringify({ seed_hashes: seedHashes, resource_kind: "static" })
     });
     if (!response.ok) {
@@ -704,9 +851,57 @@ export class BitfsBrowserRuntime extends EventEmitter {
     };
   }
 
-  private resetPageSession(url: string, rootSeedHash: string, reason: string): void {
+  private async openNodeLocator(locator: ParsedNodeLocator, visitID: string): Promise<string> {
+    const handler = this.locatorHandlers.openNodeLocator;
+    if (!handler) {
+      throw new Error("node locator open is not implemented yet");
+    }
+    const result = await handler(locator, this.getCurrentVisitContext());
+    const seedHash = normalizeSeedHash(result.seedHash);
+    if (seedHash === "") {
+      throw new Error("node locator returned invalid seed hash");
+    }
+    this.resetPageSession(locator.locator, buildBitfsViewerURL(seedHash), seedHash, "open_locator_node");
+    this.finishVisitSuccess(visitID, "node locator opened");
+    debugLogger.log("runtime", "open_locator_node", {
+      locator: locator.locator,
+      node_pubkey_hex: locator.nodePubkeyHex,
+      route: locator.route,
+      seed_hash: seedHash,
+      trace_id: this.currentTraceID
+    });
+    await this.refreshVisitAccounting(visitID, "open_locator_node");
+    return this.currentURL;
+  }
+
+  private async openResolverLocator(locator: ParsedResolverLocator, visitID: string): Promise<string> {
+    const handler = this.locatorHandlers.openResolverLocator;
+    if (!handler) {
+      throw new Error("resolver locator open is not implemented yet");
+    }
+    const result = await handler(locator, this.getCurrentVisitContext());
+    const seedHash = normalizeSeedHash(result.seedHash);
+    if (seedHash === "") {
+      throw new Error("resolver locator returned invalid seed hash");
+    }
+    this.resetPageSession(locator.locator, buildBitfsViewerURL(seedHash), seedHash, "open_locator_resolver");
+    this.finishVisitSuccess(visitID, "resolver locator opened");
+    debugLogger.log("runtime", "open_locator_resolver", {
+      locator: locator.locator,
+      resolver_pubkey_hex: locator.resolverPubkeyHex,
+      name: locator.name,
+      route: locator.route,
+      seed_hash: seedHash,
+      trace_id: this.currentTraceID
+    });
+    await this.refreshVisitAccounting(visitID, "open_locator_resolver");
+    return this.currentURL;
+  }
+
+  private resetPageSession(locator: string, viewerURL: string, rootSeedHash: string, reason: string): void {
     this.currentTraceID = createTraceID();
-    this.currentURL = url;
+    this.currentURL = locator;
+    this.currentViewerURL = viewerURL;
     this.currentRootSeedHash = rootSeedHash;
     this.autoSpentSat = 0;
     this.pending.clear();
@@ -718,16 +913,83 @@ export class BitfsBrowserRuntime extends EventEmitter {
     this.lastError = "";
     debugLogger.log("runtime", "reset_page_session", {
       reason,
-      url,
+      locator,
+      viewer_url: viewerURL,
       seed_hash: rootSeedHash,
       trace_id: this.currentTraceID
     });
     this.emitState();
     this.emitRuntimeEvent("shell.page.session.reset", {
       reason,
-      url,
+      locator,
+      viewer_url: viewerURL,
       current_root_seed_hash: rootSeedHash
     });
+  }
+
+  private beginVisit(locator: string, reason: string): string {
+    const nowUnix = Math.floor(Date.now() / 1000);
+    const visitID = createTraceID();
+    // 设计说明：
+    // - “访问账目概述”跟随一次 locator 打开尝试，而不是跟随当前页面是否成功切换；
+    // - 这样失败访问已经花掉的钱也能留在侧栏，不会被旧页面状态掩盖。
+    this.currentVisit = {
+      visitID,
+      locator: String(locator || "").trim(),
+      status: "opening",
+      startedAtUnix: nowUnix,
+      lastUpdatedAtUnix: nowUnix,
+      finishedAtUnix: 0,
+      note: reason,
+      totalUsedSatoshi: 0,
+      totalReturnedSatoshi: 0,
+      resolverUsedSatoshi: 0,
+      reachabilityUsedSatoshi: 0,
+      contentUsedSatoshi: 0,
+      otherUsedSatoshi: 0,
+      itemCount: 0,
+      buckets: []
+    };
+    this.currentVisitBaselineFlowID = 0;
+    this.emitState();
+    return visitID;
+  }
+
+  private finishVisitSuccess(visitID: string, note: string): void {
+    if (this.currentVisit.visitID !== visitID) {
+      return;
+    }
+    const nowUnix = Math.floor(Date.now() / 1000);
+    this.currentVisit = {
+      ...this.currentVisit,
+      status: "open",
+      lastUpdatedAtUnix: nowUnix,
+      finishedAtUnix: nowUnix,
+      note
+    };
+    this.emitState();
+  }
+
+  private finishVisitFailure(visitID: string, note: string): void {
+    if (this.currentVisit.visitID !== visitID) {
+      return;
+    }
+    const nowUnix = Math.floor(Date.now() / 1000);
+    this.currentVisit = {
+      ...this.currentVisit,
+      status: "failed",
+      lastUpdatedAtUnix: nowUnix,
+      finishedAtUnix: nowUnix,
+      note: String(note || "").trim() || "visit failed"
+    };
+    this.emitState();
+  }
+
+  private async captureVisitBaseline(visitID: string): Promise<void> {
+    if (this.currentVisit.visitID !== visitID) {
+      return;
+    }
+    this.currentVisitBaselineFlowID = await this.fetchLatestWalletFundFlowIDSilent();
   }
 
   private emitState(): void {
@@ -807,6 +1069,51 @@ export class BitfsBrowserRuntime extends EventEmitter {
       trace_id: this.currentTraceID
     });
     return body;
+  }
+
+  private async fetchJSONSilent<T>(pathOrURL: string, init?: RequestInit): Promise<T> {
+    const target = pathOrURL.startsWith("http://") || pathOrURL.startsWith("https://")
+      ? pathOrURL
+      : `${this.clientAPIBase}${pathOrURL}`;
+    const response = await fetch(target, init);
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `request failed: ${response.status}`);
+    }
+    return await response.json() as T;
+  }
+
+  private async fetchLatestWalletFundFlowIDSilent(): Promise<number> {
+    try {
+      const payload = await this.fetchJSONSilent<WalletFundFlowListResponse>("/api/v1/wallet/fund-flows?limit=1&offset=0");
+      const first = Array.isArray(payload.items) ? payload.items[0] : null;
+      return Math.max(0, clampBoundInt(first?.id, 0, 0, Number.MAX_SAFE_INTEGER));
+    } catch {
+      return 0;
+    }
+  }
+
+  private async fetchVisitFundFlowsSilent(visitID: string): Promise<WalletFundFlowItem[]> {
+    if (this.currentVisit.visitID !== visitID) {
+      return [];
+    }
+    try {
+      // 设计说明：
+      // - “访问会话概述”和 settings 账务明细要看同一批后台业务流水；
+      // - 所以这里不能再按时间窗口猜测，而是直接按 visit_id 查 wallet_fund_flows。
+      const payload = await this.fetchJSONSilent<WalletFundFlowListResponse>(`/api/v1/wallet/fund-flows?limit=200&offset=0&visit_id=${encodeURIComponent(visitID)}`);
+      return Array.isArray(payload.items) ? payload.items : [];
+    } catch (error) {
+      if (this.currentVisit.visitID === visitID) {
+        this.currentVisit = {
+          ...this.currentVisit,
+          note: `账目刷新失败: ${error instanceof Error ? error.message : String(error)}`,
+          lastUpdatedAtUnix: Math.floor(Date.now() / 1000)
+        };
+        this.emitState();
+      }
+      return [];
+    }
   }
 }
 
@@ -954,6 +1261,163 @@ function readHistoryItems(payload: Record<string, unknown>): BitfsPublicWalletHi
     });
   }
   return items;
+}
+
+function createEmptyVisitAccounting(): ShellVisitAccounting {
+  return {
+    visitID: "",
+    locator: "",
+    status: "idle",
+    startedAtUnix: 0,
+    lastUpdatedAtUnix: 0,
+    finishedAtUnix: 0,
+    note: "尚未开始访问。",
+    totalUsedSatoshi: 0,
+    totalReturnedSatoshi: 0,
+    resolverUsedSatoshi: 0,
+    reachabilityUsedSatoshi: 0,
+    contentUsedSatoshi: 0,
+    otherUsedSatoshi: 0,
+    itemCount: 0,
+    buckets: []
+  };
+}
+
+function cloneVisitAccounting(source: ShellVisitAccounting): ShellVisitAccounting {
+  return {
+    ...source,
+    buckets: Array.isArray(source.buckets)
+      ? source.buckets.map((item) => ({ ...item }))
+      : []
+  };
+}
+
+function summarizeVisitFundFlows(
+  visit: ShellVisitAccounting,
+  flows: WalletFundFlowItem[],
+  baselineFlowID: number
+): {
+  totalUsedSatoshi: number;
+  totalReturnedSatoshi: number;
+  resolverUsedSatoshi: number;
+  reachabilityUsedSatoshi: number;
+  contentUsedSatoshi: number;
+  otherUsedSatoshi: number;
+  itemCount: number;
+  buckets: ShellVisitAccountingBucket[];
+} {
+  const startedAtUnix = Math.max(0, Number(visit.startedAtUnix || 0));
+  const minID = Math.max(0, Number(baselineFlowID || 0));
+  const bucketMap = new Map<string, ShellVisitAccountingBucket>();
+  let totalUsedSatoshi = 0;
+  let totalReturnedSatoshi = 0;
+  let resolverUsedSatoshi = 0;
+  let reachabilityUsedSatoshi = 0;
+  let contentUsedSatoshi = 0;
+  let otherUsedSatoshi = 0;
+  let itemCount = 0;
+  for (const item of flows) {
+    const id = clampBoundInt(item?.id, 0, 0, Number.MAX_SAFE_INTEGER);
+    const createdAtUnix = clampBoundInt(item?.created_at_unix, 0, 0, Number.MAX_SAFE_INTEGER);
+    if (id <= minID) {
+      continue;
+    }
+    if (startedAtUnix > 0 && createdAtUnix > 0 && createdAtUnix < startedAtUnix) {
+      continue;
+    }
+    const usedSatoshi = Math.max(0, clampBoundInt(item?.used_satoshi, 0, 0, Number.MAX_SAFE_INTEGER));
+    const returnedSatoshi = Math.max(0, clampBoundInt(item?.returned_satoshi, 0, 0, Number.MAX_SAFE_INTEGER));
+    const purpose = String(item?.purpose || "").trim();
+    const bucketKey = purpose || "other";
+    const bucket = bucketMap.get(bucketKey) || {
+      purpose: bucketKey,
+      label: visitBucketLabel(bucketKey),
+      usedSatoshi: 0,
+      count: 0
+    };
+    bucket.usedSatoshi += usedSatoshi;
+    bucket.count += 1;
+    bucketMap.set(bucketKey, bucket);
+    itemCount += 1;
+    totalUsedSatoshi += usedSatoshi;
+    totalReturnedSatoshi += returnedSatoshi;
+    switch (visitBucketCategory(bucketKey)) {
+      case "resolver":
+        resolverUsedSatoshi += usedSatoshi;
+        break;
+      case "reachability":
+        reachabilityUsedSatoshi += usedSatoshi;
+        break;
+      case "content":
+        contentUsedSatoshi += usedSatoshi;
+        break;
+      default:
+        otherUsedSatoshi += usedSatoshi;
+        break;
+    }
+  }
+  return {
+    totalUsedSatoshi,
+    totalReturnedSatoshi,
+    resolverUsedSatoshi,
+    reachabilityUsedSatoshi,
+    contentUsedSatoshi,
+    otherUsedSatoshi,
+    itemCount,
+    buckets: Array.from(bucketMap.values()).sort((a, b) => {
+      if (a.usedSatoshi !== b.usedSatoshi) {
+        return b.usedSatoshi - a.usedSatoshi;
+      }
+      return a.label.localeCompare(b.label, "zh-CN");
+    }).slice(0, 6)
+  };
+}
+
+function visitBucketCategory(purpose: string): "resolver" | "reachability" | "content" | "other" {
+  const value = String(purpose || "").trim();
+  if (value === "resolver_query_fee") {
+    return "resolver";
+  }
+  if (value === "node_reachability_query_fee") {
+    return "reachability";
+  }
+  if (
+    value === "direct_transfer_pool_open" ||
+    value === "prepare_exact_pool_amount" ||
+    value === "direct_transfer_chunk_pay" ||
+    value === "direct_transfer_pool_close"
+  ) {
+    return "content";
+  }
+  return "other";
+}
+
+function visitBucketLabel(purpose: string): string {
+  const value = String(purpose || "").trim();
+  switch (value) {
+    case "resolver_query_fee":
+      return "解析费";
+    case "node_reachability_query_fee":
+      return "地址查询费";
+    case "direct_transfer_pool_open":
+      return "内容池开启";
+    case "prepare_exact_pool_amount":
+      return "内容池补足";
+    case "direct_transfer_chunk_pay":
+      return "内容传输费";
+    case "direct_transfer_pool_close":
+      return "内容池结算";
+    case "listen_cycle_fee":
+      return "监听周期费";
+    case "node_reachability_announce_fee":
+      return "地址广播费";
+    case "fee_pool_open":
+      return "费用池开启";
+    case "fee_pool_close":
+      return "费用池关闭";
+    default:
+      return value === "" ? "其他" : value;
+  }
 }
 
 function parseBitfsURL(rawURL: string): string {

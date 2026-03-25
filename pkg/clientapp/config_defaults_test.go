@@ -15,6 +15,12 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		if cfg.Listen.Enabled == nil || !*cfg.Listen.Enabled {
 			t.Fatalf("listen.enabled default should be true")
 		}
+		if cfg.Reachability.AutoAnnounceEnabled == nil || !*cfg.Reachability.AutoAnnounceEnabled {
+			t.Fatalf("reachability.auto_announce_enabled default should be true")
+		}
+		if got, want := cfg.Reachability.AnnounceTTLSeconds, uint32(3600); got != want {
+			t.Fatalf("reachability.announce_ttl_seconds=%d, want %d", got, want)
+		}
 		if got, want := cfg.Listen.AutoRenewRounds, uint64(5); got != want {
 			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)
 		}
@@ -35,6 +41,12 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		}
 		if cfg.Listen.Enabled == nil || !*cfg.Listen.Enabled {
 			t.Fatalf("listen.enabled default should be true")
+		}
+		if cfg.Reachability.AutoAnnounceEnabled == nil || !*cfg.Reachability.AutoAnnounceEnabled {
+			t.Fatalf("reachability.auto_announce_enabled default should be true")
+		}
+		if got, want := cfg.Reachability.AnnounceTTLSeconds, uint32(3600); got != want {
+			t.Fatalf("reachability.announce_ttl_seconds=%d, want %d", got, want)
 		}
 		if got, want := cfg.Listen.AutoRenewRounds, uint64(5); got != want {
 			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)

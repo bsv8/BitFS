@@ -28,6 +28,7 @@ type feePoolSession struct {
 	BillingCycleSeconds      uint32
 	SingleCycleFeeSatoshi    uint64
 	SinglePublishFeeSatoshi  uint64
+	SingleQueryFeeSatoshi    uint64
 	RenewNotifyBeforeSeconds uint32
 
 	MinimumPoolAmountSatoshi uint64

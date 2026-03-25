@@ -60,6 +60,8 @@ type gatewayEventEntry struct {
 }
 
 type walletFundFlowEntry struct {
+	VisitID         string
+	VisitLocator    string
 	FlowID          string
 	FlowType        string
 	RefID           string
@@ -73,6 +75,19 @@ type walletFundFlowEntry struct {
 	Note            string
 	Payload         any
 }
+
+type requestVisitMeta struct {
+	VisitID      string
+	VisitLocator string
+}
+
+type requestVisitContextKey string
+
+const (
+	headerVisitID               = "X-BitFS-Visit-ID"
+	headerVisitLocator          = "X-BitFS-Visit-Locator"
+	requestVisitMetaContextKey  = requestVisitContextKey("bitfs_request_visit_meta")
+)
 
 type walletLedgerEntry struct {
 	TxID              string
@@ -135,6 +150,8 @@ func appendWalletFundFlow(db *sql.DB, e walletFundFlowEntry) {
 	if db == nil {
 		return
 	}
+	e.VisitID = strings.TrimSpace(e.VisitID)
+	e.VisitLocator = strings.TrimSpace(e.VisitLocator)
 	e.FlowID = strings.TrimSpace(e.FlowID)
 	if e.FlowID == "" {
 		e.FlowID = "unknown"
@@ -164,9 +181,11 @@ func appendWalletFundFlow(db *sql.DB, e walletFundFlowEntry) {
 	}
 	_, err := db.Exec(
 		`INSERT INTO wallet_fund_flows(
-			created_at_unix,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			created_at_unix,visit_id,visit_locator,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		time.Now().Unix(),
+		e.VisitID,
+		e.VisitLocator,
 		e.FlowID,
 		e.FlowType,
 		e.RefID,
@@ -187,6 +206,73 @@ func appendWalletFundFlow(db *sql.DB, e walletFundFlowEntry) {
 			"stage":   e.Stage,
 		})
 	}
+}
+
+func appendWalletFundFlowFromContext(ctx context.Context, db *sql.DB, e walletFundFlowEntry) {
+	meta := requestVisitMetaFromContext(ctx)
+	if strings.TrimSpace(e.VisitID) == "" {
+		e.VisitID = meta.VisitID
+	}
+	if strings.TrimSpace(e.VisitLocator) == "" {
+		e.VisitLocator = meta.VisitLocator
+	}
+	appendWalletFundFlow(db, e)
+}
+
+func requestVisitMetaFromRequest(r *http.Request) requestVisitMeta {
+	if r == nil {
+		return requestVisitMeta{}
+	}
+	return requestVisitMeta{
+		VisitID:      normalizeVisitIDHeader(r.Header.Get(headerVisitID)),
+		VisitLocator: normalizeVisitLocatorHeader(r.Header.Get(headerVisitLocator)),
+	}
+}
+
+func requestVisitMetaFromContext(ctx context.Context) requestVisitMeta {
+	if ctx == nil {
+		return requestVisitMeta{}
+	}
+	meta, _ := ctx.Value(requestVisitMetaContextKey).(requestVisitMeta)
+	meta.VisitID = normalizeVisitIDHeader(meta.VisitID)
+	meta.VisitLocator = normalizeVisitLocatorHeader(meta.VisitLocator)
+	return meta
+}
+
+func withRequestVisitMeta(r *http.Request) *http.Request {
+	if r == nil {
+		return r
+	}
+	meta := requestVisitMetaFromRequest(r)
+	return r.WithContext(context.WithValue(r.Context(), requestVisitMetaContextKey, meta))
+}
+
+func normalizeVisitIDHeader(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if len(value) > 128 {
+		value = value[:128]
+	}
+	for _, ch := range value {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		return ""
+	}
+	return value
+}
+
+func normalizeVisitLocatorHeader(raw string) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	if len(value) > 512 {
+		value = value[:512]
+	}
+	return value
 }
 
 func appendWalletLedgerEntry(db *sql.DB, e walletLedgerEntry) {
@@ -385,6 +471,11 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/files/get-file/job", s.withAuth(s.handleGetFileJob))
 		mux.HandleFunc(prefix+"/v1/files/get-file/jobs", s.withAuth(s.handleGetFileJobs))
 		mux.HandleFunc(prefix+"/v1/files/get-file/cancel", s.withAuth(s.handleGetFileCancel))
+		mux.HandleFunc(prefix+"/v1/post", s.withAuth(s.handlePost))
+		mux.HandleFunc(prefix+"/v1/get", s.withAuth(s.handleGet))
+		mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
+		mux.HandleFunc(prefix+"/v1/inbox/messages", s.withAuth(s.handleInboxMessages))
+		mux.HandleFunc(prefix+"/v1/inbox/messages/detail", s.withAuth(s.handleInboxMessageDetail))
 		mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
 		mux.HandleFunc(prefix+"/v1/workspace/sync-once", s.withAuth(s.handleWorkspaceSyncOnce))
 		mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
@@ -405,6 +496,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/gateways", s.withAuth(s.handleGateways))
 		mux.HandleFunc(prefix+"/v1/gateways/master", s.withAuth(s.handleGatewayMaster))
 		mux.HandleFunc(prefix+"/v1/gateways/health", s.withAuth(s.handleGatewayHealth))
+		mux.HandleFunc(prefix+"/v1/gateways/reachability/announce", s.withAuth(s.handleGatewayReachabilityAnnounce))
+		mux.HandleFunc(prefix+"/v1/gateways/reachability/query", s.withAuth(s.handleGatewayReachabilityQuery))
 		// 仲裁管理 API
 		mux.HandleFunc(prefix+"/v1/arbiters", s.withAuth(s.handleArbiters))
 		mux.HandleFunc(prefix+"/v1/arbiters/health", s.withAuth(s.handleArbiterHealth))
@@ -422,6 +515,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/static/entry", s.withAuth(s.handleAdminStaticEntry))
 		mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
 		mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
+		mux.HandleFunc(prefix+"/v1/admin/routes/indexes", s.withAuth(s.handleAdminRouteIndexes))
+		mux.HandleFunc(prefix+"/v1/admin/resolvers/records", s.withAuth(s.handleAdminResolverRecords))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/commands/detail", s.withAuth(s.handleAdminFeePoolCommandDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/events", s.withAuth(s.handleAdminFeePoolEvents))
@@ -509,7 +604,9 @@ func (s *httpAPIServer) Shutdown(ctx context.Context) error {
 }
 
 func (s *httpAPIServer) withAuth(next http.HandlerFunc) http.HandlerFunc {
-	return next
+	return func(w http.ResponseWriter, r *http.Request) {
+		next(w, withRequestVisitMeta(r))
+	}
 }
 
 func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
@@ -947,6 +1044,7 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
 	purpose := strings.TrimSpace(r.URL.Query().Get("purpose"))
 	relatedTxID := strings.TrimSpace(r.URL.Query().Get("related_txid"))
+	visitID := normalizeVisitIDHeader(r.URL.Query().Get("visit_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	type argsT struct {
@@ -982,10 +1080,14 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 		build.where += " AND related_txid=?"
 		build.args = append(build.args, relatedTxID)
 	}
+	if visitID != "" {
+		build.where += " AND visit_id=?"
+		build.args = append(build.args, visitID)
+	}
 	if q != "" {
-		build.where += " AND (flow_id LIKE ? OR ref_id LIKE ? OR note LIKE ? OR related_txid LIKE ?)"
+		build.where += " AND (flow_id LIKE ? OR ref_id LIKE ? OR note LIKE ? OR related_txid LIKE ? OR visit_locator LIKE ?)"
 		like := "%" + q + "%"
-		build.args = append(build.args, like, like, like, like)
+		build.args = append(build.args, like, like, like, like, like)
 	}
 
 	var total int
@@ -994,7 +1096,7 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json FROM wallet_fund_flows WHERE 1=1`+build.where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+		`SELECT id,created_at_unix,visit_id,visit_locator,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json FROM wallet_fund_flows WHERE 1=1`+build.where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 		append(build.args, limit, offset)...,
 	)
 	if err != nil {
@@ -1005,6 +1107,8 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 	type flowItem struct {
 		ID              int64           `json:"id"`
 		CreatedAtUnix   int64           `json:"created_at_unix"`
+		VisitID         string          `json:"visit_id"`
+		VisitLocator    string          `json:"visit_locator"`
 		FlowID          string          `json:"flow_id"`
 		FlowType        string          `json:"flow_type"`
 		RefID           string          `json:"ref_id"`
@@ -1022,7 +1126,7 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 	for rows.Next() {
 		var it flowItem
 		var payload string
-		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.FlowID, &it.FlowType, &it.RefID, &it.Stage, &it.Direction, &it.Purpose, &it.AmountSatoshi, &it.UsedSatoshi, &it.ReturnedSatoshi, &it.RelatedTxID, &it.Note, &payload); err != nil {
+		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.VisitID, &it.VisitLocator, &it.FlowID, &it.FlowType, &it.RefID, &it.Stage, &it.Direction, &it.Purpose, &it.AmountSatoshi, &it.UsedSatoshi, &it.ReturnedSatoshi, &it.RelatedTxID, &it.Note, &payload); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -1050,6 +1154,8 @@ func (s *httpAPIServer) handleWalletFundFlowDetail(w http.ResponseWriter, r *htt
 	type flowItem struct {
 		ID              int64           `json:"id"`
 		CreatedAtUnix   int64           `json:"created_at_unix"`
+		VisitID         string          `json:"visit_id"`
+		VisitLocator    string          `json:"visit_locator"`
 		FlowID          string          `json:"flow_id"`
 		FlowType        string          `json:"flow_type"`
 		RefID           string          `json:"ref_id"`
@@ -1065,8 +1171,8 @@ func (s *httpAPIServer) handleWalletFundFlowDetail(w http.ResponseWriter, r *htt
 	}
 	var it flowItem
 	var payload string
-	err := s.db.QueryRow(`SELECT id,created_at_unix,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json FROM wallet_fund_flows WHERE id=?`, id).
-		Scan(&it.ID, &it.CreatedAtUnix, &it.FlowID, &it.FlowType, &it.RefID, &it.Stage, &it.Direction, &it.Purpose, &it.AmountSatoshi, &it.UsedSatoshi, &it.ReturnedSatoshi, &it.RelatedTxID, &it.Note, &payload)
+	err := s.db.QueryRow(`SELECT id,created_at_unix,visit_id,visit_locator,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json FROM wallet_fund_flows WHERE id=?`, id).
+		Scan(&it.ID, &it.CreatedAtUnix, &it.VisitID, &it.VisitLocator, &it.FlowID, &it.FlowType, &it.RefID, &it.Stage, &it.Direction, &it.Purpose, &it.AmountSatoshi, &it.UsedSatoshi, &it.ReturnedSatoshi, &it.RelatedTxID, &it.Note, &payload)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -6704,6 +6810,8 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
 		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
+		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
+		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
 		{Key: "storage.min_free_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "最小空闲空间"},
 		{Key: "live.cache_max_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "直播缓存上限"},
@@ -6845,6 +6953,8 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
 		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
 		"listen.tick_seconds":                         cfg.Listen.TickSeconds,
+		"reachability.auto_announce_enabled":          cfgBool(cfg.Reachability.AutoAnnounceEnabled, true),
+		"reachability.announce_ttl_seconds":           cfg.Reachability.AnnounceTTLSeconds,
 		"scan.rescan_interval_seconds":                cfg.Scan.RescanIntervalSeconds,
 		"storage.min_free_bytes":                      cfg.Storage.MinFreeBytes,
 		"live.cache_max_bytes":                        cfg.Live.CacheMaxBytes,
@@ -6992,6 +7102,8 @@ func adminConfigSetInt(cfg *Config, key string, v int64) error {
 		cfg.Listen.AutoRenewRounds = u
 	case "listen.tick_seconds":
 		cfg.Listen.TickSeconds = uint32(v)
+	case "reachability.announce_ttl_seconds":
+		cfg.Reachability.AnnounceTTLSeconds = uint32(v)
 	case "scan.rescan_interval_seconds":
 		cfg.Scan.RescanIntervalSeconds = uint32(v)
 	case "storage.min_free_bytes":
@@ -7032,6 +7144,8 @@ func adminConfigSetBool(cfg *Config, key string, v bool) error {
 	switch key {
 	case "listen.enabled":
 		cfg.Listen.Enabled = boolPtr(v)
+	case "reachability.auto_announce_enabled":
+		cfg.Reachability.AutoAnnounceEnabled = boolPtr(v)
 	case "seller.enabled":
 		cfg.Seller.Enabled = v
 	case "fs_http.strategy_debug_log_enabled":

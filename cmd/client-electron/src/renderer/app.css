@@ -439,6 +439,39 @@ input {
   gap: 6px;
 }
 
+.visit-bucket-list {
+  min-height: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.visit-bucket-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 6px;
+  border: 1px solid rgba(194, 202, 211, 0.96);
+  background: rgba(252, 253, 254, 0.98);
+  font-size: 12px;
+}
+
+.visit-bucket-label {
+  min-width: 0;
+  word-break: break-all;
+}
+
+.visit-bucket-count {
+  color: var(--chrome-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.visit-bucket-amount {
+  font-weight: 700;
+  white-space: nowrap;
+}
+
 .resource-row {
   display: grid;
   grid-template-columns: 18px 18px minmax(0, 1fr) auto auto;

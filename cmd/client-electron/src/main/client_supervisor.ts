@@ -57,6 +57,7 @@ type ManagedJSONRequest = {
   method?: string;
   pathname: string;
   body?: unknown;
+  headers?: Record<string, string>;
 };
 
 type StaticUploadRequest = {
@@ -276,7 +277,7 @@ export class ManagedClientSupervisor extends EventEmitter {
 
   async requestManagedJSON<T>(request: ManagedJSONRequest): Promise<T> {
     await this.ensureReachable();
-    return this.fetchJSON<T>(request.pathname, buildJSONRequestInit(request.method, request.body));
+    return this.fetchJSON<T>(request.pathname, buildJSONRequestInit(request.method, request.body, request.headers));
   }
 
   async uploadStaticFile<T>(request: StaticUploadRequest): Promise<T> {
@@ -734,14 +735,18 @@ function resolveManagedClientBinaryPath(appRootDir: string, packaged: boolean): 
   return path.join(appRootDir, "resources", "bin", platformKey, binaryName);
 }
 
-function buildJSONRequestInit(method: string | undefined, body: unknown): RequestInit {
+function buildJSONRequestInit(method: string | undefined, body: unknown, headers?: Record<string, string>): RequestInit {
   const normalizedMethod = String(method || "GET").trim().toUpperCase() || "GET";
   const init: RequestInit = {
     method: normalizedMethod
   };
+  const nextHeaders: Record<string, string> = { ...(headers || {}) };
   if (body !== undefined) {
-    init.headers = { "content-type": "application/json" };
+    nextHeaders["content-type"] = "application/json";
     init.body = JSON.stringify(body);
+  }
+  if (Object.keys(nextHeaders).length > 0) {
+    init.headers = nextHeaders;
   }
   return init;
 }

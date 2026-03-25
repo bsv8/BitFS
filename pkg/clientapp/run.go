@@ -300,6 +300,15 @@ type Config struct {
 		AutoRenewRounds       uint64 `yaml:"auto_renew_rounds" toml:"auto_renew_rounds"`
 		TickSeconds           uint32 `yaml:"tick_seconds" toml:"tick_seconds"`
 	} `yaml:"listen" toml:"listen"`
+	Reachability struct {
+		// AutoAnnounceEnabled 控制“客户端自动把自己当前可达地址发布到 gateway 目录”。
+		// 设计说明：
+		// - 这是节点侧行为开关，不是 gateway 侧策略；
+		// - 缺省开启，让 node locator 在大多数情况下开箱即用；
+		// - 关闭后仍保留手动触发口子，方便后续 e2e 与精细调试。
+		AutoAnnounceEnabled *bool  `yaml:"auto_announce_enabled" toml:"auto_announce_enabled"`
+		AnnounceTTLSeconds  uint32 `yaml:"announce_ttl_seconds" toml:"announce_ttl_seconds"`
+	} `yaml:"reachability" toml:"reachability"`
 	Scan struct {
 		StartupFullScan       bool   `yaml:"startup_full_scan" toml:"startup_full_scan"`
 		FSWatchEnabled        bool   `yaml:"fs_watch_enabled" toml:"fs_watch_enabled"`
@@ -395,6 +404,10 @@ type RunInput struct {
 		RenewThresholdSeconds uint32
 		AutoRenewRounds       uint64
 		TickSeconds           uint32
+	}
+	Reachability struct {
+		AutoAnnounceEnabled *bool
+		AnnounceTTLSeconds  uint32
 	}
 	Scan struct {
 		StartupFullScan       bool
@@ -494,6 +507,11 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 	in.Listen.RenewThresholdSeconds = cfg.Listen.RenewThresholdSeconds
 	in.Listen.AutoRenewRounds = cfg.Listen.AutoRenewRounds
 	in.Listen.TickSeconds = cfg.Listen.TickSeconds
+	if cfg.Reachability.AutoAnnounceEnabled != nil {
+		v := *cfg.Reachability.AutoAnnounceEnabled
+		in.Reachability.AutoAnnounceEnabled = &v
+	}
+	in.Reachability.AnnounceTTLSeconds = cfg.Reachability.AnnounceTTLSeconds
 	in.Scan.StartupFullScan = cfg.Scan.StartupFullScan
 	in.Scan.FSWatchEnabled = cfg.Scan.FSWatchEnabled
 	in.Scan.RescanIntervalSeconds = cfg.Scan.RescanIntervalSeconds
@@ -562,6 +580,11 @@ func (in RunInput) toConfig() Config {
 	cfg.Listen.RenewThresholdSeconds = in.Listen.RenewThresholdSeconds
 	cfg.Listen.AutoRenewRounds = in.Listen.AutoRenewRounds
 	cfg.Listen.TickSeconds = in.Listen.TickSeconds
+	if in.Reachability.AutoAnnounceEnabled != nil {
+		v := *in.Reachability.AutoAnnounceEnabled
+		cfg.Reachability.AutoAnnounceEnabled = &v
+	}
+	cfg.Reachability.AnnounceTTLSeconds = in.Reachability.AnnounceTTLSeconds
 	cfg.Scan.StartupFullScan = in.Scan.StartupFullScan
 	cfg.Scan.FSWatchEnabled = in.Scan.FSWatchEnabled
 	cfg.Scan.RescanIntervalSeconds = in.Scan.RescanIntervalSeconds
@@ -960,6 +983,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
+	registerPostGetHandlers(rt)
+	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
 		registerSellerHandlers(h, db, rt.live, trace, cfg)
@@ -1013,6 +1038,10 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	startChainMaintainer(ctx, rt)
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(ctx, rt)
+	// 自动地址声明发布与 listen loop 并列存在：
+	// - listen 解决“我是否持续监听网关广播”；
+	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
+	startAutoNodeReachabilityAnnounceLoop(ctx, rt)
 	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
 		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
@@ -1144,6 +1173,13 @@ func ApplyConfigDefaults(cfg *Config) error {
 	}
 	if cfg.Listen.TickSeconds == 0 {
 		cfg.Listen.TickSeconds = networkDefaults.ListenTickSeconds
+	}
+	if cfg.Reachability.AutoAnnounceEnabled == nil {
+		v := true
+		cfg.Reachability.AutoAnnounceEnabled = &v
+	}
+	if cfg.Reachability.AnnounceTTLSeconds == 0 {
+		cfg.Reachability.AnnounceTTLSeconds = 3600
 	}
 	if cfg.Scan.RescanIntervalSeconds == 0 {
 		cfg.Scan.RescanIntervalSeconds = networkDefaults.ScanRescanIntervalSeconds
@@ -1327,6 +1363,9 @@ func validateConfig(cfg *Config) error {
 	}
 	if strings.TrimSpace(cfg.HTTP.ListenAddr) == "" {
 		return errors.New("http.listen_addr is required")
+	}
+	if cfg.Reachability.AnnounceTTLSeconds == 0 {
+		return errors.New("reachability.announce_ttl_seconds must be > 0")
 	}
 	return nil
 }
@@ -1572,6 +1611,8 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
+			visit_id TEXT NOT NULL DEFAULT '',
+			visit_locator TEXT NOT NULL DEFAULT '',
 			flow_id TEXT NOT NULL,
 			flow_type TEXT NOT NULL,
 			ref_id TEXT NOT NULL,
@@ -1890,12 +1931,52 @@ func initIndexDB(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			PRIMARY KEY(seed_hash,chunk_index)
 		)`,
+		`CREATE TABLE IF NOT EXISTS inbox_messages(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			message_id TEXT NOT NULL,
+			sender_pubkey_hex TEXT NOT NULL,
+			target_input TEXT NOT NULL,
+			route TEXT NOT NULL,
+			content_type TEXT NOT NULL,
+			body_bytes BLOB NOT NULL,
+			body_size_bytes INTEGER NOT NULL,
+			received_at_unix INTEGER NOT NULL,
+			UNIQUE(sender_pubkey_hex,message_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS published_route_indexes(
+			route TEXT PRIMARY KEY,
+			seed_hash TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS resolver_name_records(
+			name TEXT PRIMARY KEY,
+			target_pubkey_hex TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS node_reachability_cache(
+			target_node_pubkey_hex TEXT PRIMARY KEY,
+			source_gateway_pubkey_hex TEXT NOT NULL,
+			head_height INTEGER NOT NULL,
+			seq INTEGER NOT NULL,
+			multiaddrs_json TEXT NOT NULL,
+			published_at_unix INTEGER NOT NULL,
+			expires_at_unix INTEGER NOT NULL,
+			signature BLOB NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS self_node_reachability_state(
+			node_pubkey_hex TEXT PRIMARY KEY,
+			head_height INTEGER NOT NULL,
+			seq INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_workspace_seed_hash ON workspace_files(seed_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_seed_available_chunks_seed ON seed_available_chunks(seed_hash,chunk_index)`,
 		`CREATE INDEX IF NOT EXISTS idx_workspaces_path ON workspaces(path)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_downloads_updated ON file_downloads(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_download_chunks_seed ON file_download_chunks(seed_hash,chunk_index)`,
 		`CREATE INDEX IF NOT EXISTS idx_live_quotes_demand ON live_quotes(demand_id, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_node_reachability_cache_expires ON node_reachability_cache(expires_at_unix DESC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_tx_history_created_at ON tx_history(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_sale_records_created_at ON sale_records(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
@@ -1949,6 +2030,9 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_status ON scheduler_task_runs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_started ON scheduler_task_runs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_static_file_prices_updated ON static_file_prices(updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_inbox_messages_received_at ON inbox_messages(received_at_unix DESC,id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_published_route_indexes_updated ON published_route_indexes(updated_at_unix DESC,route ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_resolver_name_records_updated ON resolver_name_records(updated_at_unix DESC,name ASC)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -1956,6 +2040,9 @@ func initIndexDB(db *sql.DB) error {
 		}
 	}
 	if err := ensureDirectQuotesSchema(db); err != nil {
+		return err
+	}
+	if err := ensureWalletFundFlowsSchema(db); err != nil {
 		return err
 	}
 	if err := ensureSeedsSchema(db); err != nil {
@@ -2412,6 +2499,27 @@ func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 	}
 	return out, rows.Err()
+}
+
+func ensureWalletFundFlowsSchema(db *sql.DB) error {
+	cols, err := tableColumns(db, "wallet_fund_flows")
+	if err != nil {
+		return err
+	}
+	if _, ok := cols["visit_id"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_fund_flows ADD COLUMN visit_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, ok := cols["visit_locator"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_fund_flows ADD COLUMN visit_locator TEXT NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_visit_id ON wallet_fund_flows(visit_id, id DESC)`); err != nil {
+		return err
+	}
+	return nil
 }
 
 func ensureDirectQuotesSchema(db *sql.DB) error {

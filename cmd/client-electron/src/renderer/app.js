@@ -21,6 +21,17 @@
   const clientAPIBase = document.getElementById("client-api-base");
   const homeSource = document.getElementById("home-source");
   const autoSpentTotal = document.getElementById("auto-spent-total");
+  const visitStatus = document.getElementById("visit-status");
+  const visitLocator = document.getElementById("visit-locator");
+  const visitTotalUsed = document.getElementById("visit-total-used");
+  const visitTotalReturned = document.getElementById("visit-total-returned");
+  const visitResolverUsed = document.getElementById("visit-resolver-used");
+  const visitReachabilityUsed = document.getElementById("visit-reachability-used");
+  const visitContentUsed = document.getElementById("visit-content-used");
+  const visitOtherUsed = document.getElementById("visit-other-used");
+  const visitItemCount = document.getElementById("visit-item-count");
+  const visitAccountingNote = document.getElementById("visit-accounting-note");
+  const visitBucketList = document.getElementById("visit-bucket-list");
   const resourceTotalBadge = document.getElementById("resource-total-badge");
   const resourcePendingBadge = document.getElementById("resource-pending-badge");
   const resourceListNote = document.getElementById("resource-list-note");
@@ -33,42 +44,12 @@
   const sidebarDragOverlay = document.getElementById("sidebar-drag-overlay");
   const walletRefreshButton = document.getElementById("wallet-refresh-button");
   const walletSummaryNote = document.getElementById("wallet-summary-note");
-  const walletDiagnosticNote = document.getElementById("wallet-diagnostic-note");
-  const walletCopyDiagnosticsButton = document.getElementById("wallet-copy-diagnostics-button");
   const walletAddress = document.getElementById("wallet-address");
   const walletBalance = document.getElementById("wallet-balance");
   const walletBalanceSource = document.getElementById("wallet-balance-source");
   const walletLedgerNet = document.getElementById("wallet-ledger-net");
   const walletTotalIn = document.getElementById("wallet-total-in");
   const walletTotalOut = document.getElementById("wallet-total-out");
-  const walletBackendPhase = document.getElementById("wallet-backend-phase");
-  const walletClientAPIBase = document.getElementById("wallet-client-api-base");
-  const walletChainType = document.getElementById("wallet-chain-type");
-  const walletChainBaseURL = document.getElementById("wallet-chain-base-url");
-  const walletSummaryUpdatedAt = document.getElementById("wallet-summary-updated-at");
-  const walletRuntimeStartedAt = document.getElementById("wallet-runtime-started-at");
-  const walletSyncUpdatedAt = document.getElementById("wallet-sync-updated-at");
-  const walletSyncStale = document.getElementById("wallet-sync-stale");
-  const walletSyncStaleReason = document.getElementById("wallet-sync-stale-reason");
-  const walletSyncTrigger = document.getElementById("wallet-sync-trigger");
-  const walletSyncDuration = document.getElementById("wallet-sync-duration");
-  const walletSyncSchedulerStatus = document.getElementById("wallet-sync-scheduler-status");
-  const walletSyncSchedulerInFlight = document.getElementById("wallet-sync-scheduler-in-flight");
-  const walletSyncSchedulerStartedAt = document.getElementById("wallet-sync-scheduler-started-at");
-  const walletSyncSchedulerEndedAt = document.getElementById("wallet-sync-scheduler-ended-at");
-  const walletSyncSchedulerError = document.getElementById("wallet-sync-scheduler-error");
-  const chainMaintQueueLength = document.getElementById("chain-maint-queue-length");
-  const chainMaintInFlight = document.getElementById("chain-maint-in-flight");
-  const chainMaintInFlightTaskType = document.getElementById("chain-maint-in-flight-task-type");
-  const chainMaintLastTaskStartedAt = document.getElementById("chain-maint-last-task-started-at");
-  const chainMaintLastTaskEndedAt = document.getElementById("chain-maint-last-task-ended-at");
-  const chainMaintLastError = document.getElementById("chain-maint-last-error");
-  const walletSyncRoundID = document.getElementById("wallet-sync-round-id");
-  const walletSyncFailedStep = document.getElementById("wallet-sync-failed-step");
-  const walletSyncUpstreamPath = document.getElementById("wallet-sync-upstream-path");
-  const walletSyncHTTPStatus = document.getElementById("wallet-sync-http-status");
-  const walletOnchainError = document.getElementById("wallet-onchain-error");
-  const walletSyncError = document.getElementById("wallet-sync-error");
   const errorBanner = document.getElementById("error-banner");
   const errorBannerText = document.getElementById("error-banner-text");
   const errorBannerCopyButton = document.getElementById("error-banner-copy-button");
@@ -106,19 +87,15 @@
     !bridge || !browserShell || !addressForm || !addressInput || !backButton || !forwardButton || !reloadButton ||
     !goHomeButton || !openButton || !homeButton || !settingsButton || !closeSettingsButton || !lockButton || !budgetForm || !singleBudgetInput ||
     !pageBudgetInput || !currentURL || !currentRootSeed || !pendingCount || !clientAPIBase || !homeSource ||
-    !autoSpentTotal || !resourceTotalBadge || !resourcePendingBadge || !resourceListNote || !resourceList ||
+    !autoSpentTotal || !visitStatus || !visitLocator || !visitTotalUsed || !visitTotalReturned ||
+    !visitResolverUsed || !visitReachabilityUsed || !visitContentUsed || !visitOtherUsed ||
+    !visitItemCount || !visitAccountingNote || !visitBucketList ||
+    !resourceTotalBadge || !resourcePendingBadge || !resourceListNote || !resourceList ||
     !panelTabResources || !panelTabWallet || !panelResources || !panelWallet || !sidebarResizeHandle ||
     !sidebarDragOverlay ||
-    !walletRefreshButton || !walletSummaryNote || !walletDiagnosticNote || !walletCopyDiagnosticsButton ||
+    !walletRefreshButton || !walletSummaryNote ||
     !walletAddress || !walletBalance || !walletBalanceSource || !walletLedgerNet || !walletTotalIn ||
-    !walletTotalOut || !walletBackendPhase || !walletClientAPIBase || !walletChainType || !walletChainBaseURL ||
-    !walletSummaryUpdatedAt || !walletRuntimeStartedAt || !walletSyncUpdatedAt || !walletSyncStale || !walletSyncStaleReason ||
-    !walletSyncTrigger || !walletSyncDuration || !walletSyncSchedulerStatus || !walletSyncSchedulerInFlight ||
-    !walletSyncSchedulerStartedAt || !walletSyncSchedulerEndedAt || !walletSyncSchedulerError ||
-    !chainMaintQueueLength || !chainMaintInFlight || !chainMaintInFlightTaskType ||
-    !chainMaintLastTaskStartedAt || !chainMaintLastTaskEndedAt || !chainMaintLastError ||
-    !walletSyncRoundID || !walletSyncFailedStep || !walletSyncUpstreamPath || !walletSyncHTTPStatus ||
-    !walletOnchainError || !walletSyncError || !errorBanner || !errorBannerText || !errorBannerCopyButton ||
+    !walletTotalOut || !errorBanner || !errorBannerText || !errorBannerCopyButton ||
     !webview || !viewerStage || !backendGate || !backendTitle || !backendSummary || !backendDetail ||
     !backendStepNote || !backendErrorBanner || !backendErrorBannerText || !backendErrorCopyButton ||
     !choosePanel || !chooseCreateButton || !chooseImportButton || !createKeyForm || !createPasswordInput ||
@@ -248,18 +225,9 @@
     });
   }
 
-  function normalizeTarget(raw) {
+  function normalizeSeedHash(raw) {
     const value = String(raw || "").trim().toLowerCase();
-    if (value === "") {
-      return "";
-    }
-    if (/^bitfs:\/\/[0-9a-f]{64}$/.test(value)) {
-      return value.slice("bitfs://".length);
-    }
-    if (/^[0-9a-f]{64}$/.test(value)) {
-      return value;
-    }
-    return "";
+    return /^[0-9a-f]{64}$/.test(value) ? value : "";
   }
 
   function clampSidebarWidth(raw) {
@@ -378,28 +346,26 @@
     return `${Math.max(0, Math.floor(sat))} sat`;
   }
 
-  function formatUnixTime(value) {
-    const raw = Number(value || 0);
-    if (!Number.isFinite(raw) || raw <= 0) {
+  function formatDateTime(unix) {
+    const value = Number(unix || 0);
+    if (!Number.isFinite(value) || value <= 0) {
       return "-";
     }
-    try {
-      return new Date(raw * 1000).toLocaleString("zh-CN", { hour12: false });
-    } catch {
-      return String(raw);
-    }
+    return new Date(value * 1000).toLocaleString("zh-CN", { hour12: false });
   }
 
-  function formatHTTPStatus(value) {
-    const raw = Number(value || 0);
-    if (!Number.isFinite(raw) || raw <= 0) {
-      return "-";
+  function formatVisitStatus(status) {
+    const value = String(status || "").trim();
+    if (value === "opening") {
+      return "打开中";
     }
-    return String(Math.floor(raw));
-  }
-
-  function formatBoolCN(value) {
-    return value ? "是" : "否";
+    if (value === "open") {
+      return "已打开";
+    }
+    if (value === "failed") {
+      return "已失败";
+    }
+    return "空闲";
   }
 
   function isBrowserContentMode() {
@@ -619,6 +585,45 @@
     `;
   }
 
+  function renderVisitBucketItem(bucket) {
+    const label = String(bucket?.label || bucket?.purpose || "其他").trim() || "其他";
+    return `
+      <article class="visit-bucket-item">
+        <div class="visit-bucket-label">${escapeHTML(label)}</div>
+        <div class="visit-bucket-count">${Math.max(0, Number(bucket?.count || 0))} 笔</div>
+        <div class="visit-bucket-amount">${escapeHTML(formatSat(bucket?.usedSatoshi || 0))}</div>
+      </article>
+    `;
+  }
+
+  function renderVisitAccounting(visit) {
+    const data = visit && typeof visit === "object" ? visit : {};
+    const buckets = Array.isArray(data.buckets) ? data.buckets : [];
+    visitStatus.textContent = formatVisitStatus(data.status);
+    visitLocator.textContent = String(data.locator || "-");
+    visitTotalUsed.textContent = formatSat(data.totalUsedSatoshi || 0);
+    visitTotalReturned.textContent = formatSat(data.totalReturnedSatoshi || 0);
+    visitResolverUsed.textContent = formatSat(data.resolverUsedSatoshi || 0);
+    visitReachabilityUsed.textContent = formatSat(data.reachabilityUsedSatoshi || 0);
+    visitContentUsed.textContent = formatSat(data.contentUsedSatoshi || 0);
+    visitOtherUsed.textContent = formatSat(data.otherUsedSatoshi || 0);
+    visitItemCount.textContent = String(Math.max(0, Number(data.itemCount || 0)));
+    const noteParts = [];
+    if (String(data.note || "").trim()) {
+      noteParts.push(String(data.note || "").trim());
+    }
+    if (Number(data.startedAtUnix || 0) > 0) {
+      noteParts.push(`开始于 ${formatDateTime(data.startedAtUnix)}`);
+    }
+    if (Number(data.lastUpdatedAtUnix || 0) > 0) {
+      noteParts.push(`最近更新 ${formatDateTime(data.lastUpdatedAtUnix)}`);
+    }
+    visitAccountingNote.textContent = noteParts.length > 0 ? noteParts.join(" | ") : "当前还没有访问账目。";
+    visitBucketList.innerHTML = buckets.length > 0
+      ? buckets.map(renderVisitBucketItem).join("")
+      : '<article class="visit-bucket-item"><div class="visit-bucket-label">当前访问还没有落账。</div><div class="visit-bucket-count">0 笔</div><div class="visit-bucket-amount">0 sat</div></article>';
+  }
+
   function renderWalletSummary() {
     if (walletState.loading) {
       walletSummaryNote.textContent = "正在读取钱包摘要。";
@@ -631,52 +636,14 @@
       walletSummaryNote.textContent = onchainError || "钱包摘要已更新。";
     }
     const payload = walletState.data || {};
-    const backendPhase = String(currentState?.backend?.phase || "");
     const onchainError = String(payload.onchain_balance_error || "").trim();
-    const syncError = String(payload.wallet_utxo_sync_last_error || "").trim();
     walletAddress.textContent = String(payload.wallet_address || "-");
     walletBalance.textContent = walletState.loaded ? formatSat(payload.onchain_balance_satoshi) : "-";
     walletBalanceSource.textContent = String(payload.balance_source || "-");
     walletLedgerNet.textContent = walletState.loaded ? formatSat(payload.ledger_net_satoshi) : "-";
     walletTotalIn.textContent = walletState.loaded ? formatSat(payload.total_in_satoshi) : "-";
     walletTotalOut.textContent = walletState.loaded ? formatSat(payload.total_out_satoshi) : "-";
-    walletBackendPhase.textContent = backendPhase || "-";
-    walletClientAPIBase.textContent = String(currentState?.backend?.apiBase || currentState?.clientAPIBase || "-");
-    walletChainType.textContent = String(payload.wallet_chain_type || "-");
-    walletChainBaseURL.textContent = String(payload.wallet_chain_base_url || "-");
-    walletSummaryUpdatedAt.textContent = walletState.loadedAtISO || "-";
-    walletRuntimeStartedAt.textContent = formatUnixTime(payload.runtime_started_at_unix);
-    walletSyncUpdatedAt.textContent = formatUnixTime(payload.wallet_utxo_sync_updated_at_unix);
-    walletSyncStale.textContent = walletState.loaded ? formatBoolCN(Boolean(payload.wallet_utxo_sync_state_is_stale)) : "-";
-    walletSyncStaleReason.textContent = String(payload.wallet_utxo_sync_state_stale_reason || "-");
-    walletSyncTrigger.textContent = String(payload.wallet_utxo_sync_last_trigger || "-");
-    walletSyncDuration.textContent = walletState.loaded ? `${Number(payload.wallet_utxo_sync_last_duration_ms || 0)} ms` : "-";
-    walletSyncSchedulerStatus.textContent = String(payload.wallet_utxo_sync_scheduler_status || "-");
-    walletSyncSchedulerInFlight.textContent = walletState.loaded ? formatBoolCN(Boolean(payload.wallet_utxo_sync_scheduler_in_flight)) : "-";
-    walletSyncSchedulerStartedAt.textContent = formatUnixTime(payload.wallet_utxo_sync_scheduler_last_started_at_unix);
-    walletSyncSchedulerEndedAt.textContent = formatUnixTime(payload.wallet_utxo_sync_scheduler_last_ended_at_unix);
-    walletSyncSchedulerError.textContent = String(payload.wallet_utxo_sync_scheduler_last_error || "-");
-    chainMaintQueueLength.textContent = walletState.loaded ? String(Number(payload.chain_maintainer_queue_length || 0)) : "-";
-    chainMaintInFlight.textContent = walletState.loaded ? formatBoolCN(Boolean(payload.chain_maintainer_in_flight)) : "-";
-    chainMaintInFlightTaskType.textContent = String(payload.chain_maintainer_in_flight_task_type || "-");
-    chainMaintLastTaskStartedAt.textContent = formatUnixTime(payload.chain_maintainer_last_task_started_at_unix);
-    chainMaintLastTaskEndedAt.textContent = formatUnixTime(payload.chain_maintainer_last_task_ended_at_unix);
-    chainMaintLastError.textContent = String(payload.chain_maintainer_last_error || "-");
-    walletSyncRoundID.textContent = String(payload.wallet_utxo_sync_last_round_id || "-");
-    walletSyncFailedStep.textContent = String(payload.wallet_utxo_sync_last_failed_step || "-");
-    walletSyncUpstreamPath.textContent = String(payload.wallet_utxo_sync_last_upstream_path || "-");
-    walletSyncHTTPStatus.textContent = formatHTTPStatus(payload.wallet_utxo_sync_last_http_status);
-    walletOnchainError.textContent = onchainError || "-";
-    walletSyncError.textContent = syncError || "-";
-    walletDiagnosticNote.textContent = !walletState.loaded
-      ? "这里会显示钱包摘要链路的关键诊断字段。"
-      : payload.wallet_utxo_sync_state_is_stale
-        ? "当前钱包同步状态看起来是旧运行时残留，请先对照运行时启动时间和调度状态。"
-      : onchainError || syncError
-        ? "已检测到钱包摘要退化，请优先复制诊断并对照后端 chain_utxo_worker 日志。"
-        : "钱包摘要链路当前没有暴露出错误。";
     walletRefreshButton.disabled = !currentState || !isBackendReady(currentState) || walletState.loading;
-    walletCopyDiagnosticsButton.disabled = !walletState.loaded && !walletState.error;
   }
 
   async function loadWalletSummary(force) {
@@ -762,7 +729,7 @@
       refreshNavigationButtons();
       return;
     }
-    const target = String(state.currentURL || "").trim();
+    const target = String(state.currentViewerURL || "").trim();
     if (!target) {
       webview.removeAttribute("src");
       debugLog("shell", "viewer_src_cleared", {
@@ -954,6 +921,7 @@
     currentRootSeed.textContent = state.currentRootSeedHash || "-";
     clientAPIBase.textContent = String(state.backend?.apiBase || state.clientAPIBase || "-");
     autoSpentTotal.textContent = formatSat(state.autoSpentSat);
+    renderVisitAccounting(state.currentVisit);
     pendingCount.textContent = String(Number(state.pendingCount || 0));
     resourceTotalBadge.textContent = `${Array.isArray(state.resources) ? state.resources.length : 0} 项`;
     resourcePendingBadge.textContent = `${Number(state.pendingCount || 0)} 待批`;
@@ -1002,7 +970,7 @@
     errorBannerText.textContent = message;
     errorBanner.classList.toggle("is-hidden", message === "");
 
-    const currentSeedHash = normalizeTarget(state.currentURL || "");
+    const currentSeedHash = normalizeSeedHash(state.currentRootSeedHash || "");
     const userHomeSeedHash = String(state.userHomeSeedHash || "");
     homeButton.textContent = userHomeSeedHash && currentSeedHash === userHomeSeedHash ? "清除首页" : "设为首页";
     goHomeButton.disabled = !isBackendReady(state) || getEffectiveHomeSeedHash(state) === "";
@@ -1018,17 +986,17 @@
       showShellError("内置客户端尚未就绪，请先创建或解锁密钥。", "客户端未就绪");
       return;
     }
-    const normalized = normalizeTarget(addressInput.value);
-    if (!normalized) {
-      showShellError("请输入 64 位十六进制 seed hash，或 bitfs://<seed_hash>", "地址无效");
+    const rawLocator = String(addressInput.value || "").trim();
+    if (!rawLocator) {
+      showShellError("请输入 bitfs、node 或解析服务 locator。", "地址无效");
       addressInput.focus();
       return;
     }
     debugLog("shell", "open_from_input", {
-      seed_hash: normalized
+      locator: rawLocator
     });
     closeSettingsView("open_from_input");
-    await bridge.open(normalized);
+    await bridge.open(rawLocator);
     return bridge.getState();
   }
 
@@ -1042,7 +1010,7 @@
       return;
     }
     debugLog("shell", "open_home", {
-      seed_hash: homeSeedHash
+      locator: homeSeedHash
     });
     closeSettingsView("open_home");
     await bridge.open(homeSeedHash);
@@ -1198,42 +1166,6 @@
     return currentState.resources.find((item) => item.seedHash === seedHash) || null;
   }
 
-  function buildWalletDiagnosticsText() {
-    const payload = walletState.data || {};
-    return [
-      `backend_phase: ${String(currentState?.backend?.phase || "") || "-"}`,
-      `client_api_base: ${String(currentState?.backend?.apiBase || currentState?.clientAPIBase || "") || "-"}`,
-      `wallet_chain_type: ${String(payload.wallet_chain_type || "") || "-"}`,
-      `wallet_chain_base_url: ${String(payload.wallet_chain_base_url || "") || "-"}`,
-      `wallet_address: ${String(payload.wallet_address || "") || "-"}`,
-      `summary_loaded_at: ${walletState.loadedAtISO || "-"}`,
-      `runtime_started_at: ${formatUnixTime(payload.runtime_started_at_unix)}`,
-      `wallet_utxo_sync_updated_at: ${formatUnixTime(payload.wallet_utxo_sync_updated_at_unix)}`,
-      `wallet_utxo_sync_state_is_stale: ${formatBoolCN(Boolean(payload.wallet_utxo_sync_state_is_stale))}`,
-      `wallet_utxo_sync_state_stale_reason: ${String(payload.wallet_utxo_sync_state_stale_reason || "") || "-"}`,
-      `wallet_utxo_sync_last_trigger: ${String(payload.wallet_utxo_sync_last_trigger || "") || "-"}`,
-      `wallet_utxo_sync_last_duration_ms: ${String(payload.wallet_utxo_sync_last_duration_ms || 0)}`,
-      `wallet_utxo_sync_scheduler_status: ${String(payload.wallet_utxo_sync_scheduler_status || "") || "-"}`,
-      `wallet_utxo_sync_scheduler_in_flight: ${formatBoolCN(Boolean(payload.wallet_utxo_sync_scheduler_in_flight))}`,
-      `wallet_utxo_sync_scheduler_last_started_at: ${formatUnixTime(payload.wallet_utxo_sync_scheduler_last_started_at_unix)}`,
-      `wallet_utxo_sync_scheduler_last_ended_at: ${formatUnixTime(payload.wallet_utxo_sync_scheduler_last_ended_at_unix)}`,
-      `wallet_utxo_sync_scheduler_last_duration_ms: ${String(payload.wallet_utxo_sync_scheduler_last_duration_ms || 0)}`,
-      `wallet_utxo_sync_scheduler_last_error: ${String(payload.wallet_utxo_sync_scheduler_last_error || "") || "-"}`,
-      `chain_maintainer_queue_length: ${String(Number(payload.chain_maintainer_queue_length || 0))}`,
-      `chain_maintainer_in_flight: ${formatBoolCN(Boolean(payload.chain_maintainer_in_flight))}`,
-      `chain_maintainer_in_flight_task_type: ${String(payload.chain_maintainer_in_flight_task_type || "") || "-"}`,
-      `chain_maintainer_last_task_started_at: ${formatUnixTime(payload.chain_maintainer_last_task_started_at_unix)}`,
-      `chain_maintainer_last_task_ended_at: ${formatUnixTime(payload.chain_maintainer_last_task_ended_at_unix)}`,
-      `chain_maintainer_last_error: ${String(payload.chain_maintainer_last_error || "") || "-"}`,
-      `wallet_utxo_sync_last_round_id: ${String(payload.wallet_utxo_sync_last_round_id || "") || "-"}`,
-      `wallet_utxo_sync_last_failed_step: ${String(payload.wallet_utxo_sync_last_failed_step || "") || "-"}`,
-      `wallet_utxo_sync_last_upstream_path: ${String(payload.wallet_utxo_sync_last_upstream_path || "") || "-"}`,
-      `wallet_utxo_sync_last_http_status: ${formatHTTPStatus(payload.wallet_utxo_sync_last_http_status)}`,
-      `onchain_balance_error: ${String(payload.onchain_balance_error || walletState.error || "") || "-"}`,
-      `wallet_utxo_sync_last_error: ${String(payload.wallet_utxo_sync_last_error || "") || "-"}`
-    ].join("\n");
-  }
-
   webview.addEventListener("did-attach", function handleAttach() {
     viewerDOMReady = false;
     debugLog("webview", "did_attach");
@@ -1356,7 +1288,7 @@
     if (!currentState || !isBackendReady(currentState)) {
       return;
     }
-    const currentSeedHash = normalizeTarget(currentState.currentURL || addressInput.value || "");
+    const currentSeedHash = normalizeSeedHash(currentState.currentRootSeedHash || "");
     if (!currentSeedHash) {
       showShellError("先打开一个 bitfs 页面，才能把它设成浏览器首页。", "无法设置首页");
       return;
@@ -1420,12 +1352,6 @@
 
   walletRefreshButton.addEventListener("click", function handleWalletRefresh() {
     void loadWalletSummary(true);
-  });
-
-  walletCopyDiagnosticsButton.addEventListener("click", function handleWalletCopyDiagnostics() {
-    void copyPlainText(buildWalletDiagnosticsText()).catch((error) => {
-      showShellError(error instanceof Error ? error.message : String(error), "复制失败");
-    });
   });
 
   sidebarResizeHandle.addEventListener("mousedown", function handleResizeStart(event) {

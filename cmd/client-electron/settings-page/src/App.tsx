@@ -10,6 +10,7 @@ import {
   deleteStaticEntry,
   deleteWorkspace,
   exportKeyFile,
+  getAdminConfig,
   getArbiters,
   getGateways,
   getShellState,
@@ -21,19 +22,21 @@ import {
   restartBackend,
   saveArbiter,
   saveGateway,
+  setAdminConfigItems,
   setStaticItemPrice,
   setUserHomepage,
   updateWorkspace,
   uploadStaticFile
 } from "./api";
 import { ArbiterManager } from "./components/ArbiterManager";
+import { BillingManager } from "./components/BillingManager";
 import { GatewayManager } from "./components/GatewayManager";
 import { StaticFileManager } from "./components/StaticFileManager";
 import { WorkspacesManager } from "./components/WorkspacesManager";
 import type { ArbitersResp, GatewaysResp, StaticItem, StaticTreeResp, WalletSummary, WorkspacesResp } from "./types";
 import { formatSat, normalizeSeedHash, shortHex } from "./utils";
 
-type NavSection = "security" | "network" | "storage";
+type NavSection = "security" | "network" | "storage" | "billing";
 const walletRefreshTopics = ["backend.phase.changed", "wallet.changed", "client.status.changed"];
 const walletChangedRefreshSteps = new Set([
   "collect_wallet_snapshot",
@@ -48,12 +51,15 @@ export default function App() {
   const [error, setError] = useState("");
   const [shellState, setShellState] = useState<ShellState | null>(null);
   const [walletSummary, setWalletSummary] = useState<WalletSummary | null>(null);
+  const [adminConfig, setAdminConfig] = useState<Record<string, unknown>>({});
   const [gateways, setGateways] = useState<GatewaysResp | null>(null);
   const [arbiters, setArbiters] = useState<ArbitersResp | null>(null);
   const [workspaces, setWorkspaces] = useState<WorkspacesResp | null>(null);
   const [staticTree, setStaticTree] = useState<StaticTreeResp | null>(null);
   const [staticPath, setStaticPath] = useState("/");
   const [homepageDraft, setHomepageDraft] = useState("");
+  const [autoReachabilityAnnounceEnabled, setAutoReachabilityAnnounceEnabled] = useState(true);
+  const [reachabilityAnnounceTTLSeconds, setReachabilityAnnounceTTLSeconds] = useState("3600");
 
   async function loadAll(nextStaticPath = staticPath) {
     setLoading(true);
@@ -62,6 +68,7 @@ export default function App() {
       const [
         nextShellState,
         nextWalletSummary,
+        nextAdminConfig,
         nextGateways,
         nextArbiters,
         nextWorkspaces,
@@ -69,6 +76,7 @@ export default function App() {
       ] = await Promise.all([
         getShellState(),
         getWalletSummary(),
+        getAdminConfig(),
         getGateways(),
         getArbiters(),
         getWorkspaces(),
@@ -77,12 +85,15 @@ export default function App() {
       startTransition(() => {
         setShellState(nextShellState);
         setWalletSummary(nextWalletSummary);
+        setAdminConfig(nextAdminConfig);
         setGateways(nextGateways);
         setArbiters(nextArbiters);
         setWorkspaces(nextWorkspaces);
         setStaticTree(nextStaticTree);
         setStaticPath(nextStaticTree.current_path || nextStaticPath);
         setHomepageDraft(nextShellState.userHomeSeedHash || nextShellState.backend.defaultHomeSeedHash || "");
+        setAutoReachabilityAnnounceEnabled(Boolean(nextAdminConfig["reachability.auto_announce_enabled"] ?? true));
+        setReachabilityAnnounceTTLSeconds(String(nextAdminConfig["reachability.announce_ttl_seconds"] ?? 3600));
       });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -142,6 +153,8 @@ export default function App() {
       : "当前没有首页";
 
   const currentRootSeedHash = shellState?.currentRootSeedHash || "";
+  const currentAutoReachabilityAnnounceEnabled = Boolean(adminConfig["reachability.auto_announce_enabled"] ?? true);
+  const currentReachabilityAnnounceTTLSeconds = Number(adminConfig["reachability.announce_ttl_seconds"] ?? 3600);
 
   return (
     <div className="settings-shell">
@@ -157,6 +170,7 @@ export default function App() {
         <nav className="settings-nav">
           <button className={activeSection === "security" ? "nav-button active" : "nav-button"} type="button" onClick={() => setActiveSection("security")}>安全</button>
           <button className={activeSection === "network" ? "nav-button active" : "nav-button"} type="button" onClick={() => setActiveSection("network")}>网络</button>
+          <button className={activeSection === "billing" ? "nav-button active" : "nav-button"} type="button" onClick={() => setActiveSection("billing")}>账务</button>
           <button className={activeSection === "storage" ? "nav-button active" : "nav-button"} type="button" onClick={() => setActiveSection("storage")}>存储</button>
         </nav>
       </aside>
@@ -314,6 +328,74 @@ export default function App() {
 
         {!loading && activeSection === "network" ? (
           <div className="section-stack">
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <p className="panel-kicker">Network</p>
+                  <h2>地址目录发布</h2>
+                </div>
+              </div>
+              <form
+                className="form-stack section-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  const nextTTL = Number.parseInt(reachabilityAnnounceTTLSeconds.trim(), 10);
+                  if (!Number.isInteger(nextTTL) || nextTTL < 60 || nextTTL > 604800) {
+                    setError("reachability announce ttl must be between 60 and 604800 seconds");
+                    return;
+                  }
+                  void runBusyTask(async () => {
+                    const nextConfig = await setAdminConfigItems([
+                      { key: "reachability.auto_announce_enabled", value: autoReachabilityAnnounceEnabled },
+                      { key: "reachability.announce_ttl_seconds", value: nextTTL }
+                    ]);
+                    startTransition(() => {
+                      setAdminConfig(nextConfig);
+                      setAutoReachabilityAnnounceEnabled(Boolean(nextConfig["reachability.auto_announce_enabled"] ?? true));
+                      setReachabilityAnnounceTTLSeconds(String(nextConfig["reachability.announce_ttl_seconds"] ?? 3600));
+                    });
+                    await loadAll(staticPath);
+                  });
+                }}
+              >
+                <label>
+                  <span>自动地址声明发布</span>
+                  <input
+                    type="checkbox"
+                    checked={autoReachabilityAnnounceEnabled}
+                    onChange={(event) => setAutoReachabilityAnnounceEnabled(event.target.checked)}
+                  />
+                </label>
+                <label>
+                  <span>地址声明有效期秒</span>
+                  <input
+                    className="text-input"
+                    inputMode="numeric"
+                    value={reachabilityAnnounceTTLSeconds}
+                    onChange={(event) => setReachabilityAnnounceTTLSeconds(event.target.value)}
+                    placeholder="60 - 604800"
+                  />
+                </label>
+                <p className="helper-copy">
+                  开启后，客户端会在启动后和本地 libp2p 地址变化时，自动把最新地址声明发布到当前默认 gateway 目录。
+                </p>
+                <p className="helper-copy">
+                  当前生效值：{currentAutoReachabilityAnnounceEnabled ? "开启" : "关闭"}，TTL {currentReachabilityAnnounceTTLSeconds} 秒
+                </p>
+                <div className="panel-actions">
+                  <button
+                    className="primary-button"
+                    type="submit"
+                    disabled={busy || (
+                      autoReachabilityAnnounceEnabled === currentAutoReachabilityAnnounceEnabled &&
+                      Number.parseInt(reachabilityAnnounceTTLSeconds.trim(), 10) === currentReachabilityAnnounceTTLSeconds
+                    )}
+                  >
+                    保存目录发布设置
+                  </button>
+                </div>
+              </form>
+            </section>
             <GatewayManager
               items={gateways?.items || []}
               busy={busy}
@@ -346,6 +428,12 @@ export default function App() {
                 });
               }}
             />
+          </div>
+        ) : null}
+
+        {!loading && activeSection === "billing" ? (
+          <div className="section-stack">
+            <BillingManager walletSummary={walletSummary} shellBusy={busy} shellState={shellState} />
           </div>
         ) : null}
 

@@ -1,6 +1,23 @@
 export type ShellState = {
   currentURL: string;
+  currentViewerURL: string;
   currentRootSeedHash: string;
+  currentVisit?: {
+    visitID: string;
+    locator: string;
+    status: string;
+    startedAtUnix: number;
+    lastUpdatedAtUnix: number;
+    finishedAtUnix: number;
+    note: string;
+    totalUsedSatoshi: number;
+    totalReturnedSatoshi: number;
+    resolverUsedSatoshi: number;
+    reachabilityUsedSatoshi: number;
+    contentUsedSatoshi: number;
+    otherUsedSatoshi: number;
+    itemCount: number;
+  };
   userHomeSeedHash: string;
   settingsPageURL: string;
   settingsPreloadPath: string;

@@ -19,13 +19,13 @@
 
           <form id="address-form" class="address-form">
             <label class="address-box" for="address-input">
-              <span class="address-prefix">bitfs</span>
+              <span class="address-prefix">loc</span>
               <input
                 id="address-input"
                 class="address-input"
                 autocomplete="off"
                 spellcheck="false"
-                placeholder="输入 64 位 seed hash 或 bitfs://&lt;seed_hash&gt;"
+                placeholder="输入 bitfs:、node: 或 &lt;解析服务公钥&gt;:名字/route"
               />
             </label>
             <button id="open-button" class="primary-button" type="submit">打开</button>
@@ -134,6 +134,52 @@
 
                 <section class="compact-section">
                   <div class="section-head">
+                    <h3>访问账目</h3>
+                    <p id="visit-accounting-note">当前还没有访问账目。</p>
+                  </div>
+                  <dl class="compact-grid">
+                    <div class="compact-row">
+                      <dt>访问状态</dt>
+                      <dd id="visit-status">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>访问地址</dt>
+                      <dd id="visit-locator">-</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>实际已花费</dt>
+                      <dd id="visit-total-used">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>已退回</dt>
+                      <dd id="visit-total-returned">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>解析费</dt>
+                      <dd id="visit-resolver-used">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>地址查询费</dt>
+                      <dd id="visit-reachability-used">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>内容传输费</dt>
+                      <dd id="visit-content-used">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>其他费用</dt>
+                      <dd id="visit-other-used">0 sat</dd>
+                    </div>
+                    <div class="compact-row">
+                      <dt>账目笔数</dt>
+                      <dd id="visit-item-count">0</dd>
+                    </div>
+                  </dl>
+                  <div id="visit-bucket-list" class="visit-bucket-list"></div>
+                </section>
+
+                <section class="compact-section">
+                  <div class="section-head">
                     <h3>资源账单</h3>
                     <p id="resource-list-note">当前没有已规划资源。</p>
                   </div>
@@ -187,129 +233,6 @@
                   </dl>
                 </section>
 
-                <section class="compact-section">
-                  <div class="section-head">
-                    <h3>诊断</h3>
-                    <p id="wallet-diagnostic-note">这里会显示钱包摘要链路的关键诊断字段。</p>
-                  </div>
-                  <div class="compact-inline-actions">
-                    <button id="wallet-copy-diagnostics-button" class="secondary-button compact-action" type="button">复制诊断</button>
-                  </div>
-                  <dl class="compact-grid">
-                    <div class="compact-row">
-                      <dt>后端阶段</dt>
-                      <dd id="wallet-backend-phase">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>客户端 API</dt>
-                      <dd id="wallet-client-api-base">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>钱包链类型</dt>
-                      <dd id="wallet-chain-type">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>Guard Base</dt>
-                      <dd id="wallet-chain-base-url">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>摘要刷新</dt>
-                      <dd id="wallet-summary-updated-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>运行时启动</dt>
-                      <dd id="wallet-runtime-started-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>UTXO 同步时间</dt>
-                      <dd id="wallet-sync-updated-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>状态陈旧</dt>
-                      <dd id="wallet-sync-stale">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>陈旧原因</dt>
-                      <dd id="wallet-sync-stale-reason">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>UTXO 触发源</dt>
-                      <dd id="wallet-sync-trigger">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>UTXO 耗时</dt>
-                      <dd id="wallet-sync-duration">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>调度状态</dt>
-                      <dd id="wallet-sync-scheduler-status">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>调度中</dt>
-                      <dd id="wallet-sync-scheduler-in-flight">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>调度开始</dt>
-                      <dd id="wallet-sync-scheduler-started-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>调度结束</dt>
-                      <dd id="wallet-sync-scheduler-ended-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>调度错误</dt>
-                      <dd id="wallet-sync-scheduler-error">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>队列长度</dt>
-                      <dd id="chain-maint-queue-length">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>维护中</dt>
-                      <dd id="chain-maint-in-flight">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>维护任务</dt>
-                      <dd id="chain-maint-in-flight-task-type">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>任务开始</dt>
-                      <dd id="chain-maint-last-task-started-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>任务结束</dt>
-                      <dd id="chain-maint-last-task-ended-at">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>维护错误</dt>
-                      <dd id="chain-maint-last-error">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>同步轮次</dt>
-                      <dd id="wallet-sync-round-id">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>失败步骤</dt>
-                      <dd id="wallet-sync-failed-step">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>上游路径</dt>
-                      <dd id="wallet-sync-upstream-path">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>HTTP 状态</dt>
-                      <dd id="wallet-sync-http-status">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>链上余额错误</dt>
-                      <dd id="wallet-onchain-error">-</dd>
-                    </div>
-                    <div class="compact-row">
-                      <dt>UTXO 同步错误</dt>
-                      <dd id="wallet-sync-error">-</dd>
-                    </div>
-                  </dl>
-                </section>
               </div>
             </section>
           </div>

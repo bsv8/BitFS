@@ -627,6 +627,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		"listen.renew_threshold_seconds",
 		"listen.auto_renew_rounds",
 		"listen.tick_seconds",
+		"reachability.auto_announce_enabled",
+		"reachability.announce_ttl_seconds",
 	} {
 		if !hasKey[key] {
 			t.Fatalf("schema missing key: %s", key)
@@ -654,6 +656,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 			{"key":"listen.renew_threshold_seconds","value":77},
 			{"key":"listen.auto_renew_rounds","value":12345},
 			{"key":"listen.tick_seconds","value":9},
+			{"key":"reachability.auto_announce_enabled","value":false},
+			{"key":"reachability.announce_ttl_seconds","value":7200},
 			{"key":"scan.rescan_interval_seconds","value":120},
 			{"key":"seller.pricing.resale_discount_ratio","value":0.75}
 		]
@@ -680,6 +684,12 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	}
 	if rt.runIn.Listen.TickSeconds != 9 {
 		t.Fatalf("listen.tick_seconds not updated: %d", rt.runIn.Listen.TickSeconds)
+	}
+	if cfgBool(rt.runIn.Reachability.AutoAnnounceEnabled, true) {
+		t.Fatalf("reachability.auto_announce_enabled not updated: got=true want=false")
+	}
+	if rt.runIn.Reachability.AnnounceTTLSeconds != 7200 {
+		t.Fatalf("reachability.announce_ttl_seconds not updated: %d", rt.runIn.Reachability.AnnounceTTLSeconds)
 	}
 	if rt.runIn.Seller.Pricing.ResaleDiscountBPS != 7500 {
 		t.Fatalf("resale_discount_bps mismatch: got=%d want=7500", rt.runIn.Seller.Pricing.ResaleDiscountBPS)

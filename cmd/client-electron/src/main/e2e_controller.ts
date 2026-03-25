@@ -143,6 +143,7 @@ export class ElectronE2EController {
       user_data_dir: app.getPath("userData"),
       log_file_path: debugLogger.getLogFilePath(),
       current_url: runtime.currentURL,
+      current_viewer_url: runtime.currentViewerURL,
       current_root_seed_hash: runtime.currentRootSeedHash,
       client_api_base: runtime.clientAPIBase,
       viewer_preload_path: runtime.viewerPreloadPath,

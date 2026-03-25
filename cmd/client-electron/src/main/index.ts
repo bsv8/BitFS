@@ -9,6 +9,7 @@ import { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
 import { ElectronE2EController } from "./e2e_controller";
 import { registerShellIPC } from "./ipc_bridge";
+import type { LocatorVisitContext } from "./locator";
 import { isTrustedNavigationURL, isTrustedRequestURL } from "./navigation_guard";
 import { resolveShellAssetPaths } from "./shell_assets";
 
@@ -92,7 +93,19 @@ async function bootstrap(): Promise<void> {
     userDataDir: app.getPath("userData")
   });
   debugLogger.log("bootstrap", "supervisor_created", supervisor.snapshot());
-  runtime = new BitfsBrowserRuntime(supervisor.snapshot().apiBase, shellAssets.viewerPreloadPath);
+  runtime = new BitfsBrowserRuntime(supervisor.snapshot().apiBase, shellAssets.viewerPreloadPath, {
+    openNodeLocator: async (locator, visit) => {
+      return {
+        seedHash: await fetchSeedHashFromNodeRoute(locator.nodePubkeyHex, locator.route, visit)
+      };
+    },
+    openResolverLocator: async (locator, visit) => {
+      const targetPubkeyHex = await resolveLocatorName(locator.resolverPubkeyHex, locator.name, visit);
+      return {
+        seedHash: await fetchSeedHashFromNodeRoute(targetPubkeyHex, locator.route, visit)
+      };
+    }
+  });
   protocol.handle("bitfs", createBitfsProtocolHandler(runtime));
   debugLogger.log("bootstrap", "protocol_registered", {
     scheme: "bitfs"
@@ -209,6 +222,73 @@ void bootstrap().catch((error: unknown) => {
   console.error("electron bootstrap failed:", message);
   app.exit(1);
 });
+
+async function fetchSeedHashFromNodeRoute(targetPubkeyHex: string, route: string, visit?: LocatorVisitContext): Promise<string> {
+  const body = await postJSON("/api/v1/get", {
+    to: targetPubkeyHex,
+    route
+  }, visit);
+  if (!body.ok) {
+    throw new Error(String(body.message || body.error || "node locator get failed"));
+  }
+  const manifest = body.body_json as Record<string, unknown> | undefined;
+  const seedHash = String(manifest?.seed_hash || "").trim();
+  if (!/^[0-9a-f]{64}$/i.test(seedHash)) {
+    throw new Error("node locator get returned invalid seed hash");
+  }
+  return seedHash;
+}
+
+async function resolveLocatorName(resolverPubkeyHex: string, name: string, visit?: LocatorVisitContext): Promise<string> {
+  // 设计说明：
+  // - 壳只把 locator 翻译成“先名字解析，再 node get”的业务链；
+  // - 解析服务仍然是普通 node，真正的寻址与重试逻辑放在后端；
+  // - 这轮先把 resolve 查询协议接通，收费/注册协议后续继续补。
+  const body = await postJSON("/api/v1/resolvers/resolve", {
+    resolver_pubkey_hex: resolverPubkeyHex,
+    name
+  }, visit);
+  if (!body.ok) {
+    throw new Error(String(body.message || body.error || "resolver resolve failed"));
+  }
+  const targetPubkeyHex = String(body.target_pubkey_hex || "").trim().toLowerCase();
+  if (!/^(02|03)[0-9a-f]{64}$/i.test(targetPubkeyHex)) {
+    throw new Error("resolver resolve returned invalid target pubkey hex");
+  }
+  return targetPubkeyHex;
+}
+
+async function postJSON(pathname: string, payload: Record<string, unknown>, visit?: LocatorVisitContext): Promise<Record<string, unknown>> {
+  const response = await fetch(`${supervisor!.snapshot().apiBase}${pathname}`, {
+    method: "POST",
+    headers: buildVisitHeaders(visit),
+    body: JSON.stringify(payload)
+  });
+  const text = await response.text();
+  let body: Record<string, unknown> = {};
+  if (text.trim() !== "") {
+    body = JSON.parse(text) as Record<string, unknown>;
+  }
+  if (!response.ok) {
+    throw new Error(String(body.error || text || `request failed: ${response.status}`));
+  }
+  return body;
+}
+
+function buildVisitHeaders(visit?: LocatorVisitContext): Record<string, string> {
+  const headers: Record<string, string> = {
+    "content-type": "application/json"
+  };
+  const visitID = String(visit?.visitID || "").trim();
+  const visitLocator = String(visit?.visitLocator || "").trim();
+  if (visitID !== "") {
+    headers["X-BitFS-Visit-ID"] = visitID;
+  }
+  if (visitLocator !== "") {
+    headers["X-BitFS-Visit-Locator"] = visitLocator;
+  }
+  return headers;
+}
 
 type ElectronE2EConfig = {
   enabled: boolean;

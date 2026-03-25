@@ -306,6 +306,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			"billing_cycle_seconds":       info.BillingCycleSeconds,
 			"single_cycle_fee_satoshi":    info.SingleCycleFeeSatoshi,
 			"single_publish_fee_satoshi":  info.SinglePublishFeeSatoshi,
+			"single_query_fee_satoshi":    info.SingleQueryFeeSatoshi,
 			"renew_notify_before_seconds": info.RenewNotifyBeforeSeconds,
 			"minimum_pool_amount_satoshi": info.MinimumPoolAmountSatoshi,
 			"lock_blocks":                 info.LockBlocks,

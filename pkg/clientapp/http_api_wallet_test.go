@@ -38,6 +38,8 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 	srv := &httpAPIServer{db: db}
 
 	appendWalletFundFlow(db, walletFundFlowEntry{
+		VisitID:         "visit-a",
+		VisitLocator:    "node:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/movie",
 		FlowID:          "direct_pool:s1",
 		FlowType:        "direct_transfer_pool",
 		RefID:           "s1",
@@ -52,6 +54,8 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 		Payload:         map[string]any{"sequence": 1},
 	})
 	appendWalletFundFlow(db, walletFundFlowEntry{
+		VisitID:         "visit-a",
+		VisitLocator:    "node:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/movie",
 		FlowID:          "direct_pool:s1",
 		FlowType:        "direct_transfer_pool",
 		RefID:           "s1",
@@ -66,6 +70,8 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 		Payload:         map[string]any{"chunk_index": 0},
 	})
 	appendWalletFundFlow(db, walletFundFlowEntry{
+		VisitID:         "visit-b",
+		VisitLocator:    "bitfs:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		FlowID:          "fee_pool:fp1",
 		FlowType:        "fee_pool",
 		RefID:           "fp1",
@@ -80,7 +86,7 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 		Payload:         map[string]any{"status": "closed"},
 	})
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows?flow_type=direct_transfer_pool&limit=10&offset=0", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows?flow_type=direct_transfer_pool&visit_id=visit-a&limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
 	srv.handleWalletFundFlows(rec, req)
 	if rec.Code != http.StatusOK {
@@ -89,9 +95,11 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 	var list struct {
 		Total int `json:"total"`
 		Items []struct {
-			ID       int64           `json:"id"`
-			FlowType string          `json:"flow_type"`
-			Payload  json.RawMessage `json:"payload"`
+			ID           int64           `json:"id"`
+			VisitID      string          `json:"visit_id"`
+			VisitLocator string          `json:"visit_locator"`
+			FlowType     string          `json:"flow_type"`
+			Payload      json.RawMessage `json:"payload"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
@@ -105,6 +113,12 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 	}
 	if list.Items[0].FlowType != "direct_transfer_pool" || len(list.Items[0].Payload) == 0 {
 		t.Fatalf("unexpected list item: %+v", list.Items[0])
+	}
+	if list.Items[0].VisitID != "visit-a" {
+		t.Fatalf("visit_id mismatch: got=%q want=%q", list.Items[0].VisitID, "visit-a")
+	}
+	if list.Items[0].VisitLocator == "" {
+		t.Fatalf("visit_locator should not be empty")
 	}
 
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?id=999999", nil)
@@ -120,6 +134,19 @@ func TestHandleWalletFundFlows_ListAndDetail(t *testing.T) {
 	srv.handleWalletFundFlowDetail(detailRecOK, detailReqOK)
 	if detailRecOK.Code != http.StatusOK {
 		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRecOK.Code, http.StatusOK, detailRecOK.Body.String())
+	}
+	var detail struct {
+		VisitID      string `json:"visit_id"`
+		VisitLocator string `json:"visit_locator"`
+	}
+	if err := json.Unmarshal(detailRecOK.Body.Bytes(), &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail.VisitID != "visit-a" {
+		t.Fatalf("detail visit_id mismatch: got=%q want=%q", detail.VisitID, "visit-a")
+	}
+	if detail.VisitLocator == "" {
+		t.Fatalf("detail visit_locator should not be empty")
 	}
 }
 
@@ -555,5 +582,73 @@ func TestHandleWalletLedger_ListAndDetail(t *testing.T) {
 	srv.handleWalletLedgerDetail(detailRecOK, detailReqOK)
 	if detailRecOK.Code != http.StatusOK {
 		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRecOK.Code, http.StatusOK, detailRecOK.Body.String())
+	}
+}
+
+func TestInitIndexDB_MigrateLegacyWalletFundFlowsVisitColumns(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "legacy-client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE wallet_fund_flows(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at_unix INTEGER NOT NULL DEFAULT 0,
+		flow_id TEXT NOT NULL DEFAULT '',
+		flow_type TEXT NOT NULL DEFAULT '',
+		ref_id TEXT NOT NULL DEFAULT '',
+		stage TEXT NOT NULL DEFAULT '',
+		direction TEXT NOT NULL DEFAULT '',
+		purpose TEXT NOT NULL DEFAULT '',
+		amount_satoshi INTEGER NOT NULL DEFAULT 0,
+		used_satoshi INTEGER NOT NULL DEFAULT 0,
+		returned_satoshi INTEGER NOT NULL DEFAULT 0,
+		related_txid TEXT NOT NULL DEFAULT '',
+		note TEXT NOT NULL DEFAULT '',
+		payload_json TEXT NOT NULL DEFAULT '{}'
+	)`); err != nil {
+		t.Fatalf("create legacy wallet_fund_flows: %v", err)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB migrate legacy wallet_fund_flows: %v", err)
+	}
+
+	cols, err := tableColumns(db, "wallet_fund_flows")
+	if err != nil {
+		t.Fatalf("tableColumns wallet_fund_flows: %v", err)
+	}
+	if _, ok := cols["visit_id"]; !ok {
+		t.Fatalf("visit_id column should be added")
+	}
+	if _, ok := cols["visit_locator"]; !ok {
+		t.Fatalf("visit_locator column should be added")
+	}
+	if _, err := db.Exec(`INSERT INTO wallet_fund_flows(
+		created_at_unix,visit_id,visit_locator,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		time.Now().Unix(),
+		"visit-legacy",
+		"node:legacy/index",
+		"legacy-flow",
+		"fee_pool",
+		"legacy-ref",
+		"legacy-stage",
+		"out",
+		"node_reachability_query_fee",
+		-1,
+		1,
+		0,
+		"legacy-tx",
+		"legacy note",
+		`{"ok":true}`,
+	); err != nil {
+		t.Fatalf("insert migrated wallet_fund_flows: %v", err)
 	}
 }

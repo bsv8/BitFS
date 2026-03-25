@@ -68,9 +68,73 @@
     return out;
   }
 
+  function normalizeTarget(raw) {
+    const value = String(raw || "").trim();
+    if (!value) {
+      throw new Error("bitfs target is required");
+    }
+    return value;
+  }
+
+  function normalizeRoute(raw, allowEmpty) {
+    const value = String(raw || "").trim();
+    if (!value && !allowEmpty) {
+      throw new Error("bitfs route is required");
+    }
+    return value;
+  }
+
+  function normalizePostInput(input) {
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error("post payload is required");
+    }
+    const payload = {
+      to: normalizeTarget(input.to),
+      route: normalizeRoute(input.route, false),
+      content_type: String(input.contentType || input.content_type || "").trim()
+    };
+    if (!payload.content_type) {
+      throw new Error("bitfs contentType is required");
+    }
+    if (input.body instanceof Uint8Array) {
+      payload.body_base64 = Buffer.from(input.body).toString("base64");
+      return payload;
+    }
+    if (input.body instanceof ArrayBuffer) {
+      payload.body_base64 = Buffer.from(new Uint8Array(input.body)).toString("base64");
+      return payload;
+    }
+    if (input.body != null) {
+      payload.body = input.body;
+    }
+    return payload;
+  }
+
+  function normalizeGetInput(input, maybeRoute) {
+    if (typeof input === "string") {
+      return {
+        to: normalizeTarget(input),
+        route: normalizeRoute(maybeRoute, true)
+      };
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      throw new Error("get payload is required");
+    }
+    return {
+      to: normalizeTarget(input.to),
+      route: normalizeRoute(input.route, true)
+    };
+  }
+
   const bitfsBridge = {
     version: "0.1.0",
     trustedProtocol: "bitfs://",
+    async post(input) {
+      return ipcRenderer.invoke("bitfs-viewer:post", normalizePostInput(input));
+    },
+    async get(input, maybeRoute) {
+      return ipcRenderer.invoke("bitfs-viewer:get", normalizeGetInput(input, maybeRoute));
+    },
     navigation: {
       open(raw) {
         window.location.assign(resolveBitfsRef(raw));
