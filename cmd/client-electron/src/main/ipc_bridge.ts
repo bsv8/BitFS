@@ -6,6 +6,7 @@ import type { BitfsBrowserRuntime } from "./browser_runtime";
 import type { BrowserSettingsStore } from "./browser_settings";
 import type { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
+import type { ElectronE2EViewerPolicyStore } from "./e2e_controller";
 import type { BitfsPublicClientStatus, BitfsRuntimeEvent, KeyFileActionResult, ShellState } from "../shared/shell_contract";
 import type { ShellAssetPaths } from "./shell_assets";
 
@@ -14,7 +15,8 @@ export function registerShellIPC(
   runtime: BitfsBrowserRuntime,
   supervisor: ManagedClientSupervisor,
   settings: BrowserSettingsStore,
-  shellAssets: ShellAssetPaths
+  shellAssets: ShellAssetPaths,
+  e2eViewerPolicy?: ElectronE2EViewerPolicyStore | null
 ): void {
   const buildShellState = (): ShellState => {
     const runtimeState = runtime.snapshot();
@@ -182,6 +184,74 @@ export function registerShellIPC(
     });
     return runtime.listPublicWalletHistory(payload || {});
   });
+  ipcMain.handle("bitfs-viewer:wallet-sign-business", async (_event, payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }) => {
+    const normalized = normalizeViewerWalletBusinessRequest(payload);
+    debugLogger.log("ipc", "viewer_wallet_sign_business", {
+      signer_pubkey_hex: normalized.signer_pubkey_hex,
+      signed_envelope_bytes: estimateViewerWalletBusinessBytes(normalized)
+    });
+    const preview = await supervisor.requestManagedJSON<{
+      ok?: boolean;
+      code?: string;
+      message?: string;
+      preview?: {
+        can_sign?: boolean;
+        summary?: string;
+        detail_lines?: string[];
+        preview_hash?: string;
+        business_title?: string;
+        warning_level?: string;
+      };
+    }>({
+      method: "POST",
+      pathname: "/api/v1/wallet/business/preview",
+      body: normalized,
+      timeout_ms: 30_000,
+      headers: runtime.getCurrentVisitHeaders()
+    });
+    const previewBody = preview?.preview;
+    if (!preview || preview.ok !== true || !previewBody) {
+      return {
+        ok: false,
+        code: String(preview?.code || "PREVIEW_FAILED"),
+        message: String(preview?.message || "wallet business preview failed"),
+        preview: previewBody || null
+      };
+    }
+    const approved = await confirmViewerWalletBusiness(window, {
+      title: String(previewBody.business_title || "钱包签名请求"),
+      summary: String(previewBody.summary || ""),
+      detailLines: Array.isArray(previewBody.detail_lines) ? previewBody.detail_lines.map((item) => String(item || "")) : [],
+      canSign: Boolean(previewBody.can_sign),
+      warningLevel: String(previewBody.warning_level || "")
+    }, e2eViewerPolicy || null);
+    if (!approved) {
+      return {
+        ok: false,
+        code: "USER_DENIED",
+        message: "wallet signing denied",
+        preview: previewBody
+      };
+    }
+    if (!previewBody.can_sign) {
+      return {
+        ok: false,
+        code: "UNKNOWN_TEMPLATE",
+        message: "wallet business template not found",
+        preview: previewBody
+      };
+    }
+    return supervisor.requestManagedJSON({
+      method: "POST",
+      pathname: "/api/v1/wallet/business/sign",
+      body: {
+        ...normalized,
+        expected_preview_hash: String(previewBody.preview_hash || "")
+      },
+      timeout_ms: 30_000,
+      headers: runtime.getCurrentVisitHeaders()
+    });
+  });
   ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string }) => {
     const normalized = normalizeViewerPeerCallRequest(payload);
     debugLogger.log("ipc", "viewer_peer_call", {
@@ -191,7 +261,7 @@ export function registerShellIPC(
       has_body_json: Object.prototype.hasOwnProperty.call(normalized, "body"),
       has_body_base64: Object.prototype.hasOwnProperty.call(normalized, "body_base64")
     });
-    return confirmViewerPeerCall(window, normalized).then((approved) => {
+    return confirmViewerPeerCall(window, normalized, e2eViewerPolicy || null).then((approved) => {
       if (!approved) {
         debugLogger.log("ipc", "viewer_peer_call_denied", {
           to: normalized.to,
@@ -213,6 +283,7 @@ export function registerShellIPC(
         method: "POST",
         pathname: "/api/v1/call",
         body: normalized,
+        timeout_ms: 30_000,
         headers: runtime.getCurrentVisitHeaders()
       });
     });
@@ -490,13 +561,40 @@ function normalizeViewerLocatorResolveRequest(payload: { locator?: string }): { 
   return { locator };
 }
 
+function normalizeViewerWalletBusinessRequest(payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }): {
+  signer_pubkey_hex: string;
+  signed_envelope: unknown;
+} {
+  const signerPubkeyHex = String(payload?.signer_pubkey_hex || "").trim().toLowerCase();
+  if (signerPubkeyHex === "") {
+    throw new Error("signer_pubkey_hex is required");
+  }
+  if (!Object.prototype.hasOwnProperty.call(payload || {}, "signed_envelope")) {
+    throw new Error("signed_envelope is required");
+  }
+  return {
+    signer_pubkey_hex: signerPubkeyHex,
+    signed_envelope: payload?.signed_envelope
+  };
+}
+
 // 设计说明：
 // - peer.call 会让网页驱动本地身份向外部节点发消息，风险明显高于 locator.resolve；
 // - 这里先走壳弹框逐次确认，后续如果加侧栏策略，也可以复用同一摘要口径。
 async function confirmViewerPeerCall(
   window: BrowserWindow,
-  payload: { to: string; route: string; content_type: string; body?: unknown; body_base64?: string }
+  payload: { to: string; route: string; content_type: string; body?: unknown; body_base64?: string },
+  e2eViewerPolicy: ElectronE2EViewerPolicyStore | null
 ): Promise<boolean> {
+  const policy = e2eViewerPolicy?.snapshot();
+  if (policy?.auto_approve_peer_call) {
+    debugLogger.log("ipc", "viewer_peer_call_auto_approved", {
+      to: payload.to,
+      route: payload.route,
+      content_type: payload.content_type
+    });
+    return true;
+  }
   const detailLines = [
     `目标: ${payload.to}`,
     `路由: ${payload.route}`,
@@ -516,6 +614,34 @@ async function confirmViewerPeerCall(
   return result.response === 0;
 }
 
+async function confirmViewerWalletBusiness(
+  window: BrowserWindow,
+  payload: { title: string; summary: string; detailLines: string[]; canSign: boolean; warningLevel: string },
+  e2eViewerPolicy: ElectronE2EViewerPolicyStore | null
+): Promise<boolean> {
+  const canSign = payload.canSign;
+  const policy = e2eViewerPolicy?.snapshot();
+  if (policy?.auto_approve_wallet_business) {
+    debugLogger.log("ipc", "viewer_wallet_business_auto_approved", {
+      can_sign: canSign,
+      warning_level: payload.warningLevel,
+      title: payload.title
+    });
+    return canSign;
+  }
+  const result = await dialog.showMessageBox(window, {
+    type: canSign ? "question" : "warning",
+    buttons: canSign ? ["生成签名交易", "取消"] : ["关闭"],
+    defaultId: canSign ? 1 : 0,
+    cancelId: canSign ? 1 : 0,
+    noLink: true,
+    title: canSign ? "确认钱包签名请求" : "未知交易请求",
+    message: String(payload.summary || (canSign ? "页面请求钱包生成一笔签名交易。" : "未知交易请求，高度注意")),
+    detail: payload.detailLines.join("\n")
+  });
+  return canSign && result.response === 0;
+}
+
 function estimateViewerPeerCallBodyBytes(payload: { body?: unknown; body_base64?: string }): number {
   const bodyBase64 = String(payload.body_base64 || "").trim();
   if (bodyBase64 !== "") {
@@ -530,6 +656,17 @@ function estimateViewerPeerCallBodyBytes(payload: { body?: unknown; body_base64?
   }
   try {
     return Buffer.byteLength(JSON.stringify(payload.body ?? null), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function estimateViewerWalletBusinessBytes(payload: { signed_envelope?: unknown }): number {
+  if (!Object.prototype.hasOwnProperty.call(payload, "signed_envelope")) {
+    return 0;
+  }
+  try {
+    return Buffer.byteLength(JSON.stringify(payload.signed_envelope ?? null), "utf8");
   } catch {
     return 0;
   }

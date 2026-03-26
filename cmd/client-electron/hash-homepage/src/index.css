@@ -42,6 +42,11 @@ input {
   font: inherit;
 }
 
+button:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
 .sr-only {
   position: absolute;
   width: 1px;
@@ -300,13 +305,27 @@ input {
 }
 
 .address-panel,
+.domain-panel,
 .rules-panel {
   display: grid;
   gap: 16px;
 }
 
 .address-list,
+.domain-list,
 .rule-list {
+  display: grid;
+  gap: 14px;
+}
+
+.domain-register-panel,
+.domain-form,
+.domain-field,
+.domain-pricing-bar,
+.domain-pricing-grid,
+.domain-actions,
+.domain-result-card,
+.wallet-preview-lines {
   display: grid;
   gap: 14px;
 }
@@ -315,6 +334,120 @@ input {
   display: grid;
   gap: 12px;
   padding: 18px;
+}
+
+.domain-card {
+  display: grid;
+  gap: 10px;
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(91, 120, 147, 0.14);
+  background: linear-gradient(180deg, rgba(255, 253, 248, 0.96), rgba(244, 249, 252, 0.94));
+}
+
+.domain-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.domain-name {
+  color: var(--ink-strong);
+  font-size: 18px;
+}
+
+.domain-open-button {
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.domain-search-panel {
+  margin-top: 0;
+}
+
+.domain-register-panel {
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(91, 120, 147, 0.12);
+}
+
+.domain-pricing-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.domain-pricing-button,
+.domain-lock-button,
+.domain-submit-button {
+  min-height: 44px;
+}
+
+.domain-field span {
+  color: var(--ink-soft);
+  font-size: 14px;
+}
+
+.domain-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.domain-result-card {
+  padding: 18px;
+  border-radius: 22px;
+  border: 1px solid rgba(91, 120, 147, 0.14);
+  background: linear-gradient(180deg, rgba(255, 253, 248, 0.96), rgba(244, 249, 252, 0.94));
+}
+
+.wallet-preview-card.warning-high {
+  border-color: rgba(197, 69, 58, 0.18);
+  background: linear-gradient(180deg, rgba(255, 248, 246, 0.98), rgba(252, 244, 241, 0.96));
+}
+
+.register-actions {
+  margin-top: 4px;
+}
+
+.wallet-preview-lines {
+  gap: 8px;
+}
+
+.domain-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.domain-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.domain-status.status-available,
+.domain-status.status-ok {
+  color: var(--ok-ink);
+  background: var(--ok-bg);
+}
+
+.domain-status.status-registered,
+.domain-status.status-locked {
+  color: var(--warn-ink);
+  background: var(--warn-bg);
+}
+
+.domain-status.status-expired,
+.domain-status.status-bad_request {
+  color: var(--err-ink);
+  background: var(--err-bg);
 }
 
 .address-purpose {
@@ -446,6 +579,11 @@ input {
   }
 
   .summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .domain-pricing-grid,
+  .domain-actions {
     grid-template-columns: 1fr;
   }
 }

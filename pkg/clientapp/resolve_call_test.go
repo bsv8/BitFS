@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/bsv8/BFTP/pkg/nodesvc"
 )
 
 func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
@@ -28,7 +30,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 
 	senderRT := &Runtime{Host: senderHost, DB: senderDB}
 	receiverRT := &Runtime{Host: receiverHost, DB: receiverDB}
-	registerResolveCallHandlers(receiverRT)
+	registerNodeRouteHandlers(receiverRT)
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
@@ -43,11 +45,11 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := upsertPublishedRouteIndex(receiverDB, defaultClientResolveRoute, strings.Repeat("ab", 32)); err != nil {
+	if _, err := upsertPublishedRouteIndex(receiverDB, defaultNodeResolveRoute, strings.Repeat("ab", 32)); err != nil {
 		t.Fatalf("upsert route index: %v", err)
 	}
 
-	callOut, err := TriggerClientCall(context.Background(), senderRT, TriggerClientCallParams{
+	callOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
 		Route:       routeInboxMessage,
 		ContentType: "application/json",
@@ -73,7 +75,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected inbox row: sender=%s target=%s", gotSenderPubKeyHex, gotTargetInput)
 	}
 
-	resolveOut, err := TriggerClientResolve(context.Background(), senderRT, TriggerClientResolveParams{
+	resolveOut, err := TriggerPeerResolve(context.Background(), senderRT, TriggerPeerResolveParams{
 		To: receiverPubKeyHex,
 	})
 	if err != nil {
@@ -89,8 +91,21 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	if manifest.SeedHash != strings.Repeat("ab", 32) {
 		t.Fatalf("unexpected seed hash: %s", manifest.SeedHash)
 	}
-	if manifest.Route != defaultClientResolveRoute {
+	if manifest.Route != defaultNodeResolveRoute {
 		t.Fatalf("unexpected route: %s", manifest.Route)
+	}
+
+	capOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
+		To:          receiverPubKeyHex,
+		Route:       nodesvc.RouteNodeV1CapabilitiesShow,
+		ContentType: "application/json",
+		Body:        []byte(`{}`),
+	})
+	if err != nil {
+		t.Fatalf("capabilities_show failed: %v", err)
+	}
+	if !capOut.Ok {
+		t.Fatalf("capabilities_show response not ok: %+v", capOut)
 	}
 }
 
@@ -109,7 +124,7 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 
 	senderRT := &Runtime{Host: senderHost, DB: senderDB}
 	receiverRT := &Runtime{Host: receiverHost, DB: receiverDB}
-	registerResolveCallHandlers(receiverRT)
+	registerNodeRouteHandlers(receiverRT)
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 

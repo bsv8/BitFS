@@ -987,7 +987,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
-	registerResolveCallHandlers(rt)
+	registerNodeRouteHandlers(rt)
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
@@ -4136,6 +4136,20 @@ func arbSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
 }
 func clientSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
 	return p2prpc.SecurityConfig{Domain: "bitcast-client", Network: "test", TTL: 30 * time.Second, Trace: trace}
+}
+func nodeSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
+	return p2prpc.SecurityConfig{Domain: "bitfs-node", Network: "test", TTL: 30 * time.Second, Trace: trace}
+}
+func nodeSecForRuntime(rt *Runtime) p2prpc.SecurityConfig {
+	network := "test"
+	trace := p2prpc.TraceSink(nil)
+	if rt != nil {
+		trace = rt.rpcTrace
+		if strings.TrimSpace(rt.runIn.BSV.Network) != "" {
+			network = strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network))
+		}
+	}
+	return p2prpc.SecurityConfig{Domain: "bitfs-node", Network: network, TTL: 30 * time.Second, Trace: trace}
 }
 
 func parseAddr(full string) (*peer.AddrInfo, error) {

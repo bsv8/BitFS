@@ -113,19 +113,3 @@ func (*liveQuoteSubmitReq) ProtoMessage()    {}
 func (m *liveQuoteSubmitResp) Reset()         { *m = liveQuoteSubmitResp{} }
 func (m *liveQuoteSubmitResp) String() string { return oldproto.CompactTextString(m) }
 func (*liveQuoteSubmitResp) ProtoMessage()    {}
-
-func (m *callReq) Reset()         { *m = callReq{} }
-func (m *callReq) String() string { return oldproto.CompactTextString(m) }
-func (*callReq) ProtoMessage()    {}
-
-func (m *callResp) Reset()         { *m = callResp{} }
-func (m *callResp) String() string { return oldproto.CompactTextString(m) }
-func (*callResp) ProtoMessage()    {}
-
-func (m *resolveReq) Reset()         { *m = resolveReq{} }
-func (m *resolveReq) String() string { return oldproto.CompactTextString(m) }
-func (*resolveReq) ProtoMessage()    {}
-
-func (m *resolveResp) Reset()         { *m = resolveResp{} }
-func (m *resolveResp) String() string { return oldproto.CompactTextString(m) }
-func (*resolveResp) ProtoMessage()    {}

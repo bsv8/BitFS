@@ -7,7 +7,7 @@ import { BitfsBrowserRuntime } from "./browser_runtime";
 import { createBitfsProtocolHandler } from "./bitfs_protocol";
 import { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
-import { ElectronE2EController } from "./e2e_controller";
+import { ElectronE2EController, ElectronE2EViewerPolicyStore } from "./e2e_controller";
 import { registerShellIPC } from "./ipc_bridge";
 import type { LocatorVisitContext } from "./locator";
 import { isTrustedNavigationURL, isTrustedRequestURL } from "./navigation_guard";
@@ -21,6 +21,7 @@ let runtime: BitfsBrowserRuntime | null = null;
 let supervisor: ManagedClientSupervisor | null = null;
 let settings: BrowserSettingsStore | null = null;
 let e2eController: ElectronE2EController | null = null;
+const e2eViewerPolicy = e2eConfig.enabled ? new ElectronE2EViewerPolicyStore() : null;
 
 applyEarlyAppConfig();
 
@@ -120,7 +121,7 @@ async function bootstrap(): Promise<void> {
       }
       mainWindowCreated = false;
     });
-    registerShellIPC(window, runtime, supervisor, settings, shellAssets);
+    registerShellIPC(window, runtime, supervisor, settings, shellAssets, e2eViewerPolicy);
     mainWindowCreated = true;
     debugLogger.log("bootstrap", "main_window_created", {
       window_id: window.id
@@ -132,7 +133,8 @@ async function bootstrap(): Promise<void> {
       supervisor,
       settings,
       getWindow: () => mainWindow,
-      cdpPort: e2eConfig.cdpPort
+      cdpPort: e2eConfig.cdpPort,
+      viewerPolicy: e2eViewerPolicy || new ElectronE2EViewerPolicyStore()
     });
     await e2eController.start(e2eConfig.controlPort);
   }
@@ -208,7 +210,7 @@ app.on("activate", () => {
     }
     mainWindowCreated = false;
   });
-  registerShellIPC(window, runtime, supervisor, settings, shellAssets);
+  registerShellIPC(window, runtime, supervisor, settings, shellAssets, e2eViewerPolicy);
   mainWindowCreated = true;
   debugLogger.log("bootstrap", "main_window_recreated", {
     window_id: window.id

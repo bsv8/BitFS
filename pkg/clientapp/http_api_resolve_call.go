@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/bsv8/BFTP/pkg/nodesvc"
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 type apiRouteCallRequest struct {
@@ -37,7 +40,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	resp, err := TriggerClientCall(r.Context(), s.rt, TriggerClientCallParams{
+	resp, err := TriggerPeerCall(r.Context(), s.rt, TriggerPeerCallParams{
 		To:          req.To,
 		Route:       req.Route,
 		ContentType: req.ContentType,
@@ -47,7 +50,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, routeCallHTTPResponse(resp.Ok, resp.Code, resp.Message, resp.ContentType, resp.Body))
+	writeJSON(w, http.StatusOK, routeCallHTTPResponse(resp.Ok, resp.Code, resp.Message, resp.ContentType, resp.Body, routeCallPaymentHTTPExtras(resp)))
 }
 
 func (s *httpAPIServer) handleResolve(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +70,7 @@ func (s *httpAPIServer) handleResolve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerClientResolve(r.Context(), s.rt, TriggerClientResolveParams{To: req.To, Route: req.Route})
+	resp, err := TriggerPeerResolve(r.Context(), s.rt, TriggerPeerResolveParams{To: req.To, Route: req.Route})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -256,7 +259,7 @@ func decodeRouteCallBody(raw json.RawMessage, bodyBase64 string) ([]byte, error)
 	return append([]byte(nil), raw...), nil
 }
 
-func routeCallHTTPResponse(ok bool, code, message, contentType string, body []byte) map[string]any {
+func routeCallHTTPResponse(ok bool, code, message, contentType string, body []byte, extras ...func(map[string]any)) map[string]any {
 	out := map[string]any{
 		"ok":      ok,
 		"code":    strings.TrimSpace(code),
@@ -266,7 +269,32 @@ func routeCallHTTPResponse(ok bool, code, message, contentType string, body []by
 		out["content_type"] = strings.TrimSpace(contentType)
 	}
 	attachHTTPBodyPayload(out, contentType, body)
+	for _, extra := range extras {
+		if extra != nil {
+			extra(out)
+		}
+	}
 	return out
+}
+
+func routeCallPaymentHTTPExtras(resp nodesvc.CallResp) func(map[string]any) {
+	return func(out map[string]any) {
+		if len(resp.PaymentOptions) > 0 {
+			out["payment_options"] = resp.PaymentOptions
+		}
+		if strings.TrimSpace(resp.PaymentReceiptScheme) != "" {
+			out["payment_receipt_scheme"] = strings.TrimSpace(resp.PaymentReceiptScheme)
+		}
+		if len(resp.PaymentReceipt) > 0 {
+			out["payment_receipt_base64"] = base64.StdEncoding.EncodeToString(resp.PaymentReceipt)
+			if strings.TrimSpace(resp.PaymentReceiptScheme) == nodesvc.PaymentSchemePool2of2V1 {
+				var receipt nodesvc.FeePool2of2Receipt
+				if err := oldproto.Unmarshal(resp.PaymentReceipt, &receipt); err == nil {
+					out["payment_receipt"] = receipt
+				}
+			}
+		}
+	}
 }
 
 func attachHTTPBodyPayload(out map[string]any, contentType string, body []byte) {

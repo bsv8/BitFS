@@ -35,3 +35,4 @@ cmd/client/web/assets/
 cmd/client/web/index.html
 david-docs/
 cmd/client/web-src/node_modules/
+cmd/client-electron/hash-e2e-domain-register/dist-hash/

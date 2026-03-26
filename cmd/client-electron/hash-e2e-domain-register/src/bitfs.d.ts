@@ -215,6 +215,16 @@ type BitfsDomainRegisterSubmitResponse = {
   error_message?: string;
 };
 
+type BitfsDomainResolveResponse = {
+  success: boolean;
+  status: string;
+  name?: string;
+  target_pubkey_hex?: string;
+  expire_at_unix?: number;
+  error?: string;
+  message?: string;
+};
+
 type BitfsBridge = {
   trustedProtocol: "bitfs://";
   navigation: {

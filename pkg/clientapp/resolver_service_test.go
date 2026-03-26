@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/domainsvc"
+	"github.com/bsv8/BFTP/pkg/nodesvc"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
 	"github.com/libp2p/go-libp2p/core/host"
 )
@@ -32,7 +33,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	callerRT := &Runtime{Host: callerHost, DB: callerDB}
 	targetRT := &Runtime{Host: targetHost, DB: targetDB}
 	registerFakeDomainResolveHandler(resolverHost, "mp3.david", targetPubkeyHex, time.Now().Add(time.Hour).Unix())
-	registerResolveCallHandlers(targetRT)
+	registerNodeRouteHandlers(targetRT)
 
 	callerHost.Peerstore().AddAddrs(resolverHost.ID(), resolverHost.Addrs(), time.Minute)
 	callerHost.Peerstore().AddAddrs(targetHost.ID(), targetHost.Addrs(), time.Minute)
@@ -63,7 +64,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected resolver response: %+v", resolveResp)
 	}
 
-	resolveRespFromTarget, err := TriggerClientResolve(context.Background(), callerRT, TriggerClientResolveParams{
+	resolveRespFromTarget, err := TriggerPeerResolve(context.Background(), callerRT, TriggerPeerResolveParams{
 		To:    resolveResp.TargetPubkeyHex,
 		Route: "album",
 	})
@@ -113,24 +114,41 @@ func TestHTTPAPIResolverResolve(t *testing.T) {
 }
 
 func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPubkeyHex string, expireAtUnix int64) {
-	p2prpc.HandleProto[domainsvc.ResolveNamePaidReq, domainsvc.ResolveNamePaidResp](h, domainsvc.ProtoResolveNamePaid, p2prpc.SecurityConfig{
-		Domain:  "bitcast-domain",
+	nodesvc.Register(h, p2prpc.SecurityConfig{
+		Domain:  "bitfs-node",
 		Network: "test",
 		TTL:     30 * time.Second,
-	}, func(_ context.Context, req domainsvc.ResolveNamePaidReq) (domainsvc.ResolveNamePaidResp, error) {
-		name, err := normalizeResolverNameCanonical(req.Name)
+	}, func(_ context.Context, _ nodesvc.CallContext, req nodesvc.CallReq) (nodesvc.CallResp, error) {
+		if strings.TrimSpace(req.Route) != domainsvc.RouteDomainV1Resolve {
+			return nodesvc.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(req.Body, &body); err != nil {
+			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: "invalid json body"}, nil
+		}
+		name, err := normalizeResolverNameCanonical(body.Name)
 		if err != nil {
-			return domainsvc.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()}, nil
+			raw, _ := json.Marshal(domainsvc.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
+			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: "application/json", Body: raw}, nil
 		}
+		var routeResp domainsvc.ResolveNamePaidResp
 		if name != expectedName {
-			return domainsvc.ResolveNamePaidResp{Success: false, Status: "not_found", Name: name, Error: "domain name not found"}, nil
+			routeResp = domainsvc.ResolveNamePaidResp{Success: false, Status: "not_found", Name: name, Error: "domain name not found"}
+		} else {
+			routeResp = domainsvc.ResolveNamePaidResp{
+				Success:         true,
+				Status:          "ok",
+				Name:            name,
+				TargetPubkeyHex: targetPubkeyHex,
+				ExpireAtUnix:    expireAtUnix,
+			}
 		}
-		return domainsvc.ResolveNamePaidResp{
-			Success:         true,
-			Status:          "ok",
-			Name:            name,
-			TargetPubkeyHex: targetPubkeyHex,
-			ExpireAtUnix:    expireAtUnix,
-		}, nil
-	})
+		raw, err := json.Marshal(routeResp)
+		if err != nil {
+			return nodesvc.CallResp{}, err
+		}
+		return nodesvc.CallResp{Ok: true, Code: "OK", ContentType: "application/json", Body: raw}, nil
+	}, nil)
 }

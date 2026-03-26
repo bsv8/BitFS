@@ -154,6 +154,13 @@ type domainRegisterQuote struct {
 	TermSeconds              uint64
 }
 
+type builtDomainRegisterTx struct {
+	RawTx           []byte
+	TxID            string
+	MinerFeeSatoshi uint64
+	ChangeSatoshi   uint64
+}
+
 // domain 相关 trigger 的收费边界说明：
 // - resolve/query/register_lock/set_target 这类请求，都是在已有 2of2 费用池会话上推进一次 PayConfirm；
 // - 只有 register_submit 会把客户端本地构造好的独立注册交易交给 domain 去广播；
@@ -958,19 +965,27 @@ func verifyRegisterQuote(resolverPubkeyHex string, raw []byte) (domainRegisterQu
 }
 
 func buildDomainRegisterTx(rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) ([]byte, string, error) {
-	if rt == nil || rt.ActionChain == nil {
-		return nil, "", fmt.Errorf("runtime chain not initialized")
-	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	built, err := buildDomainRegisterTxDetailed(rt, signedQuoteJSON, quote)
 	if err != nil {
 		return nil, "", err
 	}
+	return built.RawTx, built.TxID, nil
+}
+
+func buildDomainRegisterTxDetailed(rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) (builtDomainRegisterTx, error) {
+	if rt == nil || rt.ActionChain == nil {
+		return builtDomainRegisterTx{}, fmt.Errorf("runtime chain not initialized")
+	}
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	if err != nil {
+		return builtDomainRegisterTx{}, err
+	}
 	utxos, err := getWalletUTXOsFromDB(rt)
 	if err != nil {
-		return nil, "", fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}
 	if len(utxos) == 0 {
-		return nil, "", fmt.Errorf("no utxos for client wallet")
+		return builtDomainRegisterTx{}, fmt.Errorf("no utxos for client wallet")
 	}
 	sort.Slice(utxos, func(i, j int) bool {
 		if utxos[i].Value == utxos[j].Value {
@@ -984,55 +999,63 @@ func buildDomainRegisterTx(rt *Runtime, signedQuoteJSON []byte, quote domainRegi
 	selected := make([]dual2of2.UTXO, 0, len(utxos))
 	for _, u := range utxos {
 		selected = append(selected, u)
-		rawTx, txID, buildErr := buildDomainRegisterTxWithUTXOs(clientActor, selected, quote.PayToAddress, quote.TotalPaySatoshi, signedQuoteJSON)
+		built, buildErr := buildDomainRegisterTxWithUTXOsDetailed(clientActor, selected, quote.PayToAddress, quote.TotalPaySatoshi, signedQuoteJSON)
 		if buildErr == nil {
-			return rawTx, txID, nil
+			return built, nil
 		}
 		if !strings.Contains(strings.ToLower(buildErr.Error()), "insufficient selected utxos") {
-			return nil, "", buildErr
+			return builtDomainRegisterTx{}, buildErr
 		}
 	}
-	return nil, "", fmt.Errorf("insufficient wallet utxos for register payment")
+	return builtDomainRegisterTx{}, fmt.Errorf("insufficient wallet utxos for register payment")
 }
 
 func buildDomainRegisterTxWithUTXOs(actor *dual2of2.Actor, selected []dual2of2.UTXO, payToAddress string, payAmount uint64, signedQuoteJSON []byte) ([]byte, string, error) {
+	built, err := buildDomainRegisterTxWithUTXOsDetailed(actor, selected, payToAddress, payAmount, signedQuoteJSON)
+	if err != nil {
+		return nil, "", err
+	}
+	return built.RawTx, built.TxID, nil
+}
+
+func buildDomainRegisterTxWithUTXOsDetailed(actor *dual2of2.Actor, selected []dual2of2.UTXO, payToAddress string, payAmount uint64, signedQuoteJSON []byte) (builtDomainRegisterTx, error) {
 	if actor == nil {
-		return nil, "", fmt.Errorf("client actor not initialized")
+		return builtDomainRegisterTx{}, fmt.Errorf("client actor not initialized")
 	}
 	if len(selected) == 0 {
-		return nil, "", fmt.Errorf("selected utxos is empty")
+		return builtDomainRegisterTx{}, fmt.Errorf("selected utxos is empty")
 	}
 	if payAmount == 0 {
-		return nil, "", fmt.Errorf("register payment amount is zero")
+		return builtDomainRegisterTx{}, fmt.Errorf("register payment amount is zero")
 	}
 	clientAddr, err := script.NewAddressFromString(strings.TrimSpace(actor.Addr))
 	if err != nil {
-		return nil, "", fmt.Errorf("parse client address failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("parse client address failed: %w", err)
 	}
 	lockScript, err := p2pkh.Lock(clientAddr)
 	if err != nil {
-		return nil, "", fmt.Errorf("build client lock script failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("build client lock script failed: %w", err)
 	}
 	prevLockHex := hex.EncodeToString(lockScript.Bytes())
 	sigHash := sighash.Flag(sighash.ForkID | sighash.All)
 	unlockTpl, err := p2pkh.Unlock(actor.PrivKey, &sigHash)
 	if err != nil {
-		return nil, "", fmt.Errorf("build client unlock template failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("build client unlock template failed: %w", err)
 	}
 
 	total := sumUTXOValue(selected)
 	txBuilder := txsdk.NewTransaction()
 	for _, u := range selected {
 		if err := txBuilder.AddInputFrom(u.TxID, u.Vout, prevLockHex, u.Value, unlockTpl); err != nil {
-			return nil, "", fmt.Errorf("add register input failed: %w", err)
+			return builtDomainRegisterTx{}, fmt.Errorf("add register input failed: %w", err)
 		}
 	}
 	if err := txBuilder.PayToAddress(strings.TrimSpace(payToAddress), payAmount); err != nil {
-		return nil, "", fmt.Errorf("build register payment output failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("build register payment output failed: %w", err)
 	}
 	opReturnScript, err := domainsvc.BuildSignedEnvelopeOpReturnScript(signedQuoteJSON)
 	if err != nil {
-		return nil, "", fmt.Errorf("build register quote op_return failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("build register quote op_return failed: %w", err)
 	}
 	txBuilder.AddOutput(&txsdk.TransactionOutput{
 		Satoshis:      0,
@@ -1047,12 +1070,12 @@ func buildDomainRegisterTxWithUTXOs(actor *dual2of2.Actor, selected []dual2of2.U
 		})
 	}
 	if err := signP2PKHAllInputs(txBuilder, unlockTpl); err != nil {
-		return nil, "", fmt.Errorf("pre-sign register tx failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("pre-sign register tx failed: %w", err)
 	}
 	// 注册交易这里统一按 sat/KB 估算，不再把 0.5 这种费率误读成 sat/B。
 	fee := estimateMinerFeeSatPerKB(txBuilder.Size(), 0.5)
 	if total <= payAmount+fee {
-		return nil, "", fmt.Errorf("insufficient selected utxos for register tx fee: have=%d need=%d", total, payAmount+fee)
+		return builtDomainRegisterTx{}, fmt.Errorf("insufficient selected utxos for register tx fee: have=%d need=%d", total, payAmount+fee)
 	}
 	change := total - payAmount - fee
 	if hasChangeOutput {
@@ -1063,10 +1086,15 @@ func buildDomainRegisterTxWithUTXOs(actor *dual2of2.Actor, selected []dual2of2.U
 		}
 	}
 	if err := signP2PKHAllInputs(txBuilder, unlockTpl); err != nil {
-		return nil, "", fmt.Errorf("final-sign register tx failed: %w", err)
+		return builtDomainRegisterTx{}, fmt.Errorf("final-sign register tx failed: %w", err)
 	}
 	txID := strings.ToLower(strings.TrimSpace(txBuilder.TxID().String()))
-	return append([]byte(nil), txBuilder.Bytes()...), txID, nil
+	return builtDomainRegisterTx{
+		RawTx:           append([]byte(nil), txBuilder.Bytes()...),
+		TxID:            txID,
+		MinerFeeSatoshi: fee,
+		ChangeSatoshi:   change,
+	}, nil
 }
 
 func asStringField(v any) string {

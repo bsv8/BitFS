@@ -641,7 +641,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
     const info = await this.fetchJSON<Record<string, unknown>>("/api/v1/info");
     return {
       trusted_protocol: "bitfs://",
-      pubkey_hex: normalizeSeedHash(readStringField(info, "pubkey_hex", "client_pubkey_hex")),
+      pubkey_hex: normalizePubkeyHex(readStringField(info, "pubkey_hex", "client_pubkey_hex")),
       started_at_unix: readIntegerField(info, "started_at_unix"),
       seller_enabled: readBooleanField(info, "seller_enabled")
     };
@@ -662,7 +662,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
       this.fetchJSON<Record<string, unknown>>("/api/v1/info"),
       this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary")
     ]);
-    const pubkeyHex = normalizeSeedHash(readStringField(info, "pubkey_hex", "client_pubkey_hex"));
+    const pubkeyHex = normalizePubkeyHex(readStringField(info, "pubkey_hex", "client_pubkey_hex"));
     const walletAddress = readStringField(summary, "wallet_address");
     const addresses = walletAddress === ""
       ? []
@@ -1189,6 +1189,14 @@ export class BitfsBrowserRuntime extends EventEmitter {
 function normalizeSeedHash(raw: string): string {
   const value = String(raw || "").trim().toLowerCase();
   if (!/^[0-9a-f]{64}$/.test(value)) {
+    return "";
+  }
+  return value;
+}
+
+function normalizePubkeyHex(raw: string): string {
+  const value = String(raw || "").trim().toLowerCase();
+  if (!/^[0-9a-f]{66}$/.test(value)) {
     return "";
   }
   return value;

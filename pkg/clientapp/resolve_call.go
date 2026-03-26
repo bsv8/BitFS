@@ -9,55 +9,24 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/nodesvc"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
 	"github.com/libp2p/go-libp2p/core/peer"
-	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 const (
-	ProtoClientCall    protocol.ID = "/bsv-transfer/client/call/1.0.0"
-	ProtoClientResolve protocol.ID = "/bsv-transfer/client/resolve/1.0.0"
-
-	defaultClientResolveRoute = "index"
-	routeInboxMessage         = "inbox.message"
+	defaultNodeResolveRoute = "index"
+	routeInboxMessage       = "inbox.message"
 )
 
-type callReq struct {
-	To          string `protobuf:"bytes,1,opt,name=to,proto3" json:"to"`
-	Route       string `protobuf:"bytes,2,opt,name=route,proto3" json:"route"`
-	ContentType string `protobuf:"bytes,3,opt,name=content_type,json=contentType,proto3" json:"content_type"`
-	Body        []byte `protobuf:"bytes,4,opt,name=body,proto3" json:"body,omitempty"`
-}
-
-type callResp struct {
-	Ok          bool   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok"`
-	Code        string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
-	Message     string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	ContentType string `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
-	Body        []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
-}
-
-type resolveReq struct {
-	To    string `protobuf:"bytes,1,opt,name=to,proto3" json:"to"`
-	Route string `protobuf:"bytes,2,opt,name=route,proto3" json:"route,omitempty"`
-}
-
-type resolveResp struct {
-	Ok          bool   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok"`
-	Code        string `protobuf:"bytes,2,opt,name=code,proto3" json:"code,omitempty"`
-	Message     string `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	ContentType string `protobuf:"bytes,4,opt,name=content_type,json=contentType,proto3" json:"content_type,omitempty"`
-	Body        []byte `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`
-}
-
-type TriggerClientCallParams struct {
+type TriggerPeerCallParams struct {
 	To          string
 	Route       string
 	ContentType string
 	Body        []byte
 }
 
-type TriggerClientResolveParams struct {
+type TriggerPeerResolveParams struct {
 	To    string
 	Route string
 }
@@ -76,52 +45,43 @@ type routeIndexManifest struct {
 	UpdatedAtUnix       int64  `json:"updated_at_unix"`
 }
 
-// registerResolveCallHandlers 把节点级 resolve/call 能力挂到现有 client p2prpc 上。
+// registerNodeRouteHandlers 把节点级 route-call / route-resolve 能力挂到统一 node 协议上。
 // 设计说明：
-// - v1 只做“裸公钥可直连”的最小闭环，短名解析明确留空，避免伪解析；
-// - resolve 只返回资源声明（hash/元信息），不返回文件内容；
-// - call 先内建 inbox.message，其它 route 以后继续加，不先发明注册框架。
-func registerResolveCallHandlers(rt *Runtime) {
+// - bitfs.peer.call 未来会承接多支付协议，因此这里先统一“所有节点共用一个外壳”；
+// - client 自己目前只暴露 inbox.message、capabilities_show 与 route index resolve；
+// - 业务层 route 继续由各自服务挂载，壳不需要知道 domain/gateway 的细节。
+func registerNodeRouteHandlers(rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.DB == nil {
 		return
 	}
-	h := rt.Host
 	db := rt.DB
-	trace := rt.rpcTrace
-	p2prpc.HandleProto[callReq, callResp](h, ProtoClientCall, clientSec(trace), func(ctx context.Context, req callReq) (callResp, error) {
+	nodesvc.Register(rt.Host, nodeSecForRuntime(rt), func(ctx context.Context, meta nodesvc.CallContext, req nodesvc.CallReq) (nodesvc.CallResp, error) {
 		route, bad := normalizeCallRoute(req.Route)
 		if bad != "" {
-			return callResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
+			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		contentType, bad := normalizeContentType(req.ContentType)
 		if bad != "" {
-			return callResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
-		}
-		senderPubKeyHex, ok := p2prpc.SenderPubkeyHexFromContext(ctx)
-		if !ok {
-			return callResp{Ok: false, Code: "UNAUTHORIZED", Message: "sender identity missing"}, nil
-		}
-		messageID, ok := p2prpc.MessageIDFromContext(ctx)
-		if !ok {
-			return callResp{Ok: false, Code: "BAD_REQUEST", Message: "message id missing"}, nil
+			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		switch route {
+		case nodesvc.RouteNodeV1CapabilitiesShow:
+			return marshalNodeCallJSON(clientCapabilitiesShowBody(rt))
 		case routeInboxMessage:
-			return storeInboxMessage(db, messageID, senderPubKeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
+			return storeInboxMessage(db, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
-			return callResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+			return nodesvc.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-	})
-	p2prpc.HandleProto[resolveReq, resolveResp](h, ProtoClientResolve, clientSec(trace), func(_ context.Context, req resolveReq) (resolveResp, error) {
+	}, func(_ context.Context, req nodesvc.ResolveReq) (nodesvc.ResolveResp, error) {
 		route := normalizeResolveRoute(req.Route)
 		body, err := buildRouteIndexManifest(db, route)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return resolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
+				return nodesvc.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
 			}
-			return resolveResp{}, err
+			return nodesvc.ResolveResp{}, err
 		}
-		return resolveResp{
+		return nodesvc.ResolveResp{
 			Ok:          true,
 			Code:        "OK",
 			ContentType: "application/json",
@@ -130,8 +90,8 @@ func registerResolveCallHandlers(rt *Runtime) {
 	})
 }
 
-func TriggerClientCall(ctx context.Context, rt *Runtime, p TriggerClientCallParams) (callResp, error) {
-	var out callResp
+func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) (nodesvc.CallResp, error) {
+	var out nodesvc.CallResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
@@ -142,17 +102,28 @@ func TriggerClientCall(ctx context.Context, rt *Runtime, p TriggerClientCallPara
 	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
 		return out, err
 	}
-	err = p2prpc.CallProto(ctx, rt.Host, peerID, ProtoClientCall, clientSec(rt.rpcTrace), callReq{
+	req := nodesvc.CallReq{
 		To:          to,
 		Route:       strings.TrimSpace(p.Route),
 		ContentType: strings.TrimSpace(p.ContentType),
 		Body:        append([]byte(nil), p.Body...),
-	}, &out)
-	return out, err
+	}
+	out, err = callNodeRoute(ctx, rt, peerID, req)
+	if err != nil {
+		return out, err
+	}
+	if !isNodePaymentRequired(out) {
+		return out, nil
+	}
+	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentOptions)
+	if payErr != nil {
+		return nodesvc.CallResp{}, payErr
+	}
+	return paidOut, nil
 }
 
-func TriggerClientResolve(ctx context.Context, rt *Runtime, p TriggerClientResolveParams) (resolveResp, error) {
-	var out resolveResp
+func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolveParams) (nodesvc.ResolveResp, error) {
+	var out nodesvc.ResolveResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
@@ -163,30 +134,57 @@ func TriggerClientResolve(ctx context.Context, rt *Runtime, p TriggerClientResol
 	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
 		return out, err
 	}
-	err = p2prpc.CallProto(ctx, rt.Host, peerID, ProtoClientResolve, clientSec(rt.rpcTrace), resolveReq{
+	err = p2prpc.CallProto(ctx, rt.Host, peerID, nodesvc.ProtoNodeResolve, nodeSecForRuntime(rt), nodesvc.ResolveReq{
 		To:    to,
 		Route: normalizeResolveRoute(p.Route),
 	}, &out)
 	return out, err
 }
 
-func resolveClientTarget(raw string) (string, peer.ID, error) {
-	target := strings.TrimSpace(raw)
-	if target == "" {
-		return "", "", fmt.Errorf("target is required")
+func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req nodesvc.CallReq) (nodesvc.CallResp, error) {
+	var out nodesvc.CallResp
+	if err := p2prpc.CallProto(ctx, rt.Host, peerID, nodesvc.ProtoNodeCall, nodeSecForRuntime(rt), req, &out); err != nil {
+		return nodesvc.CallResp{}, err
 	}
-	if strings.HasSuffix(strings.ToLower(target), ".bsv") {
-		return "", "", fmt.Errorf("shortname resolver not implemented yet")
+	return out, nil
+}
+
+func clientCapabilitiesShowBody(rt *Runtime) nodesvc.CapabilitiesShowBody {
+	nodePubkeyHex := ""
+	if rt != nil && rt.runIn.ClientID != "" {
+		nodePubkeyHex = strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
 	}
-	pubKeyHex, err := normalizeCompressedPubKeyHex(target)
+	return nodesvc.CapabilitiesShowBody{
+		NodePubkeyHex: nodePubkeyHex,
+		Capabilities: []nodesvc.CapabilityItem{
+			{
+				ID:             "wallet",
+				Version:        1,
+				PaymentSchemes: []string{nodesvc.PaymentSchemePool2of2V1},
+			},
+			{
+				ID:      "bitfs",
+				Version: 1,
+			},
+		},
+	}
+}
+
+func marshalNodeCallJSON(v any) (nodesvc.CallResp, error) {
+	body, err := json.Marshal(v)
 	if err != nil {
-		return "", "", fmt.Errorf("target invalid: %w", err)
+		return nodesvc.CallResp{}, err
 	}
-	pid, err := dual2of2.PeerIDFromClientID(pubKeyHex)
-	if err != nil {
-		return "", "", err
-	}
-	return pubKeyHex, pid, nil
+	return nodesvc.CallResp{
+		Ok:          true,
+		Code:        "OK",
+		ContentType: "application/json",
+		Body:        body,
+	}, nil
+}
+
+func isNodePaymentRequired(resp nodesvc.CallResp) bool {
+	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") && len(resp.PaymentOptions) > 0
 }
 
 func normalizeCallRoute(raw string) (string, string) {
@@ -200,7 +198,7 @@ func normalizeCallRoute(raw string) (string, string) {
 func normalizeResolveRoute(raw string) string {
 	route := strings.TrimSpace(raw)
 	if route == "" {
-		return defaultClientResolveRoute
+		return defaultNodeResolveRoute
 	}
 	return route
 }
@@ -213,9 +211,9 @@ func normalizeContentType(raw string) (string, string) {
 	return contentType, ""
 }
 
-func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (callResp, error) {
+func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (nodesvc.CallResp, error) {
 	if db == nil {
-		return callResp{}, fmt.Errorf("db is nil")
+		return nodesvc.CallResp{}, fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
 	result, err := db.Exec(
@@ -241,16 +239,16 @@ func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, rout
 			strings.TrimSpace(messageID),
 		)
 		if scanErr := row.Scan(&inboxID, &now); scanErr != nil {
-			return callResp{}, scanErr
+			return nodesvc.CallResp{}, scanErr
 		}
 	default:
-		return callResp{}, err
+		return nodesvc.CallResp{}, err
 	}
 	ack, err := json.Marshal(inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
 	if err != nil {
-		return callResp{}, err
+		return nodesvc.CallResp{}, err
 	}
-	return callResp{
+	return nodesvc.CallResp{
 		Ok:          true,
 		Code:        "OK",
 		ContentType: "application/json",
@@ -258,52 +256,21 @@ func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, rout
 	}, nil
 }
 
-func buildRouteIndexManifest(db *sql.DB, route string) ([]byte, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+func resolveClientTarget(raw string) (string, peer.ID, error) {
+	target := strings.TrimSpace(raw)
+	if target == "" {
+		return "", "", fmt.Errorf("target is required")
 	}
-	var item routeIndexManifest
-	row := db.QueryRow(
-		`SELECT pri.route,pri.seed_hash,pri.updated_at_unix,COALESCE(s.recommended_file_name,''),COALESCE(s.mime_hint,''),COALESCE(s.file_size,0)
-		   FROM published_route_indexes pri
-		   LEFT JOIN seeds s ON s.seed_hash=pri.seed_hash
-		  WHERE pri.route=?`,
-		strings.TrimSpace(route),
-	)
-	if err := row.Scan(&item.Route, &item.SeedHash, &item.UpdatedAtUnix, &item.RecommendedFileName, &item.MIMEHint, &item.FileSize); err != nil {
-		return nil, err
+	if strings.HasSuffix(strings.ToLower(target), ".bsv") {
+		return "", "", fmt.Errorf("shortname resolver not implemented yet")
 	}
-	return json.Marshal(item)
-}
-
-func upsertPublishedRouteIndex(db *sql.DB, route, seedHash string) (int64, error) {
-	if db == nil {
-		return 0, fmt.Errorf("db is nil")
+	pubKeyHex, err := normalizeCompressedPubKeyHex(target)
+	if err != nil {
+		return "", "", fmt.Errorf("target invalid: %w", err)
 	}
-	route = strings.TrimSpace(route)
-	if route == "" {
-		return 0, fmt.Errorf("route is required")
+	pid, err := dual2of2.PeerIDFromClientID(pubKeyHex)
+	if err != nil {
+		return "", "", err
 	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return 0, fmt.Errorf("seed_hash is required")
-	}
-	var exists int
-	if err := db.QueryRow(`SELECT 1 FROM seeds WHERE seed_hash=? LIMIT 1`, seedHash).Scan(&exists); err != nil {
-		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("seed not found")
-		}
-		return 0, err
-	}
-	now := time.Now().Unix()
-	if _, err := db.Exec(
-		`INSERT INTO published_route_indexes(route,seed_hash,updated_at_unix) VALUES(?,?,?)
-		 ON CONFLICT(route) DO UPDATE SET seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
-		route,
-		seedHash,
-		now,
-	); err != nil {
-		return 0, err
-	}
-	return now, nil
+	return pubKeyHex, pid, nil
 }

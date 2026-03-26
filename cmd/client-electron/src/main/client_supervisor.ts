@@ -58,6 +58,7 @@ type ManagedJSONRequest = {
   pathname: string;
   body?: unknown;
   headers?: Record<string, string>;
+  timeout_ms?: number;
 };
 
 type StaticUploadRequest = {
@@ -277,7 +278,11 @@ export class ManagedClientSupervisor extends EventEmitter {
 
   async requestManagedJSON<T>(request: ManagedJSONRequest): Promise<T> {
     await this.ensureReachable();
-    return this.fetchJSON<T>(request.pathname, buildJSONRequestInit(request.method, request.body, request.headers));
+    return this.fetchJSON<T>(
+      request.pathname,
+      buildJSONRequestInit(request.method, request.body, request.headers),
+      Number(request.timeout_ms || 0)
+    );
   }
 
   async uploadStaticFile<T>(request: StaticUploadRequest): Promise<T> {
@@ -650,16 +655,17 @@ export class ManagedClientSupervisor extends EventEmitter {
     });
   }
 
-  private async fetchJSON<T>(pathname: string, init?: RequestInit): Promise<T> {
+  private async fetchJSON<T>(pathname: string, init?: RequestInit, timeoutMs = 3_000): Promise<T> {
     const target = `${this.launch.apiBase}${pathname}`;
     const method = String(init?.method || "GET");
     debugLogger.log("supervisor.http", "request", {
       method,
-      url: target
+      url: target,
+      timeout_ms: timeoutMs
     });
     const response = await fetch(target, {
       ...init,
-      signal: AbortSignal.timeout(3_000)
+      signal: AbortSignal.timeout(timeoutMs)
     });
     if (!response.ok) {
       const text = (await response.text()).trim();

@@ -12,6 +12,7 @@ type ElectronE2EControllerInit = {
   settings: BrowserSettingsStore;
   getWindow: () => BrowserWindow | null;
   cdpPort: number;
+  viewerPolicy: ElectronE2EViewerPolicyStore;
 };
 
 type e2eOpenHomeRequest = {
@@ -19,12 +20,50 @@ type e2eOpenHomeRequest = {
   persist?: boolean;
 };
 
+type e2eViewerPolicyPatch = {
+  auto_approve_peer_call?: boolean;
+  auto_approve_wallet_business?: boolean;
+};
+
+export type ElectronE2EViewerPolicySnapshot = {
+  auto_approve_peer_call: boolean;
+  auto_approve_wallet_business: boolean;
+};
+
+// ElectronE2EViewerPolicyStore 让 e2e 用例显式控制 viewer 权限弹框策略。
+// 设计说明：
+// - e2e 需要走真实 window.bitfs 链路，但原生对话框无法通过 CDP 稳定操作；
+// - 因此把“是否自动批准”做成 e2e 控制口可调策略，而不是在业务代码里硬编码跳过；
+// - 默认保持 false，避免 e2e 进程一启动就无条件放权。
+export class ElectronE2EViewerPolicyStore {
+  private autoApprovePeerCall = false;
+  private autoApproveWalletBusiness = false;
+
+  snapshot(): ElectronE2EViewerPolicySnapshot {
+    return {
+      auto_approve_peer_call: this.autoApprovePeerCall,
+      auto_approve_wallet_business: this.autoApproveWalletBusiness
+    };
+  }
+
+  applyPatch(patch: e2eViewerPolicyPatch): ElectronE2EViewerPolicySnapshot {
+    if (typeof patch.auto_approve_peer_call === "boolean") {
+      this.autoApprovePeerCall = patch.auto_approve_peer_call;
+    }
+    if (typeof patch.auto_approve_wallet_business === "boolean") {
+      this.autoApproveWalletBusiness = patch.auto_approve_wallet_business;
+    }
+    return this.snapshot();
+  }
+}
+
 export class ElectronE2EController {
   private readonly runtime: BitfsBrowserRuntime;
   private readonly supervisor: ManagedClientSupervisor;
   private readonly settings: BrowserSettingsStore;
   private readonly getWindow: () => BrowserWindow | null;
   private readonly cdpPort: number;
+  private readonly viewerPolicy: ElectronE2EViewerPolicyStore;
   private server: http.Server | null = null;
 
   constructor(init: ElectronE2EControllerInit) {
@@ -33,6 +72,7 @@ export class ElectronE2EController {
     this.settings = init.settings;
     this.getWindow = init.getWindow;
     this.cdpPort = init.cdpPort;
+    this.viewerPolicy = init.viewerPolicy;
   }
 
   async start(port: number): Promise<void> {
@@ -80,6 +120,18 @@ export class ElectronE2EController {
         this.writeJSON(res, 200, this.buildStatus());
         return;
       }
+      if (method === "GET" && url.pathname === "/e2e/wallet-summary") {
+        const summary = await this.supervisor.requestManagedJSON<Record<string, unknown>>({
+          method: "GET",
+          pathname: "/api/v1/wallet/summary",
+          timeout_ms: 5_000
+        });
+        this.writeJSON(res, 200, {
+          ok: true,
+          wallet_summary: summary
+        });
+        return;
+      }
       if (method === "POST" && url.pathname === "/e2e/unlock") {
         const body = await readJSONBody<{ password?: string }>(req);
         const state = await this.supervisor.unlock(String(body?.password || ""));
@@ -107,6 +159,24 @@ export class ElectronE2EController {
           ok: true,
           target_seed_hash: targetSeedHash,
           url: urlText,
+          status: this.buildStatus()
+        });
+        return;
+      }
+      if (method === "GET" && url.pathname === "/e2e/viewer-policy") {
+        this.writeJSON(res, 200, {
+          ok: true,
+          viewer_policy: this.viewerPolicy.snapshot()
+        });
+        return;
+      }
+      if (method === "POST" && url.pathname === "/e2e/viewer-policy") {
+        const body = await readJSONBody<e2eViewerPolicyPatch>(req);
+        const viewerPolicy = this.viewerPolicy.applyPatch(body || {});
+        debugLogger.log("e2e", "viewer_policy_updated", viewerPolicy);
+        this.writeJSON(res, 200, {
+          ok: true,
+          viewer_policy: viewerPolicy,
           status: this.buildStatus()
         });
         return;
@@ -150,6 +220,7 @@ export class ElectronE2EController {
       wallet_ready: backend.phase === "ready" && backend.unlocked,
       main_window_created: window !== null,
       main_window_visible: window ? window.isVisible() : false,
+      viewer_policy: this.viewerPolicy.snapshot(),
       backend,
       settings
     };
