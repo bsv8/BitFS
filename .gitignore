@@ -36,3 +36,4 @@ cmd/client/web/index.html
 david-docs/
 cmd/client/web-src/node_modules/
 cmd/client-electron/hash-e2e-domain-register/dist-hash/
+cmd/client-electron/hash-e2e-domain-locator-resolve/dist-hash/
