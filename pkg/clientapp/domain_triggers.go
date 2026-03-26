@@ -154,6 +154,11 @@ type domainRegisterQuote struct {
 	TermSeconds              uint64
 }
 
+// domain 相关 trigger 的收费边界说明：
+// - resolve/query/register_lock/set_target 这类请求，都是在已有 2of2 费用池会话上推进一次 PayConfirm；
+// - 只有 register_submit 会把客户端本地构造好的独立注册交易交给 domain 去广播；
+// - 因此读这组代码时，要把“费用池状态推进”和“独立注册交易广播”看成两件不同的事。
+
 // TriggerDomainRegisterName 通过 domain 系统完成“查询 -> 锁名 -> 本地构交易 -> 远端提交”。
 // 设计说明：
 // - 这里返回时，要么注册已经成功写链并拿到服务端回执，要么明确失败且不会偷偷广播；
@@ -1044,10 +1049,8 @@ func buildDomainRegisterTxWithUTXOs(actor *dual2of2.Actor, selected []dual2of2.U
 	if err := signP2PKHAllInputs(txBuilder, unlockTpl); err != nil {
 		return nil, "", fmt.Errorf("pre-sign register tx failed: %w", err)
 	}
-	fee := uint64(float64(txBuilder.Size()) / 1000.0 * 0.5)
-	if fee == 0 {
-		fee = 1
-	}
+	// 注册交易这里统一按 sat/KB 估算，不再把 0.5 这种费率误读成 sat/B。
+	fee := estimateMinerFeeSatPerKB(txBuilder.Size(), 0.5)
 	if total <= payAmount+fee {
 		return nil, "", fmt.Errorf("insufficient selected utxos for register tx fee: have=%d need=%d", total, payAmount+fee)
 	}

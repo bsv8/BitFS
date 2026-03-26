@@ -1231,7 +1231,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 	return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed after retries: %w", lastErr)
 }
 
-func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *dual2of2.Actor, selected []dual2of2.UTXO, target uint64, feeRate float64) ([]dual2of2.UTXO, string, error) {
+func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *dual2of2.Actor, selected []dual2of2.UTXO, target uint64, feeRateSatPerKB float64) ([]dual2of2.UTXO, string, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return nil, "", fmt.Errorf("runtime chain not initialized")
 	}
@@ -1286,10 +1286,8 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 	if err := signP2PKHAllInputs(splitTx, unlockTpl); err != nil {
 		return nil, "", fmt.Errorf("pre-sign split tx failed: %w", err)
 	}
-	fee := uint64(float64(splitTx.Size()) / 1000.0 * feeRate)
-	if fee == 0 {
-		fee = 1
-	}
+	// direct transfer 这里也统一按 sat/KB 估算，和 domain 注册交易保持同一口径。
+	fee := estimateMinerFeeSatPerKB(splitTx.Size(), feeRateSatPerKB)
 	if total <= target+fee {
 		return nil, "", fmt.Errorf("insufficient selected utxos for split fee: have=%d target=%d fee=%d", total, target, fee)
 	}

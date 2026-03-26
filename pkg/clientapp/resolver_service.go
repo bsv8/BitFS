@@ -37,8 +37,13 @@ type resolverResolveResp struct {
 // 设计说明：
 // - resolver 已经搬正为独立 domain 系统；
 // - BitFS client 不再承载本地 resolver 数据面，只保留调用入口。
+// - TriggerResolverResolve 自身也不直接广播独立交易，而是复用 domain 的 2of2 费用池会话推进一次付费解析。
 func registerResolverHandlers(_ *Runtime) {}
 
+// TriggerResolverResolve 走独立 domain 的付费解析入口。
+// 设计说明：
+// - 这里卖的是一次“解析服务”，而不是“锁名”或“注册写入”；
+// - 费用通过 domain 的 2of2 费用池推进，和 register_submit 的独立注册交易广播不是同一层语义。
 func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverResolveParams) (resolverResolveResp, error) {
 	var out resolverResolveResp
 	if rt == nil || rt.Host == nil {
