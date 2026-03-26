@@ -1151,6 +1151,9 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			}
 			return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed: %w", err)
 		}
+		if err := applyLocalBroadcastWalletTx(buyer, baseResp.Tx.Hex(), "direct_transfer_pool_open_base"); err != nil {
+			return directTransferPoolOpenResult{}, fmt.Errorf("project transfer pool base tx failed: %w", err)
+		}
 		buyer.setTriplePool(&triplePoolSession{
 			DemandID:         strings.TrimSpace(p.DemandID),
 			SessionID:        curSessionID,
@@ -1303,6 +1306,9 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 	splitTxID := strings.ToLower(strings.TrimSpace(broadcastTxID))
 	if splitTxID == "" {
 		splitTxID = localTxID
+	}
+	if err := applyLocalBroadcastWalletTx(rt, splitTx.Hex(), "direct_transfer_pool_split"); err != nil {
+		return nil, "", fmt.Errorf("project split tx failed: %w", err)
 	}
 	change := int64(total - target - fee)
 	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
@@ -1602,6 +1608,9 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	finalTxID, err := buyer.ActionChain.Broadcast(merged.Hex())
 	if err != nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("broadcast transfer pool final tx failed: %w", err)
+	}
+	if err := applyLocalBroadcastWalletTx(buyer, merged.Hex(), "direct_transfer_pool_close_final"); err != nil {
+		return directTransferPoolCloseResult{}, fmt.Errorf("project transfer pool final tx failed: %w", err)
 	}
 	session.FinalTxID = finalTxID
 	session.CurrentTxHex = merged.Hex()

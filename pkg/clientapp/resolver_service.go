@@ -2,19 +2,26 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv8/BFTP/pkg/domainsvc"
+	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/p2prpc"
+	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-const ProtoResolverResolve protocol.ID = "/bsv-transfer/client/resolver/resolve/1.0.0"
+const ProtoResolverResolve protocol.ID = domainsvc.ProtoResolveNamePaid
 
-type resolverResolveReq struct {
-	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name"`
+type TriggerResolverResolveParams struct {
+	ResolverPubkeyHex string
+	Name              string
 }
 
 type resolverResolveResp struct {
@@ -26,47 +33,11 @@ type resolverResolveResp struct {
 	UpdatedAtUnix   int64  `protobuf:"varint,6,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix,omitempty"`
 }
 
-type TriggerResolverResolveParams struct {
-	ResolverPubkeyHex string
-	Name              string
-}
-
-type resolverRecord struct {
-	Name            string `json:"name"`
-	TargetPubkeyHex string `json:"target_pubkey_hex"`
-	UpdatedAtUnix   int64  `json:"updated_at_unix"`
-}
-
-// registerResolverHandlers 注册“名字 -> 目标节点公钥”的最小解析协议。
+// registerResolverHandlers 现在保留为空壳。
 // 设计说明：
-// - 这层只负责身份解析，不负责 route、不负责 get/post，也不直接返回 seed；
-// - 解析服务本身仍是普通 node，寻址继续复用 node->gateway 目录能力；
-// - 注册/续费/删除协议后续再做，本轮先用本地表 + admin 口子承载 resolver 数据。
-func registerResolverHandlers(rt *Runtime) {
-	if rt == nil || rt.Host == nil || rt.DB == nil {
-		return
-	}
-	p2prpc.HandleProto[resolverResolveReq, resolverResolveResp](rt.Host, ProtoResolverResolve, clientSec(rt.rpcTrace), func(_ context.Context, req resolverResolveReq) (resolverResolveResp, error) {
-		name, err := normalizeResolverNameCanonical(req.Name)
-		if err != nil {
-			return resolverResolveResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
-		}
-		record, found, err := loadResolverRecord(rt.DB, name)
-		if err != nil {
-			return resolverResolveResp{}, err
-		}
-		if !found {
-			return resolverResolveResp{Ok: false, Code: "NOT_FOUND", Message: "resolver name not found"}, nil
-		}
-		return resolverResolveResp{
-			Ok:              true,
-			Code:            "OK",
-			Name:            record.Name,
-			TargetPubkeyHex: record.TargetPubkeyHex,
-			UpdatedAtUnix:   record.UpdatedAtUnix,
-		}, nil
-	})
-}
+// - resolver 已经搬正为独立 domain 系统；
+// - BitFS client 不再承载本地 resolver 数据面，只保留调用入口。
+func registerResolverHandlers(_ *Runtime) {}
 
 func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverResolveParams) (resolverResolveResp, error) {
 	var out resolverResolveResp
@@ -88,107 +59,160 @@ func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverR
 	if err := ensureTargetPeerReachable(ctx, rt, resolverPubkeyHex, resolverPeerID); err != nil {
 		return out, err
 	}
-	err = p2prpc.CallProto(ctx, rt.Host, resolverPeerID, ProtoResolverResolve, clientSec(rt.rpcTrace), resolverResolveReq{
+
+	// 单元测试常用最小 runtime 不会装配真实费用池；这条退路只服务包内测试。
+	if strings.TrimSpace(rt.runIn.ClientID) == "" || rt.ActionChain == nil {
+		return callResolverResolveDirect(ctx, rt, resolverPeerID, name)
+	}
+
+	info, gw, err := fetchDomainFeePoolInfo(ctx, rt, resolverPeerID)
+	if err != nil {
+		return out, err
+	}
+	charge := info.SingleQueryFeeSatoshi
+	if charge == 0 {
+		charge = 1
+	}
+
+	payMu := rt.feePoolPayMutex(gw.ID.String())
+	payMu.Lock()
+	defer payMu.Unlock()
+	if _, err := ensureDomainFeePoolSessionForChargeLocked(ctx, rt, gw, info, charge); err != nil {
+		return out, err
+	}
+
+	session, ok := rt.getFeePool(gw.ID.String())
+	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
+		return out, fmt.Errorf("fee pool session missing for resolver=%s", gw.ID.String())
+	}
+	resolverPub := rt.Host.Peerstore().PubKey(gw.ID)
+	if resolverPub == nil {
+		return out, fmt.Errorf("missing resolver pubkey")
+	}
+	raw, err := resolverPub.Raw()
+	if err != nil {
+		return out, err
+	}
+	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	if err != nil {
+		return out, err
+	}
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	if err != nil {
+		return out, err
+	}
+	nextSeq := session.Sequence + 1
+	nextServerAmount := session.ServerAmount + charge
+	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	if err != nil {
+		return out, err
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	if err != nil {
+		return out, err
+	}
+
+	var resp domainsvc.ResolveNamePaidResp
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, domainsvc.ProtoResolveNamePaid, domainSec(rt), domainsvc.ResolveNamePaidReq{
+		ClientID:            rt.runIn.ClientID,
+		Name:                name,
+		SpendTxID:           session.SpendTxID,
+		SequenceNumber:      nextSeq,
+		ServerAmount:        nextServerAmount,
+		ChargeAmountSatoshi: charge,
+		Fee:                 session.SpendTxFeeSat,
+		ClientSignature:     append([]byte(nil), (*clientSig)...),
+		ChargeReason:        "resolver_query_fee",
+	}, &resp); err != nil {
+		return out, err
+	}
+	if resp.Success {
+		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + session.SpendTxID,
+			FlowType:        "fee_pool",
+			RefID:           session.SpendTxID,
+			Stage:           "use_resolver_query",
+			Direction:       "out",
+			Purpose:         "resolver_query_fee",
+			AmountSatoshi:   -int64(charge),
+			UsedSatoshi:     int64(charge),
+			ReturnedSatoshi: 0,
+			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
+			Note:            fmt.Sprintf("resolver_pubkey_hex=%s name=%s", resolverPubkeyHex, name),
+			Payload:         resp,
+		})
+	}
+
+	out = resolverResolveResp{
+		Ok:              resp.Success,
+		Code:            strings.ToUpper(strings.TrimSpace(resp.Status)),
+		Message:         strings.TrimSpace(resp.Error),
+		Name:            strings.TrimSpace(resp.Name),
+		TargetPubkeyHex: strings.TrimSpace(resp.TargetPubkeyHex),
+		UpdatedAtUnix:   resp.ExpireAtUnix,
+	}
+	if out.Code == "" {
+		if out.Ok {
+			out.Code = "OK"
+		} else {
+			out.Code = "ERROR"
+		}
+	}
+	if out.Ok {
+		obs.Business("bitcast-client", "evt_trigger_domain_resolve_end", map[string]any{
+			"resolver_pubkey_hex":    resolverPubkeyHex,
+			"name":                   name,
+			"target_pubkey_hex":      out.TargetPubkeyHex,
+			"charged_amount_satoshi": charge,
+			"updated_txid":           strings.TrimSpace(resp.UpdatedTxID),
+		})
+	}
+	return out, nil
+}
+
+func fetchDomainFeePoolInfo(ctx context.Context, rt *Runtime, pid peer.ID) (dual2of2.InfoResp, peer.AddrInfo, error) {
+	var info dual2of2.InfoResp
+	gw := peer.AddrInfo{ID: pid, Addrs: rt.Host.Peerstore().Addrs(pid)}
+	if err := p2prpc.CallProto(ctx, rt.Host, pid, dual2of2.ProtoFeePoolInfo, domainSec(rt), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+		return dual2of2.InfoResp{}, peer.AddrInfo{}, err
+	}
+	return info, gw, nil
+}
+
+func callResolverResolveDirect(ctx context.Context, rt *Runtime, pid peer.ID, name string) (resolverResolveResp, error) {
+	var resp domainsvc.ResolveNamePaidResp
+	err := p2prpc.CallProto(ctx, rt.Host, pid, domainsvc.ProtoResolveNamePaid, domainSec(rt), domainsvc.ResolveNamePaidReq{
 		Name: name,
-	}, &out)
-	return out, err
+	}, &resp)
+	if err != nil {
+		return resolverResolveResp{}, err
+	}
+	return resolverResolveResp{
+		Ok:              resp.Success,
+		Code:            strings.ToUpper(strings.TrimSpace(resp.Status)),
+		Message:         strings.TrimSpace(resp.Error),
+		Name:            strings.TrimSpace(resp.Name),
+		TargetPubkeyHex: strings.TrimSpace(resp.TargetPubkeyHex),
+		UpdatedAtUnix:   resp.ExpireAtUnix,
+	}, nil
 }
 
 func normalizeResolverNameCanonical(raw string) (string, error) {
-	value := strings.TrimSpace(raw)
-	if value == "" {
-		return "", fmt.Errorf("resolver name is required")
+	value, err := domainsvc.NormalizeName(raw)
+	if err != nil {
+		return "", err
 	}
 	if strings.Contains(value, "/") {
 		return "", fmt.Errorf("resolver name must not contain /")
 	}
-	// 设计说明：
-	// - 这里先落最小公共子集：trim + lowercase；
-	// - ENS/ETH 完整规范化以后单独补，避免本轮把协议接口和规范细节绑死。
-	value = strings.ToLower(value)
 	return value, nil
 }
 
-func loadResolverRecord(db *sql.DB, name string) (resolverRecord, bool, error) {
-	if db == nil {
-		return resolverRecord{}, false, fmt.Errorf("db is nil")
+func domainSec(rt *Runtime) p2prpc.SecurityConfig {
+	network := "test"
+	if rt != nil && strings.TrimSpace(rt.runIn.BSV.Network) != "" {
+		network = strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network))
 	}
-	var out resolverRecord
-	err := db.QueryRow(
-		`SELECT name,target_pubkey_hex,updated_at_unix FROM resolver_name_records WHERE name=?`,
-		strings.TrimSpace(name),
-	).Scan(&out.Name, &out.TargetPubkeyHex, &out.UpdatedAtUnix)
-	if err == sql.ErrNoRows {
-		return resolverRecord{}, false, nil
-	}
-	if err != nil {
-		return resolverRecord{}, false, err
-	}
-	return out, true, nil
-}
-
-func listResolverRecords(db *sql.DB) ([]resolverRecord, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	rows, err := db.Query(`SELECT name,target_pubkey_hex,updated_at_unix FROM resolver_name_records ORDER BY updated_at_unix DESC,name ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]resolverRecord, 0)
-	for rows.Next() {
-		var item resolverRecord
-		if err := rows.Scan(&item.Name, &item.TargetPubkeyHex, &item.UpdatedAtUnix); err != nil {
-			return nil, err
-		}
-		items = append(items, item)
-	}
-	return items, rows.Err()
-}
-
-func upsertResolverRecord(db *sql.DB, rawName string, rawTargetPubkeyHex string) (resolverRecord, error) {
-	if db == nil {
-		return resolverRecord{}, fmt.Errorf("db is nil")
-	}
-	name, err := normalizeResolverNameCanonical(rawName)
-	if err != nil {
-		return resolverRecord{}, err
-	}
-	targetPubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(rawTargetPubkeyHex))
-	if err != nil {
-		return resolverRecord{}, fmt.Errorf("target_pubkey_hex invalid: %w", err)
-	}
-	nowUnix := time.Now().Unix()
-	_, err = db.Exec(
-		`INSERT INTO resolver_name_records(name,target_pubkey_hex,updated_at_unix) VALUES(?,?,?)
-		 ON CONFLICT(name) DO UPDATE SET
-		 	target_pubkey_hex=excluded.target_pubkey_hex,
-		 	updated_at_unix=excluded.updated_at_unix`,
-		name,
-		targetPubkeyHex,
-		nowUnix,
-	)
-	if err != nil {
-		return resolverRecord{}, err
-	}
-	return resolverRecord{
-		Name:            name,
-		TargetPubkeyHex: targetPubkeyHex,
-		UpdatedAtUnix:   nowUnix,
-	}, nil
-}
-
-func deleteResolverRecord(db *sql.DB, rawName string) (string, error) {
-	if db == nil {
-		return "", fmt.Errorf("db is nil")
-	}
-	name, err := normalizeResolverNameCanonical(rawName)
-	if err != nil {
-		return "", err
-	}
-	if _, err := db.Exec(`DELETE FROM resolver_name_records WHERE name=?`, name); err != nil {
-		return "", err
-	}
-	return name, nil
+	return p2prpc.SecurityConfig{Domain: "bitcast-domain", Network: network, TTL: 30 * time.Second, Trace: rt.rpcTrace}
 }

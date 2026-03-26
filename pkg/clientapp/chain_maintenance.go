@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bsv-blockchain/go-sdk/script"
+	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -58,6 +60,7 @@ type chainMaintainer struct {
 	pendingByType  map[string]bool
 	inFlightByType map[string]bool
 	status         chainSchedulerStatus
+	wg             sync.WaitGroup
 }
 
 type chainTipState struct {
@@ -224,11 +227,22 @@ func (m *chainMaintainer) start(ctx context.Context) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	go m.runScheduler(ctx)
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		m.runScheduler(ctx)
+	}()
 	m.runTipWorker(ctx)
 	m.runUTXOWorker(ctx)
 	m.enqueue(chainTaskTip, "startup")
 	m.enqueue(chainTaskUTXO, "startup")
+}
+
+func (m *chainMaintainer) Wait() {
+	if m == nil {
+		return
+	}
+	m.wg.Wait()
 }
 
 func (m *chainMaintainer) snapshotStatus() chainSchedulerStatus {
@@ -428,10 +442,16 @@ func (m *chainMaintainer) runTask(ctx context.Context, task chainTask) {
 	}
 	m.mu.Lock()
 	if err != nil {
-		m.status.TaskFailedCount++
-		m.status.LastError = err.Error()
-		entry.Status = "failed"
-		entry.ErrorMessage = err.Error()
+		if errors.Is(err, context.Canceled) {
+			entry.Status = "canceled"
+			entry.ErrorMessage = err.Error()
+			m.status.LastError = ""
+		} else {
+			m.status.TaskFailedCount++
+			m.status.LastError = err.Error()
+			entry.Status = "failed"
+			entry.ErrorMessage = err.Error()
+		}
 	} else {
 		m.status.TaskAppliedCount++
 		entry.Status = "success"
@@ -872,6 +892,14 @@ type liveWalletSnapshot struct {
 	OldestConfirmedHeight int64
 }
 
+type walletLocalBroadcastRow struct {
+	TxID           string
+	TxHex          string
+	CreatedAtUnix  int64
+	UpdatedAtUnix  int64
+	ObservedAtUnix int64
+}
+
 func getWalletChainStateClient(rt *Runtime) (walletChainClient, error) {
 	if rt == nil || rt.WalletChain == nil {
 		return nil, fmt.Errorf("runtime wallet chain not initialized")
@@ -901,6 +929,10 @@ func logWalletSyncStepError(meta walletSyncRoundMeta, step string, err error, fi
 		if status := walletSyncHTTPStatus(err); status > 0 {
 			payload["http_status"] = status
 		}
+	}
+	if errors.Is(err, context.Canceled) {
+		logWalletSyncStep(obs.LevelInfo, meta, step, payload)
+		return
 	}
 	logWalletSyncStep(obs.LevelError, meta, step, payload)
 }
@@ -1077,6 +1109,10 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 	if err != nil {
 		return err
 	}
+	localBroadcasts, err := loadWalletLocalBroadcastTxsTx(tx, walletID, address)
+	if err != nil {
+		return err
+	}
 	if _, err = tx.Exec(`UPDATE wallet_utxo SET state='spent',updated_at_unix=?,spent_at_unix=CASE WHEN spent_at_unix>0 THEN spent_at_unix ELSE ? END WHERE wallet_id=? AND address=? AND state<>'spent'`, updatedAt, updatedAt, walletID, address); err != nil {
 		return err
 	}
@@ -1136,6 +1172,14 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 			return err
 		}
 	}
+	observedLocalTxIDs := collectObservedWalletTxIDs(history, snapshot.ObservedMempoolTxs)
+	if err = overlayPendingLocalBroadcastsTx(tx, existing, walletID, address, scriptHex, localBroadcasts, observedLocalTxIDs, updatedAt); err != nil {
+		return err
+	}
+	if err = markObservedWalletLocalBroadcastTxsTx(tx, observedLocalTxIDs, updatedAt); err != nil {
+		return err
+	}
+	count, balance := summarizeWalletUTXOState(existing)
 
 	if _, err = tx.Exec(
 		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
@@ -1154,8 +1198,8 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 			last_upstream_path=excluded.last_upstream_path,
 			last_http_status=excluded.last_http_status`,
 		address, walletID,
-		snapshot.Count,
-		snapshot.Balance,
+		count,
+		balance,
 		updatedAt,
 		strings.TrimSpace(lastError),
 		"chain_utxo_worker",
@@ -1190,6 +1234,202 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 }
 
 func upsertWalletUTXORowTx(tx *sql.Tx, existing map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, updatedAt int64) error {
+	return upsertWalletUTXORowTxWithEvent(tx, existing, walletID, address, utxoID, txid, vout, value, state, spentTxID, updatedAt, "detected", "utxo detected by chain sync", map[string]any{"state": state})
+}
+
+func loadWalletLocalBroadcastTxsTx(tx *sql.Tx, walletID string, address string) ([]walletLocalBroadcastRow, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
+	rows, err := tx.Query(
+		`SELECT txid,tx_hex,created_at_unix,updated_at_unix,observed_at_unix
+		 FROM wallet_local_broadcast_txs
+		 WHERE wallet_id=? AND address=?
+		 ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`,
+		walletID,
+		address,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]walletLocalBroadcastRow, 0, 8)
+	for rows.Next() {
+		var row walletLocalBroadcastRow
+		if err := rows.Scan(&row.TxID, &row.TxHex, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.ObservedAtUnix); err != nil {
+			return nil, err
+		}
+		row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
+		row.TxHex = strings.ToLower(strings.TrimSpace(row.TxHex))
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func collectObservedWalletTxIDs(history []walletHistoryTxRecord, mempool []whatsonchain.TxDetail) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, item := range history {
+		txid := strings.ToLower(strings.TrimSpace(item.TxID))
+		if txid != "" {
+			out[txid] = struct{}{}
+		}
+	}
+	for _, item := range mempool {
+		txid := strings.ToLower(strings.TrimSpace(item.TxID))
+		if txid != "" {
+			out[txid] = struct{}{}
+		}
+	}
+	return out
+}
+
+func overlayPendingLocalBroadcastsTx(tx *sql.Tx, existing map[string]utxoStateRow, walletID string, address string, scriptHex string, rows []walletLocalBroadcastRow, observedTxIDs map[string]struct{}, updatedAt int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	ordered, err := orderWalletLocalBroadcastRows(rows)
+	if err != nil {
+		return err
+	}
+	for _, row := range ordered {
+		if row.ObservedAtUnix > 0 {
+			continue
+		}
+		if _, ok := observedTxIDs[row.TxID]; ok {
+			continue
+		}
+		parsed, err := txsdk.NewTransactionFromHex(row.TxHex)
+		if err != nil {
+			return fmt.Errorf("parse local broadcast tx %s failed: %w", row.TxID, err)
+		}
+		for _, in := range parsed.Inputs {
+			if in == nil || in.SourceTXID == nil {
+				continue
+			}
+			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
+			if err := setWalletUTXOSpentTxWithNote(tx, existing, utxoID, row.TxID, updatedAt, "local_pending_spent", "utxo preserved by local pending broadcast", map[string]any{
+				"txid": row.TxID,
+			}); err != nil {
+				return err
+			}
+		}
+		for idx, out := range parsed.Outputs {
+			if out == nil || out.LockingScript == nil {
+				continue
+			}
+			if strings.TrimSpace(strings.ToLower(hex.EncodeToString(out.LockingScript.Bytes()))) != scriptHex {
+				continue
+			}
+			utxoID := row.TxID + ":" + fmt.Sprint(idx)
+			if err := upsertWalletUTXORowTxWithEvent(tx, existing, walletID, address, utxoID, row.TxID, uint32(idx), out.Satoshis, "unspent", "", updatedAt, "local_pending_detected", "utxo preserved by local pending broadcast", map[string]any{
+				"txid": row.TxID,
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func orderWalletLocalBroadcastRows(rows []walletLocalBroadcastRow) ([]walletLocalBroadcastRow, error) {
+	if len(rows) <= 1 {
+		return rows, nil
+	}
+	parsed := make(map[string]*txsdk.Transaction, len(rows))
+	pending := make(map[string]walletLocalBroadcastRow, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.TxID) == "" || strings.TrimSpace(row.TxHex) == "" {
+			continue
+		}
+		parsedTx, err := txsdk.NewTransactionFromHex(row.TxHex)
+		if err != nil {
+			return nil, fmt.Errorf("parse local broadcast tx %s failed: %w", row.TxID, err)
+		}
+		parsed[row.TxID] = parsedTx
+		pending[row.TxID] = row
+	}
+	out := make([]walletLocalBroadcastRow, 0, len(pending))
+	for len(pending) > 0 {
+		progressed := false
+		for txid, row := range pending {
+			ready := true
+			for _, in := range parsed[txid].Inputs {
+				if in == nil || in.SourceTXID == nil {
+					continue
+				}
+				prevTxID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String()))
+				if prevTxID == "" || prevTxID == txid {
+					continue
+				}
+				if _, waiting := pending[prevTxID]; waiting {
+					ready = false
+					break
+				}
+			}
+			if !ready {
+				continue
+			}
+			out = append(out, row)
+			delete(pending, txid)
+			progressed = true
+		}
+		if progressed {
+			continue
+		}
+		remaining := make([]walletLocalBroadcastRow, 0, len(pending))
+		for _, row := range pending {
+			remaining = append(remaining, row)
+		}
+		sort.Slice(remaining, func(i, j int) bool {
+			if remaining[i].CreatedAtUnix != remaining[j].CreatedAtUnix {
+				return remaining[i].CreatedAtUnix < remaining[j].CreatedAtUnix
+			}
+			return remaining[i].TxID < remaining[j].TxID
+		})
+		out = append(out, remaining...)
+		break
+	}
+	return out, nil
+}
+
+func markObservedWalletLocalBroadcastTxsTx(tx *sql.Tx, observedTxIDs map[string]struct{}, updatedAt int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	if len(observedTxIDs) == 0 {
+		return nil
+	}
+	holders := make([]string, 0, len(observedTxIDs))
+	args := make([]any, 0, len(observedTxIDs)+2)
+	args = append(args, updatedAt, updatedAt)
+	for txid := range observedTxIDs {
+		txid = strings.ToLower(strings.TrimSpace(txid))
+		if txid == "" {
+			continue
+		}
+		holders = append(holders, "?")
+		args = append(args, txid)
+	}
+	if len(holders) == 0 {
+		return nil
+	}
+	_, err := tx.Exec(
+		`UPDATE wallet_local_broadcast_txs
+		 SET observed_at_unix=CASE WHEN observed_at_unix>0 THEN observed_at_unix ELSE ? END,
+		     updated_at_unix=?
+		 WHERE txid IN (`+strings.Join(holders, ",")+`)`,
+		args...,
+	)
+	return err
+}
+
+func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, updatedAt int64, eventType string, eventNote string, payload any) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -1243,10 +1483,14 @@ func upsertWalletUTXORowTx(tx *sql.Tx, existing map[string]utxoStateRow, walletI
 		SpentTxID:     spentTxID,
 		CreatedAtUnix: createdAtUnix,
 	}
-	return appendWalletUTXOEventTx(tx, utxoID, "detected", txid, "", "utxo detected by chain sync", map[string]any{"state": state})
+	return appendWalletUTXOEventTx(tx, utxoID, strings.TrimSpace(eventType), txid, "", strings.TrimSpace(eventNote), payload)
 }
 
 func setWalletUTXOSpentTx(tx *sql.Tx, existing map[string]utxoStateRow, utxoID string, spentTxID string, updatedAt int64, eventType string) error {
+	return setWalletUTXOSpentTxWithNote(tx, existing, utxoID, spentTxID, updatedAt, eventType, "utxo spent by chain sync", nil)
+}
+
+func setWalletUTXOSpentTxWithNote(tx *sql.Tx, existing map[string]utxoStateRow, utxoID string, spentTxID string, updatedAt int64, eventType string, eventNote string, payload any) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -1266,7 +1510,7 @@ func setWalletUTXOSpentTx(tx *sql.Tx, existing map[string]utxoStateRow, utxoID s
 	if prevState == "spent" && prevSpentTxID == spentTxID {
 		return nil
 	}
-	return appendWalletUTXOEventTx(tx, utxoID, eventType, spentTxID, "", "utxo spent by chain sync", nil)
+	return appendWalletUTXOEventTx(tx, utxoID, strings.TrimSpace(eventType), spentTxID, "", strings.TrimSpace(eventNote), payload)
 }
 
 func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, address string, meta walletSyncRoundMeta) (liveWalletSnapshot, error) {
@@ -1650,22 +1894,25 @@ func updateWalletUTXOSyncStateError(db *sql.DB, address string, meta walletSyncR
 		errMsg = err.Error()
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
-	_, execErr := db.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(address) DO UPDATE SET
-			wallet_id=excluded.wallet_id,
-			updated_at_unix=excluded.updated_at_unix,
-			last_error=excluded.last_error,
-			last_updated_by=excluded.last_updated_by,
-			last_trigger=excluded.last_trigger,
-			last_duration_ms=excluded.last_duration_ms,
-			last_sync_round_id=excluded.last_sync_round_id,
-			last_failed_step=excluded.last_failed_step,
-			last_upstream_path=excluded.last_upstream_path,
-			last_http_status=excluded.last_http_status`,
-		address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
-	)
+	execErr := retrySQLiteBusy("wallet_utxo_sync_state_error_upsert", func() error {
+		_, err := db.Exec(
+			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+			 ON CONFLICT(address) DO UPDATE SET
+				wallet_id=excluded.wallet_id,
+				updated_at_unix=excluded.updated_at_unix,
+				last_error=excluded.last_error,
+				last_updated_by=excluded.last_updated_by,
+				last_trigger=excluded.last_trigger,
+				last_duration_ms=excluded.last_duration_ms,
+				last_sync_round_id=excluded.last_sync_round_id,
+				last_failed_step=excluded.last_failed_step,
+				last_upstream_path=excluded.last_upstream_path,
+				last_http_status=excluded.last_http_status`,
+			address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
+		)
+		return err
+	})
 	if execErr != nil {
 		obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": execErr.Error(), "address": address})
 	}
@@ -1681,15 +1928,18 @@ func updateWalletUTXOHistoryCursorError(db *sql.DB, address string, errMsg strin
 	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	_, err := db.Exec(
-		`INSERT INTO wallet_utxo_history_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
-		 VALUES(?,?,?,?,?,?,?,?)
-		 ON CONFLICT(address) DO UPDATE SET
-			wallet_id=excluded.wallet_id,
-			updated_at_unix=excluded.updated_at_unix,
-			last_error=excluded.last_error`,
-		address, walletID, 0, "", 0, 0, now, strings.TrimSpace(errMsg),
-	)
+	err := retrySQLiteBusy("wallet_utxo_history_cursor_error_upsert", func() error {
+		_, execErr := db.Exec(
+			`INSERT INTO wallet_utxo_history_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
+			 VALUES(?,?,?,?,?,?,?,?)
+			 ON CONFLICT(address) DO UPDATE SET
+				wallet_id=excluded.wallet_id,
+				updated_at_unix=excluded.updated_at_unix,
+				last_error=excluded.last_error`,
+			address, walletID, 0, "", 0, 0, now, strings.TrimSpace(errMsg),
+		)
+		return execErr
+	})
 	if err != nil {
 		obs.Error("bitcast-client", "wallet_utxo_history_cursor_upsert_failed", map[string]any{"error": err.Error(), "address": address})
 	}
@@ -1839,18 +2089,21 @@ func appendChainUTXOWorkerLog(db *sql.DB, e chainWorkerLogEntry) {
 	if e.EndedAtUnix <= 0 {
 		e.EndedAtUnix = e.StartedAtUnix
 	}
-	_, err := db.Exec(
-		`INSERT INTO chain_utxo_worker_logs(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		e.TriggeredAtUnix,
-		e.StartedAtUnix,
-		e.EndedAtUnix,
-		e.DurationMS,
-		strings.TrimSpace(e.TriggerSource),
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSON(e.Result),
-	)
+	err := retrySQLiteBusy("chain_utxo_worker_log_append", func() error {
+		_, execErr := db.Exec(
+			`INSERT INTO chain_utxo_worker_logs(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
+			 VALUES(?,?,?,?,?,?,?,?)`,
+			e.TriggeredAtUnix,
+			e.StartedAtUnix,
+			e.EndedAtUnix,
+			e.DurationMS,
+			strings.TrimSpace(e.TriggerSource),
+			strings.TrimSpace(e.Status),
+			strings.TrimSpace(e.ErrorMessage),
+			mustJSON(e.Result),
+		)
+		return execErr
+	})
 	if err != nil {
 		obs.Error("bitcast-client", "chain_utxo_worker_log_append_failed", map[string]any{"error": err.Error()})
 		return
@@ -1867,7 +2120,43 @@ func trimWorkerLogs(db *sql.DB, table string, keep int) {
 		table,
 		table,
 	)
-	if _, err := db.Exec(stmt, keep); err != nil {
+	if err := retrySQLiteBusy("chain_worker_log_trim", func() error {
+		_, execErr := db.Exec(stmt, keep)
+		return execErr
+	}); err != nil {
 		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 	}
+}
+
+func retrySQLiteBusy(op string, fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	var lastErr error
+	for attempt := 1; attempt <= 6; attempt++ {
+		if err := fn(); err != nil {
+			lastErr = err
+			if !isSQLiteBusyError(err) {
+				return err
+			}
+			time.Sleep(time.Duration(attempt*50) * time.Millisecond)
+			continue
+		}
+		return nil
+	}
+	if lastErr != nil {
+		obs.Info("bitcast-client", "sqlite_busy_retry_exhausted", map[string]any{
+			"operation": strings.TrimSpace(op),
+			"error":     lastErr.Error(),
+		})
+	}
+	return lastErr
+}
+
+func isSQLiteBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
 }

@@ -54,8 +54,10 @@ type taskScheduler struct {
 	service string
 	db      *sql.DB
 
-	mu    sync.RWMutex
-	tasks map[string]*periodicTaskRuntime
+	mu       sync.RWMutex
+	tasks    map[string]*periodicTaskRuntime
+	shutdown bool
+	wg       sync.WaitGroup
 }
 
 func newTaskScheduler(db *sql.DB, service string) *taskScheduler {
@@ -117,6 +119,10 @@ func (s *taskScheduler) registerPeriodicTask(ctx context.Context, spec periodicT
 	}
 
 	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return fmt.Errorf("task scheduler is shutting down")
+	}
 	if old, exists := s.tasks[spec.Name]; exists {
 		if !replace {
 			s.mu.Unlock()
@@ -147,7 +153,11 @@ func (s *taskScheduler) registerPeriodicTask(ctx context.Context, spec periodicT
 		s.logSchedulerError(spec.Name, "task_profile_upsert_failed", err)
 	}
 
-	go s.runPeriodicTask(taskCtx, rt)
+	s.wg.Add(1)
+	go func() {
+		defer s.wg.Done()
+		s.runPeriodicTask(taskCtx, rt)
+	}()
 	return nil
 }
 
@@ -223,6 +233,45 @@ func (s *taskScheduler) HasTask(name string) bool {
 	defer s.mu.RUnlock()
 	_, ok := s.tasks[name]
 	return ok
+}
+
+// Shutdown 用于 runtime 关闭阶段：
+// - 先统一取消所有后台周期任务；
+// - 再把调度表状态标记为 stopped；
+// - 关闭后不再接受新任务注册，避免“DB 已关闭但后台又起新任务”。
+func (s *taskScheduler) Shutdown() error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.shutdown {
+		s.mu.Unlock()
+		return nil
+	}
+	s.shutdown = true
+	runtimes := make([]*periodicTaskRuntime, 0, len(s.tasks))
+	for name, rt := range s.tasks {
+		runtimes = append(runtimes, rt)
+		delete(s.tasks, name)
+	}
+	s.mu.Unlock()
+
+	var firstErr error
+	for _, rt := range runtimes {
+		if rt != nil && rt.cancel != nil {
+			rt.cancel()
+		}
+	}
+	s.wg.Wait()
+	for _, rt := range runtimes {
+		if rt == nil {
+			continue
+		}
+		if err := s.markTaskStopped(rt.spec.Name); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *taskScheduler) runPeriodicTask(ctx context.Context, rt *periodicTaskRuntime) {

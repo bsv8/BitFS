@@ -292,6 +292,10 @@ func listenBillingTaskName(gatewayPeerID string) string {
 }
 
 func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+	return ensureActiveFeePoolWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
+}
+
+func ensureActiveFeePoolWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp, sec p2prpc.SecurityConfig) (*feePoolSession, error) {
 	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -299,12 +303,16 @@ func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, aut
 	if existing, ok := rt.getFeePool(gwID); ok && existing != nil && existing.Status == "active" && existing.SpendTxID != "" {
 		return existing, nil
 	}
-	return createFeePoolSession(ctx, rt, gw, autoRenewRounds, info)
+	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, sec)
 }
 
 // createFeePoolSession 在链上创建新的费用池并注册为当前 active 会话。
 // 设计说明：监听轮换场景要求“先开新池再关旧池”，因此新池创建流程必须可复用。
 func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
+}
+
+func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp, sec p2prpc.SecurityConfig) (*feePoolSession, error) {
 	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -453,7 +461,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		ClientSig:      append([]byte(nil), (*clientOpenSig)...),
 	}
 	var createResp dual2of2.CreateResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolCreate, gwSec(rt.rpcTrace), createReq, &createResp); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolCreate, sec, createReq, &createResp); err != nil {
 		return nil, fmt.Errorf("fee_pool.create failed: %w", err)
 	}
 	if strings.TrimSpace(createResp.SpendTxID) == "" {
@@ -467,7 +475,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 		ClientSig: append([]byte(nil), (*clientOpenSig)...),
 	}
 	var baseOut dual2of2.BaseTxResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolBaseTx, gwSec(rt.rpcTrace), baseReq, &baseOut); err != nil {
+	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolBaseTx, sec, baseReq, &baseOut); err != nil {
 		return nil, fmt.Errorf("fee_pool.base_tx failed: %w", err)
 	}
 	if !baseOut.Success || baseOut.Status != "active" {
@@ -601,6 +609,9 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 				"charge_amount_sat": initialServerAmount,
 			},
 		})
+	}
+	if err := applyLocalBroadcastWalletTx(rt, baseResp.Tx.Hex(), "fee_pool_open_base"); err != nil {
+		return nil, fmt.Errorf("project fee pool base tx to wallet utxo failed: %w", err)
 	}
 
 	return s, nil

@@ -1,3 +1,5 @@
+import { ens_normalize } from "@adraffy/ens-normalize";
+
 export type ParsedBitfsLocator = {
   kind: "bitfs";
   locator: string;
@@ -155,17 +157,22 @@ function splitIDAndRoute(raw: string, label: string): { id: string; route: strin
 }
 
 function normalizeResolverName(raw: string): string {
-  const value = String(raw || "").trim().toLowerCase();
+  const value = String(raw || "").trim();
   if (value === "") {
     throw new Error("resolver name is required");
   }
   if (value.includes("/")) {
     throw new Error("resolver name must not contain /");
   }
-  // 设计说明：
-  // - 名字规范最终要完全对齐 ENS/ETH 的规范化流程；
-  // - 这次先把接口口子和基本约束落下，真正的 name normalize 规则在协议阶段补齐。
-  return value;
+  try {
+    const normalized = ens_normalize(value);
+    if (normalized.includes("/")) {
+      throw new Error("resolver name must not contain /");
+    }
+    return normalized;
+  } catch (error) {
+    throw new Error(error instanceof Error ? error.message : "resolver name invalid");
+  }
 }
 
 function normalizeSeedHash(raw: string): string {

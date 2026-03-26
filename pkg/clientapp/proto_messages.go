@@ -129,11 +129,3 @@ func (*resolveReq) ProtoMessage()    {}
 func (m *resolveResp) Reset()         { *m = resolveResp{} }
 func (m *resolveResp) String() string { return oldproto.CompactTextString(m) }
 func (*resolveResp) ProtoMessage()    {}
-
-func (m *resolverResolveReq) Reset()         { *m = resolverResolveReq{} }
-func (m *resolverResolveReq) String() string { return oldproto.CompactTextString(m) }
-func (*resolverResolveReq) ProtoMessage()    {}
-
-func (m *resolverResolveResp) Reset()         { *m = resolverResolveResp{} }
-func (m *resolverResolveResp) String() string { return oldproto.CompactTextString(m) }
-func (*resolverResolveResp) ProtoMessage()    {}

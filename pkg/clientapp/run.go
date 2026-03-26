@@ -654,6 +654,8 @@ type Runtime struct {
 	taskSched   *taskScheduler
 	taskSchedMu sync.Mutex
 
+	bgCancel context.CancelFunc
+
 	closeOnce sync.Once
 	closeFn   func() error
 }
@@ -979,6 +981,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		transferPoolSessionLocks: map[string]*sync.Mutex{},
 		rpcTrace:                 trace,
 	}
+	rtCtx, rtCancel := context.WithCancel(ctx)
+	rt.bgCancel = rtCancel
 	rt.taskSched = newTaskScheduler(db, "bitcast-client")
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
@@ -1026,22 +1030,22 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 
 	// 初始化网关管理器
 	rt.gwManager = newGatewayManager(rt, h)
-	_ = rt.gwManager.InitFromConfig(ctx, cfg.Network.Gateways)
+	_ = rt.gwManager.InitFromConfig(rtCtx, cfg.Network.Gateways)
 	// 更新 HealthyGWs 为已连接的网关
 	rt.HealthyGWs = rt.gwManager.GetConnectedGateways()
 
 	var wg sync.WaitGroup
 	if rt.orch != nil {
-		rt.orch.Start(ctx)
+		rt.orch.Start(rtCtx)
 	}
 	// 链维护进程：统一串行调度链 API 查询，业务侧只读本地快照。
-	startChainMaintainer(ctx, rt)
+	startChainMaintainer(rtCtx, rt)
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
-	startListenLoops(ctx, rt)
+	startListenLoops(rtCtx, rt)
 	// 自动地址声明发布与 listen loop 并列存在：
 	// - listen 解决“我是否持续监听网关广播”；
 	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
-	startAutoNodeReachabilityAnnounceLoop(ctx, rt)
+	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt)
 	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
 		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
@@ -1071,9 +1075,20 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}()
 	}
 
-	go restorePersistedLiveFollows(ctx, rt)
+	go restorePersistedLiveFollows(rtCtx, rt)
 
 	rt.closeFn = func() error {
+		if rt.bgCancel != nil {
+			rt.bgCancel()
+		}
+		if rt.taskSched != nil {
+			if err := rt.taskSched.Shutdown(); err != nil {
+				obs.Error("bitcast-client", "task_scheduler_shutdown_failed", map[string]any{"error": err.Error()})
+			}
+		}
+		if rt.chainMaint != nil {
+			rt.chainMaint.Wait()
+		}
 		if rt.HTTP != nil {
 			_ = rt.HTTP.Shutdown(context.Background())
 		}
@@ -1472,10 +1487,14 @@ func applySQLitePragmas(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
+	// 设计说明：
+	// - client 运行时会有链维护、HTTP 触发、调度器等多路并发写；
+	// - 这里先保留正常连接模型，避免把事务内辅助查询卡成自等待；
+	// - 通过 WAL + 更长 busy_timeout，尽量让短暂写锁竞争自动退避完成。
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return fmt.Errorf("sqlite pragma journal_mode: %w", err)
 	}
-	if _, err := db.Exec(`PRAGMA busy_timeout=5000`); err != nil {
+	if _, err := db.Exec(`PRAGMA busy_timeout=15000`); err != nil {
 		return fmt.Errorf("sqlite pragma busy_timeout: %w", err)
 	}
 	return nil
@@ -1733,6 +1752,15 @@ func initIndexDB(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
+			txid TEXT PRIMARY KEY,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			tx_hex TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			observed_at_unix INTEGER NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_utxo_sync_state(
 			address TEXT PRIMARY KEY,
 			wallet_id TEXT NOT NULL,
@@ -1948,11 +1976,6 @@ func initIndexDB(db *sql.DB) error {
 			seed_hash TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS resolver_name_records(
-			name TEXT PRIMARY KEY,
-			target_pubkey_hex TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS node_reachability_cache(
 			target_node_pubkey_hex TEXT PRIMARY KEY,
 			source_gateway_pubkey_hex TEXT NOT NULL,
@@ -2007,6 +2030,7 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_scene ON fin_business(scene_type, scene_subtype, occurred_at_unix DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
@@ -2032,7 +2056,6 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_static_file_prices_updated ON static_file_prices(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inbox_messages_received_at ON inbox_messages(received_at_unix DESC,id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_published_route_indexes_updated ON published_route_indexes(updated_at_unix DESC,route ASC)`,
-		`CREATE INDEX IF NOT EXISTS idx_resolver_name_records_updated ON resolver_name_records(updated_at_unix DESC,name ASC)`,
 	}
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -2061,6 +2084,9 @@ func initIndexDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureWalletUTXOSchema(db); err != nil {
+		return err
+	}
+	if err := ensureWalletLocalBroadcastSchema(db); err != nil {
 		return err
 	}
 	if err := ensureWalletUTXOSyncStateSchema(db); err != nil {
@@ -2361,6 +2387,39 @@ func ensureWalletUTXOSyncStateSchema(db *sql.DB) error {
 	}
 	if _, ok := cols["last_http_status"]; !ok {
 		if _, err := db.Exec(`ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_http_status INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureWalletLocalBroadcastSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
+		txid TEXT PRIMARY KEY,
+		wallet_id TEXT NOT NULL,
+		address TEXT NOT NULL,
+		tx_hex TEXT NOT NULL,
+		created_at_unix INTEGER NOT NULL,
+		updated_at_unix INTEGER NOT NULL,
+		observed_at_unix INTEGER NOT NULL DEFAULT 0
+	)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`); err != nil {
+		return err
+	}
+	cols, err := tableColumns(db, "wallet_local_broadcast_txs")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, ok := cols["observed_at_unix"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE wallet_local_broadcast_txs ADD COLUMN observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}
