@@ -1,4 +1,60 @@
 (function bootstrapRenderer() {
+  function trimErrorText(raw) {
+    return String(raw || "").trim();
+  }
+
+  function reportShellRendererError(title, message, detail) {
+    const report = {
+      source: "shell-renderer",
+      title: trimErrorText(title) || "壳页面 JS 错误",
+      message: trimErrorText(message) || "shell renderer error",
+      detail: trimErrorText(detail),
+      page_url: trimErrorText(window.location && window.location.href),
+      occurred_at_unix: Math.floor(Date.now() / 1000),
+      can_stop_current_page: false
+    };
+    if (!Array.isArray(window.__bitfsPendingShellErrors)) {
+      window.__bitfsPendingShellErrors = [];
+    }
+    window.__bitfsPendingShellErrors.push(report);
+    if (window.__bitfsPendingShellErrors.length > 8) {
+      window.__bitfsPendingShellErrors.shift();
+    }
+    try {
+      if (!window.bitfsShell || typeof window.bitfsShell.reportError !== "function") {
+        return;
+      }
+      window.bitfsShell.reportError(report);
+    } catch {
+      // 设计说明：
+      // - 壳页面自己的兜底再报错时，只能静默降级；
+      // - 否则错误上报本身也会触发默认 JS 对话框，等于把问题放大一倍。
+    }
+  }
+
+  window.addEventListener("error", function handleShellWindowError(event) {
+    event.preventDefault();
+    const error = event && event.error;
+    const message = trimErrorText(event && event.message) || trimErrorText(error && error.message) || "shell uncaught error";
+    const detailLines = [
+      trimErrorText(event && event.filename) ? `file: ${trimErrorText(event.filename)}` : "",
+      Number(event && event.lineno) > 0 ? `line: ${Number(event.lineno)}` : "",
+      Number(event && event.colno) > 0 ? `column: ${Number(event.colno)}` : ""
+    ].filter(Boolean);
+    const detail = [message, ...detailLines, "", trimErrorText(error && error.stack)].filter(Boolean).join("\n").trim();
+    reportShellRendererError("壳页面 JS 错误", message, detail);
+  });
+
+  window.addEventListener("unhandledrejection", function handleShellUnhandledRejection(event) {
+    event.preventDefault();
+    const reason = event && event.reason;
+    const message = reason instanceof Error
+      ? trimErrorText(reason.message)
+      : trimErrorText(reason && reason.message) || trimErrorText(reason) || "shell unhandled rejection";
+    const detail = [message, "", reason instanceof Error ? trimErrorText(reason.stack) : trimErrorText(reason && reason.stack)].filter(Boolean).join("\n").trim();
+    reportShellRendererError("壳页面 Promise 未处理拒绝", message, detail);
+  });
+
   const bridge = window.bitfsShell;
   const browserShell = document.getElementById("browser-shell");
   const addressForm = document.getElementById("address-form");
@@ -80,8 +136,10 @@
   const shellErrorTitle = document.getElementById("shell-error-title");
   const shellErrorSummary = document.getElementById("shell-error-summary");
   const shellErrorText = document.getElementById("shell-error-text");
+  const shellErrorStopButton = document.getElementById("shell-error-stop-button");
   const shellErrorCopyButton = document.getElementById("shell-error-copy-button");
   const shellErrorSelectButton = document.getElementById("shell-error-select-button");
+  const shellErrorForceCloseButton = document.getElementById("shell-error-force-close-button");
   const shellErrorCloseButton = document.getElementById("shell-error-close-button");
 
   if (
@@ -102,7 +160,8 @@
     !choosePanel || !chooseCreateButton || !chooseImportButton || !createKeyForm || !createPasswordInput ||
     !createPasswordConfirmInput || !createBackButton || !unlockForm || !unlockPasswordInput || !unlockBusinessNotice || !exportKeyButton ||
     !restartPanel || !restartBackendButton || !shellErrorModal || !shellErrorTitle || !shellErrorSummary ||
-    !shellErrorText || !shellErrorCopyButton || !shellErrorSelectButton || !shellErrorCloseButton
+    !shellErrorText || !shellErrorStopButton || !shellErrorCopyButton || !shellErrorSelectButton ||
+    !shellErrorForceCloseButton || !shellErrorCloseButton
   ) {
     throw new Error("bitfs shell bootstrap failed");
   }
@@ -136,6 +195,10 @@
   let contentMode = CONTENT_MODE_BROWSER;
   let resizeState = null;
   let walletFetchSequence = 0;
+  let viewerFrozen = false;
+  let viewerFrozenURL = "";
+  let viewerFrozenReason = "";
+  let activeShellErrorReport = null;
   const walletState = {
     loading: false,
     loaded: false,
@@ -149,6 +212,13 @@
       return;
     }
     bridge.debugLog(scope, event, fields || {});
+  }
+
+  function emitE2EEvent(name, fields) {
+    if (!bridge || !bridge.e2e || bridge.e2e.enabled !== true || typeof bridge.e2e.emit !== "function") {
+      return;
+    }
+    bridge.e2e.emit(String(name || ""), fields || {});
   }
 
   function handleRuntimeEvent(runtimeEvent) {
@@ -210,20 +280,173 @@
   }
 
   function hideShellError() {
+    const hiddenReport = activeShellErrorReport;
+    activeShellErrorReport = null;
+    updateShellErrorActions();
     shellErrorModal.classList.add("is-hidden");
+    emitE2EEvent("shell.error.modal.hidden", {
+      report_source: hiddenReport && hiddenReport.source ? hiddenReport.source : "",
+      report_title: shellErrorTitle.textContent,
+      report_message: shellErrorText.value
+    });
     debugLog("shell", "error_modal_hidden");
   }
 
-  function showShellError(message, title) {
+  function updateShellErrorActions() {
+    const canStopCurrentPage = Boolean(activeShellErrorReport && activeShellErrorReport.can_stop_current_page);
+    shellErrorStopButton.classList.toggle("is-hidden", !canStopCurrentPage);
+  }
+
+  function showShellError(message, title, options) {
+    activeShellErrorReport = options && options.report ? options.report : null;
+    updateShellErrorActions();
     shellErrorTitle.textContent = String(title || "操作失败");
-    shellErrorSummary.textContent = "错误内容已经整理成可复制文本。";
+    shellErrorSummary.textContent = String(options && options.summary || "错误内容已经整理成可复制文本。");
     shellErrorText.value = String(message || "").trim() || "unknown error";
     shellErrorModal.classList.remove("is-hidden");
     selectShellErrorText();
+    emitE2EEvent("shell.error.modal.shown", {
+      report_source: activeShellErrorReport && activeShellErrorReport.source ? activeShellErrorReport.source : "",
+      report_title: shellErrorTitle.textContent,
+      report_message: activeShellErrorReport && activeShellErrorReport.message ? activeShellErrorReport.message : shellErrorText.value,
+      report_page_url: activeShellErrorReport && activeShellErrorReport.page_url ? activeShellErrorReport.page_url : "",
+      can_stop_current_page: Boolean(activeShellErrorReport && activeShellErrorReport.can_stop_current_page)
+    });
     debugLog("shell", "error_modal_shown", {
       title: shellErrorTitle.textContent,
       message: shellErrorText.value
     });
+  }
+
+  function normalizeShellErrorSource(raw) {
+    const value = String(raw || "").trim();
+    if (value === "viewer" || value === "settings" || value === "shell-renderer") {
+      return value;
+    }
+    return "main-process";
+  }
+
+  function normalizeShellErrorReport(raw) {
+    const payload = raw && typeof raw === "object" ? raw : {};
+    const source = normalizeShellErrorSource(payload.source);
+    return {
+      source,
+      title: String(payload.title || "").trim() || "JS 错误",
+      message: String(payload.message || "").trim() || "unknown error",
+      detail: String(payload.detail || "").trim(),
+      page_url: String(payload.page_url || "").trim(),
+      occurred_at_unix: Math.max(0, Math.floor(Number(payload.occurred_at_unix || 0))),
+      can_stop_current_page: Boolean(payload.can_stop_current_page) && (source === "viewer" || source === "settings")
+    };
+  }
+
+  function formatShellErrorReport(report) {
+    const lines = [
+      `source: ${report.source}`,
+      `title: ${report.title}`,
+      `message: ${report.message}`
+    ];
+    if (report.page_url) {
+      lines.push(`page_url: ${report.page_url}`);
+    }
+    if (report.occurred_at_unix > 0) {
+      lines.push(`occurred_at: ${new Date(report.occurred_at_unix * 1000).toISOString()}`);
+    }
+    if (report.detail) {
+      lines.push("");
+      lines.push(report.detail);
+    }
+    return lines.join("\n").trim();
+  }
+
+  function showShellErrorReport(rawReport) {
+    const report = normalizeShellErrorReport(rawReport);
+    const summary = report.can_stop_current_page
+      ? "错误内容已经整理成可复制文本。你可以先停止当前页面，让出错脚本立刻停住。"
+      : "错误内容已经整理成可复制文本。";
+    showShellError(formatShellErrorReport(report), report.title, {
+      summary,
+      report
+    });
+  }
+
+  function drainPendingShellErrorReports() {
+    if (!Array.isArray(window.__bitfsPendingShellErrors) || window.__bitfsPendingShellErrors.length === 0) {
+      return;
+    }
+    const pending = window.__bitfsPendingShellErrors.slice();
+    window.__bitfsPendingShellErrors.length = 0;
+    showShellErrorReport(pending[pending.length - 1]);
+  }
+
+  function clearViewerFreeze(reason) {
+    if (!viewerFrozen) {
+      return;
+    }
+    const previousFrozenURL = viewerFrozenURL;
+    const previousFrozenReason = viewerFrozenReason;
+    debugLog("shell", "viewer_unfrozen", {
+      reason: String(reason || ""),
+      frozen_url: viewerFrozenURL,
+      frozen_reason: viewerFrozenReason
+    });
+    viewerFrozen = false;
+    viewerFrozenURL = "";
+    viewerFrozenReason = "";
+    emitE2EEvent("shell.viewer.unfrozen", {
+      reason: String(reason || ""),
+      viewer_url: previousFrozenURL,
+      viewer_reason: previousFrozenReason
+    });
+  }
+
+  function freezeViewer(reason, source) {
+    viewerFrozen = true;
+    viewerFrozenURL = String(currentState?.currentViewerURL || webview.getAttribute("src") || "").trim();
+    viewerFrozenReason = String(reason || "").trim() || "viewer runtime error";
+    viewerDOMReady = false;
+    try {
+      if (typeof webview.stop === "function") {
+        webview.stop();
+      }
+    } catch {
+      // webview stop 失败时仍继续切 blank，确保 guest 至少不会继续执行原页面脚本。
+    }
+    webview.setAttribute("src", "about:blank");
+    debugLog("shell", "viewer_frozen", {
+      source: String(source || ""),
+      url: viewerFrozenURL,
+      reason: viewerFrozenReason
+    });
+    emitE2EEvent("shell.viewer.frozen", {
+      source: String(source || ""),
+      viewer_url: viewerFrozenURL,
+      viewer_reason: viewerFrozenReason
+    });
+    refreshNavigationButtons();
+  }
+
+  function stopCurrentPageFromShellError() {
+    if (!activeShellErrorReport || !activeShellErrorReport.can_stop_current_page) {
+      return;
+    }
+    emitE2EEvent("shell.error.stop_current_page_clicked", {
+      report_source: activeShellErrorReport.source,
+      report_message: activeShellErrorReport.message
+    });
+    if (activeShellErrorReport.source === "settings") {
+      closeSettingsView("error_stop_current_page");
+      shellErrorSummary.textContent = "设置页已经关闭，相关 JS 不会继续运行。";
+    } else {
+      freezeViewer(activeShellErrorReport.message || activeShellErrorReport.title, activeShellErrorReport.source);
+      shellErrorSummary.textContent = "当前页面已经停止，原页面 JS 不会继续运行。你可以关闭面板，或稍后手动重新打开页面。";
+    }
+    activeShellErrorReport = {
+      ...activeShellErrorReport,
+      can_stop_current_page: false
+    };
+    updateShellErrorActions();
+    selectShellErrorText();
   }
 
   function hideUnlockBusinessNotice() {
@@ -743,6 +966,7 @@
 
   function syncViewerURL(state) {
     if (!isBackendReady(state)) {
+      clearViewerFreeze("backend_not_ready");
       webview.removeAttribute("src");
       debugLog("shell", "viewer_src_cleared", {
         reason: "backend_not_ready"
@@ -756,6 +980,13 @@
       debugLog("shell", "viewer_src_cleared", {
         reason: "empty_target"
       });
+      refreshNavigationButtons();
+      return;
+    }
+    if (viewerFrozen) {
+      if (webview.getAttribute("src") !== "about:blank") {
+        webview.setAttribute("src", "about:blank");
+      }
       refreshNavigationButtons();
       return;
     }
@@ -1018,6 +1249,7 @@
       locator: rawLocator
     });
     closeSettingsView("open_from_input");
+    clearViewerFreeze("open_from_input");
     await bridge.open(rawLocator);
     return bridge.getState();
   }
@@ -1035,6 +1267,7 @@
       locator: homeSeedHash
     });
     closeSettingsView("open_home");
+    clearViewerFreeze("open_home");
     await bridge.open(homeSeedHash);
     return bridge.getState();
   }
@@ -1055,6 +1288,13 @@
   }
 
   function handleViewerNavigation(url) {
+    if (viewerFrozen && String(url || "").trim() === "about:blank") {
+      debugLog("webview", "frozen_blank_navigation_ignored", {
+        url
+      });
+      window.setTimeout(refreshNavigationButtons, 0);
+      return;
+    }
     debugLog("webview", "navigated", {
       url
     });
@@ -1273,6 +1513,11 @@
         });
         settingsView.reload();
       }
+      return;
+    }
+    if (viewerFrozen) {
+      clearViewerFreeze("reload_click");
+      syncViewerURL(currentState);
       return;
     }
     if (viewerDOMReady && webview.getURL()) {
@@ -1500,8 +1745,19 @@
     });
   });
 
+  shellErrorStopButton.addEventListener("click", function handleStopCurrentPage() {
+    stopCurrentPageFromShellError();
+  });
+
   shellErrorSelectButton.addEventListener("click", function handleSelectShellError() {
     selectShellErrorText();
+  });
+
+  shellErrorForceCloseButton.addEventListener("click", function handleForceCloseWindow() {
+    void bridge.forceCloseWindow().catch((error) => {
+      shellErrorSummary.textContent = error instanceof Error ? error.message : String(error);
+      selectShellErrorText();
+    });
   });
 
   shellErrorCloseButton.addEventListener("click", function handleCloseShellError() {
@@ -1515,6 +1771,8 @@
   });
 
   const unsubscribe = bridge.onState(renderState);
+  const unsubscribeShellErrors = bridge.onErrorReport(showShellErrorReport);
+  drainPendingShellErrorReports();
   const unsubscribeEvents = bridge.events.subscribe(Array.from(WALLET_REFRESH_TOPICS), handleRuntimeEvent);
   window.addEventListener("resize", function handleResize() {
     applySidebarWidth(sidebarWidthPx);
@@ -1522,6 +1780,7 @@
   });
   window.addEventListener("beforeunload", function cleanup() {
     debugLog("shell", "beforeunload");
+    unsubscribeShellErrors();
     unsubscribeEvents();
     unsubscribe();
   });

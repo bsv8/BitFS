@@ -193,7 +193,7 @@ func runtimeStartedAtUnix(rt *Runtime) int64 {
 }
 
 func resetChainMaintainerStartupState(rt *Runtime) error {
-	if rt == nil || rt.DB == nil {
+	if rt == nil || rt.DBActor == nil {
 		return nil
 	}
 	scheduler := ensureRuntimeTaskScheduler(rt)
@@ -202,16 +202,19 @@ func resetChainMaintainerStartupState(rt *Runtime) error {
 			return err
 		}
 	}
-	if _, err := rt.DB.Exec(
-		`UPDATE wallet_utxo_sync_state SET
-			last_error='',
-			last_trigger='',
-			last_duration_ms=0,
-			last_sync_round_id='',
-			last_failed_step='',
-			last_upstream_path='',
-			last_http_status=0`,
-	); err != nil {
+	if err := runtimeDBDo(rt, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`UPDATE wallet_utxo_sync_state SET
+				last_error='',
+				last_trigger='',
+				last_duration_ms=0,
+				last_sync_round_id='',
+				last_failed_step='',
+				last_upstream_path='',
+				last_http_status=0`,
+		)
+		return err
+	}); err != nil {
 		return err
 	}
 	obs.Info("bitcast-client", "chain_maintainer_startup_state_reset", map[string]any{
@@ -311,7 +314,7 @@ func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
 }
 
 func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
-	if m == nil || m.rt == nil || m.rt.DB == nil {
+	if m == nil || m.rt == nil || m.rt.DBActor == nil {
 		return
 	}
 	taskType = strings.TrimSpace(taskType)
@@ -465,13 +468,20 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 	if m.rt == nil || m.rt.WalletChain == nil {
 		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime wallet chain not initialized")
 	}
-	before, _ := loadChainTipState(m.rt.DB)
+	before, _ := runtimeDBValue(m.rt, ctx, func(db *sql.DB) (chainTipState, error) {
+		return loadChainTipState(db)
+	})
 	tip, err := m.rt.WalletChain.GetChainInfo(ctx)
 	if err != nil {
-		updateChainTipStateError(m.rt.DB, err.Error(), task.TriggerSource)
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateChainTipStateError(db, err.Error(), task.TriggerSource)
+			return nil
+		})
 		return map[string]any{"task_type": chainTaskTip}, err
 	}
-	if err := upsertChainTipState(m.rt.DB, tip, "", task.TriggerSource, time.Now().Unix(), 0); err != nil {
+	if err := runtimeDBDo(m.rt, ctx, func(db *sql.DB) error {
+		return upsertChainTipState(db, tip, "", task.TriggerSource, time.Now().Unix(), 0)
+	}); err != nil {
 		return map[string]any{"task_type": chainTaskTip, "tip_height": tip}, err
 	}
 	emitted := false
@@ -529,7 +539,10 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	addr, err := clientWalletAddress(m.rt)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, "", meta, wrapWalletSyncStepError(meta, "load_wallet_address", "", err), task.TriggerSource)
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateWalletUTXOSyncStateError(db, "", meta, wrapWalletSyncStepError(meta, "load_wallet_address", "", err), task.TriggerSource)
+			return nil
+		})
 		logWalletSyncStepError(meta, "load_wallet_address", err, nil)
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
@@ -546,8 +559,11 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	tip, err := m.rt.WalletChain.GetChainInfo(ctx)
 	if err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "wallet_chain_get_tip", tipPath, err)
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, wrappedErr, task.TriggerSource)
-		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateWalletUTXOSyncStateError(db, addr, meta, wrappedErr, task.TriggerSource)
+			updateWalletUTXOHistoryCursorError(db, addr, err.Error())
+			return nil
+		})
 		logWalletSyncStepError(meta, "wallet_chain_get_tip", err, map[string]any{
 			"upstream_path":    tipPath,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
@@ -565,8 +581,11 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, meta)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, err, task.TriggerSource)
-		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateWalletUTXOSyncStateError(db, addr, meta, err, task.TriggerSource)
+			updateWalletUTXOHistoryCursorError(db, addr, err.Error())
+			return nil
+		})
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
 			"address":       addr,
@@ -581,11 +600,16 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"oldest_confirmed_height": snapshot.OldestConfirmedHeight,
 	})
 	stepStart = time.Now()
-	cursor, err := loadWalletUTXOHistoryCursor(m.rt.DB, addr)
+	cursor, err := runtimeDBValue(m.rt, ctx, func(db *sql.DB) (walletUTXOHistoryCursor, error) {
+		return loadWalletUTXOHistoryCursor(db, addr)
+	})
 	if err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "load_wallet_utxo_history_cursor", "", err)
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, wrappedErr, task.TriggerSource)
-		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateWalletUTXOSyncStateError(db, addr, meta, wrappedErr, task.TriggerSource)
+			updateWalletUTXOHistoryCursorError(db, addr, err.Error())
+			return nil
+		})
 		logWalletSyncStepError(meta, "load_wallet_utxo_history_cursor", err, nil)
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
@@ -615,8 +639,11 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	stepStart = time.Now()
 	history, nextCursor, err := collectConfirmedHistoryRange(ctx, chain, addr, cursor, tip, meta)
 	if err != nil {
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, err, task.TriggerSource)
-		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateWalletUTXOSyncStateError(db, addr, meta, err, task.TriggerSource)
+			updateWalletUTXOHistoryCursorError(db, addr, err.Error())
+			return nil
+		})
 		logWalletSyncStepError(meta, "collect_confirmed_history_range", err, map[string]any{
 			"tip_height":           tip,
 			"cursor_anchor_height": cursor.AnchorHeight,
@@ -639,10 +666,15 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	durationMS := time.Since(startedAt).Milliseconds()
 	stepStart = time.Now()
-	if err := reconcileWalletUTXOSet(m.rt.DB, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
+	if err := runtimeDBDo(m.rt, ctx, func(db *sql.DB) error {
+		return reconcileWalletUTXOSet(db, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS)
+	}); err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "reconcile_wallet_utxo_set", "", err)
-		updateWalletUTXOSyncStateError(m.rt.DB, addr, meta, wrappedErr, task.TriggerSource)
-		updateWalletUTXOHistoryCursorError(m.rt.DB, addr, err.Error())
+		_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+			updateWalletUTXOSyncStateError(db, addr, meta, wrappedErr, task.TriggerSource)
+			updateWalletUTXOHistoryCursorError(db, addr, err.Error())
+			return nil
+		})
 		logWalletSyncStepError(meta, "reconcile_wallet_utxo_set", err, map[string]any{
 			"utxo_count":        snapshot.Count,
 			"history_tx_cnt":    len(history),
@@ -700,14 +732,17 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 }
 
 func (m *chainMaintainer) appendWorkerLog(taskType string, entry chainWorkerLogEntry) {
-	if m == nil || m.rt == nil || m.rt.DB == nil {
+	if m == nil || m.rt == nil || m.rt.DBActor == nil {
 		return
 	}
-	if taskType == chainTaskTip {
-		appendChainTipWorkerLog(m.rt.DB, entry)
-		return
-	}
-	appendChainUTXOWorkerLog(m.rt.DB, entry)
+	_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
+		if taskType == chainTaskTip {
+			appendChainTipWorkerLog(db, entry)
+			return nil
+		}
+		appendChainUTXOWorkerLog(db, entry)
+		return nil
+	})
 }
 
 func clientWalletAddress(rt *Runtime) (string, error) {
@@ -1894,25 +1929,22 @@ func updateWalletUTXOSyncStateError(db *sql.DB, address string, meta walletSyncR
 		errMsg = err.Error()
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
-	execErr := retrySQLiteBusy("wallet_utxo_sync_state_error_upsert", func() error {
-		_, err := db.Exec(
-			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(address) DO UPDATE SET
-				wallet_id=excluded.wallet_id,
-				updated_at_unix=excluded.updated_at_unix,
-				last_error=excluded.last_error,
-				last_updated_by=excluded.last_updated_by,
-				last_trigger=excluded.last_trigger,
-				last_duration_ms=excluded.last_duration_ms,
-				last_sync_round_id=excluded.last_sync_round_id,
-				last_failed_step=excluded.last_failed_step,
-				last_upstream_path=excluded.last_upstream_path,
-				last_http_status=excluded.last_http_status`,
-			address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
-		)
-		return err
-	})
+	_, execErr := db.Exec(
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(address) DO UPDATE SET
+			wallet_id=excluded.wallet_id,
+			updated_at_unix=excluded.updated_at_unix,
+			last_error=excluded.last_error,
+			last_updated_by=excluded.last_updated_by,
+			last_trigger=excluded.last_trigger,
+			last_duration_ms=excluded.last_duration_ms,
+			last_sync_round_id=excluded.last_sync_round_id,
+			last_failed_step=excluded.last_failed_step,
+			last_upstream_path=excluded.last_upstream_path,
+			last_http_status=excluded.last_http_status`,
+		address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
+	)
 	if execErr != nil {
 		obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": execErr.Error(), "address": address})
 	}
@@ -1928,18 +1960,15 @@ func updateWalletUTXOHistoryCursorError(db *sql.DB, address string, errMsg strin
 	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	err := retrySQLiteBusy("wallet_utxo_history_cursor_error_upsert", func() error {
-		_, execErr := db.Exec(
-			`INSERT INTO wallet_utxo_history_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
-			 VALUES(?,?,?,?,?,?,?,?)
-			 ON CONFLICT(address) DO UPDATE SET
-				wallet_id=excluded.wallet_id,
-				updated_at_unix=excluded.updated_at_unix,
-				last_error=excluded.last_error`,
-			address, walletID, 0, "", 0, 0, now, strings.TrimSpace(errMsg),
-		)
-		return execErr
-	})
+	_, err := db.Exec(
+		`INSERT INTO wallet_utxo_history_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
+		 VALUES(?,?,?,?,?,?,?,?)
+		 ON CONFLICT(address) DO UPDATE SET
+			wallet_id=excluded.wallet_id,
+			updated_at_unix=excluded.updated_at_unix,
+			last_error=excluded.last_error`,
+		address, walletID, 0, "", 0, 0, now, strings.TrimSpace(errMsg),
+	)
 	if err != nil {
 		obs.Error("bitcast-client", "wallet_utxo_history_cursor_upsert_failed", map[string]any{"error": err.Error(), "address": address})
 	}
@@ -1971,71 +2000,79 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 }
 
 func getWalletUTXOsFromDB(rt *Runtime) ([]poolcore.UTXO, error) {
-	if rt == nil || rt.DB == nil {
+	if rt == nil || rt.DBActor == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		return nil, err
 	}
-	s, err := loadWalletUTXOSyncState(rt.DB, addr)
-	if err != nil {
-		return nil, err
-	}
-	if s.UpdatedAtUnix <= 0 {
-		return nil, fmt.Errorf("wallet utxo sync state not ready")
-	}
-	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-		return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
-	}
-	if strings.TrimSpace(s.LastError) != "" {
-		return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
-	}
-	walletID := walletIDByAddress(addr)
-	rows, err := rt.DB.Query(`SELECT txid,vout,value_satoshi FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent' ORDER BY value_satoshi ASC,txid ASC,vout ASC`, walletID, addr)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]poolcore.UTXO, 0, s.UTXOCount)
-	for rows.Next() {
-		var u poolcore.UTXO
-		if err := rows.Scan(&u.TxID, &u.Vout, &u.Value); err != nil {
+	return runtimeDBValue(rt, context.Background(), func(db *sql.DB) ([]poolcore.UTXO, error) {
+		s, err := loadWalletUTXOSyncState(db, addr)
+		if err != nil {
 			return nil, err
 		}
-		out = append(out, u)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+		if s.UpdatedAtUnix <= 0 {
+			return nil, fmt.Errorf("wallet utxo sync state not ready")
+		}
+		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
+		}
+		if strings.TrimSpace(s.LastError) != "" {
+			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
+		}
+		walletID := walletIDByAddress(addr)
+		rows, err := db.Query(`SELECT txid,vout,value_satoshi FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent' ORDER BY value_satoshi ASC,txid ASC,vout ASC`, walletID, addr)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := make([]poolcore.UTXO, 0, s.UTXOCount)
+		for rows.Next() {
+			var u poolcore.UTXO
+			if err := rows.Scan(&u.TxID, &u.Vout, &u.Value); err != nil {
+				return nil, err
+			}
+			out = append(out, u)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return out, nil
+	})
 }
 
 func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
-	if rt == nil || rt.DB == nil {
+	if rt == nil || rt.DBActor == nil {
 		return "", 0, fmt.Errorf("runtime not initialized")
 	}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		return "", 0, err
 	}
-	s, err := loadWalletUTXOSyncState(rt.DB, addr)
+	balance, err := runtimeDBValue(rt, context.Background(), func(db *sql.DB) (uint64, error) {
+		s, err := loadWalletUTXOSyncState(db, addr)
+		if err != nil {
+			return 0, err
+		}
+		if s.UpdatedAtUnix <= 0 {
+			return 0, fmt.Errorf("wallet utxo sync state not ready")
+		}
+		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+			return 0, fmt.Errorf("wallet utxo sync state stale for current runtime")
+		}
+		walletID := walletIDByAddress(addr)
+		var balance uint64
+		if err := db.QueryRow(`SELECT COALESCE(SUM(value_satoshi),0) FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent'`, walletID, addr).Scan(&balance); err != nil {
+			return 0, err
+		}
+		if strings.TrimSpace(s.LastError) != "" && balance == 0 {
+			return 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
+		}
+		return balance, nil
+	})
 	if err != nil {
 		return addr, 0, err
-	}
-	if s.UpdatedAtUnix <= 0 {
-		return addr, 0, fmt.Errorf("wallet utxo sync state not ready")
-	}
-	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-		return addr, 0, fmt.Errorf("wallet utxo sync state stale for current runtime")
-	}
-	walletID := walletIDByAddress(addr)
-	var balance uint64
-	if err := rt.DB.QueryRow(`SELECT COALESCE(SUM(value_satoshi),0) FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent'`, walletID, addr).Scan(&balance); err != nil {
-		return addr, 0, err
-	}
-	if strings.TrimSpace(s.LastError) != "" && balance == 0 {
-		return addr, 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 	}
 	// 设计说明：
 	// - wallet_utxo 表是链上未花费输出的本地投影；
@@ -2089,21 +2126,18 @@ func appendChainUTXOWorkerLog(db *sql.DB, e chainWorkerLogEntry) {
 	if e.EndedAtUnix <= 0 {
 		e.EndedAtUnix = e.StartedAtUnix
 	}
-	err := retrySQLiteBusy("chain_utxo_worker_log_append", func() error {
-		_, execErr := db.Exec(
-			`INSERT INTO chain_utxo_worker_logs(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
-			 VALUES(?,?,?,?,?,?,?,?)`,
-			e.TriggeredAtUnix,
-			e.StartedAtUnix,
-			e.EndedAtUnix,
-			e.DurationMS,
-			strings.TrimSpace(e.TriggerSource),
-			strings.TrimSpace(e.Status),
-			strings.TrimSpace(e.ErrorMessage),
-			mustJSON(e.Result),
-		)
-		return execErr
-	})
+	_, err := db.Exec(
+		`INSERT INTO chain_utxo_worker_logs(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
+		 VALUES(?,?,?,?,?,?,?,?)`,
+		e.TriggeredAtUnix,
+		e.StartedAtUnix,
+		e.EndedAtUnix,
+		e.DurationMS,
+		strings.TrimSpace(e.TriggerSource),
+		strings.TrimSpace(e.Status),
+		strings.TrimSpace(e.ErrorMessage),
+		mustJSON(e.Result),
+	)
 	if err != nil {
 		obs.Error("bitcast-client", "chain_utxo_worker_log_append_failed", map[string]any{"error": err.Error()})
 		return
@@ -2120,43 +2154,7 @@ func trimWorkerLogs(db *sql.DB, table string, keep int) {
 		table,
 		table,
 	)
-	if err := retrySQLiteBusy("chain_worker_log_trim", func() error {
-		_, execErr := db.Exec(stmt, keep)
-		return execErr
-	}); err != nil {
+	if _, err := db.Exec(stmt, keep); err != nil {
 		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 	}
-}
-
-func retrySQLiteBusy(op string, fn func() error) error {
-	if fn == nil {
-		return nil
-	}
-	var lastErr error
-	for attempt := 1; attempt <= 6; attempt++ {
-		if err := fn(); err != nil {
-			lastErr = err
-			if !isSQLiteBusyError(err) {
-				return err
-			}
-			time.Sleep(time.Duration(attempt*50) * time.Millisecond)
-			continue
-		}
-		return nil
-	}
-	if lastErr != nil {
-		obs.Info("bitcast-client", "sqlite_busy_retry_exhausted", map[string]any{
-			"operation": strings.TrimSpace(op),
-			"error":     lastErr.Error(),
-		})
-	}
-	return lastErr
-}
-
-func isSQLiteBusyError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(strings.TrimSpace(err.Error()))
-	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "sqlite_busy")
 }

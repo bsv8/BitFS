@@ -7,7 +7,8 @@ import type { BrowserSettingsStore } from "./browser_settings";
 import type { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
 import type { ElectronE2EViewerPolicyStore } from "./e2e_controller";
-import type { BitfsPublicClientStatus, BitfsRuntimeEvent, KeyFileActionResult, ShellState } from "../shared/shell_contract";
+import type { ElectronE2EObserver } from "./e2e_observer";
+import type { BitfsPublicClientStatus, BitfsRuntimeEvent, KeyFileActionResult, ShellErrorReport, ShellState } from "../shared/shell_contract";
 import type { ShellAssetPaths } from "./shell_assets";
 
 export function registerShellIPC(
@@ -16,7 +17,8 @@ export function registerShellIPC(
   supervisor: ManagedClientSupervisor,
   settings: BrowserSettingsStore,
   shellAssets: ShellAssetPaths,
-  e2eViewerPolicy?: ElectronE2EViewerPolicyStore | null
+  e2eViewerPolicy?: ElectronE2EViewerPolicyStore | null,
+  e2eObserver?: ElectronE2EObserver | null
 ): void {
   const buildShellState = (): ShellState => {
     const runtimeState = runtime.snapshot();
@@ -39,6 +41,18 @@ export function registerShellIPC(
   };
   const emitLatestState = () => {
     sendState(buildShellState());
+  };
+  const emitShellErrorReport = (report: ShellErrorReport) => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) {
+      return;
+    }
+    try {
+      window.webContents.send("bitfs-shell:error-report", report);
+    } catch {
+      // 设计说明：
+      // - 错误面板只是辅助沟通链路，窗口如果正在销毁，不该再因为二次发送失败制造额外噪音；
+      // - 主错误已经写进 debug log，这里保持 best effort 即可。
+    }
   };
   runtime.on("state", emitLatestState);
   runtime.on("event", (event: BitfsRuntimeEvent) => {
@@ -101,6 +115,15 @@ export function registerShellIPC(
   ipcMain.handle("bitfs-shell:restart-backend", () => {
     debugLogger.log("ipc", "restart_backend");
     return supervisor.restart().then(() => buildShellState());
+  });
+  ipcMain.handle("bitfs-shell:force-close-window", () => {
+    debugLogger.log("ipc", "force_close_window", {
+      window_id: window.id
+    });
+    if (!window.isDestroyed()) {
+      window.destroy();
+    }
+    return true;
   });
   ipcMain.handle("bitfs-shell:set-user-homepage", (_event, payload: { seedHash: string }) => {
     debugLogger.log("ipc", "set_user_homepage", {
@@ -315,6 +338,34 @@ export function registerShellIPC(
   ipcMain.on("bitfs-shell:debug-log", (_event, payload: { scope?: string; event?: string; fields?: Record<string, unknown> }) => {
     debugLogger.log(`renderer.${String(payload?.scope || "shell")}`, String(payload?.event || "log"), payload?.fields);
   });
+  ipcMain.on("bitfs-shell:e2e-event", (_event, payload: unknown) => {
+    const event = normalizeE2EEventPayload(payload);
+    debugLogger.log("shell_e2e", event.name, event.fields);
+    e2eObserver?.emit("shell-renderer", event.name, event.fields);
+  });
+  ipcMain.on("bitfs-shell:report-error", (_event, payload: unknown) => {
+    const report = normalizeShellErrorReport(payload);
+    debugLogger.log("shell_error", "renderer_reported", {
+      source: report.source,
+      title: report.title,
+      page_url: report.page_url,
+      can_stop_current_page: report.can_stop_current_page,
+      message: report.message
+    });
+    e2eObserver?.emit(report.source === "viewer" ? "viewer-preload" : "shell-renderer", "shell.error.reported", {
+      report_source: report.source,
+      report_title: report.title,
+      report_message: report.message,
+      report_page_url: report.page_url,
+      can_stop_current_page: report.can_stop_current_page
+    });
+    emitShellErrorReport(report);
+  });
+  ipcMain.on("bitfs-viewer:e2e-event", (_event, payload: unknown) => {
+    const event = normalizeE2EEventPayload(payload);
+    debugLogger.log("viewer_e2e", event.name, event.fields);
+    e2eObserver?.emit("viewer-page", event.name, event.fields);
+  });
   ipcMain.handle("bitfs-settings:request", (_event, payload: { method?: string; path?: string; body?: unknown }) => {
     const normalized = normalizeManagedSettingsRequest(payload);
     debugLogger.log("ipc", "settings_request", {
@@ -391,6 +442,57 @@ function buildPublicClientStatus(state: ShellState): BitfsPublicClientStatus {
     wallet_ready: state.backend.phase === "ready" && state.backend.unlocked,
     wallet_unlocked: Boolean(state.backend.unlocked)
   };
+}
+
+function normalizeShellErrorReport(payload: unknown): ShellErrorReport {
+  const input = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  const source = normalizeShellErrorSource(String(input.source || ""));
+  const title = String(input.title || "").trim() || defaultShellErrorTitle(source);
+  const message = String(input.message || "").trim() || "unknown error";
+  return {
+    source,
+    title,
+    message,
+    detail: String(input.detail || "").trim(),
+    page_url: String(input.page_url || "").trim(),
+    occurred_at_unix: Math.max(0, Math.floor(Number(input.occurred_at_unix || 0))) || Math.floor(Date.now() / 1000),
+    can_stop_current_page: Boolean(input.can_stop_current_page) && (source === "viewer" || source === "settings")
+  };
+}
+
+function normalizeShellErrorSource(raw: string): ShellErrorReport["source"] {
+  const value = String(raw || "").trim();
+  if (value === "viewer" || value === "settings" || value === "shell-renderer") {
+    return value;
+  }
+  return "main-process";
+}
+
+function defaultShellErrorTitle(source: ShellErrorReport["source"]): string {
+  if (source === "viewer") {
+    return "当前页面 JS 错误";
+  }
+  if (source === "settings") {
+    return "设置页 JS 错误";
+  }
+  if (source === "shell-renderer") {
+    return "壳页面 JS 错误";
+  }
+  return "主进程 JS 错误";
+}
+
+function normalizeE2EEventPayload(payload: unknown): { name: string; fields: Record<string, unknown> } {
+  const input = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload as Record<string, unknown>
+    : {};
+  const name = String(input.name || "").trim() || "unknown";
+  const rawFields = input.fields;
+  const fields = rawFields && typeof rawFields === "object" && !Array.isArray(rawFields)
+    ? { ...(rawFields as Record<string, unknown>) }
+    : {};
+  return { name, fields };
 }
 
 async function importKeyFile(

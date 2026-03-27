@@ -16,6 +16,9 @@ func NewRuntimeAPIHandler(rt *Runtime) (http.Handler, error) {
 	if rt.DB == nil {
 		return nil, fmt.Errorf("runtime db is nil")
 	}
+	if rt.DBActor == nil {
+		return nil, fmt.Errorf("runtime db actor is nil")
+	}
 	if rt.Host == nil {
 		return nil, fmt.Errorf("runtime host is nil")
 	}
@@ -23,6 +26,6 @@ func NewRuntimeAPIHandler(rt *Runtime) (http.Handler, error) {
 		return nil, fmt.Errorf("runtime workspace is nil")
 	}
 	cfg := rt.runIn.toConfig()
-	srv := newHTTPAPIServer(rt, &cfg, rt.DB, rt.Host, rt.HealthyGWs, rt.Workspace, rt.rpcTrace)
+	srv := newHTTPAPIServer(rt, &cfg, rt.DB, rt.DBActor, rt.Host, rt.HealthyGWs, rt.Workspace, rt.rpcTrace)
 	return srv.Handler()
 }

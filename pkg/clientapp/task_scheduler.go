@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 )
 
@@ -52,7 +53,7 @@ type periodicTaskRuntime struct {
 
 type taskScheduler struct {
 	service string
-	db      *sql.DB
+	dbActor *sqliteactor.Actor
 
 	mu       sync.RWMutex
 	tasks    map[string]*periodicTaskRuntime
@@ -60,14 +61,14 @@ type taskScheduler struct {
 	wg       sync.WaitGroup
 }
 
-func newTaskScheduler(db *sql.DB, service string) *taskScheduler {
+func newTaskScheduler(dbActor *sqliteactor.Actor, service string) *taskScheduler {
 	service = strings.TrimSpace(service)
 	if service == "" {
 		service = "bitcast-client"
 	}
 	return &taskScheduler{
 		service: service,
-		db:      db,
+		dbActor: dbActor,
 		tasks:   map[string]*periodicTaskRuntime{},
 	}
 }
@@ -79,7 +80,7 @@ func ensureRuntimeTaskScheduler(rt *Runtime) *taskScheduler {
 	rt.taskSchedMu.Lock()
 	defer rt.taskSchedMu.Unlock()
 	if rt.taskSched == nil {
-		rt.taskSched = newTaskScheduler(rt.DB, "bitcast-client")
+		rt.taskSched = newTaskScheduler(rt.DBActor, "bitcast-client")
 	}
 	return rt.taskSched
 }
@@ -393,7 +394,7 @@ func (s *taskScheduler) logSchedulerError(task string, code string, err error) {
 }
 
 func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string, closedAt int64) error {
-	if s == nil || s.db == nil || rt == nil {
+	if s == nil || s.dbActor == nil || rt == nil {
 		return nil
 	}
 	now := time.Now().Unix()
@@ -401,77 +402,83 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 	if strings.TrimSpace(status) == "" {
 		status = "active"
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO scheduler_tasks(
-			task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
-			last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
-			run_count,success_count,failure_count,last_summary_json,meta_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(task_name) DO UPDATE SET
-			owner=excluded.owner,
-			mode=excluded.mode,
-			status=excluded.status,
-			interval_seconds=excluded.interval_seconds,
-			updated_at_unix=excluded.updated_at_unix,
-			closed_at_unix=excluded.closed_at_unix,
-			meta_json=excluded.meta_json`,
-		strings.TrimSpace(spec.Name),
-		strings.TrimSpace(spec.Owner),
-		strings.TrimSpace(spec.Mode),
-		strings.TrimSpace(status),
-		int64(spec.Interval/time.Second),
-		now,
-		now,
-		closedAt,
-		"",
-		0,
-		0,
-		0,
-		"",
-		0,
-		0,
-		0,
-		0,
-		"{}",
-		mustJSONTask(map[string]any{"immediate": spec.Immediate, "timeout_ms": spec.Timeout.Milliseconds()}),
-	)
-	return err
+	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO scheduler_tasks(
+				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
+				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
+				run_count,success_count,failure_count,last_summary_json,meta_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(task_name) DO UPDATE SET
+				owner=excluded.owner,
+				mode=excluded.mode,
+				status=excluded.status,
+				interval_seconds=excluded.interval_seconds,
+				updated_at_unix=excluded.updated_at_unix,
+				closed_at_unix=excluded.closed_at_unix,
+				meta_json=excluded.meta_json`,
+			strings.TrimSpace(spec.Name),
+			strings.TrimSpace(spec.Owner),
+			strings.TrimSpace(spec.Mode),
+			strings.TrimSpace(status),
+			int64(spec.Interval/time.Second),
+			now,
+			now,
+			closedAt,
+			"",
+			0,
+			0,
+			0,
+			"",
+			0,
+			0,
+			0,
+			0,
+			"{}",
+			mustJSONTask(map[string]any{"immediate": spec.Immediate, "timeout_ms": spec.Timeout.Milliseconds()}),
+		)
+		return err
+	})
 }
 
 func (s *taskScheduler) markTaskStopped(name string) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.dbActor == nil {
 		return nil
 	}
 	now := time.Now().Unix()
-	_, err := s.db.Exec(
-		`UPDATE scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
-		now, now, strings.TrimSpace(name),
-	)
-	return err
+	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`UPDATE scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
+			now, now, strings.TrimSpace(name),
+		)
+		return err
+	})
 }
 
 func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt int64) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.dbActor == nil {
 		return nil
 	}
-	_, err := s.db.Exec(
-		`UPDATE scheduler_tasks SET
-			last_trigger=?,
-			last_started_at_unix=?,
-			in_flight=1,
-			updated_at_unix=?,
-			status=CASE WHEN status='stopped' THEN status ELSE 'active' END
-		WHERE task_name=?`,
-		strings.TrimSpace(trigger),
-		startedAt,
-		time.Now().Unix(),
-		strings.TrimSpace(name),
-	)
-	return err
+	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`UPDATE scheduler_tasks SET
+				last_trigger=?,
+				last_started_at_unix=?,
+				in_flight=1,
+				updated_at_unix=?,
+				status=CASE WHEN status='stopped' THEN status ELSE 'active' END
+			WHERE task_name=?`,
+			strings.TrimSpace(trigger),
+			startedAt,
+			time.Now().Unix(),
+			strings.TrimSpace(name),
+		)
+		return err
+	})
 }
 
 func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS int64, errMsg string, summary map[string]any, success bool) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.dbActor == nil {
 		return nil
 	}
 	incSuccess := 0
@@ -481,51 +488,55 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	} else {
 		incFailure = 1
 	}
-	_, err := s.db.Exec(
-		`UPDATE scheduler_tasks SET
-			last_ended_at_unix=?,
-			last_duration_ms=?,
-			last_error=?,
-			last_summary_json=?,
-			in_flight=0,
-			run_count=run_count+1,
-			success_count=success_count+?,
-			failure_count=failure_count+?,
-			updated_at_unix=?
-		WHERE task_name=?`,
-		endedAt,
-		durationMS,
-		strings.TrimSpace(errMsg),
-		mustJSONTask(summary),
-		incSuccess,
-		incFailure,
-		time.Now().Unix(),
-		strings.TrimSpace(name),
-	)
-	return err
+	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`UPDATE scheduler_tasks SET
+				last_ended_at_unix=?,
+				last_duration_ms=?,
+				last_error=?,
+				last_summary_json=?,
+				in_flight=0,
+				run_count=run_count+1,
+				success_count=success_count+?,
+				failure_count=failure_count+?,
+				updated_at_unix=?
+			WHERE task_name=?`,
+			endedAt,
+			durationMS,
+			strings.TrimSpace(errMsg),
+			mustJSONTask(summary),
+			incSuccess,
+			incFailure,
+			time.Now().Unix(),
+			strings.TrimSpace(name),
+		)
+		return err
+	})
 }
 
 func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, startedAt int64, endedAt int64, durationMS int64, status string, errMsg string, summary map[string]any) error {
-	if s == nil || s.db == nil {
+	if s == nil || s.dbActor == nil {
 		return nil
 	}
-	_, err := s.db.Exec(
-		`INSERT INTO scheduler_task_runs(
-			task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		strings.TrimSpace(spec.Name),
-		strings.TrimSpace(spec.Owner),
-		strings.TrimSpace(spec.Mode),
-		strings.TrimSpace(trigger),
-		startedAt,
-		endedAt,
-		durationMS,
-		strings.TrimSpace(status),
-		strings.TrimSpace(errMsg),
-		mustJSONTask(summary),
-		time.Now().Unix(),
-	)
-	return err
+	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO scheduler_task_runs(
+				task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			strings.TrimSpace(spec.Name),
+			strings.TrimSpace(spec.Owner),
+			strings.TrimSpace(spec.Mode),
+			strings.TrimSpace(trigger),
+			startedAt,
+			endedAt,
+			durationMS,
+			strings.TrimSpace(status),
+			strings.TrimSpace(errMsg),
+			mustJSONTask(summary),
+			time.Now().Unix(),
+		)
+		return err
+	})
 }
 
 func mustJSONTask(v any) string {
@@ -552,7 +563,7 @@ func (s *taskScheduler) logTaskError(task string, trigger string, duration time.
 }
 
 func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix int64) error {
-	if s == nil || s.db == nil || len(names) == 0 {
+	if s == nil || s.dbActor == nil || len(names) == 0 {
 		return nil
 	}
 	filtered := make([]string, 0, len(names))
@@ -573,20 +584,22 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(filtered)), ",")
 	args = append([]any{startupUnix, startupUnix}, args...)
-	_, err := s.db.Exec(
-		`UPDATE scheduler_tasks SET
-			status='stopped',
-			updated_at_unix=?,
-			closed_at_unix=?,
-			last_trigger='',
-			last_started_at_unix=0,
-			last_ended_at_unix=0,
-			last_duration_ms=0,
-			last_error='',
-			in_flight=0,
-			last_summary_json='{}'
-		WHERE task_name IN (`+placeholders+`)`,
-		args...,
-	)
-	return err
+	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(
+			`UPDATE scheduler_tasks SET
+				status='stopped',
+				updated_at_unix=?,
+				closed_at_unix=?,
+				last_trigger='',
+				last_started_at_unix=0,
+				last_ended_at_unix=0,
+				last_duration_ms=0,
+				last_error='',
+				in_flight=0,
+				last_summary_json='{}'
+			WHERE task_name IN (`+placeholders+`)`,
+			args...,
+		)
+		return err
+	})
 }

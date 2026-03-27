@@ -12,7 +12,6 @@ import (
 
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/BitFS/pkg/managedclient"
-	_ "modernc.org/sqlite"
 )
 
 var version = "dev"

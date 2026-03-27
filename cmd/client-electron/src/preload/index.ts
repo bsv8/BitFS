@@ -1,5 +1,5 @@
 import { ipcRenderer } from "electron";
-import type { BitfsRuntimeEvent, KeyFileActionResult, ShellState } from "../shared/shell_contract";
+import type { BitfsRuntimeEvent, KeyFileActionResult, ShellErrorReport, ShellState } from "../shared/shell_contract";
 
 type Unsubscribe = () => void;
 
@@ -14,12 +14,19 @@ type BitfsShellBridge = {
   unlock(password: string): Promise<ShellState>;
   lock(): Promise<ShellState>;
   restartBackend(): Promise<ShellState>;
+  forceCloseWindow(): Promise<boolean>;
   setUserHomepage(seedHash: string): Promise<ShellState>;
   clearUserHomepage(): Promise<ShellState>;
   setSidebarLayout(sidebarWidthPx?: number, activePanel?: string): Promise<ShellState>;
   getWalletSummary(): Promise<Record<string, unknown>>;
+  reportError(report: ShellErrorReport): void;
+  onErrorReport(listener: (report: ShellErrorReport) => void): Unsubscribe;
   noteNavigation(url: string): void;
   debugLog(scope: string, event: string, fields?: Record<string, unknown>): void;
+  e2e: {
+    enabled: boolean;
+    emit(name: string, fields?: Record<string, unknown>): void;
+  };
   onState(listener: (state: ShellState) => void): Unsubscribe;
   events: {
     subscribe(topics: string | string[], listener: (event: BitfsRuntimeEvent) => void): Unsubscribe;
@@ -67,6 +74,9 @@ window.bitfsShell = {
   restartBackend() {
     return ipcRenderer.invoke("bitfs-shell:restart-backend") as Promise<ShellState>;
   },
+  forceCloseWindow() {
+    return ipcRenderer.invoke("bitfs-shell:force-close-window") as Promise<boolean>;
+  },
   setUserHomepage(seedHash: string) {
     return ipcRenderer.invoke("bitfs-shell:set-user-homepage", { seedHash }) as Promise<ShellState>;
   },
@@ -82,11 +92,35 @@ window.bitfsShell = {
   getWalletSummary() {
     return ipcRenderer.invoke("bitfs-shell:wallet-summary") as Promise<Record<string, unknown>>;
   },
+  reportError(report: ShellErrorReport) {
+    ipcRenderer.send("bitfs-shell:report-error", report);
+  },
+  onErrorReport(listener: (report: ShellErrorReport) => void): Unsubscribe {
+    const handler = (_event: unknown, report: ShellErrorReport) => {
+      listener(report);
+    };
+    ipcRenderer.on("bitfs-shell:error-report", handler);
+    return () => {
+      ipcRenderer.removeListener("bitfs-shell:error-report", handler);
+    };
+  },
   noteNavigation(url: string) {
     ipcRenderer.send("bitfs-shell:did-navigate", url);
   },
   debugLog(scope: string, event: string, fields?: Record<string, unknown>) {
     ipcRenderer.send("bitfs-shell:debug-log", { scope, event, fields });
+  },
+  e2e: {
+    enabled: process.env.BITFS_ELECTRON_E2E === "1",
+    emit(name: string, fields?: Record<string, unknown>) {
+      if (process.env.BITFS_ELECTRON_E2E !== "1") {
+        return;
+      }
+      ipcRenderer.send("bitfs-shell:e2e-event", {
+        name: String(name || ""),
+        fields: fields && typeof fields === "object" ? fields : {}
+      });
+    }
   },
   onState(listener: (state: ShellState) => void): Unsubscribe {
     const handler = (_event: unknown, state: ShellState) => {

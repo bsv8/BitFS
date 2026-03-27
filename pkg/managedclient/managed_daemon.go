@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
+	"github.com/bsv8/BFTP/pkg/infra/caps"
 	"github.com/bsv8/BFTP/pkg/infra/lhttp"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
@@ -40,6 +41,10 @@ const (
 
 	managedWOCProxyListenAddr = "127.0.0.1:19183"
 	managedWOCUpstreamRootURL = wocproxy.DefaultUpstreamRootURL
+
+	bitfsManagedHTTPKeyAbility      = "bitfs.managed_http.key@1"
+	bitfsManagedHTTPProxyAbility    = "bitfs.managed_http.proxy@1"
+	bitfsManagedHTTPFallbackAbility = "bitfs.managed_http.fallback@1"
 )
 
 type startupErrorState struct {
@@ -179,17 +184,9 @@ func (d *managedDaemon) close() error {
 }
 
 func (d *managedDaemon) startHTTPServer() error {
-	mux := lhttp.NewServeMux(
-		lhttp.Route{Path: "/api/v1/key/status", Handler: d.handleKeyStatus},
-		lhttp.Route{Path: "/api/v1/key/new", Handler: d.handleKeyNew},
-		lhttp.Route{Path: "/api/v1/key/import", Handler: d.handleKeyImport},
-		lhttp.Route{Path: "/api/v1/key/export", Handler: d.handleKeyExport},
-		lhttp.Route{Path: "/api/v1/key/unlock", Handler: d.handleKeyUnlock},
-		lhttp.Route{Path: "/api/v1/key/lock", Handler: d.handleKeyLock},
-		lhttp.Route{Path: "/api", Handler: d.handleAPIProxyOrLocked},
-		lhttp.Route{Path: "/api/", Handler: d.handleAPIProxyOrLocked},
-		lhttp.Route{Path: "/", Handler: d.handleNonAPIRequest},
-	)
+	decls := d.httpRouteDecls()
+	caps.MustAssemble(lhttp.ModuleSpecs(decls...)...)
+	mux := lhttp.NewServeMux(lhttp.FlattenDecls(decls...)...)
 	started, err := lhttp.StartServer(lhttp.ServerOptions{
 		ListenAddr: d.cfg.HTTP.ListenAddr,
 		Handler:    mux,
@@ -209,6 +206,35 @@ func (d *managedDaemon) startHTTPServer() error {
 		d.rootCancel()
 	})
 	return nil
+}
+
+func (d *managedDaemon) httpRouteDecls() []lhttp.RouteDecl {
+	return []lhttp.RouteDecl{
+		{
+			InternalAbility: bitfsManagedHTTPKeyAbility,
+			Routes: []lhttp.Route{
+				{Path: "/api/v1/key/status", Handler: d.handleKeyStatus},
+				{Path: "/api/v1/key/new", Handler: d.handleKeyNew},
+				{Path: "/api/v1/key/import", Handler: d.handleKeyImport},
+				{Path: "/api/v1/key/export", Handler: d.handleKeyExport},
+				{Path: "/api/v1/key/unlock", Handler: d.handleKeyUnlock},
+				{Path: "/api/v1/key/lock", Handler: d.handleKeyLock},
+			},
+		},
+		{
+			InternalAbility: bitfsManagedHTTPProxyAbility,
+			Routes: []lhttp.Route{
+				{Path: "/api", Handler: d.handleAPIProxyOrLocked},
+				{Path: "/api/", Handler: d.handleAPIProxyOrLocked},
+			},
+		},
+		{
+			InternalAbility: bitfsManagedHTTPFallbackAbility,
+			Routes: []lhttp.Route{
+				{Path: "/", Handler: d.handleNonAPIRequest},
+			},
+		},
+	}
 }
 
 func (d *managedDaemon) handleNonAPIRequest(w http.ResponseWriter, _ *http.Request) {

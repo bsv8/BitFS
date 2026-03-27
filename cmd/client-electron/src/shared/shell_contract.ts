@@ -140,6 +140,47 @@ export type BitfsPublicWalletHistoryList = {
   items: BitfsPublicWalletHistoryItem[];
 };
 
+export type ShellErrorSource = "main-process" | "shell-renderer" | "viewer" | "settings";
+
+export type ShellErrorReport = {
+  source: ShellErrorSource;
+  title: string;
+  message: string;
+  detail: string;
+  page_url: string;
+  occurred_at_unix: number;
+  can_stop_current_page: boolean;
+};
+
+export type ElectronE2EEventSource =
+  | "main-process"
+  | "shell-renderer"
+  | "viewer-preload"
+  | "viewer-page";
+
+export type ElectronE2EEvent = {
+  seq: number;
+  name: string;
+  source: ElectronE2EEventSource;
+  occurred_at_unix: number;
+  fields: Record<string, unknown>;
+};
+
+export type ElectronE2EObserverState = {
+  enabled: boolean;
+  last_seq: number;
+  report_count: number;
+  last_report_source: ShellErrorSource | "";
+  last_report_title: string;
+  last_report_message: string;
+  last_report_page_url: string;
+  modal_visible: boolean;
+  stop_current_page_visible: boolean;
+  viewer_frozen: boolean;
+  viewer_frozen_url: string;
+  viewer_frozen_reason: string;
+};
+
 export type ShellState = {
   currentURL: string;
   currentViewerURL: string;

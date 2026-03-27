@@ -26,6 +26,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/dealprod"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -35,7 +36,6 @@ import (
 	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/pelletier/go-toml/v2"
-	_ "modernc.org/sqlite"
 )
 
 const (
@@ -616,6 +616,7 @@ func (in RunInput) toConfig() Config {
 type Runtime struct {
 	Host            host.Host
 	DB              *sql.DB
+	DBActor         *sqliteactor.Actor
 	runIn           RunInput
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
@@ -767,22 +768,17 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	db, err := sql.Open("sqlite", dbPath)
+	openedDB, err := sqliteactor.Open(dbPath)
 	if err != nil {
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	if err := applySQLitePragmas(db); err != nil {
-		_ = db.Close()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
+	db := openedDB.DB
+	dbActor := openedDB.Actor
 	if err := initIndexDB(db); err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -796,14 +792,14 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		catalog: catalog,
 	}
 	if err := workspaceMgr.EnsureDefaultWorkspace(); err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if err := workspaceMgr.ValidateLiveCacheCapacity(cfg.Live.CacheMaxBytes); err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -811,7 +807,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	if cfg.Scan.StartupFullScan {
 		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
-			_ = db.Close()
+			_ = dbActor.Close()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -819,7 +815,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 	}
 	if err := workspaceMgr.EnforceLiveCacheLimit(cfg.Live.CacheMaxBytes); err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -827,7 +823,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	if in.PostWorkspaceBootstrap != nil {
 		if err := in.PostWorkspaceBootstrap(db); err != nil {
-			_ = db.Close()
+			_ = dbActor.Close()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -843,14 +839,14 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
 	if err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if strings.TrimSpace(effectivePrivHex) == "" {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -862,7 +858,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	in.EffectivePrivKeyHex = effectivePrivHex
 	priv, err := parsePrivHex(effectivePrivHex)
 	if err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -871,7 +867,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	opts = append(opts, libp2p.Identity(priv))
 	h, err := libp2p.New(opts...)
 	if err != nil {
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -880,7 +876,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	clientPubHex, err := localPubKeyHex(h)
 	if err != nil {
 		_ = h.Close()
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -892,7 +888,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	cfg.ClientID = clientPubHex
 	if err := validateClientIdentityConsistency(cfg); err != nil {
 		_ = h.Close()
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -902,7 +898,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	activeGWs, err := connectGateways(ctx, h, cfg.Network.Gateways)
 	if err != nil {
 		_ = h.Close()
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -914,7 +910,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	arbInfo, err := connectArbiters(ctx, h, cfg.Network.Arbiters)
 	if err != nil {
 		_ = h.Close()
-		_ = db.Close()
+		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -928,7 +924,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		localTrace, err := pproto.NewLocalRawTraceSink(logFile)
 		if err != nil {
 			_ = h.Close()
-			_ = db.Close()
+			_ = dbActor.Close()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -971,6 +967,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rt := &Runtime{
 		Host:                     h,
 		DB:                       db,
+		DBActor:                  dbActor,
 		runIn:                    in,
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,
@@ -988,7 +985,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	rtCtx, rtCancel := context.WithCancel(ctx)
 	rt.bgCancel = rtCancel
-	rt.taskSched = newTaskScheduler(db, "bitcast-client")
+	rt.taskSched = newTaskScheduler(dbActor, "bitcast-client")
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
@@ -1004,7 +1001,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			Network:  in.BSV.Network,
 		})
 		if err != nil {
-			_ = db.Close()
+			_ = dbActor.Close()
 			if closeTrace != nil {
 				_ = closeTrace()
 			}
@@ -1021,7 +1018,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			Network:  in.BSV.Network,
 		})
 		if err != nil {
-			_ = db.Close()
+			_ = dbActor.Close()
 			if closeTrace != nil {
 				_ = closeTrace()
 			}
@@ -1052,7 +1049,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
 	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt)
 	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
-		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, h, healthyGWs, workspaceMgr, trace)
+		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, dbActor, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1108,7 +1105,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		if err := h.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if err := db.Close(); err != nil && firstErr == nil {
+		if err := dbActor.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 		if closeTrace != nil {
@@ -1493,14 +1490,11 @@ func applySQLitePragmas(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	// 设计说明：
-	// - client 运行时会有链维护、HTTP 触发、调度器等多路并发写；
-	// - 这里先保留正常连接模型，避免把事务内辅助查询卡成自等待；
-	// - 通过 WAL + 更长 busy_timeout，尽量让短暂写锁竞争自动退避完成。
+	// - 运行时正式入口统一走 infra/sqliteactor.Open；
+	// - 这里保留给直接 sql.Open("sqlite", ...) 的测试库做最小 WAL 初始化；
+	// - 不再在这里叠加 busy_timeout 之类并发补丁，避免测试口径和正式口径分裂。
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return fmt.Errorf("sqlite pragma journal_mode: %w", err)
-	}
-	if _, err := db.Exec(`PRAGMA busy_timeout=15000`); err != nil {
-		return fmt.Errorf("sqlite pragma busy_timeout: %w", err)
 	}
 	return nil
 }
@@ -2187,6 +2181,13 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
+	// 设计说明：
+	// - sqliteactor 把运行时压成单连接后，事务期间不能再回头走库级 Query；
+	// - 这里先在事务外判断旧表是否存在，避免同一函数里“持有 tx 又重新借 db”把自己堵死。
+	legacyExists, legacyErr := hasTable(db, "biz_utxo_links")
+	if legacyErr != nil {
+		return legacyErr
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -2224,10 +2225,6 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 		return err
 	}
 	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑。
-	legacyExists, legacyErr := hasTable(db, "biz_utxo_links")
-	if legacyErr != nil {
-		return legacyErr
-	}
 	if legacyExists {
 		if _, err = tx.Exec(
 			`DELETE FROM biz_utxo_links

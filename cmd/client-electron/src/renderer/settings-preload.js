@@ -1,6 +1,82 @@
 try {
   const { contextBridge, ipcRenderer } = require("electron");
 
+  function trimString(raw) {
+    return String(raw || "").trim();
+  }
+
+  function formatErrorDetail(message, stack, extraLines) {
+    const lines = [];
+    const normalizedMessage = trimString(message);
+    const normalizedStack = trimString(stack);
+    if (normalizedMessage) {
+      lines.push(`message: ${normalizedMessage}`);
+    }
+    if (Array.isArray(extraLines)) {
+      for (const line of extraLines) {
+        const value = trimString(line);
+        if (value) {
+          lines.push(value);
+        }
+      }
+    }
+    if (normalizedStack && normalizedStack !== normalizedMessage) {
+      lines.push("");
+      lines.push(normalizedStack);
+    }
+    return lines.join("\n").trim();
+  }
+
+  function reportSettingsRuntimeError(title, message, detail) {
+    try {
+      ipcRenderer.send("bitfs-shell:report-error", {
+        source: "settings",
+        title: trimString(title) || "设置页 JS 错误",
+        message: trimString(message) || "settings runtime error",
+        detail: trimString(detail),
+        page_url: trimString(window.location && window.location.href),
+        occurred_at_unix: Math.floor(Date.now() / 1000),
+        can_stop_current_page: true
+      });
+    } catch {
+      // 设计说明：
+      // - 设置页已经是壳内受信页面，但错误上报本身仍然要 best effort；
+      // - 这里不能为了再报一次错，把设置页彻底锁死。
+    }
+  }
+
+  window.addEventListener("error", (event) => {
+    event.preventDefault();
+    const error = event && event.error;
+    reportSettingsRuntimeError(
+      "设置页 JS 错误",
+      trimString(event && event.message) || trimString(error && error.message) || "settings uncaught error",
+      formatErrorDetail(
+        trimString(event && event.message) || trimString(error && error.message),
+        trimString(error && error.stack),
+        [
+          trimString(event && event.filename) ? `file: ${trimString(event.filename)}` : "",
+          Number(event && event.lineno) > 0 ? `line: ${Number(event.lineno)}` : "",
+          Number(event && event.colno) > 0 ? `column: ${Number(event.colno)}` : ""
+        ]
+      )
+    );
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    event.preventDefault();
+    const reason = event && event.reason;
+    const message = reason instanceof Error
+      ? trimString(reason.message)
+      : trimString(reason && reason.message) || trimString(reason) || "settings unhandled rejection";
+    const stack = reason instanceof Error ? trimString(reason.stack) : trimString(reason && reason.stack);
+    reportSettingsRuntimeError(
+      "设置页 Promise 未处理拒绝",
+      message,
+      formatErrorDetail(message, stack, [])
+    );
+  });
+
   function normalizeTopics(raw) {
     const values = Array.isArray(raw) ? raw : [raw];
     const topics = new Set();

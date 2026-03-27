@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
@@ -387,6 +388,7 @@ type httpAPIServer struct {
 	rt        *Runtime
 	cfg       *Config
 	db        *sql.DB
+	dbActor   *sqliteactor.Actor
 	h         host.Host
 	gateways  []peer.AddrInfo
 	workspace *workspaceManager
@@ -425,11 +427,12 @@ type fileGetJob struct {
 	cancel          context.CancelFunc `json:"-"`
 }
 
-func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
+func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, dbActor *sqliteactor.Actor, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
 	return &httpAPIServer{
 		rt:        rt,
 		cfg:       cfg,
 		db:        db,
+		dbActor:   dbActor,
 		h:         h,
 		gateways:  gateways,
 		workspace: workspace,
@@ -652,30 +655,32 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || s.dbActor == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
 	var flowCount, txCount, saleCount, gatewayEventCount int64
 	var totalIn, totalOut, totalUsed, totalReturned int64
 	var ledgerCount, ledgerIn, ledgerOut int64
-	if err := s.db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN amount_satoshi>0 THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN amount_satoshi<0 THEN -amount_satoshi ELSE 0 END),0),COALESCE(SUM(used_satoshi),0),COALESCE(SUM(returned_satoshi),0) FROM wallet_fund_flows`).Scan(&flowCount, &totalIn, &totalOut, &totalUsed, &totalReturned); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := s.db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN direction='IN' THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN direction='OUT' THEN amount_satoshi ELSE 0 END),0) FROM wallet_ledger_entries`).Scan(&ledgerCount, &ledgerIn, &ledgerOut); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := s.db.QueryRow(`SELECT COUNT(1) FROM tx_history`).Scan(&txCount); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := s.db.QueryRow(`SELECT COUNT(1) FROM sale_records`).Scan(&saleCount); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := s.db.QueryRow(`SELECT COUNT(1) FROM gateway_events`).Scan(&gatewayEventCount); err != nil {
+	_, err := httpDBValue(r.Context(), s, func(db *sql.DB) (struct{}, error) {
+		if err := db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN amount_satoshi>0 THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN amount_satoshi<0 THEN -amount_satoshi ELSE 0 END),0),COALESCE(SUM(used_satoshi),0),COALESCE(SUM(returned_satoshi),0) FROM wallet_fund_flows`).Scan(&flowCount, &totalIn, &totalOut, &totalUsed, &totalReturned); err != nil {
+			return struct{}{}, err
+		}
+		if err := db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN direction='IN' THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN direction='OUT' THEN amount_satoshi ELSE 0 END),0) FROM wallet_ledger_entries`).Scan(&ledgerCount, &ledgerIn, &ledgerOut); err != nil {
+			return struct{}{}, err
+		}
+		if err := db.QueryRow(`SELECT COUNT(1) FROM tx_history`).Scan(&txCount); err != nil {
+			return struct{}{}, err
+		}
+		if err := db.QueryRow(`SELECT COUNT(1) FROM sale_records`).Scan(&saleCount); err != nil {
+			return struct{}{}, err
+		}
+		if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events`).Scan(&gatewayEventCount); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, nil
+	})
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -723,7 +728,9 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 			onchainBalErr = err.Error()
 		}
 		if strings.TrimSpace(walletAddr) != "" {
-			if syncState, syncErr := loadWalletUTXOSyncState(s.db, walletAddr); syncErr == nil {
+			if syncState, syncErr := httpDBValue(r.Context(), s, func(db *sql.DB) (walletUTXOSyncState, error) {
+				return loadWalletUTXOSyncState(db, walletAddr)
+			}); syncErr == nil {
 				walletUTXOSyncUpdatedAtUnix = syncState.UpdatedAtUnix
 				walletUTXOSyncLastError = strings.TrimSpace(syncState.LastError)
 				walletUTXOSyncLastTrigger = strings.TrimSpace(syncState.LastTrigger)
@@ -736,8 +743,10 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
-	if s != nil && s.db != nil {
-		if schedulerState, err := loadSchedulerTaskSnapshot(s.db, "chain_utxo_sync"); err == nil {
+	if s != nil && s.dbActor != nil {
+		if schedulerState, err := httpDBValue(r.Context(), s, func(db *sql.DB) (schedulerTaskSnapshot, error) {
+			return loadSchedulerTaskSnapshot(db, "chain_utxo_sync")
+		}); err == nil {
 			walletUTXOSyncSchedulerStatus = strings.TrimSpace(schedulerState.Status)
 			walletUTXOSyncSchedulerLastTrigger = strings.TrimSpace(schedulerState.LastTrigger)
 			walletUTXOSyncSchedulerLastStartedAtUnix = schedulerState.LastStartedAtUnix
@@ -946,21 +955,6 @@ func (s *httpAPIServer) handleWalletLedger(w http.ResponseWriter, r *http.Reques
 		like := "%" + q + "%"
 		build.args = append(build.args, like, like, like, like)
 	}
-	var total int
-	if err := s.db.QueryRow("SELECT COUNT(1) FROM wallet_ledger_entries WHERE 1=1"+build.where, build.args...).Scan(&total); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	rows, err := s.db.Query(
-		`SELECT id,created_at_unix,txid,direction,category,amount_satoshi,counterparty_label,status,block_height,occurred_at_unix,raw_ref_id,note,payload_json
-		FROM wallet_ledger_entries WHERE 1=1`+build.where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
-		append(build.args, limit, offset)...,
-	)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	defer rows.Close()
 	type item struct {
 		ID                int64           `json:"id"`
 		CreatedAtUnix     int64           `json:"created_at_unix"`
@@ -976,18 +970,44 @@ func (s *httpAPIServer) handleWalletLedger(w http.ResponseWriter, r *http.Reques
 		Note              string          `json:"note"`
 		Payload           json.RawMessage `json:"payload"`
 	}
-	items := make([]item, 0, limit)
-	for rows.Next() {
-		var it item
-		var payload string
-		if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.TxID, &it.Direction, &it.Category, &it.AmountSatoshi, &it.CounterpartyLabel, &it.Status, &it.BlockHeight, &it.OccurredAtUnix, &it.RawRefID, &it.Note, &payload); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		it.Payload = json.RawMessage(payload)
-		items = append(items, it)
+	type walletLedgerList struct {
+		Total int
+		Items []item
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": total, "limit": limit, "offset": offset, "items": items})
+	data, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletLedgerList, error) {
+		var out walletLedgerList
+		if err := db.QueryRow("SELECT COUNT(1) FROM wallet_ledger_entries WHERE 1=1"+build.where, build.args...).Scan(&out.Total); err != nil {
+			return walletLedgerList{}, err
+		}
+		rows, err := db.Query(
+			`SELECT id,created_at_unix,txid,direction,category,amount_satoshi,counterparty_label,status,block_height,occurred_at_unix,raw_ref_id,note,payload_json
+			FROM wallet_ledger_entries WHERE 1=1`+build.where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
+			append(build.args, limit, offset)...,
+		)
+		if err != nil {
+			return walletLedgerList{}, err
+		}
+		defer rows.Close()
+		out.Items = make([]item, 0, limit)
+		for rows.Next() {
+			var it item
+			var payload string
+			if err := rows.Scan(&it.ID, &it.CreatedAtUnix, &it.TxID, &it.Direction, &it.Category, &it.AmountSatoshi, &it.CounterpartyLabel, &it.Status, &it.BlockHeight, &it.OccurredAtUnix, &it.RawRefID, &it.Note, &payload); err != nil {
+				return walletLedgerList{}, err
+			}
+			it.Payload = json.RawMessage(payload)
+			out.Items = append(out.Items, it)
+		}
+		if err := rows.Err(); err != nil {
+			return walletLedgerList{}, err
+		}
+		return out, nil
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": data.Total, "limit": limit, "offset": offset, "items": data.Items})
 }
 
 func (s *httpAPIServer) handleWalletLedgerDetail(w http.ResponseWriter, r *http.Request) {
@@ -1015,12 +1035,19 @@ func (s *httpAPIServer) handleWalletLedgerDetail(w http.ResponseWriter, r *http.
 		Note              string          `json:"note"`
 		Payload           json.RawMessage `json:"payload"`
 	}
-	var it item
-	var payload string
-	err := s.db.QueryRow(
-		`SELECT id,created_at_unix,txid,direction,category,amount_satoshi,counterparty_label,status,block_height,occurred_at_unix,raw_ref_id,note,payload_json
-		FROM wallet_ledger_entries WHERE id=?`, id,
-	).Scan(&it.ID, &it.CreatedAtUnix, &it.TxID, &it.Direction, &it.Category, &it.AmountSatoshi, &it.CounterpartyLabel, &it.Status, &it.BlockHeight, &it.OccurredAtUnix, &it.RawRefID, &it.Note, &payload)
+	it, err := httpDBValue(r.Context(), s, func(db *sql.DB) (item, error) {
+		var out item
+		var payload string
+		err := db.QueryRow(
+			`SELECT id,created_at_unix,txid,direction,category,amount_satoshi,counterparty_label,status,block_height,occurred_at_unix,raw_ref_id,note,payload_json
+			FROM wallet_ledger_entries WHERE id=?`, id,
+		).Scan(&out.ID, &out.CreatedAtUnix, &out.TxID, &out.Direction, &out.Category, &out.AmountSatoshi, &out.CounterpartyLabel, &out.Status, &out.BlockHeight, &out.OccurredAtUnix, &out.RawRefID, &out.Note, &payload)
+		if err != nil {
+			return item{}, err
+		}
+		out.Payload = json.RawMessage(payload)
+		return out, nil
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -1029,7 +1056,6 @@ func (s *httpAPIServer) handleWalletLedgerDetail(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	it.Payload = json.RawMessage(payload)
 	writeJSON(w, http.StatusOK, it)
 }
 

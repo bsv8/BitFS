@@ -8,10 +8,12 @@ import { createBitfsProtocolHandler } from "./bitfs_protocol";
 import { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
 import { ElectronE2EController, ElectronE2EViewerPolicyStore } from "./e2e_controller";
+import { ElectronE2EObserver } from "./e2e_observer";
 import { registerShellIPC } from "./ipc_bridge";
 import type { LocatorVisitContext } from "./locator";
 import { isTrustedNavigationURL, isTrustedRequestURL } from "./navigation_guard";
 import { resolveShellAssetPaths } from "./shell_assets";
+import type { ShellErrorReport, ShellErrorSource } from "../shared/shell_contract";
 
 const e2eConfig = resolveE2EConfig();
 
@@ -22,8 +24,11 @@ let supervisor: ManagedClientSupervisor | null = null;
 let settings: BrowserSettingsStore | null = null;
 let e2eController: ElectronE2EController | null = null;
 const e2eViewerPolicy = e2eConfig.enabled ? new ElectronE2EViewerPolicyStore() : null;
+const e2eObserver = new ElectronE2EObserver(e2eConfig.enabled);
+const pendingShellErrorReports: ShellErrorReport[] = [];
 
 applyEarlyAppConfig();
+installProcessErrorGuards();
 
 function installTrustedWorldGuards(): void {
   app.on("web-contents-created", (_event, contents) => {
@@ -121,7 +126,10 @@ async function bootstrap(): Promise<void> {
       }
       mainWindowCreated = false;
     });
-    registerShellIPC(window, runtime, supervisor, settings, shellAssets, e2eViewerPolicy);
+    registerShellIPC(window, runtime, supervisor, settings, shellAssets, e2eViewerPolicy, e2eObserver);
+    window.webContents.once("did-finish-load", () => {
+      flushPendingShellErrorReports(window);
+    });
     mainWindowCreated = true;
     debugLogger.log("bootstrap", "main_window_created", {
       window_id: window.id
@@ -134,7 +142,8 @@ async function bootstrap(): Promise<void> {
       settings,
       getWindow: () => mainWindow,
       cdpPort: e2eConfig.cdpPort,
-      viewerPolicy: e2eViewerPolicy || new ElectronE2EViewerPolicyStore()
+      viewerPolicy: e2eViewerPolicy || new ElectronE2EViewerPolicyStore(),
+      observer: e2eObserver
     });
     await e2eController.start(e2eConfig.controlPort);
   }
@@ -211,6 +220,9 @@ app.on("activate", () => {
     mainWindowCreated = false;
   });
   registerShellIPC(window, runtime, supervisor, settings, shellAssets, e2eViewerPolicy);
+  window.webContents.once("did-finish-load", () => {
+    flushPendingShellErrorReports(window);
+  });
   mainWindowCreated = true;
   debugLogger.log("bootstrap", "main_window_recreated", {
     window_id: window.id
@@ -225,6 +237,153 @@ void bootstrap().catch((error: unknown) => {
   console.error("electron bootstrap failed:", message);
   app.exit(1);
 });
+
+function installProcessErrorGuards(): void {
+  process.on("uncaughtException", (error: Error) => {
+    emitShellErrorReport(buildShellErrorReport(
+      "main-process",
+      "主进程 JS 错误",
+      error?.message || "main process uncaught exception",
+      error?.stack || "",
+      false
+    ));
+  });
+  process.on("unhandledRejection", (reason: unknown) => {
+    emitShellErrorReport(buildShellErrorReport(
+      "main-process",
+      "主进程 Promise 未处理拒绝",
+      extractUnknownErrorMessage(reason, "main process unhandled rejection"),
+      extractUnknownErrorDetail(reason),
+      false
+    ));
+  });
+}
+
+function emitShellErrorReport(report: ShellErrorReport): void {
+  const normalized = normalizeShellErrorReport(report);
+  debugLogger.log("shell_error", "main_reported", {
+    source: normalized.source,
+    title: normalized.title,
+    page_url: normalized.page_url,
+    can_stop_current_page: normalized.can_stop_current_page,
+    message: normalized.message
+  });
+  e2eObserver.emit("main-process", "shell.error.reported", {
+    report_source: normalized.source,
+    report_title: normalized.title,
+    report_message: normalized.message,
+    report_page_url: normalized.page_url,
+    can_stop_current_page: normalized.can_stop_current_page
+  });
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed()) {
+    try {
+      mainWindow.webContents.send("bitfs-shell:error-report", normalized);
+      return;
+    } catch {
+      // 窗口销毁或 renderer 尚未就绪时，退回到 pending 队列，等待壳页面完成加载后再交付。
+    }
+  }
+  pendingShellErrorReports.push(normalized);
+  if (pendingShellErrorReports.length > 16) {
+    pendingShellErrorReports.shift();
+  }
+}
+
+function flushPendingShellErrorReports(window: BrowserWindow): void {
+  if (pendingShellErrorReports.length === 0 || window.isDestroyed() || window.webContents.isDestroyed()) {
+    return;
+  }
+  const queued = pendingShellErrorReports.splice(0, pendingShellErrorReports.length);
+  for (const report of queued) {
+    try {
+      window.webContents.send("bitfs-shell:error-report", report);
+    } catch {
+      pendingShellErrorReports.unshift(report);
+      break;
+    }
+  }
+}
+
+function buildShellErrorReport(
+  source: ShellErrorSource,
+  title: string,
+  message: string,
+  detail: string,
+  canStopCurrentPage: boolean,
+  pageURL = ""
+): ShellErrorReport {
+  return normalizeShellErrorReport({
+    source,
+    title,
+    message,
+    detail,
+    page_url: pageURL,
+    occurred_at_unix: Math.floor(Date.now() / 1000),
+    can_stop_current_page: canStopCurrentPage
+  });
+}
+
+function normalizeShellErrorReport(report: Partial<ShellErrorReport>): ShellErrorReport {
+  const source = normalizeShellErrorSource(report.source);
+  const title = String(report.title || "").trim() || defaultShellErrorTitle(source);
+  const message = String(report.message || "").trim() || "unknown error";
+  return {
+    source,
+    title,
+    message,
+    detail: String(report.detail || "").trim(),
+    page_url: String(report.page_url || "").trim(),
+    occurred_at_unix: Math.max(0, Math.floor(Number(report.occurred_at_unix || 0))) || Math.floor(Date.now() / 1000),
+    can_stop_current_page: Boolean(report.can_stop_current_page) && (source === "viewer" || source === "settings")
+  };
+}
+
+function normalizeShellErrorSource(raw: ShellErrorReport["source"] | undefined): ShellErrorSource {
+  if (raw === "viewer" || raw === "settings" || raw === "shell-renderer") {
+    return raw;
+  }
+  return "main-process";
+}
+
+function defaultShellErrorTitle(source: ShellErrorSource): string {
+  if (source === "viewer") {
+    return "当前页面 JS 错误";
+  }
+  if (source === "settings") {
+    return "设置页 JS 错误";
+  }
+  if (source === "shell-renderer") {
+    return "壳页面 JS 错误";
+  }
+  return "主进程 JS 错误";
+}
+
+function extractUnknownErrorMessage(reason: unknown, fallback: string): string {
+  if (reason instanceof Error && String(reason.message || "").trim() !== "") {
+    return String(reason.message || "").trim();
+  }
+  if (reason && typeof reason === "object" && !Array.isArray(reason) && "message" in reason) {
+    const message = String((reason as { message?: unknown }).message || "").trim();
+    if (message !== "") {
+      return message;
+    }
+  }
+  const value = String(reason || "").trim();
+  return value || fallback;
+}
+
+function extractUnknownErrorDetail(reason: unknown): string {
+  if (reason instanceof Error) {
+    return String(reason.stack || reason.message || "").trim();
+  }
+  if (reason && typeof reason === "object" && !Array.isArray(reason) && "stack" in reason) {
+    const stack = String((reason as { stack?: unknown }).stack || "").trim();
+    if (stack !== "") {
+      return stack;
+    }
+  }
+  return String(reason || "").trim();
+}
 
 async function fetchSeedHashFromNodeRoute(targetPubkeyHex: string, route: string, visit?: LocatorVisitContext): Promise<string> {
   const body = await postJSON("/api/v1/resolve", {

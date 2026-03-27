@@ -5,6 +5,7 @@ import { BrowserSettingsStore } from "./browser_settings";
 import { BitfsBrowserRuntime } from "./browser_runtime";
 import { ManagedClientSupervisor } from "./client_supervisor";
 import { debugLogger } from "./debug_logger";
+import type { ElectronE2EObserver } from "./e2e_observer";
 
 type ElectronE2EControllerInit = {
   runtime: BitfsBrowserRuntime;
@@ -13,6 +14,7 @@ type ElectronE2EControllerInit = {
   getWindow: () => BrowserWindow | null;
   cdpPort: number;
   viewerPolicy: ElectronE2EViewerPolicyStore;
+  observer: ElectronE2EObserver;
 };
 
 type e2eOpenHomeRequest = {
@@ -64,6 +66,7 @@ export class ElectronE2EController {
   private readonly getWindow: () => BrowserWindow | null;
   private readonly cdpPort: number;
   private readonly viewerPolicy: ElectronE2EViewerPolicyStore;
+  private readonly observer: ElectronE2EObserver;
   private server: http.Server | null = null;
 
   constructor(init: ElectronE2EControllerInit) {
@@ -73,6 +76,7 @@ export class ElectronE2EController {
     this.getWindow = init.getWindow;
     this.cdpPort = init.cdpPort;
     this.viewerPolicy = init.viewerPolicy;
+    this.observer = init.observer;
   }
 
   async start(port: number): Promise<void> {
@@ -118,6 +122,16 @@ export class ElectronE2EController {
       const url = new URL(String(req.url || "/"), "http://127.0.0.1");
       if (method === "GET" && url.pathname === "/e2e/status") {
         this.writeJSON(res, 200, this.buildStatus());
+        return;
+      }
+      if (method === "GET" && url.pathname === "/e2e/events") {
+        const afterSeq = Number.parseInt(String(url.searchParams.get("after_seq") || "0"), 10);
+        this.writeJSON(res, 200, {
+          ok: true,
+          after_seq: Number.isInteger(afterSeq) && afterSeq > 0 ? afterSeq : 0,
+          events: this.observer.eventsAfter(afterSeq),
+          state: this.observer.snapshot()
+        });
         return;
       }
       if (method === "GET" && url.pathname === "/e2e/wallet-summary") {
@@ -221,6 +235,7 @@ export class ElectronE2EController {
       main_window_created: window !== null,
       main_window_visible: window ? window.isVisible() : false,
       viewer_policy: this.viewerPolicy.snapshot(),
+      observer: this.observer.snapshot(),
       backend,
       settings
     };
