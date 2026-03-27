@@ -39,6 +39,31 @@ export type BrowserRuntimeState = {
   viewerPreloadPath: string;
 };
 
+const visitPurposeCategories: Record<string, "resolver" | "reachability" | "content" | "other"> = {
+  resolver_query_fee: "resolver",
+  node_reachability_query_fee: "reachability",
+  direct_transfer_pool_open: "content",
+  prepare_exact_pool_amount: "content",
+  direct_transfer_chunk_pay: "content",
+  direct_transfer_pool_close: "content"
+};
+
+const visitPurposeLabels: Record<string, string> = {
+  resolver_query_fee: "解析费",
+  node_reachability_query_fee: "地址查询费",
+  direct_transfer_pool_open: "内容池开启",
+  prepare_exact_pool_amount: "内容池补足",
+  direct_transfer_chunk_pay: "内容传输费",
+  direct_transfer_pool_close: "内容池结算",
+  listen_cycle_fee: "监听周期费",
+  node_reachability_announce_fee: "地址广播费",
+  fee_pool_open: "费用池开启",
+  fee_pool_close: "费用池关闭",
+  demand_publish_fee: "需求发布费",
+  demand_publish_batch_fee: "批量需求发布费",
+  live_demand_publish_fee: "直播需求发布费"
+};
+
 type PlanItem = {
   seed_hash: string;
   status: string;
@@ -1452,49 +1477,12 @@ function summarizeVisitFundFlows(
 
 function visitBucketCategory(purpose: string): "resolver" | "reachability" | "content" | "other" {
   const value = String(purpose || "").trim();
-  if (value === "resolver_query_fee") {
-    return "resolver";
-  }
-  if (value === "node_reachability_query_fee") {
-    return "reachability";
-  }
-  if (
-    value === "direct_transfer_pool_open" ||
-    value === "prepare_exact_pool_amount" ||
-    value === "direct_transfer_chunk_pay" ||
-    value === "direct_transfer_pool_close"
-  ) {
-    return "content";
-  }
-  return "other";
+  return visitPurposeCategories[value] || "other";
 }
 
 function visitBucketLabel(purpose: string): string {
   const value = String(purpose || "").trim();
-  switch (value) {
-    case "resolver_query_fee":
-      return "解析费";
-    case "node_reachability_query_fee":
-      return "地址查询费";
-    case "direct_transfer_pool_open":
-      return "内容池开启";
-    case "prepare_exact_pool_amount":
-      return "内容池补足";
-    case "direct_transfer_chunk_pay":
-      return "内容传输费";
-    case "direct_transfer_pool_close":
-      return "内容池结算";
-    case "listen_cycle_fee":
-      return "监听周期费";
-    case "node_reachability_announce_fee":
-      return "地址广播费";
-    case "fee_pool_open":
-      return "费用池开启";
-    case "fee_pool_close":
-      return "费用池关闭";
-    default:
-      return value === "" ? "其他" : value;
-  }
+  return value === "" ? "其他" : visitPurposeLabels[value] || value;
 }
 
 function parseBitfsURL(rawURL: string): string {

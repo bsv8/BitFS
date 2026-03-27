@@ -4,6 +4,7 @@ import type { ShellState } from "../bitfs";
 import { getWalletFundFlowDetail, getWalletFundFlows } from "../api";
 import type { WalletFundFlowItem, WalletFundFlowListResp, WalletSummary } from "../types";
 import { formatSat, formatTime, shortHex } from "../utils";
+import { defaultPurposePlaceholder, formatPurposeLabel } from "../purpose";
 import { Modal } from "./Modal";
 
 type BillingManagerProps = {
@@ -210,7 +211,7 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
             className="text-input"
             value={draftQuery.purpose}
             onChange={(event) => setDraftQuery({ ...draftQuery, purpose: event.target.value })}
-            placeholder="node_reachability_query_fee"
+            placeholder={defaultPurposePlaceholder}
           />
         </label>
         <label>
@@ -407,40 +408,6 @@ function formatSignedSat(value: number): string {
     return `+${amount} sat`;
   }
   return `${amount} sat`;
-}
-
-function formatPurposeLabel(purpose: string): string {
-  const normalized = String(purpose || "").trim();
-  switch (normalized) {
-    case "node_reachability_announce_fee":
-      return "地址广播费";
-    case "node_reachability_query_fee":
-      return "地址查询费";
-    case "resolver_query_fee":
-      return "解析费";
-    case "listen_cycle_fee":
-      return "监听周期费";
-    case "fee_pool_open":
-      return "费用池开启";
-    case "fee_pool_close":
-      return "费用池关闭";
-    case "demand_publish_fee":
-      return "需求发布费";
-    case "demand_publish_batch_fee":
-      return "批量需求发布费";
-    case "live_demand_publish_fee":
-      return "直播需求发布费";
-    case "direct_transfer_pool_open":
-      return "内容池开启";
-    case "prepare_exact_pool_amount":
-      return "内容池补足";
-    case "direct_transfer_chunk_pay":
-      return "内容传输费";
-    case "direct_transfer_pool_close":
-      return "内容池结算";
-    default:
-      return normalized || "-";
-  }
 }
 
 function formatVisitStatus(value: string | undefined): string {

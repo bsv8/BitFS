@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
@@ -641,7 +642,7 @@ func TestInitIndexDB_MigrateLegacyWalletFundFlowsVisitColumns(t *testing.T) {
 		"legacy-ref",
 		"legacy-stage",
 		"out",
-		"node_reachability_query_fee",
+		broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
 		-1,
 		1,
 		0,

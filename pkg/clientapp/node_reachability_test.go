@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 )
 
 func TestNodeReachabilityCacheAndSelfState(t *testing.T) {
@@ -16,7 +16,7 @@ func TestNodeReachabilityCacheAndSelfState(t *testing.T) {
 	defer hNode.Close()
 	hGateway, gatewayPubkeyHex := newSecpHost(t)
 	defer hGateway.Close()
-	ann := poolcore.NodeReachabilityAnnouncement{
+	ann := broadcastmodule.NodeReachabilityAnnouncement{
 		NodePubkeyHex:   nodePubkeyHex,
 		Multiaddrs:      []string{fmt.Sprintf("%s/p2p/%s", hNode.Addrs()[0].String(), hNode.ID().String())},
 		HeadHeight:      321,
