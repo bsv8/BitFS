@@ -777,6 +777,10 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	db := openedDB.DB
 	dbActor := openedDB.Actor
+	// 设计说明：
+	// - BitFS 正式运行时的 sqlite 从这里开始统一进入单 owner 模型；
+	// - 初始化阶段仍有一些旧 helper 直接吃 `*sql.DB`，所以当前同时保留 `db` 和 `dbActor`；
+	// - 但运行期并发最重的路径必须优先走 actor，避免再长出新的直连写库逻辑。
 	if err := initIndexDB(db); err != nil {
 		_ = dbActor.Close()
 		if removeObs != nil {
