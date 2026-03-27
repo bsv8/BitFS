@@ -4,7 +4,7 @@ import type { ShellState } from "../bitfs";
 import { getWalletFundFlowDetail, getWalletFundFlows } from "../api";
 import type { WalletFundFlowItem, WalletFundFlowListResp, WalletSummary } from "../types";
 import { formatSat, formatTime, shortHex } from "../utils";
-import { defaultPurposePlaceholder, formatPurposeLabel } from "../purpose";
+import { billingPurposeOptions, defaultPurposePlaceholder, formatPurposeLabel } from "../purpose";
 import { Modal } from "./Modal";
 
 type BillingManagerProps = {
@@ -209,6 +209,7 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
           <span>用途</span>
           <input
             className="text-input"
+            list="billing-purpose-options"
             value={draftQuery.purpose}
             onChange={(event) => setDraftQuery({ ...draftQuery, purpose: event.target.value })}
             placeholder={defaultPurposePlaceholder}
@@ -258,6 +259,12 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
           </button>
         </div>
       </form>
+
+      <datalist id="billing-purpose-options">
+        {billingPurposeOptions.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </datalist>
 
       {isFilteringCurrentVisit ? (
         <section className="path-strip">
