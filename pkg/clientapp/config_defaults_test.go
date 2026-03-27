@@ -24,6 +24,9 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		if got, want := cfg.Listen.AutoRenewRounds, uint64(5); got != want {
 			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)
 		}
+		if got := cfg.Listen.OfferPaymentSatoshi; got != 0 {
+			t.Fatalf("listen.offer_payment_satoshi=%d, want 0", got)
+		}
 		if got, want := cfg.Listen.RenewThresholdSeconds, uint32(5); got != want {
 			t.Fatalf("listen.renew_threshold_seconds=%d, want %d", got, want)
 		}
@@ -50,6 +53,9 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		}
 		if got, want := cfg.Listen.AutoRenewRounds, uint64(5); got != want {
 			t.Fatalf("listen.auto_renew_rounds=%d, want %d", got, want)
+		}
+		if got := cfg.Listen.OfferPaymentSatoshi; got != 0 {
+			t.Fatalf("listen.offer_payment_satoshi=%d, want 0", got)
 		}
 		if got, want := cfg.Listen.RenewThresholdSeconds, uint32(1800); got != want {
 			t.Fatalf("listen.renew_threshold_seconds=%d, want %d", got, want)

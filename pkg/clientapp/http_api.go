@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -5199,25 +5199,26 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		}
 		master := gm.GetMasterGateway().String()
 		type gwResp struct {
-			ID                     int    `json:"id"`
-			PeerID                 string `json:"transport_peer_id,omitempty"`
-			Addr                   string `json:"addr"`
-			Pubkey                 string `json:"pubkey"`
-			Enabled                bool   `json:"enabled"`
-			Connected              bool   `json:"connected"`
-			Connectedness          string `json:"connectedness"`
-			InHealthyGWs           bool   `json:"in_healthy_gws"`
-			FeePoolReady           bool   `json:"fee_pool_ready"`
-			IsMaster               bool   `json:"is_master"`
-			LastError              string `json:"last_error,omitempty"`
-			LastConnectedAtUnix    int64  `json:"last_connected_at_unix"`
-			LastRuntimeError       string `json:"last_runtime_error,omitempty"`
-			LastRuntimeErrorStage  string `json:"last_runtime_error_stage,omitempty"`
-			LastRuntimeErrorAtUnix int64  `json:"last_runtime_error_at_unix"`
+			ID                        int    `json:"id"`
+			PeerID                    string `json:"transport_peer_id,omitempty"`
+			Addr                      string `json:"addr"`
+			Pubkey                    string `json:"pubkey"`
+			Enabled                   bool   `json:"enabled"`
+			ListenOfferPaymentSatoshi uint64 `json:"listen_offer_payment_satoshi,omitempty"`
+			Connected                 bool   `json:"connected"`
+			Connectedness             string `json:"connectedness"`
+			InHealthyGWs              bool   `json:"in_healthy_gws"`
+			FeePoolReady              bool   `json:"fee_pool_ready"`
+			IsMaster                  bool   `json:"is_master"`
+			LastError                 string `json:"last_error,omitempty"`
+			LastConnectedAtUnix       int64  `json:"last_connected_at_unix"`
+			LastRuntimeError          string `json:"last_runtime_error,omitempty"`
+			LastRuntimeErrorStage     string `json:"last_runtime_error_stage,omitempty"`
+			LastRuntimeErrorAtUnix    int64  `json:"last_runtime_error_at_unix"`
 		}
 		items := make([]gwResp, len(gateways))
 		for i, g := range gateways {
-			it := gwResp{ID: i, Addr: g.Addr, Pubkey: g.Pubkey, Enabled: g.Enabled}
+			it := gwResp{ID: i, Addr: g.Addr, Pubkey: g.Pubkey, Enabled: g.Enabled, ListenOfferPaymentSatoshi: g.ListenOfferPaymentSatoshi}
 			ai, err := parseAddr(g.Addr)
 			if err != nil {
 				it.Connectedness = "invalid_addr"
@@ -5251,9 +5252,10 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		// 添加网关
 		var req struct {
-			Addr    string `json:"addr"`
-			Pubkey  string `json:"pubkey"`
-			Enabled bool   `json:"enabled"`
+			Addr                      string `json:"addr"`
+			Pubkey                    string `json:"pubkey"`
+			Enabled                   bool   `json:"enabled"`
+			ListenOfferPaymentSatoshi uint64 `json:"listen_offer_payment_satoshi,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -5289,7 +5291,7 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		node := PeerNode{Enabled: req.Enabled, Addr: req.Addr, Pubkey: req.Pubkey}
+		node := PeerNode{Enabled: req.Enabled, Addr: req.Addr, Pubkey: req.Pubkey, ListenOfferPaymentSatoshi: req.ListenOfferPaymentSatoshi}
 		idx, err := gm.AddGateway(r.Context(), node)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -5319,9 +5321,10 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		}
 
 		var req struct {
-			Addr    string `json:"addr"`
-			Pubkey  string `json:"pubkey"`
-			Enabled bool   `json:"enabled"`
+			Addr                      string `json:"addr"`
+			Pubkey                    string `json:"pubkey"`
+			Enabled                   bool   `json:"enabled"`
+			ListenOfferPaymentSatoshi uint64 `json:"listen_offer_payment_satoshi,omitempty"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
@@ -5334,7 +5337,7 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		node := PeerNode{Enabled: req.Enabled, Addr: req.Addr, Pubkey: req.Pubkey}
+		node := PeerNode{Enabled: req.Enabled, Addr: req.Addr, Pubkey: req.Pubkey, ListenOfferPaymentSatoshi: req.ListenOfferPaymentSatoshi}
 		if err := gm.UpdateGateway(r.Context(), id, node); err != nil {
 			if strings.Contains(err.Error(), "out of range") {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "gateway not found"})
@@ -6812,6 +6815,7 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
 		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
+		{Key: "listen.offer_payment_satoshi", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 40, Description: "监听续费每次向 gateway 主动提出的预算 sat"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
@@ -6955,6 +6959,7 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"listen.enabled":                              cfgBool(cfg.Listen.Enabled, true),
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
 		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
+		"listen.offer_payment_satoshi":                cfg.Listen.OfferPaymentSatoshi,
 		"listen.tick_seconds":                         cfg.Listen.TickSeconds,
 		"reachability.auto_announce_enabled":          cfgBool(cfg.Reachability.AutoAnnounceEnabled, true),
 		"reachability.announce_ttl_seconds":           cfg.Reachability.AnnounceTTLSeconds,
@@ -7103,6 +7108,8 @@ func adminConfigSetInt(cfg *Config, key string, v int64) error {
 		cfg.Listen.RenewThresholdSeconds = uint32(v)
 	case "listen.auto_renew_rounds":
 		cfg.Listen.AutoRenewRounds = u
+	case "listen.offer_payment_satoshi":
+		cfg.Listen.OfferPaymentSatoshi = u
 	case "listen.tick_seconds":
 		cfg.Listen.TickSeconds = uint32(v)
 	case "reachability.announce_ttl_seconds":

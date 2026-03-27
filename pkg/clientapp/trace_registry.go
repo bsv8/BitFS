@@ -1,7 +1,6 @@
 package clientapp
 
-import "github.com/bsv8/BFTP/pkg/domainsvc"
-import "github.com/bsv8/BFTP/pkg/nodesvc"
+import "github.com/bsv8/BFTP/pkg/infra/ncall"
 import oldproto "github.com/golang/protobuf/proto"
 
 // NewTraceProtoMessage 为调试工具提供 client 私有 protobuf 类型实例。
@@ -100,13 +99,6 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		}
 		if kind == "resp" {
 			return &nodesvc.ResolveResp{}, true
-		}
-	case string(domainsvc.ProtoResolveNamePaid):
-		if kind == "req" {
-			return &domainsvc.ResolveNamePaidReq{}, true
-		}
-		if kind == "resp" {
-			return &domainsvc.ResolveNamePaidResp{}, true
 		}
 	}
 	return nil, false

@@ -9,10 +9,9 @@ import (
 	"strings"
 	"time"
 
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -230,8 +229,8 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+	info, err := callNodePoolInfo(ctx, rt, gw.ID)
+	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
@@ -286,6 +285,18 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("sign node reachability announcement failed: %w", err)
 	}
+	signedAnnouncement, err := dual2of2.MarshalSignedNodeReachabilityAnnouncement(dual2of2.NodeReachabilityAnnouncement{
+		NodePubkeyHex:   nodePubkeyHex,
+		Multiaddrs:      multiaddrs,
+		HeadHeight:      uint64(headHeight),
+		Seq:             announceSeq,
+		PublishedAtUnix: publishedAtUnix,
+		ExpiresAtUnix:   expiresAtUnix,
+		Signature:       append([]byte(nil), announcementSig...),
+	})
+	if err != nil {
+		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
+	}
 	payMu := rt.feePoolPayMutex(gw.ID.String())
 	payMu.Lock()
 	defer payMu.Unlock()
@@ -297,47 +308,53 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if charge == 0 {
 		charge = 1
 	}
-	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
-	if gwPub == nil {
-		return dual2of2.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("missing gateway pubkey")
-	}
-	raw, err := gwPub.Raw()
+	payloadRaw, err := dual2of2.MarshalNodeReachabilityAnnounceQuotePayload(signedAnnouncement)
 	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              session,
+		GatewayPeerID:        gw.ID,
+		ServiceType:          dual2of2.QuoteServiceTypeNodeReachabilityAnnounce,
+		Target:               nodePubkeyHex,
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		ProposedPaymentSat:   charge,
+	})
 	if err != nil {
-		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
+		return dual2of2.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("request node reachability announce quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	nextSeq := session.Sequence + 1
-	nextServerAmount := session.ServerAmount + charge
-	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         session,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
 	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	req := dual2of2.NodeReachabilityAnnouncePaidReq{
 		ClientID:            rt.runIn.ClientID,
-		Multiaddrs:          multiaddrs,
-		HeadHeight:          uint64(headHeight),
-		Seq:                 announceSeq,
-		PublishedAtUnix:     publishedAtUnix,
-		ExpiresAtUnix:       expiresAtUnix,
-		Signature:           append([]byte(nil), announcementSig...),
+		SignedAnnouncement:  append([]byte(nil), signedAnnouncement...),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      nextSeq,
-		ServerAmount:        nextServerAmount,
-		ChargeAmountSatoshi: charge,
+		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
+		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        "node_reachability_announce_fee",
+		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
 	var resp dual2of2.NodeReachabilityAnnouncePaidResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoNodeReachabilityAnnouncePaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
@@ -350,7 +367,25 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		}
 		return dual2of2.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
-	applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+	payload, err := dual2of2.MarshalNodeReachabilityAnnounceServicePayload(resp)
+	if err != nil {
+		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
+	}
+	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+		ServiceType:        dual2of2.ServiceTypeNodeReachabilityAnnounce,
+		SpendTxID:          session.SpendTxID,
+		SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
+		AcceptedChargeHash: built.AcceptedChargeHash,
+		ResultCode:         strings.TrimSpace(resp.Status),
+		ResultPayloadBytes: payload,
+	}, resp.ServiceReceipt); err != nil {
+		return dual2of2.NodeReachabilityAnnouncePaidResp{}, err
+	}
+	nextTxHex := built.UpdatedTx.Hex()
+	if len(resp.MergedCurrentTx) > 0 {
+		nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+	}
+	applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
 	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + session.SpendTxID,
 		FlowType:        "fee_pool",
@@ -358,8 +393,8 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		Stage:           "use_node_reachability_announce",
 		Direction:       "out",
 		Purpose:         "node_reachability_announce_fee",
-		AmountSatoshi:   -int64(charge),
-		UsedSatoshi:     int64(charge),
+		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 		ReturnedSatoshi: 0,
 		RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 		Note:            fmt.Sprintf("head_height=%d seq=%d ttl_seconds=%d", headHeight, announceSeq, ttlSeconds),
@@ -403,8 +438,8 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	if err != nil {
 		return dual2of2.NodeReachabilityQueryPaidResp{}, err
 	}
-	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+	info, err := callNodePoolInfo(ctx, rt, gw.ID)
+	if err != nil {
 		return dual2of2.NodeReachabilityQueryPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
@@ -436,29 +471,37 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	if charge == 0 {
 		charge = 1
 	}
-	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
-	if gwPub == nil {
-		return dual2of2.NodeReachabilityQueryPaidResp{}, fmt.Errorf("missing gateway pubkey")
-	}
-	raw, err := gwPub.Raw()
+	payloadRaw, err := dual2of2.MarshalNodeReachabilityQueryQuotePayload(targetNodePubkeyHex)
 	if err != nil {
 		return dual2of2.NodeReachabilityQueryPaidResp{}, err
 	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              session,
+		GatewayPeerID:        gw.ID,
+		ServiceType:          dual2of2.QuoteServiceTypeNodeReachabilityQuery,
+		Target:               targetNodePubkeyHex,
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		ProposedPaymentSat:   charge,
+	})
 	if err != nil {
-		return dual2of2.NodeReachabilityQueryPaidResp{}, err
+		return dual2of2.NodeReachabilityQueryPaidResp{}, fmt.Errorf("request node reachability query quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return dual2of2.NodeReachabilityQueryPaidResp{}, err
 	}
-	nextSeq := session.Sequence + 1
-	nextServerAmount := session.ServerAmount + charge
-	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         session,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
 	if err != nil {
 		return dual2of2.NodeReachabilityQueryPaidResp{}, err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
 		return dual2of2.NodeReachabilityQueryPaidResp{}, err
 	}
@@ -466,12 +509,15 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		ClientID:            rt.runIn.ClientID,
 		TargetNodePubkeyHex: targetNodePubkeyHex,
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      nextSeq,
-		ServerAmount:        nextServerAmount,
-		ChargeAmountSatoshi: charge,
+		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
+		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        "node_reachability_query_fee",
+		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
 	var resp dual2of2.NodeReachabilityQueryPaidResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoNodeReachabilityQueryPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
@@ -484,7 +530,25 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		}
 		return dual2of2.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
-	applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+	payload, err := dual2of2.MarshalNodeReachabilityQueryServicePayload(resp)
+	if err != nil {
+		return dual2of2.NodeReachabilityQueryPaidResp{}, err
+	}
+	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+		ServiceType:        dual2of2.ServiceTypeNodeReachabilityQuery,
+		SpendTxID:          session.SpendTxID,
+		SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
+		AcceptedChargeHash: built.AcceptedChargeHash,
+		ResultCode:         strings.TrimSpace(resp.Status),
+		ResultPayloadBytes: payload,
+	}, resp.ServiceReceipt); err != nil {
+		return dual2of2.NodeReachabilityQueryPaidResp{}, err
+	}
+	nextTxHex := built.UpdatedTx.Hex()
+	if len(resp.MergedCurrentTx) > 0 {
+		nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+	}
+	applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
 	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + session.SpendTxID,
 		FlowType:        "fee_pool",
@@ -492,15 +556,18 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		Stage:           "use_node_reachability_query",
 		Direction:       "out",
 		Purpose:         "node_reachability_query_fee",
-		AmountSatoshi:   -int64(charge),
-		UsedSatoshi:     int64(charge),
+		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 		ReturnedSatoshi: 0,
 		RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 		Note:            fmt.Sprintf("target_node_pubkey_hex=%s found=%t", targetNodePubkeyHex, resp.Found),
 		Payload:         resp,
 	})
 	if resp.Found {
-		ann := announcementFromQueryResp(resp)
+		ann, err := announcementFromQueryResp(resp)
+		if err != nil {
+			return dual2of2.NodeReachabilityQueryPaidResp{}, err
+		}
 		if err := saveNodeReachabilityCache(rt.DB, gatewayBusinessID(rt, gw.ID), ann); err != nil {
 			return dual2of2.NodeReachabilityQueryPaidResp{}, err
 		}
@@ -636,16 +703,12 @@ func loadSelfNodeReachabilityState(db *sql.DB, nodePubkeyHex string) (selfNodeRe
 	return out, true, nil
 }
 
-func announcementFromQueryResp(resp dual2of2.NodeReachabilityQueryPaidResp) dual2of2.NodeReachabilityAnnouncement {
-	return dual2of2.NodeReachabilityAnnouncement{
-		NodePubkeyHex:   strings.ToLower(strings.TrimSpace(resp.TargetNodePubkeyHex)),
-		Multiaddrs:      append([]string(nil), resp.Multiaddrs...),
-		HeadHeight:      resp.HeadHeight,
-		Seq:             resp.Seq,
-		PublishedAtUnix: resp.PublishedAtUnix,
-		ExpiresAtUnix:   resp.ExpiresAtUnix,
-		Signature:       append([]byte(nil), resp.Signature...),
+func announcementFromQueryResp(resp dual2of2.NodeReachabilityQueryPaidResp) (dual2of2.NodeReachabilityAnnouncement, error) {
+	ann, err := dual2of2.UnmarshalSignedNodeReachabilityAnnouncement(resp.SignedAnnouncement)
+	if err != nil {
+		return dual2of2.NodeReachabilityAnnouncement{}, err
 	}
+	return ann, nil
 }
 
 func injectNodeReachabilityAnnouncement(rt *Runtime, ann dual2of2.NodeReachabilityAnnouncement) error {
@@ -766,7 +829,10 @@ func ensureTargetPeerReachable(ctx context.Context, rt *Runtime, targetPubkeyHex
 	if !queryResp.Found {
 		return fmt.Errorf("target peer addrs unavailable")
 	}
-	latestAnn := announcementFromQueryResp(queryResp)
+	latestAnn, err := announcementFromQueryResp(queryResp)
+	if err != nil {
+		return err
+	}
 	if cached && announcementSemanticallyEqual(cachedAnn, latestAnn) {
 		return fmt.Errorf("target peer connect failed with cached announcement")
 	}

@@ -11,9 +11,9 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -312,7 +312,7 @@ func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, au
 	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
 }
 
-func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp, sec p2prpc.SecurityConfig) (*feePoolSession, error) {
+func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp, _ p2prpc.SecurityConfig) (*feePoolSession, error) {
 	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -460,8 +460,8 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		ServerAmount:   initialServerAmount,
 		ClientSig:      append([]byte(nil), (*clientOpenSig)...),
 	}
-	var createResp dual2of2.CreateResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolCreate, sec, createReq, &createResp); err != nil {
+	createResp, err := callNodePoolCreate(ctx, rt, gw.ID, createReq)
+	if err != nil {
 		return nil, fmt.Errorf("fee_pool.create failed: %w", err)
 	}
 	if strings.TrimSpace(createResp.SpendTxID) == "" {
@@ -474,8 +474,8 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		BaseTx:    baseTxBytes,
 		ClientSig: append([]byte(nil), (*clientOpenSig)...),
 	}
-	var baseOut dual2of2.BaseTxResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolBaseTx, sec, baseReq, &baseOut); err != nil {
+	baseOut, err := callNodePoolBaseTx(ctx, rt, gw.ID, baseReq)
+	if err != nil {
 		return nil, fmt.Errorf("fee_pool.base_tx failed: %w", err)
 	}
 	if !baseOut.Success || baseOut.Status != "active" {
@@ -641,40 +641,41 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{"gateway": gw.String(), "client_amount": s.ClientAmount, "need": s.SingleCycleFeeSatoshi + s.SpendTxFeeSat})
 		return errListenFeePoolRotateRequired
 	}
-
-	pub := rt.Host.Peerstore().PubKey(gw)
-	if pub == nil {
-		return fmt.Errorf("missing gateway public key in peerstore")
-	}
-	raw, err := pub.Raw()
-	if err != nil {
-		return fmt.Errorf("read gateway raw pubkey: %w", err)
-	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
-	if err != nil {
-		return fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
-	}
+	offerPayment := listenOfferPaymentSatoshi(rt, s)
 
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return err
 	}
 
-	nextSeq := s.Sequence + 1
-	nextServerAmount := s.ServerAmount + s.SingleCycleFeeSatoshi
-	updatedTx, err := ce.LoadTx(
-		s.CurrentTxHex,
-		nil,
-		nextSeq,
-		nextServerAmount,
-		serverPub,
-		clientActor.PubKey,
-		s.PoolAmountSat,
-	)
+	// 监听续费现在只走“budget_for_service”语义：client 给预算，gateway 回本次可成交时长。
+	payloadRaw, err := dual2of2.MarshalListenCycleQuotePayload(0, 0)
 	if err != nil {
-		return fmt.Errorf("load updated tx failed: %w", err)
+		return err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              s,
+		GatewayPeerID:        gw,
+		ServiceType:          dual2of2.QuoteServiceTypeListenCycle,
+		Target:               "listen_cycle_fee",
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeBudgetForService,
+		ProposedPaymentSat:   offerPayment,
+	})
+	if err != nil {
+		return fmt.Errorf("request listen quote failed: %w", err)
+	}
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         s,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
+	if err != nil {
+		return fmt.Errorf("build listen proof tx failed: %w", err)
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
 		return fmt.Errorf("client sign update failed: %w", err)
 	}
@@ -682,29 +683,46 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	req := dual2of2.PayConfirmReq{
 		ClientID:            rt.runIn.ClientID,
 		SpendTxID:           s.SpendTxID,
-		SequenceNumber:      nextSeq,
-		ServerAmount:        nextServerAmount,
+		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
+		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
 		Fee:                 s.SpendTxFeeSat,
 		ClientSig:           append([]byte(nil), (*clientSig)...),
-		ChargeReason:        "listen_cycle_fee",
-		ChargeAmountSatoshi: s.SingleCycleFeeSatoshi,
+		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
-	var out dual2of2.PayConfirmResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw, dual2of2.ProtoFeePoolPayConfirm, gwSec(rt.rpcTrace), req, &out); err != nil {
+	out, err := callNodePoolPayConfirm(ctx, rt, gw, req)
+	if err != nil {
 		return err
 	}
 	if !out.Success {
 		return fmt.Errorf("pay_confirm rejected: %s", strings.TrimSpace(out.Error))
 	}
+	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw, s, out.MergedCurrentTx, expectedServiceReceipt{
+		ServiceType:        "listen_cycle_fee",
+		SpendTxID:          s.SpendTxID,
+		SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
+		AcceptedChargeHash: built.AcceptedChargeHash,
+		ResultCode:         "ok",
+		ResultPayloadBytes: nil,
+	}, out.ServiceReceipt); err != nil {
+		return err
+	}
 
-	// client 侧保存“本次更新的 tx hex”（不需要 server merge 结果）。
-	applyFeePoolChargeToSession(s, out.Sequence, out.ServerAmount, updatedTx.Hex())
+	nextTxHex := built.UpdatedTx.Hex()
+	if len(out.MergedCurrentTx) > 0 {
+		nextTxHex = strings.ToLower(hex.EncodeToString(out.MergedCurrentTx))
+	}
+	// client 侧应优先保存 gateway 回签后的共同状态，争议时才能直接拿去等高广播。
+	applyFeePoolChargeToSession(s, out.Sequence, out.ServerAmount, nextTxHex)
 
 	appendTxHistory(rt.DB, txHistoryEntry{
 		GatewayPeerID: s.GatewayPeerID,
 		EventType:     "pay_confirm",
 		Direction:     "debit",
-		AmountSatoshi: -int64(s.SingleCycleFeeSatoshi),
+		AmountSatoshi: -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 		Purpose:       "listen_cycle_fee",
 		Note:          fmt.Sprintf("spend_txid=%s seq=%d server_amount=%d updated_txid=%s", s.SpendTxID, out.Sequence, out.ServerAmount, out.UpdatedTxID),
 		PoolID:        s.SpendTxID,
@@ -715,8 +733,19 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		Action:        "listen_cycle_fee",
 		PoolID:        s.SpendTxID,
 		SequenceNum:   out.Sequence,
-		AmountSatoshi: int64(s.SingleCycleFeeSatoshi),
-		Payload:       out,
+		AmountSatoshi: int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+		Payload: map[string]any{
+			"pay_confirm":                    out,
+			"quote_status":                   quoted.QuoteStatus,
+			"offer_payment_satoshi":          offerPayment,
+			"granted_service_deadline_unix":  quoted.ServiceQuote.GrantedServiceDeadlineUnix,
+			"granted_duration_seconds":       quoted.ServiceQuote.GrantedDurationSeconds,
+			"minimum_cycle_fee_satoshi":      s.SingleCycleFeeSatoshi,
+			"minimum_billing_cycle_seconds":  s.BillingCycleSeconds,
+			"quoted_charge_amount_satoshi":   quoted.ServiceQuote.ChargeAmountSatoshi,
+			"quoted_server_amount_after_sat": quoted.ServiceQuote.ServerAmountAfter,
+			"quoted_sequence_number":         quoted.ServiceQuote.SequenceNumber,
+		},
 	})
 	appendWalletFundFlow(rt.DB, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + s.SpendTxID,
@@ -725,15 +754,48 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		Stage:           "use_cycle",
 		Direction:       "out",
 		Purpose:         "listen_cycle_fee",
-		AmountSatoshi:   -int64(s.SingleCycleFeeSatoshi),
-		UsedSatoshi:     int64(s.SingleCycleFeeSatoshi),
+		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 		ReturnedSatoshi: 0,
 		RelatedTxID:     out.UpdatedTxID,
 		Note:            fmt.Sprintf("sequence=%d", out.Sequence),
-		Payload:         out,
+		Payload: map[string]any{
+			"pay_confirm":                   out,
+			"quote_status":                  quoted.QuoteStatus,
+			"offer_payment_satoshi":         offerPayment,
+			"granted_service_deadline_unix": quoted.ServiceQuote.GrantedServiceDeadlineUnix,
+			"granted_duration_seconds":      quoted.ServiceQuote.GrantedDurationSeconds,
+		},
 	})
-	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, out.Sequence, s.SingleCycleFeeSatoshi, s.GatewayPeerID)
+	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, out.Sequence, quoted.ServiceQuote.ChargeAmountSatoshi, s.GatewayPeerID)
 	return nil
+}
+
+func listenOfferPaymentSatoshi(rt *Runtime, s *feePoolSession) uint64 {
+	if rt == nil || s == nil {
+		return 0
+	}
+	budget := s.SingleCycleFeeSatoshi
+	for _, node := range rt.runIn.Network.Gateways {
+		ai, err := parseAddr(node.Addr)
+		if err != nil {
+			continue
+		}
+		if strings.EqualFold(ai.ID.String(), strings.TrimSpace(s.GatewayPeerID)) && node.ListenOfferPaymentSatoshi > 0 {
+			budget = node.ListenOfferPaymentSatoshi
+			break
+		}
+	}
+	if budget == s.SingleCycleFeeSatoshi && rt.runIn.Listen.OfferPaymentSatoshi > 0 {
+		budget = rt.runIn.Listen.OfferPaymentSatoshi
+	}
+	if s.ClientAmount > s.SpendTxFeeSat {
+		maxPayable := s.ClientAmount - s.SpendTxFeeSat
+		if budget > maxPayable {
+			budget = maxPayable
+		}
+	}
+	return budget
 }
 
 // rotateListenFeePool 处理监听费用池轮换：先开新池并切换，再异步重试关闭旧池。

@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"

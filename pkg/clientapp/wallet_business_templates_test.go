@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/domainsvc"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	_ "modernc.org/sqlite"
 )
 

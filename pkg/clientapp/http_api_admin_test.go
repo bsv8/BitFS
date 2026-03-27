@@ -626,6 +626,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		"listen.enabled",
 		"listen.renew_threshold_seconds",
 		"listen.auto_renew_rounds",
+		"listen.offer_payment_satoshi",
 		"listen.tick_seconds",
 		"reachability.auto_announce_enabled",
 		"reachability.announce_ttl_seconds",
@@ -655,6 +656,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 			{"key":"listen.enabled","value":false},
 			{"key":"listen.renew_threshold_seconds","value":77},
 			{"key":"listen.auto_renew_rounds","value":12345},
+			{"key":"listen.offer_payment_satoshi","value":888},
 			{"key":"listen.tick_seconds","value":9},
 			{"key":"reachability.auto_announce_enabled","value":false},
 			{"key":"reachability.announce_ttl_seconds","value":7200},
@@ -681,6 +683,9 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	}
 	if rt.runIn.Listen.AutoRenewRounds != 12345 {
 		t.Fatalf("listen.auto_renew_rounds not updated: %d", rt.runIn.Listen.AutoRenewRounds)
+	}
+	if rt.runIn.Listen.OfferPaymentSatoshi != 888 {
+		t.Fatalf("listen.offer_payment_satoshi not updated: %d", rt.runIn.Listen.OfferPaymentSatoshi)
 	}
 	if rt.runIn.Listen.TickSeconds != 9 {
 		t.Fatalf("listen.tick_seconds not updated: %d", rt.runIn.Listen.TickSeconds)

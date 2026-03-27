@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/nodesvc"
+	"github.com/bsv8/BFTP/pkg/infra/payflow"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
@@ -85,7 +87,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected resolve response: %+v", resolveOut)
 	}
 	var manifest routeIndexManifest
-	if err := json.Unmarshal(resolveOut.Body, &manifest); err != nil {
+	if err := oldproto.Unmarshal(resolveOut.Body, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	if manifest.SeedHash != strings.Repeat("ab", 32) {
@@ -98,8 +100,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	capOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
 		Route:       nodesvc.RouteNodeV1CapabilitiesShow,
-		ContentType: "application/json",
-		Body:        []byte(`{}`),
+		ContentType: nodesvc.ContentTypeProto,
 	})
 	if err != nil {
 		t.Fatalf("capabilities_show failed: %v", err)
@@ -206,9 +207,55 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("resolve api status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
 		}
-		if !strings.Contains(rec.Body.String(), strings.Repeat("cd", 32)) {
-			t.Fatalf("expected seed hash in resolve body: %s", rec.Body.String())
+		var body struct {
+			BodyBase64 string `json:"body_base64"`
 		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode resolve api response: %v", err)
+		}
+		raw, err := decodeOptionalBase64(body.BodyBase64, "body_base64")
+		if err != nil {
+			t.Fatalf("decode resolve body base64: %v", err)
+		}
+		var manifest routeIndexManifest
+		if err := oldproto.Unmarshal(raw, &manifest); err != nil {
+			t.Fatalf("decode resolve proto body: %v", err)
+		}
+		if manifest.SeedHash != strings.Repeat("cd", 32) {
+			t.Fatalf("expected seed hash in resolve body: %+v", manifest)
+		}
+	}
+}
+
+func TestDecorateQuotedPaymentOptionUsesRealQuoteStatus(t *testing.T) {
+	t.Parallel()
+
+	option := &nodesvc.PaymentOption{
+		Scheme:        nodesvc.PaymentSchemePool2of2V1,
+		PaymentDomain: "bitcast-domain",
+		PricingMode:   "fixed_price",
+	}
+	quoted := feePoolServiceQuoteBuilt{
+		QuoteStatus: "countered",
+		ServiceQuote: proof.ServiceQuote{
+			ChargeAmountSatoshi:    25,
+			ChargeReason:           "domain_query_fee",
+			GrantedDurationSeconds: 0,
+		},
+	}
+
+	got := decorateQuotedPaymentOption(option, quoted, 1, "call")
+	if got == nil {
+		t.Fatalf("decorateQuotedPaymentOption returned nil")
+	}
+	if got.QuoteStatus != "countered" {
+		t.Fatalf("quote status mismatch: got=%q", got.QuoteStatus)
+	}
+	if got.PricingMode != "fixed_price" {
+		t.Fatalf("pricing mode mismatch: got=%q", got.PricingMode)
+	}
+	if got.ServiceQuantity != 1 || got.ServiceQuantityUnit != "call" {
+		t.Fatalf("service quantity mismatch: %+v", got)
 	}
 }
 

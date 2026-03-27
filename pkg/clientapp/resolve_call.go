@@ -3,14 +3,14 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
-	"github.com/bsv8/BFTP/pkg/nodesvc"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -20,10 +20,12 @@ const (
 )
 
 type TriggerPeerCallParams struct {
-	To          string
-	Route       string
-	ContentType string
-	Body        []byte
+	To           string
+	Route        string
+	ContentType  string
+	Body         []byte
+	PaymentMode  string
+	PaymentQuote []byte
 }
 
 type TriggerPeerResolveParams struct {
@@ -32,17 +34,17 @@ type TriggerPeerResolveParams struct {
 }
 
 type inboxReceipt struct {
-	InboxMessageID int64 `json:"inbox_message_id"`
-	ReceivedAtUnix int64 `json:"received_at_unix"`
+	InboxMessageID int64 `protobuf:"varint,1,opt,name=inbox_message_id,json=inboxMessageId,proto3" json:"inbox_message_id"`
+	ReceivedAtUnix int64 `protobuf:"varint,2,opt,name=received_at_unix,json=receivedAtUnix,proto3" json:"received_at_unix"`
 }
 
 type routeIndexManifest struct {
-	Route               string `json:"route"`
-	SeedHash            string `json:"seed_hash"`
-	RecommendedFileName string `json:"recommended_file_name,omitempty"`
-	MIMEHint            string `json:"mime_hint,omitempty"`
-	FileSize            int64  `json:"file_size,omitempty"`
-	UpdatedAtUnix       int64  `json:"updated_at_unix"`
+	Route               string `protobuf:"bytes,1,opt,name=route,proto3" json:"route"`
+	SeedHash            string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
+	RecommendedFileName string `protobuf:"bytes,3,opt,name=recommended_file_name,json=recommendedFileName,proto3" json:"recommended_file_name,omitempty"`
+	MIMEHint            string `protobuf:"bytes,4,opt,name=mime_hint,json=mimeHint,proto3" json:"mime_hint,omitempty"`
+	FileSize            int64  `protobuf:"varint,5,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"`
+	UpdatedAtUnix       int64  `protobuf:"varint,6,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix"`
 }
 
 // registerNodeRouteHandlers 把节点级 route-call / route-resolve 能力挂到统一 node 协议上。
@@ -66,7 +68,8 @@ func registerNodeRouteHandlers(rt *Runtime) {
 		}
 		switch route {
 		case nodesvc.RouteNodeV1CapabilitiesShow:
-			return marshalNodeCallJSON(clientCapabilitiesShowBody(rt))
+			body := clientCapabilitiesShowBody(rt)
+			return marshalNodeCallProto(&body)
 		case routeInboxMessage:
 			return storeInboxMessage(db, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
@@ -84,7 +87,7 @@ func registerNodeRouteHandlers(rt *Runtime) {
 		return nodesvc.ResolveResp{
 			Ok:          true,
 			Code:        "OK",
-			ContentType: "application/json",
+			ContentType: nodesvc.ContentTypeProto,
 			Body:        body,
 		}, nil
 	})
@@ -108,12 +111,19 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		ContentType: strings.TrimSpace(p.ContentType),
 		Body:        append([]byte(nil), p.Body...),
 	}
+	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
+	if paymentMode == "pay" && len(p.PaymentQuote) > 0 {
+		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.PaymentQuote)
+	}
 	out, err = callNodeRoute(ctx, rt, peerID, req)
 	if err != nil {
 		return out, err
 	}
 	if !isNodePaymentRequired(out) {
 		return out, nil
+	}
+	if paymentMode == "quote" {
+		return quotePeerCallFromPaymentRequired(ctx, rt, peerID, req, out.PaymentOptions)
 	}
 	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentOptions)
 	if payErr != nil {
@@ -156,7 +166,7 @@ func clientCapabilitiesShowBody(rt *Runtime) nodesvc.CapabilitiesShowBody {
 	}
 	return nodesvc.CapabilitiesShowBody{
 		NodePubkeyHex: nodePubkeyHex,
-		Capabilities: []nodesvc.CapabilityItem{
+		Capabilities: []*nodesvc.CapabilityItem{
 			{
 				ID:             "wallet",
 				Version:        1,
@@ -170,21 +180,32 @@ func clientCapabilitiesShowBody(rt *Runtime) nodesvc.CapabilitiesShowBody {
 	}
 }
 
-func marshalNodeCallJSON(v any) (nodesvc.CallResp, error) {
-	body, err := json.Marshal(v)
+func marshalNodeCallProto(msg oldproto.Message) (nodesvc.CallResp, error) {
+	body, err := marshalNodeRouteProtoBody(msg)
 	if err != nil {
 		return nodesvc.CallResp{}, err
 	}
 	return nodesvc.CallResp{
 		Ok:          true,
 		Code:        "OK",
-		ContentType: "application/json",
+		ContentType: nodesvc.ContentTypeProto,
 		Body:        body,
 	}, nil
 }
 
 func isNodePaymentRequired(resp nodesvc.CallResp) bool {
 	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") && len(resp.PaymentOptions) > 0
+}
+
+func normalizePeerCallPaymentMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "quote":
+		return "quote"
+	case "pay":
+		return "pay"
+	default:
+		return "auto"
+	}
 }
 
 func normalizeCallRoute(raw string) (string, string) {
@@ -244,14 +265,14 @@ func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, rout
 	default:
 		return nodesvc.CallResp{}, err
 	}
-	ack, err := json.Marshal(inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
+	ack, err := oldproto.Marshal(&inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
 	if err != nil {
 		return nodesvc.CallResp{}, err
 	}
 	return nodesvc.CallResp{
 		Ok:          true,
 		Code:        "OK",
-		ContentType: "application/json",
+		ContentType: nodesvc.ContentTypeProto,
 		Body:        ack,
 	}, nil
 }

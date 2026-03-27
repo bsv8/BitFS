@@ -9,16 +9,15 @@ import (
 	"strings"
 	"time"
 
-	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/script"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/domainsvc"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
-	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
+	oldproto "github.com/golang/protobuf/proto"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -639,281 +638,105 @@ func triggerDomainQueryName(ctx context.Context, rt *Runtime, resolverPubkeyHex 
 	if rt == nil || rt.Host == nil {
 		return domainQueryResult{}, fmt.Errorf("runtime not initialized")
 	}
-	info, gw, err := fetchDomainFeePoolInfo(ctx, rt, resolverPeerID)
+	payload, err := oldproto.Marshal(&domainsvc.NameRouteReq{Name: name})
 	if err != nil {
 		return domainQueryResult{}, err
 	}
-	charge := info.SingleQueryFeeSatoshi
-	if charge == 0 {
-		charge = 1
-	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	if _, err := ensureDomainFeePoolSessionForChargeLocked(ctx, rt, gw, info, charge); err != nil {
-		return domainQueryResult{}, err
-	}
-	chargeCtx, err := prepareDomainFeePoolCharge(rt, gw.ID, charge)
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:          resolverPubkeyHex,
+		Route:       domainsvc.RouteDomainV1Query,
+		ContentType: nodesvc.ContentTypeProto,
+		Body:        payload,
+	})
 	if err != nil {
 		return domainQueryResult{}, err
 	}
-	req := domainsvc.QueryNamePaidReq{
-		ClientID:            rt.runIn.ClientID,
-		Name:                name,
-		SpendTxID:           chargeCtx.Session.SpendTxID,
-		SequenceNumber:      chargeCtx.NextSeq,
-		ServerAmount:        chargeCtx.NextServerAmount,
-		ChargeAmountSatoshi: charge,
-		Fee:                 chargeCtx.Session.SpendTxFeeSat,
-		ClientSignature:     chargeCtx.ClientSignature,
-		ChargeReason:        "domain_query_fee",
+	if !callResp.Ok {
+		return domainQueryResult{}, fmt.Errorf("domain query route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
 	var resp domainsvc.QueryNamePaidResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, domainsvc.ProtoQueryNamePaid, domainSec(rt), req, &resp); err != nil {
-		return domainQueryResult{}, err
-	}
-	if resp.Success {
-		applyDomainFeePoolCharge(ctx, rt, chargeCtx, "use_domain_query", "domain_query_fee", fmt.Sprintf("resolver_pubkey_hex=%s name=%s", resolverPubkeyHex, name), resp)
+	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
+		return domainQueryResult{}, fmt.Errorf("decode domain query body failed: %w", err)
 	}
 	return domainQueryResult{ResolverPeerID: resolverPeerID, Response: resp}, nil
 }
 
 func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPeerID peer.ID, name string, targetPubkeyHex string, charge uint64) (domainsvc.RegisterLockPaidResp, error) {
-	info, gw, err := fetchDomainFeePoolInfo(ctx, rt, resolverPeerID)
+	payload, err := oldproto.Marshal(&domainsvc.NameTargetRouteReq{
+		Name:            name,
+		TargetPubkeyHex: targetPubkeyHex,
+	})
 	if err != nil {
 		return domainsvc.RegisterLockPaidResp{}, err
 	}
-	if charge == 0 {
-		charge = info.SinglePublishFeeSatoshi
-	}
-	if charge == 0 {
-		charge = 1
-	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	if _, err := ensureDomainFeePoolSessionForChargeLocked(ctx, rt, gw, info, charge); err != nil {
-		return domainsvc.RegisterLockPaidResp{}, err
-	}
-
-	chargeCtx, err := prepareDomainFeePoolCharge(rt, gw.ID, charge)
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:          resolverPeerID.String(),
+		Route:       domainsvc.RouteDomainV1Lock,
+		ContentType: nodesvc.ContentTypeProto,
+		Body:        payload,
+	})
 	if err != nil {
 		return domainsvc.RegisterLockPaidResp{}, err
 	}
-	req := domainsvc.RegisterLockPaidReq{
-		ClientID:            rt.runIn.ClientID,
-		Name:                name,
-		TargetPubkeyHex:     targetPubkeyHex,
-		SpendTxID:           chargeCtx.Session.SpendTxID,
-		SequenceNumber:      chargeCtx.NextSeq,
-		ServerAmount:        chargeCtx.NextServerAmount,
-		ChargeAmountSatoshi: charge,
-		Fee:                 chargeCtx.Session.SpendTxFeeSat,
-		ClientSignature:     chargeCtx.ClientSignature,
-		ChargeReason:        "domain_register_lock_fee",
+	if !callResp.Ok {
+		return domainsvc.RegisterLockPaidResp{}, fmt.Errorf("domain register lock route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
 	var resp domainsvc.RegisterLockPaidResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, domainsvc.ProtoRegisterLock, domainSec(rt), req, &resp); err != nil {
-		return domainsvc.RegisterLockPaidResp{}, err
-	}
-	if resp.Success {
-		applyDomainFeePoolCharge(ctx, rt, chargeCtx, "use_domain_register_lock", "domain_register_lock_fee", fmt.Sprintf("name=%s target_pubkey_hex=%s", name, targetPubkeyHex), resp)
+	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
+		return domainsvc.RegisterLockPaidResp{}, fmt.Errorf("decode domain register lock body failed: %w", err)
 	}
 	return resp, nil
 }
 
 func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPeerID peer.ID, registerTx []byte) (domainsvc.RegisterSubmitResp, error) {
-	var resp domainsvc.RegisterSubmitResp
-	if err := p2prpc.CallProto(ctx, rt.Host, resolverPeerID, domainsvc.ProtoRegisterSubmit, domainSec(rt), domainsvc.RegisterSubmitReq{
-		ClientID:   rt.runIn.ClientID,
-		RegisterTx: append([]byte(nil), registerTx...),
-	}, &resp); err != nil {
+	payload, err := oldproto.Marshal(&domainsvc.RegisterSubmitReq{RegisterTx: append([]byte(nil), registerTx...)})
+	if err != nil {
 		return domainsvc.RegisterSubmitResp{}, err
 	}
-	return resp, nil
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:          resolverPeerID.String(),
+		Route:       domainsvc.RouteDomainV1RegisterSubmit,
+		ContentType: nodesvc.ContentTypeProto,
+		Body:        payload,
+	})
+	if err != nil {
+		return domainsvc.RegisterSubmitResp{}, err
+	}
+	if !callResp.Ok {
+		return domainsvc.RegisterSubmitResp{}, fmt.Errorf("domain register submit route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
+	}
+	var routeResp domainsvc.RegisterSubmitResp
+	if err := oldproto.Unmarshal(callResp.Body, &routeResp); err != nil {
+		return domainsvc.RegisterSubmitResp{}, fmt.Errorf("decode domain register submit body failed: %w", err)
+	}
+	return routeResp, nil
 }
 
 func triggerDomainSetTarget(ctx context.Context, rt *Runtime, resolverPeerID peer.ID, name string, targetPubkeyHex string, charge uint64) (domainsvc.SetTargetPaidResp, error) {
-	info, gw, err := fetchDomainFeePoolInfo(ctx, rt, resolverPeerID)
+	payload, err := oldproto.Marshal(&domainsvc.NameTargetRouteReq{
+		Name:            name,
+		TargetPubkeyHex: targetPubkeyHex,
+	})
 	if err != nil {
 		return domainsvc.SetTargetPaidResp{}, err
 	}
-	if charge == 0 {
-		charge = info.SinglePublishFeeSatoshi
-	}
-	if charge == 0 {
-		charge = 1
-	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	if _, err := ensureDomainFeePoolSessionForChargeLocked(ctx, rt, gw, info, charge); err != nil {
-		return domainsvc.SetTargetPaidResp{}, err
-	}
-
-	chargeCtx, err := prepareDomainFeePoolCharge(rt, gw.ID, charge)
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:          resolverPeerID.String(),
+		Route:       domainsvc.RouteDomainV1SetTarget,
+		ContentType: nodesvc.ContentTypeProto,
+		Body:        payload,
+	})
 	if err != nil {
 		return domainsvc.SetTargetPaidResp{}, err
 	}
-	req := domainsvc.SetTargetPaidReq{
-		ClientID:            rt.runIn.ClientID,
-		Name:                name,
-		TargetPubkeyHex:     targetPubkeyHex,
-		SpendTxID:           chargeCtx.Session.SpendTxID,
-		SequenceNumber:      chargeCtx.NextSeq,
-		ServerAmount:        chargeCtx.NextServerAmount,
-		ChargeAmountSatoshi: charge,
-		Fee:                 chargeCtx.Session.SpendTxFeeSat,
-		ClientSignature:     chargeCtx.ClientSignature,
-		ChargeReason:        "domain_set_target_fee",
+	if !callResp.Ok {
+		return domainsvc.SetTargetPaidResp{}, fmt.Errorf("domain set target route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
 	var resp domainsvc.SetTargetPaidResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, domainsvc.ProtoSetTargetPaid, domainSec(rt), req, &resp); err != nil {
-		return domainsvc.SetTargetPaidResp{}, err
-	}
-	if resp.Success {
-		applyDomainFeePoolCharge(ctx, rt, chargeCtx, "use_domain_set_target", "domain_set_target_fee", fmt.Sprintf("name=%s target_pubkey_hex=%s", name, targetPubkeyHex), resp)
+	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
+		return domainsvc.SetTargetPaidResp{}, fmt.Errorf("decode domain set target body failed: %w", err)
 	}
 	return resp, nil
-}
-
-func ensureDomainFeePoolSession(ctx context.Context, rt *Runtime, resolverPeerID peer.ID) (dual2of2.InfoResp, peer.AddrInfo, error) {
-	info, gw, err := fetchDomainFeePoolInfo(ctx, rt, resolverPeerID)
-	if err != nil {
-		return dual2of2.InfoResp{}, peer.AddrInfo{}, err
-	}
-	autoRenewRounds := rt.runIn.Listen.AutoRenewRounds
-	if autoRenewRounds == 0 {
-		autoRenewRounds = 1
-	}
-	if _, err := ensureActiveFeePoolWithSecurity(ctx, rt, gw, autoRenewRounds, info, domainSec(rt)); err != nil {
-		return dual2of2.InfoResp{}, peer.AddrInfo{}, err
-	}
-	return info, gw, nil
-}
-
-// ensureDomainFeePoolSessionForChargeLocked 确保当前 domain 费用池足够支付下一笔扣费。
-// 调用方必须已经持有该 resolver 对应的 feePoolPayMutex。
-func ensureDomainFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, gw peer.AddrInfo, info dual2of2.InfoResp, charge uint64) (*feePoolSession, error) {
-	if charge == 0 {
-		charge = 1
-	}
-	if cur, ok := rt.getFeePool(gw.ID.String()); ok && cur != nil && strings.TrimSpace(cur.SpendTxID) != "" && cur.Status == "active" {
-		if cur.ClientAmount >= charge+cur.SpendTxFeeSat {
-			return cur, nil
-		}
-	}
-	autoRenewRounds := rt.runIn.Listen.AutoRenewRounds
-	if autoRenewRounds == 0 {
-		autoRenewRounds = 1
-	}
-	info.MinimumPoolAmountSatoshi = maxUint64Local(info.MinimumPoolAmountSatoshi, domainFeePoolWarmTarget(info))
-	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, domainSec(rt))
-}
-
-// domainFeePoolWarmTarget 为 domain 一轮常见 burst 预留池资金。
-// 目标覆盖：
-// - open 时首扣 1 次；
-// - 查询注册、锁名；
-// - 注册后的解析；
-// - set-target 前查询；
-// - set-target 后再次解析。
-func domainFeePoolWarmTarget(info dual2of2.InfoResp) uint64 {
-	headroom := maxUint64Local(info.SingleQueryFeeSatoshi, info.SinglePublishFeeSatoshi)
-	if headroom == 0 {
-		headroom = 1
-	}
-	target := info.SingleCycleFeeSatoshi
-	target += info.SingleQueryFeeSatoshi * 4
-	target += info.SinglePublishFeeSatoshi * 2
-	target += headroom
-	if target == 0 {
-		target = 1
-	}
-	return target
-}
-
-func maxUint64Local(a uint64, b uint64) uint64 {
-	if a > b {
-		return a
-	}
-	return b
-}
-
-type domainFeePoolChargeContext struct {
-	Session          *feePoolSession
-	Charge           uint64
-	NextSeq          uint32
-	NextServerAmount uint64
-	UpdatedTxHex     string
-	ClientSignature  []byte
-}
-
-// prepareDomainFeePoolCharge 计算一次付费 RPC 所需的 sequence/server_amount 推进材料。
-// 调用方必须已经持有该 resolver 对应的 feePoolPayMutex。
-func prepareDomainFeePoolCharge(rt *Runtime, resolverPeerID peer.ID, charge uint64) (domainFeePoolChargeContext, error) {
-	session, ok := rt.getFeePool(resolverPeerID.String())
-	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return domainFeePoolChargeContext{}, fmt.Errorf("fee pool session missing for resolver=%s", resolverPeerID)
-	}
-	if charge == 0 {
-		charge = 1
-	}
-	resolverPub := rt.Host.Peerstore().PubKey(resolverPeerID)
-	if resolverPub == nil {
-		return domainFeePoolChargeContext{}, fmt.Errorf("missing resolver pubkey")
-	}
-	raw, err := resolverPub.Raw()
-	if err != nil {
-		return domainFeePoolChargeContext{}, err
-	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
-	if err != nil {
-		return domainFeePoolChargeContext{}, err
-	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return domainFeePoolChargeContext{}, err
-	}
-	nextSeq := session.Sequence + 1
-	nextServerAmount := session.ServerAmount + charge
-	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
-	if err != nil {
-		return domainFeePoolChargeContext{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
-	if err != nil {
-		return domainFeePoolChargeContext{}, err
-	}
-	return domainFeePoolChargeContext{
-		Session:          session,
-		Charge:           charge,
-		NextSeq:          nextSeq,
-		NextServerAmount: nextServerAmount,
-		UpdatedTxHex:     updatedTx.Hex(),
-		ClientSignature:  append([]byte(nil), (*clientSig)...),
-	}, nil
-}
-
-func applyDomainFeePoolCharge(ctx context.Context, rt *Runtime, chargeCtx domainFeePoolChargeContext, stage string, purpose string, note string, payload any) {
-	if chargeCtx.Session == nil {
-		return
-	}
-	applyFeePoolChargeToSession(chargeCtx.Session, chargeCtx.NextSeq, chargeCtx.NextServerAmount, chargeCtx.UpdatedTxHex)
-	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-		FlowID:          "fee_pool:" + chargeCtx.Session.SpendTxID,
-		FlowType:        "fee_pool",
-		RefID:           chargeCtx.Session.SpendTxID,
-		Stage:           stage,
-		Direction:       "out",
-		Purpose:         purpose,
-		AmountSatoshi:   -int64(chargeCtx.Charge),
-		UsedSatoshi:     int64(chargeCtx.Charge),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     chargeCtx.Session.SpendTxID,
-		Note:            note,
-		Payload:         payload,
-	})
 }
 
 func verifyRegisterQuote(resolverPubkeyHex string, raw []byte) (domainRegisterQuote, error) {

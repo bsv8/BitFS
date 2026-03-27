@@ -14,9 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -286,8 +285,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	st := beforeState
 	switch cmd.CommandType {
 	case feePoolCommandEnsureActive:
-		var info dual2of2.InfoResp
-		infoErr := p2prpc.CallProto(ctx, k.rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(k.rt.rpcTrace), dual2of2.InfoReq{ClientID: k.rt.runIn.ClientID}, &info)
+		info, infoErr := callNodePoolInfo(ctx, k.rt, gw.ID)
 		if infoErr != nil {
 			st.State = feePoolKernelStateFailed
 			st.LastError = infoErr.Error()
@@ -458,8 +456,8 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		addEvent("fee_pool_rotate_begin", map[string]any{
 			"spend_txid": shortToken(sess.SpendTxID),
 		}, beforeState.State, st.State)
-		var info dual2of2.InfoResp
-		if err := p2prpc.CallProto(ctx, k.rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(k.rt.rpcTrace), dual2of2.InfoReq{ClientID: k.rt.runIn.ClientID}, &info); err != nil {
+		info, err := callNodePoolInfo(ctx, k.rt, gw.ID)
+		if err != nil {
 			st.State = feePoolKernelStateFailed
 			st.LastError = err.Error()
 			k.setState(gwID, st)

@@ -16,7 +16,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/script"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )

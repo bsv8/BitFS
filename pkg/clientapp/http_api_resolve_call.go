@@ -9,16 +9,18 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/nodesvc"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
 type apiRouteCallRequest struct {
-	To          string          `json:"to"`
-	Route       string          `json:"route"`
-	ContentType string          `json:"content_type"`
-	Body        json.RawMessage `json:"body,omitempty"`
-	BodyBase64  string          `json:"body_base64,omitempty"`
+	To               string          `json:"to"`
+	Route            string          `json:"route"`
+	ContentType      string          `json:"content_type"`
+	Body             json.RawMessage `json:"body,omitempty"`
+	BodyBase64       string          `json:"body_base64,omitempty"`
+	PaymentMode      string          `json:"payment_mode,omitempty"`
+	PaymentQuoteB64  string          `json:"payment_quote_base64,omitempty"`
 }
 
 func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
@@ -40,11 +42,18 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	paymentQuote, err := decodeOptionalBase64(req.PaymentQuoteB64, "payment_quote_base64")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
 	resp, err := TriggerPeerCall(r.Context(), s.rt, TriggerPeerCallParams{
-		To:          req.To,
-		Route:       req.Route,
-		ContentType: req.ContentType,
-		Body:        body,
+		To:           req.To,
+		Route:        req.Route,
+		ContentType:  req.ContentType,
+		Body:         body,
+		PaymentMode:  req.PaymentMode,
+		PaymentQuote: paymentQuote,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -259,6 +268,18 @@ func decodeRouteCallBody(raw json.RawMessage, bodyBase64 string) ([]byte, error)
 	return append([]byte(nil), raw...), nil
 }
 
+func decodeOptionalBase64(raw string, field string) ([]byte, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return nil, nil
+	}
+	out, err := base64.StdEncoding.DecodeString(value)
+	if err != nil {
+		return nil, errors.New("invalid " + strings.TrimSpace(field))
+	}
+	return out, nil
+}
+
 func routeCallHTTPResponse(ok bool, code, message, contentType string, body []byte, extras ...func(map[string]any)) map[string]any {
 	out := map[string]any{
 		"ok":      ok,
@@ -291,6 +312,18 @@ func routeCallPaymentHTTPExtras(resp nodesvc.CallResp) func(map[string]any) {
 				var receipt nodesvc.FeePool2of2Receipt
 				if err := oldproto.Unmarshal(resp.PaymentReceipt, &receipt); err == nil {
 					out["payment_receipt"] = receipt
+				}
+			}
+		}
+		if strings.TrimSpace(resp.PaymentQuoteScheme) != "" {
+			out["payment_quote_scheme"] = strings.TrimSpace(resp.PaymentQuoteScheme)
+		}
+		if len(resp.PaymentQuote) > 0 {
+			out["payment_quote_base64"] = base64.StdEncoding.EncodeToString(resp.PaymentQuote)
+			if json.Valid(resp.PaymentQuote) {
+				var quote any
+				if err := json.Unmarshal(resp.PaymentQuote, &quote); err == nil {
+					out["payment_quote"] = quote
 				}
 			}
 		}

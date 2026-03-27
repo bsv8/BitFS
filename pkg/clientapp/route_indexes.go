@@ -2,10 +2,11 @@ package clientapp
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 func upsertPublishedRouteIndex(db *sql.DB, route string, seedHash string) (int64, error) {
@@ -53,5 +54,5 @@ func buildRouteIndexManifest(db *sql.DB, route string) ([]byte, error) {
 	); err != nil {
 		return nil, err
 	}
-	return json.Marshal(manifest)
+	return oldproto.Marshal(&manifest)
 }

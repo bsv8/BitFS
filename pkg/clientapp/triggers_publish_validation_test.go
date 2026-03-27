@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 )
 
 func TestValidateDemandPublishPaidResp(t *testing.T) {

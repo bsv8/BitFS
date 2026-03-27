@@ -1,0 +1,156 @@
+package clientapp
+
+import (
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"time"
+
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/payflow"
+	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
+)
+
+type feePoolProofArgs struct {
+	Session         *feePoolSession
+	ClientActor     *dual2of2.Actor
+	GatewayPub      *ec.PublicKey
+	ServiceQuoteRaw []byte
+	ServiceQuote    proof.ServiceQuote
+}
+
+type feePoolProofBuilt struct {
+	UpdatedTx          *txsdk.Transaction
+	ProofIntent        []byte
+	SignedProofCommit  []byte
+	ProofStatePayload  []byte
+	AcceptedChargeHash string
+}
+
+func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, error) {
+	if args.Session == nil || strings.TrimSpace(args.Session.CurrentTxHex) == "" {
+		return feePoolProofBuilt{}, fmt.Errorf("fee pool session current tx missing")
+	}
+	if args.ClientActor == nil || args.ClientActor.PrivKey == nil || args.ClientActor.PubKey == nil {
+		return feePoolProofBuilt{}, fmt.Errorf("client actor missing")
+	}
+	if args.GatewayPub == nil {
+		return feePoolProofBuilt{}, fmt.Errorf("gateway public key missing")
+	}
+	if len(args.ServiceQuoteRaw) == 0 {
+		return feePoolProofBuilt{}, fmt.Errorf("service quote required")
+	}
+	gatewayQuoteHash, err := proof.HashServiceQuote(args.ServiceQuote)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	nextSequence := args.ServiceQuote.SequenceNumber
+	nextServerAmount := args.ServiceQuote.ServerAmountAfter
+	chargeAmount := args.ServiceQuote.ChargeAmountSatoshi
+	baseTx, err := ce.LoadTx(
+		args.Session.CurrentTxHex,
+		nil,
+		nextSequence,
+		nextServerAmount,
+		args.GatewayPub,
+		args.ClientActor.PubKey,
+		args.Session.PoolAmountSat,
+	)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	intent := proof.ChargeIntent{
+		Domain:              strings.TrimSpace(args.ServiceQuote.Domain),
+		Target:              strings.TrimSpace(args.ServiceQuote.Target),
+		GatewayPubkeyHex:    strings.ToLower(hex.EncodeToString(args.GatewayPub.Compressed())),
+		ClientPubkeyHex:     strings.ToLower(strings.TrimSpace(args.ClientActor.PubHex)),
+		SpendTxID:           strings.TrimSpace(args.Session.SpendTxID),
+		GatewayQuoteHash:    gatewayQuoteHash,
+		ChargeReason:        strings.TrimSpace(args.ServiceQuote.ChargeReason),
+		ChargeAmountSatoshi: chargeAmount,
+		SequenceNumber:      nextSequence,
+		ServerAmountBefore:  args.Session.ServerAmount,
+		ServerAmountAfter:   nextServerAmount,
+		ServiceDeadlineUnix: args.ServiceQuote.GrantedServiceDeadlineUnix,
+	}
+	intentRaw, err := proof.MarshalIntent(intent)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	intentHash, err := proof.HashIntent(intent)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	updateTemplateHash, err := proof.UpdateTemplateHashFromTxHex(baseTx.Hex())
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	commit := proof.ClientCommit{
+		IntentHash:          intentHash,
+		ClientPubkeyHex:     strings.ToLower(strings.TrimSpace(args.ClientActor.PubHex)),
+		SpendTxID:           strings.TrimSpace(args.Session.SpendTxID),
+		SequenceNumber:      nextSequence,
+		ServerAmountBefore:  args.Session.ServerAmount,
+		ChargeAmountSatoshi: chargeAmount,
+		ServerAmountAfter:   nextServerAmount,
+		UpdateTemplateHash:  updateTemplateHash,
+		CreatedAtUnix:       time.Now().Unix(),
+	}
+	signedCommit, err := proof.SignClientCommitEnvelope(commit, args.ClientActor.PrivKey)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	prevState, _, err := proof.ExtractProofStateFromTxHex(args.Session.CurrentTxHex)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	commitHash, err := proof.HashClientCommit(commit)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	accepted := proof.AcceptedCharge{
+		IntentHash:          intentHash,
+		ClientCommitHash:    commitHash,
+		SpendTxID:           strings.TrimSpace(args.Session.SpendTxID),
+		SequenceNumber:      nextSequence,
+		ServerAmountBefore:  args.Session.ServerAmount,
+		ChargeAmountSatoshi: chargeAmount,
+		ServerAmountAfter:   nextServerAmount,
+		ServiceDeadlineUnix: args.ServiceQuote.GrantedServiceDeadlineUnix,
+		PrevAcceptedHash:    prevState.AcceptedTipHash,
+	}
+	state, err := proof.BuildNextProofState(prevState, accepted)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	acceptedHash, err := proof.HashAcceptedCharge(accepted)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	stateRaw, err := proof.MarshalProofState(state)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	updatedTx, err := ce.LoadTxWithProof(
+		args.Session.CurrentTxHex,
+		nil,
+		nextSequence,
+		nextServerAmount,
+		args.GatewayPub,
+		args.ClientActor.PubKey,
+		args.Session.PoolAmountSat,
+		stateRaw,
+	)
+	if err != nil {
+		return feePoolProofBuilt{}, err
+	}
+	return feePoolProofBuilt{
+		UpdatedTx:          updatedTx,
+		ProofIntent:        intentRaw,
+		SignedProofCommit:  append([]byte(nil), signedCommit...),
+		ProofStatePayload:  stateRaw,
+		AcceptedChargeHash: acceptedHash,
+	}, nil
+}

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 )
 
 // normalizeCompressedPubKeyHex 统一系统内公钥格式为 secp256k1 压缩公钥 hex（33 字节，前缀 02/03）。

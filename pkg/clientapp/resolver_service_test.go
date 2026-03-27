@@ -2,16 +2,16 @@ package clientapp
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/domainsvc"
-	"github.com/bsv8/BFTP/pkg/nodesvc"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/host"
 )
 
@@ -75,7 +75,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("resolve response not ok: %+v", resolveRespFromTarget)
 	}
 	var manifest routeIndexManifest
-	if err := json.Unmarshal(resolveRespFromTarget.Body, &manifest); err != nil {
+	if err := oldproto.Unmarshal(resolveRespFromTarget.Body, &manifest); err != nil {
 		t.Fatalf("decode manifest: %v", err)
 	}
 	if manifest.SeedHash != strings.Repeat("ef", 32) {
@@ -122,16 +122,14 @@ func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPu
 		if strings.TrimSpace(req.Route) != domainsvc.RouteDomainV1Resolve {
 			return nodesvc.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-		var body struct {
-			Name string `json:"name"`
-		}
-		if err := json.Unmarshal(req.Body, &body); err != nil {
-			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: "invalid json body"}, nil
+		var body domainsvc.NameRouteReq
+		if err := oldproto.Unmarshal(req.Body, &body); err != nil {
+			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: "invalid protobuf body"}, nil
 		}
 		name, err := normalizeResolverNameCanonical(body.Name)
 		if err != nil {
-			raw, _ := json.Marshal(domainsvc.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
-			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: "application/json", Body: raw}, nil
+			raw, _ := oldproto.Marshal(&domainsvc.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
+			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: nodesvc.ContentTypeProto, Body: raw}, nil
 		}
 		var routeResp domainsvc.ResolveNamePaidResp
 		if name != expectedName {
@@ -145,10 +143,10 @@ func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPu
 				ExpireAtUnix:    expireAtUnix,
 			}
 		}
-		raw, err := json.Marshal(routeResp)
+		raw, err := oldproto.Marshal(&routeResp)
 		if err != nil {
 			return nodesvc.CallResp{}, err
 		}
-		return nodesvc.CallResp{Ok: true, Code: "OK", ContentType: "application/json", Body: raw}, nil
+		return nodesvc.CallResp{Ok: true, Code: "OK", ContentType: nodesvc.ContentTypeProto, Body: raw}, nil
 	}, nil)
 }

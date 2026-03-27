@@ -7,9 +7,8 @@ import (
 	"strings"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 )
 
@@ -27,9 +26,8 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 	}
 	gw := rt.HealthyGWs[0]
 	gatewayID := gatewayBusinessID(rt, gw.ID)
-	var resp dual2of2.StateResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{})
-	err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{ClientID: rt.runIn.ClientID}, &resp)
+	resp, err := callNodePoolState(ctx, rt, gw.ID, "")
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
 		return FeePoolStateResult{}, err
@@ -95,6 +93,9 @@ type FeePoolListenUnderpayProbeResult struct {
 	GatewayPeerID          string                  `json:"gateway_pubkey_hex"`
 	SpendTxID              string                  `json:"spend_txid"`
 	ExpectedSingleCycleFee uint64                  `json:"expected_single_cycle_fee_satoshi"`
+	QuoteStatus            string                  `json:"quote_status"`
+	QuotedChargeAmount     uint64                  `json:"quoted_charge_amount_satoshi"`
+	QuotedDurationSeconds  uint32                  `json:"quoted_duration_seconds"`
 	AttemptChargeAmount    uint64                  `json:"attempt_charge_amount_satoshi"`
 	AttemptSequence        uint32                  `json:"attempt_sequence"`
 	AttemptServerAmount    uint64                  `json:"attempt_server_amount_satoshi"`
@@ -169,39 +170,41 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("session current tx missing")
 	}
 
-	pub := rt.Host.Peerstore().PubKey(gw.ID)
-	if pub == nil {
-		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("missing gateway public key in peerstore")
-	}
-	raw, err := pub.Raw()
-	if err != nil {
-		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("read gateway raw pubkey: %w", err)
-	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
-	if err != nil {
-		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
-	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
 	}
 
 	underpay := sess.SingleCycleFeeSatoshi - 1
-	nextSeq := sess.Sequence + 1
-	nextServerAmount := sess.ServerAmount + underpay
-	updatedTx, err := ce.LoadTx(
-		sess.CurrentTxHex,
-		nil,
-		nextSeq,
-		nextServerAmount,
-		serverPub,
-		clientActor.PubKey,
-		sess.PoolAmountSat,
-	)
+	payloadRaw, err := dual2of2.MarshalListenCycleQuotePayload(0, 0)
 	if err != nil {
-		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("load updated tx failed: %w", err)
+		return FeePoolListenUnderpayProbeResult{}, err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              sess,
+		GatewayPeerID:        gw.ID,
+		ServiceType:          dual2of2.QuoteServiceTypeListenCycle,
+		Target:               "listen_cycle/underpay_probe",
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeBudgetForService,
+		ProposedPaymentSat:   underpay,
+	})
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("request listen quote failed: %w", err)
+	}
+	nextSeq := quoted.ServiceQuote.SequenceNumber
+	nextServerAmount := sess.ServerAmount + underpay
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         sess,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
+	if err != nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("build proof update failed: %w", err)
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("client sign update failed: %w", err)
 	}
@@ -215,15 +218,21 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 		ClientSig:           append([]byte(nil), (*clientSig)...),
 		ChargeReason:        "listen_cycle_fee",
 		ChargeAmountSatoshi: underpay,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
-	var resp dual2of2.PayConfirmResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolPayConfirm, gwSec(rt.rpcTrace), req, &resp); err != nil {
+	resp, err := callNodePoolPayConfirm(ctx, rt, gw.ID, req)
+	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
 	}
 	return FeePoolListenUnderpayProbeResult{
 		GatewayPeerID:          gatewayID,
 		SpendTxID:              spendTxID,
 		ExpectedSingleCycleFee: sess.SingleCycleFeeSatoshi,
+		QuoteStatus:            quoted.QuoteStatus,
+		QuotedChargeAmount:     quoted.ServiceQuote.ChargeAmountSatoshi,
+		QuotedDurationSeconds:  quoted.ServiceQuote.GrantedDurationSeconds,
 		AttemptChargeAmount:    underpay,
 		AttemptSequence:        nextSeq,
 		AttemptServerAmount:    nextServerAmount,
@@ -246,11 +255,8 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	}
 	gatewayID := gatewayBusinessID(rt, gw.ID)
 
-	var st dual2of2.StateResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolState, gwSec(rt.rpcTrace), dual2of2.StateReq{
-		ClientID:  rt.runIn.ClientID,
-		SpendTxID: spendTxID,
-	}, &st); err != nil {
+	st, err := callNodePoolState(ctx, rt, gw.ID, spendTxID)
+	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
 	if strings.TrimSpace(st.Status) == "not_found" {
@@ -312,19 +318,18 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
-
-	var resp dual2of2.CloseResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_begin", map[string]any{
 		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":         spendTxID,
 	})
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolClose, gwSec(rt.rpcTrace), dual2of2.CloseReq{
+	resp, err := callNodePoolClose(ctx, rt, gw.ID, dual2of2.CloseReq{
 		ClientID:     rt.runIn.ClientID,
 		SpendTxID:    spendTxID,
 		ServerAmount: st.ServerAmountSat,
 		Fee:          st.SpendTxFeeSat,
 		ClientSig:    append([]byte(nil), (*clientSig)...),
-	}, &resp); err != nil {
+	})
+	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_end", map[string]any{

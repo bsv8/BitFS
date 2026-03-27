@@ -24,9 +24,9 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/dealprod"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -298,6 +298,7 @@ type Config struct {
 		Enabled               *bool  `yaml:"enabled" toml:"enabled"`
 		RenewThresholdSeconds uint32 `yaml:"renew_threshold_seconds" toml:"renew_threshold_seconds"`
 		AutoRenewRounds       uint64 `yaml:"auto_renew_rounds" toml:"auto_renew_rounds"`
+		OfferPaymentSatoshi   uint64 `yaml:"offer_payment_satoshi" toml:"offer_payment_satoshi"`
 		TickSeconds           uint32 `yaml:"tick_seconds" toml:"tick_seconds"`
 	} `yaml:"listen" toml:"listen"`
 	Reachability struct {
@@ -341,9 +342,10 @@ type Config struct {
 }
 
 type PeerNode struct {
-	Enabled bool   `yaml:"enabled" toml:"enabled"`
-	Addr    string `yaml:"addr" toml:"addr"`
-	Pubkey  string `yaml:"pubkey" toml:"pubkey"`
+	Enabled                   bool   `yaml:"enabled" toml:"enabled"`
+	Addr                      string `yaml:"addr" toml:"addr"`
+	Pubkey                    string `yaml:"pubkey" toml:"pubkey"`
+	ListenOfferPaymentSatoshi uint64 `yaml:"listen_offer_payment_satoshi" toml:"listen_offer_payment_satoshi"`
 }
 
 type sellerSeed struct {
@@ -403,6 +405,7 @@ type RunInput struct {
 		Enabled               *bool
 		RenewThresholdSeconds uint32
 		AutoRenewRounds       uint64
+		OfferPaymentSatoshi   uint64
 		TickSeconds           uint32
 	}
 	Reachability struct {
@@ -506,6 +509,7 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 	}
 	in.Listen.RenewThresholdSeconds = cfg.Listen.RenewThresholdSeconds
 	in.Listen.AutoRenewRounds = cfg.Listen.AutoRenewRounds
+	in.Listen.OfferPaymentSatoshi = cfg.Listen.OfferPaymentSatoshi
 	in.Listen.TickSeconds = cfg.Listen.TickSeconds
 	if cfg.Reachability.AutoAnnounceEnabled != nil {
 		v := *cfg.Reachability.AutoAnnounceEnabled
@@ -579,6 +583,7 @@ func (in RunInput) toConfig() Config {
 	}
 	cfg.Listen.RenewThresholdSeconds = in.Listen.RenewThresholdSeconds
 	cfg.Listen.AutoRenewRounds = in.Listen.AutoRenewRounds
+	cfg.Listen.OfferPaymentSatoshi = in.Listen.OfferPaymentSatoshi
 	cfg.Listen.TickSeconds = in.Listen.TickSeconds
 	if in.Reachability.AutoAnnounceEnabled != nil {
 		v := *in.Reachability.AutoAnnounceEnabled

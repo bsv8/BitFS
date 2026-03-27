@@ -117,6 +117,23 @@ type BitfsPeerCallRequest = {
   body?: unknown;
 };
 
+type BitfsPeerQuoteDecision = {
+  to: string;
+  route: string;
+  payment_scheme: string;
+  payment_domain: string;
+  quote_status: string;
+  amount_satoshi: number;
+  quantity: number;
+  quantity_unit: string;
+  quote: unknown;
+  quoted_response: BitfsPeerCallResponse;
+};
+
+type BitfsPeerCallOptions = {
+  onQuote?: (quote: BitfsPeerQuoteDecision) => boolean | Promise<boolean>;
+};
+
 type BitfsPeerCallResponse = {
   ok?: boolean;
   code?: string;
@@ -127,6 +144,9 @@ type BitfsPeerCallResponse = {
   payment_options?: unknown[];
   payment_receipt_scheme?: string;
   payment_receipt?: unknown;
+  payment_quote_scheme?: string;
+  payment_quote?: unknown;
+  payment_quote_base64?: string;
 } & Record<string, unknown>;
 
 type BitfsCapabilityItem = {
@@ -225,7 +245,7 @@ type BitfsBridge = {
     resolve: (locator: string) => Promise<BitfsLocatorResolveResult>;
   };
   peer: {
-    call: (request: BitfsPeerCallRequest) => Promise<BitfsPeerCallResponse>;
+    call: (request: BitfsPeerCallRequest, options?: BitfsPeerCallOptions) => Promise<BitfsPeerCallResponse>;
   };
   client: {
     info: () => Promise<BitfsClientInfo>;

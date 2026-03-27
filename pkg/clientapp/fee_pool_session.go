@@ -15,6 +15,9 @@ type feePoolSession struct {
 	FinalTxID string
 	Status    string
 
+	SuspiciousReason string
+	SuspiciousAtUnix int64
+
 	PoolAmountSat uint64
 	SpendTxFeeSat uint64
 

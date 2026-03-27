@@ -9,7 +9,7 @@ import (
 
 	"github.com/bsv-blockchain/go-sdk/chainhash"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 )
 
 func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T) {

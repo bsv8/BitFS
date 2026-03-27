@@ -15,9 +15,9 @@ import (
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BFTP/pkg/p2prpc"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
@@ -165,8 +165,8 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
 
-	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+	info, err := callNodePoolInfo(ctx, rt, gw.ID)
+	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
@@ -199,30 +199,37 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	if charge == 0 {
 		charge = 1
 	}
-
-	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
-	if gwPub == nil {
-		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("missing gateway pubkey")
-	}
-	raw, err := gwPub.Raw()
+	payloadRaw, err := dual2of2.MarshalDemandPublishQuotePayload(seedHash, p.ChunkCount, localAdvertiseAddrs(rt))
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              session,
+		GatewayPeerID:        gw.ID,
+		ServiceType:          dual2of2.QuoteServiceTypeDemandPublish,
+		Target:               seedHash,
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		ProposedPaymentSat:   charge,
+	})
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("request demand publish quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	nextSeq := session.Sequence + 1
-	nextServerAmount := session.ServerAmount + charge
-	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         session,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
@@ -233,12 +240,15 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		ChunkCount:          p.ChunkCount,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      nextSeq,
-		ServerAmount:        nextServerAmount,
-		ChargeAmountSatoshi: charge,
+		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
+		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        "demand_publish_fee",
+		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
 	var resp dual2of2.DemandPublishPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
@@ -255,8 +265,26 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		return dual2of2.DemandPublishPaidResp{}, err
 	}
 	if resp.Success {
+		payload, err := dual2of2.MarshalDemandPublishServicePayload(resp)
+		if err != nil {
+			return dual2of2.DemandPublishPaidResp{}, err
+		}
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+			ServiceType:        dual2of2.ServiceTypeDemandPublish,
+			SpendTxID:          session.SpendTxID,
+			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
+			AcceptedChargeHash: built.AcceptedChargeHash,
+			ResultCode:         strings.TrimSpace(resp.Status),
+			ResultPayloadBytes: payload,
+		}, resp.ServiceReceipt); err != nil {
+			return dual2of2.DemandPublishPaidResp{}, err
+		}
+		nextTxHex := built.UpdatedTx.Hex()
+		if len(resp.MergedCurrentTx) > 0 {
+			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+		}
 		// 发布扣费成功后必须推进本地会话，否则下次请求会重复旧 sequence/server_amount。
-		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+		applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
@@ -264,8 +292,8 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 			Stage:           "use_publish",
 			Direction:       "out",
 			Purpose:         "demand_publish_fee",
-			AmountSatoshi:   -int64(charge),
-			UsedSatoshi:     int64(charge),
+			AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 			ReturnedSatoshi: 0,
 			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 			Note:            fmt.Sprintf("demand_id=%s", strings.TrimSpace(resp.DemandID)),
@@ -297,8 +325,8 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	if err != nil {
 		return dual2of2.DemandPublishBatchPaidResp{}, err
 	}
-	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+	info, err := callNodePoolInfo(ctx, rt, gw.ID)
+	if err != nil {
 		return dual2of2.DemandPublishBatchPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
@@ -338,32 +366,6 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	if charge == 0 {
 		charge = 1
 	}
-	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
-	if gwPub == nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("missing gateway pubkey")
-	}
-	raw, err := gwPub.Raw()
-	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
-	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
-	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
-	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
-	}
-	nextSeq := session.Sequence + 1
-	nextServerAmount := session.ServerAmount + charge
-	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
-	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
-	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
-	}
 	reqItems := make([]*dual2of2.DemandPublishBatchPaidItem, 0, len(items))
 	for _, item := range items {
 		reqItems = append(reqItems, &dual2of2.DemandPublishBatchPaidItem{
@@ -371,17 +373,54 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 			ChunkCount: item.ChunkCount,
 		})
 	}
+	payloadRaw, err := dual2of2.MarshalDemandPublishBatchQuotePayload(reqItems, localAdvertiseAddrs(rt))
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              session,
+		GatewayPeerID:        gw.ID,
+		ServiceType:          dual2of2.QuoteServiceTypeDemandPublishBatch,
+		Target:               "demand_publish_batch",
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		ProposedPaymentSat:   charge,
+	})
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("request demand publish batch quote failed: %w", err)
+	}
+	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         session,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
+	if err != nil {
+		return dual2of2.DemandPublishBatchPaidResp{}, err
+	}
 	req := dual2of2.DemandPublishBatchPaidReq{
 		ClientID:            rt.runIn.ClientID,
 		Items:               reqItems,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      nextSeq,
-		ServerAmount:        nextServerAmount,
-		ChargeAmountSatoshi: charge,
+		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
+		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        "demand_publish_batch_fee",
+		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
 	var resp dual2of2.DemandPublishBatchPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
@@ -398,7 +437,25 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		return dual2of2.DemandPublishBatchPaidResp{}, err
 	}
 	if resp.Success {
-		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+		payload, err := dual2of2.MarshalDemandPublishBatchServicePayload(resp)
+		if err != nil {
+			return dual2of2.DemandPublishBatchPaidResp{}, err
+		}
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+			ServiceType:        dual2of2.ServiceTypeDemandPublishBatch,
+			SpendTxID:          session.SpendTxID,
+			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
+			AcceptedChargeHash: built.AcceptedChargeHash,
+			ResultCode:         strings.TrimSpace(resp.Status),
+			ResultPayloadBytes: payload,
+		}, resp.ServiceReceipt); err != nil {
+			return dual2of2.DemandPublishBatchPaidResp{}, err
+		}
+		nextTxHex := built.UpdatedTx.Hex()
+		if len(resp.MergedCurrentTx) > 0 {
+			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+		}
+		applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
 		demandIDs := make([]string, 0, len(resp.Items))
 		for _, item := range resp.Items {
 			if item == nil {
@@ -415,8 +472,8 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 			Stage:           "use_publish",
 			Direction:       "out",
 			Purpose:         "demand_publish_batch_fee",
-			AmountSatoshi:   -int64(charge),
-			UsedSatoshi:     int64(charge),
+			AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 			ReturnedSatoshi: 0,
 			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 			Note:            fmt.Sprintf("published=%d demand_ids=%s", len(demandIDs), strings.Join(demandIDs, ",")),
@@ -447,8 +504,8 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	var info dual2of2.InfoResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoFeePoolInfo, gwSec(rt.rpcTrace), dual2of2.InfoReq{ClientID: rt.runIn.ClientID}, &info); err != nil {
+	info, err := callNodePoolInfo(ctx, rt, gw.ID)
+	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
@@ -482,29 +539,37 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if charge == 0 {
 		charge = 1
 	}
-	gwPub := rt.Host.Peerstore().PubKey(gw.ID)
-	if gwPub == nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("missing gateway pubkey")
-	}
-	raw, err := gwPub.Raw()
+	payloadRaw, err := dual2of2.MarshalLiveDemandPublishQuotePayload(streamID, p.HaveSegmentIndex, p.Window, localAdvertiseAddrs(rt))
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	serverPub, err := ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
+	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
+		Session:              session,
+		GatewayPeerID:        gw.ID,
+		ServiceType:          dual2of2.QuoteServiceTypeLiveDemandPublish,
+		Target:               p.StreamID,
+		ServiceParamsPayload: payloadRaw,
+		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		ProposedPaymentSat:   charge,
+	})
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("request live demand publish quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	nextSeq := session.Sequence + 1
-	nextServerAmount := session.ServerAmount + charge
-	updatedTx, err := ce.LoadTx(session.CurrentTxHex, nil, nextSeq, nextServerAmount, serverPub, clientActor.PubKey, session.PoolAmountSat)
+	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
+		Session:         session,
+		ClientActor:     clientActor,
+		GatewayPub:      quoted.GatewayPub,
+		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
+		ServiceQuote:    quoted.ServiceQuote,
+	})
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(updatedTx, clientActor.PrivKey, serverPub)
+	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
@@ -515,12 +580,15 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		Window:              p.Window,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      nextSeq,
-		ServerAmount:        nextServerAmount,
-		ChargeAmountSatoshi: charge,
+		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
+		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        "live_demand_publish_fee",
+		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ProofIntent:         append([]byte(nil), built.ProofIntent...),
+		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
+		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
 	var resp dual2of2.LiveDemandPublishPaidResp
 	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoLiveDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
@@ -530,8 +598,26 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		return dual2of2.LiveDemandPublishPaidResp{}, err
 	}
 	if resp.Success {
+		payload, err := dual2of2.MarshalLiveDemandPublishServicePayload(resp)
+		if err != nil {
+			return dual2of2.LiveDemandPublishPaidResp{}, err
+		}
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+			ServiceType:        dual2of2.ServiceTypeLiveDemandPublish,
+			SpendTxID:          session.SpendTxID,
+			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
+			AcceptedChargeHash: built.AcceptedChargeHash,
+			ResultCode:         strings.TrimSpace(resp.Status),
+			ResultPayloadBytes: payload,
+		}, resp.ServiceReceipt); err != nil {
+			return dual2of2.LiveDemandPublishPaidResp{}, err
+		}
+		nextTxHex := built.UpdatedTx.Hex()
+		if len(resp.MergedCurrentTx) > 0 {
+			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+		}
 		// 直播需求发布同样会推进费用池状态，必须同步回写本地会话。
-		applyFeePoolChargeToSession(session, nextSeq, nextServerAmount, updatedTx.Hex())
+		applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
@@ -539,8 +625,8 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 			Stage:           "use_live_publish",
 			Direction:       "out",
 			Purpose:         "live_demand_publish_fee",
-			AmountSatoshi:   -int64(charge),
-			UsedSatoshi:     int64(charge),
+			AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
 			ReturnedSatoshi: 0,
 			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 			Note:            fmt.Sprintf("live_demand_id=%s", strings.TrimSpace(resp.DemandID)),

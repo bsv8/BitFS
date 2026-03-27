@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/domainsvc"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
 )
 
 // WalletBusinessRequest 是页面交给钱包的签名业务原文。

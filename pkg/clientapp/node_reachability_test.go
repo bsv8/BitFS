@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/feepool/dual2of2"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 )
 
 func TestNodeReachabilityCacheAndSelfState(t *testing.T) {

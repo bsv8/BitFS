@@ -107,7 +107,28 @@
     if (input.body != null) {
       payload.body = input.body;
     }
+    if (typeof input.payment_mode === "string" && input.payment_mode.trim() !== "") {
+      payload.payment_mode = input.payment_mode.trim();
+    }
+    if (typeof input.payment_quote_base64 === "string" && input.payment_quote_base64.trim() !== "") {
+      payload.payment_quote_base64 = input.payment_quote_base64.trim();
+    }
     return payload;
+  }
+
+  function normalizePeerCallOptions(options) {
+    if (options == null) {
+      return { onQuote: null };
+    }
+    if (typeof options !== "object" || Array.isArray(options)) {
+      throw new Error("peer call options must be an object");
+    }
+    if (options.onQuote != null && typeof options.onQuote !== "function") {
+      throw new Error("peer call onQuote must be a function");
+    }
+    return {
+      onQuote: options.onQuote || null
+    };
   }
 
   function normalizeLocatorInput(raw) {
@@ -152,8 +173,45 @@
       }
     },
     peer: {
-      async call(input) {
-        return ipcRenderer.invoke("bitfs-viewer:peer-call", normalizePeerCallInput(input));
+      async call(input, options) {
+        const normalized = normalizePeerCallInput(input);
+        const normalizedOptions = normalizePeerCallOptions(options);
+        if (!normalizedOptions.onQuote) {
+          return ipcRenderer.invoke("bitfs-viewer:peer-call", normalized);
+        }
+        const quoted = await ipcRenderer.invoke("bitfs-viewer:peer-call", {
+          ...normalized,
+          payment_mode: "quote"
+        });
+        if (String(quoted && quoted.code || "").trim().toUpperCase() !== "PAYMENT_QUOTED") {
+          return quoted;
+        }
+        const option = Array.isArray(quoted && quoted.payment_options) && quoted.payment_options.length > 0 ? quoted.payment_options[0] : null;
+        const approved = await normalizedOptions.onQuote({
+          to: normalized.to,
+          route: normalized.route,
+          payment_scheme: String(quoted && quoted.payment_quote_scheme || option && option.scheme || ""),
+          payment_domain: String(option && option.payment_domain || ""),
+          quote_status: String(option && option.quote_status || ""),
+          amount_satoshi: Number(option && option.amount_satoshi || 0),
+          quantity: Number(option && option.service_quantity || 0),
+          quantity_unit: String(option && option.service_quantity_unit || ""),
+          quote: Object.prototype.hasOwnProperty.call(quoted || {}, "payment_quote") ? quoted.payment_quote : null,
+          quoted_response: quoted
+        });
+        if (!approved) {
+          return {
+            ...quoted,
+            ok: false,
+            code: "QUOTE_REJECTED",
+            message: "payment quote rejected by caller"
+          };
+        }
+        return ipcRenderer.invoke("bitfs-viewer:peer-call", {
+          ...normalized,
+          payment_mode: "pay",
+          payment_quote_base64: String(quoted && quoted.payment_quote_base64 || "")
+        });
       }
     },
     resource: {

@@ -2,12 +2,13 @@ package clientapp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/domainsvc"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/obs"
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 type TriggerResolverResolveParams struct {
@@ -44,14 +45,14 @@ func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverR
 	if err != nil {
 		return out, err
 	}
-	payload, err := json.Marshal(map[string]any{"name": name})
+	payload, err := oldproto.Marshal(&domainsvc.NameRouteReq{Name: name})
 	if err != nil {
 		return out, err
 	}
 	resp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          resolverPubkeyHex,
 		Route:       domainsvc.RouteDomainV1Resolve,
-		ContentType: "application/json",
+		ContentType: nodesvc.ContentTypeProto,
 		Body:        payload,
 	})
 	if err != nil {
@@ -66,7 +67,7 @@ func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverR
 		return out, nil
 	}
 	var routeBody domainsvc.ResolveNamePaidResp
-	if err := json.Unmarshal(resp.Body, &routeBody); err != nil {
+	if err := oldproto.Unmarshal(resp.Body, &routeBody); err != nil {
 		return out, fmt.Errorf("decode domain resolve body: %w", err)
 	}
 	out = resolverResolveResp{
