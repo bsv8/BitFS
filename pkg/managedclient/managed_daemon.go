@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
+	"github.com/bsv8/BFTP/pkg/infra/lhttp"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
@@ -178,42 +179,35 @@ func (d *managedDaemon) close() error {
 }
 
 func (d *managedDaemon) startHTTPServer() error {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/key/status", d.handleKeyStatus)
-	mux.HandleFunc("/api/v1/key/new", d.handleKeyNew)
-	mux.HandleFunc("/api/v1/key/import", d.handleKeyImport)
-	mux.HandleFunc("/api/v1/key/export", d.handleKeyExport)
-	mux.HandleFunc("/api/v1/key/unlock", d.handleKeyUnlock)
-	mux.HandleFunc("/api/v1/key/lock", d.handleKeyLock)
-	mux.HandleFunc("/api", d.handleAPIProxyOrLocked)
-	mux.HandleFunc("/api/", d.handleAPIProxyOrLocked)
-	mux.HandleFunc("/", d.handleNonAPIRequest)
-
-	d.srv = &http.Server{
-		Addr:              d.cfg.HTTP.ListenAddr,
-		Handler:           mux,
-		ReadTimeout:       10 * time.Second,
-		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
-
-	ln, err := net.Listen("tcp", d.cfg.HTTP.ListenAddr)
+	mux := lhttp.NewServeMux(
+		lhttp.Route{Path: "/api/v1/key/status", Handler: d.handleKeyStatus},
+		lhttp.Route{Path: "/api/v1/key/new", Handler: d.handleKeyNew},
+		lhttp.Route{Path: "/api/v1/key/import", Handler: d.handleKeyImport},
+		lhttp.Route{Path: "/api/v1/key/export", Handler: d.handleKeyExport},
+		lhttp.Route{Path: "/api/v1/key/unlock", Handler: d.handleKeyUnlock},
+		lhttp.Route{Path: "/api/v1/key/lock", Handler: d.handleKeyLock},
+		lhttp.Route{Path: "/api", Handler: d.handleAPIProxyOrLocked},
+		lhttp.Route{Path: "/api/", Handler: d.handleAPIProxyOrLocked},
+		lhttp.Route{Path: "/", Handler: d.handleNonAPIRequest},
+	)
+	started, err := lhttp.StartServer(lhttp.ServerOptions{
+		ListenAddr: d.cfg.HTTP.ListenAddr,
+		Handler:    mux,
+	})
 	if err != nil {
 		return err
 	}
-	d.cfg.HTTP.ListenAddr = ln.Addr().String()
+	d.srv = started.Server
+	d.cfg.HTTP.ListenAddr = started.Listener.Addr().String()
 	obs.Important("bitcast-client", "managed_api_started", map[string]any{
-		"listen_addr": ln.Addr().String(),
+		"listen_addr": started.Listener.Addr().String(),
 		"config_path": d.startup.ConfigPath,
 		"phase":       string(d.currentPhase()),
 	})
-	go func() {
-		if err := d.srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			obs.Error("bitcast-client", "managed_api_stopped", map[string]any{"error": err.Error()})
-			d.rootCancel()
-		}
-	}()
+	lhttp.ServeInBackground(started, func(err error) {
+		obs.Error("bitcast-client", "managed_api_stopped", map[string]any{"error": err.Error()})
+		d.rootCancel()
+	})
 	return nil
 }
 
