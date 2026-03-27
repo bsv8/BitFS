@@ -8,17 +8,17 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 )
 
 type feePoolProofArgs struct {
 	Session         *feePoolSession
-	ClientActor     *dual2of2.Actor
+	ClientActor     *poolcore.Actor
 	GatewayPub      *ec.PublicKey
 	ServiceQuoteRaw []byte
-	ServiceQuote    proof.ServiceQuote
+	ServiceQuote    payflow.ServiceQuote
 }
 
 type feePoolProofBuilt struct {
@@ -42,7 +42,7 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 	if len(args.ServiceQuoteRaw) == 0 {
 		return feePoolProofBuilt{}, fmt.Errorf("service quote required")
 	}
-	gatewayQuoteHash, err := proof.HashServiceQuote(args.ServiceQuote)
+	gatewayQuoteHash, err := payflow.HashServiceQuote(args.ServiceQuote)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
@@ -61,7 +61,7 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	intent := proof.ChargeIntent{
+	intent := payflow.ChargeIntent{
 		Domain:              strings.TrimSpace(args.ServiceQuote.Domain),
 		Target:              strings.TrimSpace(args.ServiceQuote.Target),
 		GatewayPubkeyHex:    strings.ToLower(hex.EncodeToString(args.GatewayPub.Compressed())),
@@ -75,19 +75,19 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 		ServerAmountAfter:   nextServerAmount,
 		ServiceDeadlineUnix: args.ServiceQuote.GrantedServiceDeadlineUnix,
 	}
-	intentRaw, err := proof.MarshalIntent(intent)
+	intentRaw, err := payflow.MarshalIntent(intent)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	intentHash, err := proof.HashIntent(intent)
+	intentHash, err := payflow.HashIntent(intent)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	updateTemplateHash, err := proof.UpdateTemplateHashFromTxHex(baseTx.Hex())
+	updateTemplateHash, err := payflow.UpdateTemplateHashFromTxHex(baseTx.Hex())
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	commit := proof.ClientCommit{
+	commit := payflow.ClientCommit{
 		IntentHash:          intentHash,
 		ClientPubkeyHex:     strings.ToLower(strings.TrimSpace(args.ClientActor.PubHex)),
 		SpendTxID:           strings.TrimSpace(args.Session.SpendTxID),
@@ -98,19 +98,19 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 		UpdateTemplateHash:  updateTemplateHash,
 		CreatedAtUnix:       time.Now().Unix(),
 	}
-	signedCommit, err := proof.SignClientCommitEnvelope(commit, args.ClientActor.PrivKey)
+	signedCommit, err := payflow.SignClientCommitEnvelope(commit, args.ClientActor.PrivKey)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	prevState, _, err := proof.ExtractProofStateFromTxHex(args.Session.CurrentTxHex)
+	prevState, _, err := payflow.ExtractProofStateFromTxHex(args.Session.CurrentTxHex)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	commitHash, err := proof.HashClientCommit(commit)
+	commitHash, err := payflow.HashClientCommit(commit)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	accepted := proof.AcceptedCharge{
+	accepted := payflow.AcceptedCharge{
 		IntentHash:          intentHash,
 		ClientCommitHash:    commitHash,
 		SpendTxID:           strings.TrimSpace(args.Session.SpendTxID),
@@ -121,15 +121,15 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 		ServiceDeadlineUnix: args.ServiceQuote.GrantedServiceDeadlineUnix,
 		PrevAcceptedHash:    prevState.AcceptedTipHash,
 	}
-	state, err := proof.BuildNextProofState(prevState, accepted)
+	state, err := payflow.BuildNextProofState(prevState, accepted)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	acceptedHash, err := proof.HashAcceptedCharge(accepted)
+	acceptedHash, err := payflow.HashAcceptedCharge(accepted)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	stateRaw, err := proof.MarshalProofState(state)
+	stateRaw, err := payflow.MarshalProofState(state)
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}

@@ -14,13 +14,13 @@ import (
 )
 
 type apiRouteCallRequest struct {
-	To               string          `json:"to"`
-	Route            string          `json:"route"`
-	ContentType      string          `json:"content_type"`
-	Body             json.RawMessage `json:"body,omitempty"`
-	BodyBase64       string          `json:"body_base64,omitempty"`
-	PaymentMode      string          `json:"payment_mode,omitempty"`
-	PaymentQuoteB64  string          `json:"payment_quote_base64,omitempty"`
+	To              string          `json:"to"`
+	Route           string          `json:"route"`
+	ContentType     string          `json:"content_type"`
+	Body            json.RawMessage `json:"body,omitempty"`
+	BodyBase64      string          `json:"body_base64,omitempty"`
+	PaymentMode     string          `json:"payment_mode,omitempty"`
+	PaymentQuoteB64 string          `json:"payment_quote_base64,omitempty"`
 }
 
 func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
@@ -298,7 +298,7 @@ func routeCallHTTPResponse(ok bool, code, message, contentType string, body []by
 	return out
 }
 
-func routeCallPaymentHTTPExtras(resp nodesvc.CallResp) func(map[string]any) {
+func routeCallPaymentHTTPExtras(resp ncall.CallResp) func(map[string]any) {
 	return func(out map[string]any) {
 		if len(resp.PaymentOptions) > 0 {
 			out["payment_options"] = resp.PaymentOptions
@@ -308,8 +308,8 @@ func routeCallPaymentHTTPExtras(resp nodesvc.CallResp) func(map[string]any) {
 		}
 		if len(resp.PaymentReceipt) > 0 {
 			out["payment_receipt_base64"] = base64.StdEncoding.EncodeToString(resp.PaymentReceipt)
-			if strings.TrimSpace(resp.PaymentReceiptScheme) == nodesvc.PaymentSchemePool2of2V1 {
-				var receipt nodesvc.FeePool2of2Receipt
+			if strings.TrimSpace(resp.PaymentReceiptScheme) == ncall.PaymentSchemePool2of2V1 {
+				var receipt ncall.FeePool2of2Receipt
 				if err := oldproto.Unmarshal(resp.PaymentReceipt, &receipt); err == nil {
 					out["payment_receipt"] = receipt
 				}

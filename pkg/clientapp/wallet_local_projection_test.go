@@ -202,7 +202,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 	}
 
 	staleSnapshot := liveWalletSnapshot{
-		Live: map[string]dual2of2.UTXO{
+		Live: map[string]poolcore.UTXO{
 			prevTxID + ":0": {TxID: prevTxID, Vout: 0, Value: 100},
 		},
 		ObservedMempoolTxs: nil,

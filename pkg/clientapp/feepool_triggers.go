@@ -14,7 +14,7 @@ import (
 
 type FeePoolStateResult struct {
 	GatewayPeerID string             `json:"gateway_pubkey_hex"`
-	State         dual2of2.StateResp `json:"state"`
+	State         poolcore.StateResp `json:"state"`
 }
 
 func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateResult, error) {
@@ -38,7 +38,7 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 
 type FeePoolCloseResult struct {
 	GatewayPeerID string             `json:"gateway_pubkey_hex"`
-	Result        dual2of2.CloseResp `json:"result"`
+	Result        poolcore.CloseResp `json:"result"`
 }
 
 // TriggerGatewayFeePoolClose 触发关闭费用池通道并广播 final tx（用于 e2e 清理环境）。
@@ -99,7 +99,7 @@ type FeePoolListenUnderpayProbeResult struct {
 	AttemptChargeAmount    uint64                  `json:"attempt_charge_amount_satoshi"`
 	AttemptSequence        uint32                  `json:"attempt_sequence"`
 	AttemptServerAmount    uint64                  `json:"attempt_server_amount_satoshi"`
-	Response               dual2of2.PayConfirmResp `json:"response"`
+	Response               poolcore.PayConfirmResp `json:"response"`
 }
 
 // TriggerGatewayFeePoolEnsureActive 显式触发费用池内核执行 ensure_active 命令（用于 e2e/运维触发）。
@@ -176,17 +176,17 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 	}
 
 	underpay := sess.SingleCycleFeeSatoshi - 1
-	payloadRaw, err := dual2of2.MarshalListenCycleQuotePayload(0, 0)
+	payloadRaw, err := poolcore.MarshalListenCycleQuotePayload(0, 0)
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
 	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              sess,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          dual2of2.QuoteServiceTypeListenCycle,
+		ServiceType:          poolcore.QuoteServiceTypeListenCycle,
 		Target:               "listen_cycle/underpay_probe",
 		ServiceParamsPayload: payloadRaw,
-		PricingMode:          dual2of2.ServiceOfferPricingModeBudgetForService,
+		PricingMode:          poolcore.ServiceOfferPricingModeBudgetForService,
 		ProposedPaymentSat:   underpay,
 	})
 	if err != nil {
@@ -209,7 +209,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("client sign update failed: %w", err)
 	}
 
-	req := dual2of2.PayConfirmReq{
+	req := poolcore.PayConfirmReq{
 		ClientID:            rt.runIn.ClientID,
 		SpendTxID:           spendTxID,
 		SequenceNumber:      nextSeq,
@@ -279,7 +279,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		})
 		return FeePoolCloseResult{
 			GatewayPeerID: gatewayID,
-			Result: dual2of2.CloseResp{
+			Result: poolcore.CloseResp{
 				Success:        true,
 				Status:         "closed",
 				Broadcasted:    true,
@@ -322,7 +322,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":         spendTxID,
 	})
-	resp, err := callNodePoolClose(ctx, rt, gw.ID, dual2of2.CloseReq{
+	resp, err := callNodePoolClose(ctx, rt, gw.ID, poolcore.CloseReq{
 		ClientID:     rt.runIn.ClientID,
 		SpendTxID:    spendTxID,
 		ServerAmount: st.ServerAmountSat,

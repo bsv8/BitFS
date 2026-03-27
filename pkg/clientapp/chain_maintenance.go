@@ -884,7 +884,7 @@ type walletHistoryTxRecord struct {
 }
 
 type liveWalletSnapshot struct {
-	Live                  map[string]dual2of2.UTXO
+	Live                  map[string]poolcore.UTXO
 	ObservedMempoolTxs    []whatsonchain.TxDetail
 	ConfirmedLiveTxIDs    map[string]struct{}
 	Balance               uint64
@@ -1529,12 +1529,12 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 		"confirmed_utxo_cnt": len(confirmedUTXOs),
 		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
 	})
-	current := map[string]dual2of2.UTXO{}
+	current := map[string]poolcore.UTXO{}
 	confirmedLiveTxIDs := map[string]struct{}{}
 	for _, u := range confirmedUTXOs {
 		txid := strings.ToLower(strings.TrimSpace(u.TxID))
 		utxoID := txid + ":" + fmt.Sprint(u.Vout)
-		current[utxoID] = dual2of2.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
+		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
 		confirmedLiveTxIDs[txid] = struct{}{}
 	}
 	stepStart = time.Now()
@@ -1572,7 +1572,7 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 				continue
 			}
 			utxoID := txid + ":" + fmt.Sprint(out.N)
-			current[utxoID] = dual2of2.UTXO{
+			current[utxoID] = poolcore.UTXO{
 				TxID:  txid,
 				Vout:  out.N,
 				Value: txOutputValueSatoshi(out),
@@ -1970,7 +1970,7 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 	return s.UpdatedAtUnix > 0 && s.UpdatedAtUnix < startedAtUnix
 }
 
-func getWalletUTXOsFromDB(rt *Runtime) ([]dual2of2.UTXO, error) {
+func getWalletUTXOsFromDB(rt *Runtime) ([]poolcore.UTXO, error) {
 	if rt == nil || rt.DB == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -1997,9 +1997,9 @@ func getWalletUTXOsFromDB(rt *Runtime) ([]dual2of2.UTXO, error) {
 		return nil, err
 	}
 	defer rows.Close()
-	out := make([]dual2of2.UTXO, 0, s.UTXOCount)
+	out := make([]poolcore.UTXO, 0, s.UTXOCount)
 	for rows.Next() {
-		var u dual2of2.UTXO
+		var u poolcore.UTXO
 		if err := rows.Scan(&u.TxID, &u.Vout, &u.Value); err != nil {
 			return nil, err
 		}

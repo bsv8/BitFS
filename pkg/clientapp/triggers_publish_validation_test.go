@@ -4,12 +4,12 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 )
 
 func TestValidateDemandPublishPaidResp(t *testing.T) {
 	t.Run("success false", func(t *testing.T) {
-		err := validateDemandPublishPaidResp(dual2of2.DemandPublishPaidResp{
+		err := validateDemandPublishPaidResp(broadcastmodule.DemandPublishPaidResp{
 			Success: false,
 			Status:  "active",
 			Error:   "charge rejected",
@@ -23,7 +23,7 @@ func TestValidateDemandPublishPaidResp(t *testing.T) {
 	})
 
 	t.Run("success true with empty demand id", func(t *testing.T) {
-		err := validateDemandPublishPaidResp(dual2of2.DemandPublishPaidResp{
+		err := validateDemandPublishPaidResp(broadcastmodule.DemandPublishPaidResp{
 			Success:  true,
 			Status:   "ok",
 			DemandID: "",
@@ -37,7 +37,7 @@ func TestValidateDemandPublishPaidResp(t *testing.T) {
 	})
 
 	t.Run("success true with demand id", func(t *testing.T) {
-		err := validateDemandPublishPaidResp(dual2of2.DemandPublishPaidResp{
+		err := validateDemandPublishPaidResp(broadcastmodule.DemandPublishPaidResp{
 			Success:  true,
 			Status:   "ok",
 			DemandID: "dmd_x1",
@@ -50,7 +50,7 @@ func TestValidateDemandPublishPaidResp(t *testing.T) {
 
 func TestValidateLiveDemandPublishPaidResp(t *testing.T) {
 	t.Run("success false", func(t *testing.T) {
-		err := validateLiveDemandPublishPaidResp(dual2of2.LiveDemandPublishPaidResp{
+		err := validateLiveDemandPublishPaidResp(broadcastmodule.LiveDemandPublishPaidResp{
 			Success: false,
 			Status:  "active",
 			Error:   "charge rejected",
@@ -64,7 +64,7 @@ func TestValidateLiveDemandPublishPaidResp(t *testing.T) {
 	})
 
 	t.Run("success true with empty demand id", func(t *testing.T) {
-		err := validateLiveDemandPublishPaidResp(dual2of2.LiveDemandPublishPaidResp{
+		err := validateLiveDemandPublishPaidResp(broadcastmodule.LiveDemandPublishPaidResp{
 			Success:  true,
 			Status:   "ok",
 			DemandID: "",
@@ -80,7 +80,7 @@ func TestValidateLiveDemandPublishPaidResp(t *testing.T) {
 
 func TestValidateDemandPublishBatchPaidResp(t *testing.T) {
 	t.Run("success false", func(t *testing.T) {
-		err := validateDemandPublishBatchPaidResp(dual2of2.DemandPublishBatchPaidResp{
+		err := validateDemandPublishBatchPaidResp(broadcastmodule.DemandPublishBatchPaidResp{
 			Success: false,
 			Status:  "active",
 			Error:   "charge rejected",
@@ -94,7 +94,7 @@ func TestValidateDemandPublishBatchPaidResp(t *testing.T) {
 	})
 
 	t.Run("success true with empty items", func(t *testing.T) {
-		err := validateDemandPublishBatchPaidResp(dual2of2.DemandPublishBatchPaidResp{
+		err := validateDemandPublishBatchPaidResp(broadcastmodule.DemandPublishBatchPaidResp{
 			Success: true,
 			Status:  "ok",
 		})
@@ -107,10 +107,10 @@ func TestValidateDemandPublishBatchPaidResp(t *testing.T) {
 	})
 
 	t.Run("success true with items", func(t *testing.T) {
-		err := validateDemandPublishBatchPaidResp(dual2of2.DemandPublishBatchPaidResp{
+		err := validateDemandPublishBatchPaidResp(broadcastmodule.DemandPublishBatchPaidResp{
 			Success: true,
 			Status:  "ok",
-			Items: []*dual2of2.DemandPublishBatchPaidResult{
+			Items: []*broadcastmodule.DemandPublishBatchPaidResult{
 				{SeedHash: strings.Repeat("a", 64), ChunkCount: 1, DemandID: "dmd_batch_1", Status: "open"},
 			},
 		})

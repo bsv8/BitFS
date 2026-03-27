@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -365,7 +365,7 @@ func registerLiveHandlers(rt *Runtime) {
 	}
 	h := rt.Host
 	trace := rt.rpcTrace
-	p2prpc.HandleProto[liveSubscribeReq, liveSubscribeResp](h, ProtoLiveSubscribe, clientSec(trace), func(_ context.Context, req liveSubscribeReq) (liveSubscribeResp, error) {
+	pproto.HandleProto[liveSubscribeReq, liveSubscribeResp](h, ProtoLiveSubscribe, clientSec(trace), func(_ context.Context, req liveSubscribeReq) (liveSubscribeResp, error) {
 		streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
 		if streamID == "" && strings.TrimSpace(req.StreamURI) != "" {
 			parsed, err := ParseLiveSubscribeURI(req.StreamURI)
@@ -395,7 +395,7 @@ func registerLiveHandlers(rt *Runtime) {
 			RecentSegments:  liveSegmentRefsToPB(recent),
 		}, nil
 	})
-	p2prpc.HandleProto[liveHeadPushReq, liveHeadPushResp](h, ProtoLiveHeadPush, clientSec(trace), func(_ context.Context, req liveHeadPushReq) (liveHeadPushResp, error) {
+	pproto.HandleProto[liveHeadPushReq, liveHeadPushResp](h, ProtoLiveHeadPush, clientSec(trace), func(_ context.Context, req liveHeadPushReq) (liveHeadPushResp, error) {
 		streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
 		publisherPubKey := strings.ToLower(strings.TrimSpace(req.PublisherPubKey))
 		if !isSeedHashHex(streamID) || publisherPubKey == "" {
@@ -408,7 +408,7 @@ func registerLiveHandlers(rt *Runtime) {
 		})
 		return liveHeadPushResp{Status: "stored"}, nil
 	})
-	p2prpc.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(_ context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
+	pproto.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(_ context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
 		if rt.DB == nil || strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamID))) || len(req.RecentSegments) == 0 {
 			return liveQuoteSubmitResp{}, fmt.Errorf("invalid live quote")
 		}
@@ -573,7 +573,7 @@ func TriggerLiveSubscribe(ctx context.Context, rt *Runtime, rawURI string, windo
 		return LiveSubscribeResult{}, err
 	}
 	var resp liveSubscribeResp
-	if err := p2prpc.CallProto(ctx, rt.Host, publisherID, ProtoLiveSubscribe, clientSec(rt.rpcTrace), liveSubscribeReq{
+	if err := pproto.CallProto(ctx, rt.Host, publisherID, ProtoLiveSubscribe, clientSec(rt.rpcTrace), liveSubscribeReq{
 		StreamURI:        rawURI,
 		StreamID:         parsed.StreamID,
 		Window:           uint32(clampLiveWindow(window)),
@@ -635,7 +635,7 @@ func TriggerLivePublishLatest(ctx context.Context, rt *Runtime, streamID string,
 			SentAtUnix:      nowUnix,
 		}
 		var resp liveHeadPushResp
-		if err := p2prpc.CallProto(ctx, rt.Host, subscriberID, ProtoLiveHeadPush, clientSec(rt.rpcTrace), req, &resp); err != nil {
+		if err := pproto.CallProto(ctx, rt.Host, subscriberID, ProtoLiveHeadPush, clientSec(rt.rpcTrace), req, &resp); err != nil {
 			obs.Error("bitcast-client", "live_head_push_failed", map[string]any{
 				"stream_id":         streamID,
 				"transport_peer_id": target.PeerID,

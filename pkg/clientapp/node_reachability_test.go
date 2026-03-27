@@ -16,7 +16,7 @@ func TestNodeReachabilityCacheAndSelfState(t *testing.T) {
 	defer hNode.Close()
 	hGateway, gatewayPubkeyHex := newSecpHost(t)
 	defer hGateway.Close()
-	ann := dual2of2.NodeReachabilityAnnouncement{
+	ann := poolcore.NodeReachabilityAnnouncement{
 		NodePubkeyHex:   nodePubkeyHex,
 		Multiaddrs:      []string{fmt.Sprintf("%s/p2p/%s", hNode.Addrs()[0].String(), hNode.ID().String())},
 		HeadHeight:      321,

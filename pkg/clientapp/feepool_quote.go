@@ -8,8 +8,8 @@ import (
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -28,7 +28,7 @@ type feePoolServiceQuoteBuilt struct {
 	GatewayPub       *ec.PublicKey
 	QuoteStatus      string
 	ServiceQuoteRaw  []byte
-	ServiceQuote     proof.ServiceQuote
+	ServiceQuote     payflow.ServiceQuote
 	ServiceQuoteHash string
 }
 
@@ -51,23 +51,23 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	offer := proof.ServiceOffer{
+	offer := payflow.ServiceOffer{
 		Domain:                 normalizeFeePoolServiceDomain(args.ServiceDomain),
 		ServiceType:            strings.TrimSpace(args.ServiceType),
 		Target:                 strings.TrimSpace(args.Target),
 		GatewayPubkeyHex:       strings.ToLower(hex.EncodeToString(rawGatewayPub)),
 		ClientPubkeyHex:        strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
 		SpendTxID:              strings.TrimSpace(args.Session.SpendTxID),
-		ServiceParamsHash:      dual2of2.HashServiceParamsPayload(args.ServiceParamsPayload),
+		ServiceParamsHash:      poolcore.HashServiceParamsPayload(args.ServiceParamsPayload),
 		PricingMode:            strings.TrimSpace(args.PricingMode),
 		ProposedPaymentSatoshi: args.ProposedPaymentSat,
 		CreatedAtUnix:          time.Now().Unix(),
 	}
-	rawOffer, err := proof.MarshalServiceOffer(offer)
+	rawOffer, err := payflow.MarshalServiceOffer(offer)
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	resp, err := callNodePoolServiceQuote(ctx, rt, args.GatewayPeerID, dual2of2.ServiceQuoteReq{
+	resp, err := callNodePoolServiceQuote(ctx, rt, args.GatewayPeerID, poolcore.ServiceQuoteReq{
 		ClientID:             rt.runIn.ClientID,
 		ServiceOffer:         rawOffer,
 		ServiceParamsPayload: append([]byte(nil), args.ServiceParamsPayload...),
@@ -82,11 +82,11 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 		}
 		return feePoolServiceQuoteBuilt{}, fmt.Errorf("service quote rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
-	quote, quoteHash, err := dual2of2.ParseAndVerifyServiceQuote(resp.ServiceQuote, gatewayPub)
+	quote, quoteHash, err := poolcore.ParseAndVerifyServiceQuote(resp.ServiceQuote, gatewayPub)
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	if err := dual2of2.ValidateServiceQuoteBinding(quote, offer.GatewayPubkeyHex, rt.runIn.ClientID, args.Session.SpendTxID, args.ServiceType, args.ServiceParamsPayload, time.Now().Unix()); err != nil {
+	if err := poolcore.ValidateServiceQuoteBinding(quote, offer.GatewayPubkeyHex, rt.runIn.ClientID, args.Session.SpendTxID, args.ServiceType, args.ServiceParamsPayload, time.Now().Unix()); err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
 	return feePoolServiceQuoteBuilt{

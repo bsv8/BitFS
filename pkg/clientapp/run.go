@@ -25,8 +25,8 @@ import (
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/dealprod"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -254,8 +254,8 @@ type liveQuoteSubmitResp struct {
 
 type Config struct {
 	ClientID string `yaml:"-" toml:"-"`
-	// Debug 打开后，client 会把 p2prpc 收发原文落盘到本地 raw 抓包目录。
-	// 注意：这里只抓 p2prpc 控制层原文，不抓更底层 libp2p/TCP 线包。
+	// Debug 打开后，client 会把 pproto 收发原文落盘到本地 raw 抓包目录。
+	// 注意：这里只抓 pproto 控制层原文，不抓更底层 libp2p/TCP 线包。
 	Debug bool `yaml:"debug" toml:"debug"`
 	Keys  struct {
 		PrivkeyHex string `yaml:"-" toml:"-"`
@@ -458,7 +458,7 @@ type RunInput struct {
 
 	// ActionChain 承载真实上链动作与费用池最小读能力。
 	// 生产环境默认使用 chainbridge 的嵌入式费用池客户端。
-	ActionChain dual2of2.ChainClient
+	ActionChain poolcore.ChainClient
 
 	// WalletChain 只服务钱包同步与历史扫描。
 	// 设计约束：
@@ -466,9 +466,9 @@ type RunInput struct {
 	// - 运行时只持有已装配好的最小 WOC 客户端，不再依赖历史中间层。
 	WalletChain walletChainClient
 
-	// RPCTrace 仅用于集成测试：记录 client 自己的 p2prpc 收发报文（JSONL）。
+	// RPCTrace 仅用于集成测试：记录 client 自己的 pproto 收发报文（JSONL）。
 	// 正常运行默认不启用（nil）。
-	RPCTrace p2prpc.TraceSink
+	RPCTrace pproto.TraceSink
 
 	// PostWorkspaceBootstrap 在 workspace 初始化完成后、运行期后台协程启动前执行。
 	// 设计说明：
@@ -625,7 +625,7 @@ type Runtime struct {
 	HTTP            *httpAPIServer
 	FSHTTP          *fileHTTPServer
 
-	ActionChain dual2of2.ChainClient
+	ActionChain poolcore.ChainClient
 	WalletChain walletChainClient
 	feePoolsMu  sync.RWMutex
 	feePools    map[string]*feePoolSession
@@ -646,7 +646,7 @@ type Runtime struct {
 	// 分配完成后，基于专属 UTXO 的后续池内操作可并行。
 	walletAllocMu sync.Mutex
 
-	rpcTrace p2prpc.TraceSink
+	rpcTrace pproto.TraceSink
 	live     *liveRuntime
 
 	// 运行时状态
@@ -925,7 +925,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	trace := in.RPCTrace
 	var closeTrace func() error
 	if trace == nil && cfg.Debug {
-		localTrace, err := p2prpc.NewLocalRawTraceSink(logFile)
+		localTrace, err := pproto.NewLocalRawTraceSink(logFile)
 		if err != nil {
 			_ = h.Close()
 			_ = db.Close()
@@ -3028,8 +3028,8 @@ func cfgBool(v *bool, def bool) bool {
 // 设计说明：
 // - direct quote 是“卖方 -> 买方”回推路径，买方即便不是 seller 模式也必须可接收；
 // - 该入口只负责落库 direct_quotes，不涉及卖方资源读取，因此可全端默认启用。
-func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace p2prpc.TraceSink) {
-	p2prpc.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
+func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace pproto.TraceSink) {
+	pproto.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
 		}
@@ -3081,8 +3081,8 @@ func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace p2prpc.Trac
 	})
 }
 
-func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2prpc.TraceSink, cfg Config) {
-	p2prpc.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
+func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace pproto.TraceSink, cfg Config) {
+	pproto.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 		buyerPeerID := strings.TrimSpace(req.BuyerPeerID)
@@ -3164,7 +3164,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 		})
 		return dealprod.DemandAnnounceResp{Status: "quoted"}, nil
 	})
-	p2prpc.HandleProto[dealprod.LiveDemandAnnounceReq, dealprod.LiveDemandAnnounceResp](h, protocol.ID(dealprod.ProtoLiveDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.LiveDemandAnnounceReq) (dealprod.LiveDemandAnnounceResp, error) {
+	pproto.HandleProto[dealprod.LiveDemandAnnounceReq, dealprod.LiveDemandAnnounceResp](h, protocol.ID(dealprod.ProtoLiveDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.LiveDemandAnnounceReq) (dealprod.LiveDemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
 		buyerPeerID := strings.TrimSpace(req.BuyerPeerID)
@@ -3204,7 +3204,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 		return dealprod.LiveDemandAnnounceResp{Status: "quoted"}, nil
 	})
 
-	p2prpc.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(_ context.Context, req seedGetReq) (seedGetResp, error) {
+	pproto.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(_ context.Context, req seedGetReq) (seedGetResp, error) {
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 		if strings.TrimSpace(req.SessionID) == "" || seedHash == "" {
 			return seedGetResp{}, fmt.Errorf("invalid params")
@@ -3226,7 +3226,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 		}
 		return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
 	})
-	p2prpc.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(_ context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
+	pproto.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(_ context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.BuyerPeerID) == "" || strings.TrimSpace(req.SeedHash) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directDealAcceptResp{}, fmt.Errorf("invalid direct deal accept")
 		}
@@ -3265,7 +3265,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 			Status:       "accepted",
 		}, nil
 	})
-	p2prpc.HandleProto[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(_ context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
+	pproto.HandleProto[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(_ context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
 		if strings.TrimSpace(req.DealID) == "" {
 			return directSessionOpenResp{}, fmt.Errorf("deal_id required")
 		}
@@ -3281,16 +3281,16 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 		}
 		return directSessionOpenResp{SessionID: sessionID, Status: "active"}, nil
 	})
-	p2prpc.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
+	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 		return handleDirectTransferPoolOpen(h, db, cfg, req)
 	})
-	p2prpc.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
+	pproto.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
 		return handleDirectTransferPoolPay(h, db, cfg, req)
 	})
-	p2prpc.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
+	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 		return handleDirectTransferPoolClose(h, db, cfg, req)
 	})
-	p2prpc.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(_ context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
+	pproto.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(_ context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
 		if strings.TrimSpace(req.SessionID) == "" {
 			return directSessionCloseResp{}, fmt.Errorf("session_id required")
 		}
@@ -3301,7 +3301,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace p2
 	})
 }
 
-func submitDirectQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink, p DirectQuoteParams) error {
+func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink, p DirectQuoteParams) error {
 	if h == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
@@ -3341,7 +3341,7 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink,
 			return fmt.Errorf("invalid available_chunk_bitmap_hex")
 		}
 	}
-	if err := p2prpc.CallProto(ctx, h, buyerID, ProtoQuoteDirectSubmit, clientSec(trace), directQuoteSubmitReq{
+	if err := pproto.CallProto(ctx, h, buyerID, ProtoQuoteDirectSubmit, clientSec(trace), directQuoteSubmitReq{
 		DemandID:             strings.TrimSpace(p.DemandID),
 		SellerPeerID:         strings.ToLower(strings.TrimSpace(sellerClientID)),
 		SeedPrice:            p.SeedPrice,
@@ -3362,7 +3362,7 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink,
 	return nil
 }
 
-func submitLiveQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink, p LiveQuoteParams) error {
+func submitLiveQuote(ctx context.Context, h host.Host, trace pproto.TraceSink, p LiveQuoteParams) error {
 	if h == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
@@ -3402,7 +3402,7 @@ func submitLiveQuote(ctx context.Context, h host.Host, trace p2prpc.TraceSink, p
 		return fmt.Errorf("empty recent segments")
 	}
 	var resp liveQuoteSubmitResp
-	if err := p2prpc.CallProto(ctx, h, buyerID, ProtoLiveQuoteSubmit, clientSec(trace), liveQuoteSubmitReq{
+	if err := pproto.CallProto(ctx, h, buyerID, ProtoLiveQuoteSubmit, clientSec(trace), liveQuoteSubmitReq{
 		DemandID:           strings.TrimSpace(p.DemandID),
 		SellerPeerID:       strings.ToLower(strings.TrimSpace(sellerClientID)),
 		StreamID:           strings.ToLower(strings.TrimSpace(p.StreamID)),
@@ -3596,7 +3596,7 @@ func connectArbiters(ctx context.Context, h host.Host, arbiters []PeerNode) ([]p
 	return out, nil
 }
 
-func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, protoID protocol.ID, sec p2prpc.SecurityConfig, kind string) []peer.AddrInfo {
+func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, protoID protocol.ID, sec pproto.SecurityConfig, kind string) []peer.AddrInfo {
 	const maxAttempts = 3
 	out := make([]peer.AddrInfo, 0, len(peers))
 	for _, p := range peers {
@@ -3604,7 +3604,7 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 		ok := false
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
 			var health healthResp
-			err := p2prpc.CallProto(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
+			err := pproto.CallProto(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
 			if err == nil {
 				obs.Business("bitcast-client", kind+"_health_ok", map[string]any{
 					"transport_peer_id": p.ID.String(),
@@ -4133,28 +4133,28 @@ func (c *sellerCatalog) Get(seedHash string) (sellerSeed, bool) {
 	return s, ok
 }
 
-func gwSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
-	return p2prpc.SecurityConfig{Domain: "bitcast-gateway", Network: "test", TTL: 30 * time.Second, Trace: trace}
+func gwSec(trace pproto.TraceSink) pproto.SecurityConfig {
+	return pproto.SecurityConfig{Domain: "bitcast-gateway", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
-func arbSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
-	return p2prpc.SecurityConfig{Domain: "arbiter-mr", Network: "test", TTL: 30 * time.Second, Trace: trace}
+func arbSec(trace pproto.TraceSink) pproto.SecurityConfig {
+	return pproto.SecurityConfig{Domain: "arbiter-mr", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
-func clientSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
-	return p2prpc.SecurityConfig{Domain: "bitcast-client", Network: "test", TTL: 30 * time.Second, Trace: trace}
+func clientSec(trace pproto.TraceSink) pproto.SecurityConfig {
+	return pproto.SecurityConfig{Domain: "bitcast-client", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
-func nodeSec(trace p2prpc.TraceSink) p2prpc.SecurityConfig {
-	return p2prpc.SecurityConfig{Domain: "bitfs-node", Network: "test", TTL: 30 * time.Second, Trace: trace}
+func nodeSec(trace pproto.TraceSink) pproto.SecurityConfig {
+	return pproto.SecurityConfig{Domain: "bitfs-node", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
-func nodeSecForRuntime(rt *Runtime) p2prpc.SecurityConfig {
+func nodeSecForRuntime(rt *Runtime) pproto.SecurityConfig {
 	network := "test"
-	trace := p2prpc.TraceSink(nil)
+	trace := pproto.TraceSink(nil)
 	if rt != nil {
 		trace = rt.rpcTrace
 		if strings.TrimSpace(rt.runIn.BSV.Network) != "" {
 			network = strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network))
 		}
 	}
-	return p2prpc.SecurityConfig{Domain: "bitfs-node", Network: network, TTL: 30 * time.Second, Trace: trace}
+	return pproto.SecurityConfig{Domain: "bitfs-node", Network: network, TTL: 30 * time.Second, Trace: trace}
 }
 
 func parseAddr(full string) (*peer.AddrInfo, error) {
@@ -4204,7 +4204,7 @@ func normalizeRawSecp256k1PrivKeyHex(s string) (string, error) {
 	return strings.ToLower(hex.EncodeToString(raw)), nil
 }
 
-func buildClientActorFromConfig(cfg Config) (*dual2of2.Actor, error) {
+func buildClientActorFromConfig(cfg Config) (*poolcore.Actor, error) {
 	privHex, err := normalizeRawSecp256k1PrivKeyHex(cfg.Keys.PrivkeyHex)
 	if err != nil {
 		return nil, err
@@ -4219,10 +4219,10 @@ func buildClientActorFromConfig(cfg Config) (*dual2of2.Actor, error) {
 		}
 	}
 	isMainnet := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
-	return dual2of2.BuildActor("client", privHex, isMainnet)
+	return poolcore.BuildActor("client", privHex, isMainnet)
 }
 
-func buildClientActorFromRunInput(in RunInput) (*dual2of2.Actor, error) {
+func buildClientActorFromRunInput(in RunInput) (*poolcore.Actor, error) {
 	privHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
 	if err != nil {
 		return nil, err
@@ -4237,7 +4237,7 @@ func buildClientActorFromRunInput(in RunInput) (*dual2of2.Actor, error) {
 		}
 	}
 	isMainnet := strings.EqualFold(strings.TrimSpace(in.BSV.Network), "main")
-	return dual2of2.BuildActor("client", privHex, isMainnet)
+	return poolcore.BuildActor("client", privHex, isMainnet)
 }
 
 func validateClientIdentityConsistency(cfg Config) error {

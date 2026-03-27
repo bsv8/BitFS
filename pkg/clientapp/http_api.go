@@ -19,8 +19,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -394,7 +394,7 @@ type httpAPIServer struct {
 	startedAt time.Time
 	jobsMu    sync.RWMutex
 	getJobs   map[string]*fileGetJob
-	rpcTrace  p2prpc.TraceSink
+	rpcTrace  pproto.TraceSink
 }
 
 // 说明：
@@ -425,7 +425,7 @@ type fileGetJob struct {
 	cancel          context.CancelFunc `json:"-"`
 }
 
-func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace p2prpc.TraceSink) *httpAPIServer {
+func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
 	return &httpAPIServer{
 		rt:        rt,
 		cfg:       cfg,

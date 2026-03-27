@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/modules/domain"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
 	_ "modernc.org/sqlite"
 )
 
@@ -55,7 +55,7 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 	if err != nil {
 		t.Fatalf("derive domain pubkey failed: %v", err)
 	}
-	signedEnvelope, err := signEnvelopeForTest(domainPrivHex, domainsvc.RegisterQuoteFields{
+	signedEnvelope, err := signEnvelopeForTest(domainPrivHex, domainmodule.RegisterQuoteFields{
 		QuoteID:                  "quote-1",
 		Name:                     "alice.david",
 		OwnerPubkeyHex:           clientPubkeyHex,
@@ -138,7 +138,7 @@ func newWalletBusinessTestRuntime(t *testing.T) *Runtime {
 	if err != nil {
 		t.Fatalf("clientWalletAddress failed: %v", err)
 	}
-	if err := seedWalletUTXOsForKernelTest(db, addr, []dual2of2.UTXO{
+	if err := seedWalletUTXOsForKernelTest(db, addr, []poolcore.UTXO{
 		{TxID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", Vout: 0, Value: 4000},
 		{TxID: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", Vout: 1, Value: 6000},
 	}); err != nil {
@@ -152,5 +152,5 @@ func signEnvelopeForTest(privHex string, fields []any) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return domainsvc.SignEnvelope(fields, priv.Sign)
+	return domainmodule.SignEnvelope(fields, priv.Sign)
 }

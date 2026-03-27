@@ -86,19 +86,19 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		if kind == "resp" {
 			return &liveHeadPushResp{}, true
 		}
-	case string(nodesvc.ProtoNodeCall):
+	case string(ncall.ProtoNodeCall):
 		if kind == "req" {
-			return &nodesvc.CallReq{}, true
+			return &ncall.CallReq{}, true
 		}
 		if kind == "resp" {
-			return &nodesvc.CallResp{}, true
+			return &ncall.CallResp{}, true
 		}
-	case string(nodesvc.ProtoNodeResolve):
+	case string(ncall.ProtoNodeResolve):
 		if kind == "req" {
-			return &nodesvc.ResolveReq{}, true
+			return &ncall.ResolveReq{}, true
 		}
 		if kind == "resp" {
-			return &nodesvc.ResolveResp{}, true
+			return &ncall.ResolveResp{}, true
 		}
 	}
 	return nil, false

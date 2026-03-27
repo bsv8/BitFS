@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -57,44 +57,44 @@ func registerNodeRouteHandlers(rt *Runtime) {
 		return
 	}
 	db := rt.DB
-	nodesvc.Register(rt.Host, nodeSecForRuntime(rt), func(ctx context.Context, meta nodesvc.CallContext, req nodesvc.CallReq) (nodesvc.CallResp, error) {
+	ncall.Register(rt.Host, nodeSecForRuntime(rt), func(ctx context.Context, meta ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
 		route, bad := normalizeCallRoute(req.Route)
 		if bad != "" {
-			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
+			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		contentType, bad := normalizeContentType(req.ContentType)
 		if bad != "" {
-			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
+			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		switch route {
-		case nodesvc.RouteNodeV1CapabilitiesShow:
+		case ncall.RouteNodeV1CapabilitiesShow:
 			body := clientCapabilitiesShowBody(rt)
 			return marshalNodeCallProto(&body)
 		case routeInboxMessage:
 			return storeInboxMessage(db, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
-			return nodesvc.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-	}, func(_ context.Context, req nodesvc.ResolveReq) (nodesvc.ResolveResp, error) {
+	}, func(_ context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
 		route := normalizeResolveRoute(req.Route)
 		body, err := buildRouteIndexManifest(db, route)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return nodesvc.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
+				return ncall.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
 			}
-			return nodesvc.ResolveResp{}, err
+			return ncall.ResolveResp{}, err
 		}
-		return nodesvc.ResolveResp{
+		return ncall.ResolveResp{
 			Ok:          true,
 			Code:        "OK",
-			ContentType: nodesvc.ContentTypeProto,
+			ContentType: ncall.ContentTypeProto,
 			Body:        body,
 		}, nil
 	})
 }
 
-func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) (nodesvc.CallResp, error) {
-	var out nodesvc.CallResp
+func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) (ncall.CallResp, error) {
+	var out ncall.CallResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
@@ -105,7 +105,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
 		return out, err
 	}
-	req := nodesvc.CallReq{
+	req := ncall.CallReq{
 		To:          to,
 		Route:       strings.TrimSpace(p.Route),
 		ContentType: strings.TrimSpace(p.ContentType),
@@ -127,13 +127,13 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	}
 	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentOptions)
 	if payErr != nil {
-		return nodesvc.CallResp{}, payErr
+		return ncall.CallResp{}, payErr
 	}
 	return paidOut, nil
 }
 
-func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolveParams) (nodesvc.ResolveResp, error) {
-	var out nodesvc.ResolveResp
+func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolveParams) (ncall.ResolveResp, error) {
+	var out ncall.ResolveResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
@@ -144,33 +144,32 @@ func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolvePa
 	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
 		return out, err
 	}
-	err = p2prpc.CallProto(ctx, rt.Host, peerID, nodesvc.ProtoNodeResolve, nodeSecForRuntime(rt), nodesvc.ResolveReq{
+	err = pproto.CallProto(ctx, rt.Host, peerID, ncall.ProtoNodeResolve, nodeSecForRuntime(rt), ncall.ResolveReq{
 		To:    to,
 		Route: normalizeResolveRoute(p.Route),
 	}, &out)
 	return out, err
 }
 
-func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req nodesvc.CallReq) (nodesvc.CallResp, error) {
-	var out nodesvc.CallResp
-	if err := p2prpc.CallProto(ctx, rt.Host, peerID, nodesvc.ProtoNodeCall, nodeSecForRuntime(rt), req, &out); err != nil {
-		return nodesvc.CallResp{}, err
+func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error) {
+	var out ncall.CallResp
+	if err := pproto.CallProto(ctx, rt.Host, peerID, ncall.ProtoNodeCall, nodeSecForRuntime(rt), req, &out); err != nil {
+		return ncall.CallResp{}, err
 	}
 	return out, nil
 }
 
-func clientCapabilitiesShowBody(rt *Runtime) nodesvc.CapabilitiesShowBody {
+func clientCapabilitiesShowBody(rt *Runtime) ncall.CapabilitiesShowBody {
 	nodePubkeyHex := ""
 	if rt != nil && rt.runIn.ClientID != "" {
 		nodePubkeyHex = strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
 	}
-	return nodesvc.CapabilitiesShowBody{
+	return ncall.CapabilitiesShowBody{
 		NodePubkeyHex: nodePubkeyHex,
-		Capabilities: []*nodesvc.CapabilityItem{
+		Capabilities: []*ncall.CapabilityItem{
 			{
-				ID:             "wallet",
-				Version:        1,
-				PaymentSchemes: []string{nodesvc.PaymentSchemePool2of2V1},
+				ID:      "wallet",
+				Version: 1,
 			},
 			{
 				ID:      "bitfs",
@@ -180,20 +179,20 @@ func clientCapabilitiesShowBody(rt *Runtime) nodesvc.CapabilitiesShowBody {
 	}
 }
 
-func marshalNodeCallProto(msg oldproto.Message) (nodesvc.CallResp, error) {
+func marshalNodeCallProto(msg oldproto.Message) (ncall.CallResp, error) {
 	body, err := marshalNodeRouteProtoBody(msg)
 	if err != nil {
-		return nodesvc.CallResp{}, err
+		return ncall.CallResp{}, err
 	}
-	return nodesvc.CallResp{
+	return ncall.CallResp{
 		Ok:          true,
 		Code:        "OK",
-		ContentType: nodesvc.ContentTypeProto,
+		ContentType: ncall.ContentTypeProto,
 		Body:        body,
 	}, nil
 }
 
-func isNodePaymentRequired(resp nodesvc.CallResp) bool {
+func isNodePaymentRequired(resp ncall.CallResp) bool {
 	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") && len(resp.PaymentOptions) > 0
 }
 
@@ -232,9 +231,9 @@ func normalizeContentType(raw string) (string, string) {
 	return contentType, ""
 }
 
-func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (nodesvc.CallResp, error) {
+func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
 	if db == nil {
-		return nodesvc.CallResp{}, fmt.Errorf("db is nil")
+		return ncall.CallResp{}, fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
 	result, err := db.Exec(
@@ -260,19 +259,19 @@ func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, rout
 			strings.TrimSpace(messageID),
 		)
 		if scanErr := row.Scan(&inboxID, &now); scanErr != nil {
-			return nodesvc.CallResp{}, scanErr
+			return ncall.CallResp{}, scanErr
 		}
 	default:
-		return nodesvc.CallResp{}, err
+		return ncall.CallResp{}, err
 	}
 	ack, err := oldproto.Marshal(&inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
 	if err != nil {
-		return nodesvc.CallResp{}, err
+		return ncall.CallResp{}, err
 	}
-	return nodesvc.CallResp{
+	return ncall.CallResp{
 		Ok:          true,
 		Code:        "OK",
-		ContentType: nodesvc.ContentTypeProto,
+		ContentType: ncall.ContentTypeProto,
 		Body:        ack,
 	}, nil
 }
@@ -289,7 +288,7 @@ func resolveClientTarget(raw string) (string, peer.ID, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("target invalid: %w", err)
 	}
-	pid, err := dual2of2.PeerIDFromClientID(pubKeyHex)
+	pid, err := poolcore.PeerIDFromClientID(pubKeyHex)
 	if err != nil {
 		return "", "", err
 	}

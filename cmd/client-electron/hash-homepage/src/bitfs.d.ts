@@ -152,8 +152,6 @@ type BitfsPeerCallResponse = {
 type BitfsCapabilityItem = {
   id: string;
   version: number;
-  pricing?: Record<string, number>;
-  payment_schemes?: string[];
 };
 
 type BitfsCapabilitiesShowBody = {

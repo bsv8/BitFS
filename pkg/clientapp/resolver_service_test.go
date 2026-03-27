@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/modules/domain"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/modules/domain"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/host"
 )
@@ -114,28 +114,28 @@ func TestHTTPAPIResolverResolve(t *testing.T) {
 }
 
 func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPubkeyHex string, expireAtUnix int64) {
-	nodesvc.Register(h, p2prpc.SecurityConfig{
+	ncall.Register(h, pproto.SecurityConfig{
 		Domain:  "bitfs-node",
 		Network: "test",
 		TTL:     30 * time.Second,
-	}, func(_ context.Context, _ nodesvc.CallContext, req nodesvc.CallReq) (nodesvc.CallResp, error) {
-		if strings.TrimSpace(req.Route) != domainsvc.RouteDomainV1Resolve {
-			return nodesvc.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+	}, func(_ context.Context, _ ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
+		if strings.TrimSpace(req.Route) != domainmodule.RouteDomainV1Resolve {
+			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-		var body domainsvc.NameRouteReq
+		var body domainmodule.NameRouteReq
 		if err := oldproto.Unmarshal(req.Body, &body); err != nil {
-			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: "invalid protobuf body"}, nil
+			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: "invalid protobuf body"}, nil
 		}
 		name, err := normalizeResolverNameCanonical(body.Name)
 		if err != nil {
-			raw, _ := oldproto.Marshal(&domainsvc.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
-			return nodesvc.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: nodesvc.ContentTypeProto, Body: raw}, nil
+			raw, _ := oldproto.Marshal(&domainmodule.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
+			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: ncall.ContentTypeProto, Body: raw}, nil
 		}
-		var routeResp domainsvc.ResolveNamePaidResp
+		var routeResp domainmodule.ResolveNamePaidResp
 		if name != expectedName {
-			routeResp = domainsvc.ResolveNamePaidResp{Success: false, Status: "not_found", Name: name, Error: "domain name not found"}
+			routeResp = domainmodule.ResolveNamePaidResp{Success: false, Status: "not_found", Name: name, Error: "domain name not found"}
 		} else {
-			routeResp = domainsvc.ResolveNamePaidResp{
+			routeResp = domainmodule.ResolveNamePaidResp{
 				Success:         true,
 				Status:          "ok",
 				Name:            name,
@@ -145,8 +145,8 @@ func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPu
 		}
 		raw, err := oldproto.Marshal(&routeResp)
 		if err != nil {
-			return nodesvc.CallResp{}, err
+			return ncall.CallResp{}, err
 		}
-		return nodesvc.CallResp{Ok: true, Code: "OK", ContentType: nodesvc.ContentTypeProto, Body: raw}, nil
+		return ncall.CallResp{Ok: true, Code: "OK", ContentType: ncall.ContentTypeProto, Body: raw}, nil
 	}, nil)
 }

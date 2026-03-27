@@ -34,7 +34,7 @@ func normalizeCompressedPubKeyHexLegacyAware(in string) (string, error) {
 	if err == nil {
 		return pubHex, nil
 	}
-	converted, convErr := dual2of2.Libp2pMarshalPubHexToSecpCompressedHex(strings.TrimSpace(in))
+	converted, convErr := poolcore.Libp2pMarshalPubHexToSecpCompressedHex(strings.TrimSpace(in))
 	if convErr != nil {
 		return "", err
 	}

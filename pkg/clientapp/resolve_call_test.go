@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
@@ -99,8 +99,8 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 
 	capOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
-		Route:       nodesvc.RouteNodeV1CapabilitiesShow,
-		ContentType: nodesvc.ContentTypeProto,
+		Route:       ncall.RouteNodeV1CapabilitiesShow,
+		ContentType: ncall.ContentTypeProto,
 	})
 	if err != nil {
 		t.Fatalf("capabilities_show failed: %v", err)
@@ -230,14 +230,14 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 func TestDecorateQuotedPaymentOptionUsesRealQuoteStatus(t *testing.T) {
 	t.Parallel()
 
-	option := &nodesvc.PaymentOption{
-		Scheme:        nodesvc.PaymentSchemePool2of2V1,
+	option := &ncall.PaymentOption{
+		Scheme:        ncall.PaymentSchemePool2of2V1,
 		PaymentDomain: "bitcast-domain",
 		PricingMode:   "fixed_price",
 	}
 	quoted := feePoolServiceQuoteBuilt{
 		QuoteStatus: "countered",
-		ServiceQuote: proof.ServiceQuote{
+		ServiceQuote: payflow.ServiceQuote{
 			ChargeAmountSatoshi:    25,
 			ChargeReason:           "domain_query_fee",
 			GrantedDurationSeconds: 0,

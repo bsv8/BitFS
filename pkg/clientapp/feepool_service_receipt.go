@@ -32,7 +32,7 @@ func verifyServiceReceiptOrFreeze(ctx context.Context, rt *Runtime, gatewayPeerI
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_missing")
 		return fmt.Errorf("service receipt missing")
 	}
-	receipt, err := proof.UnmarshalServiceReceipt(receiptRaw)
+	receipt, err := payflow.UnmarshalServiceReceipt(receiptRaw)
 	if err != nil {
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_decode_failed")
 		return fmt.Errorf("decode service receipt failed: %w", err)
@@ -42,7 +42,7 @@ func verifyServiceReceiptOrFreeze(ctx context.Context, rt *Runtime, gatewayPeerI
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "gateway_pubkey_missing")
 		return err
 	}
-	if err := proof.VerifyServiceReceiptSignature(receipt, gatewayPub); err != nil {
+	if err := payflow.VerifyServiceReceiptSignature(receipt, gatewayPub); err != nil {
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_signature_invalid")
 		return err
 	}
@@ -70,7 +70,7 @@ func verifyServiceReceiptOrFreeze(ctx context.Context, rt *Runtime, gatewayPeerI
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_result_code_mismatch")
 		return fmt.Errorf("service receipt result code mismatch")
 	}
-	if !strings.EqualFold(strings.TrimSpace(receipt.ResultPayloadHash), proof.HashPayloadBytes(expected.ResultPayloadBytes)) {
+	if !strings.EqualFold(strings.TrimSpace(receipt.ResultPayloadHash), payflow.HashPayloadBytes(expected.ResultPayloadBytes)) {
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_payload_hash_mismatch")
 		return fmt.Errorf("service receipt payload hash mismatch")
 	}

@@ -12,8 +12,8 @@ import (
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/obs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -291,11 +291,11 @@ func listenBillingTaskName(gatewayPeerID string) string {
 	return "listen_billing_tick:" + gatewayPeerID
 }
 
-func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
 	return ensureActiveFeePoolWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
 }
 
-func ensureActiveFeePoolWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp, sec p2prpc.SecurityConfig) (*feePoolSession, error) {
+func ensureActiveFeePoolWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp, sec pproto.SecurityConfig) (*feePoolSession, error) {
 	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -308,11 +308,11 @@ func ensureActiveFeePoolWithSecurity(ctx context.Context, rt *Runtime, gw peer.A
 
 // createFeePoolSession 在链上创建新的费用池并注册为当前 active 会话。
 // 设计说明：监听轮换场景要求“先开新池再关旧池”，因此新池创建流程必须可复用。
-func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
 	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
 }
 
-func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info dual2of2.InfoResp, _ p2prpc.SecurityConfig) (*feePoolSession, error) {
+func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp, _ pproto.SecurityConfig) (*feePoolSession, error) {
 	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -398,7 +398,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	if clientAmount > poolAmount {
 		return nil, fmt.Errorf("invalid spend tx client amount: pool=%d client=%d", poolAmount, clientAmount)
 	}
-	spendTxFeeSat := dual2of2.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
+	spendTxFeeSat := poolcore.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
 	requiredPoolAmount, err := listenPoolAmountByRounds(autoRenewRounds, info.SingleCycleFeeSatoshi, spendTxFeeSat)
 	if err != nil {
 		return nil, err
@@ -428,7 +428,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		if clientAmount > poolAmount {
 			return nil, fmt.Errorf("invalid rebuilt spend tx client amount: pool=%d client=%d", poolAmount, clientAmount)
 		}
-		spendTxFeeSat = dual2of2.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
+		spendTxFeeSat = poolcore.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
 	}
 	// 创建即首扣：rounds 的第 1 轮在 open 时已经划拨给网关，后续只需校验剩余轮次资金。
 	remainingRounds := autoRenewRounds
@@ -452,7 +452,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		return nil, fmt.Errorf("encode base tx bytes failed: %w", err)
 	}
 
-	createReq := dual2of2.CreateReq{
+	createReq := poolcore.CreateReq{
 		ClientID:       rt.runIn.ClientID,
 		SpendTx:        spendTxBytes,
 		InputAmount:    baseResp.Amount,
@@ -468,7 +468,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		return nil, fmt.Errorf("fee_pool.create invalid response: missing spend_txid")
 	}
 
-	baseReq := dual2of2.BaseTxReq{
+	baseReq := poolcore.BaseTxReq{
 		ClientID:  rt.runIn.ClientID,
 		SpendTxID: createResp.SpendTxID,
 		BaseTx:    baseTxBytes,
@@ -649,17 +649,17 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 
 	// 监听续费现在只走“budget_for_service”语义：client 给预算，gateway 回本次可成交时长。
-	payloadRaw, err := dual2of2.MarshalListenCycleQuotePayload(0, 0)
+	payloadRaw, err := poolcore.MarshalListenCycleQuotePayload(0, 0)
 	if err != nil {
 		return err
 	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              s,
 		GatewayPeerID:        gw,
-		ServiceType:          dual2of2.QuoteServiceTypeListenCycle,
+		ServiceType:          poolcore.QuoteServiceTypeListenCycle,
 		Target:               "listen_cycle_fee",
 		ServiceParamsPayload: payloadRaw,
-		PricingMode:          dual2of2.ServiceOfferPricingModeBudgetForService,
+		PricingMode:          poolcore.ServiceOfferPricingModeBudgetForService,
 		ProposedPaymentSat:   offerPayment,
 	})
 	if err != nil {
@@ -680,7 +680,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		return fmt.Errorf("client sign update failed: %w", err)
 	}
 
-	req := dual2of2.PayConfirmReq{
+	req := poolcore.PayConfirmReq{
 		ClientID:            rt.runIn.ClientID,
 		SpendTxID:           s.SpendTxID,
 		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
@@ -799,7 +799,7 @@ func listenOfferPaymentSatoshi(rt *Runtime, s *feePoolSession) uint64 {
 }
 
 // rotateListenFeePool 处理监听费用池轮换：先开新池并切换，再异步重试关闭旧池。
-func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old *feePoolSession, autoRenewRounds uint64, info dual2of2.InfoResp) (*feePoolSession, error) {
+func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old *feePoolSession, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
 	if rt == nil || old == nil {
 		return nil, fmt.Errorf("session missing")
 	}

@@ -45,10 +45,10 @@ func callNodeRouteProto(ctx context.Context, rt *Runtime, peerID peer.ID, route 
 	if err != nil {
 		return err
 	}
-	resp, err := callNodeRoute(ctx, rt, peerID, nodesvc.CallReq{
+	resp, err := callNodeRoute(ctx, rt, peerID, ncall.CallReq{
 		To:          peerID.String(),
 		Route:       strings.TrimSpace(route),
-		ContentType: nodesvc.ContentTypeProto,
+		ContentType: ncall.ContentTypeProto,
 		Body:        rawBody,
 	})
 	if err != nil {

@@ -592,7 +592,7 @@ func shortToken(s string) string {
 	return v[:4] + "..." + v[len(v)-4:]
 }
 
-func probeListenOpenNeedAndWallet(rt *Runtime, info dual2of2.InfoResp) (uint64, uint64, error) {
+func probeListenOpenNeedAndWallet(rt *Runtime, info poolcore.InfoResp) (uint64, uint64, error) {
 	if rt == nil {
 		return 0, 0, fmt.Errorf("runtime not initialized")
 	}

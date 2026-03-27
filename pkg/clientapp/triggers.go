@@ -16,8 +16,9 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
+	"github.com/bsv8/BFTP/pkg/obs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
@@ -147,27 +148,27 @@ func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePl
 	}, nil
 }
 
-func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDemandParams) (dual2of2.DemandPublishPaidResp, error) {
+func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDemandParams) (broadcastmodule.DemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
+		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
+		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" || p.ChunkCount == 0 {
-		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("invalid params")
+		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("invalid params")
 	}
 
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 
 	info, err := callNodePoolInfo(ctx, rt, gw.ID)
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
 		kres := kernel.dispatch(ctx, clientKernelCommand{
@@ -183,9 +184,9 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		})
 		if kres.Status != "applied" {
 			if strings.TrimSpace(kres.ErrorMessage) != "" {
-				return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
+				return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
 			}
-			return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
+			return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
 	payMu := rt.feePoolPayMutex(gw.ID.String())
@@ -193,31 +194,31 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	defer payMu.Unlock()
 	session, ok := rt.getFeePool(gw.ID.String())
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
+		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
 	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
 	}
-	payloadRaw, err := dual2of2.MarshalDemandPublishQuotePayload(seedHash, p.ChunkCount, localAdvertiseAddrs(rt))
+	payloadRaw, err := broadcastmodule.MarshalDemandPublishQuotePayload(seedHash, p.ChunkCount, localAdvertiseAddrs(rt))
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          dual2of2.QuoteServiceTypeDemandPublish,
+		ServiceType:          poolcore.QuoteServiceTypeDemandPublish,
 		Target:               seedHash,
 		ServiceParamsPayload: payloadRaw,
-		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
 		ProposedPaymentSat:   charge,
 	})
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, fmt.Errorf("request demand publish quote failed: %w", err)
+		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("request demand publish quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
 		Session:         session,
@@ -227,14 +228,14 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		ServiceQuote:    quoted.ServiceQuote,
 	})
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 
-	req := dual2of2.DemandPublishPaidReq{
+	req := broadcastmodule.DemandPublishPaidReq{
 		ClientID:            rt.runIn.ClientID,
 		SeedHash:            seedHash,
 		ChunkCount:          p.ChunkCount,
@@ -250,11 +251,11 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
-	var resp dual2of2.DemandPublishPaidResp
+	var resp broadcastmodule.DemandPublishPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
+	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	if err := validateDemandPublishPaidResp(resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{
@@ -262,22 +263,22 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 			"status":  strings.TrimSpace(resp.Status),
 			"success": resp.Success,
 		})
-		return dual2of2.DemandPublishPaidResp{}, err
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	if resp.Success {
-		payload, err := dual2of2.MarshalDemandPublishServicePayload(resp)
+		payload, err := broadcastmodule.MarshalDemandPublishServicePayload(resp)
 		if err != nil {
-			return dual2of2.DemandPublishPaidResp{}, err
+			return broadcastmodule.DemandPublishPaidResp{}, err
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
-			ServiceType:        dual2of2.ServiceTypeDemandPublish,
+			ServiceType:        broadcastmodule.ServiceTypeDemandPublish,
 			SpendTxID:          session.SpendTxID,
 			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
 			AcceptedChargeHash: built.AcceptedChargeHash,
 			ResultCode:         strings.TrimSpace(resp.Status),
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
-			return dual2of2.DemandPublishPaidResp{}, err
+			return broadcastmodule.DemandPublishPaidResp{}, err
 		}
 		nextTxHex := built.UpdatedTx.Hex()
 		if len(resp.MergedCurrentTx) > 0 {
@@ -309,25 +310,25 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	return resp, nil
 }
 
-func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p PublishDemandBatchParams) (dual2of2.DemandPublishBatchPaidResp, error) {
+func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p PublishDemandBatchParams) (broadcastmodule.DemandPublishBatchPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
+		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
+		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	items, err := normalizeDemandBatchItems(p.Items)
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	info, err := callNodePoolInfo(ctx, rt, gw.ID)
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
 		payloadItems := make([]map[string]any, 0, len(items))
@@ -350,9 +351,9 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		})
 		if kres.Status != "applied" {
 			if strings.TrimSpace(kres.ErrorMessage) != "" {
-				return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
+				return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
 			}
-			return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
+			return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
 	payMu := rt.feePoolPayMutex(gw.ID.String())
@@ -360,38 +361,38 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	defer payMu.Unlock()
 	session, ok := rt.getFeePool(gw.ID.String())
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
+		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
 	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
 	}
-	reqItems := make([]*dual2of2.DemandPublishBatchPaidItem, 0, len(items))
+	reqItems := make([]*broadcastmodule.DemandPublishBatchPaidItem, 0, len(items))
 	for _, item := range items {
-		reqItems = append(reqItems, &dual2of2.DemandPublishBatchPaidItem{
+		reqItems = append(reqItems, &broadcastmodule.DemandPublishBatchPaidItem{
 			SeedHash:   item.SeedHash,
 			ChunkCount: item.ChunkCount,
 		})
 	}
-	payloadRaw, err := dual2of2.MarshalDemandPublishBatchQuotePayload(reqItems, localAdvertiseAddrs(rt))
+	payloadRaw, err := broadcastmodule.MarshalDemandPublishBatchQuotePayload(reqItems, localAdvertiseAddrs(rt))
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          dual2of2.QuoteServiceTypeDemandPublishBatch,
+		ServiceType:          poolcore.QuoteServiceTypeDemandPublishBatch,
 		Target:               "demand_publish_batch",
 		ServiceParamsPayload: payloadRaw,
-		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
 		ProposedPaymentSat:   charge,
 	})
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, fmt.Errorf("request demand publish batch quote failed: %w", err)
+		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("request demand publish batch quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
 		Session:         session,
@@ -401,13 +402,13 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		ServiceQuote:    quoted.ServiceQuote,
 	})
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
-	req := dual2of2.DemandPublishBatchPaidReq{
+	req := broadcastmodule.DemandPublishBatchPaidReq{
 		ClientID:            rt.runIn.ClientID,
 		Items:               reqItems,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
@@ -422,11 +423,11 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
-	var resp dual2of2.DemandPublishBatchPaidResp
+	var resp broadcastmodule.DemandPublishBatchPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoDemandPublishBatchPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
+	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoDemandPublishBatchPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	if err := validateDemandPublishBatchPaidResp(resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{
@@ -434,22 +435,22 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 			"status":  strings.TrimSpace(resp.Status),
 			"success": resp.Success,
 		})
-		return dual2of2.DemandPublishBatchPaidResp{}, err
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	if resp.Success {
-		payload, err := dual2of2.MarshalDemandPublishBatchServicePayload(resp)
+		payload, err := broadcastmodule.MarshalDemandPublishBatchServicePayload(resp)
 		if err != nil {
-			return dual2of2.DemandPublishBatchPaidResp{}, err
+			return broadcastmodule.DemandPublishBatchPaidResp{}, err
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
-			ServiceType:        dual2of2.ServiceTypeDemandPublishBatch,
+			ServiceType:        broadcastmodule.ServiceTypeDemandPublishBatch,
 			SpendTxID:          session.SpendTxID,
 			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
 			AcceptedChargeHash: built.AcceptedChargeHash,
 			ResultCode:         strings.TrimSpace(resp.Status),
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
-			return dual2of2.DemandPublishBatchPaidResp{}, err
+			return broadcastmodule.DemandPublishBatchPaidResp{}, err
 		}
 		nextTxHex := built.UpdatedTx.Hex()
 		if len(resp.MergedCurrentTx) > 0 {
@@ -489,24 +490,24 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	return resp, nil
 }
 
-func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p PublishLiveDemandParams) (dual2of2.LiveDemandPublishPaidResp, error) {
+func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p PublishLiveDemandParams) (broadcastmodule.LiveDemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
+		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
+		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
 	if !isSeedHashHex(streamID) || p.Window == 0 {
-		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("invalid params")
+		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("invalid params")
 	}
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	info, err := callNodePoolInfo(ctx, rt, gw.ID)
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	if kernel := ensureClientKernel(rt); kernel != nil {
 		kres := kernel.dispatch(ctx, clientKernelCommand{
@@ -523,9 +524,9 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		})
 		if kres.Status != "applied" {
 			if strings.TrimSpace(kres.ErrorMessage) != "" {
-				return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
+				return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
 			}
-			return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
+			return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
 	payMu := rt.feePoolPayMutex(gw.ID.String())
@@ -533,31 +534,31 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	defer payMu.Unlock()
 	session, ok := rt.getFeePool(gw.ID.String())
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
+		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
 	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
 	}
-	payloadRaw, err := dual2of2.MarshalLiveDemandPublishQuotePayload(streamID, p.HaveSegmentIndex, p.Window, localAdvertiseAddrs(rt))
+	payloadRaw, err := broadcastmodule.MarshalLiveDemandPublishQuotePayload(streamID, p.HaveSegmentIndex, p.Window, localAdvertiseAddrs(rt))
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          dual2of2.QuoteServiceTypeLiveDemandPublish,
+		ServiceType:          poolcore.QuoteServiceTypeLiveDemandPublish,
 		Target:               p.StreamID,
 		ServiceParamsPayload: payloadRaw,
-		PricingMode:          dual2of2.ServiceOfferPricingModeFixedPrice,
+		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
 		ProposedPaymentSat:   charge,
 	})
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, fmt.Errorf("request live demand publish quote failed: %w", err)
+		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("request live demand publish quote failed: %w", err)
 	}
 	clientActor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
 		Session:         session,
@@ -567,13 +568,13 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		ServiceQuote:    quoted.ServiceQuote,
 	})
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
 	if err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
-	req := dual2of2.LiveDemandPublishPaidReq{
+	req := broadcastmodule.LiveDemandPublishPaidReq{
 		ClientID:            rt.runIn.ClientID,
 		StreamID:            streamID,
 		HaveSegmentIndex:    p.HaveSegmentIndex,
@@ -590,27 +591,27 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
-	var resp dual2of2.LiveDemandPublishPaidResp
-	if err := p2prpc.CallProto(ctx, rt.Host, gw.ID, dual2of2.ProtoLiveDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+	var resp broadcastmodule.LiveDemandPublishPaidResp
+	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoLiveDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	if err := validateLiveDemandPublishPaidResp(resp); err != nil {
-		return dual2of2.LiveDemandPublishPaidResp{}, err
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	if resp.Success {
-		payload, err := dual2of2.MarshalLiveDemandPublishServicePayload(resp)
+		payload, err := broadcastmodule.MarshalLiveDemandPublishServicePayload(resp)
 		if err != nil {
-			return dual2of2.LiveDemandPublishPaidResp{}, err
+			return broadcastmodule.LiveDemandPublishPaidResp{}, err
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
-			ServiceType:        dual2of2.ServiceTypeLiveDemandPublish,
+			ServiceType:        broadcastmodule.ServiceTypeLiveDemandPublish,
 			SpendTxID:          session.SpendTxID,
 			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
 			AcceptedChargeHash: built.AcceptedChargeHash,
 			ResultCode:         strings.TrimSpace(resp.Status),
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
-			return dual2of2.LiveDemandPublishPaidResp{}, err
+			return broadcastmodule.LiveDemandPublishPaidResp{}, err
 		}
 		nextTxHex := built.UpdatedTx.Hex()
 		if len(resp.MergedCurrentTx) > 0 {
@@ -656,7 +657,7 @@ func applyFeePoolChargeToSession(session *feePoolSession, nextSeq uint32, nextSe
 // 设计约束：
 // - RPC 成功 != 业务成功，必须检查 success 位；
 // - success=true 时 demand_id 必须存在，否则后续 list quotes 必然失败。
-func validateDemandPublishPaidResp(resp dual2of2.DemandPublishPaidResp) error {
+func validateDemandPublishPaidResp(resp broadcastmodule.DemandPublishPaidResp) error {
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
@@ -670,7 +671,7 @@ func validateDemandPublishPaidResp(resp dual2of2.DemandPublishPaidResp) error {
 	return nil
 }
 
-func validateDemandPublishBatchPaidResp(resp dual2of2.DemandPublishBatchPaidResp) error {
+func validateDemandPublishBatchPaidResp(resp broadcastmodule.DemandPublishBatchPaidResp) error {
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
@@ -693,7 +694,7 @@ func validateDemandPublishBatchPaidResp(resp dual2of2.DemandPublishBatchPaidResp
 }
 
 // validateLiveDemandPublishPaidResp 统一校验网关 publish_live_demand 业务响应。
-func validateLiveDemandPublishPaidResp(resp dual2of2.LiveDemandPublishPaidResp) error {
+func validateLiveDemandPublishPaidResp(resp broadcastmodule.LiveDemandPublishPaidResp) error {
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
@@ -946,7 +947,7 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 		return SeedGetResult{}, err
 	}
 	var resp seedGetResp
-	err = p2prpc.CallProto(ctx, rt.Host, seller, ProtoSeedGet, clientSec(rt.rpcTrace), seedGetReq{
+	err = pproto.CallProto(ctx, rt.Host, seller, ProtoSeedGet, clientSec(rt.rpcTrace), seedGetReq{
 		SessionID: sessionID,
 		SeedHash:  seedHash,
 	}, &resp)
@@ -1067,7 +1068,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 	}
 
 	clientPrivHex := strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex)
-	clientActor, err := dual2of2.BuildActor("buyer", clientPrivHex, strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
+	clientActor, err := poolcore.BuildActor("buyer", clientPrivHex, strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
@@ -1100,7 +1101,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			curSessionID = strings.TrimSpace(sess.SessionID)
 		}
 
-		poolInputs, splitTxID, err := func() ([]dual2of2.UTXO, string, error) {
+		poolInputs, splitTxID, err := func() ([]poolcore.UTXO, string, error) {
 			// 钱包 UTXO 分配必须单步串行：查询/选取/拆分在同一临界区完成。
 			allocMu := buyer.walletAllocMutex()
 			allocMu.Lock()
@@ -1176,7 +1177,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		if err != nil {
 			return directTransferPoolOpenResult{}, fmt.Errorf("encode base tx bytes failed: %w", err)
 		}
-		spendFee := dual2of2.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
+		spendFee := poolcore.CalcFeeWithInputAmount(spendTx, baseResp.Amount)
 		if spendFee == 0 {
 			spendFee = 1
 		}
@@ -1204,7 +1205,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"attempt":    attempt,
 		})
 		var openResp directTransferPoolOpenResp
-		if err := p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolOpen, clientSec(buyer.rpcTrace), req, &openResp); err != nil {
+		if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolOpen, clientSec(buyer.rpcTrace), req, &openResp); err != nil {
 			obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_open_failed", map[string]any{"error": err.Error()})
 			return directTransferPoolOpenResult{}, err
 		}
@@ -1317,7 +1318,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 	return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed after retries: %w", lastErr)
 }
 
-func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *dual2of2.Actor, selected []dual2of2.UTXO, target uint64, feeRateSatPerKB float64) ([]dual2of2.UTXO, string, error) {
+func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *poolcore.Actor, selected []poolcore.UTXO, target uint64, feeRateSatPerKB float64) ([]poolcore.UTXO, string, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return nil, "", fmt.Errorf("runtime chain not initialized")
 	}
@@ -1421,7 +1422,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 		if err == nil {
 			for _, u := range utxos {
 				if strings.EqualFold(strings.TrimSpace(u.TxID), splitTxID) && u.Vout == 0 && u.Value == target {
-					return []dual2of2.UTXO{u}, splitTxID, nil
+					return []poolcore.UTXO{u}, splitTxID, nil
 				}
 			}
 		}
@@ -1448,7 +1449,7 @@ func signP2PKHAllInputs(t *tx.Transaction, unlockTpl *p2pkh.P2PKH) error {
 	return nil
 }
 
-func sumUTXOValue(utxos []dual2of2.UTXO) uint64 {
+func sumUTXOValue(utxos []poolcore.UTXO) uint64 {
 	var sum uint64
 	for _, u := range utxos {
 		sum += u.Value
@@ -1477,7 +1478,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
-	clientActor, err := dual2of2.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
+	clientActor, err := poolcore.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
@@ -1531,7 +1532,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"chunk_index":   p.ChunkIndex,
 	})
 	var payResp directTransferPoolPayResp
-	if err := p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolPay, clientSec(buyer.rpcTrace), req, &payResp); err != nil {
+	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolPay, clientSec(buyer.rpcTrace), req, &payResp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolPayResult{}, err
 	}
@@ -1630,7 +1631,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
-	clientActor, err := dual2of2.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
+	clientActor, err := poolcore.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
@@ -1677,7 +1678,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 		"sequence":   req.Sequence,
 	})
 	var closeResp directTransferPoolCloseResp
-	if err := p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolClose, clientSec(buyer.rpcTrace), req, &closeResp); err != nil {
+	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolClose, clientSec(buyer.rpcTrace), req, &closeResp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_close_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolCloseResult{}, err
 	}
@@ -1756,12 +1757,12 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	return directTransferPoolCloseResult{FinalTxID: finalTxID}, nil
 }
 
-func pickUTXOsForTarget(all []dual2of2.UTXO, target uint64) ([]dual2of2.UTXO, error) {
+func pickUTXOsForTarget(all []poolcore.UTXO, target uint64) ([]poolcore.UTXO, error) {
 	if len(all) == 0 {
 		return nil, fmt.Errorf("no utxos available")
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
-	selected := make([]dual2of2.UTXO, 0, 4)
+	selected := make([]poolcore.UTXO, 0, 4)
 	var sum uint64
 	for _, u := range all {
 		selected = append(selected, u)
@@ -1946,7 +1947,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 		return directDealAcceptResp{}, err
 	}
 	var resp directDealAcceptResp
-	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
+	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
 		DemandID:      strings.TrimSpace(p.DemandID),
 		BuyerPeerID:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
 		SeedHash:      strings.ToLower(strings.TrimSpace(p.SeedHash)),
@@ -1975,7 +1976,7 @@ func TriggerClientOpenDirectSession(ctx context.Context, buyer *Runtime, p OpenD
 		return directSessionOpenResp{}, err
 	}
 	var resp directSessionOpenResp
-	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionOpen, clientSec(buyer.rpcTrace), directSessionOpenReq{
+	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionOpen, clientSec(buyer.rpcTrace), directSessionOpenReq{
 		DealID: strings.TrimSpace(p.DealID),
 	}, &resp)
 	if err != nil {
@@ -1998,7 +1999,7 @@ func TriggerClientCloseDirectSession(ctx context.Context, buyer *Runtime, p Clos
 		return directSessionCloseResp{}, err
 	}
 	var resp directSessionCloseResp
-	err = p2prpc.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionClose, clientSec(buyer.rpcTrace), directSessionCloseReq{
+	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionClose, clientSec(buyer.rpcTrace), directSessionCloseReq{
 		SessionID: strings.TrimSpace(p.SessionID),
 	}, &resp)
 	if err != nil {

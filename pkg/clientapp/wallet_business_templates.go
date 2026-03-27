@@ -160,7 +160,7 @@ func walletBusinessTemplateRegistry() map[string]walletBusinessTemplate {
 }
 
 func walletBusinessTemplateIDFromEnvelope(raw []byte) (string, error) {
-	var env domainsvc.SignedEnvelope
+	var env domainmodule.SignedEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return "", fmt.Errorf("decode signed envelope: %w", err)
 	}

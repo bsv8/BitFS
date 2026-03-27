@@ -13,11 +13,11 @@ import (
 )
 
 type feePoolKernelMockChain struct {
-	utxos []dual2of2.UTXO
+	utxos []poolcore.UTXO
 }
 
-func (m *feePoolKernelMockChain) GetUTXOs(address string) ([]dual2of2.UTXO, error) {
-	return append([]dual2of2.UTXO(nil), m.utxos...), nil
+func (m *feePoolKernelMockChain) GetUTXOs(address string) ([]poolcore.UTXO, error) {
+	return append([]poolcore.UTXO(nil), m.utxos...), nil
 }
 
 func (m *feePoolKernelMockChain) GetTipHeight() (uint32, error) {
@@ -37,7 +37,7 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
 		},
 		ActionChain: &feePoolKernelMockChain{
-			utxos: []dual2of2.UTXO{
+			utxos: []poolcore.UTXO{
 				{TxID: "tx1", Vout: 0, Value: 50000},
 				{TxID: "tx2", Vout: 1, Value: 48560},
 			},
@@ -49,7 +49,7 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)
 	}
-	if err := seedWalletUTXOsForKernelTest(db, addr, []dual2of2.UTXO{
+	if err := seedWalletUTXOsForKernelTest(db, addr, []poolcore.UTXO{
 		{TxID: "tx1", Vout: 0, Value: 50000},
 		{TxID: "tx2", Vout: 1, Value: 48560},
 	}); err != nil {
@@ -76,7 +76,7 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
 		},
 		ActionChain: &feePoolKernelMockChain{
-			utxos: []dual2of2.UTXO{
+			utxos: []poolcore.UTXO{
 				{TxID: "tx1", Vout: 0, Value: 500},
 			},
 		},
@@ -87,7 +87,7 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)
 	}
-	if err := seedWalletUTXOsForKernelTest(db, addr, []dual2of2.UTXO{
+	if err := seedWalletUTXOsForKernelTest(db, addr, []poolcore.UTXO{
 		{TxID: "tx1", Vout: 0, Value: 500},
 	}); err != nil {
 		t.Fatalf("reconcile wallet utxo set failed: %v", err)
@@ -104,8 +104,8 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	}
 }
 
-func dualInfo(singleCycle uint64, minimum uint64) dual2of2.InfoResp {
-	return dual2of2.InfoResp{
+func dualInfo(singleCycle uint64, minimum uint64) poolcore.InfoResp {
+	return poolcore.InfoResp{
 		SingleCycleFeeSatoshi:    singleCycle,
 		MinimumPoolAmountSatoshi: minimum,
 	}
@@ -128,9 +128,9 @@ func newKernelTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []dual2of2.UTXO) error {
+func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []poolcore.UTXO) error {
 	var balance uint64
-	live := make(map[string]dual2of2.UTXO, len(utxos))
+	live := make(map[string]poolcore.UTXO, len(utxos))
 	for _, u := range utxos {
 		balance += u.Value
 		live[strings.ToLower(u.TxID)+":"+fmt.Sprint(u.Vout)] = u
