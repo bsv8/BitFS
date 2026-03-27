@@ -62,7 +62,7 @@ func currentLocalNodeReachabilitySnapshot(rt *Runtime) (string, []string, string
 	if err != nil {
 		return "", nil, "", err
 	}
-	multiaddrs, err := poolcore.NormalizeNodeReachabilityAddrs(nodePubkeyHex, localAdvertiseAddrs(rt))
+	multiaddrs, err := broadcastmodule.NormalizeNodeReachabilityAddrs(nodePubkeyHex, localAdvertiseAddrs(rt))
 	if err != nil {
 		return "", nil, "", err
 	}
@@ -274,7 +274,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	}
 	publishedAtUnix := time.Now().Unix()
 	expiresAtUnix := publishedAtUnix + int64(ttlSeconds)
-	signPayload, err := poolcore.BuildNodeReachabilitySignPayload(nodePubkeyHex, multiaddrs, uint64(headHeight), announceSeq, publishedAtUnix, expiresAtUnix)
+	signPayload, err := broadcastmodule.BuildNodeReachabilitySignPayload(nodePubkeyHex, multiaddrs, uint64(headHeight), announceSeq, publishedAtUnix, expiresAtUnix)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
@@ -286,7 +286,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("sign node reachability announcement failed: %w", err)
 	}
-	signedAnnouncement, err := poolcore.MarshalSignedNodeReachabilityAnnouncement(poolcore.NodeReachabilityAnnouncement{
+	signedAnnouncement, err := broadcastmodule.MarshalSignedNodeReachabilityAnnouncement(broadcastmodule.NodeReachabilityAnnouncement{
 		NodePubkeyHex:   nodePubkeyHex,
 		Multiaddrs:      multiaddrs,
 		HeadHeight:      uint64(headHeight),
@@ -316,7 +316,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          poolcore.QuoteServiceTypeNodeReachabilityAnnounce,
+		ServiceType:          broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
 		Target:               nodePubkeyHex,
 		ServiceParamsPayload: payloadRaw,
 		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
@@ -479,7 +479,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          poolcore.QuoteServiceTypeNodeReachabilityQuery,
+		ServiceType:          broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
 		Target:               targetNodePubkeyHex,
 		ServiceParamsPayload: payloadRaw,
 		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
@@ -586,13 +586,13 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	return resp, nil
 }
 
-func loadCachedNodeReachability(db *sql.DB, targetNodePubkeyHex string, nowUnix int64) (poolcore.NodeReachabilityAnnouncement, bool, error) {
+func loadCachedNodeReachability(db *sql.DB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
 	if db == nil {
-		return poolcore.NodeReachabilityAnnouncement{}, false, nil
+		return broadcastmodule.NodeReachabilityAnnouncement{}, false, nil
 	}
 	targetNodePubkeyHex, err := normalizeCompressedPubKeyHex(targetNodePubkeyHex)
 	if err != nil {
-		return poolcore.NodeReachabilityAnnouncement{}, false, err
+		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
 	}
 	var (
 		sourceGatewayPubkeyHex string
@@ -611,16 +611,16 @@ func loadCachedNodeReachability(db *sql.DB, targetNodePubkeyHex string, nowUnix 
 		nowUnix,
 	).Scan(&sourceGatewayPubkeyHex, &headHeight, &seq, &multiaddrsJSON, &publishedAtUnix, &expiresAtUnix, &signature)
 	if err == sql.ErrNoRows {
-		return poolcore.NodeReachabilityAnnouncement{}, false, nil
+		return broadcastmodule.NodeReachabilityAnnouncement{}, false, nil
 	}
 	if err != nil {
-		return poolcore.NodeReachabilityAnnouncement{}, false, err
+		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
 	}
 	addrs, err := unmarshalReachabilityStringList(multiaddrsJSON)
 	if err != nil {
-		return poolcore.NodeReachabilityAnnouncement{}, false, err
+		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
 	}
-	return poolcore.NodeReachabilityAnnouncement{
+	return broadcastmodule.NodeReachabilityAnnouncement{
 		NodePubkeyHex:   targetNodePubkeyHex,
 		Multiaddrs:      addrs,
 		HeadHeight:      headHeight,
@@ -631,7 +631,7 @@ func loadCachedNodeReachability(db *sql.DB, targetNodePubkeyHex string, nowUnix 
 	}, true, nil
 }
 
-func saveNodeReachabilityCache(db *sql.DB, sourceGatewayPubkeyHex string, ann poolcore.NodeReachabilityAnnouncement) error {
+func saveNodeReachabilityCache(db *sql.DB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
 	if db == nil {
 		return nil
 	}
@@ -704,15 +704,15 @@ func loadSelfNodeReachabilityState(db *sql.DB, nodePubkeyHex string) (selfNodeRe
 	return out, true, nil
 }
 
-func announcementFromQueryResp(resp broadcastmodule.NodeReachabilityQueryPaidResp) (poolcore.NodeReachabilityAnnouncement, error) {
-	ann, err := poolcore.UnmarshalSignedNodeReachabilityAnnouncement(resp.SignedAnnouncement)
+func announcementFromQueryResp(resp broadcastmodule.NodeReachabilityQueryPaidResp) (broadcastmodule.NodeReachabilityAnnouncement, error) {
+	ann, err := broadcastmodule.UnmarshalSignedNodeReachabilityAnnouncement(resp.SignedAnnouncement)
 	if err != nil {
-		return poolcore.NodeReachabilityAnnouncement{}, err
+		return broadcastmodule.NodeReachabilityAnnouncement{}, err
 	}
 	return ann, nil
 }
 
-func injectNodeReachabilityAnnouncement(rt *Runtime, ann poolcore.NodeReachabilityAnnouncement) error {
+func injectNodeReachabilityAnnouncement(rt *Runtime, ann broadcastmodule.NodeReachabilityAnnouncement) error {
 	if rt == nil || rt.Host == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
@@ -741,7 +741,7 @@ func injectNodeReachabilityAnnouncement(rt *Runtime, ann poolcore.NodeReachabili
 	return nil
 }
 
-func announcementSemanticallyEqual(a, b poolcore.NodeReachabilityAnnouncement) bool {
+func announcementSemanticallyEqual(a, b broadcastmodule.NodeReachabilityAnnouncement) bool {
 	if !strings.EqualFold(strings.TrimSpace(a.NodePubkeyHex), strings.TrimSpace(b.NodePubkeyHex)) {
 		return false
 	}

@@ -207,7 +207,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          poolcore.QuoteServiceTypeDemandPublish,
+		ServiceType:          broadcastmodule.QuoteServiceTypeDemandPublish,
 		Target:               seedHash,
 		ServiceParamsPayload: payloadRaw,
 		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
@@ -381,7 +381,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          poolcore.QuoteServiceTypeDemandPublishBatch,
+		ServiceType:          broadcastmodule.QuoteServiceTypeDemandPublishBatch,
 		Target:               "demand_publish_batch",
 		ServiceParamsPayload: payloadRaw,
 		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
@@ -547,7 +547,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
-		ServiceType:          poolcore.QuoteServiceTypeLiveDemandPublish,
+		ServiceType:          broadcastmodule.QuoteServiceTypeLiveDemandPublish,
 		Target:               p.StreamID,
 		ServiceParamsPayload: payloadRaw,
 		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
