@@ -393,8 +393,7 @@ async function fetchSeedHashFromNodeRoute(targetPubkeyHex: string, route: string
   if (!body.ok) {
     throw new Error(String(body.message || body.error || "node locator resolve failed"));
   }
-  const manifest = body.body_json as Record<string, unknown> | undefined;
-  const seedHash = String(manifest?.seed_hash || "").trim();
+  const seedHash = decodeRouteIndexSeedHash(String(body.body_base64 || "").trim());
   if (!/^[0-9a-f]{64}$/i.test(seedHash)) {
     throw new Error("node locator resolve returned invalid seed hash");
   }
@@ -406,15 +405,53 @@ async function resolveLocatorName(resolverPubkeyHex: string, name: string, visit
   // - 壳只把 locator 翻译成“先名字解析，再 node get”的业务链；
   // - 解析服务仍然是普通 node，真正的寻址与重试逻辑放在后端；
   // - 这轮先把 resolve 查询协议接通，收费/注册协议后续继续补。
-  const body = await postJSON("/api/v1/resolvers/resolve", {
+  debugLogger.log("runtime", "locator_resolve_request", {
     resolver_pubkey_hex: resolverPubkeyHex,
-    name
-  }, visit);
+    name,
+    visit_id: String(visit?.visitID || "").trim(),
+    visit_locator: String(visit?.visitLocator || "").trim()
+  });
+  let body: Record<string, unknown>;
+  try {
+    body = await postJSON("/api/v1/resolvers/resolve", {
+      resolver_pubkey_hex: resolverPubkeyHex,
+      name
+    }, visit);
+  } catch (error) {
+    debugLogger.log("runtime", "locator_resolve_http_error", {
+      resolver_pubkey_hex: resolverPubkeyHex,
+      name,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    throw error;
+  }
+  debugLogger.log("runtime", "locator_resolve_response", {
+    resolver_pubkey_hex: resolverPubkeyHex,
+    name,
+    ok: Boolean(body.ok),
+    code: String(body.code || "").trim(),
+    message: String(body.message || "").trim(),
+    error: String(body.error || "").trim(),
+    response_name: String(body.name || "").trim(),
+    target_pubkey_hex: String(body.target_pubkey_hex || "").trim(),
+    updated_at_unix: Number(body.updated_at_unix || 0)
+  });
   if (!body.ok) {
+    debugLogger.log("runtime", "locator_resolve_rejected", {
+      resolver_pubkey_hex: resolverPubkeyHex,
+      name,
+      code: String(body.code || "").trim(),
+      message: String(body.message || body.error || "").trim()
+    });
     throw new Error(String(body.message || body.error || "resolver resolve failed"));
   }
   const targetPubkeyHex = String(body.target_pubkey_hex || "").trim().toLowerCase();
   if (!/^(02|03)[0-9a-f]{64}$/i.test(targetPubkeyHex)) {
+    debugLogger.log("runtime", "locator_resolve_invalid_target", {
+      resolver_pubkey_hex: resolverPubkeyHex,
+      name,
+      target_pubkey_hex: targetPubkeyHex
+    });
     throw new Error("resolver resolve returned invalid target pubkey hex");
   }
   return targetPubkeyHex;
@@ -435,6 +472,110 @@ async function postJSON(pathname: string, payload: Record<string, unknown>, visi
     throw new Error(String(body.error || text || `request failed: ${response.status}`));
   }
   return body;
+}
+
+function decodeRouteIndexSeedHash(bodyBase64: string): string {
+  if (bodyBase64 === "") {
+    throw new Error("node locator resolve body_base64 missing");
+  }
+  let raw: Buffer;
+  try {
+    raw = Buffer.from(bodyBase64, "base64");
+  } catch {
+    throw new Error("node locator resolve body_base64 invalid");
+  }
+  if (raw.length === 0) {
+    throw new Error("node locator resolve proto body empty");
+  }
+  let offset = 0;
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    if (fieldNumber === 2) {
+      return readProtoString(raw, () => offset, (next) => {
+        offset = next;
+      }).trim().toLowerCase();
+    }
+    offset = skipProtoField(raw, offset, wireType);
+  }
+  return "";
+}
+
+function readProtoString(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): string {
+  return new TextDecoder().decode(readProtoBytes(raw, getOffset, setOffset));
+}
+
+function readProtoBytes(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): Uint8Array {
+  const size = readProtoVarint(raw, getOffset, setOffset);
+  const offset = getOffset();
+  const next = offset + size;
+  if (size < 0 || next > raw.length) {
+    throw new Error("protobuf length-delimited field truncated");
+  }
+  setOffset(next);
+  return raw.subarray(offset, next);
+}
+
+function readProtoVarint(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): number {
+  let offset = getOffset();
+  let result = 0;
+  let shift = 0;
+  while (offset < raw.length && shift < 35) {
+    const value = raw[offset];
+    offset += 1;
+    result |= (value & 0x7f) << shift;
+    if ((value & 0x80) === 0) {
+      setOffset(offset);
+      return result >>> 0;
+    }
+    shift += 7;
+  }
+  throw new Error("protobuf varint truncated");
+}
+
+function skipProtoField(raw: Uint8Array, offset: number, wireType: number): number {
+  switch (wireType) {
+    case 0:
+      return skipProtoVarint(raw, offset);
+    case 1:
+      if (offset + 8 > raw.length) {
+        throw new Error("protobuf fixed64 truncated");
+      }
+      return offset + 8;
+    case 2: {
+      const nextOffsetRef = { value: offset };
+      const size = readProtoVarint(raw, () => nextOffsetRef.value, (next) => {
+        nextOffsetRef.value = next;
+      });
+      const next = nextOffsetRef.value + size;
+      if (size < 0 || next > raw.length) {
+        throw new Error("protobuf length-delimited skip truncated");
+      }
+      return next;
+    }
+    case 5:
+      if (offset + 4 > raw.length) {
+        throw new Error("protobuf fixed32 truncated");
+      }
+      return offset + 4;
+    default:
+      throw new Error(`protobuf wire type unsupported: ${String(wireType)}`);
+  }
+}
+
+function skipProtoVarint(raw: Uint8Array, offset: number): number {
+  let next = offset;
+  while (next < raw.length) {
+    const value = raw[next];
+    next += 1;
+    if ((value & 0x80) === 0) {
+      return next;
+    }
+  }
+  throw new Error("protobuf varint skip truncated");
 }
 
 function buildVisitHeaders(visit?: LocatorVisitContext): Record<string, string> {

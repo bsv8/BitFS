@@ -467,6 +467,10 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	if strings.TrimSpace(createResp.SpendTxID) == "" {
 		return nil, fmt.Errorf("fee_pool.create invalid response: missing spend_txid")
 	}
+	currentTxHex, err := mergeOpenedFeePoolCurrentTx(spendTx.Hex(), createResp.ServerSig, *clientOpenSig)
+	if err != nil {
+		return nil, fmt.Errorf("merge fee pool current tx failed: %w", err)
+	}
 
 	baseReq := poolcore.BaseTxReq{
 		ClientID:  rt.runIn.ClientID,
@@ -492,7 +496,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		Sequence:      1,
 		ServerAmount:  initialServerAmount,
 		ClientAmount:  clientAmount,
-		CurrentTxHex:  spendTx.Hex(),
+		CurrentTxHex:  currentTxHex,
 
 		BillingCycleSeconds:      info.BillingCycleSeconds,
 		SingleCycleFeeSatoshi:    info.SingleCycleFeeSatoshi,
@@ -615,6 +619,25 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	}
 
 	return s, nil
+}
+
+func mergeOpenedFeePoolCurrentTx(spendTxHex string, serverSig []byte, clientSig []byte) (string, error) {
+	if strings.TrimSpace(spendTxHex) == "" {
+		return "", fmt.Errorf("spend tx hex required")
+	}
+	serverSig = append([]byte(nil), serverSig...)
+	clientSig = append([]byte(nil), clientSig...)
+	if len(serverSig) == 0 {
+		return "", fmt.Errorf("server signature required")
+	}
+	if len(clientSig) == 0 {
+		return "", fmt.Errorf("client signature required")
+	}
+	merged, err := ce.MergeDualPoolSigForSpendTx(strings.TrimSpace(spendTxHex), &serverSig, &clientSig)
+	if err != nil {
+		return "", err
+	}
+	return merged.Hex(), nil
 }
 
 func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolSession) error {

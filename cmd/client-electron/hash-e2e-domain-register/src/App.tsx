@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 
+const protoContentType = "application/x-protobuf";
+
 type RunStep = {
   name: string;
   ok: boolean;
@@ -135,10 +137,9 @@ export default function App() {
       const capabilityResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "node.v1.capabilities_show",
-        contentType: "application/json",
-        body: {}
+        contentType: protoContentType
       });
-      const capabilityBody = readPeerCallBodyJson<BitfsCapabilitiesShowBody>(capabilityResp);
+      const capabilityBody = readCapabilitiesShowBody(capabilityResp);
       const hasDomain = capabilityBody.capabilities.some((item) => item.id === "domain" && Number(item.version || 0) === 1);
       if (!hasDomain) {
         throw new Error("target node does not expose domain v1 capability");
@@ -148,19 +149,18 @@ export default function App() {
       const pricingResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "domain.v1.pricing",
-        contentType: "application/json",
-        body: {}
+        contentType: protoContentType
       });
-      const pricing = readPeerCallBodyJson<BitfsDomainPricing>(pricingResp);
+      const pricing = readDomainPricingBody(pricingResp);
       steps.push({ name: "pricing", ok: true, detail: formatSat(pricing.register_price_satoshi || 0) });
 
       const queryResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "domain.v1.query",
-        contentType: "application/json",
-        body: { name: normalizedName }
+        contentType: protoContentType,
+        body: encodeProtoNameRouteReq(normalizedName)
       });
-      const query = readPeerCallBodyJson<BitfsDomainQueryResponse>(queryResp);
+      const query = readDomainQueryBody(queryResp);
       steps.push({ name: "query", ok: true, detail: String(query.status || "") });
       if (query.available !== true) {
         throw new Error(`domain not available: ${String(query.status || "unknown")}`);
@@ -169,13 +169,10 @@ export default function App() {
       const lockResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "domain.v1.lock",
-        contentType: "application/json",
-        body: {
-          name: normalizedName,
-          target_pubkey_hex: normalizedTarget
-        }
+        contentType: protoContentType,
+        body: encodeProtoNameTargetRouteReq(normalizedName, normalizedTarget)
       });
-      const lock = readPeerCallBodyJson<BitfsDomainLockResponse>(lockResp);
+      const lock = readDomainLockBody(lockResp);
       steps.push({ name: "lock", ok: true, detail: String(lock.status || "") });
       if (!lock.signed_quote_json) {
         throw new Error("domain lock did not return signed quote");
@@ -193,12 +190,10 @@ export default function App() {
       const submitResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "domain.v1.register_submit",
-        contentType: "application/json",
-        body: {
-          register_tx_hex: String(sign.signed_tx_hex || "")
-        }
+        contentType: protoContentType,
+        body: encodeProtoRegisterSubmitReq(String(sign.signed_tx_hex || ""))
       });
-      const submit = readPeerCallBodyJson<BitfsDomainRegisterSubmitResponse>(submitResp);
+      const submit = readDomainRegisterSubmitBody(submitResp);
       steps.push({ name: "register_submit", ok: Boolean(submit.success), detail: String(submit.status || "") });
       if (!submit.success) {
         throw new Error(String(submit.error_message || submit.status || "register submit failed"));
@@ -207,12 +202,10 @@ export default function App() {
       const listOwnedResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "domain.v1.list_owned",
-        contentType: "application/json",
-        body: {
-          owner_pubkey_hex: walletPubkeyHex
-        }
+        contentType: protoContentType,
+        body: encodeProtoListOwnedReq(walletPubkeyHex)
       });
-      const listOwned = readPeerCallBodyJson<BitfsDomainListOwnedResponse>(listOwnedResp);
+      const listOwned = readDomainListOwnedBody(listOwnedResp);
       const foundOwned = listOwned.items.some((item) => normalizeDomainName(item.name) === normalizedName);
       steps.push({ name: "list_owned", ok: foundOwned, detail: foundOwned ? "owned found" : "owned missing" });
       if (!foundOwned) {
@@ -222,12 +215,10 @@ export default function App() {
       const resolveResp = await bridge.peer.call({
         to: normalizedResolver,
         route: "domain.v1.resolve",
-        contentType: "application/json",
-        body: {
-          name: normalizedName
-        }
+        contentType: protoContentType,
+        body: encodeProtoNameRouteReq(normalizedName)
       });
-      const resolveQuery = readPeerCallBodyJson<BitfsDomainResolveResponse>(resolveResp);
+      const resolveQuery = readDomainResolveBody(resolveResp);
       steps.push({ name: "domain_resolve", ok: normalizePubkeyHex(resolveQuery.target_pubkey_hex || "") === normalizedTarget, detail: String(resolveQuery.status || "") });
       if (normalizePubkeyHex(resolveQuery.target_pubkey_hex || "") !== normalizedTarget) {
         throw new Error("resolved target mismatch");
@@ -439,14 +430,594 @@ function normalizeDomainName(raw: string): string {
   return value;
 }
 
-function readPeerCallBodyJson<T>(response: BitfsPeerCallResponse): T {
+function readCapabilitiesShowBody(response: BitfsPeerCallResponse): BitfsCapabilitiesShowBody {
+  return decodeCapabilitiesShowBody(readPeerCallProtoBytes(response, "capabilities_show"));
+}
+
+function readDomainPricingBody(response: BitfsPeerCallResponse): BitfsDomainPricing {
+  const raw = readPeerCallProtoBytes(response, "domain pricing");
+  let offset = 0;
+  const out: BitfsDomainPricing = {};
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.resolve_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.query_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.register_lock_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.register_submit_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 5:
+        out.set_target_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.register_price_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function readDomainQueryBody(response: BitfsPeerCallResponse): BitfsDomainQueryResponse {
+  const raw = readPeerCallProtoBytes(response, "domain query");
+  let offset = 0;
+  const out: BitfsDomainQueryResponse = {
+    success: false,
+    status: "",
+    name: "",
+    available: false,
+    locked: false,
+    registered: false
+  };
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.success = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.status = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.name = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.available = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 5:
+        out.locked = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.registered = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 7:
+        out.owner_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 8:
+        out.target_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 9:
+        out.expire_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 10:
+        out.lock_expires_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 11:
+        out.register_price_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 12:
+        out.register_submit_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 13:
+        out.register_lock_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 14:
+        out.set_target_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 15:
+        out.resolve_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 16:
+        out.query_fee_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 17:
+        out.charged_amount_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 18:
+        out.updated_txid = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 20:
+        out.error_message = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function readDomainLockBody(response: BitfsPeerCallResponse): BitfsDomainLockResponse {
+  const raw = readPeerCallProtoBytes(response, "domain lock");
+  let offset = 0;
+  const out: BitfsDomainLockResponse = {
+    success: false,
+    status: ""
+  };
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.success = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.status = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.name = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.target_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 5:
+        out.lock_expires_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.charged_amount_satoshi = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 7:
+        out.updated_txid = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 8:
+        out.signed_quote_json = encodeBase64Bytes(readProtoBytes(raw, () => offset, (next) => { offset = next; }));
+        break;
+      case 9:
+        out.error_message = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function readDomainRegisterSubmitBody(response: BitfsPeerCallResponse): BitfsDomainRegisterSubmitResponse {
+  const raw = readPeerCallProtoBytes(response, "domain register_submit");
+  let offset = 0;
+  const out: BitfsDomainRegisterSubmitResponse = {
+    success: false,
+    status: ""
+  };
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.success = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.status = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.name = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.owner_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 5:
+        out.target_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.expire_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 7:
+        out.register_txid = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 8:
+        out.signed_receipt_json = encodeBase64Bytes(readProtoBytes(raw, () => offset, (next) => { offset = next; }));
+        break;
+      case 9:
+        out.error_message = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function readDomainListOwnedBody(response: BitfsPeerCallResponse): BitfsDomainListOwnedResponse {
+  const raw = readPeerCallProtoBytes(response, "domain list_owned");
+  let offset = 0;
+  const out: BitfsDomainListOwnedResponse = {
+    success: false,
+    status: "",
+    owner_pubkey_hex: "",
+    items: [],
+    total: 0
+  };
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.success = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.status = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.owner_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.items.push(decodeOwnedDomainItem(readProtoBytes(raw, () => offset, (next) => { offset = next; })));
+        break;
+      case 5:
+        out.total = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.error_message = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 7:
+        out.queried_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function readDomainResolveBody(response: BitfsPeerCallResponse): BitfsDomainResolveResponse {
+  const raw = readPeerCallProtoBytes(response, "domain resolve");
+  let offset = 0;
+  const out: BitfsDomainResolveResponse = {
+    success: false,
+    status: ""
+  };
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.success = readProtoBool(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.status = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.name = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.owner_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 5:
+        out.target_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.expire_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 10:
+        out.error = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function decodeOwnedDomainItem(raw: Uint8Array): BitfsOwnedDomainItem {
+  let offset = 0;
+  const out: BitfsOwnedDomainItem = {
+    name: "",
+    owner_pubkey_hex: "",
+    target_pubkey_hex: "",
+    expire_at_unix: 0
+  };
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        out.name = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        out.owner_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 3:
+        out.target_pubkey_hex = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 4:
+        out.expire_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 5:
+        out.register_txid = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 6:
+        out.updated_at_unix = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return out;
+}
+
+function readPeerCallProtoBytes(response: BitfsPeerCallResponse, routeName: string): Uint8Array {
   if (!response || response.ok !== true) {
     throw new Error(String(response?.message || response?.code || "peer call failed"));
   }
-  if (!("body_json" in response)) {
-    throw new Error("peer call body_json missing");
+  const bodyBase64 = String(response.body_base64 || "").trim();
+  if (bodyBase64 === "") {
+    throw new Error(`${routeName} body_base64 missing`);
   }
-  return response.body_json as T;
+  return decodeBase64Bytes(bodyBase64);
+}
+
+function decodeCapabilitiesShowBody(raw: Uint8Array): BitfsCapabilitiesShowBody {
+  let offset = 0;
+  let nodePubkeyHex = "";
+  const capabilities: BitfsCapabilityItem[] = [];
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        nodePubkeyHex = readProtoString(raw, () => offset, (next) => { offset = next; }).toLowerCase();
+        break;
+      case 2:
+        capabilities.push(decodeCapabilityItem(readProtoBytes(raw, () => offset, (next) => { offset = next; })));
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return { node_pubkey_hex: nodePubkeyHex, capabilities };
+}
+
+function decodeCapabilityItem(raw: Uint8Array): BitfsCapabilityItem {
+  let offset = 0;
+  let id = "";
+  let version = 0;
+  while (offset < raw.length) {
+    const tag = readProtoVarint(raw, () => offset, (next) => {
+      offset = next;
+    });
+    const fieldNumber = tag >>> 3;
+    const wireType = tag & 0x07;
+    switch (fieldNumber) {
+      case 1:
+        id = readProtoString(raw, () => offset, (next) => { offset = next; });
+        break;
+      case 2:
+        version = readProtoVarint(raw, () => offset, (next) => { offset = next; });
+        break;
+      default:
+        offset = skipProtoField(raw, offset, wireType);
+        break;
+    }
+  }
+  return { id, version };
+}
+
+function decodeBase64Bytes(raw: string): Uint8Array {
+  const bin = window.atob(raw);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) {
+    out[i] = bin.charCodeAt(i);
+  }
+  return out;
+}
+
+function encodeBase64Bytes(raw: Uint8Array): string {
+  let binary = "";
+  for (let i = 0; i < raw.length; i += 1) {
+    binary += String.fromCharCode(raw[i]);
+  }
+  return window.btoa(binary);
+}
+
+function encodeProtoNameRouteReq(name: string): Uint8Array {
+  return concatProtoChunks([
+    encodeProtoStringField(1, name)
+  ]);
+}
+
+function encodeProtoNameTargetRouteReq(name: string, targetPubkeyHex: string): Uint8Array {
+  return concatProtoChunks([
+    encodeProtoStringField(1, name),
+    encodeProtoStringField(2, targetPubkeyHex)
+  ]);
+}
+
+function encodeProtoRegisterSubmitReq(registerTxHex: string): Uint8Array {
+  const txBytes = decodeHexBytes(registerTxHex);
+  if (txBytes.length === 0) {
+    throw new Error("register tx hex missing");
+  }
+  return concatProtoChunks([
+    encodeProtoBytesField(2, txBytes)
+  ]);
+}
+
+function encodeProtoListOwnedReq(ownerPubkeyHex: string): Uint8Array {
+  return concatProtoChunks([
+    encodeProtoStringField(1, ownerPubkeyHex)
+  ]);
+}
+
+function concatProtoChunks(chunks: Uint8Array[]): Uint8Array {
+  let total = 0;
+  for (const chunk of chunks) {
+    total += chunk.length;
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+function encodeProtoStringField(fieldNumber: number, value: string): Uint8Array {
+  return encodeProtoBytesField(fieldNumber, new TextEncoder().encode(value));
+}
+
+function encodeProtoBytesField(fieldNumber: number, value: Uint8Array): Uint8Array {
+  const tag = encodeProtoVarint((fieldNumber << 3) | 2);
+  const size = encodeProtoVarint(value.length);
+  return concatProtoChunks([tag, size, value]);
+}
+
+function encodeProtoVarint(value: number): Uint8Array {
+  const out: number[] = [];
+  let next = Math.max(0, Math.floor(Number(value || 0)));
+  do {
+    let byte = next & 0x7f;
+    next = Math.floor(next / 128);
+    if (next > 0) {
+      byte |= 0x80;
+    }
+    out.push(byte);
+  } while (next > 0);
+  return Uint8Array.from(out);
+}
+
+function decodeHexBytes(raw: string): Uint8Array {
+  const value = String(raw || "").trim().toLowerCase();
+  if (value === "") {
+    return new Uint8Array();
+  }
+  if (!/^[0-9a-f]+$/.test(value) || (value.length % 2) !== 0) {
+    throw new Error("register tx hex invalid");
+  }
+  const out = new Uint8Array(value.length / 2);
+  for (let i = 0; i < value.length; i += 2) {
+    out[i / 2] = Number.parseInt(value.slice(i, i + 2), 16);
+  }
+  return out;
+}
+
+function readProtoString(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): string {
+  return new TextDecoder().decode(readProtoBytes(raw, getOffset, setOffset));
+}
+
+function readProtoBytes(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): Uint8Array {
+  const size = readProtoVarint(raw, getOffset, setOffset);
+  const offset = getOffset();
+  const next = offset + size;
+  if (size < 0 || next > raw.length) {
+    throw new Error("protobuf length-delimited field truncated");
+  }
+  setOffset(next);
+  return raw.subarray(offset, next);
+}
+
+function readProtoBool(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): boolean {
+  return readProtoVarint(raw, getOffset, setOffset) !== 0;
+}
+
+function readProtoVarint(raw: Uint8Array, getOffset: () => number, setOffset: (next: number) => void): number {
+  let offset = getOffset();
+  let result = 0;
+  let shift = 0;
+  while (offset < raw.length && shift < 35) {
+    const value = raw[offset];
+    offset += 1;
+    result |= (value & 0x7f) << shift;
+    if ((value & 0x80) === 0) {
+      setOffset(offset);
+      return result >>> 0;
+    }
+    shift += 7;
+  }
+  throw new Error("protobuf varint truncated");
+}
+
+function skipProtoField(raw: Uint8Array, offset: number, wireType: number): number {
+  switch (wireType) {
+    case 0:
+      return skipProtoVarint(raw, offset);
+    case 1:
+      if (offset + 8 > raw.length) {
+        throw new Error("protobuf fixed64 truncated");
+      }
+      return offset + 8;
+    case 2: {
+      const nextOffsetRef = { value: offset };
+      const size = readProtoVarint(raw, () => nextOffsetRef.value, (next) => {
+        nextOffsetRef.value = next;
+      });
+      const next = nextOffsetRef.value + size;
+      if (size < 0 || next > raw.length) {
+        throw new Error("protobuf length-delimited skip truncated");
+      }
+      return next;
+    }
+    case 5:
+      if (offset + 4 > raw.length) {
+        throw new Error("protobuf fixed32 truncated");
+      }
+      return offset + 4;
+    default:
+      throw new Error(`protobuf wire type unsupported: ${String(wireType)}`);
+  }
+}
+
+function skipProtoVarint(raw: Uint8Array, offset: number): number {
+  let next = offset;
+  while (next < raw.length) {
+    const value = raw[next];
+    next += 1;
+    if ((value & 0x80) === 0) {
+      return next;
+    }
+  }
+  throw new Error("protobuf varint skip truncated");
 }
 
 function formatSat(value: number): string {

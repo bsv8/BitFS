@@ -10,6 +10,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -204,13 +205,17 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 		if receipt.SequenceNumber != chargeCtx.NextSeq || receipt.ServerAmount != chargeCtx.NextServerAmount {
 			return ncall.CallResp{}, fmt.Errorf("payment receipt state mismatch")
 		}
+		resultPayloadBytes, err := expectedPeerCallResultPayload(req.Route, out.Body)
+		if err != nil {
+			return ncall.CallResp{}, err
+		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, peerID, chargeCtx.Session, receipt.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        strings.TrimSpace(req.Route),
 			SpendTxID:          chargeCtx.Session.SpendTxID,
 			SequenceNumber:     chargeCtx.NextSeq,
 			AcceptedChargeHash: chargeCtx.AcceptedChargeHash,
 			ResultCode:         strings.TrimSpace(out.Code),
-			ResultPayloadBytes: append([]byte(nil), out.Body...),
+			ResultPayloadBytes: resultPayloadBytes,
 		}, receipt.ServiceReceipt); err != nil {
 			return ncall.CallResp{}, err
 		}
@@ -242,6 +247,37 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 		})
 	}
 	return out, nil
+}
+
+func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
+	switch strings.TrimSpace(route) {
+	case domainmodule.RouteDomainV1Resolve:
+		var resp domainmodule.ResolveNamePaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode domain resolve body failed: %w", err)
+		}
+		return domainmodule.MarshalResolveNameServicePayload(resp)
+	case domainmodule.RouteDomainV1Query:
+		var resp domainmodule.QueryNamePaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode domain query body failed: %w", err)
+		}
+		return domainmodule.MarshalQueryNameServicePayload(resp)
+	case domainmodule.RouteDomainV1Lock:
+		var resp domainmodule.RegisterLockPaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode domain register lock body failed: %w", err)
+		}
+		return domainmodule.MarshalRegisterLockServicePayload(resp)
+	case domainmodule.RouteDomainV1SetTarget:
+		var resp domainmodule.SetTargetPaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode domain set target body failed: %w", err)
+		}
+		return domainmodule.MarshalSetTargetServicePayload(resp)
+	default:
+		return append([]byte(nil), body...), nil
+	}
 }
 
 func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, peerID peer.ID, paymentDomain string, charge uint64, option *ncall.PaymentOption) (poolcore.InfoResp, peer.AddrInfo, error) {

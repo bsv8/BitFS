@@ -8,8 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
+	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 )
 
 func TestRuntimeListenOverridesApply(t *testing.T) {
@@ -189,5 +193,56 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 	}
 	if floorPrice != systemHomepageFloorPriceSatPer64K {
 		t.Fatalf("seed floor price mismatch: got=%d want=%d", floorPrice, systemHomepageFloorPriceSatPer64K)
+	}
+}
+
+func TestResolveChainAccessState_DefaultsToEmbeddedProxy(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{}
+	d.cfg.BSV.Network = "test"
+
+	state := d.resolveChainAccessState()
+	if got, want := state.Mode, "proxy"; got != want {
+		t.Fatalf("mode=%q, want %q", got, want)
+	}
+	if !state.WOCProxyEnabled {
+		t.Fatal("expected embedded proxy to be enabled")
+	}
+	if got, want := state.WOCProxyAddr, managedWOCProxyListenAddr; got != want {
+		t.Fatalf("woc proxy addr=%q, want %q", got, want)
+	}
+	if got, want := state.BaseURL, wocproxy.BaseURLForNetwork("http://"+managedWOCProxyListenAddr, "test"); got != want {
+		t.Fatalf("base_url=%q, want %q", got, want)
+	}
+	if got, want := state.MinInterval, time.Second; got != want {
+		t.Fatalf("min_interval=%s, want %s", got, want)
+	}
+}
+
+func TestResolveChainAccessState_UsesInjectedEnvBaseURL(t *testing.T) {
+	t.Setenv(chainbridge.FeePoolChainBaseURLEnv, " http://127.0.0.1:33333/v1/bsv/test/ ")
+
+	d := &managedDaemon{}
+	d.cfg.BSV.Network = "test"
+
+	state := d.resolveChainAccessState()
+	if got, want := state.Mode, "injected_env"; got != want {
+		t.Fatalf("mode=%q, want %q", got, want)
+	}
+	if state.WOCProxyEnabled {
+		t.Fatal("expected embedded proxy to be disabled when env is injected")
+	}
+	if got, want := state.BaseURL, "http://127.0.0.1:33333/v1/bsv/test"; got != want {
+		t.Fatalf("base_url=%q, want %q", got, want)
+	}
+	if got, want := state.WOCProxyAddr, ""; got != want {
+		t.Fatalf("woc_proxy_addr=%q, want empty", got)
+	}
+	if state.RouteAuth != (chainbridge.AuthConfig{}) {
+		t.Fatalf("route_auth=%+v, want empty", state.RouteAuth)
+	}
+	if state.WalletAuth != (whatsonchain.AuthConfig{}) {
+		t.Fatalf("wallet_auth=%+v, want empty", state.WalletAuth)
 	}
 }

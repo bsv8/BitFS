@@ -293,7 +293,7 @@ func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomain
 
 	queryOut, err := triggerDomainQueryName(ctx, rt, resolverPubkeyHex, resolverPeerID, name)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("domain query step failed: %w", err)
 	}
 	queryResp := queryOut.Response
 	out.Name = name
@@ -324,9 +324,9 @@ func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomain
 		return out, nil
 	}
 
-	lockResp, err := triggerDomainRegisterLock(ctx, rt, resolverPeerID, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
+	lockResp, err := triggerDomainRegisterLock(ctx, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("domain register lock step failed: %w", err)
 	}
 	out.RegisterLockChargedSatoshi = lockResp.ChargedAmount
 	out.LockExpiresAtUnix = lockResp.LockExpiresAtUnix
@@ -388,7 +388,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 
 	queryOut, err := triggerDomainQueryName(ctx, rt, resolverPubkeyHex, resolverPeerID, name)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("domain query step failed: %w", err)
 	}
 	queryResp := queryOut.Response
 	out.Name = name
@@ -419,9 +419,9 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 		return out, nil
 	}
 
-	lockResp, err := triggerDomainRegisterLock(ctx, rt, resolverPeerID, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
+	lockResp, err := triggerDomainRegisterLock(ctx, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("domain register lock step failed: %w", err)
 	}
 	out.RegisterLockChargedSatoshi = lockResp.ChargedAmount
 	out.LockExpiresAtUnix = lockResp.LockExpiresAtUnix
@@ -479,7 +479,7 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p Tri
 	if strings.TrimSpace(rt.runIn.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
-	_, resolverPeerID, err := ensureDomainPeerConnected(ctx, rt, p.ResolverPubkeyHex, p.ResolverAddr)
+	resolverPubkeyHex, _, err := ensureDomainPeerConnected(ctx, rt, p.ResolverPubkeyHex, p.ResolverAddr)
 	if err != nil {
 		return out, err
 	}
@@ -491,9 +491,9 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p Tri
 	if err != nil {
 		return out, fmt.Errorf("register_tx_hex invalid: %w", err)
 	}
-	submitResp, err := triggerDomainRegisterSubmit(ctx, rt, resolverPeerID, registerTxRaw)
+	submitResp, err := triggerDomainRegisterSubmit(ctx, rt, resolverPubkeyHex, registerTxRaw)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("domain register submit step failed: %w", err)
 	}
 	out.Code = strings.ToUpper(strings.TrimSpace(submitResp.Status))
 	out.Message = strings.TrimSpace(submitResp.Error)
@@ -551,7 +551,7 @@ func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSet
 
 	queryOut, err := triggerDomainQueryName(ctx, rt, resolverPubkeyHex, resolverPeerID, name)
 	if err != nil {
-		return out, err
+		return out, fmt.Errorf("domain query step failed: %w", err)
 	}
 	queryResp := queryOut.Response
 	out.Name = name
@@ -576,7 +576,7 @@ func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSet
 		return out, nil
 	}
 
-	resp, err := triggerDomainSetTarget(ctx, rt, resolverPeerID, name, targetPubkeyHex, queryResp.SetTargetFeeSatoshi)
+	resp, err := triggerDomainSetTarget(ctx, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.SetTargetFeeSatoshi)
 	if err != nil {
 		return out, err
 	}
@@ -661,7 +661,7 @@ func triggerDomainQueryName(ctx context.Context, rt *Runtime, resolverPubkeyHex 
 	return domainQueryResult{ResolverPeerID: resolverPeerID, Response: resp}, nil
 }
 
-func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPeerID peer.ID, name string, targetPubkeyHex string, charge uint64) (domainmodule.RegisterLockPaidResp, error) {
+func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.RegisterLockPaidResp, error) {
 	payload, err := oldproto.Marshal(&domainmodule.NameTargetRouteReq{
 		Name:            name,
 		TargetPubkeyHex: targetPubkeyHex,
@@ -670,7 +670,7 @@ func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPeerID 
 		return domainmodule.RegisterLockPaidResp{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
-		To:          resolverPeerID.String(),
+		To:          strings.TrimSpace(resolverPubkeyHex),
 		Route:       domainmodule.RouteDomainV1Lock,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
@@ -688,13 +688,13 @@ func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPeerID 
 	return resp, nil
 }
 
-func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPeerID peer.ID, registerTx []byte) (domainmodule.RegisterSubmitResp, error) {
+func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPubkeyHex string, registerTx []byte) (domainmodule.RegisterSubmitResp, error) {
 	payload, err := oldproto.Marshal(&domainmodule.RegisterSubmitReq{RegisterTx: append([]byte(nil), registerTx...)})
 	if err != nil {
 		return domainmodule.RegisterSubmitResp{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
-		To:          resolverPeerID.String(),
+		To:          strings.TrimSpace(resolverPubkeyHex),
 		Route:       domainmodule.RouteDomainV1RegisterSubmit,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
@@ -712,7 +712,7 @@ func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPeerI
 	return routeResp, nil
 }
 
-func triggerDomainSetTarget(ctx context.Context, rt *Runtime, resolverPeerID peer.ID, name string, targetPubkeyHex string, charge uint64) (domainmodule.SetTargetPaidResp, error) {
+func triggerDomainSetTarget(ctx context.Context, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.SetTargetPaidResp, error) {
 	payload, err := oldproto.Marshal(&domainmodule.NameTargetRouteReq{
 		Name:            name,
 		TargetPubkeyHex: targetPubkeyHex,
@@ -721,7 +721,7 @@ func triggerDomainSetTarget(ctx context.Context, rt *Runtime, resolverPeerID pee
 		return domainmodule.SetTargetPaidResp{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
-		To:          resolverPeerID.String(),
+		To:          strings.TrimSpace(resolverPubkeyHex),
 		Route:       domainmodule.RouteDomainV1SetTarget,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,

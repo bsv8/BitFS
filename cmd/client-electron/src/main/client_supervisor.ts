@@ -731,6 +731,9 @@ function resolveManagedClientBinaryPath(appRootDir: string, packaged: boolean): 
   if (override) {
     return path.resolve(override);
   }
+  if (parseManagedBoolEnv(process.env.BITFS_ELECTRON_E2E)) {
+    throw new Error("BITFS_CLIENT_BINARY is required in Electron e2e");
+  }
   const platformKey = `${process.platform}-${process.arch}`;
   const binaryName = process.platform === "win32"
     ? "bitfs-client-electron-backend.exe"
@@ -785,6 +788,11 @@ function buildManagedChildEnv(): NodeJS.ProcessEnv {
 function isManagedControlLine(line: string): boolean {
   const trimmed = String(line || "").trim();
   return trimmed.startsWith(BOOTSTRAP_PREFIX) || trimmed.startsWith(MANAGED_EVENT_PREFIX);
+}
+
+function parseManagedBoolEnv(raw: string | undefined): boolean {
+  const value = String(raw || "").trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
 function normalizeManagedPhase(value: unknown, fallback: ManagedClientPhase): ManagedClientPhase {

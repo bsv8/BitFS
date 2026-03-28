@@ -676,6 +676,19 @@ func (d *managedDaemon) resolveChainAccessState() chainAccessState {
 			Value: auth.Value,
 		},
 	}
+	// 设计说明：
+	// - e2e 协调层会统一注入 `BSV_CHAIN_API_URL`，要求所有业务进程共享同一条受保护链路；
+	// - 桌面独立运行时再退回内嵌 WOC proxy，避免把 e2e 专属端口 guard 暴露给真实产品环境；
+	// - 这里必须优先吃环境注入，否则 Electron e2e 会偷偷绕开 shared guard，重新各自起 proxy。
+	if injected := strings.TrimRight(strings.TrimSpace(os.Getenv(chainbridge.FeePoolChainBaseURLEnv)), "/"); injected != "" {
+		state.Mode = "injected_env"
+		state.BaseURL = injected
+		state.RouteAuth = chainbridge.AuthConfig{}
+		state.WalletAuth = whatsonchain.AuthConfig{}
+		state.WOCProxyEnabled = false
+		state.WOCProxyAddr = ""
+		return state
+	}
 	if strings.TrimSpace(auth.Value) != "" {
 		state.Mode = "direct_woc"
 		state.BaseURL = wocproxy.BaseURLForNetwork(state.UpstreamRootURL, d.currentNetworkName())
