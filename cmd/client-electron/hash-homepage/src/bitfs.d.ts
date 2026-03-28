@@ -53,6 +53,222 @@ type BitfsWalletHistoryQuery = {
   direction?: BitfsWalletHistoryDirection;
 };
 
+type BitfsWalletTokenStandard = "bsv20" | "bsv21";
+
+type BitfsWalletTokenBalanceItem = {
+  token_standard: BitfsWalletTokenStandard;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  output_count: number;
+  source_name: string;
+  updated_at_unix: number;
+};
+
+type BitfsWalletTokenBalanceList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsWalletTokenBalanceItem[];
+};
+
+type BitfsWalletTokenOutputItem = {
+  utxo_id: string;
+  wallet_address: string;
+  txid: string;
+  vout: number;
+  value_satoshi: number;
+  allocation_class: string;
+  allocation_reason: string;
+  token_standard: BitfsWalletTokenStandard;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  source_name: string;
+  updated_at_unix: number;
+  payload: unknown;
+};
+
+type BitfsWalletTokenOutputList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsWalletTokenOutputItem[];
+};
+
+type BitfsWalletAssetEventItem = {
+  id: number;
+  created_at_unix: number;
+  utxo_id: string;
+  wallet_address: string;
+  asset_group: string;
+  asset_standard: string;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  source_name: string;
+  event_type: string;
+  ref_txid: string;
+  ref_business_id: string;
+  note: string;
+  payload: unknown;
+};
+
+type BitfsWalletAssetEventList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsWalletAssetEventItem[];
+};
+
+type BitfsWalletAssetPreviewChange = {
+  owner_scope: string;
+  asset_group: string;
+  asset_standard: string;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  direction: string;
+  note: string;
+};
+
+type BitfsWalletAssetPreview = {
+  action: string;
+  feasible: boolean;
+  can_sign: boolean;
+  summary: string;
+  detail_lines: string[];
+  warning_level: string;
+  estimated_network_fee_bsv_sat: number;
+  fee_funding_target_bsv_sat: number;
+  selected_asset_utxo_ids: string[];
+  selected_fee_utxo_ids: string[];
+  txid: string;
+  preview_hash: string;
+  changes: BitfsWalletAssetPreviewChange[];
+};
+
+type BitfsWalletAssetPreviewResponse = {
+  ok: boolean;
+  code: string;
+  message: string;
+  preview: BitfsWalletAssetPreview;
+};
+
+type BitfsWalletAssetSignResponse = {
+  ok: boolean;
+  code: string;
+  message: string;
+  preview: BitfsWalletAssetPreview;
+  signed_tx_hex: string;
+  txid: string;
+};
+
+type BitfsWalletAssetSubmitResponse = {
+  ok: boolean;
+  code: string;
+  message: string;
+  txid: string;
+};
+
+type BitfsWalletTokenBalanceQuery = {
+  limit?: number;
+  offset?: number;
+  standard?: BitfsWalletTokenStandard;
+};
+
+type BitfsWalletTokenOutputQuery = {
+  limit?: number;
+  offset?: number;
+  standard?: BitfsWalletTokenStandard;
+  assetKey?: string;
+  asset_key?: string;
+};
+
+type BitfsWalletAssetEventQuery = {
+  limit?: number;
+  offset?: number;
+  standard?: BitfsWalletTokenStandard;
+  utxoID?: string;
+  utxo_id?: string;
+  assetKey?: string;
+  asset_key?: string;
+};
+
+type BitfsWalletTokenSendPreviewRequest = {
+  tokenStandard?: BitfsWalletTokenStandard;
+  token_standard?: BitfsWalletTokenStandard;
+  assetKey?: string;
+  asset_key?: string;
+  amountText?: string;
+  amount_text?: string;
+  toAddress?: string;
+  to_address?: string;
+};
+
+type BitfsWalletTokenSendSignRequest = BitfsWalletTokenSendPreviewRequest & {
+  expectedPreviewHash?: string;
+  expected_preview_hash?: string;
+};
+
+type BitfsWalletOrdinalItem = {
+  utxo_id: string;
+  wallet_address: string;
+  txid: string;
+  vout: number;
+  value_satoshi: number;
+  allocation_class: string;
+  allocation_reason: string;
+  asset_standard: "ordinal";
+  asset_key: string;
+  asset_symbol: string;
+  source_name: string;
+  updated_at_unix: number;
+  payload: unknown;
+};
+
+type BitfsWalletOrdinalList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsWalletOrdinalItem[];
+};
+
+type BitfsWalletOrdinalQuery = {
+  limit?: number;
+  offset?: number;
+};
+
+type BitfsWalletOrdinalDetailQuery = {
+  utxoID?: string;
+  utxo_id?: string;
+  assetKey?: string;
+  asset_key?: string;
+};
+
+type BitfsWalletOrdinalTransferPreviewRequest = {
+  utxoID?: string;
+  utxo_id?: string;
+  assetKey?: string;
+  asset_key?: string;
+  toAddress?: string;
+  to_address?: string;
+};
+
+type BitfsWalletOrdinalTransferSignRequest = BitfsWalletOrdinalTransferPreviewRequest & {
+  expectedPreviewHash?: string;
+  expected_preview_hash?: string;
+};
+
+type BitfsWalletAssetSubmitRequest = {
+  signedTxHex?: string;
+  signed_tx_hex?: string;
+};
+
 type BitfsWalletBusinessRequest = {
   signerPubkeyHex?: string;
   signer_pubkey_hex?: string;
@@ -255,6 +471,35 @@ type BitfsBridge = {
     signBusinessRequest: (request: BitfsWalletBusinessRequest) => Promise<BitfsWalletBusinessSignResponse>;
     history: {
       list: (query?: BitfsWalletHistoryQuery) => Promise<BitfsWalletHistoryList>;
+    };
+    tokens: {
+      balances: {
+        list: (query?: BitfsWalletTokenBalanceQuery) => Promise<BitfsWalletTokenBalanceList>;
+      };
+      outputs: {
+        list: (query?: BitfsWalletTokenOutputQuery) => Promise<BitfsWalletTokenOutputList>;
+        get: (query: { standard?: BitfsWalletTokenStandard; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }) => Promise<BitfsWalletTokenOutputItem>;
+        events: {
+          list: (query?: BitfsWalletAssetEventQuery) => Promise<BitfsWalletAssetEventList>;
+        };
+      };
+      send: {
+        preview: (input: BitfsWalletTokenSendPreviewRequest) => Promise<BitfsWalletAssetPreviewResponse>;
+        sign: (input: BitfsWalletTokenSendSignRequest) => Promise<BitfsWalletAssetSignResponse>;
+        submit: (input: BitfsWalletAssetSubmitRequest) => Promise<BitfsWalletAssetSubmitResponse>;
+      };
+    };
+    ordinals: {
+      list: (query?: BitfsWalletOrdinalQuery) => Promise<BitfsWalletOrdinalList>;
+      get: (query: BitfsWalletOrdinalDetailQuery) => Promise<BitfsWalletOrdinalItem>;
+      events: {
+        list: (query?: Omit<BitfsWalletAssetEventQuery, "standard">) => Promise<BitfsWalletAssetEventList>;
+      };
+      transfer: {
+        preview: (input: BitfsWalletOrdinalTransferPreviewRequest) => Promise<BitfsWalletAssetPreviewResponse>;
+        sign: (input: BitfsWalletOrdinalTransferSignRequest) => Promise<BitfsWalletAssetSignResponse>;
+        submit: (input: BitfsWalletAssetSubmitRequest) => Promise<BitfsWalletAssetSubmitResponse>;
+      };
     };
   };
   events: {

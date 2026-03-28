@@ -65,3 +65,27 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyConfigDefaults_ExternalAPIProviderDefaultsAndMigration(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.WOCAPIKey = "legacy-woc-key"
+
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	if got, want := cfg.ExternalAPI.WOC.APIKey, "legacy-woc-key"; got != want {
+		t.Fatalf("external_api.woc.api_key=%q, want %q", got, want)
+	}
+	if got := cfg.WOCAPIKey; got != "" {
+		t.Fatalf("legacy woc_api_key should be cleared after migration, got=%q", got)
+	}
+	if got, want := cfg.ExternalAPI.WOC.MinIntervalMS, uint32(1000); got != want {
+		t.Fatalf("external_api.woc.min_interval_ms=%d, want %d", got, want)
+	}
+	if got, want := cfg.ExternalAPI.AssetIndex.MinIntervalMS, uint32(250); got != want {
+		t.Fatalf("external_api.asset_index.min_interval_ms=%d, want %d", got, want)
+	}
+}

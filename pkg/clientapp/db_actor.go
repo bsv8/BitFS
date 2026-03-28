@@ -28,11 +28,18 @@ func runtimeDBValue[T any](rt *Runtime, ctx context.Context, fn func(*sql.DB) (T
 }
 
 func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*sql.DB) (T, error)) (T, error) {
-	if s == nil || s.dbActor == nil {
+	if s == nil {
 		var zero T
-		return zero, fmt.Errorf("http db actor is nil")
+		return zero, fmt.Errorf("http api server is nil")
 	}
-	return sqliteactor.DoValue(ctx, s.dbActor, fn)
+	if s.dbActor != nil {
+		return sqliteactor.DoValue(ctx, s.dbActor, fn)
+	}
+	if s.db != nil {
+		return fn(s.db)
+	}
+	var zero T
+	return zero, fmt.Errorf("http db is nil")
 }
 
 func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(*sql.DB) error) error {

@@ -140,6 +140,151 @@ export type BitfsPublicWalletHistoryList = {
   items: BitfsPublicWalletHistoryItem[];
 };
 
+export type BitfsPublicWalletTokenStandard = "bsv20" | "bsv21";
+
+export type BitfsPublicWalletTokenBalanceItem = {
+  token_standard: BitfsPublicWalletTokenStandard;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  output_count: number;
+  source_name: string;
+  updated_at_unix: number;
+};
+
+export type BitfsPublicWalletTokenBalanceList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsPublicWalletTokenBalanceItem[];
+};
+
+export type BitfsPublicWalletTokenOutputItem = {
+  utxo_id: string;
+  wallet_address: string;
+  txid: string;
+  vout: number;
+  value_satoshi: number;
+  allocation_class: string;
+  allocation_reason: string;
+  token_standard: BitfsPublicWalletTokenStandard;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  source_name: string;
+  updated_at_unix: number;
+  payload: unknown;
+};
+
+export type BitfsPublicWalletTokenOutputList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsPublicWalletTokenOutputItem[];
+};
+
+export type BitfsPublicWalletAssetEventItem = {
+  id: number;
+  created_at_unix: number;
+  utxo_id: string;
+  wallet_address: string;
+  asset_group: string;
+  asset_standard: string;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  source_name: string;
+  event_type: string;
+  ref_txid: string;
+  ref_business_id: string;
+  note: string;
+  payload: unknown;
+};
+
+export type BitfsPublicWalletAssetEventList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsPublicWalletAssetEventItem[];
+};
+
+export type BitfsPublicWalletAssetPreviewChange = {
+  owner_scope: string;
+  asset_group: string;
+  asset_standard: string;
+  asset_key: string;
+  asset_symbol: string;
+  quantity_text: string;
+  direction: string;
+  note: string;
+};
+
+export type BitfsPublicWalletAssetPreview = {
+  action: string;
+  feasible: boolean;
+  can_sign: boolean;
+  summary: string;
+  detail_lines: string[];
+  warning_level: string;
+  estimated_network_fee_bsv_sat: number;
+  fee_funding_target_bsv_sat: number;
+  selected_asset_utxo_ids: string[];
+  selected_fee_utxo_ids: string[];
+  txid: string;
+  preview_hash: string;
+  changes: BitfsPublicWalletAssetPreviewChange[];
+};
+
+export type BitfsPublicWalletAssetPreviewResponse = {
+  ok: boolean;
+  code: string;
+  message: string;
+  preview: BitfsPublicWalletAssetPreview;
+};
+
+export type BitfsPublicWalletAssetSignResponse = {
+  ok: boolean;
+  code: string;
+  message: string;
+  preview: BitfsPublicWalletAssetPreview;
+  signed_tx_hex: string;
+  txid: string;
+};
+
+export type BitfsPublicWalletAssetSubmitResponse = {
+  ok: boolean;
+  code: string;
+  message: string;
+  txid: string;
+};
+
+export type BitfsPublicWalletOrdinalItem = {
+  utxo_id: string;
+  wallet_address: string;
+  txid: string;
+  vout: number;
+  value_satoshi: number;
+  allocation_class: string;
+  allocation_reason: string;
+  asset_standard: "ordinal";
+  asset_key: string;
+  asset_symbol: string;
+  source_name: string;
+  updated_at_unix: number;
+  payload: unknown;
+};
+
+export type BitfsPublicWalletOrdinalList = {
+  wallet_address: string;
+  total: number;
+  limit: number;
+  offset: number;
+  items: BitfsPublicWalletOrdinalItem[];
+};
+
 export type ShellErrorSource = "main-process" | "shell-renderer" | "viewer" | "settings";
 
 export type ShellErrorReport = {

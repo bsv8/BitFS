@@ -455,6 +455,128 @@
             direction: String(payload.direction || "")
           });
         }
+      },
+      tokens: {
+        balances: {
+          async list(query) {
+            const payload = query && typeof query === "object" ? query : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-balances", {
+              limit: Number(payload.limit || 0),
+              offset: Number(payload.offset || 0),
+              standard: String(payload.standard || "")
+            });
+          }
+        },
+        outputs: {
+          async list(query) {
+            const payload = query && typeof query === "object" ? query : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-outputs", {
+              limit: Number(payload.limit || 0),
+              offset: Number(payload.offset || 0),
+              standard: String(payload.standard || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || "")
+            });
+          },
+          async get(query) {
+            const payload = query && typeof query === "object" ? query : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-output-detail", {
+              standard: String(payload.standard || ""),
+              utxoID: String(payload.utxoID || payload.utxo_id || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || "")
+            });
+          },
+          events: {
+            async list(query) {
+              const payload = query && typeof query === "object" ? query : {};
+              return ipcRenderer.invoke("bitfs-viewer:wallet-token-events", {
+                limit: Number(payload.limit || 0),
+                offset: Number(payload.offset || 0),
+                standard: String(payload.standard || ""),
+                utxoID: String(payload.utxoID || payload.utxo_id || ""),
+                assetKey: String(payload.assetKey || payload.asset_key || "")
+              });
+            }
+          }
+        },
+        send: {
+          async preview(input) {
+            const payload = input && typeof input === "object" ? input : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-send-preview", {
+              tokenStandard: String(payload.tokenStandard || payload.token_standard || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || ""),
+              amountText: String(payload.amountText || payload.amount_text || ""),
+              toAddress: String(payload.toAddress || payload.to_address || "")
+            });
+          },
+          async sign(input) {
+            const payload = input && typeof input === "object" ? input : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-send-sign", {
+              tokenStandard: String(payload.tokenStandard || payload.token_standard || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || ""),
+              amountText: String(payload.amountText || payload.amount_text || ""),
+              toAddress: String(payload.toAddress || payload.to_address || ""),
+              expectedPreviewHash: String(payload.expectedPreviewHash || payload.expected_preview_hash || "")
+            });
+          },
+          async submit(input) {
+            const payload = input && typeof input === "object" ? input : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-send-submit", {
+              signedTxHex: String(payload.signedTxHex || payload.signed_tx_hex || "")
+            });
+          }
+        }
+      },
+      ordinals: {
+        async list(query) {
+          const payload = query && typeof query === "object" ? query : {};
+          return ipcRenderer.invoke("bitfs-viewer:wallet-ordinals", {
+            limit: Number(payload.limit || 0),
+            offset: Number(payload.offset || 0)
+          });
+        },
+        async get(query) {
+          const payload = query && typeof query === "object" ? query : {};
+          return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-detail", {
+            utxoID: String(payload.utxoID || payload.utxo_id || ""),
+            assetKey: String(payload.assetKey || payload.asset_key || "")
+          });
+        },
+        events: {
+          async list(query) {
+            const payload = query && typeof query === "object" ? query : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-events", {
+              limit: Number(payload.limit || 0),
+              offset: Number(payload.offset || 0),
+              utxoID: String(payload.utxoID || payload.utxo_id || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || "")
+            });
+          }
+        },
+        transfer: {
+          async preview(input) {
+            const payload = input && typeof input === "object" ? input : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-transfer-preview", {
+              utxoID: String(payload.utxoID || payload.utxo_id || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || ""),
+              toAddress: String(payload.toAddress || payload.to_address || "")
+            });
+          },
+          async sign(input) {
+            const payload = input && typeof input === "object" ? input : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-transfer-sign", {
+              utxoID: String(payload.utxoID || payload.utxo_id || ""),
+              assetKey: String(payload.assetKey || payload.asset_key || ""),
+              toAddress: String(payload.toAddress || payload.to_address || ""),
+              expectedPreviewHash: String(payload.expectedPreviewHash || payload.expected_preview_hash || "")
+            });
+          },
+          async submit(input) {
+            const payload = input && typeof input === "object" ? input : {};
+            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-transfer-submit", {
+              signedTxHex: String(payload.signedTxHex || payload.signed_tx_hex || "")
+            });
+          }
+        }
       }
     },
     live: {

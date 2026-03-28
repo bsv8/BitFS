@@ -246,3 +246,23 @@ func TestResolveChainAccessState_UsesInjectedEnvBaseURL(t *testing.T) {
 		t.Fatalf("wallet_auth=%+v, want empty", state.WalletAuth)
 	}
 }
+
+func TestResolveChainAccessState_UsesPerProviderWOCSettings(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{}
+	d.cfg.BSV.Network = "test"
+	d.cfg.ExternalAPI.WOC.APIKey = "provider-key"
+	d.cfg.ExternalAPI.WOC.MinIntervalMS = 2500
+
+	state := d.resolveChainAccessState()
+	if got, want := state.Mode, "direct_woc"; got != want {
+		t.Fatalf("mode=%q, want %q", got, want)
+	}
+	if got, want := state.RouteAuth.Value, "provider-key"; got != want {
+		t.Fatalf("route_auth.value=%q, want %q", got, want)
+	}
+	if got, want := state.MinInterval, 2500*time.Millisecond; got != want {
+		t.Fatalf("min_interval=%s, want %s", got, want)
+	}
+}

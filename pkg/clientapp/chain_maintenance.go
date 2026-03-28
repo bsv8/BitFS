@@ -73,19 +73,25 @@ type chainTipState struct {
 }
 
 type walletUTXOSyncState struct {
-	WalletID         string `json:"wallet_id"`
-	Address          string `json:"address"`
-	UTXOCount        int    `json:"utxo_count"`
-	BalanceSatoshi   uint64 `json:"balance_satoshi"`
-	UpdatedAtUnix    int64  `json:"updated_at_unix"`
-	LastError        string `json:"last_error"`
-	LastUpdatedBy    string `json:"last_updated_by"`
-	LastTrigger      string `json:"last_trigger"`
-	LastDurationMS   int64  `json:"last_duration_ms"`
-	LastSyncRoundID  string `json:"last_sync_round_id"`
-	LastFailedStep   string `json:"last_failed_step"`
-	LastUpstreamPath string `json:"last_upstream_path"`
-	LastHTTPStatus   int    `json:"last_http_status"`
+	WalletID                string `json:"wallet_id"`
+	Address                 string `json:"address"`
+	UTXOCount               int    `json:"utxo_count"`
+	BalanceSatoshi          uint64 `json:"balance_satoshi"`
+	PlainBSVUTXOCount       int    `json:"plain_bsv_utxo_count"`
+	PlainBSVBalanceSatoshi  uint64 `json:"plain_bsv_balance_satoshi"`
+	ProtectedUTXOCount      int    `json:"protected_utxo_count"`
+	ProtectedBalanceSatoshi uint64 `json:"protected_balance_satoshi"`
+	UnknownUTXOCount        int    `json:"unknown_utxo_count"`
+	UnknownBalanceSatoshi   uint64 `json:"unknown_balance_satoshi"`
+	UpdatedAtUnix           int64  `json:"updated_at_unix"`
+	LastError               string `json:"last_error"`
+	LastUpdatedBy           string `json:"last_updated_by"`
+	LastTrigger             string `json:"last_trigger"`
+	LastDurationMS          int64  `json:"last_duration_ms"`
+	LastSyncRoundID         string `json:"last_sync_round_id"`
+	LastFailedStep          string `json:"last_failed_step"`
+	LastUpstreamPath        string `json:"last_upstream_path"`
+	LastHTTPStatus          int    `json:"last_http_status"`
 }
 
 type walletUTXOHistoryCursor struct {
@@ -97,6 +103,17 @@ type walletUTXOHistoryCursor struct {
 	RoundTipHeight      int64  `json:"round_tip_height"`
 	UpdatedAtUnix       int64  `json:"updated_at_unix"`
 	LastError           string `json:"last_error"`
+}
+
+type walletUTXOAggregateStats struct {
+	UTXOCount               int
+	BalanceSatoshi          uint64
+	PlainBSVUTXOCount       int
+	PlainBSVBalanceSatoshi  uint64
+	ProtectedUTXOCount      int
+	ProtectedBalanceSatoshi uint64
+	UnknownUTXOCount        int
+	UnknownBalanceSatoshi   uint64
 }
 
 type chainWorkerLogEntry struct {
@@ -626,16 +643,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	cursor.WalletID = walletIDByAddress(addr)
 	cursor.Address = addr
-	if cursor.AnchorHeight <= 0 {
-		cursor.AnchorHeight = snapshot.OldestConfirmedHeight
-	}
-	if cursor.NextConfirmedHeight <= 0 {
-		if cursor.AnchorHeight > 0 {
-			cursor.NextConfirmedHeight = cursor.AnchorHeight
-		} else {
-			cursor.NextConfirmedHeight = int64(tip) + 1
-		}
-	}
+	cursor = alignWalletUTXOHistoryCursor(cursor, snapshot.OldestConfirmedHeight, tip)
 	stepStart = time.Now()
 	history, nextCursor, err := collectConfirmedHistoryRange(ctx, chain, addr, cursor, tip, meta)
 	if err != nil {
@@ -696,6 +704,16 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"step_duration_ms":  time.Since(stepStart).Milliseconds(),
 		"total_duration_ms": durationMS,
 	})
+	stepStart = time.Now()
+	if err := refreshWalletAssetProjection(ctx, m.rt, addr, task.TriggerSource); err != nil {
+		logWalletSyncStepError(meta, "refresh_wallet_asset_projection", err, map[string]any{
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+	} else {
+		logWalletSyncStepInfo(meta, "refresh_wallet_asset_projection", map[string]any{
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+	}
 	select {
 	case <-ctx.Done():
 		return map[string]any{
@@ -819,9 +837,9 @@ func loadWalletUTXOSyncState(db *sql.DB, address string) (walletUTXOSyncState, e
 	}
 	var s walletUTXOSyncState
 	err := db.QueryRow(
-		`SELECT wallet_id,address,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status FROM wallet_utxo_sync_state WHERE address=?`,
+		`SELECT wallet_id,address,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status FROM wallet_utxo_sync_state WHERE address=?`,
 		address,
-	).Scan(&s.WalletID, &s.Address, &s.UTXOCount, &s.BalanceSatoshi, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS, &s.LastSyncRoundID, &s.LastFailedStep, &s.LastUpstreamPath, &s.LastHTTPStatus)
+	).Scan(&s.WalletID, &s.Address, &s.UTXOCount, &s.BalanceSatoshi, &s.PlainBSVUTXOCount, &s.PlainBSVBalanceSatoshi, &s.ProtectedUTXOCount, &s.ProtectedBalanceSatoshi, &s.UnknownUTXOCount, &s.UnknownBalanceSatoshi, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS, &s.LastSyncRoundID, &s.LastFailedStep, &s.LastUpstreamPath, &s.LastHTTPStatus)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return walletUTXOSyncState{}, nil
@@ -854,35 +872,67 @@ func loadWalletUTXOHistoryCursor(db *sql.DB, address string) (walletUTXOHistoryC
 	return s, nil
 }
 
-func loadWalletUTXOAggregate(db *sql.DB, address string) (int, uint64, error) {
+func loadWalletUTXOAggregate(db *sql.DB, address string) (walletUTXOAggregateStats, error) {
 	if db == nil {
-		return 0, 0, fmt.Errorf("db is nil")
+		return walletUTXOAggregateStats{}, fmt.Errorf("db is nil")
 	}
 	address = strings.TrimSpace(address)
 	if address == "" {
-		return 0, 0, fmt.Errorf("wallet address is empty")
+		return walletUTXOAggregateStats{}, fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	var count int
-	var balance uint64
-	if err := db.QueryRow(
-		`SELECT COUNT(1),COALESCE(SUM(value_satoshi),0) FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent'`,
-		walletID, address,
-	).Scan(&count, &balance); err != nil {
-		return 0, 0, err
+	rows, err := db.Query(
+		`SELECT allocation_class,COUNT(1),COALESCE(SUM(value_satoshi),0)
+		 FROM wallet_utxo
+		 WHERE wallet_id=? AND address=? AND state='unspent'
+		 GROUP BY allocation_class`,
+		walletID,
+		address,
+	)
+	if err != nil {
+		return walletUTXOAggregateStats{}, err
 	}
-	return count, balance, nil
+	defer rows.Close()
+	var stats walletUTXOAggregateStats
+	for rows.Next() {
+		var class string
+		var count int
+		var balance uint64
+		if err := rows.Scan(&class, &count, &balance); err != nil {
+			return walletUTXOAggregateStats{}, err
+		}
+		class = normalizeWalletUTXOAllocationClass(class)
+		stats.UTXOCount += count
+		stats.BalanceSatoshi += balance
+		switch class {
+		case walletUTXOAllocationPlainBSV:
+			stats.PlainBSVUTXOCount += count
+			stats.PlainBSVBalanceSatoshi += balance
+		case walletUTXOAllocationProtectedAsset:
+			stats.ProtectedUTXOCount += count
+			stats.ProtectedBalanceSatoshi += balance
+		default:
+			stats.UnknownUTXOCount += count
+			stats.UnknownBalanceSatoshi += balance
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return walletUTXOAggregateStats{}, err
+	}
+	return stats, nil
 }
 
 type utxoStateRow struct {
-	UTXOID        string
-	TxID          string
-	Vout          uint32
-	Value         uint64
-	State         string
-	CreatedTxID   string
-	SpentTxID     string
-	CreatedAtUnix int64
+	UTXOID           string
+	TxID             string
+	Vout             uint32
+	Value            uint64
+	State            string
+	AllocationClass  string
+	AllocationReason string
+	CreatedTxID      string
+	SpentTxID        string
+	CreatedAtUnix    int64
 }
 
 func walletIDByAddress(address string) string {
@@ -1124,17 +1174,19 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 			_ = tx.Rollback()
 		}
 	}()
-	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
+	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
 	if err != nil {
 		return err
 	}
 	existing := map[string]utxoStateRow{}
 	for rows.Next() {
 		var r utxoStateRow
-		if scanErr := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix); scanErr != nil {
+		if scanErr := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.AllocationClass, &r.AllocationReason, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix); scanErr != nil {
 			_ = rows.Close()
 			return scanErr
 		}
+		r.AllocationClass = normalizeWalletUTXOAllocationClass(r.AllocationClass)
+		r.AllocationReason = strings.TrimSpace(r.AllocationReason)
 		existing[strings.ToLower(strings.TrimSpace(r.UTXOID))] = r
 	}
 	if err = rows.Close(); err != nil {
@@ -1214,15 +1266,21 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 	if err = markObservedWalletLocalBroadcastTxsTx(tx, observedLocalTxIDs, updatedAt); err != nil {
 		return err
 	}
-	count, balance := summarizeWalletUTXOState(existing)
+	stats := summarizeWalletUTXOState(existing)
 
 	if _, err = tx.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(address) DO UPDATE SET
 			wallet_id=excluded.wallet_id,
 			utxo_count=excluded.utxo_count,
 			balance_satoshi=excluded.balance_satoshi,
+			plain_bsv_utxo_count=excluded.plain_bsv_utxo_count,
+			plain_bsv_balance_satoshi=excluded.plain_bsv_balance_satoshi,
+			protected_utxo_count=excluded.protected_utxo_count,
+			protected_balance_satoshi=excluded.protected_balance_satoshi,
+			unknown_utxo_count=excluded.unknown_utxo_count,
+			unknown_balance_satoshi=excluded.unknown_balance_satoshi,
 			updated_at_unix=excluded.updated_at_unix,
 			last_error=excluded.last_error,
 			last_updated_by=excluded.last_updated_by,
@@ -1233,8 +1291,14 @@ func reconcileWalletUTXOSet(db *sql.DB, address string, snapshot liveWalletSnaps
 			last_upstream_path=excluded.last_upstream_path,
 			last_http_status=excluded.last_http_status`,
 		address, walletID,
-		count,
-		balance,
+		stats.UTXOCount,
+		stats.BalanceSatoshi,
+		stats.PlainBSVUTXOCount,
+		stats.PlainBSVBalanceSatoshi,
+		stats.ProtectedUTXOCount,
+		stats.ProtectedBalanceSatoshi,
+		stats.UnknownUTXOCount,
+		stats.UnknownBalanceSatoshi,
 		updatedAt,
 		strings.TrimSpace(lastError),
 		"chain_utxo_worker",
@@ -1358,7 +1422,7 @@ func overlayPendingLocalBroadcastsTx(tx *sql.Tx, existing map[string]utxoStateRo
 			if out == nil || out.LockingScript == nil {
 				continue
 			}
-			if strings.TrimSpace(strings.ToLower(hex.EncodeToString(out.LockingScript.Bytes()))) != scriptHex {
+			if !walletScriptHexMatchesAddressControl(hex.EncodeToString(out.LockingScript.Bytes()), scriptHex) {
 				continue
 			}
 			utxoID := row.TxID + ":" + fmt.Sprint(idx)
@@ -1476,6 +1540,16 @@ func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow
 	if ok && row.CreatedAtUnix > 0 {
 		createdAtUnix = row.CreatedAtUnix
 	}
+	// 设计说明：
+	// - 按当前 1sat 资产模型，真正需要先保护的是“1 聪输出”；
+	// - 这些输出在链上先出现、索引后确认之间有时间差，若先按 plain_bsv 放行，可能被分配器误花；
+	// - 因此 value=1 的新 UTXO 先进入 unknown，等索引明确确认“不是 1sat 资产输出”后才放行；
+	// - 非 1 聪输出默认仍按 plain_bsv 处理，避免把保护范围错误扩大到整个钱包。
+	allocationClass, allocationReason := defaultWalletUTXOProtectionForValue(value)
+	if ok {
+		allocationClass = normalizeWalletUTXOAllocationClass(row.AllocationClass)
+		allocationReason = strings.TrimSpace(row.AllocationReason)
+	}
 	spentAtUnix := int64(0)
 	if state == "spent" {
 		spentAtUnix = updatedAt
@@ -1483,9 +1557,9 @@ func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow
 	if ok {
 		_, err := tx.Exec(
 			`UPDATE wallet_utxo
-			 SET txid=?,vout=?,value_satoshi=?,state=?,created_txid=?,spent_txid=?,updated_at_unix=?,spent_at_unix=?
+			 SET txid=?,vout=?,value_satoshi=?,state=?,allocation_class=?,allocation_reason=?,created_txid=?,spent_txid=?,updated_at_unix=?,spent_at_unix=?
 			 WHERE utxo_id=?`,
-			txid, vout, value, strings.TrimSpace(state), txid, spentTxID, updatedAt, spentAtUnix, utxoID,
+			txid, vout, value, strings.TrimSpace(state), allocationClass, allocationReason, txid, spentTxID, updatedAt, spentAtUnix, utxoID,
 		)
 		if err != nil {
 			return err
@@ -1496,27 +1570,31 @@ func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow
 		row.State = state
 		row.CreatedTxID = txid
 		row.SpentTxID = spentTxID
+		row.AllocationClass = allocationClass
+		row.AllocationReason = allocationReason
 		existing[utxoID] = row
 		return nil
 	}
 	_, err := tx.Exec(
 		`INSERT INTO wallet_utxo(
-			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		utxoID, walletID, address, txid, vout, value, strings.TrimSpace(state), txid, spentTxID, createdAtUnix, updatedAt, spentAtUnix,
+			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, txid, vout, value, strings.TrimSpace(state), allocationClass, allocationReason, txid, spentTxID, createdAtUnix, updatedAt, spentAtUnix,
 	)
 	if err != nil {
 		return err
 	}
 	existing[utxoID] = utxoStateRow{
-		UTXOID:        utxoID,
-		TxID:          txid,
-		Vout:          vout,
-		Value:         value,
-		State:         state,
-		CreatedTxID:   txid,
-		SpentTxID:     spentTxID,
-		CreatedAtUnix: createdAtUnix,
+		UTXOID:           utxoID,
+		TxID:             txid,
+		Vout:             vout,
+		Value:            value,
+		State:            state,
+		AllocationClass:  allocationClass,
+		AllocationReason: allocationReason,
+		CreatedTxID:      txid,
+		SpentTxID:        spentTxID,
+		CreatedAtUnix:    createdAtUnix,
 	}
 	return appendWalletUTXOEventTx(tx, utxoID, strings.TrimSpace(eventType), txid, "", strings.TrimSpace(eventNote), payload)
 }
@@ -1603,7 +1681,7 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 			delete(confirmedLiveTxIDs, strings.ToLower(strings.TrimSpace(in.TxID)))
 		}
 		for _, out := range detail.Vout {
-			if strings.TrimSpace(strings.ToLower(out.ScriptPubKey.Hex)) != scriptHex {
+			if !walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
 				continue
 			}
 			utxoID := txid + ":" + fmt.Sprint(out.N)
@@ -1890,11 +1968,32 @@ func walletAddressLockScriptHex(address string) (string, error) {
 	return strings.ToLower(hex.EncodeToString(lock.Bytes())), nil
 }
 
+// walletScriptHexMatchesAddressControl 判断一个输出脚本是否仍然受当前钱包地址控制。
+// 设计说明：
+// - 现在钱包不能只认“纯 p2pkh 输出”，因为 1sat token / ordinal 的承载输出通常是“协议前缀 + 钱包 p2pkh 后缀”；
+// - 对当前底座来说，我们关心的是“这个输出最终是不是仍然锁给本钱包”，而不是它前面叠了什么协议壳；
+// - 因此这里接受两类脚本：
+//  1. 纯钱包 p2pkh；
+//  2. 以钱包 p2pkh 作为后缀的组合脚本；
+//
+// - 这样本地投影、链同步、pending local broadcast 叠加三条链才能对 token change 使用同一判断口径。
+func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHex string) bool {
+	outputScriptHex = strings.TrimSpace(strings.ToLower(outputScriptHex))
+	walletScriptHex = strings.TrimSpace(strings.ToLower(walletScriptHex))
+	if outputScriptHex == "" || walletScriptHex == "" {
+		return false
+	}
+	if outputScriptHex == walletScriptHex {
+		return true
+	}
+	return strings.HasSuffix(outputScriptHex, walletScriptHex)
+}
+
 func matchWalletOutput(txid string, out whatsonchain.TxOutput, scriptHex string) (string, uint64, bool) {
 	if strings.TrimSpace(txid) == "" {
 		return "", 0, false
 	}
-	if strings.TrimSpace(strings.ToLower(out.ScriptPubKey.Hex)) != strings.TrimSpace(strings.ToLower(scriptHex)) {
+	if !walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
 		return "", 0, false
 	}
 	return strings.ToLower(strings.TrimSpace(txid)) + ":" + fmt.Sprint(out.N), txOutputValueSatoshi(out), true
@@ -1914,6 +2013,31 @@ func satoshiFromTxOutputValue(v float64) uint64 {
 	return uint64(v*100000000 + 0.5)
 }
 
+// alignWalletUTXOHistoryCursor 把历史游标和“当前仍未花费集合”的最老确认高度重新对齐。
+// 设计说明：
+// - 钱包开始处理 1sat 后，当前未花费集合不再只是 plain BSV；
+// - 如果当前仍未花费集合里出现了更老的输出，必须把同步锚点回退过去重扫；
+// - 否则后续资产识别可能拿不到那段历史，导致 UTXO 有了但资产语义丢了。
+func alignWalletUTXOHistoryCursor(cursor walletUTXOHistoryCursor, oldestCurrentConfirmedHeight int64, tip uint32) walletUTXOHistoryCursor {
+	next := cursor
+	if oldestCurrentConfirmedHeight > 0 && (next.AnchorHeight <= 0 || oldestCurrentConfirmedHeight < next.AnchorHeight) {
+		next.AnchorHeight = oldestCurrentConfirmedHeight
+		next.NextConfirmedHeight = oldestCurrentConfirmedHeight
+		next.NextPageToken = ""
+	}
+	if next.AnchorHeight <= 0 {
+		next.AnchorHeight = oldestCurrentConfirmedHeight
+	}
+	if next.NextConfirmedHeight <= 0 {
+		if next.AnchorHeight > 0 {
+			next.NextConfirmedHeight = next.AnchorHeight
+		} else {
+			next.NextConfirmedHeight = int64(tip) + 1
+		}
+	}
+	return next
+}
+
 func updateWalletUTXOSyncStateError(db *sql.DB, address string, meta walletSyncRoundMeta, err error, trigger string) {
 	if db == nil {
 		return
@@ -1930,8 +2054,8 @@ func updateWalletUTXOSyncStateError(db *sql.DB, address string, meta walletSyncR
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
 	_, execErr := db.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(address) DO UPDATE SET
 			wallet_id=excluded.wallet_id,
 			updated_at_unix=excluded.updated_at_unix,
@@ -1943,7 +2067,7 @@ func updateWalletUTXOSyncStateError(db *sql.DB, address string, meta walletSyncR
 			last_failed_step=excluded.last_failed_step,
 			last_upstream_path=excluded.last_upstream_path,
 			last_http_status=excluded.last_http_status`,
-		address, walletID, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
+		address, walletID, 0, 0, 0, 0, 0, 0, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
 	)
 	if execErr != nil {
 		obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": execErr.Error(), "address": address})
@@ -2000,57 +2124,18 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 }
 
 func getWalletUTXOsFromDB(rt *Runtime) ([]poolcore.UTXO, error) {
-	if rt == nil || rt.DBActor == nil {
-		return nil, fmt.Errorf("runtime not initialized")
-	}
-	addr, err := clientWalletAddress(rt)
-	if err != nil {
-		return nil, err
-	}
-	return runtimeDBValue(rt, context.Background(), func(db *sql.DB) ([]poolcore.UTXO, error) {
-		s, err := loadWalletUTXOSyncState(db, addr)
-		if err != nil {
-			return nil, err
-		}
-		if s.UpdatedAtUnix <= 0 {
-			return nil, fmt.Errorf("wallet utxo sync state not ready")
-		}
-		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
-		}
-		if strings.TrimSpace(s.LastError) != "" {
-			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
-		}
-		walletID := walletIDByAddress(addr)
-		rows, err := db.Query(`SELECT txid,vout,value_satoshi FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent' ORDER BY value_satoshi ASC,txid ASC,vout ASC`, walletID, addr)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		out := make([]poolcore.UTXO, 0, s.UTXOCount)
-		for rows.Next() {
-			var u poolcore.UTXO
-			if err := rows.Scan(&u.TxID, &u.Vout, &u.Value); err != nil {
-				return nil, err
-			}
-			out = append(out, u)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
-	})
+	return listEligiblePlainBSVWalletUTXOs(rt)
 }
 
 func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
-	if rt == nil || rt.DBActor == nil {
+	if rt == nil || (rt.DBActor == nil && rt.DB == nil) {
 		return "", 0, fmt.Errorf("runtime not initialized")
 	}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		return "", 0, err
 	}
-	balance, err := runtimeDBValue(rt, context.Background(), func(db *sql.DB) (uint64, error) {
+	load := func(db *sql.DB) (uint64, error) {
 		s, err := loadWalletUTXOSyncState(db, addr)
 		if err != nil {
 			return 0, err
@@ -2061,16 +2146,21 @@ func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
 		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
 			return 0, fmt.Errorf("wallet utxo sync state stale for current runtime")
 		}
-		walletID := walletIDByAddress(addr)
-		var balance uint64
-		if err := db.QueryRow(`SELECT COALESCE(SUM(value_satoshi),0) FROM wallet_utxo WHERE wallet_id=? AND address=? AND state='unspent'`, walletID, addr).Scan(&balance); err != nil {
+		stats, err := loadWalletUTXOAggregate(db, addr)
+		if err != nil {
 			return 0, err
 		}
-		if strings.TrimSpace(s.LastError) != "" && balance == 0 {
+		if strings.TrimSpace(s.LastError) != "" && stats.PlainBSVBalanceSatoshi == 0 {
 			return 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 		}
-		return balance, nil
-	})
+		return stats.PlainBSVBalanceSatoshi, nil
+	}
+	var balance uint64
+	if rt.DBActor != nil {
+		balance, err = runtimeDBValue(rt, context.Background(), load)
+	} else {
+		balance, err = load(rt.DB)
+	}
 	if err != nil {
 		return addr, 0, err
 	}

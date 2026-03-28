@@ -1,14 +1,13 @@
 package clientapp
 
 import (
-	"bytes"
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/bsv-blockchain/go-sdk/script"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 )
 
@@ -45,9 +44,9 @@ func applyLocalBroadcastWalletProjection(rt *Runtime, tx *txsdk.Transaction, tri
 	if err != nil {
 		return err
 	}
-	walletAddr, err := script.NewAddressFromString(strings.TrimSpace(addr))
+	walletScriptHex, err := walletAddressLockScriptHex(addr)
 	if err != nil {
-		return fmt.Errorf("parse wallet address: %w", err)
+		return err
 	}
 	txid := strings.ToLower(strings.TrimSpace(tx.TxID().String()))
 	if txid == "" {
@@ -82,11 +81,14 @@ func applyLocalBroadcastWalletProjection(rt *Runtime, tx *txsdk.Transaction, tri
 		}
 	}
 	for idx, out := range tx.Outputs {
-		if out == nil || out.LockingScript == nil || !out.LockingScript.IsP2PKH() {
+		if out == nil || out.LockingScript == nil {
 			continue
 		}
-		pkh, err := out.LockingScript.PublicKeyHash()
-		if err != nil || !bytes.Equal(pkh, []byte(walletAddr.PublicKeyHash)) {
+		// 设计说明：
+		// - 本地广播投影不能只认纯 p2pkh，因为 token change 常常是“协议前缀 + 钱包 p2pkh 后缀”；
+		// - 这里只判断“最终是否仍由本钱包控制”，和链同步保持同一套脚本匹配口径；
+		// - 这样 submit 成功后，钱包不会把自己的 1sat 找零误看成外部输出。
+		if !walletScriptHexMatchesAddressControl(hex.EncodeToString(out.LockingScript.Bytes()), walletScriptHex) {
 			continue
 		}
 		utxoID := txid + ":" + fmt.Sprint(idx)
@@ -99,21 +101,33 @@ func applyLocalBroadcastWalletProjection(rt *Runtime, tx *txsdk.Transaction, tri
 	if err := upsertWalletLocalBroadcastTx(dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
 		return err
 	}
-	count, balance := summarizeWalletUTXOState(existing)
+	stats := summarizeWalletUTXOState(existing)
 	if _, err := dbtx.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(address) DO UPDATE SET
 		 	utxo_count=excluded.utxo_count,
 		 	balance_satoshi=excluded.balance_satoshi,
+		 	plain_bsv_utxo_count=excluded.plain_bsv_utxo_count,
+		 	plain_bsv_balance_satoshi=excluded.plain_bsv_balance_satoshi,
+		 	protected_utxo_count=excluded.protected_utxo_count,
+		 	protected_balance_satoshi=excluded.protected_balance_satoshi,
+		 	unknown_utxo_count=excluded.unknown_utxo_count,
+		 	unknown_balance_satoshi=excluded.unknown_balance_satoshi,
 		 	updated_at_unix=excluded.updated_at_unix,
 		 	last_updated_by=excluded.last_updated_by,
 		 	last_trigger=excluded.last_trigger,
 		 	last_duration_ms=excluded.last_duration_ms`,
 		addr,
 		walletID,
-		count,
-		balance,
+		stats.UTXOCount,
+		stats.BalanceSatoshi,
+		stats.PlainBSVUTXOCount,
+		stats.PlainBSVBalanceSatoshi,
+		stats.ProtectedUTXOCount,
+		stats.ProtectedBalanceSatoshi,
+		stats.UnknownUTXOCount,
+		stats.UnknownBalanceSatoshi,
 		updatedAt,
 		"",
 		"local_wallet_projection",
@@ -126,7 +140,10 @@ func applyLocalBroadcastWalletProjection(rt *Runtime, tx *txsdk.Transaction, tri
 	); err != nil {
 		return err
 	}
-	return dbtx.Commit()
+	if err := dbtx.Commit(); err != nil {
+		return err
+	}
+	return refreshWalletAssetProjection(context.Background(), rt, addr, trigger)
 }
 
 func upsertWalletLocalBroadcastTx(tx *sql.Tx, walletID string, address string, txid string, txHex string, updatedAt int64) error {
@@ -162,7 +179,7 @@ func loadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (map
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
-	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
+	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
 	if err != nil {
 		return nil, err
 	}
@@ -170,9 +187,11 @@ func loadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (map
 	out := map[string]utxoStateRow{}
 	for rows.Next() {
 		var r utxoStateRow
-		if err := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix); err != nil {
+		if err := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.AllocationClass, &r.AllocationReason, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix); err != nil {
 			return nil, err
 		}
+		r.AllocationClass = normalizeWalletUTXOAllocationClass(r.AllocationClass)
+		r.AllocationReason = strings.TrimSpace(r.AllocationReason)
 		out[strings.ToLower(strings.TrimSpace(r.UTXOID))] = r
 	}
 	if err := rows.Err(); err != nil {
@@ -181,15 +200,25 @@ func loadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (map
 	return out, nil
 }
 
-func summarizeWalletUTXOState(existing map[string]utxoStateRow) (int, uint64) {
-	count := 0
-	var balance uint64
+func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggregateStats {
+	stats := walletUTXOAggregateStats{}
 	for _, row := range existing {
 		if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
 			continue
 		}
-		count++
-		balance += row.Value
+		stats.UTXOCount++
+		stats.BalanceSatoshi += row.Value
+		switch normalizeWalletUTXOAllocationClass(row.AllocationClass) {
+		case walletUTXOAllocationPlainBSV:
+			stats.PlainBSVUTXOCount++
+			stats.PlainBSVBalanceSatoshi += row.Value
+		case walletUTXOAllocationProtectedAsset:
+			stats.ProtectedUTXOCount++
+			stats.ProtectedBalanceSatoshi += row.Value
+		default:
+			stats.UnknownUTXOCount++
+			stats.UnknownBalanceSatoshi += row.Value
+		}
 	}
-	return count, balance
+	return stats
 }

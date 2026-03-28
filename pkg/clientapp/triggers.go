@@ -1107,14 +1107,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			allocMu.Lock()
 			defer allocMu.Unlock()
 
-			utxos, err := getWalletUTXOsFromDB(buyer)
-			if err != nil {
-				return nil, "", fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
-			}
-			if len(utxos) == 0 {
-				return nil, "", fmt.Errorf("no utxos for buyer address")
-			}
-			selected, err := pickUTXOsForTarget(utxos, target)
+			selected, err := allocatePlainBSVWalletUTXOs(buyer, "direct_transfer_pool_open", target)
 			if err != nil {
 				return nil, "", err
 			}

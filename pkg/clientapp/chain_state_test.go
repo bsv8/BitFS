@@ -90,11 +90,11 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 		t.Fatalf("seed wallet_utxo_sync_state: %v", err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
+		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
 		 VALUES
-		 ('a:0',?,?,?,?,?,'unspent','a','',?,?,0),
-		 ('b:1',?,?,?,?,?,'unspent','b','',?,?,0),
-		 ('c:2',?,?,?,?,?,'spent','c','',?,?,?)`,
+		 ('a:0',?,?,?,?,?,'unspent','plain_bsv','','a','',?,?,0),
+		 ('b:1',?,?,?,?,?,'unspent','protected_asset','detected by indexer','b','',?,?,0),
+		 ('c:2',?,?,?,?,?,'spent','plain_bsv','','c','',?,?,?)`,
 		walletID, addr, "a", 0, 100, now, now,
 		walletID, addr, "b", 1, 200, now, now,
 		walletID, addr, "c", 2, 300, now, now, now,
@@ -124,5 +124,11 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 	}
 	if body.BalanceSatoshi != 300 {
 		t.Fatalf("balance_satoshi mismatch: got=%d want=300", body.BalanceSatoshi)
+	}
+	if body.PlainBSVUTXOCount != 1 || body.PlainBSVBalanceSatoshi != 100 {
+		t.Fatalf("plain_bsv aggregate mismatch: %+v", body)
+	}
+	if body.ProtectedUTXOCount != 1 || body.ProtectedBalanceSatoshi != 200 {
+		t.Fatalf("protected aggregate mismatch: %+v", body)
 	}
 }

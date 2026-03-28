@@ -452,6 +452,19 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/business/sign", s.withAuth(s.handleWalletBusinessSign))
 		mux.HandleFunc(prefix+"/v1/wallet/ledger", s.withAuth(s.handleWalletLedger))
 		mux.HandleFunc(prefix+"/v1/wallet/ledger/detail", s.withAuth(s.handleWalletLedgerDetail))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/balances", s.withAuth(s.handleWalletTokenBalances))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/outputs", s.withAuth(s.handleWalletTokenOutputs))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/outputs/detail", s.withAuth(s.handleWalletTokenOutputDetail))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/events", s.withAuth(s.handleWalletTokenEvents))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/preview", s.withAuth(s.handleWalletTokenSendPreview))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/sign", s.withAuth(s.handleWalletTokenSendSign))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/submit", s.withAuth(s.handleWalletTokenSendSubmit))
+		mux.HandleFunc(prefix+"/v1/wallet/ordinals", s.withAuth(s.handleWalletOrdinals))
+		mux.HandleFunc(prefix+"/v1/wallet/ordinals/detail", s.withAuth(s.handleWalletOrdinalDetail))
+		mux.HandleFunc(prefix+"/v1/wallet/ordinals/events", s.withAuth(s.handleWalletOrdinalEvents))
+		mux.HandleFunc(prefix+"/v1/wallet/ordinals/transfer/preview", s.withAuth(s.handleWalletOrdinalTransferPreview))
+		mux.HandleFunc(prefix+"/v1/wallet/ordinals/transfer/sign", s.withAuth(s.handleWalletOrdinalTransferSign))
+		mux.HandleFunc(prefix+"/v1/wallet/ordinals/transfer/submit", s.withAuth(s.handleWalletOrdinalTransferSubmit))
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows", s.withAuth(s.handleWalletFundFlows))
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
 		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
@@ -655,7 +668,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.dbActor == nil {
+	if s == nil || (s.dbActor == nil && s.db == nil) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -687,6 +700,14 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 	walletAddr := ""
 	onchainBal := int64(0)
 	onchainBalErr := ""
+	walletUTXOTotalCount := 0
+	walletUTXOTotalBalanceSatoshi := int64(0)
+	walletPlainBSVUTXOCount := 0
+	walletPlainBSVBalanceSatoshi := int64(0)
+	walletProtectedUTXOCount := 0
+	walletProtectedBalanceSatoshi := int64(0)
+	walletUnknownUTXOCount := 0
+	walletUnknownBalanceSatoshi := int64(0)
 	walletUTXOSyncUpdatedAtUnix := int64(0)
 	walletUTXOSyncLastError := ""
 	walletUTXOSyncLastTrigger := ""
@@ -741,9 +762,21 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 				walletUTXOSyncLastHTTPStatus = syncState.LastHTTPStatus
 				walletUTXOSyncStateIsStale, walletUTXOSyncStateStaleReason = walletUTXOSyncStateStaleness(syncState, runtimeStartedAtUnix)
 			}
+			if aggregate, aggErr := httpDBValue(r.Context(), s, func(db *sql.DB) (walletUTXOAggregateStats, error) {
+				return loadWalletUTXOAggregate(db, walletAddr)
+			}); aggErr == nil {
+				walletUTXOTotalCount = aggregate.UTXOCount
+				walletUTXOTotalBalanceSatoshi = int64(aggregate.BalanceSatoshi)
+				walletPlainBSVUTXOCount = aggregate.PlainBSVUTXOCount
+				walletPlainBSVBalanceSatoshi = int64(aggregate.PlainBSVBalanceSatoshi)
+				walletProtectedUTXOCount = aggregate.ProtectedUTXOCount
+				walletProtectedBalanceSatoshi = int64(aggregate.ProtectedBalanceSatoshi)
+				walletUnknownUTXOCount = aggregate.UnknownUTXOCount
+				walletUnknownBalanceSatoshi = int64(aggregate.UnknownBalanceSatoshi)
+			}
 		}
 	}
-	if s != nil && s.dbActor != nil {
+	if s != nil && (s.dbActor != nil || s.db != nil) {
 		if schedulerState, err := httpDBValue(r.Context(), s, func(db *sql.DB) (schedulerTaskSnapshot, error) {
 			return loadSchedulerTaskSnapshot(db, "chain_utxo_sync")
 		}); err == nil {
@@ -782,6 +815,14 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		"ledger_net_satoshi":                              ledgerIn - ledgerOut,
 		"wallet_address":                                  walletAddr,
 		"onchain_balance_satoshi":                         onchainBal,
+		"wallet_total_unspent_utxo_count":                 walletUTXOTotalCount,
+		"wallet_total_unspent_satoshi":                    walletUTXOTotalBalanceSatoshi,
+		"wallet_plain_bsv_utxo_count":                     walletPlainBSVUTXOCount,
+		"wallet_plain_bsv_balance_satoshi":                walletPlainBSVBalanceSatoshi,
+		"wallet_protected_utxo_count":                     walletProtectedUTXOCount,
+		"wallet_protected_balance_satoshi":                walletProtectedBalanceSatoshi,
+		"wallet_unknown_utxo_count":                       walletUnknownUTXOCount,
+		"wallet_unknown_balance_satoshi":                  walletUnknownBalanceSatoshi,
 		"balance_source":                                  "wallet_utxo_db",
 		"wallet_utxo_sync_updated_at_unix":                walletUTXOSyncUpdatedAtUnix,
 		"wallet_utxo_sync_last_error":                     walletUTXOSyncLastError,
@@ -3207,7 +3248,7 @@ func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	count, balance, err := loadWalletUTXOAggregate(s.db, addr)
+	stats, err := loadWalletUTXOAggregate(s.db, addr)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -3216,8 +3257,14 @@ func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *htt
 		state.Address = addr
 		state.WalletID = walletIDByAddress(addr)
 	}
-	state.UTXOCount = count
-	state.BalanceSatoshi = balance
+	state.UTXOCount = stats.UTXOCount
+	state.BalanceSatoshi = stats.BalanceSatoshi
+	state.PlainBSVUTXOCount = stats.PlainBSVUTXOCount
+	state.PlainBSVBalanceSatoshi = stats.PlainBSVBalanceSatoshi
+	state.ProtectedUTXOCount = stats.ProtectedUTXOCount
+	state.ProtectedBalanceSatoshi = stats.ProtectedBalanceSatoshi
+	state.UnknownUTXOCount = stats.UnknownUTXOCount
+	state.UnknownBalanceSatoshi = stats.UnknownBalanceSatoshi
 	writeJSON(w, http.StatusOK, state)
 }
 
@@ -3384,7 +3431,7 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 		return
 	}
 	rows, err := s.db.Query(
-		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 		 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...,
 	)
@@ -3394,24 +3441,27 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 	}
 	defer rows.Close()
 	type item struct {
-		UTXOID        string `json:"utxo_id"`
-		WalletID      string `json:"wallet_id"`
-		Address       string `json:"address"`
-		TxID          string `json:"txid"`
-		Vout          uint32 `json:"vout"`
-		ValueSatoshi  uint64 `json:"value_satoshi"`
-		State         string `json:"state"`
-		CreatedTxID   string `json:"created_txid"`
-		SpentTxID     string `json:"spent_txid"`
-		CreatedAtUnix int64  `json:"created_at_unix"`
-		UpdatedAtUnix int64  `json:"updated_at_unix"`
-		SpentAtUnix   int64  `json:"spent_at_unix"`
+		UTXOID           string `json:"utxo_id"`
+		WalletID         string `json:"wallet_id"`
+		Address          string `json:"address"`
+		TxID             string `json:"txid"`
+		Vout             uint32 `json:"vout"`
+		ValueSatoshi     uint64 `json:"value_satoshi"`
+		State            string `json:"state"`
+		AllocationClass  string `json:"allocation_class"`
+		AllocationReason string `json:"allocation_reason"`
+		CreatedTxID      string `json:"created_txid"`
+		SpentTxID        string `json:"spent_txid"`
+		CreatedAtUnix    int64  `json:"created_at_unix"`
+		UpdatedAtUnix    int64  `json:"updated_at_unix"`
+		SpentAtUnix      int64  `json:"spent_at_unix"`
+		Assets           any    `json:"assets,omitempty"`
 	}
 	items := make([]item, 0, limit)
 	for rows.Next() {
 		var it item
 		if err := rows.Scan(
-			&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State,
+			&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.AllocationClass, &it.AllocationReason,
 			&it.CreatedTxID, &it.SpentTxID, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
 		); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -3433,26 +3483,29 @@ func (s *httpAPIServer) handleAdminWalletUTXODetail(w http.ResponseWriter, r *ht
 		return
 	}
 	type item struct {
-		UTXOID        string `json:"utxo_id"`
-		WalletID      string `json:"wallet_id"`
-		Address       string `json:"address"`
-		TxID          string `json:"txid"`
-		Vout          uint32 `json:"vout"`
-		ValueSatoshi  uint64 `json:"value_satoshi"`
-		State         string `json:"state"`
-		CreatedTxID   string `json:"created_txid"`
-		SpentTxID     string `json:"spent_txid"`
-		CreatedAtUnix int64  `json:"created_at_unix"`
-		UpdatedAtUnix int64  `json:"updated_at_unix"`
-		SpentAtUnix   int64  `json:"spent_at_unix"`
+		UTXOID           string `json:"utxo_id"`
+		WalletID         string `json:"wallet_id"`
+		Address          string `json:"address"`
+		TxID             string `json:"txid"`
+		Vout             uint32 `json:"vout"`
+		ValueSatoshi     uint64 `json:"value_satoshi"`
+		State            string `json:"state"`
+		AllocationClass  string `json:"allocation_class"`
+		AllocationReason string `json:"allocation_reason"`
+		CreatedTxID      string `json:"created_txid"`
+		SpentTxID        string `json:"spent_txid"`
+		CreatedAtUnix    int64  `json:"created_at_unix"`
+		UpdatedAtUnix    int64  `json:"updated_at_unix"`
+		SpentAtUnix      int64  `json:"spent_at_unix"`
+		Assets           any    `json:"assets,omitempty"`
 	}
 	var it item
 	err := s.db.QueryRow(
-		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 		 FROM wallet_utxo WHERE utxo_id=?`,
 		utxoID,
 	).Scan(
-		&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State,
+		&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.AllocationClass, &it.AllocationReason,
 		&it.CreatedTxID, &it.SpentTxID, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
 	)
 	if err != nil {
@@ -3462,6 +3515,9 @@ func (s *httpAPIServer) handleAdminWalletUTXODetail(w http.ResponseWriter, r *ht
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	if assets, err := listWalletUTXOAssetRows(s.db, utxoID); err == nil && len(assets) > 0 {
+		it.Assets = assets
 	}
 	writeJSON(w, http.StatusOK, it)
 }
@@ -6837,7 +6893,13 @@ func adminConfigRules() []adminConfigRule {
 	return []adminConfigRule{
 		{Key: "http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "管理 API 监听地址"},
 		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
-		{Key: "woc_api_key", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "WOC API key（非空时直连 WOC）"},
+		{Key: "external_api.woc.api_key", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "WOC API key（统一纳入外部 API 保护器）"},
+		{Key: "external_api.woc.min_interval_ms", Type: adminConfigInt, MinInt: 1, MaxInt: 60000, Description: "WOC 最小请求间隔毫秒"},
+		{Key: "external_api.asset_index.base_url", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "外部资产索引入口（兼容 1sat-stack）"},
+		{Key: "external_api.asset_index.auth_mode", Type: adminConfigString, MinLen: 0, MaxLen: 32, Description: "外部资产索引认证模式"},
+		{Key: "external_api.asset_index.auth_name", Type: adminConfigString, MinLen: 0, MaxLen: 128, Description: "外部资产索引认证名称"},
+		{Key: "external_api.asset_index.auth_value", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "外部资产索引认证值"},
+		{Key: "external_api.asset_index.min_interval_ms", Type: adminConfigInt, MinInt: 1, MaxInt: 60000, Description: "外部资产索引最小请求间隔毫秒"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
 		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
@@ -6981,7 +7043,13 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 	return map[string]any{
 		"http.listen_addr":                            cfg.HTTP.ListenAddr,
 		"fs_http.listen_addr":                         cfg.FSHTTP.ListenAddr,
-		"woc_api_key":                                 maskSecretForAdminConfig(cfg.WOCAPIKey),
+		"external_api.woc.api_key":                    maskSecretForAdminConfig(cfg.ExternalAPI.WOC.APIKey),
+		"external_api.woc.min_interval_ms":            cfg.ExternalAPI.WOC.MinIntervalMS,
+		"external_api.asset_index.base_url":           cfg.ExternalAPI.AssetIndex.BaseURL,
+		"external_api.asset_index.auth_mode":          cfg.ExternalAPI.AssetIndex.AuthMode,
+		"external_api.asset_index.auth_name":          cfg.ExternalAPI.AssetIndex.AuthName,
+		"external_api.asset_index.auth_value":         maskSecretForAdminConfig(cfg.ExternalAPI.AssetIndex.AuthValue),
+		"external_api.asset_index.min_interval_ms":    cfg.ExternalAPI.AssetIndex.MinIntervalMS,
 		"listen.enabled":                              cfgBool(cfg.Listen.Enabled, true),
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
 		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
@@ -7119,8 +7187,16 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 		cfg.HTTP.ListenAddr = v
 	case "fs_http.listen_addr":
 		cfg.FSHTTP.ListenAddr = v
-	case "woc_api_key":
-		cfg.WOCAPIKey = v
+	case "external_api.woc.api_key":
+		cfg.ExternalAPI.WOC.APIKey = v
+	case "external_api.asset_index.base_url":
+		cfg.ExternalAPI.AssetIndex.BaseURL = v
+	case "external_api.asset_index.auth_mode":
+		cfg.ExternalAPI.AssetIndex.AuthMode = v
+	case "external_api.asset_index.auth_name":
+		cfg.ExternalAPI.AssetIndex.AuthName = v
+	case "external_api.asset_index.auth_value":
+		cfg.ExternalAPI.AssetIndex.AuthValue = v
 	default:
 		return fmt.Errorf("unsupported string key: %s", key)
 	}
@@ -7130,6 +7206,10 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 func adminConfigSetInt(cfg *Config, key string, v int64) error {
 	u := uint64(v)
 	switch key {
+	case "external_api.woc.min_interval_ms":
+		cfg.ExternalAPI.WOC.MinIntervalMS = uint32(v)
+	case "external_api.asset_index.min_interval_ms":
+		cfg.ExternalAPI.AssetIndex.MinIntervalMS = uint32(v)
 	case "listen.renew_threshold_seconds":
 		cfg.Listen.RenewThresholdSeconds = uint32(v)
 	case "listen.auto_renew_rounds":

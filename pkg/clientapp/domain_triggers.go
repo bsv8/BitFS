@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -810,15 +809,6 @@ func buildDomainRegisterTxDetailed(rt *Runtime, signedQuoteJSON []byte, quote do
 	if len(utxos) == 0 {
 		return builtDomainRegisterTx{}, fmt.Errorf("no utxos for client wallet")
 	}
-	sort.Slice(utxos, func(i, j int) bool {
-		if utxos[i].Value == utxos[j].Value {
-			if utxos[i].TxID == utxos[j].TxID {
-				return utxos[i].Vout < utxos[j].Vout
-			}
-			return utxos[i].TxID < utxos[j].TxID
-		}
-		return utxos[i].Value < utxos[j].Value
-	})
 	selected := make([]poolcore.UTXO, 0, len(utxos))
 	for _, u := range utxos {
 		selected = append(selected, u)

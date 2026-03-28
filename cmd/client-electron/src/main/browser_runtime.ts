@@ -2,11 +2,22 @@ import { EventEmitter } from "node:events";
 
 import type {
   BitfsPublicClientInfo,
+  BitfsPublicWalletAssetSignResponse,
+  BitfsPublicWalletAssetEventItem,
+  BitfsPublicWalletAssetEventList,
+  BitfsPublicWalletAssetSubmitResponse,
+  BitfsPublicWalletAssetPreviewResponse,
+  BitfsPublicWalletOrdinalItem,
+  BitfsPublicWalletOrdinalList,
   BitfsRuntimeEvent,
   BitfsPublicWalletAddress,
   BitfsPublicWalletHistoryDirection,
   BitfsPublicWalletHistoryItem,
   BitfsPublicWalletHistoryList,
+  BitfsPublicWalletTokenBalanceItem,
+  BitfsPublicWalletTokenBalanceList,
+  BitfsPublicWalletTokenOutputItem,
+  BitfsPublicWalletTokenOutputList,
   BitfsPublicWalletSummary,
   ShellResource,
   ShellVisitAccounting,
@@ -721,6 +732,338 @@ export class BitfsBrowserRuntime extends EventEmitter {
     };
   }
 
+  async listPublicWalletTokenBalances(query: { limit?: number; offset?: number; standard?: string }): Promise<BitfsPublicWalletTokenBalanceList> {
+    const limit = clampBoundInt(query?.limit, 50, 1, 500);
+    const offset = clampBoundInt(query?.offset, 0, 0, 1_000_000);
+    const standard = normalizePublicWalletTokenStandard(String(query?.standard || ""));
+    debugLogger.log("runtime", "list_public_wallet_token_balances", {
+      limit,
+      offset,
+      standard,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    search.set("limit", String(limit));
+    search.set("offset", String(offset));
+    if (standard !== "") {
+      search.set("standard", standard);
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/tokens/balances?${search.toString()}`);
+    return {
+      wallet_address: readStringField(payload, "wallet_address"),
+      total: Math.max(0, readIntegerField(payload, "total")),
+      limit,
+      offset,
+      items: readTokenBalanceItems(payload)
+    };
+  }
+
+  async listPublicWalletTokenOutputs(query: { limit?: number; offset?: number; standard?: string; assetKey?: string; asset_key?: string }): Promise<BitfsPublicWalletTokenOutputList> {
+    const limit = clampBoundInt(query?.limit, 50, 1, 500);
+    const offset = clampBoundInt(query?.offset, 0, 0, 1_000_000);
+    const standard = normalizePublicWalletTokenStandard(String(query?.standard || ""));
+    const assetKey = readNormalizedKey(String(query?.assetKey || ""), String(query?.asset_key || ""));
+    debugLogger.log("runtime", "list_public_wallet_token_outputs", {
+      limit,
+      offset,
+      standard,
+      asset_key: assetKey,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    search.set("limit", String(limit));
+    search.set("offset", String(offset));
+    if (standard !== "") {
+      search.set("standard", standard);
+    }
+    if (assetKey !== "") {
+      search.set("asset_key", assetKey);
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/tokens/outputs?${search.toString()}`);
+    return {
+      wallet_address: readStringField(payload, "wallet_address"),
+      total: Math.max(0, readIntegerField(payload, "total")),
+      limit,
+      offset,
+      items: readTokenOutputItems(payload)
+    };
+  }
+
+  async getPublicWalletTokenOutputDetail(query: { standard?: string; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }): Promise<BitfsPublicWalletTokenOutputItem> {
+    const standard = normalizePublicWalletTokenStandard(String(query?.standard || ""));
+    const utxoID = readNormalizedKey(String(query?.utxoID || ""), String(query?.utxo_id || "")).toLowerCase();
+    const assetKey = readNormalizedKey(String(query?.assetKey || ""), String(query?.asset_key || ""));
+    if (utxoID === "" && assetKey === "") {
+      throw new Error("token output selector is required");
+    }
+    debugLogger.log("runtime", "get_public_wallet_token_output_detail", {
+      standard,
+      utxo_id: utxoID,
+      asset_key: assetKey,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    if (standard !== "") {
+      search.set("standard", standard);
+    }
+    if (utxoID !== "") {
+      search.set("utxo_id", utxoID);
+    }
+    if (assetKey !== "") {
+      search.set("asset_key", assetKey);
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/tokens/outputs/detail?${search.toString()}`);
+    return readTokenOutputItem(payload);
+  }
+
+  async listPublicWalletTokenEvents(query: { limit?: number; offset?: number; standard?: string; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }): Promise<BitfsPublicWalletAssetEventList> {
+    const limit = clampBoundInt(query?.limit, 50, 1, 500);
+    const offset = clampBoundInt(query?.offset, 0, 0, 1_000_000);
+    const standard = normalizePublicWalletTokenStandard(String(query?.standard || ""));
+    const utxoID = readNormalizedKey(String(query?.utxoID || ""), String(query?.utxo_id || "")).toLowerCase();
+    const assetKey = readNormalizedKey(String(query?.assetKey || ""), String(query?.asset_key || ""));
+    debugLogger.log("runtime", "list_public_wallet_token_events", {
+      limit,
+      offset,
+      standard,
+      utxo_id: utxoID,
+      asset_key: assetKey,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    search.set("limit", String(limit));
+    search.set("offset", String(offset));
+    if (standard !== "") {
+      search.set("standard", standard);
+    }
+    if (utxoID !== "") {
+      search.set("utxo_id", utxoID);
+    }
+    if (assetKey !== "") {
+      search.set("asset_key", assetKey);
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/tokens/events?${search.toString()}`);
+    return {
+      wallet_address: readStringField(payload, "wallet_address"),
+      total: Math.max(0, readIntegerField(payload, "total")),
+      limit,
+      offset,
+      items: readAssetEventItems(payload)
+    };
+  }
+
+  async listPublicWalletOrdinals(query: { limit?: number; offset?: number }): Promise<BitfsPublicWalletOrdinalList> {
+    const limit = clampBoundInt(query?.limit, 50, 1, 500);
+    const offset = clampBoundInt(query?.offset, 0, 0, 1_000_000);
+    debugLogger.log("runtime", "list_public_wallet_ordinals", {
+      limit,
+      offset,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    search.set("limit", String(limit));
+    search.set("offset", String(offset));
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/ordinals?${search.toString()}`);
+    return {
+      wallet_address: readStringField(payload, "wallet_address"),
+      total: Math.max(0, readIntegerField(payload, "total")),
+      limit,
+      offset,
+      items: readOrdinalItems(payload)
+    };
+  }
+
+  async getPublicWalletOrdinalDetail(query: { utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }): Promise<BitfsPublicWalletOrdinalItem> {
+    const utxoID = readNormalizedKey(String(query?.utxoID || ""), String(query?.utxo_id || "")).toLowerCase();
+    const assetKey = readNormalizedKey(String(query?.assetKey || ""), String(query?.asset_key || ""));
+    if (utxoID === "" && assetKey === "") {
+      throw new Error("ordinal selector is required");
+    }
+    debugLogger.log("runtime", "get_public_wallet_ordinal_detail", {
+      utxo_id: utxoID,
+      asset_key: assetKey,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    if (utxoID !== "") {
+      search.set("utxo_id", utxoID);
+    }
+    if (assetKey !== "") {
+      search.set("asset_key", assetKey);
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/ordinals/detail?${search.toString()}`);
+    return readOrdinalItem(payload);
+  }
+
+  async listPublicWalletOrdinalEvents(query: { limit?: number; offset?: number; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }): Promise<BitfsPublicWalletAssetEventList> {
+    const limit = clampBoundInt(query?.limit, 50, 1, 500);
+    const offset = clampBoundInt(query?.offset, 0, 0, 1_000_000);
+    const utxoID = readNormalizedKey(String(query?.utxoID || ""), String(query?.utxo_id || "")).toLowerCase();
+    const assetKey = readNormalizedKey(String(query?.assetKey || ""), String(query?.asset_key || ""));
+    debugLogger.log("runtime", "list_public_wallet_ordinal_events", {
+      limit,
+      offset,
+      utxo_id: utxoID,
+      asset_key: assetKey,
+      trace_id: this.currentTraceID
+    });
+    const search = new URLSearchParams();
+    search.set("limit", String(limit));
+    search.set("offset", String(offset));
+    if (utxoID !== "") {
+      search.set("utxo_id", utxoID);
+    }
+    if (assetKey !== "") {
+      search.set("asset_key", assetKey);
+    }
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/ordinals/events?${search.toString()}`);
+    return {
+      wallet_address: readStringField(payload, "wallet_address"),
+      total: Math.max(0, readIntegerField(payload, "total")),
+      limit,
+      offset,
+      items: readAssetEventItems(payload)
+    };
+  }
+
+  async previewPublicWalletTokenSend(input: { tokenStandard?: string; token_standard?: string; assetKey?: string; asset_key?: string; amountText?: string; amount_text?: string; toAddress?: string; to_address?: string }): Promise<BitfsPublicWalletAssetPreviewResponse> {
+    const payload = {
+      token_standard: readNormalizedKey(String(input?.tokenStandard || ""), String(input?.token_standard || "")),
+      asset_key: readNormalizedKey(String(input?.assetKey || ""), String(input?.asset_key || "")),
+      amount_text: readNormalizedKey(String(input?.amountText || ""), String(input?.amount_text || "")),
+      to_address: readNormalizedKey(String(input?.toAddress || ""), String(input?.to_address || ""))
+    };
+    debugLogger.log("runtime", "preview_public_wallet_token_send", {
+      token_standard: payload.token_standard,
+      asset_key: payload.asset_key,
+      amount_text: payload.amount_text,
+      to_address: payload.to_address,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/tokens/send/preview", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetPreviewResponse(body);
+  }
+
+  async signPublicWalletTokenSend(input: { tokenStandard?: string; token_standard?: string; assetKey?: string; asset_key?: string; amountText?: string; amount_text?: string; toAddress?: string; to_address?: string; expectedPreviewHash?: string; expected_preview_hash?: string }): Promise<BitfsPublicWalletAssetSignResponse> {
+    const payload = {
+      token_standard: readNormalizedKey(String(input?.tokenStandard || ""), String(input?.token_standard || "")),
+      asset_key: readNormalizedKey(String(input?.assetKey || ""), String(input?.asset_key || "")),
+      amount_text: readNormalizedKey(String(input?.amountText || ""), String(input?.amount_text || "")),
+      to_address: readNormalizedKey(String(input?.toAddress || ""), String(input?.to_address || "")),
+      expected_preview_hash: readNormalizedKey(String(input?.expectedPreviewHash || ""), String(input?.expected_preview_hash || ""))
+    };
+    debugLogger.log("runtime", "sign_public_wallet_token_send", {
+      token_standard: payload.token_standard,
+      asset_key: payload.asset_key,
+      amount_text: payload.amount_text,
+      to_address: payload.to_address,
+      expected_preview_hash: payload.expected_preview_hash,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/tokens/send/sign", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetSignResponse(body);
+  }
+
+  async submitPublicWalletTokenSend(input: { signedTxHex?: string; signed_tx_hex?: string }): Promise<BitfsPublicWalletAssetSubmitResponse> {
+    const payload = {
+      signed_tx_hex: readNormalizedKey(String(input?.signedTxHex || ""), String(input?.signed_tx_hex || ""))
+    };
+    debugLogger.log("runtime", "submit_public_wallet_token_send", {
+      signed_tx_hex_len: payload.signed_tx_hex.length,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/tokens/send/submit", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetSubmitResponse(body);
+  }
+
+  async previewPublicWalletOrdinalTransfer(input: { utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string; toAddress?: string; to_address?: string }): Promise<BitfsPublicWalletAssetPreviewResponse> {
+    const payload = {
+      utxo_id: readNormalizedKey(String(input?.utxoID || ""), String(input?.utxo_id || "")),
+      asset_key: readNormalizedKey(String(input?.assetKey || ""), String(input?.asset_key || "")),
+      to_address: readNormalizedKey(String(input?.toAddress || ""), String(input?.to_address || ""))
+    };
+    debugLogger.log("runtime", "preview_public_wallet_ordinal_transfer", {
+      utxo_id: payload.utxo_id,
+      asset_key: payload.asset_key,
+      to_address: payload.to_address,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/ordinals/transfer/preview", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetPreviewResponse(body);
+  }
+
+  async signPublicWalletOrdinalTransfer(input: { utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string; toAddress?: string; to_address?: string; expectedPreviewHash?: string; expected_preview_hash?: string }): Promise<BitfsPublicWalletAssetSignResponse> {
+    const payload = {
+      utxo_id: readNormalizedKey(String(input?.utxoID || ""), String(input?.utxo_id || "")),
+      asset_key: readNormalizedKey(String(input?.assetKey || ""), String(input?.asset_key || "")),
+      to_address: readNormalizedKey(String(input?.toAddress || ""), String(input?.to_address || "")),
+      expected_preview_hash: readNormalizedKey(String(input?.expectedPreviewHash || ""), String(input?.expected_preview_hash || ""))
+    };
+    debugLogger.log("runtime", "sign_public_wallet_ordinal_transfer", {
+      utxo_id: payload.utxo_id,
+      asset_key: payload.asset_key,
+      to_address: payload.to_address,
+      expected_preview_hash: payload.expected_preview_hash,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/ordinals/transfer/sign", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetSignResponse(body);
+  }
+
+  async submitPublicWalletOrdinalTransfer(input: { signedTxHex?: string; signed_tx_hex?: string }): Promise<BitfsPublicWalletAssetSubmitResponse> {
+    const payload = {
+      signed_tx_hex: readNormalizedKey(String(input?.signedTxHex || ""), String(input?.signed_tx_hex || ""))
+    };
+    debugLogger.log("runtime", "submit_public_wallet_ordinal_transfer", {
+      signed_tx_hex_len: payload.signed_tx_hex.length,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/ordinals/transfer/submit", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetSubmitResponse(body);
+  }
+
   async getLiveLatest(streamID: string): Promise<Record<string, unknown>> {
     const normalized = normalizeSeedHash(streamID);
     if (normalized === "") {
@@ -1324,6 +1667,14 @@ function normalizePublicWalletHistoryDirection(raw: string): BitfsPublicWalletHi
   return "unknown";
 }
 
+function normalizePublicWalletTokenStandard(raw: string): "" | "bsv20" | "bsv21" {
+  const value = raw.trim().toLowerCase();
+  if (value === "bsv20" || value === "bsv21") {
+    return value;
+  }
+  return "";
+}
+
 function readHistoryItems(payload: Record<string, unknown>): BitfsPublicWalletHistoryItem[] {
   const rawItems = Array.isArray(payload.items) ? payload.items : [];
   const items: BitfsPublicWalletHistoryItem[] = [];
@@ -1343,6 +1694,204 @@ function readHistoryItems(payload: Record<string, unknown>): BitfsPublicWalletHi
     });
   }
   return items;
+}
+
+function readTokenBalanceItems(payload: Record<string, unknown>): BitfsPublicWalletTokenBalanceItem[] {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: BitfsPublicWalletTokenBalanceItem[] = [];
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    const item = rawItem as Record<string, unknown>;
+    const standard = normalizePublicWalletTokenStandard(readStringField(item, "token_standard"));
+    if (standard === "") {
+      continue;
+    }
+    items.push({
+      token_standard: standard,
+      asset_key: readStringField(item, "asset_key"),
+      asset_symbol: readStringField(item, "asset_symbol"),
+      quantity_text: readStringField(item, "quantity_text"),
+      output_count: Math.max(0, readIntegerField(item, "output_count")),
+      source_name: readStringField(item, "source_name"),
+      updated_at_unix: Math.max(0, readIntegerField(item, "updated_at_unix"))
+    });
+  }
+  return items;
+}
+
+function readTokenOutputItems(payload: Record<string, unknown>): BitfsPublicWalletTokenOutputItem[] {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: BitfsPublicWalletTokenOutputItem[] = [];
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    try {
+      items.push(readTokenOutputItem(rawItem as Record<string, unknown>));
+    } catch {
+      continue;
+    }
+  }
+  return items;
+}
+
+function readTokenOutputItem(payload: Record<string, unknown>): BitfsPublicWalletTokenOutputItem {
+  const standard = normalizePublicWalletTokenStandard(readStringField(payload, "token_standard"));
+  if (standard === "") {
+    throw new Error("invalid token standard in response");
+  }
+  return {
+    utxo_id: readStringField(payload, "utxo_id").toLowerCase(),
+    wallet_address: readStringField(payload, "wallet_address"),
+    txid: readStringField(payload, "txid").toLowerCase(),
+    vout: Math.max(0, readIntegerField(payload, "vout")),
+    value_satoshi: Math.max(0, readIntegerField(payload, "value_satoshi")),
+    allocation_class: readStringField(payload, "allocation_class"),
+    allocation_reason: readStringField(payload, "allocation_reason"),
+    token_standard: standard,
+    asset_key: readStringField(payload, "asset_key"),
+    asset_symbol: readStringField(payload, "asset_symbol"),
+    quantity_text: readStringField(payload, "quantity_text"),
+    source_name: readStringField(payload, "source_name"),
+    updated_at_unix: Math.max(0, readIntegerField(payload, "updated_at_unix")),
+    payload: payload.payload ?? null
+  };
+}
+
+function readAssetEventItems(payload: Record<string, unknown>): BitfsPublicWalletAssetEventItem[] {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: BitfsPublicWalletAssetEventItem[] = [];
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    const item = rawItem as Record<string, unknown>;
+    items.push({
+      id: Math.max(0, readIntegerField(item, "id")),
+      created_at_unix: Math.max(0, readIntegerField(item, "created_at_unix")),
+      utxo_id: readStringField(item, "utxo_id").toLowerCase(),
+      wallet_address: readStringField(item, "wallet_address"),
+      asset_group: readStringField(item, "asset_group"),
+      asset_standard: readStringField(item, "asset_standard"),
+      asset_key: readStringField(item, "asset_key"),
+      asset_symbol: readStringField(item, "asset_symbol"),
+      quantity_text: readStringField(item, "quantity_text"),
+      source_name: readStringField(item, "source_name"),
+      event_type: readStringField(item, "event_type"),
+      ref_txid: readStringField(item, "ref_txid").toLowerCase(),
+      ref_business_id: readStringField(item, "ref_business_id"),
+      note: readStringField(item, "note"),
+      payload: item.payload ?? null
+    });
+  }
+  return items;
+}
+
+function readWalletAssetPreviewResponse(payload: Record<string, unknown>): BitfsPublicWalletAssetPreviewResponse {
+  const rawPreview = payload.preview && typeof payload.preview === "object" && !Array.isArray(payload.preview)
+    ? payload.preview as Record<string, unknown>
+    : {};
+  const rawChanges = Array.isArray(rawPreview.changes) ? rawPreview.changes : [];
+  const rawDetailLines = Array.isArray(rawPreview.detail_lines) ? rawPreview.detail_lines : [];
+  const rawSelectedAssetUTXOIDs = Array.isArray(rawPreview.selected_asset_utxo_ids) ? rawPreview.selected_asset_utxo_ids : [];
+  const rawSelectedFeeUTXOIDs = Array.isArray(rawPreview.selected_fee_utxo_ids) ? rawPreview.selected_fee_utxo_ids : [];
+  return {
+    ok: readBooleanField(payload, "ok"),
+    code: readStringField(payload, "code"),
+    message: readStringField(payload, "message"),
+    preview: {
+      action: readStringField(rawPreview, "action"),
+      feasible: readBooleanField(rawPreview, "feasible"),
+      can_sign: readBooleanField(rawPreview, "can_sign"),
+      summary: readStringField(rawPreview, "summary"),
+      detail_lines: rawDetailLines.map((item) => String(item || "").trim()).filter((item) => item !== ""),
+      warning_level: readStringField(rawPreview, "warning_level"),
+      estimated_network_fee_bsv_sat: Math.max(0, readIntegerField(rawPreview, "estimated_network_fee_bsv_sat")),
+      fee_funding_target_bsv_sat: Math.max(0, readIntegerField(rawPreview, "fee_funding_target_bsv_sat")),
+      selected_asset_utxo_ids: rawSelectedAssetUTXOIDs.map((item) => String(item || "").trim().toLowerCase()).filter((item) => item !== ""),
+      selected_fee_utxo_ids: rawSelectedFeeUTXOIDs.map((item) => String(item || "").trim().toLowerCase()).filter((item) => item !== ""),
+      txid: readStringField(rawPreview, "txid").toLowerCase(),
+      preview_hash: readStringField(rawPreview, "preview_hash").toLowerCase(),
+      changes: rawChanges
+        .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+        .map((item) => {
+          const change = item as Record<string, unknown>;
+          return {
+            owner_scope: readStringField(change, "owner_scope"),
+            asset_group: readStringField(change, "asset_group"),
+            asset_standard: readStringField(change, "asset_standard"),
+            asset_key: readStringField(change, "asset_key"),
+            asset_symbol: readStringField(change, "asset_symbol"),
+            quantity_text: readStringField(change, "quantity_text"),
+            direction: readStringField(change, "direction"),
+            note: readStringField(change, "note")
+          };
+        })
+    }
+  };
+}
+
+function readWalletAssetSignResponse(payload: Record<string, unknown>): BitfsPublicWalletAssetSignResponse {
+  const previewResp = readWalletAssetPreviewResponse(payload);
+  return {
+    ok: previewResp.ok,
+    code: previewResp.code,
+    message: previewResp.message,
+    preview: previewResp.preview,
+    signed_tx_hex: readStringField(payload, "signed_tx_hex").toLowerCase(),
+    txid: readStringField(payload, "txid").toLowerCase()
+  };
+}
+
+function readWalletAssetSubmitResponse(payload: Record<string, unknown>): BitfsPublicWalletAssetSubmitResponse {
+  return {
+    ok: readBooleanField(payload, "ok"),
+    code: readStringField(payload, "code"),
+    message: readStringField(payload, "message"),
+    txid: readStringField(payload, "txid").toLowerCase()
+  };
+}
+
+function readOrdinalItems(payload: Record<string, unknown>): BitfsPublicWalletOrdinalItem[] {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: BitfsPublicWalletOrdinalItem[] = [];
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    items.push(readOrdinalItem(rawItem as Record<string, unknown>));
+  }
+  return items;
+}
+
+function readOrdinalItem(payload: Record<string, unknown>): BitfsPublicWalletOrdinalItem {
+  return {
+    utxo_id: readStringField(payload, "utxo_id").toLowerCase(),
+    wallet_address: readStringField(payload, "wallet_address"),
+    txid: readStringField(payload, "txid").toLowerCase(),
+    vout: Math.max(0, readIntegerField(payload, "vout")),
+    value_satoshi: Math.max(0, readIntegerField(payload, "value_satoshi")),
+    allocation_class: readStringField(payload, "allocation_class"),
+    allocation_reason: readStringField(payload, "allocation_reason"),
+    asset_standard: "ordinal",
+    asset_key: readStringField(payload, "asset_key"),
+    asset_symbol: readStringField(payload, "asset_symbol"),
+    source_name: readStringField(payload, "source_name"),
+    updated_at_unix: Math.max(0, readIntegerField(payload, "updated_at_unix")),
+    payload: payload.payload ?? null
+  };
+}
+
+function readNormalizedKey(...values: string[]): string {
+  for (const raw of values) {
+    const value = String(raw || "").trim();
+    if (value !== "") {
+      return value;
+    }
+  }
+  return "";
 }
 
 function createEmptyVisitAccounting(): ShellVisitAccounting {

@@ -66,7 +66,16 @@ fs_http:
   prefetch_distance_chunks: 2
   strategy_debug_log_enabled: false
 
-woc_api_key: ""
+external_api:
+  woc:
+    api_key: ""
+    min_interval_ms: 1000
+  asset_index:
+    base_url: ""
+    auth_mode: ""
+    auth_name: ""
+    auth_value: ""
+    min_interval_ms: 250
 
 log:
   file: "logs/bitfs.log"
