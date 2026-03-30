@@ -42,9 +42,6 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if rt == nil || rt.Host == nil {
 		return feePoolServiceQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
-	if args.Session == nil || strings.TrimSpace(args.Session.SpendTxID) == "" {
-		return feePoolServiceQuoteBuilt{}, fmt.Errorf("fee pool session missing")
-	}
 	gatewayPubKey := rt.Host.Peerstore().PubKey(args.GatewayPeerID)
 	if gatewayPubKey == nil {
 		return feePoolServiceQuoteBuilt{}, fmt.Errorf("missing gateway pubkey")
@@ -94,11 +91,18 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if chargeReason == "" {
 		chargeReason = strings.TrimSpace(args.ServiceType)
 	}
-	nextSeq := args.Session.Sequence + 1
-	nextServerAmount := args.Session.ServerAmount + quote.ChargeAmountSatoshi
+	nextSeq := uint32(0)
+	nextServerAmount := uint64(0)
+	if args.Session != nil {
+		nextSeq = args.Session.Sequence + 1
+		nextServerAmount = args.Session.ServerAmount + quote.ChargeAmountSatoshi
+	}
 	grantedDurationSeconds := uint32(0)
 	grantedDeadlineUnix := int64(0)
 	if strings.TrimSpace(args.ServiceType) == poolcore.QuoteServiceTypeListenCycle {
+		if args.Session == nil {
+			return feePoolServiceQuoteBuilt{}, fmt.Errorf("fee pool session missing")
+		}
 		duration, err := poolcore.ListenOfferBudgetToDurationSeconds(quote.ChargeAmountSatoshi, args.Session.SingleCycleFeeSatoshi, args.Session.BillingCycleSeconds)
 		if err != nil {
 			return feePoolServiceQuoteBuilt{}, err

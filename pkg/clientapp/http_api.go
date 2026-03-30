@@ -6896,6 +6896,7 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
 		{Key: "listen.offer_payment_satoshi", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 40, Description: "监听续费每次向 gateway 主动提出的预算 sat"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
+		{Key: "payment.preferred_scheme", Type: adminConfigString, MinLen: 1, MaxLen: 32, Description: "系统默认优先支付通道：pool_2of2_v1 或 chain_tx_v1"},
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
@@ -7041,6 +7042,7 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
 		"listen.offer_payment_satoshi":                cfg.Listen.OfferPaymentSatoshi,
 		"listen.tick_seconds":                         cfg.Listen.TickSeconds,
+		"payment.preferred_scheme":                    cfg.Payment.PreferredScheme,
 		"reachability.auto_announce_enabled":          cfgBool(cfg.Reachability.AutoAnnounceEnabled, true),
 		"reachability.announce_ttl_seconds":           cfg.Reachability.AnnounceTTLSeconds,
 		"scan.rescan_interval_seconds":                cfg.Scan.RescanIntervalSeconds,
@@ -7175,6 +7177,12 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 		cfg.FSHTTP.ListenAddr = v
 	case "external_api.woc.api_key":
 		cfg.ExternalAPI.WOC.APIKey = v
+	case "payment.preferred_scheme":
+		scheme, err := normalizePreferredPaymentScheme(v)
+		if err != nil {
+			return err
+		}
+		cfg.Payment.PreferredScheme = scheme
 	default:
 		return fmt.Errorf("unsupported string key: %s", key)
 	}

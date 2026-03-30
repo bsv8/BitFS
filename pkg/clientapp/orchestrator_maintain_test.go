@@ -36,6 +36,7 @@ func TestOrchestratorReconcileSignal_ChainTipUsesMaintain(t *testing.T) {
 			{ID: peer.ID("gw-chain-2")},
 		},
 	}
+	rt.runIn.Listen.Enabled = boolPtr(true)
 	o := newOrchestrator(rt)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")
@@ -54,5 +55,29 @@ func TestOrchestratorReconcileSignal_ChainTipUsesMaintain(t *testing.T) {
 		if got := task.Command.CommandType; got != clientKernelCommandFeePoolMaintain {
 			t.Fatalf("task[%d] command type mismatch: got=%s want=%s", i, got, clientKernelCommandFeePoolMaintain)
 		}
+	}
+}
+
+func TestOrchestratorReconcileSignal_ChainTipSkipsWhenListenDisabled(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{
+		HealthyGWs: []peer.AddrInfo{
+			{ID: peer.ID("gw-chain-1")},
+		},
+	}
+	rt.runIn.Listen.Enabled = boolPtr(false)
+	o := newOrchestrator(rt)
+	if o == nil {
+		t.Fatal("newOrchestrator returned nil")
+	}
+	out := o.reconcileSignal(orchestratorSignal{
+		Type: orchestratorSignalChainTip,
+		Payload: map[string]any{
+			"tip_to": int64(123),
+		},
+	}, time.Unix(1700000000, 0))
+	if len(out) != 0 {
+		t.Fatalf("task count mismatch: got=%d want=0", len(out))
 	}
 }

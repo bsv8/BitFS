@@ -304,6 +304,14 @@ type Config struct {
 		OfferPaymentSatoshi   uint64 `yaml:"offer_payment_satoshi" toml:"offer_payment_satoshi"`
 		TickSeconds           uint32 `yaml:"tick_seconds" toml:"tick_seconds"`
 	} `yaml:"listen" toml:"listen"`
+	Payment struct {
+		// PreferredScheme 是“系统默认优先支付通道”。
+		// 设计说明：
+		// - 这里只表达默认优先级，不引入“强制只走某一条”的第二层语义；
+		// - 显式 quote/pay 仍可带 payment_scheme 覆盖；
+		// - 缺省保持旧行为，优先走 pool_2of2_v1。
+		PreferredScheme string `yaml:"preferred_scheme" toml:"preferred_scheme"`
+	} `yaml:"payment" toml:"payment"`
 	Reachability struct {
 		// AutoAnnounceEnabled 控制“客户端自动把自己当前可达地址发布到 gateway 目录”。
 		// 设计说明：
@@ -419,6 +427,9 @@ type RunInput struct {
 		OfferPaymentSatoshi   uint64
 		TickSeconds           uint32
 	}
+	Payment struct {
+		PreferredScheme string
+	}
 	Reachability struct {
 		AutoAnnounceEnabled *bool
 		AnnounceTTLSeconds  uint32
@@ -527,6 +538,7 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 	in.Listen.AutoRenewRounds = cfg.Listen.AutoRenewRounds
 	in.Listen.OfferPaymentSatoshi = cfg.Listen.OfferPaymentSatoshi
 	in.Listen.TickSeconds = cfg.Listen.TickSeconds
+	in.Payment.PreferredScheme = cfg.Payment.PreferredScheme
 	if cfg.Reachability.AutoAnnounceEnabled != nil {
 		v := *cfg.Reachability.AutoAnnounceEnabled
 		in.Reachability.AutoAnnounceEnabled = &v
@@ -602,6 +614,7 @@ func (in RunInput) toConfig() Config {
 	cfg.Listen.AutoRenewRounds = in.Listen.AutoRenewRounds
 	cfg.Listen.OfferPaymentSatoshi = in.Listen.OfferPaymentSatoshi
 	cfg.Listen.TickSeconds = in.Listen.TickSeconds
+	cfg.Payment.PreferredScheme = in.Payment.PreferredScheme
 	if in.Reachability.AutoAnnounceEnabled != nil {
 		v := *in.Reachability.AutoAnnounceEnabled
 		cfg.Reachability.AutoAnnounceEnabled = &v
@@ -1215,6 +1228,11 @@ func ApplyConfigDefaults(cfg *Config) error {
 	if cfg.Listen.TickSeconds == 0 {
 		cfg.Listen.TickSeconds = networkDefaults.ListenTickSeconds
 	}
+	scheme, err := normalizePreferredPaymentScheme(cfg.Payment.PreferredScheme)
+	if err != nil {
+		return err
+	}
+	cfg.Payment.PreferredScheme = scheme
 	if cfg.Reachability.AutoAnnounceEnabled == nil {
 		v := true
 		cfg.Reachability.AutoAnnounceEnabled = &v

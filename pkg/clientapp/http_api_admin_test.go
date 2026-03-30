@@ -628,6 +628,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		"listen.auto_renew_rounds",
 		"listen.offer_payment_satoshi",
 		"listen.tick_seconds",
+		"payment.preferred_scheme",
 		"reachability.auto_announce_enabled",
 		"reachability.announce_ttl_seconds",
 	} {
@@ -658,6 +659,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 			{"key":"listen.auto_renew_rounds","value":12345},
 			{"key":"listen.offer_payment_satoshi","value":888},
 			{"key":"listen.tick_seconds","value":9},
+			{"key":"payment.preferred_scheme","value":"chain_tx_v1"},
 			{"key":"reachability.auto_announce_enabled","value":false},
 			{"key":"reachability.announce_ttl_seconds","value":7200},
 			{"key":"scan.rescan_interval_seconds","value":120},
@@ -689,6 +691,9 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	}
 	if rt.runIn.Listen.TickSeconds != 9 {
 		t.Fatalf("listen.tick_seconds not updated: %d", rt.runIn.Listen.TickSeconds)
+	}
+	if rt.runIn.Payment.PreferredScheme != "chain_tx_v1" {
+		t.Fatalf("payment.preferred_scheme not updated: %s", rt.runIn.Payment.PreferredScheme)
 	}
 	if cfgBool(rt.runIn.Reachability.AutoAnnounceEnabled, true) {
 		t.Fatalf("reachability.auto_announce_enabled not updated: got=true want=false")

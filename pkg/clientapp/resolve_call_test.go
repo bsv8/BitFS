@@ -243,7 +243,7 @@ func TestDecorateQuotedPaymentOptionUsesRealQuoteStatus(t *testing.T) {
 		ChargeReason: "domain_query_fee",
 	}
 
-	got := decorateQuotedPaymentOption(option, quoted, 1, "call")
+	got := decorateQuotedPeerCallPaymentOption(option, quoted.ServiceQuote.ChargeAmountSatoshi, quoted.ChargeReason, quoted.QuoteStatus, 1, "call")
 	if got == nil {
 		t.Fatalf("decorateQuotedPaymentOption returned nil")
 	}

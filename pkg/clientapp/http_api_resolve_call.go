@@ -20,6 +20,7 @@ type apiRouteCallRequest struct {
 	Body            json.RawMessage `json:"body,omitempty"`
 	BodyBase64      string          `json:"body_base64,omitempty"`
 	PaymentMode     string          `json:"payment_mode,omitempty"`
+	PaymentScheme   string          `json:"payment_scheme,omitempty"`
 	ServiceQuoteB64 string          `json:"service_quote_base64,omitempty"`
 }
 
@@ -48,12 +49,13 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp, err := TriggerPeerCall(r.Context(), s.rt, TriggerPeerCallParams{
-		To:           req.To,
-		Route:        req.Route,
-		ContentType:  req.ContentType,
-		Body:         body,
-		PaymentMode:  req.PaymentMode,
-		ServiceQuote: serviceQuote,
+		To:            req.To,
+		Route:         req.Route,
+		ContentType:   req.ContentType,
+		Body:          body,
+		PaymentMode:   req.PaymentMode,
+		PaymentScheme: req.PaymentScheme,
+		ServiceQuote:  serviceQuote,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})

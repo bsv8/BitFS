@@ -273,6 +273,10 @@
     if (paymentMode !== "") {
       payload.payment_mode = paymentMode;
     }
+    const paymentScheme = String(input.paymentScheme || input.payment_scheme || "").trim();
+    if (paymentScheme !== "") {
+      payload.payment_scheme = paymentScheme;
+    }
     const serviceQuoteBase64 = String(input.serviceQuoteBase64 || input.service_quote_base64 || "").trim();
     if (serviceQuoteBase64 !== "") {
       payload.service_quote_base64 = serviceQuoteBase64;
@@ -384,6 +388,7 @@
         return ipcRenderer.invoke("bitfs-viewer:peer-call", {
           ...normalized,
           payment_mode: "pay",
+          payment_scheme: String(option && option.scheme || ""),
           service_quote_base64: String(quoted && quoted.service_quote_base64 || "")
         });
       }

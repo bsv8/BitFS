@@ -20,12 +20,13 @@ const (
 )
 
 type TriggerPeerCallParams struct {
-	To           string
-	Route        string
-	ContentType  string
-	Body         []byte
-	PaymentMode  string
-	ServiceQuote []byte
+	To            string
+	Route         string
+	ContentType   string
+	Body          []byte
+	PaymentMode   string
+	PaymentScheme string
+	ServiceQuote  []byte
 }
 
 type TriggerPeerResolveParams struct {
@@ -113,7 +114,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
 	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
-		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.ServiceQuote)
+		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.ServiceQuote, p.PaymentScheme)
 	}
 	out, err = callNodeRoute(ctx, rt, peerID, req)
 	if err != nil {

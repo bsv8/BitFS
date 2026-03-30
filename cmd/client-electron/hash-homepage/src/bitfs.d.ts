@@ -346,6 +346,8 @@ type BitfsPeerCallRequest = {
   body_base64?: string;
   paymentMode?: "quote" | "pay";
   payment_mode?: "quote" | "pay";
+  paymentScheme?: string;
+  payment_scheme?: string;
   serviceQuoteBase64?: string;
   service_quote_base64?: string;
 };

@@ -3,6 +3,7 @@ package clientapp
 import (
 	"testing"
 
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	oldproto "github.com/golang/protobuf/proto"
@@ -88,5 +89,81 @@ func TestExpectedPeerCallResultPayloadForBroadcastNodeReachabilityQuery(t *testi
 	}
 	if string(got) != string(want) {
 		t.Fatalf("payload mismatch")
+	}
+}
+
+func TestChoosePeerCallPaymentOptionFallsBackToChainTx(t *testing.T) {
+	got, ok := choosePeerCallPaymentOption([]*ncall.PaymentOption{
+		{Scheme: ncall.PaymentSchemeChainTxV1},
+	}, "")
+	if !ok || got == nil {
+		t.Fatalf("choosePeerCallPaymentOption() did not return chain_tx_v1")
+	}
+	if got.Scheme != ncall.PaymentSchemeChainTxV1 {
+		t.Fatalf("choosePeerCallPaymentOption() = %s, want %s", got.Scheme, ncall.PaymentSchemeChainTxV1)
+	}
+}
+
+func TestChoosePeerCallPaymentOptionStillPrefersConfiguredScheme(t *testing.T) {
+	got, ok := choosePeerCallPaymentOption([]*ncall.PaymentOption{
+		{Scheme: ncall.PaymentSchemeChainTxV1},
+		{Scheme: ncall.PaymentSchemePool2of2V1},
+	}, ncall.PaymentSchemePool2of2V1)
+	if !ok || got == nil {
+		t.Fatalf("choosePeerCallPaymentOption() returned no option")
+	}
+	if got.Scheme != ncall.PaymentSchemePool2of2V1 {
+		t.Fatalf("choosePeerCallPaymentOption() = %s, want %s", got.Scheme, ncall.PaymentSchemePool2of2V1)
+	}
+}
+
+func TestChoosePeerCallPaymentOptionPrefersChainTxWhenConfigured(t *testing.T) {
+	got, ok := choosePeerCallPaymentOption([]*ncall.PaymentOption{
+		{Scheme: ncall.PaymentSchemePool2of2V1},
+		{Scheme: ncall.PaymentSchemeChainTxV1},
+	}, ncall.PaymentSchemeChainTxV1)
+	if !ok || got == nil {
+		t.Fatalf("choosePeerCallPaymentOption() returned no option")
+	}
+	if got.Scheme != ncall.PaymentSchemeChainTxV1 {
+		t.Fatalf("choosePeerCallPaymentOption() = %s, want %s", got.Scheme, ncall.PaymentSchemeChainTxV1)
+	}
+}
+
+func TestChooseAcceptedQuotePaymentScheme(t *testing.T) {
+	got, err := chooseAcceptedQuotePaymentScheme("")
+	if err != nil {
+		t.Fatalf("chooseAcceptedQuotePaymentScheme(default) error = %v", err)
+	}
+	if got != ncall.PaymentSchemePool2of2V1 {
+		t.Fatalf("chooseAcceptedQuotePaymentScheme(default) = %s, want %s", got, ncall.PaymentSchemePool2of2V1)
+	}
+	got, err = chooseAcceptedQuotePaymentScheme(ncall.PaymentSchemeChainTxV1)
+	if err != nil {
+		t.Fatalf("chooseAcceptedQuotePaymentScheme(chain_tx_v1) error = %v", err)
+	}
+	if got != ncall.PaymentSchemeChainTxV1 {
+		t.Fatalf("chooseAcceptedQuotePaymentScheme(chain_tx_v1) = %s, want %s", got, ncall.PaymentSchemeChainTxV1)
+	}
+	if _, err := chooseAcceptedQuotePaymentScheme("unknown"); err == nil {
+		t.Fatalf("chooseAcceptedQuotePaymentScheme(unknown) expected error")
+	}
+}
+
+func TestPeerCallQuotedServiceTypeMapsBroadcastRoute(t *testing.T) {
+	if got := peerCallQuotedServiceType(broadcastmodule.RouteBroadcastV1DemandPublish); got != broadcastmodule.QuoteServiceTypeDemandPublish {
+		t.Fatalf("peerCallQuotedServiceType(demand_publish) = %s, want %s", got, broadcastmodule.QuoteServiceTypeDemandPublish)
+	}
+	if got := peerCallQuotedServiceType(domainmodule.RouteDomainV1Query); got != domainmodule.RouteDomainV1Query {
+		t.Fatalf("peerCallQuotedServiceType(domain_query) = %s, want %s", got, domainmodule.RouteDomainV1Query)
+	}
+}
+
+func TestPeerCallReceiptServiceTypeMapsRoutes(t *testing.T) {
+	if got := peerCallReceiptServiceType(broadcastmodule.RouteBroadcastV1DemandPublish); got != broadcastmodule.ServiceTypeDemandPublish {
+		t.Fatalf("peerCallReceiptServiceType(demand_publish) = %s, want %s", got, broadcastmodule.ServiceTypeDemandPublish)
+	}
+	if got := peerCallReceiptServiceType(domainmodule.RouteDomainV1SetTarget); got != domainmodule.ServiceTypeSetTarget {
+		t.Fatalf("peerCallReceiptServiceType(set_target) = %s, want %s", got, domainmodule.ServiceTypeSetTarget)
 	}
 }

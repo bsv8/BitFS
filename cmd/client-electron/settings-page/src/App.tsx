@@ -60,6 +60,7 @@ export default function App() {
   const [homepageDraft, setHomepageDraft] = useState("");
   const [autoReachabilityAnnounceEnabled, setAutoReachabilityAnnounceEnabled] = useState(true);
   const [reachabilityAnnounceTTLSeconds, setReachabilityAnnounceTTLSeconds] = useState("3600");
+  const [preferredPaymentScheme, setPreferredPaymentScheme] = useState("pool_2of2_v1");
 
   async function loadAll(nextStaticPath = staticPath) {
     setLoading(true);
@@ -94,6 +95,7 @@ export default function App() {
         setHomepageDraft(nextShellState.userHomeSeedHash || nextShellState.backend.defaultHomeSeedHash || "");
         setAutoReachabilityAnnounceEnabled(Boolean(nextAdminConfig["reachability.auto_announce_enabled"] ?? true));
         setReachabilityAnnounceTTLSeconds(String(nextAdminConfig["reachability.announce_ttl_seconds"] ?? 3600));
+        setPreferredPaymentScheme(String(nextAdminConfig["payment.preferred_scheme"] ?? "pool_2of2_v1"));
       });
     } catch (nextError) {
       setError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -155,6 +157,7 @@ export default function App() {
   const currentRootSeedHash = shellState?.currentRootSeedHash || "";
   const currentAutoReachabilityAnnounceEnabled = Boolean(adminConfig["reachability.auto_announce_enabled"] ?? true);
   const currentReachabilityAnnounceTTLSeconds = Number(adminConfig["reachability.announce_ttl_seconds"] ?? 3600);
+  const currentPreferredPaymentScheme = String(adminConfig["payment.preferred_scheme"] ?? "pool_2of2_v1");
   const clientReady = shellState?.backend.backendPhase === "available" && shellState?.backend.runtimePhase === "ready";
 
   return (
@@ -436,6 +439,53 @@ export default function App() {
 
         {!loading && activeSection === "billing" ? (
           <div className="section-stack">
+            <section className="panel">
+              <div className="panel-head">
+                <div>
+                  <p className="panel-kicker">Billing</p>
+                  <h2>默认支付通道</h2>
+                </div>
+              </div>
+              <form
+                className="form-stack section-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (preferredPaymentScheme !== "pool_2of2_v1" && preferredPaymentScheme !== "chain_tx_v1") {
+                    setError("payment preferred scheme invalid");
+                    return;
+                  }
+                  void runBusyTask(async () => {
+                    const nextConfig = await setAdminConfigItems([
+                      { key: "payment.preferred_scheme", value: preferredPaymentScheme }
+                    ]);
+                    startTransition(() => {
+                      setAdminConfig(nextConfig);
+                      setPreferredPaymentScheme(String(nextConfig["payment.preferred_scheme"] ?? "pool_2of2_v1"));
+                    });
+                    await loadAll(staticPath);
+                  });
+                }}
+              >
+                <label>
+                  <span>优先支付通道</span>
+                  <select className="text-input" value={preferredPaymentScheme} onChange={(event) => setPreferredPaymentScheme(event.target.value)}>
+                    <option value="pool_2of2_v1">pool_2of2_v1</option>
+                    <option value="chain_tx_v1">chain_tx_v1</option>
+                  </select>
+                </label>
+                <p className="helper-copy">
+                  这是系统默认优先级。统一支付会优先选这里配置的通道，显式指定 `payment_scheme` 时仍会覆盖。
+                </p>
+                <p className="helper-copy">
+                  当前生效值：{currentPreferredPaymentScheme}
+                </p>
+                <div className="panel-actions">
+                  <button className="primary-button" type="submit" disabled={busy || preferredPaymentScheme === currentPreferredPaymentScheme}>
+                    保存支付设置
+                  </button>
+                </div>
+              </form>
+            </section>
             <BillingManager walletSummary={walletSummary} shellBusy={busy} shellState={shellState} />
           </div>
         ) : null}

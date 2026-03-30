@@ -323,6 +323,11 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 			NextRunAt:      now,
 		})
 	case orchestratorSignalChainTip:
+		// 设计约束：链高度推进只服务 listen 资金池维护。
+		// 非 listen 场景（例如 gateway 直付、普通 peer.call）不应该因为“配置了网关”就被动开池。
+		if o == nil || o.rt == nil || !cfgBool(o.rt.runIn.Listen.Enabled, true) {
+			break
+		}
 		for _, gw := range snapshotHealthyGateways(o.rt) {
 			gwID := strings.TrimSpace(gw.ID.String())
 			if gwID == "" {

@@ -327,7 +327,7 @@ export function registerShellIPC(
       headers: runtime.getCurrentVisitHeaders()
     });
   });
-  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string }) => {
+  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; payment_scheme?: string; service_quote_base64?: string }) => {
     const normalized = normalizeViewerPeerCallRequest(payload);
     debugLogger.log("ipc", "viewer_peer_call", {
       to: normalized.to,
@@ -666,13 +666,14 @@ function normalizeManagedSettingsMethod(raw: string | undefined): "GET" | "POST"
   return "GET";
 }
 
-function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; contentType?: string; body?: unknown; body_base64?: string; bodyBase64?: string; payment_mode?: string; paymentMode?: string; service_quote_base64?: string; serviceQuoteBase64?: string }): {
+function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; contentType?: string; body?: unknown; body_base64?: string; bodyBase64?: string; payment_mode?: string; paymentMode?: string; payment_scheme?: string; paymentScheme?: string; service_quote_base64?: string; serviceQuoteBase64?: string }): {
   to: string;
   route: string;
   content_type: string;
   body?: unknown;
   body_base64?: string;
   payment_mode?: string;
+  payment_scheme?: string;
   service_quote_base64?: string;
 } {
   const to = String(payload?.to || "").trim();
@@ -694,6 +695,7 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
     body?: unknown;
     body_base64?: string;
     payment_mode?: string;
+    payment_scheme?: string;
     service_quote_base64?: string;
   } = {
     to,
@@ -711,6 +713,10 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
   const paymentMode = String(payload?.paymentMode || payload?.payment_mode || "").trim().toLowerCase();
   if (paymentMode === "quote" || paymentMode === "pay") {
     out.payment_mode = paymentMode;
+  }
+  const paymentScheme = String(payload?.paymentScheme || payload?.payment_scheme || "").trim();
+  if (paymentScheme !== "") {
+    out.payment_scheme = paymentScheme;
   }
   const serviceQuoteBase64 = String(payload?.serviceQuoteBase64 || payload?.service_quote_base64 || "").trim();
   if (serviceQuoteBase64 !== "") {
