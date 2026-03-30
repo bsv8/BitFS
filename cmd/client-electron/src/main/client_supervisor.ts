@@ -6,15 +6,19 @@ import fsPromises from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 
-import type { BitfsRuntimeEvent, ManagedClientPhase, ManagedClientState } from "../shared/shell_contract";
+import type {
+  BitfsRuntimeEvent,
+  ManagedClientBackendPhase,
+  ManagedClientKeyState,
+  ManagedClientRuntimePhase,
+  ManagedClientState
+} from "../shared/shell_contract";
 import { debugLogger } from "./debug_logger";
+import { ManagedControlChannel } from "./managed_control_channel";
 
-const STATUS_POLL_INTERVAL_MS = 1500;
 const START_TIMEOUT_MS = 20_000;
 const READY_TIMEOUT_MS = 30_000;
 const LOG_BUFFER_LIMIT = 80;
-const BOOTSTRAP_PREFIX = "BITFS_MANAGED_STATE ";
-const MANAGED_EVENT_PREFIX = "BITFS_EVENT ";
 
 type ManagedClientSupervisorInit = {
   appRootDir: string;
@@ -30,23 +34,6 @@ type ManagedClientLaunchConfig = {
   apiBase: string;
   fsHTTPListenAddr: string;
   systemHomepageBundleDir: string;
-};
-
-type KeyStatusResponse = {
-  phase?: ManagedClientPhase;
-  has_key?: boolean;
-  unlocked?: boolean;
-  has_system_home_bundle?: boolean;
-  default_home_seed_hash?: string;
-  startup_error_service?: string;
-  startup_error_listen?: string;
-  startup_error_message?: string;
-  chain_access_mode?: string;
-  wallet_chain_base_url?: string;
-  woc_proxy_enabled?: boolean;
-  woc_proxy_listen_addr?: string;
-  woc_upstream_root_url?: string;
-  woc_min_interval?: string;
 };
 
 type ExportKeyResponse = {
@@ -68,24 +55,12 @@ type StaticUploadRequest = {
   overwrite: boolean;
 };
 
-type BootstrapStateEvent = {
-  type?: string;
-  phase?: ManagedClientPhase;
-  startup_error_service?: string;
-  startup_error_listen?: string;
-  startup_error_message?: string;
-  chain_access_mode?: string;
-  wallet_chain_base_url?: string;
-  woc_proxy_enabled?: boolean;
-  woc_proxy_listen_addr?: string;
-  woc_upstream_root_url?: string;
-  woc_min_interval?: string;
-};
-
 export class ManagedClientSupervisor extends EventEmitter {
   private readonly launch: ManagedClientLaunchConfig;
   private child: ChildProcessByStdio<null, Readable, Readable> | null = null;
-  private pollTimer: NodeJS.Timeout | null = null;
+  private controlChannel: ManagedControlChannel | null = null;
+  private controlRuntimeEpoch = "";
+  private controlLastSeq = 0;
   private state: ManagedClientState;
   private startPromise: Promise<ManagedClientState> | null = null;
   private stopping = false;
@@ -96,9 +71,9 @@ export class ManagedClientSupervisor extends EventEmitter {
     super();
     this.launch = launch;
     this.state = {
-      phase: "stopped",
-      hasKey: false,
-      unlocked: false,
+      backendPhase: "stopped",
+      runtimePhase: "stopped",
+      keyState: "missing",
       hasSystemHomeBundle: false,
       defaultHomeSeedHash: "",
       pid: 0,
@@ -109,6 +84,7 @@ export class ManagedClientSupervisor extends EventEmitter {
       lastError: "",
       startupErrorService: "",
       startupErrorListenAddr: "",
+      runtimeErrorMessage: "",
       chainAccessMode: "",
       walletChainBaseURL: "",
       wocProxyEnabled: false,
@@ -156,7 +132,8 @@ export class ManagedClientSupervisor extends EventEmitter {
 
   async start(): Promise<ManagedClientState> {
     debugLogger.log("supervisor", "start_called", {
-      phase: this.state.phase,
+      backend_phase: this.state.backendPhase,
+      runtime_phase: this.state.runtimePhase,
       has_child: Boolean(this.child)
     });
     if (this.startPromise) {
@@ -176,21 +153,24 @@ export class ManagedClientSupervisor extends EventEmitter {
   async stop(): Promise<void> {
     debugLogger.log("supervisor", "stop_called", {
       pid: this.state.pid,
-      phase: this.state.phase
+      backend_phase: this.state.backendPhase,
+      runtime_phase: this.state.runtimePhase
     });
     this.stopping = true;
-    this.stopPolling();
     const child = this.child;
     if (!child) {
+      await this.closeControlChannel();
       this.setState({
-        phase: "stopped",
+        backendPhase: "stopped",
+        runtimePhase: "stopped",
+        keyState: "missing",
         pid: 0,
-        unlocked: false,
         hasSystemHomeBundle: false,
         defaultHomeSeedHash: "",
         lastError: "",
         startupErrorService: "",
-        startupErrorListenAddr: ""
+        startupErrorListenAddr: "",
+        runtimeErrorMessage: ""
       });
       this.stopping = false;
       return;
@@ -205,15 +185,18 @@ export class ManagedClientSupervisor extends EventEmitter {
       await exitPromise.catch(() => undefined);
     }
     this.child = null;
+    await this.closeControlChannel();
     this.setState({
-      phase: "stopped",
+      backendPhase: "stopped",
+      runtimePhase: "stopped",
+      keyState: "missing",
       pid: 0,
-      unlocked: false,
       hasSystemHomeBundle: false,
       defaultHomeSeedHash: "",
       lastError: "",
       startupErrorService: "",
-      startupErrorListenAddr: ""
+      startupErrorListenAddr: "",
+      runtimeErrorMessage: ""
     });
     this.stopping = false;
   }
@@ -228,12 +211,7 @@ export class ManagedClientSupervisor extends EventEmitter {
     debugLogger.log("supervisor", "create_key_requested");
     await this.ensureReachable();
     await this.postJSON("/api/v1/key/new", { password: requirePassword(password) });
-    await this.refreshStatus();
-    // 设计说明：
-    // - 当前 Go managed API 在 key/new 后通常先落到 hasKey + locked；
-    // - renderer 会继续复用同一密码自动解锁；
-    // - 这里同时兼容未来 key/new 直接进入 ready 的实现，避免壳层把状态机写死。
-    return this.waitForState((state) => state.hasKey && (state.phase === "locked" || state.phase === "ready"), READY_TIMEOUT_MS);
+    return this.waitForState((state) => state.keyState !== "missing", READY_TIMEOUT_MS);
   }
 
   async importKeyCipher(cipher: Record<string, unknown>): Promise<ManagedClientState> {
@@ -245,8 +223,7 @@ export class ManagedClientSupervisor extends EventEmitter {
     });
     await this.ensureReachable();
     await this.postJSON("/api/v1/key/import", { cipher });
-    await this.refreshStatus();
-    return this.waitForState((state) => state.phase === "locked" && state.hasKey, READY_TIMEOUT_MS);
+    return this.waitForState((state) => state.keyState === "locked", READY_TIMEOUT_MS);
   }
 
   async exportKeyCipher(): Promise<Record<string, unknown>> {
@@ -264,16 +241,20 @@ export class ManagedClientSupervisor extends EventEmitter {
     debugLogger.log("supervisor", "unlock_requested");
     await this.ensureReachable();
     await this.postJSON("/api/v1/key/unlock", { password: requirePassword(password) });
-    await this.refreshStatus();
-    return this.waitForState((state) => state.phase === "ready" && state.unlocked, READY_TIMEOUT_MS);
+    // 设计说明：
+    // - `unlock` 现在只要求 daemon 已经接受这次解锁并开始处理；
+    // - renderer 再继续监听状态流，看 `runtimePhase` 从 `starting` 走到 `ready` 或 `error`。
+    return this.waitForState(
+      (state) => state.keyState === "unlocked" && state.runtimePhase !== "stopped",
+      READY_TIMEOUT_MS
+    );
   }
 
   async lock(): Promise<ManagedClientState> {
     debugLogger.log("supervisor", "lock_requested");
     await this.ensureReachable();
     await this.postJSON("/api/v1/key/lock", {});
-    await this.refreshStatus();
-    return this.waitForState((state) => state.phase === "locked" && !state.unlocked, READY_TIMEOUT_MS);
+    return this.waitForState((state) => state.keyState !== "unlocked" && state.runtimePhase === "stopped", READY_TIMEOUT_MS);
   }
 
   async requestManagedJSON<T>(request: ManagedJSONRequest): Promise<T> {
@@ -309,11 +290,11 @@ export class ManagedClientSupervisor extends EventEmitter {
   private async ensureReachable(): Promise<void> {
     const state = await this.start();
     debugLogger.log("supervisor", "ensure_reachable_result", {
-      phase: state.phase,
-      has_key: state.hasKey,
-      unlocked: state.unlocked
+      backend_phase: state.backendPhase,
+      runtime_phase: state.runtimePhase,
+      key_state: state.keyState
     });
-    if (state.phase === "error" || state.phase === "startup_error") {
+    if (state.backendPhase === "startup_error") {
       throw new Error(state.lastError || "managed backend start failed");
     }
   }
@@ -324,7 +305,7 @@ export class ManagedClientSupervisor extends EventEmitter {
       debugLogger.log("supervisor", "binary_missing", {
         binary_path: this.launch.binaryPath
       });
-      this.setState({ phase: "error", lastError: message });
+      this.setState({ backendPhase: "startup_error", lastError: message });
       return this.snapshot();
     }
     if (this.child) {
@@ -337,20 +318,58 @@ export class ManagedClientSupervisor extends EventEmitter {
       cwd: path.dirname(this.launch.vaultPath),
       args: this.buildManagedArgs()
     });
+    await this.closeControlChannel();
+    let controlChannel: ManagedControlChannel;
+    try {
+      controlChannel = await ManagedControlChannel.create();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      debugLogger.log("supervisor", "control_channel_create_failed", {
+        message
+      });
+      this.setState({ backendPhase: "startup_error", lastError: message });
+      return this.snapshot();
+    }
+    this.controlChannel = controlChannel;
+    this.controlRuntimeEpoch = "";
+    this.controlLastSeq = 0;
+    debugLogger.log("supervisor", "control_channel_ready", {
+      endpoint: controlChannel.getEndpoint()
+    });
+    controlChannel.on("hello", (payload: { runtime_epoch?: string }) => {
+      const runtimeEpoch = String(payload?.runtime_epoch || "").trim();
+      if (runtimeEpoch === "") {
+        return;
+      }
+      this.controlRuntimeEpoch = runtimeEpoch;
+      this.controlLastSeq = 0;
+      debugLogger.log("supervisor", "control_channel_hello", {
+        runtime_epoch: runtimeEpoch
+      });
+    });
+    controlChannel.on("event", (event: BitfsRuntimeEvent) => {
+      this.handleManagedControlEvent(event);
+    });
+    controlChannel.on("channel_error", (error: Error) => {
+      debugLogger.log("supervisor", "control_channel_error", {
+        message: error instanceof Error ? error.message : String(error)
+      });
+    });
     this.setState({
-      phase: "starting",
-      hasKey: false,
-      unlocked: false,
+      backendPhase: "starting",
+      runtimePhase: "stopped",
+      keyState: "missing",
       hasSystemHomeBundle: false,
       defaultHomeSeedHash: "",
       pid: 0,
       lastError: "",
       startupErrorService: "",
-      startupErrorListenAddr: ""
+      startupErrorListenAddr: "",
+      runtimeErrorMessage: ""
     });
     const child = spawn(this.launch.binaryPath, this.buildManagedArgs(), {
       cwd: path.dirname(this.launch.vaultPath),
-      env: buildManagedChildEnv(),
+      env: buildManagedChildEnv(controlChannel),
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true
     });
@@ -362,35 +381,54 @@ export class ManagedClientSupervisor extends EventEmitter {
         message
       });
       this.child = null;
-      this.stopPolling();
-      this.setState({ phase: "error", pid: 0, lastError: message, unlocked: false, hasSystemHomeBundle: false, defaultHomeSeedHash: "" });
+      void this.closeControlChannel().finally(() => {
+        this.setState({
+          backendPhase: "startup_error",
+          runtimePhase: "stopped",
+          keyState: "missing",
+          pid: 0,
+          lastError: message,
+          hasSystemHomeBundle: false,
+          defaultHomeSeedHash: "",
+          runtimeErrorMessage: ""
+        });
+      });
     });
     child.once("exit", (code, signal) => {
       this.child = null;
-      this.stopPolling();
-      if (this.stopping) {
-        debugLogger.log("supervisor", "child_stopped", {
+      void this.closeControlChannel().finally(() => {
+        if (this.stopping) {
+          debugLogger.log("supervisor", "child_stopped", {
+            code: code ?? 0,
+            signal: signal || ""
+          });
+          this.setState({ backendPhase: "stopped", runtimePhase: "stopped", keyState: "missing", pid: 0, runtimeErrorMessage: "" });
+          return;
+        }
+        const message = signal
+          ? `managed backend exited by signal ${signal}`
+          : `managed backend exited with code ${String(code ?? 0)}`;
+        debugLogger.log("supervisor", "child_exit_unexpected", {
           code: code ?? 0,
-          signal: signal || ""
+          signal: signal || "",
+          message
         });
-        this.setState({ phase: "stopped", pid: 0, unlocked: false });
-        return;
-      }
-      const message = signal
-        ? `managed backend exited by signal ${signal}`
-        : `managed backend exited with code ${String(code ?? 0)}`;
-      debugLogger.log("supervisor", "child_exit_unexpected", {
-        code: code ?? 0,
-        signal: signal || "",
-        message
+        this.setState({
+          backendPhase: this.state.backendPhase === "available" ? "stopped" : "startup_error",
+          runtimePhase: "stopped",
+          keyState: "missing",
+          pid: 0,
+          lastError: message,
+          hasSystemHomeBundle: false,
+          defaultHomeSeedHash: "",
+          runtimeErrorMessage: ""
+        });
       });
-      this.setState({ phase: "error", pid: 0, unlocked: false, lastError: message, hasSystemHomeBundle: false, defaultHomeSeedHash: "" });
     });
     this.setState({ pid: child.pid ?? 0 });
     debugLogger.log("supervisor", "child_spawned", {
       pid: child.pid ?? 0
     });
-    this.startPolling();
     return this.waitForReachableState(START_TIMEOUT_MS);
   }
 
@@ -412,103 +450,81 @@ export class ManagedClientSupervisor extends EventEmitter {
       const extracted = extractLines(chunk, this.stdoutLineRemainder);
       this.stdoutLineRemainder = extracted.remainder;
       const lines = extracted.lines;
-      this.appendLogs(lines.filter((line) => !isManagedControlLine(line)));
+      this.appendLogs(lines);
       for (const line of lines) {
         debugLogger.log("supervisor.stdout", "line", { line });
-        this.handleManagedControlLine(line);
       }
     });
     child.stderr.on("data", (chunk: Buffer | string) => {
       const extracted = extractLines(chunk, this.stderrLineRemainder);
       this.stderrLineRemainder = extracted.remainder;
       const lines = extracted.lines;
-      this.appendLogs(lines.filter((line) => !isManagedControlLine(line)));
+      this.appendLogs(lines);
       for (const line of lines) {
         debugLogger.log("supervisor.stderr", "line", { line });
-        this.handleManagedControlLine(line);
       }
     });
   }
 
-  private handleManagedControlLine(line: string): void {
-    this.handleBootstrapLine(line);
-    this.handleManagedEventLine(line);
-  }
-
-  private handleBootstrapLine(line: string): void {
-    const trimmed = String(line || "").trim();
-    if (!trimmed.startsWith(BOOTSTRAP_PREFIX)) {
+  private handleManagedControlEvent(event: BitfsRuntimeEvent): void {
+    const runtimeEpoch = String(event?.runtime_epoch || "").trim();
+    if (runtimeEpoch === "") {
       return;
     }
-    const raw = trimmed.slice(BOOTSTRAP_PREFIX.length);
-    try {
-      const event = JSON.parse(raw) as BootstrapStateEvent;
-      if (String(event.type || "") !== "bootstrap_state") {
-        return;
-      }
-      this.setState({
-        phase: event.phase || this.state.phase,
-        lastError: String(event.startup_error_message || "").trim(),
-        startupErrorService: String(event.startup_error_service || "").trim(),
-        startupErrorListenAddr: String(event.startup_error_listen || "").trim(),
-        chainAccessMode: String(event.chain_access_mode || "").trim(),
-        walletChainBaseURL: String(event.wallet_chain_base_url || "").trim(),
-        wocProxyEnabled: Boolean(event.woc_proxy_enabled),
-        wocProxyListenAddr: String(event.woc_proxy_listen_addr || "").trim(),
-        wocUpstreamRootURL: String(event.woc_upstream_root_url || "").trim(),
-        wocMinInterval: String(event.woc_min_interval || "").trim()
-      });
-    } catch (error) {
-      debugLogger.log("supervisor", "bootstrap_line_parse_failed", {
-        line: trimmed,
-        message: error instanceof Error ? error.message : String(error)
-      });
+    if (this.controlRuntimeEpoch === "") {
+      this.controlRuntimeEpoch = runtimeEpoch;
+      this.controlLastSeq = 0;
     }
-  }
-
-  private handleManagedEventLine(line: string): void {
-    const trimmed = String(line || "").trim();
-    if (!trimmed.startsWith(MANAGED_EVENT_PREFIX)) {
+    if (runtimeEpoch !== this.controlRuntimeEpoch) {
+      debugLogger.log("supervisor", "control_event_ignored_epoch_mismatch", {
+        runtime_epoch: runtimeEpoch,
+        expected_runtime_epoch: this.controlRuntimeEpoch,
+        topic: String(event.topic || "")
+      });
       return;
     }
-    const raw = trimmed.slice(MANAGED_EVENT_PREFIX.length);
-    try {
-      const event = JSON.parse(raw) as BitfsRuntimeEvent;
-      if (!event || typeof event !== "object" || typeof event.topic !== "string" || event.topic.trim() === "") {
-        return;
-      }
-      if (event.topic === "backend.phase.changed" && event.scope === "private") {
-        this.applyManagedPhaseEvent(event);
-      }
-      this.emit("event", event);
-    } catch (error) {
-      debugLogger.log("supervisor", "managed_event_parse_failed", {
-        line: trimmed,
-        message: error instanceof Error ? error.message : String(error)
+    const seq = Number(event.seq || 0);
+    if (!Number.isInteger(seq) || seq <= this.controlLastSeq) {
+      debugLogger.log("supervisor", "control_event_ignored_stale_seq", {
+        seq,
+        last_seq: this.controlLastSeq,
+        topic: String(event.topic || "")
       });
+      return;
     }
+    this.controlLastSeq = seq;
+    if (event.topic === "backend.snapshot" && event.scope === "private") {
+      this.applyManagedSnapshotEvent(event);
+    }
+    this.emit("event", event);
   }
 
-  private applyManagedPhaseEvent(event: BitfsRuntimeEvent): void {
+  private applyManagedSnapshotEvent(event: BitfsRuntimeEvent): void {
     const payload = event.payload && typeof event.payload === "object" ? event.payload : {};
+    const startupErrorMessage = readStringRecordField(payload, "startup_error_message");
+    const runtimeErrorMessage = readStringRecordField(payload, "runtime_error_message");
     this.setState({
-      phase: normalizeManagedPhase(payload.phase, this.state.phase),
-      unlocked: Boolean(payload.unlocked ?? this.state.unlocked),
-      lastError: readStringRecordField(payload, "startup_error_message") || this.state.lastError,
-      startupErrorService: readStringRecordField(payload, "startup_error_service") || this.state.startupErrorService,
-      startupErrorListenAddr: readStringRecordField(payload, "startup_error_listen") || this.state.startupErrorListenAddr,
-      chainAccessMode: readStringRecordField(payload, "chain_access_mode") || this.state.chainAccessMode,
-      walletChainBaseURL: readStringRecordField(payload, "wallet_chain_base_url") || this.state.walletChainBaseURL,
+      backendPhase: normalizeManagedBackendPhase(payload.backend_phase, this.state.backendPhase),
+      runtimePhase: normalizeManagedRuntimePhase(payload.runtime_phase, this.state.runtimePhase),
+      keyState: normalizeManagedKeyState(payload.key_state, this.state.keyState),
+      fsHTTPListenAddr: readStringRecordField(payload, "fs_http_listen_addr") || this.state.fsHTTPListenAddr,
+      pid: this.child?.pid ?? 0,
+      lastError: readStringRecordField(payload, "last_error") || startupErrorMessage || runtimeErrorMessage,
+      startupErrorService: readStringRecordField(payload, "startup_error_service"),
+      startupErrorListenAddr: readStringRecordField(payload, "startup_error_listen"),
+      runtimeErrorMessage,
+      chainAccessMode: readStringRecordField(payload, "chain_access_mode"),
+      walletChainBaseURL: readStringRecordField(payload, "wallet_chain_base_url"),
       wocProxyEnabled: hasRecordField(payload, "woc_proxy_enabled")
         ? readBooleanRecordField(payload, "woc_proxy_enabled")
         : this.state.wocProxyEnabled,
-      wocProxyListenAddr: readStringRecordField(payload, "woc_proxy_listen_addr") || this.state.wocProxyListenAddr,
-      wocUpstreamRootURL: readStringRecordField(payload, "woc_upstream_root_url") || this.state.wocUpstreamRootURL,
-      wocMinInterval: readStringRecordField(payload, "woc_min_interval") || this.state.wocMinInterval,
+      wocProxyListenAddr: readStringRecordField(payload, "woc_proxy_listen_addr"),
+      wocUpstreamRootURL: readStringRecordField(payload, "woc_upstream_root_url"),
+      wocMinInterval: readStringRecordField(payload, "woc_min_interval"),
       hasSystemHomeBundle: hasRecordField(payload, "has_system_home_bundle")
         ? readBooleanRecordField(payload, "has_system_home_bundle")
         : this.state.hasSystemHomeBundle,
-      defaultHomeSeedHash: normalizeSeedHash(readStringRecordField(payload, "default_home_seed_hash") || this.state.defaultHomeSeedHash)
+      defaultHomeSeedHash: normalizeSeedHash(readStringRecordField(payload, "default_home_seed_hash"))
     });
   }
 
@@ -529,99 +545,21 @@ export class ManagedClientSupervisor extends EventEmitter {
     this.setState({ recentLogs: next });
   }
 
-  private startPolling(): void {
-    this.stopPolling();
-    debugLogger.log("supervisor", "status_poll_start", {
-      interval_ms: STATUS_POLL_INTERVAL_MS
-    });
-    this.pollTimer = setInterval(() => {
-      void this.refreshStatus();
-    }, STATUS_POLL_INTERVAL_MS);
-  }
-
-  private stopPolling(): void {
-    if (!this.pollTimer) {
-      return;
-    }
-    clearInterval(this.pollTimer);
-    this.pollTimer = null;
-    debugLogger.log("supervisor", "status_poll_stop");
-  }
-
-  private async refreshStatus(): Promise<ManagedClientState> {
-    if (!this.child) {
-      return this.snapshot();
-    }
-    if (this.state.phase === "startup_error") {
-      return this.snapshot();
+  private async waitForReachableState(timeoutMs: number): Promise<ManagedClientState> {
+    const current = this.snapshot();
+    if (isReachablePhase(current.backendPhase)) {
+      return current;
     }
     try {
-      const status = await this.fetchJSON<KeyStatusResponse>("/api/v1/key/status");
-      const unlocked = Boolean(status.unlocked);
-      const statusPhase = status.phase;
-      const phase: ManagedClientPhase = statusPhase || (unlocked ? "ready" : "locked");
-      this.setState({
-        phase,
-        hasKey: Boolean(status.has_key),
-        unlocked,
-        hasSystemHomeBundle: Boolean(status.has_system_home_bundle),
-        defaultHomeSeedHash: normalizeSeedHash(status.default_home_seed_hash),
-        pid: this.child.pid ?? 0,
-        lastError: String(status.startup_error_message || "").trim(),
-        startupErrorService: String(status.startup_error_service || "").trim(),
-        startupErrorListenAddr: String(status.startup_error_listen || "").trim(),
-        chainAccessMode: String(status.chain_access_mode || "").trim(),
-        walletChainBaseURL: String(status.wallet_chain_base_url || "").trim(),
-        wocProxyEnabled: Boolean(status.woc_proxy_enabled),
-        wocProxyListenAddr: String(status.woc_proxy_listen_addr || "").trim(),
-        wocUpstreamRootURL: String(status.woc_upstream_root_url || "").trim(),
-        wocMinInterval: String(status.woc_min_interval || "").trim()
+      return await this.waitForState((state) => isReachablePhase(state.backendPhase), timeoutMs);
+    } catch {
+      const message = `managed backend did not publish startup state within ${timeoutMs}ms`;
+      debugLogger.log("supervisor", "reachability_timeout", {
+        timeout_ms: timeoutMs
       });
-      debugLogger.log("supervisor", "status_refreshed", {
-        phase,
-        has_key: Boolean(status.has_key),
-        unlocked,
-        has_system_home_bundle: Boolean(status.has_system_home_bundle),
-        default_home_seed_hash: normalizeSeedHash(status.default_home_seed_hash),
-        pid: this.child.pid ?? 0,
-        startup_error_service: String(status.startup_error_service || "").trim(),
-        startup_error_listen: String(status.startup_error_listen || "").trim(),
-        chain_access_mode: String(status.chain_access_mode || "").trim()
-      });
-    } catch (error) {
-      if (this.state.phase === "starting") {
-        debugLogger.log("supervisor", "status_refresh_retrying_during_start", {
-          message: error instanceof Error ? error.message : String(error)
-        });
-        return this.snapshot();
-      }
-      const message = error instanceof Error ? error.message : String(error);
-      debugLogger.log("supervisor", "status_refresh_failed", {
-        message
-      });
-      this.setState({ lastError: message });
+      this.setState({ backendPhase: "startup_error", lastError: message });
+      return this.snapshot();
     }
-    return this.snapshot();
-  }
-
-  private async waitForReachableState(timeoutMs: number): Promise<ManagedClientState> {
-    const started = Date.now();
-    while (Date.now() - started < timeoutMs) {
-      const state = await this.refreshStatus();
-      if (state.phase === "locked" || state.phase === "ready" || state.phase === "startup_error") {
-        return state;
-      }
-      if (state.phase === "error") {
-        return state;
-      }
-      await delay(250);
-    }
-    const message = `managed backend did not become reachable within ${timeoutMs}ms`;
-    debugLogger.log("supervisor", "reachability_timeout", {
-      timeout_ms: timeoutMs
-    });
-    this.setState({ phase: "error", lastError: message });
-    return this.snapshot();
   }
 
   private async waitForState(
@@ -701,21 +639,30 @@ export class ManagedClientSupervisor extends EventEmitter {
     });
   }
 
+  private async closeControlChannel(): Promise<void> {
+    const channel = this.controlChannel;
+    this.controlChannel = null;
+    this.controlRuntimeEpoch = "";
+    this.controlLastSeq = 0;
+    if (!channel) {
+      return;
+    }
+    await channel.close();
+  }
+
   private setState(next: Partial<ManagedClientState>): void {
     const previous = this.state;
     this.state = {
       ...this.state,
       ...next
     };
-    if (this.state.phase !== "starting") {
-      this.stopPolling();
-    }
     if (stateChanged(previous, this.state)) {
       debugLogger.log("supervisor", "state_changed", {
-        from_phase: previous.phase,
-        to_phase: this.state.phase,
-        has_key: this.state.hasKey,
-        unlocked: this.state.unlocked,
+        from_backend_phase: previous.backendPhase,
+        to_backend_phase: this.state.backendPhase,
+        from_runtime_phase: previous.runtimePhase,
+        to_runtime_phase: this.state.runtimePhase,
+        key_state: this.state.keyState,
         pid: this.state.pid,
         has_system_home_bundle: this.state.hasSystemHomeBundle,
         default_home_seed_hash: this.state.defaultHomeSeedHash,
@@ -777,17 +724,13 @@ function normalizeManagedHTTPError(text: string, status: number): string {
   return value;
 }
 
-function buildManagedChildEnv(): NodeJS.ProcessEnv {
+function buildManagedChildEnv(controlChannel: ManagedControlChannel): NodeJS.ProcessEnv {
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   env.BITFS_ELECTRON_MANAGED = "1";
-  env.BITFS_MANAGED_CONTROL_STREAM = "1";
+  env.BITFS_MANAGED_CONTROL_ENDPOINT = controlChannel.getEndpoint();
+  env.BITFS_MANAGED_CONTROL_TOKEN = controlChannel.getToken();
   return env;
-}
-
-function isManagedControlLine(line: string): boolean {
-  const trimmed = String(line || "").trim();
-  return trimmed.startsWith(BOOTSTRAP_PREFIX) || trimmed.startsWith(MANAGED_EVENT_PREFIX);
 }
 
 function parseManagedBoolEnv(raw: string | undefined): boolean {
@@ -795,19 +738,46 @@ function parseManagedBoolEnv(raw: string | undefined): boolean {
   return value === "1" || value === "true" || value === "yes" || value === "on";
 }
 
-function normalizeManagedPhase(value: unknown, fallback: ManagedClientPhase): ManagedClientPhase {
+function normalizeManagedBackendPhase(value: unknown, fallback: ManagedClientBackendPhase): ManagedClientBackendPhase {
   const phase = String(value || "").trim();
   switch (phase) {
     case "starting":
+    case "available":
     case "startup_error":
-    case "locked":
-    case "ready":
-    case "error":
     case "stopped":
       return phase;
     default:
       return fallback;
   }
+}
+
+function normalizeManagedRuntimePhase(value: unknown, fallback: ManagedClientRuntimePhase): ManagedClientRuntimePhase {
+  const phase = String(value || "").trim();
+  switch (phase) {
+    case "stopped":
+    case "starting":
+    case "ready":
+    case "error":
+      return phase;
+    default:
+      return fallback;
+  }
+}
+
+function normalizeManagedKeyState(value: unknown, fallback: ManagedClientKeyState): ManagedClientKeyState {
+  const state = String(value || "").trim();
+  switch (state) {
+    case "missing":
+    case "locked":
+    case "unlocked":
+      return state;
+    default:
+      return fallback;
+  }
+}
+
+function isReachablePhase(phase: ManagedClientBackendPhase): boolean {
+  return phase === "available" || phase === "startup_error";
 }
 
 function readStringRecordField(source: Record<string, unknown>, key: string): string {
@@ -908,12 +878,6 @@ function requirePassword(password: string): string {
   return value;
 }
 
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
-}
-
 async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<boolean> {
   let timedOut = false;
   await Promise.race([
@@ -929,15 +893,16 @@ async function raceTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<b
 }
 
 function stateChanged(previous: ManagedClientState, next: ManagedClientState): boolean {
-  return previous.phase !== next.phase ||
-    previous.hasKey !== next.hasKey ||
-    previous.unlocked !== next.unlocked ||
+  return previous.backendPhase !== next.backendPhase ||
+    previous.runtimePhase !== next.runtimePhase ||
+    previous.keyState !== next.keyState ||
     previous.hasSystemHomeBundle !== next.hasSystemHomeBundle ||
     previous.defaultHomeSeedHash !== next.defaultHomeSeedHash ||
     previous.pid !== next.pid ||
     previous.lastError !== next.lastError ||
     previous.startupErrorService !== next.startupErrorService ||
     previous.startupErrorListenAddr !== next.startupErrorListenAddr ||
+    previous.runtimeErrorMessage !== next.runtimeErrorMessage ||
     previous.chainAccessMode !== next.chainAccessMode ||
     previous.walletChainBaseURL !== next.walletChainBaseURL ||
     previous.wocProxyEnabled !== next.wocProxyEnabled ||

@@ -22,9 +22,9 @@ export type ShellState = {
   settingsPageURL: string;
   settingsPreloadPath: string;
   backend: {
-    phase: string;
-    hasKey: boolean;
-    unlocked: boolean;
+    backendPhase: string;
+    runtimePhase: string;
+    keyState: string;
     pid: number;
     apiBase: string;
     vaultPath: string;
@@ -37,6 +37,7 @@ export type ShellState = {
     wocUpstreamRootURL: string;
     wocMinInterval: string;
     lastError: string;
+    runtimeErrorMessage: string;
   };
 };
 

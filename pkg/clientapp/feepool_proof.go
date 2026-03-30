@@ -14,11 +14,15 @@ import (
 )
 
 type feePoolProofArgs struct {
-	Session         *feePoolSession
-	ClientActor     *poolcore.Actor
-	GatewayPub      *ec.PublicKey
-	ServiceQuoteRaw []byte
-	ServiceQuote    payflow.ServiceQuote
+	Session              *feePoolSession
+	ClientActor          *poolcore.Actor
+	GatewayPub           *ec.PublicKey
+	ServiceQuoteRaw      []byte
+	ServiceQuote         payflow.ServiceQuote
+	ChargeReason         string
+	NextSequence         uint32
+	NextServerAmount     uint64
+	ServiceDeadlineUnix  int64
 }
 
 type feePoolProofBuilt struct {
@@ -46,8 +50,8 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 	if err != nil {
 		return feePoolProofBuilt{}, err
 	}
-	nextSequence := args.ServiceQuote.SequenceNumber
-	nextServerAmount := args.ServiceQuote.ServerAmountAfter
+	nextSequence := args.NextSequence
+	nextServerAmount := args.NextServerAmount
 	chargeAmount := args.ServiceQuote.ChargeAmountSatoshi
 	baseTx, err := ce.LoadTx(
 		args.Session.CurrentTxHex,
@@ -62,18 +66,16 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 		return feePoolProofBuilt{}, err
 	}
 	intent := payflow.ChargeIntent{
-		Domain:              strings.TrimSpace(args.ServiceQuote.Domain),
-		Target:              strings.TrimSpace(args.ServiceQuote.Target),
 		GatewayPubkeyHex:    strings.ToLower(hex.EncodeToString(args.GatewayPub.Compressed())),
 		ClientPubkeyHex:     strings.ToLower(strings.TrimSpace(args.ClientActor.PubHex)),
 		SpendTxID:           strings.TrimSpace(args.Session.SpendTxID),
 		GatewayQuoteHash:    gatewayQuoteHash,
-		ChargeReason:        strings.TrimSpace(args.ServiceQuote.ChargeReason),
+		ChargeReason:        strings.TrimSpace(args.ChargeReason),
 		ChargeAmountSatoshi: chargeAmount,
 		SequenceNumber:      nextSequence,
 		ServerAmountBefore:  args.Session.ServerAmount,
 		ServerAmountAfter:   nextServerAmount,
-		ServiceDeadlineUnix: args.ServiceQuote.GrantedServiceDeadlineUnix,
+		ServiceDeadlineUnix: args.ServiceDeadlineUnix,
 	}
 	intentRaw, err := payflow.MarshalIntent(intent)
 	if err != nil {
@@ -118,7 +120,7 @@ func buildFeePoolUpdatedTxWithProof(args feePoolProofArgs) (feePoolProofBuilt, e
 		ServerAmountBefore:  args.Session.ServerAmount,
 		ChargeAmountSatoshi: chargeAmount,
 		ServerAmountAfter:   nextServerAmount,
-		ServiceDeadlineUnix: args.ServiceQuote.GrantedServiceDeadlineUnix,
+		ServiceDeadlineUnix: args.ServiceDeadlineUnix,
 		PrevAcceptedHash:    prevState.AcceptedTipHash,
 	}
 	state, err := payflow.BuildNextProofState(prevState, accepted)

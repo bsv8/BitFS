@@ -27,7 +27,7 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateR
 	gw := rt.HealthyGWs[0]
 	gatewayID := gatewayBusinessID(rt, gw.ID)
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{})
-	resp, err := callNodePoolState(ctx, rt, gw.ID, "")
+	resp, err := callNodePoolSessionState(ctx, rt, gw.ID, "")
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
 		return FeePoolStateResult{}, err
@@ -192,14 +192,18 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("request listen quote failed: %w", err)
 	}
-	nextSeq := quoted.ServiceQuote.SequenceNumber
+	nextSeq := quoted.NextSequence
 	nextServerAmount := sess.ServerAmount + underpay
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         sess,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             sess,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        nextSeq,
+		NextServerAmount:    nextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("build proof update failed: %w", err)
@@ -232,7 +236,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 		ExpectedSingleCycleFee: sess.SingleCycleFeeSatoshi,
 		QuoteStatus:            quoted.QuoteStatus,
 		QuotedChargeAmount:     quoted.ServiceQuote.ChargeAmountSatoshi,
-		QuotedDurationSeconds:  quoted.ServiceQuote.GrantedDurationSeconds,
+		QuotedDurationSeconds:  quoted.GrantedDurationSeconds,
 		AttemptChargeAmount:    underpay,
 		AttemptSequence:        nextSeq,
 		AttemptServerAmount:    nextServerAmount,
@@ -255,7 +259,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 	}
 	gatewayID := gatewayBusinessID(rt, gw.ID)
 
-	st, err := callNodePoolState(ctx, rt, gw.ID, spendTxID)
+	st, err := callNodePoolSessionState(ctx, rt, gw.ID, spendTxID)
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}

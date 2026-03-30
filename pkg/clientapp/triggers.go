@@ -221,11 +221,15 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         session,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             session,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return broadcastmodule.DemandPublishPaidResp{}, err
@@ -241,12 +245,12 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		ChunkCount:          p.ChunkCount,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
-		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		SequenceNumber:      quoted.NextSequence,
+		ServerAmount:        quoted.NextServerAmount,
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeReason:        quoted.ChargeReason,
 		ProofIntent:         append([]byte(nil), built.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
@@ -272,10 +276,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        broadcastmodule.ServiceTypeDemandPublish,
-			SpendTxID:          session.SpendTxID,
-			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
-			AcceptedChargeHash: built.AcceptedChargeHash,
-			ResultCode:         strings.TrimSpace(resp.Status),
+			OfferHash:          quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
 			return broadcastmodule.DemandPublishPaidResp{}, err
@@ -285,7 +286,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 		}
 		// 发布扣费成功后必须推进本地会话，否则下次请求会重复旧 sequence/server_amount。
-		applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
+		applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",
@@ -395,11 +396,15 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         session,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             session,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return broadcastmodule.DemandPublishBatchPaidResp{}, err
@@ -413,12 +418,12 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		Items:               reqItems,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
-		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		SequenceNumber:      quoted.NextSequence,
+		ServerAmount:        quoted.NextServerAmount,
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeReason:        quoted.ChargeReason,
 		ProofIntent:         append([]byte(nil), built.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
@@ -444,10 +449,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        broadcastmodule.ServiceTypeDemandPublishBatch,
-			SpendTxID:          session.SpendTxID,
-			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
-			AcceptedChargeHash: built.AcceptedChargeHash,
-			ResultCode:         strings.TrimSpace(resp.Status),
+			OfferHash:          quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
 			return broadcastmodule.DemandPublishBatchPaidResp{}, err
@@ -456,7 +458,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		if len(resp.MergedCurrentTx) > 0 {
 			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 		}
-		applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
+		applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
 		demandIDs := make([]string, 0, len(resp.Items))
 		for _, item := range resp.Items {
 			if item == nil {
@@ -561,11 +563,15 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         session,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             session,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, err
@@ -581,12 +587,12 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		Window:              p.Window,
 		BuyerAddrs:          localAdvertiseAddrs(rt),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
-		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		SequenceNumber:      quoted.NextSequence,
+		ServerAmount:        quoted.NextServerAmount,
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeReason:        quoted.ChargeReason,
 		ProofIntent:         append([]byte(nil), built.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
@@ -605,10 +611,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        broadcastmodule.ServiceTypeLiveDemandPublish,
-			SpendTxID:          session.SpendTxID,
-			SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
-			AcceptedChargeHash: built.AcceptedChargeHash,
-			ResultCode:         strings.TrimSpace(resp.Status),
+			OfferHash:          quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
 			return broadcastmodule.LiveDemandPublishPaidResp{}, err
@@ -618,7 +621,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 		}
 		// 直播需求发布同样会推进费用池状态，必须同步回写本地会话。
-		applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
+		applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + session.SpendTxID,
 			FlowType:        "fee_pool",

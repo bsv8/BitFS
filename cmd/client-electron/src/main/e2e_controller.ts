@@ -231,7 +231,7 @@ export class ElectronE2EController {
       current_root_seed_hash: runtime.currentRootSeedHash,
       client_api_base: runtime.clientAPIBase,
       viewer_preload_path: runtime.viewerPreloadPath,
-      wallet_ready: backend.phase === "ready" && backend.unlocked,
+      wallet_ready: backend.backendPhase === "available" && backend.runtimePhase === "ready",
       main_window_created: window !== null,
       main_window_visible: window ? window.isVisible() : false,
       viewer_policy: this.viewerPolicy.snapshot(),

@@ -191,9 +191,9 @@ export function registerShellIPC(
     debugLogger.log("ipc", "viewer_client_status");
     return buildPublicClientStatus(buildShellState());
   });
-  ipcMain.handle("bitfs-viewer:wallet-summary", () => {
-    debugLogger.log("ipc", "viewer_wallet_summary");
-    return runtime.getPublicWalletSummary();
+  ipcMain.handle("bitfs-viewer:wallet-balance", () => {
+    debugLogger.log("ipc", "viewer_wallet_balance");
+    return runtime.getPublicWalletBalance();
   });
   ipcMain.handle("bitfs-viewer:wallet-addresses", () => {
     debugLogger.log("ipc", "viewer_wallet_addresses");
@@ -327,7 +327,7 @@ export function registerShellIPC(
       headers: runtime.getCurrentVisitHeaders()
     });
   });
-  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; payment_quote_base64?: string }) => {
+  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string }) => {
     const normalized = normalizeViewerPeerCallRequest(payload);
     debugLogger.log("ipc", "viewer_peer_call", {
       to: normalized.to,
@@ -491,8 +491,8 @@ function buildPublicClientStatus(state: ShellState): BitfsPublicClientStatus {
     trusted_protocol: "bitfs://",
     current_url: String(state.currentURL || ""),
     current_root_seed_hash: String(state.currentRootSeedHash || ""),
-    wallet_ready: state.backend.phase === "ready" && state.backend.unlocked,
-    wallet_unlocked: Boolean(state.backend.unlocked)
+    wallet_ready: state.backend.backendPhase === "available" && state.backend.runtimePhase === "ready",
+    wallet_unlocked: state.backend.keyState === "unlocked"
   };
 }
 
@@ -666,14 +666,14 @@ function normalizeManagedSettingsMethod(raw: string | undefined): "GET" | "POST"
   return "GET";
 }
 
-function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; payment_quote_base64?: string }): {
+function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string }): {
   to: string;
   route: string;
   content_type: string;
   body?: unknown;
   body_base64?: string;
   payment_mode?: string;
-  payment_quote_base64?: string;
+  service_quote_base64?: string;
 } {
   const to = String(payload?.to || "").trim();
   if (to === "") {
@@ -694,7 +694,7 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
     body?: unknown;
     body_base64?: string;
     payment_mode?: string;
-    payment_quote_base64?: string;
+    service_quote_base64?: string;
   } = {
     to,
     route,
@@ -712,9 +712,9 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
   if (paymentMode === "quote" || paymentMode === "pay") {
     out.payment_mode = paymentMode;
   }
-  const paymentQuoteBase64 = String(payload?.payment_quote_base64 || "").trim();
-  if (paymentQuoteBase64 !== "") {
-    out.payment_quote_base64 = paymentQuoteBase64;
+  const serviceQuoteBase64 = String(payload?.service_quote_base64 || "").trim();
+  if (serviceQuoteBase64 !== "") {
+    out.service_quote_base64 = serviceQuoteBase64;
   }
   return out;
 }
@@ -749,7 +749,7 @@ function normalizeViewerWalletBusinessRequest(payload: { signer_pubkey_hex?: str
 // - 这里先走壳弹框逐次确认，后续如果加侧栏策略，也可以复用同一摘要口径。
 async function confirmViewerPeerCall(
   window: BrowserWindow,
-  payload: { to: string; route: string; content_type: string; body?: unknown; body_base64?: string; payment_mode?: string; payment_quote_base64?: string },
+  payload: { to: string; route: string; content_type: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string },
   e2eViewerPolicy: ElectronE2EViewerPolicyStore | null
 ): Promise<boolean> {
   const policy = e2eViewerPolicy?.snapshot();

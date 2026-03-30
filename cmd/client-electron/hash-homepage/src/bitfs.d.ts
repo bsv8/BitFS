@@ -22,11 +22,7 @@ type BitfsWalletAddress = {
   pubkey_hex: string;
 };
 
-type BitfsWalletSummary = {
-  trusted_protocol: "bitfs://";
-  pubkey_hex: string;
-  wallet_address: string;
-  addresses: BitfsWalletAddress[];
+type BitfsWalletBalance = {
   balance_satoshi: number;
 };
 
@@ -372,12 +368,11 @@ type BitfsPeerCallResponse = {
   content_type?: string;
   body_json?: unknown;
   body_base64?: string;
-  payment_options?: unknown[];
+  payment_schemes?: unknown[];
   payment_receipt_scheme?: string;
   payment_receipt?: unknown;
-  payment_quote_scheme?: string;
-  payment_quote?: unknown;
-  payment_quote_base64?: string;
+  service_quote?: unknown;
+  service_quote_base64?: string;
 } & Record<string, unknown>;
 
 type BitfsCapabilityItem = {
@@ -481,7 +476,7 @@ type BitfsBridge = {
     getStatus: () => Promise<BitfsClientStatus>;
   };
   wallet: {
-    summary: () => Promise<BitfsWalletSummary>;
+    balance: () => Promise<BitfsWalletBalance>;
     addresses: () => Promise<BitfsWalletAddress[]>;
     signBusinessRequest: (request: BitfsWalletBusinessRequest) => Promise<BitfsWalletBusinessSignResponse>;
     history: {

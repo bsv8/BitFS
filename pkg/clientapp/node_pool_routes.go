@@ -15,10 +15,10 @@ func callNodePoolInfo(ctx context.Context, rt *Runtime, peerID peer.ID) (poolcor
 	return out, err
 }
 
-func callNodePoolServiceQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req poolcore.ServiceQuoteReq) (poolcore.ServiceQuoteResp, error) {
+func callNodeServiceQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req poolcore.ServiceQuoteReq) (poolcore.ServiceQuoteResp, error) {
 	req.ClientID = ""
 	var out poolcore.ServiceQuoteResp
-	err := callNodeRouteProto(ctx, rt, peerID, ncall.RoutePoolV1ServiceQuote, &req, &out)
+	err := callNodeRouteProto(ctx, rt, peerID, ncall.RoutePaymentV1Quote, &req, &out)
 	return out, err
 }
 
@@ -50,11 +50,11 @@ func callNodePoolClose(ctx context.Context, rt *Runtime, peerID peer.ID, req poo
 	return out, err
 }
 
-func callNodePoolState(ctx context.Context, rt *Runtime, peerID peer.ID, spendTxID string) (poolcore.StateResp, error) {
+func callNodePoolSessionState(ctx context.Context, rt *Runtime, peerID peer.ID, spendTxID string) (poolcore.StateResp, error) {
 	req := poolcore.StateReq{
 		SpendTxID: strings.TrimSpace(spendTxID),
 	}
 	var out poolcore.StateResp
-	err := callNodeRouteProto(ctx, rt, peerID, ncall.RoutePoolV1State, &req, &out)
+	err := callNodeRouteProto(ctx, rt, peerID, ncall.RoutePoolV1SessionState, &req, &out)
 	return out, err
 }

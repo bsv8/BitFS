@@ -17,10 +17,7 @@ const feePoolSessionStatusSuspicious = "suspicious"
 
 type expectedServiceReceipt struct {
 	ServiceType        string
-	SpendTxID          string
-	SequenceNumber     uint32
-	AcceptedChargeHash string
-	ResultCode         string
+	OfferHash          string
 	ResultPayloadBytes []byte
 }
 
@@ -50,27 +47,11 @@ func verifyServiceReceiptOrFreeze(ctx context.Context, rt *Runtime, gatewayPeerI
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_type_mismatch")
 		return fmt.Errorf("service receipt type mismatch")
 	}
-	if !strings.EqualFold(strings.TrimSpace(receipt.ClientPubkeyHex), strings.TrimSpace(rt.runIn.ClientID)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_client_mismatch")
-		return fmt.Errorf("service receipt client mismatch")
+	if !strings.EqualFold(strings.TrimSpace(receipt.OfferHash), strings.TrimSpace(expected.OfferHash)) {
+		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_offer_hash_mismatch")
+		return fmt.Errorf("service receipt offer_hash mismatch")
 	}
-	if !strings.EqualFold(strings.TrimSpace(receipt.SpendTxID), strings.TrimSpace(expected.SpendTxID)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_spend_mismatch")
-		return fmt.Errorf("service receipt spend_txid mismatch")
-	}
-	if receipt.SequenceNumber != expected.SequenceNumber {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_sequence_mismatch")
-		return fmt.Errorf("service receipt sequence mismatch")
-	}
-	if !strings.EqualFold(strings.TrimSpace(receipt.AcceptedChargeHash), strings.TrimSpace(expected.AcceptedChargeHash)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_accept_hash_mismatch")
-		return fmt.Errorf("service receipt accepted_charge_hash mismatch")
-	}
-	if !strings.EqualFold(strings.TrimSpace(receipt.ResultCode), strings.TrimSpace(expected.ResultCode)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_result_code_mismatch")
-		return fmt.Errorf("service receipt result code mismatch")
-	}
-	if !strings.EqualFold(strings.TrimSpace(receipt.ResultPayloadHash), payflow.HashPayloadBytes(expected.ResultPayloadBytes)) {
+	if !strings.EqualFold(strings.TrimSpace(receipt.ResultHash), payflow.HashPayloadBytes(expected.ResultPayloadBytes)) {
 		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_payload_hash_mismatch")
 		return fmt.Errorf("service receipt payload hash mismatch")
 	}

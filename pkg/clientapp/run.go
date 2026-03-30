@@ -56,6 +56,9 @@ const (
 	ProtoLiveSubscribe      protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
 	ProtoLiveHeadPush       protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
 
+	bootPeerConnectTimeout = 5 * time.Second
+	bootPeerHealthTimeout  = 5 * time.Second
+
 	defaultIndexRelPath = "data/client-index.sqlite"
 	seedBlockSize       = 65536
 )
@@ -1006,7 +1009,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	rtCtx, rtCancel := context.WithCancel(ctx)
 	rt.bgCancel = rtCancel
-	rt.taskSched = newTaskScheduler(dbActor, "bitcast-client")
+	rt.taskSched = newTaskScheduler(db, dbActor, "bitcast-client")
 	rt.kernel = newClientKernel(rt)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
@@ -2105,7 +2108,6 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_direction_category ON wallet_ledger_entries(direction, category, id DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
@@ -2166,6 +2168,10 @@ func initIndexDB(db *sql.DB) error {
 	if err := migrateLegacyChainTables(db); err != nil {
 		return err
 	}
+	// 设计说明：
+	// - `wallet_utxo` 的老库可能还没有 `allocation_class/allocation_reason`；
+	// - 因此依赖这两个列的索引必须放到专门的迁移函数里创建，不能在通用索引初始化阶段抢跑；
+	// - 否则升级老库时会先在建索引这里报 “no such column allocation_class”。
 	if err := ensureWalletUTXOSchema(db); err != nil {
 		return err
 	}

@@ -53,6 +53,7 @@ type periodicTaskRuntime struct {
 
 type taskScheduler struct {
 	service string
+	db      *sql.DB
 	dbActor *sqliteactor.Actor
 
 	mu       sync.RWMutex
@@ -61,13 +62,14 @@ type taskScheduler struct {
 	wg       sync.WaitGroup
 }
 
-func newTaskScheduler(dbActor *sqliteactor.Actor, service string) *taskScheduler {
+func newTaskScheduler(db *sql.DB, dbActor *sqliteactor.Actor, service string) *taskScheduler {
 	service = strings.TrimSpace(service)
 	if service == "" {
 		service = "bitcast-client"
 	}
 	return &taskScheduler{
 		service: service,
+		db:      db,
 		dbActor: dbActor,
 		tasks:   map[string]*periodicTaskRuntime{},
 	}
@@ -80,7 +82,7 @@ func ensureRuntimeTaskScheduler(rt *Runtime) *taskScheduler {
 	rt.taskSchedMu.Lock()
 	defer rt.taskSchedMu.Unlock()
 	if rt.taskSched == nil {
-		rt.taskSched = newTaskScheduler(rt.DBActor, "bitcast-client")
+		rt.taskSched = newTaskScheduler(rt.DB, rt.DBActor, "bitcast-client")
 	}
 	return rt.taskSched
 }
@@ -394,7 +396,7 @@ func (s *taskScheduler) logSchedulerError(task string, code string, err error) {
 }
 
 func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string, closedAt int64) error {
-	if s == nil || s.dbActor == nil || rt == nil {
+	if s == nil || rt == nil {
 		return nil
 	}
 	now := time.Now().Unix()
@@ -442,7 +444,7 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 }
 
 func (s *taskScheduler) markTaskStopped(name string) error {
-	if s == nil || s.dbActor == nil {
+	if s == nil {
 		return nil
 	}
 	now := time.Now().Unix()
@@ -456,7 +458,7 @@ func (s *taskScheduler) markTaskStopped(name string) error {
 }
 
 func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt int64) error {
-	if s == nil || s.dbActor == nil {
+	if s == nil {
 		return nil
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
@@ -478,7 +480,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 }
 
 func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS int64, errMsg string, summary map[string]any, success bool) error {
-	if s == nil || s.dbActor == nil {
+	if s == nil {
 		return nil
 	}
 	incSuccess := 0
@@ -515,7 +517,7 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 }
 
 func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, startedAt int64, endedAt int64, durationMS int64, status string, errMsg string, summary map[string]any) error {
-	if s == nil || s.dbActor == nil {
+	if s == nil {
 		return nil
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
@@ -563,7 +565,7 @@ func (s *taskScheduler) logTaskError(task string, trigger string, duration time.
 }
 
 func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix int64) error {
-	if s == nil || s.dbActor == nil || len(names) == 0 {
+	if s == nil || len(names) == 0 {
 		return nil
 	}
 	filtered := make([]string, 0, len(names))

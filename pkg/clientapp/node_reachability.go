@@ -330,11 +330,15 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         session,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             session,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
@@ -347,12 +351,12 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		ClientID:            rt.runIn.ClientID,
 		SignedAnnouncement:  append([]byte(nil), signedAnnouncement...),
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
-		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		SequenceNumber:      quoted.NextSequence,
+		ServerAmount:        quoted.NextServerAmount,
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeReason:        quoted.ChargeReason,
 		ProofIntent:         append([]byte(nil), built.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
@@ -374,10 +378,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	}
 	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
 		ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityAnnounce,
-		SpendTxID:          session.SpendTxID,
-		SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
-		AcceptedChargeHash: built.AcceptedChargeHash,
-		ResultCode:         strings.TrimSpace(resp.Status),
+		OfferHash:          quoted.ServiceQuote.OfferHash,
 		ResultPayloadBytes: payload,
 	}, resp.ServiceReceipt); err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
@@ -386,7 +387,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if len(resp.MergedCurrentTx) > 0 {
 		nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 	}
-	applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
+	applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
 	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + session.SpendTxID,
 		FlowType:        "fee_pool",
@@ -493,11 +494,15 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         session,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             session,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
@@ -510,12 +515,12 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		ClientID:            rt.runIn.ClientID,
 		TargetNodePubkeyHex: targetNodePubkeyHex,
 		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
-		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		SequenceNumber:      quoted.NextSequence,
+		ServerAmount:        quoted.NextServerAmount,
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeReason:        quoted.ChargeReason,
 		ProofIntent:         append([]byte(nil), built.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
@@ -537,10 +542,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	}
 	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
 		ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityQuery,
-		SpendTxID:          session.SpendTxID,
-		SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
-		AcceptedChargeHash: built.AcceptedChargeHash,
-		ResultCode:         strings.TrimSpace(resp.Status),
+		OfferHash:          quoted.ServiceQuote.OfferHash,
 		ResultPayloadBytes: payload,
 	}, resp.ServiceReceipt); err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
@@ -549,7 +551,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	if len(resp.MergedCurrentTx) > 0 {
 		nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 	}
-	applyFeePoolChargeToSession(session, quoted.ServiceQuote.SequenceNumber, quoted.ServiceQuote.ServerAmountAfter, nextTxHex)
+	applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
 	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + session.SpendTxID,
 		FlowType:        "fee_pool",

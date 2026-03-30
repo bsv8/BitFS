@@ -9,7 +9,7 @@ import (
 func TestTaskSchedulerShutdownWaitsForRunningTask(t *testing.T) {
 	t.Parallel()
 
-	scheduler := newTaskScheduler(nil, "bitcast-client")
+	scheduler := newTaskScheduler(nil, nil, "bitcast-client")
 	parentCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

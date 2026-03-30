@@ -11,10 +11,29 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 )
+
+type capturedManagedControlStream struct {
+	events []ManagedRuntimeEvent
+}
+
+func (s *capturedManagedControlStream) Emit(topic, scope, producer, traceID string, payload map[string]any) {
+	s.events = append(s.events, ManagedRuntimeEvent{
+		Topic:    topic,
+		Scope:    scope,
+		Producer: producer,
+		TraceID:  traceID,
+		Payload:  cloneManagedEventPayload(payload),
+	})
+}
+
+func (*capturedManagedControlStream) ObsSink() obs.Sink {
+	return nil
+}
 
 func TestRuntimeListenOverridesApply(t *testing.T) {
 	t.Parallel()
@@ -264,5 +283,68 @@ func TestResolveChainAccessState_UsesPerProviderWOCSettings(t *testing.T) {
 	}
 	if got, want := state.MinInterval, 2500*time.Millisecond; got != want {
 		t.Fatalf("min_interval=%s, want %s", got, want)
+	}
+}
+
+func TestEmitBackendSnapshot_ReportsKeyPresence(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	stream := &capturedManagedControlStream{}
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  filepath.Join(root, "config.yaml"),
+			KeyPath:     keyPath,
+			IndexDBPath: filepath.Join(root, "data", "client-index.sqlite"),
+		},
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		chainAccess: chainAccessState{
+			Mode:            "proxy",
+			BaseURL:         "http://127.0.0.1:19183/v1/bsv/test",
+			WOCProxyEnabled: true,
+			WOCProxyAddr:    "127.0.0.1:19183",
+			UpstreamRootURL: managedWOCUpstreamRootURL,
+			MinInterval:     time.Second,
+		},
+	}
+
+	d.emitBackendSnapshot("locked")
+	if len(stream.events) != 1 {
+		t.Fatalf("event_count=%d, want 1", len(stream.events))
+	}
+	if got, want := stream.events[0].Topic, "backend.snapshot"; got != want {
+		t.Fatalf("topic=%q, want %q", got, want)
+	}
+	if got, want := stream.events[0].Payload["key_state"], "missing"; got != want {
+		t.Fatalf("first key_state=%v, want %v", got, want)
+	}
+
+	env, err := EncryptPrivateKeyEnvelope("1111111111111111111111111111111111111111111111111111111111111111", "pass")
+	if err != nil {
+		t.Fatalf("encrypt private key envelope: %v", err)
+	}
+	if err := SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
+		t.Fatalf("save encrypted key envelope: %v", err)
+	}
+
+	d.emitBackendSnapshot("key_material_ready")
+	if len(stream.events) != 2 {
+		t.Fatalf("event_count=%d, want 2", len(stream.events))
+	}
+	last := stream.events[1]
+	if got, want := last.Payload["key_state"], "locked"; got != want {
+		t.Fatalf("second key_state=%v, want %v", got, want)
+	}
+	if got, want := last.Payload["step"], "key_material_ready"; got != want {
+		t.Fatalf("step=%v, want %v", got, want)
 	}
 }

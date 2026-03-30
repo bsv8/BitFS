@@ -39,7 +39,7 @@ export default function App() {
   const [domainRegisterSubmitResult, setDomainRegisterSubmitResult] = useState<BitfsDomainRegisterSubmitResponse | null>(null);
   const [clientInfo, setClientInfo] = useState<BitfsClientInfo | null>(null);
   const [clientStatus, setClientStatus] = useState<BitfsClientStatus | null>(null);
-  const [walletSummary, setWalletSummary] = useState<BitfsWalletSummary | null>(null);
+  const [walletBalance, setWalletBalance] = useState<BitfsWalletBalance | null>(null);
   const [walletAddresses, setWalletAddresses] = useState<BitfsWalletAddress[]>([]);
   const [walletHistory, setWalletHistory] = useState<BitfsWalletHistoryList | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
@@ -57,7 +57,7 @@ export default function App() {
           setPageError("");
           setClientInfo(null);
           setClientStatus(null);
-          setWalletSummary(null);
+          setWalletBalance(null);
           setWalletAddresses([]);
           setWalletHistory(null);
         });
@@ -77,10 +77,10 @@ export default function App() {
       }
 
       try {
-        const [nextClientInfo, nextClientStatus, nextWalletSummary, nextWalletAddresses, nextWalletHistory] = await Promise.all([
+        const [nextClientInfo, nextClientStatus, nextWalletBalance, nextWalletAddresses, nextWalletHistory] = await Promise.all([
           bridge.client.info(),
           bridge.client.getStatus(),
-          bridge.wallet.summary(),
+          bridge.wallet.balance(),
           bridge.wallet.addresses(),
           bridge.wallet.history.list({ limit: historyLimit, offset: 0 })
         ]);
@@ -90,7 +90,7 @@ export default function App() {
         startTransition(() => {
           setClientInfo(nextClientInfo);
           setClientStatus(nextClientStatus);
-          setWalletSummary(nextWalletSummary);
+          setWalletBalance(nextWalletBalance);
           setWalletAddresses(nextWalletAddresses);
           setWalletHistory(nextWalletHistory);
           setPageMode("connected");
@@ -116,15 +116,15 @@ export default function App() {
       }
       inFlight = true;
       try {
-        const [nextWalletSummary, nextWalletHistory] = await Promise.all([
-          bridge.wallet.summary(),
+        const [nextWalletBalance, nextWalletHistory] = await Promise.all([
+          bridge.wallet.balance(),
           bridge.wallet.history.list({ limit: historyLimit, offset: 0 })
         ]);
         if (cancelled) {
           return;
         }
         startTransition(() => {
-          setWalletSummary(nextWalletSummary);
+          setWalletBalance(nextWalletBalance);
           setWalletHistory(nextWalletHistory);
           setPageMode("connected");
           setPageError("");
@@ -194,11 +194,11 @@ export default function App() {
     if (domainTargetInput.trim() !== "") {
       return;
     }
-    const nextTarget = normalizePubkeyHex(walletSummary?.pubkey_hex || clientInfo?.pubkey_hex || "");
+    const nextTarget = normalizePubkeyHex(clientInfo?.pubkey_hex || "");
     if (nextTarget !== "") {
       setDomainTargetInput(nextTarget);
     }
-  }, [walletSummary?.pubkey_hex, clientInfo?.pubkey_hex, domainTargetInput]);
+  }, [clientInfo?.pubkey_hex, domainTargetInput]);
 
   function shouldRefreshPublicWalletProjection(runtimeEvent: BitfsRuntimeEvent | null | undefined) {
     if (String(runtimeEvent?.topic || "") !== "wallet.changed") {
@@ -235,7 +235,7 @@ export default function App() {
     event.preventDefault();
     const bridge = window.bitfs;
     const resolverPubkeyHex = normalizePubkeyHex(domainResolverInput);
-    const ownerPubkeyHex = normalizePubkeyHex(walletSummary?.pubkey_hex || clientInfo?.pubkey_hex || "");
+    const ownerPubkeyHex = normalizePubkeyHex(clientInfo?.pubkey_hex || "");
     if (resolverPubkeyHex === "") {
       setDomainLookupError("请输入有效的 domain 节点公钥 hex。");
       setOwnedDomains([]);
@@ -549,8 +549,8 @@ export default function App() {
     }
   }
 
-  const currentAddress = walletAddresses[0]?.address || walletSummary?.wallet_address || "";
-  const currentPubkey = walletSummary?.pubkey_hex || clientInfo?.pubkey_hex || "";
+  const currentAddress = walletAddresses[0]?.address || "";
+  const currentPubkey = clientInfo?.pubkey_hex || "";
   const walletReady = clientStatus?.wallet_ready ? "已就绪" : "未就绪";
   const walletUnlocked = clientStatus?.wallet_unlocked ? "已解锁" : "未解锁";
 
@@ -605,7 +605,7 @@ export default function App() {
             <article className="metric-card">
               <span className="metric-label">链上余额</span>
               <strong className="metric-value" data-testid="homepage-balance">
-                {walletSummary ? formatSat(walletSummary.balance_satoshi) : "-"}
+                {walletBalance ? formatSat(walletBalance.balance_satoshi) : "-"}
               </strong>
               <p className="metric-note">这里只显示公开余额，不包含任何内部统计。</p>
             </article>

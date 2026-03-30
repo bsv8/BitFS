@@ -19,17 +19,23 @@ type feePoolServiceQuoteArgs struct {
 	ServiceDomain        string
 	ServiceType          string
 	Target               string
+	ChargeReason         string
 	ServiceParamsPayload []byte
 	PricingMode          string
 	ProposedPaymentSat   uint64
 }
 
 type feePoolServiceQuoteBuilt struct {
-	GatewayPub       *ec.PublicKey
-	QuoteStatus      string
-	ServiceQuoteRaw  []byte
-	ServiceQuote     payflow.ServiceQuote
-	ServiceQuoteHash string
+	GatewayPub                 *ec.PublicKey
+	QuoteStatus                string
+	ServiceQuoteRaw            []byte
+	ServiceQuote               payflow.ServiceQuote
+	ServiceQuoteHash           string
+	ChargeReason               string
+	NextSequence               uint32
+	NextServerAmount           uint64
+	GrantedServiceDeadlineUnix int64
+	GrantedDurationSeconds     uint32
 }
 
 func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolServiceQuoteArgs) (feePoolServiceQuoteBuilt, error) {
@@ -52,22 +58,17 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 		return feePoolServiceQuoteBuilt{}, err
 	}
 	offer := payflow.ServiceOffer{
-		Domain:                 normalizeFeePoolServiceDomain(args.ServiceDomain),
-		ServiceType:            strings.TrimSpace(args.ServiceType),
-		Target:                 strings.TrimSpace(args.Target),
-		GatewayPubkeyHex:       strings.ToLower(hex.EncodeToString(rawGatewayPub)),
-		ClientPubkeyHex:        strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
-		SpendTxID:              strings.TrimSpace(args.Session.SpendTxID),
-		ServiceParamsHash:      poolcore.HashServiceParamsPayload(args.ServiceParamsPayload),
-		PricingMode:            strings.TrimSpace(args.PricingMode),
-		ProposedPaymentSatoshi: args.ProposedPaymentSat,
-		CreatedAtUnix:          time.Now().Unix(),
+		ServiceType:          strings.TrimSpace(args.ServiceType),
+		ServiceNodePubkeyHex: strings.ToLower(hex.EncodeToString(rawGatewayPub)),
+		ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
+		RequestParams:        append([]byte(nil), args.ServiceParamsPayload...),
+		CreatedAtUnix:        time.Now().Unix(),
 	}
 	rawOffer, err := payflow.MarshalServiceOffer(offer)
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	resp, err := callNodePoolServiceQuote(ctx, rt, args.GatewayPeerID, poolcore.ServiceQuoteReq{
+	resp, err := callNodeServiceQuote(ctx, rt, args.GatewayPeerID, poolcore.ServiceQuoteReq{
 		ClientID:             rt.runIn.ClientID,
 		ServiceOffer:         rawOffer,
 		ServiceParamsPayload: append([]byte(nil), args.ServiceParamsPayload...),
@@ -86,22 +87,35 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	if err := poolcore.ValidateServiceQuoteBinding(quote, offer.GatewayPubkeyHex, rt.runIn.ClientID, args.Session.SpendTxID, args.ServiceType, args.ServiceParamsPayload, time.Now().Unix()); err != nil {
+	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, rt.runIn.ClientID, args.ServiceType, args.ServiceParamsPayload, time.Now().Unix()); err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	return feePoolServiceQuoteBuilt{
-		GatewayPub:       gatewayPub,
-		QuoteStatus:      strings.TrimSpace(resp.Status),
-		ServiceQuoteRaw:  append([]byte(nil), resp.ServiceQuote...),
-		ServiceQuote:     quote,
-		ServiceQuoteHash: quoteHash,
-	}, nil
-}
-
-func normalizeFeePoolServiceDomain(raw string) string {
-	value := strings.TrimSpace(raw)
-	if value != "" {
-		return value
+	chargeReason := strings.TrimSpace(args.ChargeReason)
+	if chargeReason == "" {
+		chargeReason = strings.TrimSpace(args.ServiceType)
 	}
-	return "bitcast-gateway"
+	nextSeq := args.Session.Sequence + 1
+	nextServerAmount := args.Session.ServerAmount + quote.ChargeAmountSatoshi
+	grantedDurationSeconds := uint32(0)
+	grantedDeadlineUnix := int64(0)
+	if strings.TrimSpace(args.ServiceType) == poolcore.QuoteServiceTypeListenCycle {
+		duration, err := poolcore.ListenOfferBudgetToDurationSeconds(quote.ChargeAmountSatoshi, args.Session.SingleCycleFeeSatoshi, args.Session.BillingCycleSeconds)
+		if err != nil {
+			return feePoolServiceQuoteBuilt{}, err
+		}
+		grantedDurationSeconds = uint32(duration)
+		grantedDeadlineUnix = time.Now().Unix() + int64(duration)
+	}
+	return feePoolServiceQuoteBuilt{
+		GatewayPub:                 gatewayPub,
+		QuoteStatus:                strings.TrimSpace(resp.Status),
+		ServiceQuoteRaw:            append([]byte(nil), resp.ServiceQuote...),
+		ServiceQuote:               quote,
+		ServiceQuoteHash:           quoteHash,
+		ChargeReason:               chargeReason,
+		NextSequence:               nextSeq,
+		NextServerAmount:           nextServerAmount,
+		GrantedDurationSeconds:     grantedDurationSeconds,
+		GrantedServiceDeadlineUnix: grantedDeadlineUnix,
+	}, nil
 }

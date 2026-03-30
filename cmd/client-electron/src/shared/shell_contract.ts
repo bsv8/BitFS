@@ -60,12 +60,20 @@ export type ShellVisitAccounting = {
   buckets: ShellVisitAccountingBucket[];
 };
 
-export type ManagedClientPhase = "starting" | "startup_error" | "locked" | "ready" | "error" | "stopped";
+// 设计说明：
+// - `backendPhase` 只描述受管后端自己有没有起来，不再混入钱包是否解锁；
+// - `runtimePhase` 只描述钱包运行时有没有在跑，首次启动和锁后再解锁都走这里；
+// - `keyState` 只描述 daemon 内存里的密钥状态，避免再把“有密文文件”和“运行时已 ready”混成一个字段。
+export type ManagedClientBackendPhase = "starting" | "available" | "startup_error" | "stopped";
+
+export type ManagedClientRuntimePhase = "stopped" | "starting" | "ready" | "error";
+
+export type ManagedClientKeyState = "missing" | "locked" | "unlocked";
 
 export type ManagedClientState = {
-  phase: ManagedClientPhase;
-  hasKey: boolean;
-  unlocked: boolean;
+  backendPhase: ManagedClientBackendPhase;
+  runtimePhase: ManagedClientRuntimePhase;
+  keyState: ManagedClientKeyState;
   hasSystemHomeBundle: boolean;
   defaultHomeSeedHash: string;
   pid: number;
@@ -76,6 +84,7 @@ export type ManagedClientState = {
   lastError: string;
   startupErrorService: string;
   startupErrorListenAddr: string;
+  runtimeErrorMessage: string;
   chainAccessMode: string;
   walletChainBaseURL: string;
   wocProxyEnabled: boolean;
@@ -113,11 +122,7 @@ export type BitfsPublicWalletAddress = {
   pubkey_hex: string;
 };
 
-export type BitfsPublicWalletSummary = {
-  trusted_protocol: "bitfs://";
-  pubkey_hex: string;
-  wallet_address: string;
-  addresses: BitfsPublicWalletAddress[];
+export type BitfsPublicWalletBalance = {
   balance_satoshi: number;
 };
 

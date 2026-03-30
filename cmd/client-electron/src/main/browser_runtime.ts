@@ -18,7 +18,7 @@ import type {
   BitfsPublicWalletTokenBalanceList,
   BitfsPublicWalletTokenOutputItem,
   BitfsPublicWalletTokenOutputList,
-  BitfsPublicWalletSummary,
+  BitfsPublicWalletBalance,
   ShellResource,
   ShellVisitAccounting,
   ShellVisitAccountingBucket,
@@ -670,8 +670,24 @@ export class BitfsBrowserRuntime extends EventEmitter {
     return this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary");
   }
 
-  async getPublicWalletSummary(): Promise<BitfsPublicWalletSummary> {
-    debugLogger.log("runtime", "get_public_wallet_summary", {
+  async getPublicWalletBalance(): Promise<BitfsPublicWalletBalance> {
+    debugLogger.log("runtime", "get_public_wallet_balance", {
+      trace_id: this.currentTraceID
+    });
+    const summary = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/summary");
+    // 设计说明：
+    // - 公开余额接口只表达“当前最新公开余额”，不把“本轮同步是否刚跑完”这类内部判定暴露给页面；
+    // - 因此优先读取本地钱包投影里的 plain BSV 余额，避免首页首次进入先看到 0。
+    const balanceKey = Object.prototype.hasOwnProperty.call(summary, "wallet_plain_bsv_balance_satoshi")
+      ? "wallet_plain_bsv_balance_satoshi"
+      : "onchain_balance_satoshi";
+    return {
+      balance_satoshi: Math.max(0, readIntegerField(summary, balanceKey))
+    };
+  }
+
+  async getPublicWalletAddresses(): Promise<BitfsPublicWalletAddress[]> {
+    debugLogger.log("runtime", "get_public_wallet_addresses", {
       trace_id: this.currentTraceID
     });
     const [info, summary] = await Promise.all([
@@ -680,29 +696,15 @@ export class BitfsBrowserRuntime extends EventEmitter {
     ]);
     const pubkeyHex = normalizePubkeyHex(readStringField(info, "pubkey_hex", "client_pubkey_hex"));
     const walletAddress = readStringField(summary, "wallet_address");
-    const addresses = walletAddress === ""
-      ? []
-      : [{
-          address: walletAddress,
-          encoding: "base58",
-          purpose: "default_receive",
-          pubkey_hex: pubkeyHex
-        }] satisfies BitfsPublicWalletAddress[];
-    return {
-      trusted_protocol: "bitfs://",
-      pubkey_hex: pubkeyHex,
-      wallet_address: walletAddress,
-      addresses,
-      balance_satoshi: Math.max(0, readIntegerField(summary, "onchain_balance_satoshi"))
-    };
-  }
-
-  async getPublicWalletAddresses(): Promise<BitfsPublicWalletAddress[]> {
-    debugLogger.log("runtime", "get_public_wallet_addresses", {
-      trace_id: this.currentTraceID
-    });
-    const summary = await this.getPublicWalletSummary();
-    return summary.addresses;
+    if (walletAddress === "") {
+      return [];
+    }
+    return [{
+      address: walletAddress,
+      encoding: "base58",
+      purpose: "default_receive",
+      pubkey_hex: pubkeyHex
+    }];
   }
 
   async listPublicWalletHistory(query: { limit?: number; offset?: number; direction?: string }): Promise<BitfsPublicWalletHistoryList> {

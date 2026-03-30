@@ -3,6 +3,8 @@ package managedclient
 import (
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -12,8 +14,8 @@ import (
 )
 
 const (
-	managedEventPrefix      = "BITFS_EVENT "
-	ManagedControlStreamEnv = "BITFS_MANAGED_CONTROL_STREAM"
+	ManagedControlEndpointEnv = "BITFS_MANAGED_CONTROL_ENDPOINT"
+	ManagedControlTokenEnv    = "BITFS_MANAGED_CONTROL_TOKEN"
 )
 
 type ManagedRuntimeEvent struct {
@@ -27,22 +29,41 @@ type ManagedRuntimeEvent struct {
 	Payload        map[string]any `json:"payload,omitempty"`
 }
 
+type managedControlHello struct {
+	Type         string `json:"type"`
+	Token        string `json:"token"`
+	RuntimeEpoch string `json:"runtime_epoch"`
+}
+
 // ManagedControlStream 负责把 runtime 内部事件投递到托管宿主。
 //
 // 设计说明：
 // - BitFS 内部先统一使用进程内消息/obs 挂钩，再由托管层决定是否额外输出机器帧；
 // - 纯 CLI 默认不启用 control stream，这样 stdout/stderr 仍然保留给人类阅读；
-// - Electron 托管模式再显式开启 stdout NDJSON，主进程只需要解析固定前缀即可。
+// - Electron 托管模式改走专用控制通道，避免机器帧和人类日志混在同一条 stdout 里。
 type ManagedControlStream interface {
 	Emit(topic, scope, producer, traceID string, payload map[string]any)
 	ObsSink() obs.Sink
 }
 
-func NewManagedControlStreamFromEnv() ManagedControlStream {
-	if strings.TrimSpace(os.Getenv(ManagedControlStreamEnv)) != "1" {
-		return noopManagedControlStream{}
+func NewManagedControlStreamFromEnv() (ManagedControlStream, error) {
+	endpoint := strings.TrimSpace(os.Getenv(ManagedControlEndpointEnv))
+	if endpoint == "" {
+		return noopManagedControlStream{}, nil
 	}
-	return newStdoutManagedControlStream()
+	token := strings.TrimSpace(os.Getenv(ManagedControlTokenEnv))
+	if token == "" {
+		return nil, fmt.Errorf("managed control token is required")
+	}
+	network, address, err := parseManagedControlEndpoint(endpoint)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := net.DialTimeout(network, address, 3*time.Second)
+	if err != nil {
+		return nil, fmt.Errorf("dial managed control endpoint: %w", err)
+	}
+	return newSocketManagedControlStream(conn, token)
 }
 
 type noopManagedControlStream struct{}
@@ -53,34 +74,49 @@ func (noopManagedControlStream) ObsSink() obs.Sink {
 	return nil
 }
 
-type stdoutManagedControlStream struct {
+type socketManagedControlStream struct {
 	mu           sync.Mutex
 	seq          uint64
 	runtimeEpoch string
 	obsSink      obs.Sink
+	conn         net.Conn
+	token        string
 }
 
-func newStdoutManagedControlStream() ManagedControlStream {
-	s := &stdoutManagedControlStream{
+func newSocketManagedControlStream(conn net.Conn, token string) (ManagedControlStream, error) {
+	s := &socketManagedControlStream{
 		runtimeEpoch: fmt.Sprintf("rt-%d", time.Now().UnixNano()),
+		conn:         conn,
+		token:        strings.TrimSpace(token),
 	}
 	s.obsSink = obs.SinkFunc(func(ev obs.Event) {
 		s.emitObsEvent(ev)
 	})
-	return s
+	if err := s.writeFrameLocked(managedControlHello{
+		Type:         "hello",
+		Token:        s.token,
+		RuntimeEpoch: s.runtimeEpoch,
+	}); err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("write managed control hello: %w", err)
+	}
+	return s, nil
 }
 
-func (s *stdoutManagedControlStream) ObsSink() obs.Sink {
+func (s *socketManagedControlStream) ObsSink() obs.Sink {
 	return s.obsSink
 }
 
-func (s *stdoutManagedControlStream) Emit(topic, scope, producer, traceID string, payload map[string]any) {
+func (s *socketManagedControlStream) Emit(topic, scope, producer, traceID string, payload map[string]any) {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.seq++
 	frame := ManagedRuntimeEvent{
-		Seq:            s.nextSeq(),
+		Seq:            s.seq,
 		RuntimeEpoch:   s.runtimeEpoch,
 		Topic:          topic,
 		Scope:          normalizeManagedEventScope(scope),
@@ -92,21 +128,21 @@ func (s *stdoutManagedControlStream) Emit(topic, scope, producer, traceID string
 	if frame.Payload == nil {
 		frame.Payload = map[string]any{}
 	}
-	raw, err := json.Marshal(frame)
-	if err != nil {
+	if err := s.writeFrameLocked(frame); err != nil {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "%s%s\n", managedEventPrefix, string(raw))
 }
 
-func (s *stdoutManagedControlStream) nextSeq() uint64 {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.seq++
-	return s.seq
+func (s *socketManagedControlStream) writeFrameLocked(frame any) error {
+	raw, err := json.Marshal(frame)
+	if err != nil {
+		return err
+	}
+	_, err = s.conn.Write(append(raw, '\n'))
+	return err
 }
 
-func (s *stdoutManagedControlStream) emitObsEvent(ev obs.Event) {
+func (s *socketManagedControlStream) emitObsEvent(ev obs.Event) {
 	rawPayload := map[string]any{
 		"level":    strings.TrimSpace(ev.Level),
 		"category": strings.TrimSpace(ev.Category),
@@ -215,4 +251,29 @@ func managedFieldString(fields map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(fmt.Sprint(value))
+}
+
+func parseManagedControlEndpoint(raw string) (string, string, error) {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return "", "", fmt.Errorf("managed control endpoint is required")
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid managed control endpoint: %w", err)
+	}
+	switch strings.TrimSpace(strings.ToLower(u.Scheme)) {
+	case "unix":
+		if strings.TrimSpace(u.Path) == "" {
+			return "", "", fmt.Errorf("managed control unix path is required")
+		}
+		return "unix", u.Path, nil
+	case "tcp":
+		if strings.TrimSpace(u.Host) == "" {
+			return "", "", fmt.Errorf("managed control tcp host is required")
+		}
+		return "tcp", u.Host, nil
+	default:
+		return "", "", fmt.Errorf("unsupported managed control endpoint scheme: %s", u.Scheme)
+	}
 }

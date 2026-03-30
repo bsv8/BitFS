@@ -28,16 +28,31 @@ import (
 	"golang.org/x/term"
 )
 
-const managedBootstrapPrefix = "BITFS_MANAGED_STATE "
+type managedBackendPhase string
 
-type managedPhase string
+type managedRuntimePhase string
+
+type managedKeyState string
+
+// 设计说明：
+// - backendPhase 只描述受管后端自己有没有活着，和钱包是否解锁无关；
+// - runtimePhase 只描述钱包运行时本轮会话的状态，首次启动和锁后再解锁都走这里；
+// - keyState 只描述 daemon 内存里的密钥是否可用，避免后面再把“有 key 文件”和“runtime ready”混成一个概念。
 
 const (
-	managedPhaseStarting     managedPhase = "starting"
-	managedPhaseStartupError managedPhase = "startup_error"
-	managedPhaseLocked       managedPhase = "locked"
-	managedPhaseReady        managedPhase = "ready"
-	managedPhaseStopped      managedPhase = "stopped"
+	managedBackendPhaseStarting     managedBackendPhase = "starting"
+	managedBackendPhaseAvailable    managedBackendPhase = "available"
+	managedBackendPhaseStartupError managedBackendPhase = "startup_error"
+	managedBackendPhaseStopped      managedBackendPhase = "stopped"
+
+	managedRuntimePhaseStopped  managedRuntimePhase = "stopped"
+	managedRuntimePhaseStarting managedRuntimePhase = "starting"
+	managedRuntimePhaseReady    managedRuntimePhase = "ready"
+	managedRuntimePhaseError    managedRuntimePhase = "error"
+
+	managedKeyStateMissing  managedKeyState = "missing"
+	managedKeyStateLocked   managedKeyState = "locked"
+	managedKeyStateUnlocked managedKeyState = "unlocked"
 
 	managedWOCProxyListenAddr = "127.0.0.1:19183"
 	managedWOCUpstreamRootURL = wocproxy.DefaultUpstreamRootURL
@@ -86,9 +101,13 @@ type managedDaemon struct {
 	rtCancel context.CancelFunc
 	rtAPI    http.Handler
 
-	phase        managedPhase
-	startupError startupErrorState
-	chainAccess  chainAccessState
+	backendPhase        managedBackendPhase
+	runtimePhase        managedRuntimePhase
+	runtimeErrorMessage string
+	unlockedPrivHex     string
+	runtimeStartSeq     uint64
+	startupError        startupErrorState
+	chainAccess         chainAccessState
 
 	systemHomepage *systemHomepageState
 }
@@ -112,37 +131,42 @@ func RunManagedDaemon(opts DaemonOptions) error {
 		controlStream:        opts.ControlStream,
 		rootCtx:              rootCtx,
 		rootCancel:           rootCancel,
-		phase:                managedPhaseStarting,
+		backendPhase:         managedBackendPhaseStarting,
+		runtimePhase:         managedRuntimePhaseStopped,
 	}
 	if d.controlStream == nil {
-		d.controlStream = NewManagedControlStreamFromEnv()
+		d.controlStream = noopManagedControlStream{}
 	}
 	if d.unlockPasswordPrompt == "" {
 		d.unlockPasswordPrompt = "Unlock password: "
 	}
 	d.chainAccess = d.resolveChainAccessState()
-	d.emitBootstrapState()
+	d.emitBackendSnapshot("booting")
 	if err := d.prepareSystemHomepage(); err != nil {
 		d.setStartupError("system_homepage", "", err)
 		<-rootCtx.Done()
 		return d.close()
 	}
+	d.emitBackendSnapshot("system_homepage_ready")
 	if err := d.startHTTPServer(); err != nil {
 		d.setStartupError("managed_api", d.cfg.HTTP.ListenAddr, err)
 		<-rootCtx.Done()
 		return d.close()
 	}
+	d.emitBackendSnapshot("managed_api_ready")
 	if err := d.reserveFSHTTPListener(); err != nil {
 		d.setStartupError("fs_http", d.cfg.FSHTTP.ListenAddr, err)
 		<-rootCtx.Done()
 		return d.close()
 	}
+	d.emitBackendSnapshot("fs_http_reserved")
 	if err := d.startManagedWOCProxy(); err != nil {
 		d.setStartupError("woc_proxy", managedWOCProxyListenAddr, err)
 		<-rootCtx.Done()
 		return d.close()
 	}
-	d.setPhase(managedPhaseLocked)
+	d.emitBackendSnapshot("chain_access_ready")
+	d.setBackendPhase(managedBackendPhaseAvailable)
 	d.printLockedStartupSummary()
 	go d.cliUnlockLoop()
 	<-rootCtx.Done()
@@ -156,6 +180,9 @@ func (d *managedDaemon) close() error {
 	d.rtCancel = nil
 	d.rt = nil
 	d.rtAPI = nil
+	d.unlockedPrivHex = ""
+	d.runtimeErrorMessage = ""
+	d.runtimePhase = managedRuntimePhaseStopped
 	fsHTTPReserved := d.fsHTTPReserved
 	d.fsHTTPReserved = nil
 	d.mu.Unlock()
@@ -179,7 +206,7 @@ func (d *managedDaemon) close() error {
 	if fsHTTPReserved != nil {
 		_ = fsHTTPReserved.Close()
 	}
-	d.setPhase(managedPhaseStopped)
+	d.setBackendPhase(managedBackendPhaseStopped)
 	return nil
 }
 
@@ -197,9 +224,9 @@ func (d *managedDaemon) startHTTPServer() error {
 	d.srv = started.Server
 	d.cfg.HTTP.ListenAddr = started.Listener.Addr().String()
 	obs.Important("bitcast-client", "managed_api_started", map[string]any{
-		"listen_addr": started.Listener.Addr().String(),
-		"config_path": d.startup.ConfigPath,
-		"phase":       string(d.currentPhase()),
+		"listen_addr":   started.Listener.Addr().String(),
+		"config_path":   d.startup.ConfigPath,
+		"backend_phase": string(d.currentBackendPhase()),
 	})
 	lhttp.ServeInBackground(started, func(err error) {
 		obs.Error("bitcast-client", "managed_api_stopped", map[string]any{"error": err.Error()})
@@ -242,12 +269,12 @@ func (d *managedDaemon) handleNonAPIRequest(w http.ResponseWriter, _ *http.Reque
 }
 
 func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Request) {
-	if phase := d.currentPhase(); phase == managedPhaseStartupError {
+	if phase := d.currentBackendPhase(); phase == managedBackendPhaseStartupError {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
-			"error":       d.currentStartupError().Message,
-			"phase":       string(phase),
-			"service":     d.currentStartupError().Service,
-			"listen_addr": d.currentStartupError().ListenAddr,
+			"error":         d.currentStartupError().Message,
+			"backend_phase": string(phase),
+			"service":       d.currentStartupError().Service,
+			"listen_addr":   d.currentStartupError().ListenAddr,
 		})
 		return
 	}
@@ -270,22 +297,32 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	d.mu.RLock()
-	unlocked := d.rt != nil
-	phase := d.phase
+	backendPhase := d.backendPhase
+	runtimePhase := d.runtimePhase
+	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
+	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
 	startupErr := d.startupError
 	chainAccess := d.chainAccess
 	d.mu.RUnlock()
+	keyState := managedKeyStateMissing
+	switch {
+	case unlocked:
+		keyState = managedKeyStateUnlocked
+	case exists:
+		keyState = managedKeyStateLocked
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"vault_path":             d.startup.VaultPath,
 		"config_path":            d.startup.ConfigPath,
 		"key_path":               d.startup.KeyPath,
 		"index_db_path":          d.startup.IndexDBPath,
-		"has_key":                exists,
-		"unlocked":               unlocked,
-		"phase":                  string(phase),
+		"backend_phase":          string(backendPhase),
+		"runtime_phase":          string(runtimePhase),
+		"key_state":              string(keyState),
 		"startup_error_service":  startupErr.Service,
 		"startup_error_listen":   startupErr.ListenAddr,
 		"startup_error_message":  startupErr.Message,
+		"runtime_error_message":  runtimeErrorMessage,
 		"chain_access_mode":      chainAccess.Mode,
 		"wallet_chain_base_url":  chainAccess.BaseURL,
 		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
@@ -306,8 +343,8 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	if d.isUnlocked() {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "client is unlocked, lock first"})
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "client key is already unlocked, lock first"})
 		return
 	}
 	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
@@ -342,6 +379,7 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	d.emitBackendSnapshot("key_material_ready")
 	pubHex, _ := PubHexFromPrivHex(privHex)
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pubkey_hex": pubHex})
 }
@@ -355,8 +393,8 @@ func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	if d.isUnlocked() {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "client is unlocked, lock first"})
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "client key is already unlocked, lock first"})
 		return
 	}
 	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
@@ -381,6 +419,7 @@ func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	d.emitBackendSnapshot("key_material_ready")
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -410,7 +449,11 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	if d.isUnlocked() {
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		if err := d.startRuntimeAsync(); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
 		return
 	}
@@ -437,10 +480,12 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := d.startRuntime(privHex); err != nil {
+	d.rememberUnlockedKey(privHex)
+	if err := d.startRuntimeAsync(); err != nil {
+		d.clearUnlockedKey()
 		obs.Error("bitcast-client", "api_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
 		fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
@@ -455,14 +500,14 @@ func (d *managedDaemon) handleKeyLock(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := d.stopRuntime(); err != nil {
+	if err := d.lockRuntime(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": false})
 }
 
-func (d *managedDaemon) startRuntime(privHex string) error {
+func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	if err := d.ensureKeyWorkflowReady(); err != nil {
 		return err
 	}
@@ -494,6 +539,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	if err != nil {
 		if runIn.FSHTTPListener != nil {
 			_ = runIn.FSHTTPListener.Close()
+			_ = d.reserveFSHTTPListener()
 		}
 		return err
 	}
@@ -504,6 +550,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	if err != nil {
 		if runIn.FSHTTPListener != nil {
 			_ = runIn.FSHTTPListener.Close()
+			_ = d.reserveFSHTTPListener()
 		}
 		return err
 	}
@@ -515,6 +562,7 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	if err != nil {
 		if runIn.FSHTTPListener != nil {
 			_ = runIn.FSHTTPListener.Close()
+			_ = d.reserveFSHTTPListener()
 		}
 		cancel()
 		return err
@@ -523,16 +571,16 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	if err != nil {
 		_ = rt.Close()
 		cancel()
+		_ = d.reserveFSHTTPListener()
 		return err
 	}
 
-	d.mu.Lock()
-	d.rt = rt
-	d.rtCancel = cancel
-	d.rtAPI = runtimeAPI
-	d.mu.Unlock()
-
-	d.setPhase(managedPhaseReady)
+	if !d.commitRuntimeStartup(seq, rt, cancel, runtimeAPI) {
+		_ = rt.Close()
+		cancel()
+		_ = d.reserveFSHTTPListener()
+		return nil
+	}
 	d.printUnlockedRuntimeSummary(runCfg, rt)
 	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
 		"transport_peer_id": rt.Host.ID().String(),
@@ -706,10 +754,16 @@ func (d *managedDaemon) resolveChainAccessState() chainAccessState {
 	return state
 }
 
-func (d *managedDaemon) currentPhase() managedPhase {
+func (d *managedDaemon) currentBackendPhase() managedBackendPhase {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	return d.phase
+	return d.backendPhase
+}
+
+func (d *managedDaemon) currentRuntimePhase() managedRuntimePhase {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.runtimePhase
 }
 
 func (d *managedDaemon) currentStartupError() startupErrorState {
@@ -724,14 +778,27 @@ func (d *managedDaemon) currentChainAccess() chainAccessState {
 	return d.chainAccess
 }
 
-func (d *managedDaemon) setPhase(phase managedPhase) {
+func (d *managedDaemon) currentKeyState() managedKeyState {
+	d.mu.RLock()
+	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
+	d.mu.RUnlock()
+	if unlocked {
+		return managedKeyStateUnlocked
+	}
+	if d.currentKeyExistsLocked() {
+		return managedKeyStateLocked
+	}
+	return managedKeyStateMissing
+}
+
+func (d *managedDaemon) setBackendPhase(phase managedBackendPhase) {
 	d.mu.Lock()
-	d.phase = phase
-	if phase != managedPhaseStartupError {
+	d.backendPhase = phase
+	if phase != managedBackendPhaseStartupError {
 		d.startupError = startupErrorState{}
 	}
 	d.mu.Unlock()
-	d.emitBootstrapState()
+	d.emitBackendSnapshot(string(phase))
 	d.emitPhaseEvent()
 }
 
@@ -741,7 +808,7 @@ func (d *managedDaemon) setStartupError(service, listenAddr string, err error) {
 		message = strings.TrimSpace(err.Error())
 	}
 	d.mu.Lock()
-	d.phase = managedPhaseStartupError
+	d.backendPhase = managedBackendPhaseStartupError
 	d.startupError = startupErrorState{
 		Service:    strings.TrimSpace(service),
 		ListenAddr: strings.TrimSpace(listenAddr),
@@ -753,31 +820,15 @@ func (d *managedDaemon) setStartupError(service, listenAddr string, err error) {
 		"listen_addr": strings.TrimSpace(listenAddr),
 		"error":       message,
 	})
-	d.emitBootstrapState()
+	d.emitBackendSnapshot("startup_error")
 	d.emitPhaseEvent()
 }
 
-func (d *managedDaemon) emitBootstrapState() {
-	d.mu.RLock()
-	payload := map[string]any{
-		"type":                  "bootstrap_state",
-		"phase":                 string(d.phase),
-		"startup_error_service": d.startupError.Service,
-		"startup_error_listen":  d.startupError.ListenAddr,
-		"startup_error_message": d.startupError.Message,
-		"chain_access_mode":     d.chainAccess.Mode,
-		"wallet_chain_base_url": d.chainAccess.BaseURL,
-		"woc_proxy_enabled":     d.chainAccess.WOCProxyEnabled,
-		"woc_proxy_listen_addr": d.chainAccess.WOCProxyAddr,
-		"woc_upstream_root_url": d.chainAccess.UpstreamRootURL,
-		"woc_min_interval":      d.chainAccess.MinInterval.String(),
-	}
-	d.mu.RUnlock()
-	raw, err := json.Marshal(payload)
-	if err != nil {
+func (d *managedDaemon) emitBackendSnapshot(step string) {
+	if d == nil || d.controlStream == nil {
 		return
 	}
-	fmt.Fprintf(os.Stdout, "%s%s\n", managedBootstrapPrefix, string(raw))
+	d.controlStream.Emit("backend.snapshot", "private", "managed_daemon", "", d.buildBackendSnapshotPayload(step))
 }
 
 func (d *managedDaemon) emitPhaseEvent() {
@@ -785,20 +836,36 @@ func (d *managedDaemon) emitPhaseEvent() {
 		return
 	}
 	d.mu.RLock()
-	phase := string(d.phase)
+	backendPhase := string(d.backendPhase)
+	runtimePhase := string(d.runtimePhase)
+	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
 	startupErr := d.startupError
 	chainAccess := d.chainAccess
-	unlocked := d.rt != nil
 	hasSystemHomeBundle := d.systemHomepage != nil && d.systemHomepage.HasBundle()
 	defaultHomeSeedHash := d.defaultHomeSeedHash()
+	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
 	d.mu.RUnlock()
+	keyState := managedKeyStateMissing
+	switch {
+	case unlocked:
+		keyState = managedKeyStateUnlocked
+	case d.currentKeyExistsLocked():
+		keyState = managedKeyStateLocked
+	}
+	lastError := runtimeErrorMessage
+	if strings.TrimSpace(startupErr.Message) != "" {
+		lastError = strings.TrimSpace(startupErr.Message)
+	}
 
 	privatePayload := map[string]any{
-		"phase":                  phase,
-		"unlocked":               unlocked,
+		"backend_phase":          backendPhase,
+		"runtime_phase":          runtimePhase,
+		"key_state":              string(keyState),
+		"last_error":             lastError,
 		"startup_error_service":  strings.TrimSpace(startupErr.Service),
 		"startup_error_listen":   strings.TrimSpace(startupErr.ListenAddr),
 		"startup_error_message":  strings.TrimSpace(startupErr.Message),
+		"runtime_error_message":  runtimeErrorMessage,
 		"chain_access_mode":      strings.TrimSpace(chainAccess.Mode),
 		"wallet_chain_base_url":  strings.TrimSpace(chainAccess.BaseURL),
 		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
@@ -810,16 +877,76 @@ func (d *managedDaemon) emitPhaseEvent() {
 	}
 	d.controlStream.Emit("backend.phase.changed", "private", "managed_daemon", "", privatePayload)
 	d.controlStream.Emit("client.status.changed", "public", "managed_daemon", "", map[string]any{
-		"phase":    phase,
-		"unlocked": unlocked,
+		"backend_phase": backendPhase,
+		"runtime_phase": runtimePhase,
+		"key_state":     string(keyState),
 	})
 }
 
+func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any {
+	d.mu.RLock()
+	backendPhase := string(d.backendPhase)
+	runtimePhase := string(d.runtimePhase)
+	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
+	startupErr := d.startupError
+	chainAccess := d.chainAccess
+	hasSystemHomeBundle := d.systemHomepage != nil && d.systemHomepage.HasBundle()
+	defaultHomeSeedHash := d.defaultHomeSeedHash()
+	apiListenAddr := strings.TrimSpace(d.cfg.HTTP.ListenAddr)
+	fsHTTPListenAddr := strings.TrimSpace(d.cfg.FSHTTP.ListenAddr)
+	network := d.currentNetworkName()
+	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
+	d.mu.RUnlock()
+	keyState := managedKeyStateMissing
+	switch {
+	case unlocked:
+		keyState = managedKeyStateUnlocked
+	case d.currentKeyExistsLocked():
+		keyState = managedKeyStateLocked
+	}
+	lastError := runtimeErrorMessage
+	if strings.TrimSpace(startupErr.Message) != "" {
+		lastError = strings.TrimSpace(startupErr.Message)
+	}
+
+	return map[string]any{
+		"step":                   strings.TrimSpace(step),
+		"backend_phase":          backendPhase,
+		"runtime_phase":          runtimePhase,
+		"key_state":              string(keyState),
+		"last_error":             lastError,
+		"network":                strings.TrimSpace(network),
+		"vault_path":             strings.TrimSpace(d.startup.VaultPath),
+		"config_path":            strings.TrimSpace(d.startup.ConfigPath),
+		"key_path":               strings.TrimSpace(d.startup.KeyPath),
+		"index_db_path":          strings.TrimSpace(d.startup.IndexDBPath),
+		"api_listen_addr":        apiListenAddr,
+		"fs_http_listen_addr":    fsHTTPListenAddr,
+		"startup_error_service":  strings.TrimSpace(startupErr.Service),
+		"startup_error_listen":   strings.TrimSpace(startupErr.ListenAddr),
+		"startup_error_message":  strings.TrimSpace(startupErr.Message),
+		"runtime_error_message":  runtimeErrorMessage,
+		"chain_access_mode":      strings.TrimSpace(chainAccess.Mode),
+		"wallet_chain_base_url":  strings.TrimSpace(chainAccess.BaseURL),
+		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
+		"woc_proxy_listen_addr":  strings.TrimSpace(chainAccess.WOCProxyAddr),
+		"woc_upstream_root_url":  strings.TrimSpace(chainAccess.UpstreamRootURL),
+		"woc_min_interval":       chainAccess.MinInterval.String(),
+		"has_system_home_bundle": hasSystemHomeBundle,
+		"default_home_seed_hash": strings.TrimSpace(defaultHomeSeedHash),
+	}
+}
+
+func (d *managedDaemon) currentKeyExistsLocked() bool {
+	_, err := os.Stat(strings.TrimSpace(d.startup.KeyPath))
+	return err == nil
+}
+
 func (d *managedDaemon) ensureKeyWorkflowReady() error {
-	switch d.currentPhase() {
-	case managedPhaseLocked, managedPhaseReady:
+	switch d.currentBackendPhase() {
+	case managedBackendPhaseAvailable:
 		return nil
-	case managedPhaseStartupError:
+	case managedBackendPhaseStartupError:
 		se := d.currentStartupError()
 		if se.Message != "" {
 			return fmt.Errorf("client startup failed: %s", se.Message)
@@ -828,6 +955,98 @@ func (d *managedDaemon) ensureKeyWorkflowReady() error {
 	default:
 		return fmt.Errorf("client is still starting")
 	}
+}
+
+func (d *managedDaemon) rememberUnlockedKey(privHex string) {
+	d.mu.Lock()
+	d.unlockedPrivHex = strings.TrimSpace(privHex)
+	d.runtimeErrorMessage = ""
+	d.mu.Unlock()
+}
+
+func (d *managedDaemon) clearUnlockedKey() {
+	d.mu.Lock()
+	d.unlockedPrivHex = ""
+	d.runtimeErrorMessage = ""
+	d.runtimePhase = managedRuntimePhaseStopped
+	d.runtimeStartSeq++
+	d.mu.Unlock()
+	d.emitBackendSnapshot("key_locked")
+	d.emitPhaseEvent()
+}
+
+func (d *managedDaemon) startRuntimeAsync() error {
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	// 设计说明：
+	// - `unlock` 只负责把密钥放进 daemon 内存，并异步触发运行时启动；
+	// - 真正的长耗时启动在 goroutine 里做，避免再把“验密”和“启动完整 runtime”绑成一个同步 HTTP。
+	if strings.TrimSpace(d.unlockedPrivHex) == "" {
+		d.mu.Unlock()
+		return fmt.Errorf("client key is locked")
+	}
+	if d.rt != nil || d.runtimePhase == managedRuntimePhaseStarting {
+		d.mu.Unlock()
+		return nil
+	}
+	d.runtimeStartSeq++
+	seq := d.runtimeStartSeq
+	privHex := d.unlockedPrivHex
+	d.runtimePhase = managedRuntimePhaseStarting
+	d.runtimeErrorMessage = ""
+	d.mu.Unlock()
+
+	d.emitBackendSnapshot("runtime_starting")
+	d.emitPhaseEvent()
+
+	go func() {
+		if err := d.startRuntime(privHex, seq); err != nil {
+			obs.Error("bitcast-client", "managed_runtime_start_failed", map[string]any{"error": err.Error()})
+			fmt.Fprintf(os.Stderr, "运行时启动失败: %s\n", err.Error())
+			d.failRuntimeStartup(seq, err)
+		}
+	}()
+	return nil
+}
+
+func (d *managedDaemon) failRuntimeStartup(seq uint64, err error) {
+	message := ""
+	if err != nil {
+		message = strings.TrimSpace(err.Error())
+	}
+	d.mu.Lock()
+	if seq != d.runtimeStartSeq || strings.TrimSpace(d.unlockedPrivHex) == "" {
+		d.mu.Unlock()
+		return
+	}
+	d.runtimePhase = managedRuntimePhaseError
+	d.runtimeErrorMessage = message
+	d.mu.Unlock()
+	d.emitBackendSnapshot("runtime_error")
+	d.emitPhaseEvent()
+}
+
+func (d *managedDaemon) commitRuntimeStartup(seq uint64, rt *clientapp.Runtime, cancel context.CancelFunc, runtimeAPI http.Handler) bool {
+	d.mu.Lock()
+	if seq != d.runtimeStartSeq || strings.TrimSpace(d.unlockedPrivHex) == "" {
+		d.mu.Unlock()
+		return false
+	}
+	if d.rt != nil {
+		d.mu.Unlock()
+		return false
+	}
+	d.rt = rt
+	d.rtCancel = cancel
+	d.rtAPI = runtimeAPI
+	d.runtimePhase = managedRuntimePhaseReady
+	d.runtimeErrorMessage = ""
+	d.mu.Unlock()
+	d.emitBackendSnapshot("runtime_ready")
+	d.emitPhaseEvent()
+	return true
 }
 
 func (d *managedDaemon) reserveFSHTTPListener() error {
@@ -898,7 +1117,6 @@ func (d *managedDaemon) startManagedWOCProxy() error {
 			d.setStartupError("woc_proxy", ln.Addr().String(), err)
 		}
 	}()
-	d.emitBootstrapState()
 	return nil
 }
 
@@ -906,9 +1124,13 @@ func (d *managedDaemon) stopRuntime() error {
 	d.mu.Lock()
 	cancel := d.rtCancel
 	rt := d.rt
+	runtimeWasStarting := d.runtimePhase == managedRuntimePhaseStarting
 	d.rtCancel = nil
 	d.rt = nil
 	d.rtAPI = nil
+	d.runtimePhase = managedRuntimePhaseStopped
+	d.runtimeErrorMessage = ""
+	d.runtimeStartSeq++
 	d.mu.Unlock()
 
 	if cancel != nil {
@@ -917,12 +1139,31 @@ func (d *managedDaemon) stopRuntime() error {
 	if rt != nil {
 		_ = rt.Close()
 	}
+	// 设计说明：
+	// - 运行时异步启动阶段已经提前拿走了 FS listener；
+	// - 这时如果立刻 lock，不要抢着二次 reserve，否则会和那条启动 goroutine 打架；
+	// - 让后台 goroutine 在收尾时自己把 listener 还回来，端口状态才不会乱。
+	if rt == nil && runtimeWasStarting {
+		d.emitBackendSnapshot("runtime_stopped")
+		d.emitPhaseEvent()
+		obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
+		return nil
+	}
 	if err := d.reserveFSHTTPListener(); err != nil {
 		d.setStartupError("fs_http", d.cfg.FSHTTP.ListenAddr, err)
 		return err
 	}
-	d.setPhase(managedPhaseLocked)
+	d.emitBackendSnapshot("runtime_stopped")
+	d.emitPhaseEvent()
 	obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
+	return nil
+}
+
+func (d *managedDaemon) lockRuntime() error {
+	if err := d.stopRuntime(); err != nil {
+		return err
+	}
+	d.clearUnlockedKey()
 	return nil
 }
 
@@ -938,11 +1179,11 @@ func (d *managedDaemon) cliUnlockLoop() {
 			return
 		default:
 		}
-		if phase := d.currentPhase(); phase != managedPhaseLocked && phase != managedPhaseReady {
+		if phase := d.currentBackendPhase(); phase != managedBackendPhaseAvailable {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		if d.isUnlocked() {
+		if d.currentKeyState() == managedKeyStateUnlocked {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
@@ -971,7 +1212,7 @@ func (d *managedDaemon) cliUnlockLoop() {
 			obs.Info("bitcast-client", "cli_unlock_empty_password", map[string]any{"vault_path": d.startup.VaultPath})
 			continue
 		}
-		if d.isUnlocked() {
+		if d.currentKeyState() == managedKeyStateUnlocked {
 			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
 			continue
 		}
@@ -981,7 +1222,9 @@ func (d *managedDaemon) cliUnlockLoop() {
 			fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
 			continue
 		}
-		if err := d.startRuntime(privHex); err != nil {
+		d.rememberUnlockedKey(privHex)
+		if err := d.startRuntimeAsync(); err != nil {
+			d.clearUnlockedKey()
 			obs.Error("bitcast-client", "cli_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
 			fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
 			continue
@@ -1008,7 +1251,7 @@ func (d *managedDaemon) readPasswordCancelable(prompt string) (password string, 
 
 	buf := make([]byte, 0, 128)
 	for {
-		if d.isUnlocked() {
+		if d.currentKeyState() == managedKeyStateUnlocked {
 			fmt.Fprint(os.Stderr, "\r已解锁（管理 API 已生效），取消命令行密码输入。")
 			return "", true, nil
 		}
@@ -1065,9 +1308,7 @@ func (d *managedDaemon) currentRuntimeAPI() http.Handler {
 }
 
 func (d *managedDaemon) isUnlocked() bool {
-	d.mu.RLock()
-	defer d.mu.RUnlock()
-	return d.rt != nil
+	return d.currentKeyState() == managedKeyStateUnlocked
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

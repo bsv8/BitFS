@@ -43,8 +43,14 @@ func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*sql.DB) 
 }
 
 func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(*sql.DB) error) error {
-	if s == nil || s.dbActor == nil {
+	if s == nil {
 		return nil
 	}
-	return s.dbActor.Do(ctx, fn)
+	if s.dbActor != nil {
+		return s.dbActor.Do(ctx, fn)
+	}
+	if s.db != nil {
+		return fn(s.db)
+	}
+	return nil
 }

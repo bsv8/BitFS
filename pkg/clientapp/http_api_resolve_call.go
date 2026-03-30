@@ -20,7 +20,7 @@ type apiRouteCallRequest struct {
 	Body            json.RawMessage `json:"body,omitempty"`
 	BodyBase64      string          `json:"body_base64,omitempty"`
 	PaymentMode     string          `json:"payment_mode,omitempty"`
-	PaymentQuoteB64 string          `json:"payment_quote_base64,omitempty"`
+	ServiceQuoteB64 string          `json:"service_quote_base64,omitempty"`
 }
 
 func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
@@ -42,7 +42,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	paymentQuote, err := decodeOptionalBase64(req.PaymentQuoteB64, "payment_quote_base64")
+	serviceQuote, err := decodeOptionalBase64(req.ServiceQuoteB64, "service_quote_base64")
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -53,7 +53,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		ContentType:  req.ContentType,
 		Body:         body,
 		PaymentMode:  req.PaymentMode,
-		PaymentQuote: paymentQuote,
+		ServiceQuote: serviceQuote,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
@@ -300,8 +300,8 @@ func routeCallHTTPResponse(ok bool, code, message, contentType string, body []by
 
 func routeCallPaymentHTTPExtras(resp ncall.CallResp) func(map[string]any) {
 	return func(out map[string]any) {
-		if len(resp.PaymentOptions) > 0 {
-			out["payment_options"] = resp.PaymentOptions
+		if len(resp.PaymentSchemes) > 0 {
+			out["payment_schemes"] = resp.PaymentSchemes
 		}
 		if strings.TrimSpace(resp.PaymentReceiptScheme) != "" {
 			out["payment_receipt_scheme"] = strings.TrimSpace(resp.PaymentReceiptScheme)
@@ -315,17 +315,17 @@ func routeCallPaymentHTTPExtras(resp ncall.CallResp) func(map[string]any) {
 				}
 			}
 		}
-		if strings.TrimSpace(resp.PaymentQuoteScheme) != "" {
-			out["payment_quote_scheme"] = strings.TrimSpace(resp.PaymentQuoteScheme)
-		}
-		if len(resp.PaymentQuote) > 0 {
-			out["payment_quote_base64"] = base64.StdEncoding.EncodeToString(resp.PaymentQuote)
-			if json.Valid(resp.PaymentQuote) {
+		if len(resp.ServiceQuote) > 0 {
+			out["service_quote_base64"] = base64.StdEncoding.EncodeToString(resp.ServiceQuote)
+			if json.Valid(resp.ServiceQuote) {
 				var quote any
-				if err := json.Unmarshal(resp.PaymentQuote, &quote); err == nil {
-					out["payment_quote"] = quote
+				if err := json.Unmarshal(resp.ServiceQuote, &quote); err == nil {
+					out["service_quote"] = quote
 				}
 			}
+		}
+		if len(resp.ServiceReceipt) > 0 {
+			out["service_receipt_base64"] = base64.StdEncoding.EncodeToString(resp.ServiceReceipt)
 		}
 	}
 }

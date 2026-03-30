@@ -5,7 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
@@ -79,9 +78,9 @@ func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, peerID peer.
 	}
 	option := &ncall.PaymentOption{
 		Scheme:              ncall.PaymentSchemePool2of2V1,
-		PaymentDomain:       strings.TrimSpace(quote.Domain),
+		PaymentDomain:       "",
 		AmountSatoshi:       quote.ChargeAmountSatoshi,
-		Description:         strings.TrimSpace(quote.ChargeReason),
+		Description:         strings.TrimSpace(req.Route),
 		PricingMode:         poolcore.ServiceOfferPricingModeFixedPrice,
 		ServiceQuantity:     1,
 		ServiceQuantityUnit: "call",
@@ -99,15 +98,15 @@ func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, peerID peer.
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
 		return ncall.CallResp{}, fmt.Errorf("fee pool session missing for peer=%s", peerID)
 	}
-	if err := poolcore.ValidateServiceQuoteBinding(quote, strings.ToLower(hex.EncodeToString(gatewayPub.Compressed())), rt.runIn.ClientID, session.SpendTxID, strings.TrimSpace(req.Route), req.Body, time.Now().Unix()); err != nil {
-		return ncall.CallResp{}, err
-	}
 	return payPeerCallWithFeePool2of2Quote(ctx, rt, peerID, req, option, feePoolServiceQuoteBuilt{
 		GatewayPub:       gatewayPub,
 		QuoteStatus:      "accepted",
 		ServiceQuoteRaw:  append([]byte(nil), rawQuote...),
 		ServiceQuote:     quote,
 		ServiceQuoteHash: "",
+		ChargeReason:     strings.TrimSpace(req.Route),
+		NextSequence:     session.Sequence + 1,
+		NextServerAmount: session.ServerAmount + quote.ChargeAmountSatoshi,
 	}, info)
 }
 
@@ -161,12 +160,11 @@ func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, peerID peer.
 	}
 	quantity, unit := describePeerCallQuoteQuantity(quoted.ServiceQuote)
 	return ncall.CallResp{
-		Ok:                 false,
-		Code:               "PAYMENT_QUOTED",
-		Message:            "payment quote ready",
-		PaymentOptions:     []*ncall.PaymentOption{decorateQuotedPaymentOption(option, quoted, quantity, unit)},
-		PaymentQuoteScheme: ncall.PaymentSchemePool2of2V1,
-		PaymentQuote:       append([]byte(nil), quoted.ServiceQuoteRaw...),
+		Ok:             false,
+		Code:           "PAYMENT_QUOTED",
+		Message:        "payment quote ready",
+		PaymentSchemes: []*ncall.PaymentOption{decorateQuotedPaymentOption(option, quoted, quantity, unit)},
+		ServiceQuote:   append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}, quoted, info, nil
 }
 
@@ -182,7 +180,7 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		Fee:                 chargeCtx.Session.SpendTxFeeSat,
 		ClientSignature:     append([]byte(nil), chargeCtx.ClientSignature...),
-		ChargeReason:        strings.TrimSpace(quoted.ServiceQuote.ChargeReason),
+		ChargeReason:        strings.TrimSpace(quoted.ChargeReason),
 		ProofIntent:         append([]byte(nil), chargeCtx.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), chargeCtx.SignedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
@@ -202,21 +200,15 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 		if err := oldproto.Unmarshal(out.PaymentReceipt, &receipt); err != nil {
 			return ncall.CallResp{}, err
 		}
-		if receipt.SequenceNumber != chargeCtx.NextSeq || receipt.ServerAmount != chargeCtx.NextServerAmount {
-			return ncall.CallResp{}, fmt.Errorf("payment receipt state mismatch")
-		}
 		resultPayloadBytes, err := expectedPeerCallResultPayload(req.Route, out.Body)
 		if err != nil {
 			return ncall.CallResp{}, err
 		}
 		if err := verifyServiceReceiptOrFreeze(ctx, rt, peerID, chargeCtx.Session, receipt.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        strings.TrimSpace(req.Route),
-			SpendTxID:          chargeCtx.Session.SpendTxID,
-			SequenceNumber:     chargeCtx.NextSeq,
-			AcceptedChargeHash: chargeCtx.AcceptedChargeHash,
-			ResultCode:         strings.TrimSpace(out.Code),
+			OfferHash:          quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: resultPayloadBytes,
-		}, receipt.ServiceReceipt); err != nil {
+		}, out.ServiceReceipt); err != nil {
 			return ncall.CallResp{}, err
 		}
 		nextTxHex := chargeCtx.UpdatedTxHex
@@ -240,8 +232,8 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 				"route":               strings.TrimSpace(req.Route),
 				"payment_domain":      strings.TrimSpace(option.PaymentDomain),
 				"charged_amount_sat":  receipt.ChargedAmountSatoshi,
-				"sequence_number":     receipt.SequenceNumber,
-				"server_amount":       receipt.ServerAmount,
+				"sequence_number":     chargeCtx.NextSeq,
+				"server_amount":       chargeCtx.NextServerAmount,
 				"minimum_pool_amount": info.MinimumPoolAmountSatoshi,
 			},
 		})
@@ -336,11 +328,15 @@ func prepareFeePoolChargeFromQuote(rt *Runtime, targetPeerID peer.ID, quoted fee
 		return feePoolChargeContext{}, err
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         session,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             session,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return feePoolChargeContext{}, err
@@ -352,8 +348,8 @@ func prepareFeePoolChargeFromQuote(rt *Runtime, targetPeerID peer.ID, quoted fee
 	return feePoolChargeContext{
 		Session:            session,
 		Charge:             quoted.ServiceQuote.ChargeAmountSatoshi,
-		NextSeq:            quoted.ServiceQuote.SequenceNumber,
-		NextServerAmount:   quoted.ServiceQuote.ServerAmountAfter,
+		NextSeq:            quoted.NextSequence,
+		NextServerAmount:   quoted.NextServerAmount,
 		UpdatedTxHex:       built.UpdatedTx.Hex(),
 		AcceptedChargeHash: built.AcceptedChargeHash,
 		ClientSignature:    append([]byte(nil), (*clientSig)...),
@@ -382,9 +378,6 @@ func buildPeerCallQuoteTarget(req ncall.CallReq) string {
 }
 
 func describePeerCallQuoteQuantity(quote payflow.ServiceQuote) (uint64, string) {
-	if quote.GrantedDurationSeconds > 0 {
-		return uint64(quote.GrantedDurationSeconds), "second"
-	}
 	return 1, "call"
 }
 
@@ -394,7 +387,7 @@ func decorateQuotedPaymentOption(option *ncall.PaymentOption, quoted feePoolServ
 	}
 	copyItem := *option
 	copyItem.AmountSatoshi = quoted.ServiceQuote.ChargeAmountSatoshi
-	copyItem.Description = strings.TrimSpace(quoted.ServiceQuote.ChargeReason)
+	copyItem.Description = strings.TrimSpace(quoted.ChargeReason)
 	copyItem.PricingMode = normalizePeerCallPricingMode(option)
 	copyItem.ServiceQuantity = quantity
 	copyItem.ServiceQuantityUnit = strings.TrimSpace(unit)

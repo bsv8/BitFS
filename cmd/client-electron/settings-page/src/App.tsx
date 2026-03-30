@@ -155,6 +155,7 @@ export default function App() {
   const currentRootSeedHash = shellState?.currentRootSeedHash || "";
   const currentAutoReachabilityAnnounceEnabled = Boolean(adminConfig["reachability.auto_announce_enabled"] ?? true);
   const currentReachabilityAnnounceTTLSeconds = Number(adminConfig["reachability.announce_ttl_seconds"] ?? 3600);
+  const clientReady = shellState?.backend.backendPhase === "available" && shellState?.backend.runtimePhase === "ready";
 
   return (
     <div className="settings-shell">
@@ -179,7 +180,7 @@ export default function App() {
         <header className="hero">
           <div>
             <p className="hero-kicker">Managed Client</p>
-            <h2>{shellState?.backend.phase === "ready" ? "客户端已就绪" : "客户端未就绪"}</h2>
+            <h2>{clientReady ? "客户端已就绪" : "客户端未就绪"}</h2>
             <p className="hero-copy">
               {homeSource}
             </p>
@@ -277,7 +278,9 @@ export default function App() {
                 </div>
               </div>
               <dl className="detail-grid">
-                <div><dt>阶段</dt><dd>{shellState?.backend.phase || "-"}</dd></div>
+                <div><dt>Backend 阶段</dt><dd>{shellState?.backend.backendPhase || "-"}</dd></div>
+                <div><dt>Runtime 阶段</dt><dd>{shellState?.backend.runtimePhase || "-"}</dd></div>
+                <div><dt>密钥状态</dt><dd>{shellState?.backend.keyState || "-"}</dd></div>
                 <div><dt>PID</dt><dd>{shellState?.backend.pid || "-"}</dd></div>
                 <div><dt>API</dt><dd>{shellState?.backend.apiBase || "-"}</dd></div>
                 <div><dt>Vault</dt><dd>{shellState?.backend.vaultPath || "-"}</dd></div>

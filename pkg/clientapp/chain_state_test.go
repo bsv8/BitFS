@@ -68,6 +68,57 @@ func TestInitIndexDB_MigratesLegacyChainTables(t *testing.T) {
 	}
 }
 
+func TestInitIndexDB_MigratesLegacyWalletUTXOAllocationColumns(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE wallet_utxo(
+		utxo_id TEXT PRIMARY KEY,
+		wallet_id TEXT NOT NULL,
+		address TEXT NOT NULL,
+		txid TEXT NOT NULL,
+		vout INTEGER NOT NULL,
+		value_satoshi INTEGER NOT NULL,
+		state TEXT NOT NULL,
+		created_txid TEXT NOT NULL,
+		spent_txid TEXT NOT NULL,
+		created_at_unix INTEGER NOT NULL,
+		updated_at_unix INTEGER NOT NULL,
+		spent_at_unix INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy wallet_utxo: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id,wallet_id,address,txid,vout,value_satoshi,state,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+	) VALUES('legacy:0','wallet','addr','legacy',0,2,'unspent','legacy','',1,1,0)`); err != nil {
+		t.Fatalf("seed legacy wallet_utxo: %v", err)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	var allocationClass string
+	var allocationReason string
+	if err := db.QueryRow(`SELECT allocation_class,allocation_reason FROM wallet_utxo WHERE utxo_id='legacy:0'`).Scan(&allocationClass, &allocationReason); err != nil {
+		t.Fatalf("query migrated allocation fields: %v", err)
+	}
+	if allocationClass != walletUTXOAllocationPlainBSV {
+		t.Fatalf("allocation_class mismatch: got=%s want=%s", allocationClass, walletUTXOAllocationPlainBSV)
+	}
+	if allocationReason != "" {
+		t.Fatalf("allocation_reason mismatch: got=%q want empty", allocationReason)
+	}
+}
+
 func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 	t.Parallel()
 

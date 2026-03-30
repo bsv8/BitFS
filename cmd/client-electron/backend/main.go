@@ -106,6 +106,10 @@ func main() {
 		}
 		return
 	case actionRun:
+		controlStream, err := managedclient.NewManagedControlStreamFromEnv()
+		if err != nil {
+			log.Fatal(err)
+		}
 		if err := managedclient.RunManagedDaemon(managedclient.DaemonOptions{
 			Config:               cfg,
 			Startup:              startup,
@@ -113,7 +117,7 @@ func main() {
 			Overrides:            overrides,
 			Desktop:              desktopOptions,
 			UnlockPasswordPrompt: msg("prompt_password_unlock"),
-			ControlStream:        managedclient.NewManagedControlStreamFromEnv(),
+			ControlStream:        controlStream,
 		}); err != nil {
 			log.Fatal(err)
 		}

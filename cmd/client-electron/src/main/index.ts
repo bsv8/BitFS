@@ -151,13 +151,14 @@ async function bootstrap(): Promise<void> {
     if (!runtime || !supervisor || !settings) {
       return;
     }
-    if (supervisor.snapshot().phase !== "ready") {
+    const backend = supervisor.snapshot();
+    if (backend.backendPhase !== "available" || backend.runtimePhase !== "ready") {
       return;
     }
     if (runtime.snapshot().currentURL !== "") {
       return;
     }
-    const target = settings.snapshot().userHomeSeedHash || supervisor.snapshot().defaultHomeSeedHash;
+    const target = settings.snapshot().userHomeSeedHash || backend.defaultHomeSeedHash;
     if (target === "") {
       debugLogger.log("bootstrap", "initial_homepage_missing");
       return;

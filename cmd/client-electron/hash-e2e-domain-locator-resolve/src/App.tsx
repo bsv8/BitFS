@@ -34,7 +34,7 @@ declare global {
 }
 
 export default function App() {
-  const [walletSummary, setWalletSummary] = useState<BitfsWalletSummary | null>(null);
+  const [walletBalance, setWalletBalance] = useState<BitfsWalletBalance | null>(null);
   const [clientInfo, setClientInfo] = useState<BitfsClientInfo | null>(null);
   const [resolverPubkeyHex, setResolverPubkeyHex] = useState("");
   const [domainName, setDomainName] = useState("");
@@ -51,14 +51,14 @@ export default function App() {
         return;
       }
       try {
-        const [nextWalletSummary, nextClientInfo] = await Promise.all([
-          window.bitfs.wallet.summary(),
+        const [nextWalletBalance, nextClientInfo] = await Promise.all([
+          window.bitfs.wallet.balance(),
           window.bitfs.client.info()
         ]);
         if (cancelled) {
           return;
         }
-        setWalletSummary(nextWalletSummary);
+        setWalletBalance(nextWalletBalance);
         setClientInfo(nextClientInfo);
       } catch (error) {
         if (cancelled) {
@@ -98,7 +98,7 @@ export default function App() {
       });
     }
     const walletSnapshot = await waitForWalletIdentity(bridge);
-    setWalletSummary(walletSnapshot.walletSummary);
+    setWalletBalance(walletSnapshot.walletBalance);
     setClientInfo(walletSnapshot.clientInfo);
 
     const normalizedResolver = normalizePubkeyHex(input.resolverPubkeyHex || resolverPubkeyHex);
@@ -218,7 +218,7 @@ export default function App() {
 
       <section className="panel status-panel">
         <h2>钱包快照</h2>
-        <pre>{JSON.stringify({ walletSummary, clientInfo }, null, 2)}</pre>
+        <pre>{JSON.stringify({ walletBalance, clientInfo }, null, 2)}</pre>
       </section>
 
       <section className="panel result-panel">
@@ -230,25 +230,25 @@ export default function App() {
   );
 }
 
-async function waitForWalletIdentity(bridge: BitfsBridge): Promise<{ walletSummary: BitfsWalletSummary; clientInfo: BitfsClientInfo }> {
+async function waitForWalletIdentity(bridge: BitfsBridge): Promise<{ walletBalance: BitfsWalletBalance; clientInfo: BitfsClientInfo }> {
   let lastError = "";
   for (let i = 0; i < 40; i += 1) {
     try {
-      const [walletSummary, clientInfo] = await Promise.all([
-        bridge.wallet.summary(),
+      const [walletBalance, clientInfo] = await Promise.all([
+        bridge.wallet.balance(),
         bridge.client.info()
       ]);
-      const walletPubkeyHex = normalizePubkeyHex(walletSummary.pubkey_hex || clientInfo.pubkey_hex || "");
-      if (walletPubkeyHex !== "" && Number(walletSummary.balance_satoshi || 0) > 0) {
-        return { walletSummary, clientInfo };
+      const walletPubkeyHex = normalizePubkeyHex(clientInfo.pubkey_hex || "");
+      if (walletPubkeyHex !== "" && Number(walletBalance.balance_satoshi || 0) > 0) {
+        return { walletBalance, clientInfo };
       }
-      lastError = "wallet summary not ready";
+      lastError = "wallet balance not ready";
     } catch (error) {
       lastError = error instanceof Error ? error.message : String(error);
     }
     await sleep(250);
   }
-  throw new Error(lastError || "wallet summary unavailable");
+  throw new Error(lastError || "wallet balance unavailable");
 }
 
 function readPeerCallBodyJson<T>(resp: BitfsPeerCallResponse): T {

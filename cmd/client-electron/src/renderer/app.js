@@ -561,7 +561,12 @@
   }
 
   function isBackendReady(state) {
-    return String(state?.backend?.phase || "") === "ready";
+    return String(state?.backend?.backendPhase || "") === "available" &&
+      String(state?.backend?.runtimePhase || "") === "ready";
+  }
+
+  function backendHasKey(backend) {
+    return String(backend?.keyState || "") !== "missing";
   }
 
   function getEffectiveHomeSeedHash(state) {
@@ -1050,26 +1055,33 @@
   }
 
   function resolveLockedStep(backend) {
-    return backend.hasKey ? "unlock-key" : onboardingStep === "create-key" ? "create-key" : "choose-init";
+    return backendHasKey(backend) ? "unlock-key" : onboardingStep === "create-key" ? "create-key" : "choose-init";
   }
 
   function renderBackendState(state) {
     const backend = state.backend || {};
-    const phase = String(backend.phase || "starting");
-    const hasKey = Boolean(backend.hasKey);
-    if (lastBackendPhase !== phase) {
-      lastBackendPhase = phase;
+    const backendPhase = String(backend.backendPhase || "starting");
+    const runtimePhase = String(backend.runtimePhase || "stopped");
+    const keyState = String(backend.keyState || "missing");
+    // 设计说明：
+    // - 门禁页先判断 backend 自己有没有起来；
+    // - backend 可用后，再看 runtime 本轮会话有没有启动完成；
+    // - 最后才看 keyState 决定是初始化、解锁，还是显示运行时错误。
+    const stateSignature = `${backendPhase}/${runtimePhase}/${keyState}`;
+    const hasKey = keyState !== "missing";
+    if (lastBackendPhase !== stateSignature) {
+      lastBackendPhase = stateSignature;
       debugLog("shell", "backend_phase_changed", {
-        phase,
-        has_key: hasKey,
-        unlocked: Boolean(backend.unlocked),
+        backend_phase: backendPhase,
+        runtime_phase: runtimePhase,
+        key_state: keyState,
         default_home_seed_hash: String(backend.defaultHomeSeedHash || ""),
         has_system_home_bundle: Boolean(backend.hasSystemHomeBundle)
       });
     }
-    lockButton.classList.toggle("is-hidden", phase !== "ready");
+    lockButton.classList.toggle("is-hidden", runtimePhase !== "ready");
 
-    if (phase === "ready") {
+    if (backendPhase === "available" && runtimePhase === "ready") {
       setShellMode("browser");
       backendErrorBanner.classList.add("is-hidden");
       hideUnlockBusinessNotice();
@@ -1089,44 +1101,58 @@
     restartPanel.classList.add("is-hidden");
     backendStepNote.textContent = "";
 
-    if (phase === "starting") {
+    if (backendPhase === "starting") {
       setOnboardingStep("checking");
       backendTitle.textContent = "正在启动内置客户端";
-      backendSummary.textContent = "Electron 正在拉起 Go 客户端，并等待 managed API 可用。";
-      backendStepNote.textContent = "壳层会先读取 Go managed API 状态，再决定显示初始化步骤还是解锁步骤。";
-    } else if (phase === "locked" && !hasKey) {
+      backendSummary.textContent = "Electron 正在拉起 Go backend，并等待受管接口可用。";
+      backendStepNote.textContent = "这一步只属于 backend 自己的启动，不表示钱包已经解锁。";
+    } else if (backendPhase === "startup_error") {
+      setOnboardingStep("checking");
+      backendTitle.textContent = "内置客户端启动失败";
+      backendSummary.textContent = "Go 后端没有完成自己的受管能力启动，当前还没进入钱包会话层。";
+      backendStepNote.textContent = "请先处理端口占用或托管链访问设置，再点击重启后端。";
+      restartPanel.classList.remove("is-hidden");
+    } else if (backendPhase === "stopped") {
+      setOnboardingStep("checking");
+      backendTitle.textContent = "内置客户端已停止";
+      backendSummary.textContent = "backend 当前没有运行，可以重新拉起。";
+      backendStepNote.textContent = "如果这里带了错误信息，通常表示 backend 在之前意外退出了。";
+      restartPanel.classList.remove("is-hidden");
+    } else if (!hasKey) {
       if (onboardingStep === "create-key") {
         backendTitle.textContent = "新建密文私钥";
         backendSummary.textContent = "这一步会生成新的私钥，并把密文写入当前托管 vault 的 key.json。";
-        backendStepNote.textContent = "创建完成后壳层会继续用当前密码启动 Go 运行时，不再停留在单独解锁页。";
+        backendStepNote.textContent = "创建完成后壳层会继续用当前密码触发运行时启动，不再停留在单独解锁页。";
       } else {
         backendTitle.textContent = "初始化客户端私钥";
-        backendSummary.textContent = "这是第一次启动。先选择新建密文私钥，或导入已经存在的密文私钥。";
+        backendSummary.textContent = "当前 vault 里还没有密文私钥。先选择新建，或导入已经存在的密文私钥。";
         backendStepNote.textContent = "导入与导出都只处理密文私钥 JSON，不处理明文私钥。";
       }
-    } else if (phase === "locked") {
+    } else if (keyState === "locked" && runtimePhase === "stopped") {
       backendTitle.textContent = "客户端已锁定";
-      backendSummary.textContent = "输入密码后解锁 Go 客户端，BitFS 页面才会真正装载。";
+      backendSummary.textContent = "输入密码后只会先解锁密钥，再异步启动钱包运行时。";
       backendStepNote.textContent = "如果你还没有备份当前密文私钥，可以先导出到安全位置。";
-    } else if (phase === "startup_error") {
+    } else if (keyState === "unlocked" && runtimePhase === "starting") {
       setOnboardingStep("checking");
-      backendTitle.textContent = "内置客户端启动失败";
-      backendSummary.textContent = "Go 后台没有完成受管资源监听，当前不会进入私钥解锁流程。";
-      backendStepNote.textContent = "请先处理端口占用或托管链访问设置，再点击重启后端。";
-      restartPanel.classList.remove("is-hidden");
-    } else if (phase === "error") {
+      backendTitle.textContent = "正在启动钱包运行时";
+      backendSummary.textContent = "密钥已经解锁，当前正在后台拉起钱包运行时。";
+      backendStepNote.textContent = "这里不是 backend 首启，而是本次钱包会话的启动阶段。";
+    } else if (keyState === "unlocked" && runtimePhase === "error") {
       setOnboardingStep("checking");
-      backendTitle.textContent = "内置客户端启动失败";
-      backendSummary.textContent = "Go 子进程没有成功进入可管理状态，可以直接在这里重启。";
+      backendTitle.textContent = "钱包运行时启动失败";
+      backendSummary.textContent = "密钥已经解锁，但这次钱包运行时没有成功启动。";
+      backendStepNote.textContent = "你可以先查看错误信息；当前用重启后端的方式重新开始这一轮会话。";
       restartPanel.classList.remove("is-hidden");
     } else {
       setOnboardingStep("checking");
-      backendTitle.textContent = "内置客户端已停止";
-      backendSummary.textContent = "客户端当前没有运行，可以重新拉起。";
-      restartPanel.classList.remove("is-hidden");
+      backendTitle.textContent = "客户端状态异常";
+      backendSummary.textContent = "当前状态组合不符合预期，请根据错误信息处理。";
     }
 
     backendDetail.textContent = [
+      `backend_phase: ${backendPhase}`,
+      `runtime_phase: ${runtimePhase}`,
+      `key_state: ${keyState}`,
       backend.vaultPath ? `vault: ${backend.vaultPath}` : "",
       backend.binaryPath ? `binary: ${backend.binaryPath}` : "",
       backend.apiBase ? `api: ${backend.apiBase}` : "",
@@ -1793,7 +1819,9 @@
       });
     }
     debugLog("shell", "initial_state_loaded", {
-      backend_phase: String(state?.backend?.phase || ""),
+      backend_phase: String(state?.backend?.backendPhase || ""),
+      runtime_phase: String(state?.backend?.runtimePhase || ""),
+      key_state: String(state?.backend?.keyState || ""),
       current_url: String(state?.currentURL || "")
     });
     renderState(state);

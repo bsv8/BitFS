@@ -41,7 +41,7 @@ declare global {
 }
 
 export default function App() {
-  const [walletSummary, setWalletSummary] = useState<BitfsWalletSummary | null>(null);
+  const [walletBalance, setWalletBalance] = useState<BitfsWalletBalance | null>(null);
   const [clientInfo, setClientInfo] = useState<BitfsClientInfo | null>(null);
   const [resolverPubkeyHex, setResolverPubkeyHex] = useState("");
   const [domainName, setDomainName] = useState("");
@@ -57,14 +57,14 @@ export default function App() {
         return;
       }
       try {
-        const [nextWalletSummary, nextClientInfo] = await Promise.all([
-          window.bitfs.wallet.summary(),
+        const [nextWalletBalance, nextClientInfo] = await Promise.all([
+          window.bitfs.wallet.balance(),
           window.bitfs.client.info()
         ]);
         if (cancelled) {
           return;
         }
-        setWalletSummary(nextWalletSummary);
+        setWalletBalance(nextWalletBalance);
         setClientInfo(nextClientInfo);
       } catch (error) {
         if (cancelled) {
@@ -80,11 +80,11 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const fallback = normalizePubkeyHex(walletSummary?.pubkey_hex || clientInfo?.pubkey_hex || "");
+    const fallback = normalizePubkeyHex(clientInfo?.pubkey_hex || "");
     if (fallback !== "" && targetPubkeyHex.trim() === "") {
       setTargetPubkeyHex(fallback);
     }
-  }, [walletSummary?.pubkey_hex, clientInfo?.pubkey_hex, targetPubkeyHex]);
+  }, [clientInfo?.pubkey_hex, targetPubkeyHex]);
 
   useEffect(() => {
     window.__bitfsE2EDomainRegister = {
@@ -111,14 +111,13 @@ export default function App() {
       });
     }
     const walletSnapshot = await waitForWalletIdentity(bridge);
-    setWalletSummary(walletSnapshot.walletSummary);
+    setWalletBalance(walletSnapshot.walletBalance);
     setClientInfo(walletSnapshot.clientInfo);
-    const walletSummaryNow = walletSnapshot.walletSummary;
     const clientInfoNow = walletSnapshot.clientInfo;
     const normalizedResolver = normalizePubkeyHex(input.resolverPubkeyHex || resolverPubkeyHex);
     const normalizedName = normalizeDomainName(input.domainName || domainName);
-    const normalizedTarget = normalizePubkeyHex(input.targetPubkeyHex || targetPubkeyHex || walletSummaryNow.pubkey_hex || clientInfoNow.pubkey_hex || "");
-    const walletPubkeyHex = normalizePubkeyHex(walletSummaryNow.pubkey_hex || clientInfoNow.pubkey_hex || "");
+    const normalizedTarget = normalizePubkeyHex(input.targetPubkeyHex || targetPubkeyHex || clientInfoNow.pubkey_hex || "");
+    const walletPubkeyHex = normalizePubkeyHex(clientInfoNow.pubkey_hex || "");
     if (normalizedResolver === "") {
       return finish({ ok: false, error: "resolver pubkey invalid", steps });
     }
@@ -300,8 +299,8 @@ export default function App() {
 
       <section className="card meta-card">
         <h2>当前钱包</h2>
-        <p data-testid="wallet-pubkey" className="mono">{walletSummary?.pubkey_hex || clientInfo?.pubkey_hex || "-"}</p>
-        <p data-testid="wallet-balance">余额 {formatSat(walletSummary?.balance_satoshi || 0)}</p>
+        <p data-testid="wallet-pubkey" className="mono">{clientInfo?.pubkey_hex || "-"}</p>
+        <p data-testid="wallet-balance">余额 {formatSat(walletBalance?.balance_satoshi || 0)}</p>
       </section>
 
       <section className="card result-card">
@@ -337,26 +336,25 @@ export default function App() {
 }
 
 async function waitForWalletIdentity(bridge: BitfsBridge, timeoutMs = 30_000): Promise<{
-  walletSummary: BitfsWalletSummary;
+  walletBalance: BitfsWalletBalance;
   clientInfo: BitfsClientInfo;
 }> {
   const startedAt = Date.now();
-  let lastWalletSummary: BitfsWalletSummary | null = null;
+  let lastWalletBalance: BitfsWalletBalance | null = null;
   let lastClientInfo: BitfsClientInfo | null = null;
   let lastError = "";
   while ((Date.now() - startedAt) < timeoutMs) {
     try {
-      const [walletSummary, clientInfo] = await Promise.all([
-        bridge.wallet.summary(),
+      const [walletBalance, clientInfo] = await Promise.all([
+        bridge.wallet.balance(),
         bridge.client.info()
       ]);
-      lastWalletSummary = walletSummary;
+      lastWalletBalance = walletBalance;
       lastClientInfo = clientInfo;
-      const walletPubkeyHex = normalizePubkeyHex(walletSummary.pubkey_hex || "");
       const clientPubkeyHex = normalizePubkeyHex(clientInfo.pubkey_hex || "");
-      if (walletPubkeyHex !== "" && clientPubkeyHex !== "" && Number(walletSummary.balance_satoshi || 0) > 0) {
+      if (clientPubkeyHex !== "" && Number(walletBalance.balance_satoshi || 0) > 0) {
         return {
-          walletSummary,
+          walletBalance,
           clientInfo
         };
       }
@@ -365,9 +363,9 @@ async function waitForWalletIdentity(bridge: BitfsBridge, timeoutMs = 30_000): P
     }
     await sleep(250);
   }
-  if (lastWalletSummary && lastClientInfo) {
+  if (lastWalletBalance && lastClientInfo) {
     return {
-      walletSummary: lastWalletSummary,
+      walletBalance: lastWalletBalance,
       clientInfo: lastClientInfo
     };
   }

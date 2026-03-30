@@ -689,11 +689,15 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		return fmt.Errorf("request listen quote failed: %w", err)
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:         s,
-		ClientActor:     clientActor,
-		GatewayPub:      quoted.GatewayPub,
-		ServiceQuoteRaw: quoted.ServiceQuoteRaw,
-		ServiceQuote:    quoted.ServiceQuote,
+		Session:             s,
+		ClientActor:         clientActor,
+		GatewayPub:          quoted.GatewayPub,
+		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
+		ServiceQuote:        quoted.ServiceQuote,
+		ChargeReason:        quoted.ChargeReason,
+		NextSequence:        quoted.NextSequence,
+		NextServerAmount:    quoted.NextServerAmount,
+		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
 	})
 	if err != nil {
 		return fmt.Errorf("build listen proof tx failed: %w", err)
@@ -706,11 +710,11 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	req := poolcore.PayConfirmReq{
 		ClientID:            rt.runIn.ClientID,
 		SpendTxID:           s.SpendTxID,
-		SequenceNumber:      quoted.ServiceQuote.SequenceNumber,
-		ServerAmount:        quoted.ServiceQuote.ServerAmountAfter,
+		SequenceNumber:      quoted.NextSequence,
+		ServerAmount:        quoted.NextServerAmount,
 		Fee:                 s.SpendTxFeeSat,
 		ClientSig:           append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ServiceQuote.ChargeReason,
+		ChargeReason:        quoted.ChargeReason,
 		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
 		ProofIntent:         append([]byte(nil), built.ProofIntent...),
 		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
@@ -725,10 +729,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw, s, out.MergedCurrentTx, expectedServiceReceipt{
 		ServiceType:        "listen_cycle_fee",
-		SpendTxID:          s.SpendTxID,
-		SequenceNumber:     quoted.ServiceQuote.SequenceNumber,
-		AcceptedChargeHash: built.AcceptedChargeHash,
-		ResultCode:         "ok",
+		OfferHash:          quoted.ServiceQuote.OfferHash,
 		ResultPayloadBytes: nil,
 	}, out.ServiceReceipt); err != nil {
 		return err
@@ -761,13 +762,13 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 			"pay_confirm":                    out,
 			"quote_status":                   quoted.QuoteStatus,
 			"offer_payment_satoshi":          offerPayment,
-			"granted_service_deadline_unix":  quoted.ServiceQuote.GrantedServiceDeadlineUnix,
-			"granted_duration_seconds":       quoted.ServiceQuote.GrantedDurationSeconds,
+			"granted_service_deadline_unix":  quoted.GrantedServiceDeadlineUnix,
+			"granted_duration_seconds":       quoted.GrantedDurationSeconds,
 			"minimum_cycle_fee_satoshi":      s.SingleCycleFeeSatoshi,
 			"minimum_billing_cycle_seconds":  s.BillingCycleSeconds,
 			"quoted_charge_amount_satoshi":   quoted.ServiceQuote.ChargeAmountSatoshi,
-			"quoted_server_amount_after_sat": quoted.ServiceQuote.ServerAmountAfter,
-			"quoted_sequence_number":         quoted.ServiceQuote.SequenceNumber,
+			"quoted_server_amount_after_sat": quoted.NextServerAmount,
+			"quoted_sequence_number":         quoted.NextSequence,
 		},
 	})
 	appendWalletFundFlow(rt.DB, walletFundFlowEntry{
@@ -786,8 +787,8 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 			"pay_confirm":                   out,
 			"quote_status":                  quoted.QuoteStatus,
 			"offer_payment_satoshi":         offerPayment,
-			"granted_service_deadline_unix": quoted.ServiceQuote.GrantedServiceDeadlineUnix,
-			"granted_duration_seconds":      quoted.ServiceQuote.GrantedDurationSeconds,
+			"granted_service_deadline_unix": quoted.GrantedServiceDeadlineUnix,
+			"granted_duration_seconds":      quoted.GrantedDurationSeconds,
 		},
 	})
 	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, out.Sequence, quoted.ServiceQuote.ChargeAmountSatoshi, s.GatewayPeerID)

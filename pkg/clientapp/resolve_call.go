@@ -25,7 +25,7 @@ type TriggerPeerCallParams struct {
 	ContentType  string
 	Body         []byte
 	PaymentMode  string
-	PaymentQuote []byte
+	ServiceQuote []byte
 }
 
 type TriggerPeerResolveParams struct {
@@ -112,8 +112,8 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		Body:        append([]byte(nil), p.Body...),
 	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
-	if paymentMode == "pay" && len(p.PaymentQuote) > 0 {
-		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.PaymentQuote)
+	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
+		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.ServiceQuote)
 	}
 	out, err = callNodeRoute(ctx, rt, peerID, req)
 	if err != nil {
@@ -123,9 +123,9 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		return out, nil
 	}
 	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentRequired(ctx, rt, peerID, req, out.PaymentOptions)
+		return quotePeerCallFromPaymentRequired(ctx, rt, peerID, req, out.PaymentSchemes)
 	}
-	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentOptions)
+	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentSchemes)
 	if payErr != nil {
 		return ncall.CallResp{}, payErr
 	}
@@ -193,7 +193,7 @@ func marshalNodeCallProto(msg oldproto.Message) (ncall.CallResp, error) {
 }
 
 func isNodePaymentRequired(resp ncall.CallResp) bool {
-	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") && len(resp.PaymentOptions) > 0
+	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") && len(resp.PaymentSchemes) > 0
 }
 
 func normalizePeerCallPaymentMode(raw string) string {

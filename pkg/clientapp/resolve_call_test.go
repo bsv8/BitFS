@@ -238,10 +238,9 @@ func TestDecorateQuotedPaymentOptionUsesRealQuoteStatus(t *testing.T) {
 	quoted := feePoolServiceQuoteBuilt{
 		QuoteStatus: "countered",
 		ServiceQuote: payflow.ServiceQuote{
-			ChargeAmountSatoshi:    25,
-			ChargeReason:           "domain_query_fee",
-			GrantedDurationSeconds: 0,
+			ChargeAmountSatoshi: 25,
 		},
+		ChargeReason: "domain_query_fee",
 	}
 
 	got := decorateQuotedPaymentOption(option, quoted, 1, "call")

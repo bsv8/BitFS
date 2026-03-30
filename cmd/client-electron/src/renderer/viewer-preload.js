@@ -267,8 +267,8 @@
     if (typeof input.payment_mode === "string" && input.payment_mode.trim() !== "") {
       payload.payment_mode = input.payment_mode.trim();
     }
-    if (typeof input.payment_quote_base64 === "string" && input.payment_quote_base64.trim() !== "") {
-      payload.payment_quote_base64 = input.payment_quote_base64.trim();
+    if (typeof input.service_quote_base64 === "string" && input.service_quote_base64.trim() !== "") {
+      payload.service_quote_base64 = input.service_quote_base64.trim();
     }
     return payload;
   }
@@ -353,17 +353,17 @@
         if (String(quoted && quoted.code || "").trim().toUpperCase() !== "PAYMENT_QUOTED") {
           return quoted;
         }
-        const option = Array.isArray(quoted && quoted.payment_options) && quoted.payment_options.length > 0 ? quoted.payment_options[0] : null;
+        const option = Array.isArray(quoted && quoted.payment_schemes) && quoted.payment_schemes.length > 0 ? quoted.payment_schemes[0] : null;
         const approved = await normalizedOptions.onQuote({
           to: normalized.to,
           route: normalized.route,
-          payment_scheme: String(quoted && quoted.payment_quote_scheme || option && option.scheme || ""),
+          payment_scheme: String(option && option.scheme || ""),
           payment_domain: String(option && option.payment_domain || ""),
           quote_status: String(option && option.quote_status || ""),
           amount_satoshi: Number(option && option.amount_satoshi || 0),
           quantity: Number(option && option.service_quantity || 0),
           quantity_unit: String(option && option.service_quantity_unit || ""),
-          quote: Object.prototype.hasOwnProperty.call(quoted || {}, "payment_quote") ? quoted.payment_quote : null,
+          quote: Object.prototype.hasOwnProperty.call(quoted || {}, "service_quote") ? quoted.service_quote : null,
           quoted_response: quoted
         });
         if (!approved) {
@@ -377,7 +377,7 @@
         return ipcRenderer.invoke("bitfs-viewer:peer-call", {
           ...normalized,
           payment_mode: "pay",
-          payment_quote_base64: String(quoted && quoted.payment_quote_base64 || "")
+          service_quote_base64: String(quoted && quoted.service_quote_base64 || "")
         });
       }
     },
@@ -437,8 +437,8 @@
       }
     },
     wallet: {
-      async summary() {
-        return ipcRenderer.invoke("bitfs-viewer:wallet-summary");
+      async balance() {
+        return ipcRenderer.invoke("bitfs-viewer:wallet-balance");
       },
       async addresses() {
         return ipcRenderer.invoke("bitfs-viewer:wallet-addresses");
