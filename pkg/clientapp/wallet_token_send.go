@@ -177,8 +177,8 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 // prepareWalletTokenSend 负责把 bsv21 tokens.send 收口成“可签名交易”。
 // 设计说明：
 // - create / send 都不能把 WOC 当作业务前提；
-// - 当前可发送持仓由“两路证据”组成：本地自己广播出来的 token 输出 + WOC 认证过的第三方外来 token；
-// - 这样本地自有链路可继续前进，而第三方进入的钱包 token 仍然保留权威认证门槛。
+// - 当前可发送持仓由“两路证据”组成：本地自己广播出来的 token 输出 + 当前唯一外来验真渠道确认过的第三方 token；
+// - 这样本地自有链路可继续前进，而外来 token 的验真边界也不会和某个具体实现名绑死。
 func prepareWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (preparedWalletTokenSend, error) {
 	if db == nil {
 		return preparedWalletTokenSend{}, fmt.Errorf("db is nil")
@@ -193,7 +193,7 @@ func prepareWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 	if requested.scale != 0 {
 		return preparedWalletTokenSend{}, fmt.Errorf("%s amount_text must be an integer", standard)
 	}
-	candidates, err := loadWalletTokenPreviewCandidates(ctx, db, rt, address, standard, assetKey)
+	candidates, err := loadWalletTokenSpendableCandidates(ctx, db, rt, address, standard, assetKey)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
@@ -659,7 +659,7 @@ func buildWalletTokenSendPreparedLines(standard string, assetKey string, amountT
 		lines = append(lines, fmt.Sprintf("BSV 找零回钱包: %d sat", changeSatoshi))
 	}
 	lines = append(lines, "状态: 已生成可签名预览，sign 时必须回传 expected_preview_hash。")
-	lines = append(lines, "说明: 当前 bsv21 持仓由“本地可信 + WOC 认证外来”两路证据共同组成。")
+	lines = append(lines, "说明: 当前 bsv21 持仓由“本地可信 + 当前唯一外来验真渠道”两路证据共同组成。")
 	return lines
 }
 
@@ -667,7 +667,7 @@ func walletBSV21SubmitMessage(tx *txsdk.Transaction) string {
 	if len(extractBSV21TokenIDsFromTx(tx)) == 0 {
 		return ""
 	}
-	return "交易已广播，本地钱包已先投影；后续是否拿到 WOC 认证不影响这次 send 已提交。"
+	return "交易已广播，本地钱包已先投影；后续外部观测是否追平，不影响这次 send 已提交。"
 }
 
 func walletTokenFundingNeed(assetInputSatoshi uint64, fixedOutputSatoshi uint64, fee uint64) uint64 {

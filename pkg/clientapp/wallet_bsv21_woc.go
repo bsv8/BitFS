@@ -48,7 +48,7 @@ type walletUTXOBasicRow struct {
 
 type walletWOCQuantityText string
 
-func loadWalletBSV21WOCCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+func loadWalletBSV21SpendableCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
@@ -75,11 +75,33 @@ func loadWalletBSV21WOCCandidates(ctx context.Context, db *sql.DB, rt *Runtime, 
 	for _, item := range localCandidates {
 		localSelected[item.Item.UTXOID] = struct{}{}
 	}
-	items, err := queryWalletBSV21WOCUnspent(ctx, rt, address)
+	verifiedIncomingCandidates, err := loadWalletBSV21VerifiedIncomingCandidates(ctx, db, rt, address, assetKey, rows, localSelected)
 	if err != nil {
 		if len(localCandidates) > 0 {
 			return localCandidates, nil
 		}
+		return nil, err
+	}
+	out := make([]walletTokenPreviewCandidate, 0, len(localCandidates)+len(verifiedIncomingCandidates))
+	out = append(out, verifiedIncomingCandidates...)
+	out = append(out, localCandidates...)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].CreatedAtUnix != out[j].CreatedAtUnix {
+			return out[i].CreatedAtUnix < out[j].CreatedAtUnix
+		}
+		return out[i].Item.UTXOID < out[j].Item.UTXOID
+	})
+	return out, nil
+}
+
+// loadWalletBSV21VerifiedIncomingCandidates 只补充“不是本地自广播事实”的外来 token 候选。
+// 设计说明：
+// - 这里表达的是“外来资产验真”边界，而不是把 WOC 本身写成业务真相；
+// - 当前系统只有一个外来验真渠道，所以实现上仍然查询 WOC；
+// - 一旦将来验真渠道变化，调用方仍然保持“拿已验真的外来候选”这个领域语义。
+func loadWalletBSV21VerifiedIncomingCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, assetKey string, rows []walletUTXOBasicRow, localSelected map[string]struct{}) ([]walletTokenPreviewCandidate, error) {
+	items, err := queryWalletBSV21WOCUnspent(ctx, rt, address)
+	if err != nil {
 		return nil, err
 	}
 	rowsByTxID := make(map[string][]walletUTXOBasicRow)
@@ -90,6 +112,7 @@ func loadWalletBSV21WOCCandidates(ctx context.Context, db *sql.DB, rt *Runtime, 
 	txScriptHashCache := make(map[string]map[string][]uint32)
 	selected := make(map[string]struct{})
 	out := make([]walletTokenPreviewCandidate, 0, len(items))
+	tokenID := walletBSV21TokenIDFromAssetKey(assetKey)
 	for _, item := range items {
 		if strings.TrimSpace(item.Data.BSV20.ID) != tokenID {
 			continue
@@ -165,13 +188,6 @@ func loadWalletBSV21WOCCandidates(ctx context.Context, db *sql.DB, rt *Runtime, 
 			Quantity:      parsed,
 		})
 	}
-	out = append(out, localCandidates...)
-	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].CreatedAtUnix != out[j].CreatedAtUnix {
-			return out[i].CreatedAtUnix < out[j].CreatedAtUnix
-		}
-		return out[i].Item.UTXOID < out[j].Item.UTXOID
-	})
 	return out, nil
 }
 
@@ -286,7 +302,7 @@ func listWalletUnspentOneSatRows(db *sql.DB, address string) ([]walletUTXOBasicR
 // 设计说明：
 // - create / send 不能再把 WOC 当作业务前提；
 // - 因此本地自己构造并成功广播的 token 输出，应该直接进入可继续 send 的候选集；
-// - 第三方打进来的 token 不走这里，仍要走 WOC 权威认证路径。
+// - 第三方打进来的 token 不走这里，而是留给外来资产验真边界单独补充。
 func loadWalletBSV21LocalCandidates(db *sql.DB, address string, assetKey string, rows []walletUTXOBasicRow) ([]walletTokenPreviewCandidate, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")

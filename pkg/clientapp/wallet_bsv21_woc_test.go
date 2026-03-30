@@ -44,7 +44,7 @@ func TestWalletWOCQuantityTextUnmarshalJSON(t *testing.T) {
 	}
 }
 
-func TestLoadWalletBSV21WOCCandidates_ReturnsLocalCandidatesWhenWOCUnavailable(t *testing.T) {
+func TestLoadWalletBSV21SpendableCandidates_ReturnsLocalCandidatesWhenWOCUnavailable(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
@@ -55,9 +55,9 @@ func TestLoadWalletBSV21WOCCandidates_ReturnsLocalCandidatesWhenWOCUnavailable(t
 	}
 	tokenID, txID := seedWalletBSV21LocalCreateCandidate(t, db, rt, address, "LOCAL", "100")
 
-	items, err := loadWalletBSV21WOCCandidates(context.Background(), db, rt, address, "bsv21:"+tokenID)
+	items, err := loadWalletBSV21SpendableCandidates(context.Background(), db, rt, address, "bsv21:"+tokenID)
 	if err != nil {
-		t.Fatalf("loadWalletBSV21WOCCandidates: %v", err)
+		t.Fatalf("loadWalletBSV21SpendableCandidates: %v", err)
 	}
 	if len(items) != 1 {
 		t.Fatalf("candidate count mismatch: got=%d want=1", len(items))

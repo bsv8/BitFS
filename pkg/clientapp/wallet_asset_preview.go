@@ -162,7 +162,7 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 
 func previewWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
 	requested, _ := parseDecimalText(amountText)
-	candidates, err := loadWalletTokenPreviewCandidates(ctx, db, rt, address, standard, assetKey)
+	candidates, err := loadWalletTokenSpendableCandidates(ctx, db, rt, address, standard, assetKey)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -271,8 +271,18 @@ func previewWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 	}, nil
 }
 
-func loadWalletTokenPreviewCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
-	return loadWalletBSV21WOCCandidates(ctx, db, rt, address, assetKey)
+// loadWalletTokenSpendableCandidates 统一返回“当前可继续 send 的 token 候选”。
+// 设计说明：
+// - 这里收口的是领域概念“可发送持仓”，不是某个具体外部实现；
+// - 对 bsv21 而言，候选来源分成“本地自有事实”与“外来资产验真结果”两路；
+// - 当前外来资产的唯一验真渠道仍是 WOC，但调用方不应该直接依赖这个实现名。
+func loadWalletTokenSpendableCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+	switch normalizeWalletTokenStandard(standard) {
+	case "bsv21":
+		return loadWalletBSV21SpendableCandidates(ctx, db, rt, address, assetKey)
+	default:
+		return nil, fmt.Errorf("invalid token standard")
+	}
 }
 
 func selectWalletTokenPreviewCandidates(candidates []walletTokenPreviewCandidate, requested decimalTextValue) ([]walletTokenPreviewCandidate, string, string, string, error) {

@@ -234,7 +234,7 @@ func buildWalletTokenCreateSubmit(r *http.Request, s *httpAPIServer, req walletA
 		MaxSupply:       meta.MaxSupply,
 		Decimals:        meta.Decimals,
 		Icon:            meta.Icon,
-		Status:          walletBSV21CreateStatusPendingConfirmation,
+		Status:          walletBSV21CreateStatusPendingExternalVerification,
 		CreatedAtUnix:   nowUnix,
 		SubmittedAtUnix: nowUnix,
 		UpdatedAtUnix:   nowUnix,
@@ -245,10 +245,10 @@ func buildWalletTokenCreateSubmit(r *http.Request, s *httpAPIServer, req walletA
 	return walletAssetActionSubmitResp{
 		Ok:      true,
 		Code:    "OK",
-		Message: "交易已提交，本地 token 链路已可继续；create 状态仅表示 WOC 认证进度。",
+		Message: "交易已提交，本地 token 链路已可继续；create 状态仅表示外部验真进度。",
 		TxID:    finalTxID,
 		TokenID: tokenID,
-		Status:  walletBSV21CreateStatusPendingConfirmation,
+		Status:  walletBSV21CreateStatusPendingExternalVerification,
 	}, nil
 }
 
@@ -325,7 +325,7 @@ func previewWalletTokenCreate(db *sql.DB, address string, input walletTokenCreat
 // - 这版只做 deploy+mint，不拆独立 deploy / mint，也不引入第二套钱包接口；
 // - `icon` 入参仍然收 seed hash，但链上固定写成 `_0 json + _1 deploy+mint`，避免把 bitfs 元数据塞进 token 正文里；
 // - submit 之后先刷新 wallet_utxo，本地自己 create 出来的 token 可直接进入后续 send 链路；
-// - WOC 只记录认证进度，不再作为 create / send 的业务前提。
+// - 外部验真只记录观察进度，不再作为 create / send 的业务前提。
 func prepareWalletTokenCreate(ctx context.Context, db *sql.DB, rt *Runtime, address string, input walletTokenCreateInput) (preparedWalletTokenCreate, error) {
 	if db == nil {
 		return preparedWalletTokenCreate{}, fmt.Errorf("db is nil")
@@ -601,8 +601,8 @@ func buildWalletTokenCreatePreviewLines(address string, input walletTokenCreateI
 	}
 	lines = append(lines,
 		"说明: 这版固定构造 `_0 json + _1 deploy+mint`，一次铸满，token 输出固定归当前钱包。",
-		"说明: submit 成功后会记录一条 WOC 认证状态，但它不是 create / send 的业务前提。",
-		"说明: 后续可继续 send；WOC 只作为认证侧观察面。",
+		"说明: submit 成功后会记录一条外部验真状态，但它不是 create / send 的业务前提。",
+		"说明: 后续可继续 send；外部观察面只用于报告追踪。",
 	)
 	return lines
 }
@@ -628,7 +628,7 @@ func buildWalletTokenCreatePreparedLines(address string, input walletTokenCreate
 	}
 	lines = append(lines,
 		"状态: 已生成可签名预览，sign 时必须回传 expected_preview_hash。",
-		"说明: submit 成功后会记录一条 WOC 认证状态；它不阻塞后续 send。",
+		"说明: submit 成功后会记录一条外部验真状态；它不阻塞后续 send。",
 	)
 	return lines
 }

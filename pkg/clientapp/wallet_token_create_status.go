@@ -17,9 +17,9 @@ import (
 )
 
 const (
-	walletBSV21CreateStatusPendingConfirmation = "pending_confirmation"
-	walletBSV21CreateStatusConfirmed           = "confirmed"
-	walletBSV21CreateAutoCheckDelay            = 3 * time.Minute
+	walletBSV21CreateStatusPendingExternalVerification = "pending_external_verification"
+	walletBSV21CreateStatusExternallyVerified          = "externally_verified"
+	walletBSV21CreateAutoCheckDelay                    = 3 * time.Minute
 )
 
 type walletTokenCreateStatusRequest struct {
@@ -27,23 +27,23 @@ type walletTokenCreateStatusRequest struct {
 }
 
 type walletBSV21CreateStatusItem struct {
-	TokenID             string `json:"token_id"`
-	CreateTxID          string `json:"create_txid"`
-	WalletID            string `json:"wallet_id"`
-	Address             string `json:"address"`
-	TokenStandard       string `json:"token_standard"`
-	Symbol              string `json:"symbol"`
-	MaxSupply           string `json:"max_supply"`
-	Decimals            int    `json:"decimals"`
-	Icon                string `json:"icon"`
-	Status              string `json:"status"`
-	CreatedAtUnix       int64  `json:"created_at_unix"`
-	SubmittedAtUnix     int64  `json:"submitted_at_unix"`
-	ConfirmedAtUnix     int64  `json:"confirmed_at_unix,omitempty"`
-	LastCheckAtUnix     int64  `json:"last_check_at_unix,omitempty"`
-	NextAutoCheckAtUnix int64  `json:"next_auto_check_at_unix,omitempty"`
-	UpdatedAtUnix       int64  `json:"updated_at_unix"`
-	LastCheckError      string `json:"last_check_error,omitempty"`
+	TokenID                string `json:"token_id"`
+	CreateTxID             string `json:"create_txid"`
+	WalletID               string `json:"wallet_id"`
+	Address                string `json:"address"`
+	TokenStandard          string `json:"token_standard"`
+	Symbol                 string `json:"symbol"`
+	MaxSupply              string `json:"max_supply"`
+	Decimals               int    `json:"decimals"`
+	Icon                   string `json:"icon"`
+	Status                 string `json:"status"`
+	CreatedAtUnix          int64  `json:"created_at_unix"`
+	SubmittedAtUnix        int64  `json:"submitted_at_unix"`
+	VerifiedAtUnix         int64  `json:"verified_at_unix,omitempty"`
+	LastVerificationAtUnix int64  `json:"last_verification_at_unix,omitempty"`
+	NextVerificationAtUnix int64  `json:"next_verification_at_unix,omitempty"`
+	UpdatedAtUnix          int64  `json:"updated_at_unix"`
+	LastVerificationError  string `json:"last_verification_error,omitempty"`
 }
 
 type walletBSV21CreateStatusResp struct {
@@ -138,10 +138,10 @@ func (s *httpAPIServer) handleWalletTokenCreateStatusRefresh(w http.ResponseWrit
 
 func normalizeWalletBSV21CreateStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case walletBSV21CreateStatusConfirmed:
-		return walletBSV21CreateStatusConfirmed
+	case walletBSV21CreateStatusExternallyVerified:
+		return walletBSV21CreateStatusExternallyVerified
 	default:
-		return walletBSV21CreateStatusPendingConfirmation
+		return walletBSV21CreateStatusPendingExternalVerification
 	}
 }
 
@@ -172,11 +172,11 @@ func loadWalletBSV21CreateStatusByTokenID(db *sql.DB, tokenID string) (walletBSV
 		&item.Status,
 		&item.CreatedAtUnix,
 		&item.SubmittedAtUnix,
-		&item.ConfirmedAtUnix,
-		&item.LastCheckAtUnix,
-		&item.NextAutoCheckAtUnix,
+		&item.VerifiedAtUnix,
+		&item.LastVerificationAtUnix,
+		&item.NextVerificationAtUnix,
 		&item.UpdatedAtUnix,
-		&item.LastCheckError,
+		&item.LastVerificationError,
 	)
 	if err != nil {
 		return walletBSV21CreateStatusItem{}, err
@@ -190,7 +190,7 @@ func loadWalletBSV21CreateStatusByTokenID(db *sql.DB, tokenID string) (walletBSV
 	item.MaxSupply = strings.TrimSpace(item.MaxSupply)
 	item.Icon = strings.TrimSpace(item.Icon)
 	item.Status = normalizeWalletBSV21CreateStatus(item.Status)
-	item.LastCheckError = strings.TrimSpace(item.LastCheckError)
+	item.LastVerificationError = strings.TrimSpace(item.LastVerificationError)
 	return item, nil
 }
 
@@ -207,7 +207,7 @@ func upsertWalletBSV21CreateStatus(db *sql.DB, item walletBSV21CreateStatusItem)
 	item.MaxSupply = strings.TrimSpace(item.MaxSupply)
 	item.Icon = strings.TrimSpace(item.Icon)
 	item.Status = normalizeWalletBSV21CreateStatus(item.Status)
-	item.LastCheckError = strings.TrimSpace(item.LastCheckError)
+	item.LastVerificationError = strings.TrimSpace(item.LastVerificationError)
 	if item.TokenID == "" || item.CreateTxID == "" {
 		return fmt.Errorf("token_id and create_txid are required")
 	}
@@ -255,11 +255,11 @@ func upsertWalletBSV21CreateStatus(db *sql.DB, item walletBSV21CreateStatusItem)
 		item.Status,
 		item.CreatedAtUnix,
 		item.SubmittedAtUnix,
-		item.ConfirmedAtUnix,
-		item.LastCheckAtUnix,
-		item.NextAutoCheckAtUnix,
+		item.VerifiedAtUnix,
+		item.LastVerificationAtUnix,
+		item.NextVerificationAtUnix,
 		item.UpdatedAtUnix,
-		item.LastCheckError,
+		item.LastVerificationError,
 	)
 	return err
 }
@@ -288,7 +288,7 @@ func scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx context.Context, rt *R
 			 WHERE status=?`,
 			dueAtUnix,
 			updatedAt,
-			walletBSV21CreateStatusPendingConfirmation,
+			walletBSV21CreateStatusPendingExternalVerification,
 		)
 		return err
 	})
@@ -306,7 +306,7 @@ func listDueWalletBSV21CreateStatuses(db *sql.DB, nowUnix int64) ([]walletBSV21C
 		 FROM wallet_bsv21_create_status
 		 WHERE status=? AND next_auto_check_at_unix>0 AND next_auto_check_at_unix<=?
 		 ORDER BY next_auto_check_at_unix ASC,token_id ASC`,
-		walletBSV21CreateStatusPendingConfirmation,
+		walletBSV21CreateStatusPendingExternalVerification,
 		nowUnix,
 	)
 	if err != nil {
@@ -329,11 +329,11 @@ func listDueWalletBSV21CreateStatuses(db *sql.DB, nowUnix int64) ([]walletBSV21C
 			&item.Status,
 			&item.CreatedAtUnix,
 			&item.SubmittedAtUnix,
-			&item.ConfirmedAtUnix,
-			&item.LastCheckAtUnix,
-			&item.NextAutoCheckAtUnix,
+			&item.VerifiedAtUnix,
+			&item.LastVerificationAtUnix,
+			&item.NextVerificationAtUnix,
 			&item.UpdatedAtUnix,
-			&item.LastCheckError,
+			&item.LastVerificationError,
 		); err != nil {
 			return nil, err
 		}
@@ -360,24 +360,24 @@ func refreshWalletBSV21CreateStatus(ctx context.Context, rt *Runtime, tokenID st
 	if err != nil {
 		return walletBSV21CreateStatusItem{}, err
 	}
-	if item.Status == walletBSV21CreateStatusConfirmed {
+	if item.Status == walletBSV21CreateStatusExternallyVerified {
 		return item, nil
 	}
-	ready, err := queryWalletBSV21TokenByIDReady(ctx, rt, item.TokenID)
+	ready, err := queryWalletBSV21ExternalVerificationReady(ctx, rt, item.TokenID)
 	nowUnix := time.Now().Unix()
-	item.LastCheckAtUnix = nowUnix
+	item.LastVerificationAtUnix = nowUnix
 	item.UpdatedAtUnix = nowUnix
 	if clearAutoCheck {
-		item.NextAutoCheckAtUnix = 0
+		item.NextVerificationAtUnix = 0
 	}
 	if err != nil {
-		item.LastCheckError = err.Error()
+		item.LastVerificationError = err.Error()
 	} else {
-		item.LastCheckError = ""
+		item.LastVerificationError = ""
 		if ready {
-			item.Status = walletBSV21CreateStatusConfirmed
-			item.ConfirmedAtUnix = nowUnix
-			item.NextAutoCheckAtUnix = 0
+			item.Status = walletBSV21CreateStatusExternallyVerified
+			item.VerifiedAtUnix = nowUnix
+			item.NextVerificationAtUnix = 0
 		}
 	}
 	if saveErr := runtimeDBDo(rt, ctx, func(db *sql.DB) error {
@@ -450,7 +450,7 @@ func extractBSV21DeployMintStatusMetaFromTx(tx *txsdk.Transaction) walletBSV21Cr
 	return meta
 }
 
-func queryWalletBSV21TokenByIDReady(ctx context.Context, rt *Runtime, tokenID string) (bool, error) {
+func queryWalletBSV21ExternalVerificationReady(ctx context.Context, rt *Runtime, tokenID string) (bool, error) {
 	if rt == nil || rt.WalletChain == nil {
 		return false, fmt.Errorf("wallet chain not initialized")
 	}
