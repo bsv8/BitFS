@@ -18,4 +18,5 @@ type walletChainClient interface {
 	GetAddressConfirmedHistoryPage(ctx context.Context, address string, q whatsonchain.ConfirmedHistoryQuery) (whatsonchain.ConfirmedHistoryPage, error)
 	GetAddressUnconfirmedHistory(ctx context.Context, address string) ([]string, error)
 	GetTxHash(ctx context.Context, txid string) (whatsonchain.TxDetail, error)
+	GetTxHex(ctx context.Context, txid string) (string, error)
 }

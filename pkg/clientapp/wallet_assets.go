@@ -3,12 +3,9 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
 )
 
@@ -16,38 +13,6 @@ const (
 	walletAssetGroupToken   = "token"
 	walletAssetGroupOrdinal = "ordinal"
 )
-
-type walletUTXOAssetBinding struct {
-	UTXOID        string
-	AssetGroup    string
-	AssetStandard string
-	AssetKey      string
-	AssetSymbol   string
-	QuantityText  string
-	SourceName    string
-	Payload       any
-}
-
-type walletUTXOAssetClassification struct {
-	AllocationClass  string
-	AllocationReason string
-	Assets           []walletUTXOAssetBinding
-}
-
-// walletUTXOAssetDetector 负责把“当前钱包未花费集合”映射成资产识别结果。
-// 设计说明：
-// - 探测器只做识别，不直接写库；
-// - 同步层统一把识别结果投影到 wallet_utxo / wallet_utxo_assets，避免 CLI/HTTP/Electron 各自再问一次第三方索引；
-// - 这里故意保留最小抽象，后续无论接哪家索引服务，都只需要实现这个接口。
-type walletUTXOAssetDetector interface {
-	DetectUTXOAssets(ctx context.Context, address string, utxos []poolcore.UTXO) (map[string]walletUTXOAssetClassification, error)
-}
-
-type walletUTXONoopAssetDetector struct{}
-
-func (walletUTXONoopAssetDetector) DetectUTXOAssets(context.Context, string, []poolcore.UTXO) (map[string]walletUTXOAssetClassification, error) {
-	return map[string]walletUTXOAssetClassification{}, nil
-}
 
 type walletUTXOAssetRow struct {
 	UTXOID        string `json:"utxo_id"`
@@ -63,29 +28,17 @@ type walletUTXOAssetRow struct {
 	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
-// defaultWalletUTXOProtectionForValue 按当前 1sat 资产模型给新 UTXO 一个默认保护分类。
+// defaultWalletUTXOProtectionForValue 按当前 `1 sat` 风险模型给新 UTXO 一个默认保护分类。
 // 设计说明：
-// - 当前要保护的是“承载 1sat 资产语义的 1 聪输出”，不是所有未花费；
-// - 因此只有 value=1 的输出，才先进入 unknown 等待索引明确放行；
+// - 当前不再在本地判定 token / ordinal 是否成立；
+// - 但 1 聪输出仍然不能直接当普通零钱放行，否则会把潜在资产输出误花；
+// - 因此只有 value=1 的输出，先进入 unknown，等待后续业务显式按证据面处理；
 // - 非 1 聪输出默认仍按 plain_bsv 处理，避免把保护范围错误放大。
 func defaultWalletUTXOProtectionForValue(value uint64) (string, string) {
 	if value == 1 {
-		return walletUTXOAllocationUnknown, "awaiting asset detector confirmation"
+		return walletUTXOAllocationUnknown, "awaiting external token evidence"
 	}
 	return walletUTXOAllocationPlainBSV, ""
-}
-
-func walletAssetDetectorOfRuntime(rt *Runtime) walletUTXOAssetDetector {
-	if rt == nil {
-		return nil
-	}
-	if rt.WalletAssetDetector != nil {
-		return rt.WalletAssetDetector
-	}
-	if rt.runIn.WalletAssetDetector != nil {
-		return rt.runIn.WalletAssetDetector
-	}
-	return nil
 }
 
 func loadCurrentWalletUTXOStateRows(db *sql.DB, address string) (map[string]utxoStateRow, error) {
@@ -143,14 +96,11 @@ func listWalletUTXOAssetRows(db *sql.DB, utxoID string) ([]walletUTXOAssetRow, e
 	return out, nil
 }
 
-// refreshWalletAssetProjection 在链同步后把“当前未花费集合”的资产识别结果回填到本地投影。
+// refreshWalletAssetProjection 在链同步后清理旧资产影子，并把 `1 sat` 输出维持在受保护状态。
 // 设计说明：
-// - 资产探测依赖外部索引，不能混进 wallet_utxo 原始链同步事务里；
-// - 这里单独做一轮投影，把探测结果沉淀到 wallet_utxo_assets，同时反向更新 allocation_class；
-// - 当前按 1sat 资产模型，只对 1 聪输出默认保护；
-// - 新的 1 聪 UTXO 先进入 unknown，等外部索引明确确认“不是 1sat 资产输出”后才允许降级成 plain_bsv；
-// - 非 1 聪输出默认仍按 plain_bsv 处理，避免把保护范围错误扩大到整个钱包；
-// - 若探测失败、超时、索引临时下线，1 聪输出必须继续保留 unknown，绝不能因为“没查到”就放行。
+// - 1Sat overlay 识别能力已经下线，wallet 不再在本地或私有索引里判定资产成立；
+// - 这里仍要清空 wallet_utxo_assets，避免旧版本写下的资产影子继续误导查询面；
+// - 同时把当前未花费重新归一回默认保护口径：1 聪保持 unknown，其余回 plain_bsv。
 func refreshWalletAssetProjection(ctx context.Context, rt *Runtime, address string, trigger string) error {
 	if rt == nil {
 		return fmt.Errorf("runtime not initialized")
@@ -159,7 +109,6 @@ func refreshWalletAssetProjection(ctx context.Context, rt *Runtime, address stri
 	if address == "" {
 		return fmt.Errorf("wallet address is empty")
 	}
-	detector := walletAssetDetectorOfRuntime(rt)
 	loadCurrent := func(db *sql.DB) (map[string]utxoStateRow, error) {
 		return loadCurrentWalletUTXOStateRows(db, address)
 	}
@@ -174,35 +123,6 @@ func refreshWalletAssetProjection(ctx context.Context, rt *Runtime, address stri
 	}
 	if err != nil {
 		return err
-	}
-	unspent := make([]poolcore.UTXO, 0, len(current))
-	for _, row := range current {
-		if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
-			continue
-		}
-		unspent = append(unspent, poolcore.UTXO{TxID: row.TxID, Vout: row.Vout, Value: row.Value})
-	}
-	// 设计说明：
-	// - 即使当前没装外部资产探测器，也必须继续跑这轮投影；
-	// - 原因不是为了识别新资产，而是为了把“已经花掉的旧资产行”从 wallet_utxo_assets 清干净；
-	// - 否则本地广播后会残留过期 ordinal / token 影子，查询面会和 wallet_utxo 主视图打架。
-	classifications := map[string]walletUTXOAssetClassification{}
-	var detectErr error
-	if detector != nil {
-		classifications, detectErr = detector.DetectUTXOAssets(ctx, address, unspent)
-	}
-	if detectErr != nil {
-		classifications = make(map[string]walletUTXOAssetClassification, len(unspent))
-		for _, u := range unspent {
-			if u.Value != 1 {
-				continue
-			}
-			utxoID := strings.ToLower(strings.TrimSpace(u.TxID)) + ":" + fmt.Sprint(u.Vout)
-			classifications[utxoID] = walletUTXOAssetClassification{
-				AllocationClass:  walletUTXOAllocationUnknown,
-				AllocationReason: "asset detector unavailable",
-			}
-		}
 	}
 	apply := func(db *sql.DB) error {
 		tx, err := db.Begin()
@@ -219,55 +139,10 @@ func refreshWalletAssetProjection(ctx context.Context, rt *Runtime, address stri
 			if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
 				continue
 			}
-			defaultClass, defaultReason := defaultWalletUTXOProtectionForValue(row.Value)
-			classification := walletUTXOAssetClassification{
-				AllocationClass:  defaultClass,
-				AllocationReason: defaultReason,
-			}
-			if detector != nil && detectErr == nil {
-				classification = walletUTXOAssetClassification{
-					AllocationClass: walletUTXOAllocationPlainBSV,
-				}
-				if item, ok := classifications[utxoID]; ok {
-					classification = item
-				}
-			} else if item, ok := classifications[utxoID]; ok {
-				classification = item
-			}
-			allocationClass := normalizeWalletUTXOAllocationClass(classification.AllocationClass)
-			allocationReason := strings.TrimSpace(classification.AllocationReason)
-			if allocationReason == "" && allocationClass != walletUTXOAllocationPlainBSV {
-				allocationReason = "detected by asset detector"
-			}
+			allocationClass, allocationReason := defaultWalletUTXOProtectionForValue(row.Value)
+			allocationClass = normalizeWalletUTXOAllocationClass(allocationClass)
 			if _, err := tx.Exec(`UPDATE wallet_utxo SET allocation_class=?,allocation_reason=? WHERE utxo_id=?`, allocationClass, allocationReason, utxoID); err != nil {
 				return err
-			}
-			for _, asset := range classification.Assets {
-				payloadJSON := "{}"
-				if asset.Payload != nil {
-					b, err := json.Marshal(asset.Payload)
-					if err != nil {
-						return err
-					}
-					payloadJSON = string(b)
-				}
-				if _, err := tx.Exec(
-					`INSERT INTO wallet_utxo_assets(utxo_id,wallet_id,address,asset_group,asset_standard,asset_key,asset_symbol,quantity_text,source_name,payload_json,updated_at_unix)
-					 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-					utxoID,
-					walletID,
-					address,
-					strings.TrimSpace(asset.AssetGroup),
-					strings.TrimSpace(asset.AssetStandard),
-					strings.TrimSpace(asset.AssetKey),
-					strings.TrimSpace(asset.AssetSymbol),
-					strings.TrimSpace(asset.QuantityText),
-					strings.TrimSpace(asset.SourceName),
-					payloadJSON,
-					updatedAt,
-				); err != nil {
-					return err
-				}
 			}
 		}
 		stats, err := loadWalletUTXOAggregateTx(tx, address)
@@ -293,17 +168,10 @@ func refreshWalletAssetProjection(ctx context.Context, rt *Runtime, address stri
 		return err
 	}
 	payload := map[string]any{
-		"address":              address,
-		"trigger":              strings.TrimSpace(trigger),
-		"current_utxo_count":   len(unspent),
-		"classification_count": len(classifications),
-		"detector_configured":  detector != nil,
-	}
-	if detectErr != nil {
-		payload["degraded"] = true
-		payload["error"] = detectErr.Error()
-		obs.Error("bitcast-client", "wallet_asset_projection_degraded", payload)
-		return nil
+		"address":            address,
+		"trigger":            strings.TrimSpace(trigger),
+		"current_utxo_count": len(current),
+		"asset_rows_cleared": true,
 	}
 	obs.Info("bitcast-client", "wallet_asset_projection_refreshed", payload)
 	return nil

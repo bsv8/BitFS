@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -13,6 +14,16 @@ import (
 )
 
 const walletAssetPreviewFeeRateSatPerKB = 0.5
+
+type decimalTextValue struct {
+	intValue *big.Int
+	scale    int
+}
+
+type decimalTextAccumulator struct {
+	sum   *big.Int
+	scale int
+}
 
 type walletAssetActionPreviewChange struct {
 	OwnerScope    string `json:"owner_scope"`
@@ -55,10 +66,21 @@ type walletTokenSendPreviewRequest struct {
 	ToAddress     string `json:"to_address"`
 }
 
-type walletOrdinalTransferPreviewRequest struct {
-	UTXOID    string `json:"utxo_id"`
-	AssetKey  string `json:"asset_key"`
-	ToAddress string `json:"to_address"`
+type walletTokenOutputItem struct {
+	UTXOID           string          `json:"utxo_id"`
+	WalletAddress    string          `json:"wallet_address"`
+	TxID             string          `json:"txid"`
+	Vout             uint32          `json:"vout"`
+	ValueSatoshi     uint64          `json:"value_satoshi"`
+	AllocationClass  string          `json:"allocation_class"`
+	AllocationReason string          `json:"allocation_reason"`
+	TokenStandard    string          `json:"token_standard"`
+	AssetKey         string          `json:"asset_key"`
+	AssetSymbol      string          `json:"asset_symbol"`
+	QuantityText     string          `json:"quantity_text"`
+	SourceName       string          `json:"source_name"`
+	UpdatedAtUnix    int64           `json:"updated_at_unix"`
+	Payload          json.RawMessage `json:"payload"`
 }
 
 type walletTokenPreviewCandidate struct {
@@ -69,7 +91,7 @@ type walletTokenPreviewCandidate struct {
 
 // 设计说明：
 // - preview 统一承担“资产变化预演”合同，先把花什么、收什么、链费多少讲清楚；
-// - bsv20 / bsv21 tokens.send 和 ordinals.transfer 共用一套 preview_hash 语义；
+// - 当前只保留 bsv21 tokens.send，wallet 不再暴露旧资产查询/ordinal 转移入口；
 // - 如果运行时具备真实构造依赖，preview 会直接升级成“可签名预览”，避免页面、CLI、HTTP 各自再做第二套判断。
 func (s *httpAPIServer) handleWalletTokenSendPreview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -82,24 +104,6 @@ func (s *httpAPIServer) handleWalletTokenSendPreview(w http.ResponseWriter, r *h
 		return
 	}
 	resp, err := buildWalletTokenSendPreview(r, s, req)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-func (s *httpAPIServer) handleWalletOrdinalTransferPreview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	var req walletOrdinalTransferPreviewRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	resp, err := buildWalletOrdinalTransferPreview(r, s, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -130,53 +134,14 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 		return walletAssetActionPreviewResp{}, err
 	}
 	preview, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletAssetActionPreview, error) {
-		return previewWalletTokenSend(db, address, standard, assetKey, amountText, toAddress)
+		return previewWalletTokenSend(r.Context(), db, s.rt, address, standard, assetKey, amountText, toAddress)
 	})
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
 	if s != nil && s.rt != nil && preview.Feasible {
-		switch standard {
-		case "bsv20", "bsv21":
-			prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenSend, error) {
-				return prepareWalletTokenSend(r.Context(), db, s.rt, address, standard, assetKey, amountText, toAddress)
-			})
-			if prepareErr == nil {
-				preview = prepared.Preview
-			} else {
-				preview.CanSign = false
-				preview.WarningLevel = "high"
-				preview.DetailLines = append(preview.DetailLines, "状态: 当前预演可行，但真实交易构造失败，暂不能签名。")
-				preview.DetailLines = append(preview.DetailLines, "原因: "+prepareErr.Error())
-			}
-		}
-	}
-	return walletAssetActionPreviewResp{
-		Ok:      true,
-		Code:    "OK",
-		Message: "",
-		Preview: preview,
-	}, nil
-}
-
-func buildWalletOrdinalTransferPreview(r *http.Request, s *httpAPIServer, req walletOrdinalTransferPreviewRequest) (walletAssetActionPreviewResp, error) {
-	toAddress := strings.TrimSpace(req.ToAddress)
-	if err := validatePreviewAddress(toAddress); err != nil {
-		return walletAssetActionPreviewResp{}, err
-	}
-	address, err := resolveWalletAddressForHTTP(r.Context(), s)
-	if err != nil {
-		return walletAssetActionPreviewResp{}, err
-	}
-	preview, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletAssetActionPreview, error) {
-		return previewWalletOrdinalTransfer(db, address, strings.TrimSpace(req.UTXOID), strings.TrimSpace(req.AssetKey), toAddress)
-	})
-	if err != nil {
-		return walletAssetActionPreviewResp{}, err
-	}
-	if s != nil && s.rt != nil && preview.Feasible {
-		prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletOrdinalTransfer, error) {
-			return prepareWalletOrdinalTransfer(db, s.rt, address, strings.TrimSpace(req.UTXOID), strings.TrimSpace(req.AssetKey), toAddress)
+		prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenSend, error) {
+			return prepareWalletTokenSend(r.Context(), db, s.rt, address, standard, assetKey, amountText, toAddress)
 		})
 		if prepareErr == nil {
 			preview = prepared.Preview
@@ -184,6 +149,7 @@ func buildWalletOrdinalTransferPreview(r *http.Request, s *httpAPIServer, req wa
 			preview.CanSign = false
 			preview.WarningLevel = "high"
 			preview.DetailLines = append(preview.DetailLines, "状态: 当前预演可行，但真实交易构造失败，暂不能签名。")
+			preview.DetailLines = append(preview.DetailLines, "原因: "+prepareErr.Error())
 		}
 	}
 	return walletAssetActionPreviewResp{
@@ -194,9 +160,9 @@ func buildWalletOrdinalTransferPreview(r *http.Request, s *httpAPIServer, req wa
 	}, nil
 }
 
-func previewWalletTokenSend(db *sql.DB, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
+func previewWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
 	requested, _ := parseDecimalText(amountText)
-	candidates, err := loadWalletTokenPreviewCandidates(db, address, standard, assetKey)
+	candidates, err := loadWalletTokenPreviewCandidates(ctx, db, rt, address, standard, assetKey)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -305,133 +271,8 @@ func previewWalletTokenSend(db *sql.DB, address string, standard string, assetKe
 	}, nil
 }
 
-func previewWalletOrdinalTransfer(db *sql.DB, address string, utxoID string, assetKey string, toAddress string) (walletAssetActionPreview, error) {
-	item, err := loadWalletOrdinalDetail(db, address, utxoID, assetKey)
-	if err != nil {
-		return walletAssetActionPreview{}, err
-	}
-	feeSelection, fee, fundingNeed, err := previewPlainBSVFeeFunding(db, address, item.ValueSatoshi, 1, 1)
-	if err != nil {
-		return walletAssetActionPreview{}, err
-	}
-	feasible := feeSelection.Feasible
-	detailLines := []string{
-		fmt.Sprintf("Ordinal 标识: %s", item.AssetKey),
-		fmt.Sprintf("承载输出: %s", item.UTXOID),
-		fmt.Sprintf("接收地址: %s", toAddress),
-		fmt.Sprintf("预估矿工费: %d sat BSV", fee),
-	}
-	if fundingNeed > 0 {
-		detailLines = append(detailLines, fmt.Sprintf("需额外提供 BSV: %d sat", fundingNeed))
-	}
-	if !feasible {
-		detailLines = append(detailLines, "状态: 当前 plain BSV 不足以承担预估矿工费，预览不可执行。")
-	} else {
-		detailLines = append(detailLines, "状态: 当前资产和链费条件足够，但真正协议构造尚未接入，本阶段只提供预演。")
-	}
-	return walletAssetActionPreview{
-		Action:                    "ordinals.transfer",
-		Feasible:                  feasible,
-		CanSign:                   false,
-		Summary:                   buildWalletOrdinalTransferPreviewSummary(feasible, item.AssetKey, fee),
-		DetailLines:               detailLines,
-		WarningLevel:              previewWarningLevel(feasible),
-		EstimatedNetworkFeeBSVSat: fee,
-		FeeFundingTargetBSVSat:    fundingNeed,
-		SelectedAssetUTXOIDs:      []string{item.UTXOID},
-		SelectedFeeUTXOIDs:        feeSelection.SelectedUTXOIDs,
-		Changes: []walletAssetActionPreviewChange{
-			{
-				OwnerScope:    "wallet_self",
-				AssetGroup:    walletAssetGroupOrdinal,
-				AssetStandard: item.AssetStandard,
-				AssetKey:      item.AssetKey,
-				AssetSymbol:   item.AssetSymbol,
-				QuantityText:  "1",
-				Direction:     "debit",
-				Note:          "ordinal transfer request",
-			},
-			{
-				OwnerScope:    "receiver",
-				AssetGroup:    walletAssetGroupOrdinal,
-				AssetStandard: item.AssetStandard,
-				AssetKey:      item.AssetKey,
-				AssetSymbol:   item.AssetSymbol,
-				QuantityText:  "1",
-				Direction:     "credit",
-				Note:          toAddress,
-			},
-			{
-				OwnerScope:    "network_fee",
-				AssetGroup:    "bsv",
-				AssetStandard: "native",
-				AssetKey:      "bsv",
-				AssetSymbol:   "BSV",
-				QuantityText:  fmt.Sprintf("%d", fee),
-				Direction:     "debit",
-				Note:          "estimated miner fee",
-			},
-		},
-	}, nil
-}
-
-func loadWalletTokenPreviewCandidates(db *sql.DB, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return []walletTokenPreviewCandidate{}, nil
-	}
-	walletID := walletIDByAddress(address)
-	rows, err := db.Query(
-		`SELECT u.utxo_id,u.txid,u.vout,u.value_satoshi,u.allocation_class,u.allocation_reason,u.created_at_unix,
-		        a.asset_standard,a.asset_key,a.asset_symbol,a.quantity_text,a.source_name,a.payload_json,a.updated_at_unix
-		 FROM wallet_utxo_assets a
-		 JOIN wallet_utxo u ON u.utxo_id=a.utxo_id
-		 WHERE a.wallet_id=? AND a.address=? AND a.asset_group=? AND a.asset_standard=? AND a.asset_key=? AND u.state='unspent'
-		 ORDER BY u.created_at_unix ASC,u.value_satoshi ASC,u.utxo_id ASC`,
-		walletID, address, walletAssetGroupToken, standard, assetKey,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]walletTokenPreviewCandidate, 0, 8)
-	for rows.Next() {
-		var item walletTokenPreviewCandidate
-		var payload string
-		if err := rows.Scan(
-			&item.Item.UTXOID,
-			&item.Item.TxID,
-			&item.Item.Vout,
-			&item.Item.ValueSatoshi,
-			&item.Item.AllocationClass,
-			&item.Item.AllocationReason,
-			&item.CreatedAtUnix,
-			&item.Item.TokenStandard,
-			&item.Item.AssetKey,
-			&item.Item.AssetSymbol,
-			&item.Item.QuantityText,
-			&item.Item.SourceName,
-			&payload,
-			&item.Item.UpdatedAtUnix,
-		); err != nil {
-			return nil, err
-		}
-		qty, err := parseDecimalText(item.Item.QuantityText)
-		if err != nil {
-			return nil, fmt.Errorf("token quantity_text invalid: %w", err)
-		}
-		item.Quantity = qty
-		item.Item.WalletAddress = address
-		item.Item.Payload = json.RawMessage(payload)
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func loadWalletTokenPreviewCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+	return loadWalletBSV21WOCCandidates(ctx, db, rt, address, assetKey)
 }
 
 func selectWalletTokenPreviewCandidates(candidates []walletTokenPreviewCandidate, requested decimalTextValue) ([]walletTokenPreviewCandidate, string, string, string, error) {
@@ -469,9 +310,9 @@ func previewPlainBSVFeeFunding(db *sql.DB, address string, assetInputSatoshi uin
 
 // previewPlainBSVFunding 按“固定输出总额 + 矿工费”的口径估算 plain BSV 选币。
 // 设计说明：
-// - 对 bsv20 来说，固定输出额就是 token 承载输出的 1 sat 总和；
-// - 对 bsv21 来说，还要把 overlay fee 输出额一并算进去；
-// - 这样 preview/sign 能共用一套 BSV 资金判断，不会在 bsv21 上低估所需资金。
+// - 当前 wallet 资产面只保留 bsv21 send；
+// - fixedOutputSatoshi 既包含 token 承载输出的 1 sat，也包含 bsv21 protocol fee；
+// - 这样 preview/sign 能共用一套 BSV 资金判断，不会在真实构造时低估所需资金。
 func previewPlainBSVFunding(db *sql.DB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int, fixedOutputSatoshi uint64) (plainBSVPreviewSelection, uint64, uint64, error) {
 	candidates, err := listPlainBSVFundingCandidatesFromDB(db, address)
 	if err != nil {
@@ -632,11 +473,40 @@ func buildWalletTokenSendPreviewSummary(feasible bool, amountText string, assetS
 	return fmt.Sprintf("无法完成 %s %s 的发送预演，当前资产或链费条件不足。", amountText, label)
 }
 
-func buildWalletOrdinalTransferPreviewSummary(feasible bool, assetKey string, fee uint64) string {
-	if feasible {
-		return fmt.Sprintf("将转移 ordinal %s，预计消耗约 %d sat BSV 链费。", assetKey, fee)
+func normalizeWalletTokenStandard(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "bsv21":
+		return "bsv21"
+	default:
+		return ""
 	}
-	return fmt.Sprintf("无法完成 ordinal %s 的转移预演，当前 plain BSV 不足以承担链费。", assetKey)
+}
+
+// resolveWalletAddressForHTTP 统一给钱包写接口拿当前钱包地址。
+// 设计说明：
+// - 正式运行时优先使用当前 runtime 钱包地址，避免多钱包测试夹具把口径搞乱；
+// - 仅在最小测试环境里，才退回到本地 wallet_utxo 投影里的最新地址，保证 handler 可以被单测直接驱动。
+func resolveWalletAddressForHTTP(ctx context.Context, s *httpAPIServer) (string, error) {
+	if s == nil {
+		return "", fmt.Errorf("http api server is nil")
+	}
+	if s.rt != nil {
+		addr, err := clientWalletAddress(s.rt)
+		if err == nil && strings.TrimSpace(addr) != "" {
+			return strings.TrimSpace(addr), nil
+		}
+	}
+	return httpDBValue(ctx, s, func(db *sql.DB) (string, error) {
+		var addr string
+		err := db.QueryRow(`SELECT address FROM wallet_utxo ORDER BY updated_at_unix DESC,created_at_unix DESC,utxo_id ASC LIMIT 1`).Scan(&addr)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				return "", nil
+			}
+			return "", err
+		}
+		return strings.TrimSpace(addr), nil
+	})
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -724,4 +594,121 @@ func (a decimalTextAccumulator) value() decimalTextValue {
 		return decimalTextValue{intValue: decimalZero(), scale: 0}
 	}
 	return decimalTextValue{intValue: new(big.Int).Set(a.sum), scale: a.scale}
+}
+
+func (a *decimalTextAccumulator) Add(raw string) error {
+	value, err := parseDecimalText(raw)
+	if err != nil {
+		return err
+	}
+	if a.sum == nil {
+		a.sum = new(big.Int).Set(value.intValue)
+		a.scale = value.scale
+		return nil
+	}
+	scale := a.scale
+	if value.scale > scale {
+		scale = value.scale
+	}
+	current := newScaledDecimalInt(decimalTextValue{intValue: a.sum, scale: a.scale}, scale)
+	incoming := newScaledDecimalInt(value, scale)
+	current.Add(current, incoming)
+	a.sum = current
+	a.scale = scale
+	return nil
+}
+
+func (a decimalTextAccumulator) String() string {
+	return formatDecimalText(a.value().intValue, a.value().scale)
+}
+
+func parseDecimalText(raw string) (decimalTextValue, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return decimalTextValue{}, fmt.Errorf("decimal text is empty")
+	}
+	sign := 1
+	switch value[0] {
+	case '+':
+		value = value[1:]
+	case '-':
+		sign = -1
+		value = value[1:]
+	}
+	if value == "" {
+		return decimalTextValue{}, fmt.Errorf("decimal text is empty")
+	}
+	parts := strings.Split(value, ".")
+	if len(parts) > 2 {
+		return decimalTextValue{}, fmt.Errorf("decimal text invalid")
+	}
+	intPart := parts[0]
+	fracPart := ""
+	if len(parts) == 2 {
+		fracPart = parts[1]
+	}
+	if intPart == "" {
+		intPart = "0"
+	}
+	if !allDecimalDigits(intPart) || !allDecimalDigits(fracPart) {
+		return decimalTextValue{}, fmt.Errorf("decimal text invalid")
+	}
+	digits := strings.TrimLeft(intPart+fracPart, "0")
+	if digits == "" {
+		return decimalTextValue{intValue: decimalZero(), scale: len(fracPart)}, nil
+	}
+	n, ok := new(big.Int).SetString(digits, 10)
+	if !ok {
+		return decimalTextValue{}, fmt.Errorf("decimal text invalid")
+	}
+	if sign < 0 {
+		n.Neg(n)
+	}
+	return decimalTextValue{intValue: n, scale: len(fracPart)}, nil
+}
+
+func formatDecimalText(value *big.Int, scale int) string {
+	if value == nil {
+		return "0"
+	}
+	if scale < 0 {
+		scale = 0
+	}
+	sign := ""
+	raw := new(big.Int).Set(value)
+	if raw.Sign() < 0 {
+		sign = "-"
+		raw.Abs(raw)
+	}
+	digits := raw.String()
+	if scale == 0 {
+		return sign + digits
+	}
+	if len(digits) <= scale {
+		digits = strings.Repeat("0", scale-len(digits)+1) + digits
+	}
+	point := len(digits) - scale
+	intPart := digits[:point]
+	fracPart := strings.TrimRight(digits[point:], "0")
+	if fracPart == "" {
+		return sign + intPart
+	}
+	return sign + intPart + "." + fracPart
+}
+
+func decimalPow10(n int) *big.Int {
+	if n <= 0 {
+		return big.NewInt(1)
+	}
+	out := big.NewInt(10)
+	return out.Exp(out, big.NewInt(int64(n)), nil)
+}
+
+func allDecimalDigits(raw string) bool {
+	for _, ch := range raw {
+		if ch < '0' || ch > '9' {
+			return false
+		}
+	}
+	return true
 }

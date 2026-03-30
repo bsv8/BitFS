@@ -457,47 +457,6 @@
         }
       },
       tokens: {
-        balances: {
-          async list(query) {
-            const payload = query && typeof query === "object" ? query : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-token-balances", {
-              limit: Number(payload.limit || 0),
-              offset: Number(payload.offset || 0),
-              standard: String(payload.standard || "")
-            });
-          }
-        },
-        outputs: {
-          async list(query) {
-            const payload = query && typeof query === "object" ? query : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-token-outputs", {
-              limit: Number(payload.limit || 0),
-              offset: Number(payload.offset || 0),
-              standard: String(payload.standard || ""),
-              assetKey: String(payload.assetKey || payload.asset_key || "")
-            });
-          },
-          async get(query) {
-            const payload = query && typeof query === "object" ? query : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-token-output-detail", {
-              standard: String(payload.standard || ""),
-              utxoID: String(payload.utxoID || payload.utxo_id || ""),
-              assetKey: String(payload.assetKey || payload.asset_key || "")
-            });
-          },
-          events: {
-            async list(query) {
-              const payload = query && typeof query === "object" ? query : {};
-              return ipcRenderer.invoke("bitfs-viewer:wallet-token-events", {
-                limit: Number(payload.limit || 0),
-                offset: Number(payload.offset || 0),
-                standard: String(payload.standard || ""),
-                utxoID: String(payload.utxoID || payload.utxo_id || ""),
-                assetKey: String(payload.assetKey || payload.asset_key || "")
-              });
-            }
-          }
-        },
         send: {
           async preview(input) {
             const payload = input && typeof input === "object" ? input : {};
@@ -524,55 +483,32 @@
               signedTxHex: String(payload.signedTxHex || payload.signed_tx_hex || "")
             });
           }
-        }
-      },
-      ordinals: {
-        async list(query) {
-          const payload = query && typeof query === "object" ? query : {};
-          return ipcRenderer.invoke("bitfs-viewer:wallet-ordinals", {
-            limit: Number(payload.limit || 0),
-            offset: Number(payload.offset || 0)
-          });
         },
-        async get(query) {
-          const payload = query && typeof query === "object" ? query : {};
-          return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-detail", {
-            utxoID: String(payload.utxoID || payload.utxo_id || ""),
-            assetKey: String(payload.assetKey || payload.asset_key || "")
-          });
-        },
-        events: {
-          async list(query) {
-            const payload = query && typeof query === "object" ? query : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-events", {
-              limit: Number(payload.limit || 0),
-              offset: Number(payload.offset || 0),
-              utxoID: String(payload.utxoID || payload.utxo_id || ""),
-              assetKey: String(payload.assetKey || payload.asset_key || "")
-            });
-          }
-        },
-        transfer: {
+        create: {
           async preview(input) {
             const payload = input && typeof input === "object" ? input : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-transfer-preview", {
-              utxoID: String(payload.utxoID || payload.utxo_id || ""),
-              assetKey: String(payload.assetKey || payload.asset_key || ""),
-              toAddress: String(payload.toAddress || payload.to_address || "")
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-create-preview", {
+              tokenStandard: String(payload.tokenStandard || payload.token_standard || ""),
+              symbol: String(payload.symbol || ""),
+              maxSupply: String(payload.maxSupply || payload.max_supply || ""),
+              decimals: Number(payload.decimals || 0),
+              icon: String(payload.icon || "")
             });
           },
           async sign(input) {
             const payload = input && typeof input === "object" ? input : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-transfer-sign", {
-              utxoID: String(payload.utxoID || payload.utxo_id || ""),
-              assetKey: String(payload.assetKey || payload.asset_key || ""),
-              toAddress: String(payload.toAddress || payload.to_address || ""),
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-create-sign", {
+              tokenStandard: String(payload.tokenStandard || payload.token_standard || ""),
+              symbol: String(payload.symbol || ""),
+              maxSupply: String(payload.maxSupply || payload.max_supply || ""),
+              decimals: Number(payload.decimals || 0),
+              icon: String(payload.icon || ""),
               expectedPreviewHash: String(payload.expectedPreviewHash || payload.expected_preview_hash || "")
             });
           },
           async submit(input) {
             const payload = input && typeof input === "object" ? input : {};
-            return ipcRenderer.invoke("bitfs-viewer:wallet-ordinal-transfer-submit", {
+            return ipcRenderer.invoke("bitfs-viewer:wallet-token-create-submit", {
               signedTxHex: String(payload.signedTxHex || payload.signed_tx_hex || "")
             });
           }

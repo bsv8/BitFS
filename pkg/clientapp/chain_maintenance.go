@@ -481,6 +481,103 @@ func (m *chainMaintainer) runTask(ctx context.Context, task chainTask) {
 	m.appendWorkerLog(task.TaskType, entry)
 }
 
+// runTaskSync 供显式“手动刷新一次”入口使用。
+// 设计说明：
+// - 手动刷新需要同步语义：HTTP 返回时，这一轮钱包同步已经完成或明确失败；
+// - 这里不复用 enqueue，因为 enqueue 只有“排队成功”语义，无法回答“这次刷新有没有真的跑完”；
+// - 若后台调度刚好已有同类任务在跑，这里等待其让出执行权，再串行补跑当前手动任务。
+func (m *chainMaintainer) runTaskSync(ctx context.Context, task chainTask) (map[string]any, error) {
+	if m == nil || m.rt == nil {
+		return nil, fmt.Errorf("chain maintainer not initialized")
+	}
+	if task.TaskType != chainTaskTip && task.TaskType != chainTaskUTXO {
+		return nil, fmt.Errorf("unsupported chain task type: %s", strings.TrimSpace(task.TaskType))
+	}
+	if strings.TrimSpace(task.TriggerSource) == "" {
+		task.TriggerSource = "manual_sync"
+	}
+	if task.TriggeredAt <= 0 {
+		task.TriggeredAt = time.Now().Unix()
+	}
+	startedAt := time.Now()
+	for {
+		m.mu.Lock()
+		if !m.pendingByType[task.TaskType] && !m.inFlightByType[task.TaskType] {
+			m.inFlightByType[task.TaskType] = true
+			m.status.InFlight = true
+			m.status.InFlightTaskType = task.TaskType
+			m.status.LastTaskStartedAt = startedAt.Unix()
+			m.mu.Unlock()
+			break
+		}
+		m.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	obs.Info("bitcast-client", "chain_task_started", map[string]any{
+		"task_type":               task.TaskType,
+		"trigger_source":          task.TriggerSource,
+		"triggered_at_unix":       task.TriggeredAt,
+		"task_started_at_unix":    startedAt.Unix(),
+		"runtime_started_at_unix": runtimeStartedAtUnix(m.rt),
+	})
+	defer func() {
+		ended := time.Now().Unix()
+		m.mu.Lock()
+		m.inFlightByType[task.TaskType] = false
+		m.status.InFlight = false
+		m.status.InFlightTaskType = ""
+		m.status.LastTaskEndedAt = ended
+		m.mu.Unlock()
+	}()
+
+	taskCtx, cancel := context.WithTimeout(ctx, chainAPITimeout)
+	defer cancel()
+
+	var (
+		err    error
+		result map[string]any
+	)
+	if task.TaskType == chainTaskTip {
+		result, err = m.executeTipTask(taskCtx, task)
+	} else {
+		result, err = m.executeUTXOTask(taskCtx, task)
+	}
+
+	endedAt := time.Now()
+	entry := chainWorkerLogEntry{
+		TriggeredAtUnix: task.TriggeredAt,
+		StartedAtUnix:   startedAt.Unix(),
+		EndedAtUnix:     endedAt.Unix(),
+		DurationMS:      endedAt.Sub(startedAt).Milliseconds(),
+		TriggerSource:   task.TriggerSource,
+		Result:          result,
+	}
+	m.mu.Lock()
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			entry.Status = "canceled"
+			entry.ErrorMessage = err.Error()
+			m.status.LastError = ""
+		} else {
+			m.status.TaskFailedCount++
+			m.status.LastError = err.Error()
+			entry.Status = "failed"
+			entry.ErrorMessage = err.Error()
+		}
+	} else {
+		m.status.TaskAppliedCount++
+		entry.Status = "success"
+		entry.ErrorMessage = ""
+	}
+	m.mu.Unlock()
+	m.appendWorkerLog(task.TaskType, entry)
+	return result, err
+}
+
 func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (map[string]any, error) {
 	if m.rt == nil || m.rt.WalletChain == nil {
 		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime wallet chain not initialized")
@@ -503,6 +600,16 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 	}
 	emitted := false
 	if before.TipHeight > 0 && tip > before.TipHeight {
+		if err := scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, m.rt, time.Now().Add(walletBSV21CreateAutoCheckDelay).Unix()); err != nil {
+			obs.Error("bitcast-client", "wallet_bsv21_create_auto_check_schedule_failed", map[string]any{
+				"error":        err.Error(),
+				"tip_from":     before.TipHeight,
+				"tip_to":       tip,
+				"trigger":      strings.TrimSpace(task.TriggerSource),
+				"task_type":    chainTaskTip,
+				"runtime_type": fmt.Sprintf("%T", m.rt.WalletChain),
+			})
+		}
 		if orch := getClientOrchestrator(m.rt); orch != nil {
 			orch.EmitSignal(orchestratorSignal{
 				Source:       "chain_tip_worker",
@@ -711,6 +818,16 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		})
 	} else {
 		logWalletSyncStepInfo(meta, "refresh_wallet_asset_projection", map[string]any{
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+	}
+	stepStart = time.Now()
+	if err := refreshDueWalletBSV21CreateStatuses(ctx, m.rt, task.TriggerSource); err != nil {
+		logWalletSyncStepError(meta, "refresh_due_wallet_bsv21_create_statuses", err, map[string]any{
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+	} else {
+		logWalletSyncStepInfo(meta, "refresh_due_wallet_bsv21_create_statuses", map[string]any{
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 	}

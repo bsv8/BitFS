@@ -207,41 +207,6 @@ export function registerShellIPC(
     });
     return runtime.listPublicWalletHistory(payload || {});
   });
-  ipcMain.handle("bitfs-viewer:wallet-token-balances", (_event, payload: { limit?: number; offset?: number; standard?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_token_balances", {
-      limit: Number(payload?.limit || 0),
-      offset: Number(payload?.offset || 0),
-      standard: String(payload?.standard || "")
-    });
-    return runtime.listPublicWalletTokenBalances(payload || {});
-  });
-  ipcMain.handle("bitfs-viewer:wallet-token-outputs", (_event, payload: { limit?: number; offset?: number; standard?: string; assetKey?: string; asset_key?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_token_outputs", {
-      limit: Number(payload?.limit || 0),
-      offset: Number(payload?.offset || 0),
-      standard: String(payload?.standard || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || "")
-    });
-    return runtime.listPublicWalletTokenOutputs(payload || {});
-  });
-  ipcMain.handle("bitfs-viewer:wallet-token-output-detail", (_event, payload: { standard?: string; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_token_output_detail", {
-      standard: String(payload?.standard || ""),
-      utxo_id: String(payload?.utxoID || payload?.utxo_id || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || "")
-    });
-    return runtime.getPublicWalletTokenOutputDetail(payload || {});
-  });
-  ipcMain.handle("bitfs-viewer:wallet-token-events", (_event, payload: { limit?: number; offset?: number; standard?: string; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_token_events", {
-      limit: Number(payload?.limit || 0),
-      offset: Number(payload?.offset || 0),
-      standard: String(payload?.standard || ""),
-      utxo_id: String(payload?.utxoID || payload?.utxo_id || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || "")
-    });
-    return runtime.listPublicWalletTokenEvents(payload || {});
-  });
   ipcMain.handle("bitfs-viewer:wallet-token-send-preview", (_event, payload: { tokenStandard?: string; token_standard?: string; assetKey?: string; asset_key?: string; amountText?: string; amount_text?: string; toAddress?: string; to_address?: string }) => {
     debugLogger.log("ipc", "viewer_wallet_token_send_preview", {
       token_standard: String(payload?.tokenStandard || payload?.token_standard || ""),
@@ -267,51 +232,32 @@ export function registerShellIPC(
     });
     return runtime.submitPublicWalletTokenSend(payload || {});
   });
-  ipcMain.handle("bitfs-viewer:wallet-ordinals", (_event, payload: { limit?: number; offset?: number }) => {
-    debugLogger.log("ipc", "viewer_wallet_ordinals", {
-      limit: Number(payload?.limit || 0),
-      offset: Number(payload?.offset || 0)
+  ipcMain.handle("bitfs-viewer:wallet-token-create-preview", (_event, payload: { tokenStandard?: string; token_standard?: string; symbol?: string; maxSupply?: string; max_supply?: string; decimals?: number; icon?: string }) => {
+    debugLogger.log("ipc", "viewer_wallet_token_create_preview", {
+      token_standard: String(payload?.tokenStandard || payload?.token_standard || ""),
+      symbol: String(payload?.symbol || ""),
+      max_supply: String(payload?.maxSupply || payload?.max_supply || ""),
+      decimals: Number(payload?.decimals ?? 0),
+      icon: String(payload?.icon || "")
     });
-    return runtime.listPublicWalletOrdinals(payload || {});
+    return runtime.previewPublicWalletTokenCreate(payload || {});
   });
-  ipcMain.handle("bitfs-viewer:wallet-ordinal-detail", (_event, payload: { utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_ordinal_detail", {
-      utxo_id: String(payload?.utxoID || payload?.utxo_id || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || "")
-    });
-    return runtime.getPublicWalletOrdinalDetail(payload || {});
-  });
-  ipcMain.handle("bitfs-viewer:wallet-ordinal-events", (_event, payload: { limit?: number; offset?: number; utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_ordinal_events", {
-      limit: Number(payload?.limit || 0),
-      offset: Number(payload?.offset || 0),
-      utxo_id: String(payload?.utxoID || payload?.utxo_id || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || "")
-    });
-    return runtime.listPublicWalletOrdinalEvents(payload || {});
-  });
-  ipcMain.handle("bitfs-viewer:wallet-ordinal-transfer-preview", (_event, payload: { utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string; toAddress?: string; to_address?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_ordinal_transfer_preview", {
-      utxo_id: String(payload?.utxoID || payload?.utxo_id || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || ""),
-      to_address: String(payload?.toAddress || payload?.to_address || "")
-    });
-    return runtime.previewPublicWalletOrdinalTransfer(payload || {});
-  });
-  ipcMain.handle("bitfs-viewer:wallet-ordinal-transfer-sign", (_event, payload: { utxoID?: string; utxo_id?: string; assetKey?: string; asset_key?: string; toAddress?: string; to_address?: string; expectedPreviewHash?: string; expected_preview_hash?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_ordinal_transfer_sign", {
-      utxo_id: String(payload?.utxoID || payload?.utxo_id || ""),
-      asset_key: String(payload?.assetKey || payload?.asset_key || ""),
-      to_address: String(payload?.toAddress || payload?.to_address || ""),
+  ipcMain.handle("bitfs-viewer:wallet-token-create-sign", (_event, payload: { tokenStandard?: string; token_standard?: string; symbol?: string; maxSupply?: string; max_supply?: string; decimals?: number; icon?: string; expectedPreviewHash?: string; expected_preview_hash?: string }) => {
+    debugLogger.log("ipc", "viewer_wallet_token_create_sign", {
+      token_standard: String(payload?.tokenStandard || payload?.token_standard || ""),
+      symbol: String(payload?.symbol || ""),
+      max_supply: String(payload?.maxSupply || payload?.max_supply || ""),
+      decimals: Number(payload?.decimals ?? 0),
+      icon: String(payload?.icon || ""),
       expected_preview_hash: String(payload?.expectedPreviewHash || payload?.expected_preview_hash || "")
     });
-    return runtime.signPublicWalletOrdinalTransfer(payload || {});
+    return runtime.signPublicWalletTokenCreate(payload || {});
   });
-  ipcMain.handle("bitfs-viewer:wallet-ordinal-transfer-submit", (_event, payload: { signedTxHex?: string; signed_tx_hex?: string }) => {
-    debugLogger.log("ipc", "viewer_wallet_ordinal_transfer_submit", {
+  ipcMain.handle("bitfs-viewer:wallet-token-create-submit", (_event, payload: { signedTxHex?: string; signed_tx_hex?: string }) => {
+    debugLogger.log("ipc", "viewer_wallet_token_create_submit", {
       signed_tx_hex_len: String(payload?.signedTxHex || payload?.signed_tx_hex || "").length
     });
-    return runtime.submitPublicWalletOrdinalTransfer(payload || {});
+    return runtime.submitPublicWalletTokenCreate(payload || {});
   });
   ipcMain.handle("bitfs-viewer:wallet-sign-business", async (_event, payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }) => {
     const normalized = normalizeViewerWalletBusinessRequest(payload);

@@ -339,13 +339,6 @@ type Config struct {
 			APIKey        string `yaml:"api_key" toml:"api_key"`
 			MinIntervalMS uint32 `yaml:"min_interval_ms" toml:"min_interval_ms"`
 		} `yaml:"woc" toml:"woc"`
-		AssetIndex struct {
-			BaseURL       string `yaml:"base_url" toml:"base_url"`
-			AuthMode      string `yaml:"auth_mode" toml:"auth_mode"`
-			AuthName      string `yaml:"auth_name" toml:"auth_name"`
-			AuthValue     string `yaml:"auth_value" toml:"auth_value"`
-			MinIntervalMS uint32 `yaml:"min_interval_ms" toml:"min_interval_ms"`
-		} `yaml:"asset_index" toml:"asset_index"`
 	} `yaml:"external_api" toml:"external_api"`
 	// WOCAPIKey 只保留作旧配置读入迁移。
 	// 运行态和新配置统一走 external_api.woc.api_key。
@@ -456,13 +449,6 @@ type RunInput struct {
 			APIKey        string
 			MinIntervalMS uint32
 		}
-		AssetIndex struct {
-			BaseURL       string
-			AuthMode      string
-			AuthName      string
-			AuthValue     string
-			MinIntervalMS uint32
-		}
 	}
 	Log struct {
 		File            string
@@ -492,17 +478,6 @@ type RunInput struct {
 	// - 钱包同步明确接受 whatsonchain 语义，不再复制一层同构接口；
 	// - 运行时只持有已装配好的最小 WOC 客户端，不再依赖历史中间层。
 	WalletChain walletChainClient
-
-	// WalletAssetDetector 负责把“当前未花费集合”映射成二层资产识别结果。
-	// 设计说明：
-	// - 探测本身可以依赖第三方索引；
-	// - 但运行时只接受最小识别接口，不把外部索引厂商语义直接渗透进客户端主域。
-	WalletAssetDetector walletUTXOAssetDetector
-
-	// WalletBSV21Provider 负责 bsv21 send 需要的受保护外部能力：
-	// token details / outputs validate / overlay submit。
-	// 默认从 external_api.asset_index 构建，测试可注入桩替换。
-	WalletBSV21Provider walletBSV21Provider
 
 	// RPCTrace 仅用于集成测试：记录 client 自己的 pproto 收发报文（JSONL）。
 	// 正常运行默认不启用（nil）。
@@ -572,11 +547,6 @@ func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
 	in.FSHTTP.StrategyDebugLogEnabled = cfg.FSHTTP.StrategyDebugLogEnabled
 	in.ExternalAPI.WOC.APIKey = cfg.ExternalAPI.WOC.APIKey
 	in.ExternalAPI.WOC.MinIntervalMS = cfg.ExternalAPI.WOC.MinIntervalMS
-	in.ExternalAPI.AssetIndex.BaseURL = cfg.ExternalAPI.AssetIndex.BaseURL
-	in.ExternalAPI.AssetIndex.AuthMode = cfg.ExternalAPI.AssetIndex.AuthMode
-	in.ExternalAPI.AssetIndex.AuthName = cfg.ExternalAPI.AssetIndex.AuthName
-	in.ExternalAPI.AssetIndex.AuthValue = cfg.ExternalAPI.AssetIndex.AuthValue
-	in.ExternalAPI.AssetIndex.MinIntervalMS = cfg.ExternalAPI.AssetIndex.MinIntervalMS
 	in.Log.File = cfg.Log.File
 	in.Log.ConsoleMinLevel = cfg.Log.ConsoleMinLevel
 	return in
@@ -592,8 +562,6 @@ func (in *RunInput) applyConfig(cfg Config) {
 	next.ObsSink = in.ObsSink
 	next.ActionChain = in.ActionChain
 	next.WalletChain = in.WalletChain
-	next.WalletAssetDetector = in.WalletAssetDetector
-	next.WalletBSV21Provider = in.WalletBSV21Provider
 	next.RPCTrace = in.RPCTrace
 	next.DisableHTTPServer = disableHTTPServer
 	next.FSHTTPListener = in.FSHTTPListener
@@ -654,11 +622,6 @@ func (in RunInput) toConfig() Config {
 	cfg.FSHTTP.StrategyDebugLogEnabled = in.FSHTTP.StrategyDebugLogEnabled
 	cfg.ExternalAPI.WOC.APIKey = in.ExternalAPI.WOC.APIKey
 	cfg.ExternalAPI.WOC.MinIntervalMS = in.ExternalAPI.WOC.MinIntervalMS
-	cfg.ExternalAPI.AssetIndex.BaseURL = in.ExternalAPI.AssetIndex.BaseURL
-	cfg.ExternalAPI.AssetIndex.AuthMode = in.ExternalAPI.AssetIndex.AuthMode
-	cfg.ExternalAPI.AssetIndex.AuthName = in.ExternalAPI.AssetIndex.AuthName
-	cfg.ExternalAPI.AssetIndex.AuthValue = in.ExternalAPI.AssetIndex.AuthValue
-	cfg.ExternalAPI.AssetIndex.MinIntervalMS = in.ExternalAPI.AssetIndex.MinIntervalMS
 	cfg.Log.File = in.Log.File
 	cfg.Log.ConsoleMinLevel = in.Log.ConsoleMinLevel
 	cfg.Keys.PrivkeyHex = strings.TrimSpace(in.EffectivePrivKeyHex)
@@ -678,12 +641,10 @@ type Runtime struct {
 	HTTP            *httpAPIServer
 	FSHTTP          *fileHTTPServer
 
-	ActionChain         poolcore.ChainClient
-	WalletChain         walletChainClient
-	WalletAssetDetector walletUTXOAssetDetector
-	WalletBSV21Provider walletBSV21Provider
-	feePoolsMu          sync.RWMutex
-	feePools            map[string]*feePoolSession
+	ActionChain poolcore.ChainClient
+	WalletChain walletChainClient
+	feePoolsMu  sync.RWMutex
+	feePools    map[string]*feePoolSession
 	// feePoolPayLocks 按 gateway 串行化费用池扣费路径（listen cycle / publish demand / publish live demand）。
 	// 设计约束：同一 gateway 只能有一个扣费请求在飞，避免 sequence/server_amount 并发竞争。
 	feePoolPayLocksMu sync.Mutex
@@ -789,6 +750,9 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		return nil, fmt.Errorf("ctx is required")
 	}
 	cfg := in.toConfig()
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		return nil, err
+	}
 
 	var removeObs func()
 	if in.ObsSink != nil {
@@ -1021,37 +985,6 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		"protocol_suite":    BBroadcastSuiteVersion,
 		"protocol_doc_name": BBroadcastProtocolName,
 	})
-	walletAssetDetector := in.WalletAssetDetector
-	if walletAssetDetector == nil {
-		walletAssetDetector, err = buildWalletAssetDetector(in)
-		if err != nil {
-			_ = h.Close()
-			_ = dbActor.Close()
-			if closeTrace != nil {
-				_ = closeTrace()
-			}
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-	}
-	walletBSV21Provider := in.WalletBSV21Provider
-	if walletBSV21Provider == nil {
-		walletBSV21Provider, err = buildWalletBSV21Provider(in)
-		if err != nil {
-			_ = h.Close()
-			_ = dbActor.Close()
-			if closeTrace != nil {
-				_ = closeTrace()
-			}
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-	}
-
 	rt := &Runtime{
 		Host:                     h,
 		DB:                       db,
@@ -1064,8 +997,6 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		Catalog:                  catalog,
 		ActionChain:              in.ActionChain,
 		WalletChain:              in.WalletChain,
-		WalletAssetDetector:      walletAssetDetector,
-		WalletBSV21Provider:      walletBSV21Provider,
 		live:                     newLiveRuntime(),
 		feePools:                 map[string]*feePoolSession{},
 		feePoolPayLocks:          map[string]*sync.Mutex{},
@@ -1326,9 +1257,6 @@ func ApplyConfigDefaults(cfg *Config) error {
 	if cfg.ExternalAPI.WOC.MinIntervalMS == 0 {
 		cfg.ExternalAPI.WOC.MinIntervalMS = 1000
 	}
-	if cfg.ExternalAPI.AssetIndex.MinIntervalMS == 0 {
-		cfg.ExternalAPI.AssetIndex.MinIntervalMS = 250
-	}
 	if strings.TrimSpace(cfg.Log.ConsoleMinLevel) == "" {
 		cfg.Log.ConsoleMinLevel = networkDefaults.LogConsoleMinLevel
 	}
@@ -1343,6 +1271,11 @@ func ParseConfigTOML(data []byte) (Config, error) {
 	// 这里仅做读时清理，避免旧 DB 配置因严格解析失败。
 	normalized = stripDeprecatedTOMLKeyLines(normalized, map[string]struct{}{
 		"auth_token": {},
+	})
+	// 历史字段迁移：1Sat overlay 资产索引能力已整体下线。
+	// 旧配置文件即使还留着该 section，也不应继续影响当前启动。
+	normalized = stripTOMLSections(normalized, map[string]struct{}{
+		"external_api.asset_index": {},
 	})
 	var cfg Config
 	dec := toml.NewDecoder(strings.NewReader(normalized))
@@ -1489,22 +1422,6 @@ func validateConfig(cfg *Config) error {
 		return errors.New("reachability.announce_ttl_seconds must be > 0")
 	}
 	cfg.ExternalAPI.WOC.APIKey = strings.TrimSpace(cfg.ExternalAPI.WOC.APIKey)
-	cfg.ExternalAPI.AssetIndex.BaseURL = strings.TrimRight(strings.TrimSpace(cfg.ExternalAPI.AssetIndex.BaseURL), "/")
-	cfg.ExternalAPI.AssetIndex.AuthMode = strings.TrimSpace(cfg.ExternalAPI.AssetIndex.AuthMode)
-	cfg.ExternalAPI.AssetIndex.AuthName = strings.TrimSpace(cfg.ExternalAPI.AssetIndex.AuthName)
-	cfg.ExternalAPI.AssetIndex.AuthValue = strings.TrimSpace(cfg.ExternalAPI.AssetIndex.AuthValue)
-	assetAuth := chainbridge.AuthConfig{
-		Mode:  cfg.ExternalAPI.AssetIndex.AuthMode,
-		Name:  cfg.ExternalAPI.AssetIndex.AuthName,
-		Value: cfg.ExternalAPI.AssetIndex.AuthValue,
-	}
-	if cfg.ExternalAPI.AssetIndex.BaseURL == "" {
-		if assetAuth != (chainbridge.AuthConfig{}) {
-			return errors.New("external_api.asset_index.base_url is required when asset index auth is configured")
-		}
-	} else if err := assetAuth.Validate(); err != nil {
-		return fmt.Errorf("external_api.asset_index auth invalid: %w", err)
-	}
 	return nil
 }
 
@@ -1897,6 +1814,25 @@ func initIndexDB(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			observed_at_unix INTEGER NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_bsv21_create_status(
+			token_id TEXT PRIMARY KEY,
+			create_txid TEXT NOT NULL,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			token_standard TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			max_supply TEXT NOT NULL,
+			decimals INTEGER NOT NULL,
+			icon TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			submitted_at_unix INTEGER NOT NULL,
+			confirmed_at_unix INTEGER NOT NULL,
+			last_check_at_unix INTEGER NOT NULL,
+			next_auto_check_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			last_check_error TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_utxo_sync_state(
 			address TEXT PRIMARY KEY,
 			wallet_id TEXT NOT NULL,
@@ -2176,6 +2112,8 @@ func initIndexDB(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_state ON wallet_bsv21_create_status(status, next_auto_check_at_unix ASC, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_scene ON fin_business(scene_type, scene_subtype, occurred_at_unix DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
@@ -2235,6 +2173,9 @@ func initIndexDB(db *sql.DB) error {
 		return err
 	}
 	if err := ensureWalletLocalBroadcastSchema(db); err != nil {
+		return err
+	}
+	if err := ensureWalletBSV21CreateStatusSchema(db); err != nil {
 		return err
 	}
 	if err := ensureWalletUTXOSyncStateSchema(db); err != nil {
@@ -2485,7 +2426,7 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 			SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,
 				CASE WHEN lower(trim(state))='reserved' THEN 'unspent' ELSE state END,
 				CASE WHEN value_satoshi=1 THEN 'unknown' ELSE 'plain_bsv' END,
-				CASE WHEN value_satoshi=1 THEN 'awaiting asset detector confirmation' ELSE '' END,
+				CASE WHEN value_satoshi=1 THEN 'awaiting external token evidence' ELSE '' END,
 				created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 			FROM wallet_utxo_legacy_v2`,
 		); err != nil {
@@ -2530,7 +2471,7 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 	if _, err := db.Exec(`UPDATE wallet_utxo SET allocation_class=CASE WHEN value_satoshi=1 THEN 'unknown' ELSE 'plain_bsv' END WHERE trim(allocation_class)=''`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`UPDATE wallet_utxo SET allocation_reason='awaiting asset detector confirmation' WHERE state='unspent' AND value_satoshi=1 AND allocation_class='unknown' AND trim(allocation_reason)=''`); err != nil {
+	if _, err := db.Exec(`UPDATE wallet_utxo SET allocation_reason='awaiting external token evidence' WHERE state='unspent' AND value_satoshi=1 AND allocation_class='unknown' AND trim(allocation_reason)=''`); err != nil {
 		return err
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
@@ -2661,6 +2602,40 @@ func ensureWalletLocalBroadcastSchema(db *sql.DB) error {
 		if _, err := db.Exec(`ALTER TABLE wallet_local_broadcast_txs ADD COLUMN observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func ensureWalletBSV21CreateStatusSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS wallet_bsv21_create_status(
+		token_id TEXT PRIMARY KEY,
+		create_txid TEXT NOT NULL,
+		wallet_id TEXT NOT NULL,
+		address TEXT NOT NULL,
+		token_standard TEXT NOT NULL,
+		symbol TEXT NOT NULL,
+		max_supply TEXT NOT NULL,
+		decimals INTEGER NOT NULL,
+		icon TEXT NOT NULL,
+		status TEXT NOT NULL,
+		created_at_unix INTEGER NOT NULL,
+		submitted_at_unix INTEGER NOT NULL,
+		confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
+		last_check_at_unix INTEGER NOT NULL DEFAULT 0,
+		next_auto_check_at_unix INTEGER NOT NULL DEFAULT 0,
+		updated_at_unix INTEGER NOT NULL,
+		last_check_error TEXT NOT NULL DEFAULT ''
+	)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_state ON wallet_bsv21_create_status(status, next_auto_check_at_unix ASC, updated_at_unix DESC)`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`); err != nil {
+		return err
 	}
 	return nil
 }

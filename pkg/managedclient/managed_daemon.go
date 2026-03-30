@@ -477,16 +477,6 @@ func (d *managedDaemon) startRuntime(privHex string) error {
 	if err != nil {
 		return err
 	}
-	// 设计说明：
-	// - 外部资产索引和 WOC 一样，都可能在上层被统一收口到 guard；
-	// - 这里优先吃环境注入，避免业务进程绕过外层保护器直接访问公网索引；
-	// - 当前注入只覆盖 baseURL，认证默认由 guard 或本地配置自己兜住。
-	if injected := strings.TrimRight(strings.TrimSpace(os.Getenv(clientapp.ExternalAssetIndexBaseURLEnv)), "/"); injected != "" {
-		runCfg.ExternalAPI.AssetIndex.BaseURL = injected
-		runCfg.ExternalAPI.AssetIndex.AuthMode = ""
-		runCfg.ExternalAPI.AssetIndex.AuthName = ""
-		runCfg.ExternalAPI.AssetIndex.AuthValue = ""
-	}
 	d.applyDesktopRuntimeBootstrap(&runCfg)
 	d.overrides.Apply(&runCfg)
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)

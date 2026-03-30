@@ -448,23 +448,19 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/info", s.withAuth(s.handleInfo))
 		mux.HandleFunc(prefix+"/v1/balance", s.withAuth(s.handleBalance))
 		mux.HandleFunc(prefix+"/v1/wallet/summary", s.withAuth(s.handleWalletSummary))
+		mux.HandleFunc(prefix+"/v1/wallet/sync-once", s.withAuth(s.handleWalletSyncOnce))
 		mux.HandleFunc(prefix+"/v1/wallet/business/preview", s.withAuth(s.handleWalletBusinessPreview))
 		mux.HandleFunc(prefix+"/v1/wallet/business/sign", s.withAuth(s.handleWalletBusinessSign))
 		mux.HandleFunc(prefix+"/v1/wallet/ledger", s.withAuth(s.handleWalletLedger))
 		mux.HandleFunc(prefix+"/v1/wallet/ledger/detail", s.withAuth(s.handleWalletLedgerDetail))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/balances", s.withAuth(s.handleWalletTokenBalances))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/outputs", s.withAuth(s.handleWalletTokenOutputs))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/outputs/detail", s.withAuth(s.handleWalletTokenOutputDetail))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/events", s.withAuth(s.handleWalletTokenEvents))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/preview", s.withAuth(s.handleWalletTokenCreatePreview))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/sign", s.withAuth(s.handleWalletTokenCreateSign))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/submit", s.withAuth(s.handleWalletTokenCreateSubmit))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/status", s.withAuth(s.handleWalletTokenCreateStatus))
+		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/status/refresh", s.withAuth(s.handleWalletTokenCreateStatusRefresh))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/preview", s.withAuth(s.handleWalletTokenSendPreview))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/sign", s.withAuth(s.handleWalletTokenSendSign))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/submit", s.withAuth(s.handleWalletTokenSendSubmit))
-		mux.HandleFunc(prefix+"/v1/wallet/ordinals", s.withAuth(s.handleWalletOrdinals))
-		mux.HandleFunc(prefix+"/v1/wallet/ordinals/detail", s.withAuth(s.handleWalletOrdinalDetail))
-		mux.HandleFunc(prefix+"/v1/wallet/ordinals/events", s.withAuth(s.handleWalletOrdinalEvents))
-		mux.HandleFunc(prefix+"/v1/wallet/ordinals/transfer/preview", s.withAuth(s.handleWalletOrdinalTransferPreview))
-		mux.HandleFunc(prefix+"/v1/wallet/ordinals/transfer/sign", s.withAuth(s.handleWalletOrdinalTransferSign))
-		mux.HandleFunc(prefix+"/v1/wallet/ordinals/transfer/submit", s.withAuth(s.handleWalletOrdinalTransferSubmit))
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows", s.withAuth(s.handleWalletFundFlows))
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
 		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
@@ -6895,11 +6891,6 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
 		{Key: "external_api.woc.api_key", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "WOC API key（统一纳入外部 API 保护器）"},
 		{Key: "external_api.woc.min_interval_ms", Type: adminConfigInt, MinInt: 1, MaxInt: 60000, Description: "WOC 最小请求间隔毫秒"},
-		{Key: "external_api.asset_index.base_url", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "外部资产索引入口（兼容 1sat-stack）"},
-		{Key: "external_api.asset_index.auth_mode", Type: adminConfigString, MinLen: 0, MaxLen: 32, Description: "外部资产索引认证模式"},
-		{Key: "external_api.asset_index.auth_name", Type: adminConfigString, MinLen: 0, MaxLen: 128, Description: "外部资产索引认证名称"},
-		{Key: "external_api.asset_index.auth_value", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "外部资产索引认证值"},
-		{Key: "external_api.asset_index.min_interval_ms", Type: adminConfigInt, MinInt: 1, MaxInt: 60000, Description: "外部资产索引最小请求间隔毫秒"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
 		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
 		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数（统一配置，不区分测试网/主网）"},
@@ -7045,11 +7036,6 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"fs_http.listen_addr":                         cfg.FSHTTP.ListenAddr,
 		"external_api.woc.api_key":                    maskSecretForAdminConfig(cfg.ExternalAPI.WOC.APIKey),
 		"external_api.woc.min_interval_ms":            cfg.ExternalAPI.WOC.MinIntervalMS,
-		"external_api.asset_index.base_url":           cfg.ExternalAPI.AssetIndex.BaseURL,
-		"external_api.asset_index.auth_mode":          cfg.ExternalAPI.AssetIndex.AuthMode,
-		"external_api.asset_index.auth_name":          cfg.ExternalAPI.AssetIndex.AuthName,
-		"external_api.asset_index.auth_value":         maskSecretForAdminConfig(cfg.ExternalAPI.AssetIndex.AuthValue),
-		"external_api.asset_index.min_interval_ms":    cfg.ExternalAPI.AssetIndex.MinIntervalMS,
 		"listen.enabled":                              cfgBool(cfg.Listen.Enabled, true),
 		"listen.renew_threshold_seconds":              cfg.Listen.RenewThresholdSeconds,
 		"listen.auto_renew_rounds":                    cfg.Listen.AutoRenewRounds,
@@ -7189,14 +7175,6 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 		cfg.FSHTTP.ListenAddr = v
 	case "external_api.woc.api_key":
 		cfg.ExternalAPI.WOC.APIKey = v
-	case "external_api.asset_index.base_url":
-		cfg.ExternalAPI.AssetIndex.BaseURL = v
-	case "external_api.asset_index.auth_mode":
-		cfg.ExternalAPI.AssetIndex.AuthMode = v
-	case "external_api.asset_index.auth_name":
-		cfg.ExternalAPI.AssetIndex.AuthName = v
-	case "external_api.asset_index.auth_value":
-		cfg.ExternalAPI.AssetIndex.AuthValue = v
 	default:
 		return fmt.Errorf("unsupported string key: %s", key)
 	}
@@ -7208,8 +7186,6 @@ func adminConfigSetInt(cfg *Config, key string, v int64) error {
 	switch key {
 	case "external_api.woc.min_interval_ms":
 		cfg.ExternalAPI.WOC.MinIntervalMS = uint32(v)
-	case "external_api.asset_index.min_interval_ms":
-		cfg.ExternalAPI.AssetIndex.MinIntervalMS = uint32(v)
 	case "listen.renew_threshold_seconds":
 		cfg.Listen.RenewThresholdSeconds = uint32(v)
 	case "listen.auto_renew_rounds":

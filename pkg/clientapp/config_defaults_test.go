@@ -85,7 +85,4 @@ func TestApplyConfigDefaults_ExternalAPIProviderDefaultsAndMigration(t *testing.
 	if got, want := cfg.ExternalAPI.WOC.MinIntervalMS, uint32(1000); got != want {
 		t.Fatalf("external_api.woc.min_interval_ms=%d, want %d", got, want)
 	}
-	if got, want := cfg.ExternalAPI.AssetIndex.MinIntervalMS, uint32(250); got != want {
-		t.Fatalf("external_api.asset_index.min_interval_ms=%d, want %d", got, want)
-	}
 }

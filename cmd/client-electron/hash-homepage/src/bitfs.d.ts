@@ -214,6 +214,21 @@ type BitfsWalletTokenSendSignRequest = BitfsWalletTokenSendPreviewRequest & {
   expected_preview_hash?: string;
 };
 
+type BitfsWalletTokenCreatePreviewRequest = {
+  tokenStandard?: BitfsWalletTokenStandard;
+  token_standard?: BitfsWalletTokenStandard;
+  symbol?: string;
+  maxSupply?: string;
+  max_supply?: string;
+  decimals?: number;
+  icon?: string;
+};
+
+type BitfsWalletTokenCreateSignRequest = BitfsWalletTokenCreatePreviewRequest & {
+  expectedPreviewHash?: string;
+  expected_preview_hash?: string;
+};
+
 type BitfsWalletOrdinalItem = {
   utxo_id: string;
   wallet_address: string;
@@ -486,6 +501,11 @@ type BitfsBridge = {
       send: {
         preview: (input: BitfsWalletTokenSendPreviewRequest) => Promise<BitfsWalletAssetPreviewResponse>;
         sign: (input: BitfsWalletTokenSendSignRequest) => Promise<BitfsWalletAssetSignResponse>;
+        submit: (input: BitfsWalletAssetSubmitRequest) => Promise<BitfsWalletAssetSubmitResponse>;
+      };
+      create: {
+        preview: (input: BitfsWalletTokenCreatePreviewRequest) => Promise<BitfsWalletAssetPreviewResponse>;
+        sign: (input: BitfsWalletTokenCreateSignRequest) => Promise<BitfsWalletAssetSignResponse>;
         submit: (input: BitfsWalletAssetSubmitRequest) => Promise<BitfsWalletAssetSubmitResponse>;
       };
     };

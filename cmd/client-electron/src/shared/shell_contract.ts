@@ -259,6 +259,8 @@ export type BitfsPublicWalletAssetSubmitResponse = {
   code: string;
   message: string;
   txid: string;
+  token_id: string;
+  status: string;
 };
 
 export type BitfsPublicWalletOrdinalItem = {

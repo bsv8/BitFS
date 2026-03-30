@@ -951,6 +951,81 @@ export class BitfsBrowserRuntime extends EventEmitter {
     return readWalletAssetPreviewResponse(body);
   }
 
+  async previewPublicWalletTokenCreate(input: { tokenStandard?: string; token_standard?: string; symbol?: string; maxSupply?: string; max_supply?: string; decimals?: number; icon?: string }): Promise<BitfsPublicWalletAssetPreviewResponse> {
+    const payload = {
+      token_standard: readNormalizedKey(String(input?.tokenStandard || ""), String(input?.token_standard || "")),
+      symbol: readNormalizedKey(String(input?.symbol || ""), ""),
+      max_supply: readNormalizedKey(String(input?.maxSupply || ""), String(input?.max_supply || "")),
+      decimals: Math.trunc(Number(input?.decimals ?? 0)),
+      icon: readNormalizedKey(String(input?.icon || ""), "")
+    };
+    debugLogger.log("runtime", "preview_public_wallet_token_create", {
+      token_standard: payload.token_standard,
+      symbol: payload.symbol,
+      max_supply: payload.max_supply,
+      decimals: payload.decimals,
+      icon: payload.icon,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/tokens/create/preview", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetPreviewResponse(body);
+  }
+
+  async signPublicWalletTokenCreate(input: { tokenStandard?: string; token_standard?: string; symbol?: string; maxSupply?: string; max_supply?: string; decimals?: number; icon?: string; expectedPreviewHash?: string; expected_preview_hash?: string }): Promise<BitfsPublicWalletAssetSignResponse> {
+    const payload = {
+      token_standard: readNormalizedKey(String(input?.tokenStandard || ""), String(input?.token_standard || "")),
+      symbol: readNormalizedKey(String(input?.symbol || ""), ""),
+      max_supply: readNormalizedKey(String(input?.maxSupply || ""), String(input?.max_supply || "")),
+      decimals: Math.trunc(Number(input?.decimals ?? 0)),
+      icon: readNormalizedKey(String(input?.icon || ""), ""),
+      expected_preview_hash: readNormalizedKey(String(input?.expectedPreviewHash || ""), String(input?.expected_preview_hash || ""))
+    };
+    debugLogger.log("runtime", "sign_public_wallet_token_create", {
+      token_standard: payload.token_standard,
+      symbol: payload.symbol,
+      max_supply: payload.max_supply,
+      decimals: payload.decimals,
+      icon: payload.icon,
+      expected_preview_hash: payload.expected_preview_hash,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/tokens/create/sign", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetSignResponse(body);
+  }
+
+  async submitPublicWalletTokenCreate(input: { signedTxHex?: string; signed_tx_hex?: string }): Promise<BitfsPublicWalletAssetSubmitResponse> {
+    const payload = {
+      signed_tx_hex: readNormalizedKey(String(input?.signedTxHex || ""), String(input?.signed_tx_hex || ""))
+    };
+    debugLogger.log("runtime", "submit_public_wallet_token_create", {
+      signed_tx_hex_len: payload.signed_tx_hex.length,
+      trace_id: this.currentTraceID
+    });
+    const body = await this.fetchJSON<Record<string, unknown>>("/api/v1/wallet/tokens/create/submit", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    return readWalletAssetSubmitResponse(body);
+  }
+
   async signPublicWalletTokenSend(input: { tokenStandard?: string; token_standard?: string; assetKey?: string; asset_key?: string; amountText?: string; amount_text?: string; toAddress?: string; to_address?: string; expectedPreviewHash?: string; expected_preview_hash?: string }): Promise<BitfsPublicWalletAssetSignResponse> {
     const payload = {
       token_standard: readNormalizedKey(String(input?.tokenStandard || ""), String(input?.token_standard || "")),
@@ -1850,7 +1925,9 @@ function readWalletAssetSubmitResponse(payload: Record<string, unknown>): BitfsP
     ok: readBooleanField(payload, "ok"),
     code: readStringField(payload, "code"),
     message: readStringField(payload, "message"),
-    txid: readStringField(payload, "txid").toLowerCase()
+    txid: readStringField(payload, "txid").toLowerCase(),
+    token_id: readStringField(payload, "token_id").toLowerCase(),
+    status: readStringField(payload, "status")
   };
 }
 

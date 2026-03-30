@@ -23,18 +23,6 @@ type cliOptions struct {
 	httpListenAddr       string
 	fsHTTPListen         string
 	systemHomepageBundle string
-	walletTokenBalances  bool
-	walletTokenOutputs   bool
-	walletTokenOutput    bool
-	walletTokenEvents    bool
-	walletOrdinals       bool
-	walletOrdinal        bool
-	walletOrdinalEvents  bool
-	assetStandard        string
-	assetKey             string
-	utxoID               string
-	limit                int
-	offset               int
 	newKey               bool
 	importPath           string
 	exportPath           string
@@ -53,13 +41,6 @@ const (
 	actionNew                 cliAction = "new"
 	actionImport              cliAction = "import"
 	actionExport              cliAction = "export"
-	actionWalletTokenBalances cliAction = "wallet_token_balances"
-	actionWalletTokenOutputs  cliAction = "wallet_token_outputs"
-	actionWalletTokenOutput   cliAction = "wallet_token_output_detail"
-	actionWalletTokenEvents   cliAction = "wallet_token_events"
-	actionWalletOrdinals      cliAction = "wallet_ordinals"
-	actionWalletOrdinal       cliAction = "wallet_ordinal_detail"
-	actionWalletOrdinalEvents cliAction = "wallet_ordinal_events"
 )
 
 func main() {
@@ -124,78 +105,6 @@ func main() {
 			log.Fatal(err)
 		}
 		return
-	case actionWalletTokenBalances:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:     clientapp.WalletAssetCLIQueryTokenBalances,
-			Standard: opts.assetStandard,
-			Limit:    opts.limit,
-			Offset:   opts.offset,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case actionWalletTokenOutputs:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:     clientapp.WalletAssetCLIQueryTokenOutputs,
-			Standard: opts.assetStandard,
-			AssetKey: opts.assetKey,
-			Limit:    opts.limit,
-			Offset:   opts.offset,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case actionWalletTokenOutput:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:     clientapp.WalletAssetCLIQueryTokenOutputDetail,
-			Standard: opts.assetStandard,
-			AssetKey: opts.assetKey,
-			UTXOID:   opts.utxoID,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case actionWalletTokenEvents:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:     clientapp.WalletAssetCLIQueryTokenEvents,
-			Standard: opts.assetStandard,
-			AssetKey: opts.assetKey,
-			UTXOID:   opts.utxoID,
-			Limit:    opts.limit,
-			Offset:   opts.offset,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case actionWalletOrdinals:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:   clientapp.WalletAssetCLIQueryOrdinals,
-			Limit:  opts.limit,
-			Offset: opts.offset,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case actionWalletOrdinal:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:     clientapp.WalletAssetCLIQueryOrdinalDetail,
-			AssetKey: opts.assetKey,
-			UTXOID:   opts.utxoID,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
-	case actionWalletOrdinalEvents:
-		if err := runCLIWalletAssetQuery(cfg.Index.SQLitePath, clientapp.WalletAssetCLIQuery{
-			Kind:     clientapp.WalletAssetCLIQueryOrdinalEvents,
-			AssetKey: opts.assetKey,
-			UTXOID:   opts.utxoID,
-			Limit:    opts.limit,
-			Offset:   opts.offset,
-		}); err != nil {
-			log.Fatal(err)
-		}
-		return
 	case actionRun:
 		if err := managedclient.RunManagedDaemon(managedclient.DaemonOptions{
 			Config:               cfg,
@@ -221,18 +130,6 @@ func parseFlags() cliOptions {
 	flag.StringVar(&opts.httpListenAddr, "http-listen", "", msg("flag_http_listen"))
 	flag.StringVar(&opts.fsHTTPListen, "fs-http-listen", "", msg("flag_fs_http_listen"))
 	flag.StringVar(&opts.systemHomepageBundle, "system-homepage-bundle", "", msg("flag_system_homepage_bundle"))
-	flag.BoolVar(&opts.walletTokenBalances, "wallet-token-balances", false, msg("flag_wallet_token_balances"))
-	flag.BoolVar(&opts.walletTokenOutputs, "wallet-token-outputs", false, msg("flag_wallet_token_outputs"))
-	flag.BoolVar(&opts.walletTokenOutput, "wallet-token-output", false, msg("flag_wallet_token_output"))
-	flag.BoolVar(&opts.walletTokenEvents, "wallet-token-events", false, msg("flag_wallet_token_events"))
-	flag.BoolVar(&opts.walletOrdinals, "wallet-ordinals", false, msg("flag_wallet_ordinals"))
-	flag.BoolVar(&opts.walletOrdinal, "wallet-ordinal", false, msg("flag_wallet_ordinal"))
-	flag.BoolVar(&opts.walletOrdinalEvents, "wallet-ordinal-events", false, msg("flag_wallet_ordinal_events"))
-	flag.StringVar(&opts.assetStandard, "standard", "", msg("flag_standard"))
-	flag.StringVar(&opts.assetKey, "asset-key", "", msg("flag_asset_key"))
-	flag.StringVar(&opts.utxoID, "utxo-id", "", msg("flag_utxo_id"))
-	flag.IntVar(&opts.limit, "limit", 50, msg("flag_limit"))
-	flag.IntVar(&opts.offset, "offset", 0, msg("flag_offset"))
 	flag.BoolVar(&opts.newKey, "new", false, msg("flag_new"))
 	flag.StringVar(&opts.importPath, "import", "", msg("flag_import"))
 	flag.StringVar(&opts.exportPath, "export", "", msg("flag_export"))
@@ -256,27 +153,6 @@ func resolveCLIAction(opts cliOptions) (cliAction, error) {
 	if strings.TrimSpace(opts.exportPath) != "" {
 		actions++
 	}
-	if opts.walletTokenBalances {
-		actions++
-	}
-	if opts.walletTokenOutputs {
-		actions++
-	}
-	if opts.walletTokenOutput {
-		actions++
-	}
-	if opts.walletTokenEvents {
-		actions++
-	}
-	if opts.walletOrdinals {
-		actions++
-	}
-	if opts.walletOrdinal {
-		actions++
-	}
-	if opts.walletOrdinalEvents {
-		actions++
-	}
 	if actions > 1 {
 		return "", fmt.Errorf("%s", msg("err_actions_mutually_exclusive"))
 	}
@@ -289,37 +165,7 @@ func resolveCLIAction(opts cliOptions) (cliAction, error) {
 	if strings.TrimSpace(opts.exportPath) != "" {
 		return actionExport, nil
 	}
-	if opts.walletTokenBalances {
-		return actionWalletTokenBalances, nil
-	}
-	if opts.walletTokenOutputs {
-		return actionWalletTokenOutputs, nil
-	}
-	if opts.walletTokenOutput {
-		return actionWalletTokenOutput, nil
-	}
-	if opts.walletTokenEvents {
-		return actionWalletTokenEvents, nil
-	}
-	if opts.walletOrdinals {
-		return actionWalletOrdinals, nil
-	}
-	if opts.walletOrdinal {
-		return actionWalletOrdinal, nil
-	}
-	if opts.walletOrdinalEvents {
-		return actionWalletOrdinalEvents, nil
-	}
 	return actionRun, nil
-}
-
-func runCLIWalletAssetQuery(indexDBPath string, req clientapp.WalletAssetCLIQuery) error {
-	output, err := clientapp.RunWalletAssetCLIQuery(indexDBPath, req)
-	if err != nil {
-		return err
-	}
-	_, err = fmt.Printf("%s\n", string(output))
-	return err
 }
 
 func runCLIKeyNew(keyPath string) error {
@@ -479,18 +325,6 @@ var cliMessages = map[string]map[string]string{
 		"flag_http_listen":               "override managed api listen address for current run only",
 		"flag_fs_http_listen":            "override fs_http listen address for current run only",
 		"flag_system_homepage_bundle":    "install system homepage bundle into workspace for current desktop product run",
-		"flag_wallet_token_balances":     "print wallet token balance list from local index db",
-		"flag_wallet_token_outputs":      "print wallet token output list from local index db",
-		"flag_wallet_token_output":       "print one wallet token output detail from local index db",
-		"flag_wallet_token_events":       "print current wallet token output events from local index db",
-		"flag_wallet_ordinals":           "print wallet ordinal list from local index db",
-		"flag_wallet_ordinal":            "print one wallet ordinal detail from local index db",
-		"flag_wallet_ordinal_events":     "print current wallet ordinal output events from local index db",
-		"flag_standard":                  "token standard filter for wallet token queries: bsv20/bsv21",
-		"flag_asset_key":                 "asset key filter, such as bsv20:demo or ordinal:origin",
-		"flag_utxo_id":                   "utxo id selector, format: <txid>:<vout>",
-		"flag_limit":                     "query page size for wallet asset list actions",
-		"flag_offset":                    "query offset for wallet asset list actions",
 		"flag_new":                       "create encrypted private key in key.json",
 		"flag_import":                    "import encrypted key json file into key.json",
 		"flag_export":                    "export encrypted key json file from key.json",
@@ -518,18 +352,6 @@ var cliMessages = map[string]map[string]string{
 		"flag_http_listen":               "仅本次运行覆盖 managed api 监听地址",
 		"flag_fs_http_listen":            "仅本次运行覆盖 fs_http 监听地址",
 		"flag_system_homepage_bundle":    "仅桌面产品本次运行使用的系统首页 bundle 目录",
-		"flag_wallet_token_balances":     "从本地 index db 输出钱包 token 余额列表",
-		"flag_wallet_token_outputs":      "从本地 index db 输出钱包 token 承载输出列表",
-		"flag_wallet_token_output":       "从本地 index db 输出单个钱包 token 承载输出详情",
-		"flag_wallet_token_events":       "从本地 index db 输出当前钱包 token 输出事件列表",
-		"flag_wallet_ordinals":           "从本地 index db 输出钱包 ordinal 列表",
-		"flag_wallet_ordinal":            "从本地 index db 输出单个钱包 ordinal 详情",
-		"flag_wallet_ordinal_events":     "从本地 index db 输出当前钱包 ordinal 输出事件列表",
-		"flag_standard":                  "钱包 token 查询使用的标准过滤：bsv20/bsv21",
-		"flag_asset_key":                 "资产 key 过滤，例如 bsv20:demo 或 ordinal:origin",
-		"flag_utxo_id":                   "utxo 选择器，格式：<txid>:<vout>",
-		"flag_limit":                     "钱包资产列表动作的分页大小",
-		"flag_offset":                    "钱包资产列表动作的分页偏移",
 		"flag_new":                       "新建并加密私钥到 key.json",
 		"flag_import":                    "从 json 文件导入密文私钥到 key.json",
 		"flag_export":                    "从 key.json 导出密文私钥到 json 文件",
@@ -557,18 +379,6 @@ var cliMessages = map[string]map[string]string{
 		"flag_http_listen":               "僅本次執行覆蓋 managed api 監聽位址",
 		"flag_fs_http_listen":            "僅本次執行覆蓋 fs_http 監聽位址",
 		"flag_system_homepage_bundle":    "僅桌面產品本次執行使用的系統首頁 bundle 目錄",
-		"flag_wallet_token_balances":     "從本地 index db 輸出錢包 token 餘額列表",
-		"flag_wallet_token_outputs":      "從本地 index db 輸出錢包 token 承載輸出列表",
-		"flag_wallet_token_output":       "從本地 index db 輸出單個錢包 token 承載輸出詳情",
-		"flag_wallet_token_events":       "從本地 index db 輸出目前錢包 token 輸出事件列表",
-		"flag_wallet_ordinals":           "從本地 index db 輸出錢包 ordinal 列表",
-		"flag_wallet_ordinal":            "從本地 index db 輸出單個錢包 ordinal 詳情",
-		"flag_wallet_ordinal_events":     "從本地 index db 輸出目前錢包 ordinal 輸出事件列表",
-		"flag_standard":                  "錢包 token 查詢使用的標準過濾：bsv20/bsv21",
-		"flag_asset_key":                 "資產 key 過濾，例如 bsv20:demo 或 ordinal:origin",
-		"flag_utxo_id":                   "utxo 選擇器，格式：<txid>:<vout>",
-		"flag_limit":                     "錢包資產列表動作的分頁大小",
-		"flag_offset":                    "錢包資產列表動作的分頁偏移",
 		"flag_new":                       "新建並加密私鑰到 key.json",
 		"flag_import":                    "從 json 檔案匯入密文私鑰到 key.json",
 		"flag_export":                    "從 key.json 匯出密文私鑰到 json 檔案",
@@ -596,18 +406,6 @@ var cliMessages = map[string]map[string]string{
 		"flag_http_listen":               "今回の起動だけ managed api の待受アドレスを上書き",
 		"flag_fs_http_listen":            "今回の起動だけ fs_http の待受アドレスを上書き",
 		"flag_system_homepage_bundle":    "今回のデスクトップ起動だけ使うシステムホームページ bundle ディレクトリ",
-		"flag_wallet_token_balances":     "ローカル index db からウォレット token 残高一覧を出力",
-		"flag_wallet_token_outputs":      "ローカル index db からウォレット token 出力一覧を出力",
-		"flag_wallet_token_output":       "ローカル index db からウォレット token 出力詳細を1件出力",
-		"flag_wallet_token_events":       "ローカル index db から現在のウォレット token 出力イベント一覧を出力",
-		"flag_wallet_ordinals":           "ローカル index db からウォレット ordinal 一覧を出力",
-		"flag_wallet_ordinal":            "ローカル index db からウォレット ordinal 詳細を1件出力",
-		"flag_wallet_ordinal_events":     "ローカル index db から現在のウォレット ordinal 出力イベント一覧を出力",
-		"flag_standard":                  "ウォレット token 問い合わせの標準フィルタ: bsv20/bsv21",
-		"flag_asset_key":                 "asset key フィルタ。例: bsv20:demo または ordinal:origin",
-		"flag_utxo_id":                   "utxo セレクタ。形式: <txid>:<vout>",
-		"flag_limit":                     "ウォレット資産一覧アクションのページサイズ",
-		"flag_offset":                    "ウォレット資産一覧アクションのオフセット",
 		"flag_new":                       "key.json に暗号化秘密鍵を新規作成",
 		"flag_import":                    "json から暗号化秘密鍵を key.json にインポート",
 		"flag_export":                    "key.json から暗号化秘密鍵を json にエクスポート",
