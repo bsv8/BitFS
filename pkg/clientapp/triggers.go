@@ -19,7 +19,6 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
-	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -189,118 +188,71 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 			return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	session, ok := rt.getFeePool(gw.ID.String())
-	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
-	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
 	}
-	payloadRaw, err := broadcastmodule.MarshalDemandPublishQuotePayload(seedHash, p.ChunkCount, localAdvertiseAddrs(rt))
+	buyerAddrs := localAdvertiseAddrs(rt)
+	payloadRaw, err := broadcastmodule.MarshalDemandPublishQuotePayload(seedHash, p.ChunkCount, buyerAddrs)
 	if err != nil {
 		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
-	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              session,
-		GatewayPeerID:        gw.ID,
-		ServiceType:          broadcastmodule.QuoteServiceTypeDemandPublish,
-		Target:               seedHash,
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
-		ProposedPaymentSat:   charge,
-	})
-	if err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("request demand publish quote failed: %w", err)
+	body := &broadcastmodule.DemandPublishReq{
+		SeedHash:   seedHash,
+		ChunkCount: p.ChunkCount,
+		BuyerAddrs: buyerAddrs,
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, err
-	}
-	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:             session,
-		ClientActor:         clientActor,
-		GatewayPub:          quoted.GatewayPub,
-		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
-		ServiceQuote:        quoted.ServiceQuote,
-		ChargeReason:        quoted.ChargeReason,
-		NextSequence:        quoted.NextSequence,
-		NextServerAmount:    quoted.NextServerAmount,
-		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
-	})
-	if err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
-	if err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, err
-	}
-
-	req := broadcastmodule.DemandPublishPaidReq{
-		ClientID:            rt.runIn.ClientID,
-		SeedHash:            seedHash,
-		ChunkCount:          p.ChunkCount,
-		BuyerAddrs:          localAdvertiseAddrs(rt),
-		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		Fee:                 session.SpendTxFeeSat,
-		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ChargeReason,
-		ProofIntent:         append([]byte(nil), built.ProofIntent...),
-		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
-	}
-	var resp broadcastmodule.DemandPublishPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
-	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
-		return broadcastmodule.DemandPublishPaidResp{}, err
-	}
-	if err := validateDemandPublishPaidResp(resp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{
-			"error":   err.Error(),
-			"status":  strings.TrimSpace(resp.Status),
-			"success": resp.Success,
-		})
-		return broadcastmodule.DemandPublishPaidResp{}, err
-	}
-	if resp.Success {
+	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.DemandPublishPaidResp]{
+		GatewayPeerID: gw.ID,
+		Charge:        charge,
+		ServiceType:   broadcastmodule.QuoteServiceTypeDemandPublish,
+		Target:        seedHash,
+		QuotePayload:  payloadRaw,
+		Route:         broadcastmodule.RouteBroadcastV1DemandPublish,
+		Body:          body,
+		Decode:        decodeDemandPublishRouteResp,
+	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.DemandPublishPaidResp]) error {
+		resp := state.Response
+		if err := validateDemandPublishPaidResp(resp); err != nil {
+			return err
+		}
 		payload, err := broadcastmodule.MarshalDemandPublishServicePayload(resp)
 		if err != nil {
-			return broadcastmodule.DemandPublishPaidResp{}, err
+			return err
 		}
-		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        broadcastmodule.ServiceTypeDemandPublish,
-			OfferHash:          quoted.ServiceQuote.OfferHash,
+			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
-			return broadcastmodule.DemandPublishPaidResp{}, err
+			return err
 		}
-		nextTxHex := built.UpdatedTx.Hex()
+		nextTxHex := state.UpdatedTxHex
 		if len(resp.MergedCurrentTx) > 0 {
 			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 		}
 		// 发布扣费成功后必须推进本地会话，否则下次请求会重复旧 sequence/server_amount。
-		applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
+		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + session.SpendTxID,
+			FlowID:          "fee_pool:" + state.Session.SpendTxID,
 			FlowType:        "fee_pool",
-			RefID:           session.SpendTxID,
+			RefID:           state.Session.SpendTxID,
 			Stage:           "use_publish",
 			Direction:       "out",
 			Purpose:         broadcastmodule.QuoteServiceTypeDemandPublish,
-			AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-			UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
 			ReturnedSatoshi: 0,
 			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 			Note:            fmt.Sprintf("demand_id=%s", strings.TrimSpace(resp.DemandID)),
 			Payload:         resp,
 		})
+		return nil
+	})
+	if err != nil {
+		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
+		return broadcastmodule.DemandPublishPaidResp{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_end", map[string]any{
 		"demand_id": resp.DemandID,
@@ -357,13 +309,6 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 			return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	session, ok := rt.getFeePool(gw.ID.String())
-	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
-	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
@@ -379,86 +324,41 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	if err != nil {
 		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
-	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              session,
-		GatewayPeerID:        gw.ID,
-		ServiceType:          broadcastmodule.QuoteServiceTypeDemandPublishBatch,
-		Target:               "demand_publish_batch",
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
-		ProposedPaymentSat:   charge,
-	})
-	if err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("request demand publish batch quote failed: %w", err)
+	body := &broadcastmodule.DemandPublishBatchReq{
+		Items:      reqItems,
+		BuyerAddrs: localAdvertiseAddrs(rt),
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
-	}
-	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:             session,
-		ClientActor:         clientActor,
-		GatewayPub:          quoted.GatewayPub,
-		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
-		ServiceQuote:        quoted.ServiceQuote,
-		ChargeReason:        quoted.ChargeReason,
-		NextSequence:        quoted.NextSequence,
-		NextServerAmount:    quoted.NextServerAmount,
-		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
-	})
-	if err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
-	if err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
-	}
-	req := broadcastmodule.DemandPublishBatchPaidReq{
-		ClientID:            rt.runIn.ClientID,
-		Items:               reqItems,
-		BuyerAddrs:          localAdvertiseAddrs(rt),
-		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		Fee:                 session.SpendTxFeeSat,
-		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ChargeReason,
-		ProofIntent:         append([]byte(nil), built.ProofIntent...),
-		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
-	}
-	var resp broadcastmodule.DemandPublishBatchPaidResp
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
-	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoDemandPublishBatchPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
-	}
-	if err := validateDemandPublishBatchPaidResp(resp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{
-			"error":   err.Error(),
-			"status":  strings.TrimSpace(resp.Status),
-			"success": resp.Success,
-		})
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
-	}
-	if resp.Success {
+	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.DemandPublishBatchPaidResp]{
+		GatewayPeerID: gw.ID,
+		Charge:        charge,
+		ServiceType:   broadcastmodule.QuoteServiceTypeDemandPublishBatch,
+		Target:        "demand_publish_batch",
+		QuotePayload:  payloadRaw,
+		Route:         broadcastmodule.RouteBroadcastV1DemandPublishBatch,
+		Body:          body,
+		Decode:        decodeDemandPublishBatchRouteResp,
+	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.DemandPublishBatchPaidResp]) error {
+		resp := state.Response
+		if err := validateDemandPublishBatchPaidResp(resp); err != nil {
+			return err
+		}
 		payload, err := broadcastmodule.MarshalDemandPublishBatchServicePayload(resp)
 		if err != nil {
-			return broadcastmodule.DemandPublishBatchPaidResp{}, err
+			return err
 		}
-		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        broadcastmodule.ServiceTypeDemandPublishBatch,
-			OfferHash:          quoted.ServiceQuote.OfferHash,
+			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
-			return broadcastmodule.DemandPublishBatchPaidResp{}, err
+			return err
 		}
-		nextTxHex := built.UpdatedTx.Hex()
+		nextTxHex := state.UpdatedTxHex
 		if len(resp.MergedCurrentTx) > 0 {
 			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 		}
-		applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
+		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
 		demandIDs := make([]string, 0, len(resp.Items))
 		for _, item := range resp.Items {
 			if item == nil {
@@ -469,19 +369,24 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 			}
 		}
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + session.SpendTxID,
+			FlowID:          "fee_pool:" + state.Session.SpendTxID,
 			FlowType:        "fee_pool",
-			RefID:           session.SpendTxID,
+			RefID:           state.Session.SpendTxID,
 			Stage:           "use_publish",
 			Direction:       "out",
 			Purpose:         broadcastmodule.QuoteServiceTypeDemandPublishBatch,
-			AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-			UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
 			ReturnedSatoshi: 0,
 			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 			Note:            fmt.Sprintf("published=%d demand_ids=%s", len(demandIDs), strings.Join(demandIDs, ",")),
 			Payload:         resp,
 		})
+		return nil
+	})
+	if err != nil {
+		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
+		return broadcastmodule.DemandPublishBatchPaidResp{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_end", map[string]any{
 		"published_count": resp.PublishedCount,
@@ -531,13 +436,6 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 			return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	session, ok := rt.getFeePool(gw.ID.String())
-	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
-	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
@@ -546,96 +444,61 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 	if err != nil {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
-	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              session,
-		GatewayPeerID:        gw.ID,
-		ServiceType:          broadcastmodule.QuoteServiceTypeLiveDemandPublish,
-		Target:               p.StreamID,
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
-		ProposedPaymentSat:   charge,
-	})
-	if err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("request live demand publish quote failed: %w", err)
+	body := &broadcastmodule.LiveDemandPublishReq{
+		StreamID:         streamID,
+		HaveSegmentIndex: p.HaveSegmentIndex,
+		Window:           p.Window,
+		BuyerAddrs:       localAdvertiseAddrs(rt),
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
-	}
-	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:             session,
-		ClientActor:         clientActor,
-		GatewayPub:          quoted.GatewayPub,
-		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
-		ServiceQuote:        quoted.ServiceQuote,
-		ChargeReason:        quoted.ChargeReason,
-		NextSequence:        quoted.NextSequence,
-		NextServerAmount:    quoted.NextServerAmount,
-		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
-	})
-	if err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
-	if err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
-	}
-	req := broadcastmodule.LiveDemandPublishPaidReq{
-		ClientID:            rt.runIn.ClientID,
-		StreamID:            streamID,
-		HaveSegmentIndex:    p.HaveSegmentIndex,
-		Window:              p.Window,
-		BuyerAddrs:          localAdvertiseAddrs(rt),
-		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		Fee:                 session.SpendTxFeeSat,
-		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ChargeReason,
-		ProofIntent:         append([]byte(nil), built.ProofIntent...),
-		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
-	}
-	var resp broadcastmodule.LiveDemandPublishPaidResp
-	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoLiveDemandPublishPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
-	}
-	if err := validateLiveDemandPublishPaidResp(resp); err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
-	}
-	if resp.Success {
+	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.LiveDemandPublishPaidResp]{
+		GatewayPeerID: gw.ID,
+		Charge:        charge,
+		ServiceType:   broadcastmodule.QuoteServiceTypeLiveDemandPublish,
+		Target:        p.StreamID,
+		QuotePayload:  payloadRaw,
+		Route:         broadcastmodule.RouteBroadcastV1LiveDemandPublish,
+		Body:          body,
+		Decode:        decodeLiveDemandPublishRouteResp,
+	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.LiveDemandPublishPaidResp]) error {
+		resp := state.Response
+		if err := validateLiveDemandPublishPaidResp(resp); err != nil {
+			return err
+		}
 		payload, err := broadcastmodule.MarshalLiveDemandPublishServicePayload(resp)
 		if err != nil {
-			return broadcastmodule.LiveDemandPublishPaidResp{}, err
+			return err
 		}
-		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
 			ServiceType:        broadcastmodule.ServiceTypeLiveDemandPublish,
-			OfferHash:          quoted.ServiceQuote.OfferHash,
+			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
 			ResultPayloadBytes: payload,
 		}, resp.ServiceReceipt); err != nil {
-			return broadcastmodule.LiveDemandPublishPaidResp{}, err
+			return err
 		}
-		nextTxHex := built.UpdatedTx.Hex()
+		nextTxHex := state.UpdatedTxHex
 		if len(resp.MergedCurrentTx) > 0 {
 			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
 		}
 		// 直播需求发布同样会推进费用池状态，必须同步回写本地会话。
-		applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
+		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
 		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + session.SpendTxID,
+			FlowID:          "fee_pool:" + state.Session.SpendTxID,
 			FlowType:        "fee_pool",
-			RefID:           session.SpendTxID,
+			RefID:           state.Session.SpendTxID,
 			Stage:           "use_live_publish",
 			Direction:       "out",
 			Purpose:         broadcastmodule.QuoteServiceTypeLiveDemandPublish,
-			AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-			UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
 			ReturnedSatoshi: 0,
 			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
 			Note:            fmt.Sprintf("live_demand_id=%s", strings.TrimSpace(resp.DemandID)),
 			Payload:         resp,
 		})
+		return nil
+	})
+	if err != nil {
+		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
 	return resp, nil
 }

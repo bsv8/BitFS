@@ -9,6 +9,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	oldproto "github.com/golang/protobuf/proto"
@@ -243,6 +244,36 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 
 func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
 	switch strings.TrimSpace(route) {
+	case broadcastmodule.RouteBroadcastV1DemandPublish:
+		var resp broadcastmodule.DemandPublishPaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode broadcast demand publish body failed: %w", err)
+		}
+		return broadcastmodule.MarshalDemandPublishServicePayload(resp)
+	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
+		var resp broadcastmodule.DemandPublishBatchPaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode broadcast demand publish batch body failed: %w", err)
+		}
+		return broadcastmodule.MarshalDemandPublishBatchServicePayload(resp)
+	case broadcastmodule.RouteBroadcastV1LiveDemandPublish:
+		var resp broadcastmodule.LiveDemandPublishPaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode broadcast live demand publish body failed: %w", err)
+		}
+		return broadcastmodule.MarshalLiveDemandPublishServicePayload(resp)
+	case broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce:
+		var resp broadcastmodule.NodeReachabilityAnnouncePaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode broadcast node reachability announce body failed: %w", err)
+		}
+		return broadcastmodule.MarshalNodeReachabilityAnnounceServicePayload(resp)
+	case broadcastmodule.RouteBroadcastV1NodeReachabilityQuery:
+		var resp broadcastmodule.NodeReachabilityQueryPaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode broadcast node reachability query body failed: %w", err)
+		}
+		return broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
 	case domainmodule.RouteDomainV1Resolve:
 		var resp domainmodule.ResolveNamePaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {

@@ -253,6 +253,11 @@
     if (!payload.content_type) {
       throw new Error("bitfs contentType is required");
     }
+    const bodyBase64 = String(input.bodyBase64 || input.body_base64 || "").trim();
+    if (bodyBase64) {
+      payload.body_base64 = bodyBase64;
+      return payload;
+    }
     if (input.body instanceof Uint8Array) {
       payload.body_base64 = Buffer.from(input.body).toString("base64");
       return payload;
@@ -264,11 +269,13 @@
     if (input.body != null) {
       payload.body = input.body;
     }
-    if (typeof input.payment_mode === "string" && input.payment_mode.trim() !== "") {
-      payload.payment_mode = input.payment_mode.trim();
+    const paymentMode = String(input.paymentMode || input.payment_mode || "").trim();
+    if (paymentMode !== "") {
+      payload.payment_mode = paymentMode;
     }
-    if (typeof input.service_quote_base64 === "string" && input.service_quote_base64.trim() !== "") {
-      payload.service_quote_base64 = input.service_quote_base64.trim();
+    const serviceQuoteBase64 = String(input.serviceQuoteBase64 || input.service_quote_base64 || "").trim();
+    if (serviceQuoteBase64 !== "") {
+      payload.service_quote_base64 = serviceQuoteBase64;
     }
     return payload;
   }

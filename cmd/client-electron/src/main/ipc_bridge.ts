@@ -666,7 +666,7 @@ function normalizeManagedSettingsMethod(raw: string | undefined): "GET" | "POST"
   return "GET";
 }
 
-function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string }): {
+function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; contentType?: string; body?: unknown; body_base64?: string; bodyBase64?: string; payment_mode?: string; paymentMode?: string; service_quote_base64?: string; serviceQuoteBase64?: string }): {
   to: string;
   route: string;
   content_type: string;
@@ -683,7 +683,7 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
   if (route === "") {
     throw new Error("bitfs route is required");
   }
-  const contentType = String(payload?.content_type || "").trim();
+  const contentType = String(payload?.contentType || payload?.content_type || "").trim();
   if (contentType === "") {
     throw new Error("bitfs content_type is required");
   }
@@ -700,7 +700,7 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
     route,
     content_type: contentType
   };
-  const bodyBase64 = String(payload?.body_base64 || "").trim();
+  const bodyBase64 = String(payload?.bodyBase64 || payload?.body_base64 || "").trim();
   if (bodyBase64 !== "") {
     out.body_base64 = bodyBase64;
     return out;
@@ -708,11 +708,11 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
   if (Object.prototype.hasOwnProperty.call(payload || {}, "body")) {
     out.body = payload?.body;
   }
-  const paymentMode = String(payload?.payment_mode || "").trim().toLowerCase();
+  const paymentMode = String(payload?.paymentMode || payload?.payment_mode || "").trim().toLowerCase();
   if (paymentMode === "quote" || paymentMode === "pay") {
     out.payment_mode = paymentMode;
   }
-  const serviceQuoteBase64 = String(payload?.service_quote_base64 || "").trim();
+  const serviceQuoteBase64 = String(payload?.serviceQuoteBase64 || payload?.service_quote_base64 || "").trim();
   if (serviceQuoteBase64 !== "") {
     out.service_quote_base64 = serviceQuoteBase64;
   }

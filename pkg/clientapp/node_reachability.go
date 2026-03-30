@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
-	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
 	ma "github.com/multiformats/go-multiaddr"
@@ -298,13 +296,6 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	session, ok := rt.getFeePool(gw.ID.String())
-	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
-	}
 	charge := info.SinglePublishFeeSatoshi
 	if charge == 0 {
 		charge = 1
@@ -313,95 +304,69 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              session,
-		GatewayPeerID:        gw.ID,
-		ServiceType:          broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
-		Target:               nodePubkeyHex,
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
-		ProposedPaymentSat:   charge,
-	})
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("request node reachability announce quote failed: %w", err)
+	body := &broadcastmodule.NodeReachabilityAnnounceReq{
+		SignedAnnouncement: append([]byte(nil), signedAnnouncement...),
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
-	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:             session,
-		ClientActor:         clientActor,
-		GatewayPub:          quoted.GatewayPub,
-		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
-		ServiceQuote:        quoted.ServiceQuote,
-		ChargeReason:        quoted.ChargeReason,
-		NextSequence:        quoted.NextSequence,
-		NextServerAmount:    quoted.NextServerAmount,
-		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
-	})
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
-	req := broadcastmodule.NodeReachabilityAnnouncePaidReq{
-		ClientID:            rt.runIn.ClientID,
-		SignedAnnouncement:  append([]byte(nil), signedAnnouncement...),
-		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		Fee:                 session.SpendTxFeeSat,
-		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ChargeReason,
-		ProofIntent:         append([]byte(nil), built.ProofIntent...),
-		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
-	}
-	var resp broadcastmodule.NodeReachabilityAnnouncePaidResp
-	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoNodeReachabilityAnnouncePaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
-	if !resp.Success {
-		msg := strings.TrimSpace(resp.Error)
-		if msg == "" {
-			msg = "gateway announce node reachability failed"
+	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.NodeReachabilityAnnouncePaidResp]{
+		GatewayPeerID: gw.ID,
+		Charge:        charge,
+		ServiceType:   broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
+		Target:        nodePubkeyHex,
+		QuotePayload:  payloadRaw,
+		Route:         broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce,
+		Body:          body,
+		Decode:        decodeNodeReachabilityAnnounceRouteResp,
+	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.NodeReachabilityAnnouncePaidResp]) error {
+		resp := state.Response
+		if !resp.Success {
+			msg := strings.TrimSpace(resp.Error)
+			if msg == "" {
+				msg = "gateway announce node reachability failed"
+			}
+			return fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 		}
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-	}
-	payload, err := broadcastmodule.MarshalNodeReachabilityAnnounceServicePayload(resp)
+		payload, err := broadcastmodule.MarshalNodeReachabilityAnnounceServicePayload(resp)
+		if err != nil {
+			return err
+		}
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
+			ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityAnnounce,
+			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
+			ResultPayloadBytes: payload,
+		}, resp.ServiceReceipt); err != nil {
+			return err
+		}
+		nextTxHex := state.UpdatedTxHex
+		if len(resp.MergedCurrentTx) > 0 {
+			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+		}
+		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
+		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + state.Session.SpendTxID,
+			FlowType:        "fee_pool",
+			RefID:           state.Session.SpendTxID,
+			Stage:           "use_node_reachability_announce",
+			Direction:       "out",
+			Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
+			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			ReturnedSatoshi: 0,
+			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
+			Note:            fmt.Sprintf("head_height=%d seq=%d ttl_seconds=%d", headHeight, announceSeq, ttlSeconds),
+			Payload: map[string]any{
+				"node_pubkey_hex":        nodePubkeyHex,
+				"head_height":            headHeight,
+				"seq":                    announceSeq,
+				"ttl_seconds":            ttlSeconds,
+				"updated_txid":           strings.TrimSpace(resp.UpdatedTxID),
+				"charged_amount_satoshi": resp.ChargedAmount,
+			},
+		})
+		return nil
+	})
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
-		ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityAnnounce,
-		OfferHash:          quoted.ServiceQuote.OfferHash,
-		ResultPayloadBytes: payload,
-	}, resp.ServiceReceipt); err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
-	nextTxHex := built.UpdatedTx.Hex()
-	if len(resp.MergedCurrentTx) > 0 {
-		nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
-	}
-	applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
-	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-		FlowID:          "fee_pool:" + session.SpendTxID,
-		FlowType:        "fee_pool",
-		RefID:           session.SpendTxID,
-		Stage:           "use_node_reachability_announce",
-		Direction:       "out",
-		Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
-		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
-		Note:            fmt.Sprintf("head_height=%d seq=%d ttl_seconds=%d", headHeight, announceSeq, ttlSeconds),
-		Payload:         req,
-	})
 	if err := saveSelfNodeReachabilityState(rt.DB, selfNodeReachabilityState{
 		NodePubkeyHex: nodePubkeyHex,
 		HeadHeight:    uint64(headHeight),
@@ -462,13 +427,6 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 			return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
 		}
 	}
-	payMu := rt.feePoolPayMutex(gw.ID.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-	session, ok := rt.getFeePool(gw.ID.String())
-	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
-	}
 	charge := info.SingleQueryFeeSatoshi
 	if charge == 0 {
 		charge = 1
@@ -477,95 +435,62 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 	}
-	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              session,
-		GatewayPeerID:        gw.ID,
-		ServiceType:          broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
-		Target:               targetNodePubkeyHex,
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeFixedPrice,
-		ProposedPaymentSat:   charge,
-	})
-	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("request node reachability query quote failed: %w", err)
-	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
-	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:             session,
-		ClientActor:         clientActor,
-		GatewayPub:          quoted.GatewayPub,
-		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
-		ServiceQuote:        quoted.ServiceQuote,
-		ChargeReason:        quoted.ChargeReason,
-		NextSequence:        quoted.NextSequence,
-		NextServerAmount:    quoted.NextServerAmount,
-		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
-	})
-	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
-	req := broadcastmodule.NodeReachabilityQueryPaidReq{
-		ClientID:            rt.runIn.ClientID,
+	body := &broadcastmodule.NodeReachabilityQueryReq{
 		TargetNodePubkeyHex: targetNodePubkeyHex,
-		SpendTxID:           session.SpendTxID,
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		Fee:                 session.SpendTxFeeSat,
-		ClientSignature:     append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ChargeReason,
-		ProofIntent:         append([]byte(nil), built.ProofIntent...),
-		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	}
-	var resp broadcastmodule.NodeReachabilityQueryPaidResp
-	if err := pproto.CallProto(ctx, rt.Host, gw.ID, broadcastmodule.ProtoNodeReachabilityQueryPaid, gwSec(rt.rpcTrace), req, &resp); err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
-	if !resp.Success {
-		msg := strings.TrimSpace(resp.Error)
-		if msg == "" {
-			msg = "gateway query node reachability failed"
+	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.NodeReachabilityQueryPaidResp]{
+		GatewayPeerID: gw.ID,
+		Charge:        charge,
+		ServiceType:   broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
+		Target:        targetNodePubkeyHex,
+		QuotePayload:  payloadRaw,
+		Route:         broadcastmodule.RouteBroadcastV1NodeReachabilityQuery,
+		Body:          body,
+		Decode:        decodeNodeReachabilityQueryRouteResp,
+	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.NodeReachabilityQueryPaidResp]) error {
+		resp := state.Response
+		if !resp.Success {
+			msg := strings.TrimSpace(resp.Error)
+			if msg == "" {
+				msg = "gateway query node reachability failed"
+			}
+			return fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 		}
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-	}
-	payload, err := broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
+		payload, err := broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
+		if err != nil {
+			return err
+		}
+		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
+			ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityQuery,
+			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
+			ResultPayloadBytes: payload,
+		}, resp.ServiceReceipt); err != nil {
+			return err
+		}
+		nextTxHex := state.UpdatedTxHex
+		if len(resp.MergedCurrentTx) > 0 {
+			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
+		}
+		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
+		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+			FlowID:          "fee_pool:" + state.Session.SpendTxID,
+			FlowType:        "fee_pool",
+			RefID:           state.Session.SpendTxID,
+			Stage:           "use_node_reachability_query",
+			Direction:       "out",
+			Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
+			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
+			ReturnedSatoshi: 0,
+			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
+			Note:            fmt.Sprintf("target_node_pubkey_hex=%s found=%t", targetNodePubkeyHex, resp.Found),
+			Payload:         resp,
+		})
+		return nil
+	})
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 	}
-	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, session, resp.MergedCurrentTx, expectedServiceReceipt{
-		ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityQuery,
-		OfferHash:          quoted.ServiceQuote.OfferHash,
-		ResultPayloadBytes: payload,
-	}, resp.ServiceReceipt); err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
-	nextTxHex := built.UpdatedTx.Hex()
-	if len(resp.MergedCurrentTx) > 0 {
-		nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
-	}
-	applyFeePoolChargeToSession(session, quoted.NextSequence, quoted.NextServerAmount, nextTxHex)
-	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-		FlowID:          "fee_pool:" + session.SpendTxID,
-		FlowType:        "fee_pool",
-		RefID:           session.SpendTxID,
-		Stage:           "use_node_reachability_query",
-		Direction:       "out",
-		Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
-		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
-		Note:            fmt.Sprintf("target_node_pubkey_hex=%s found=%t", targetNodePubkeyHex, resp.Found),
-		Payload:         resp,
-	})
 	if resp.Found {
 		ann, err := announcementFromQueryResp(resp)
 		if err != nil {

@@ -342,6 +342,29 @@ type BitfsPeerCallRequest = {
   contentType?: string;
   content_type?: string;
   body?: unknown;
+  bodyBase64?: string;
+  body_base64?: string;
+  paymentMode?: "quote" | "pay";
+  payment_mode?: "quote" | "pay";
+  serviceQuoteBase64?: string;
+  service_quote_base64?: string;
+};
+
+type BitfsPaymentOption = {
+  scheme: string;
+  payment_domain?: string;
+  amount_satoshi?: number;
+  description?: string;
+  pricing_mode?: string;
+  service_quantity?: number;
+  service_quantity_unit?: string;
+  minimum_pool_amount_satoshi?: number;
+  lock_blocks?: number;
+  fee_rate_sat_per_byte_milli?: number;
+  single_cycle_fee_satoshi?: number;
+  single_publish_fee_satoshi?: number;
+  single_query_fee_satoshi?: number;
+  quote_status?: string;
 };
 
 type BitfsPeerQuoteDecision = {
@@ -368,11 +391,13 @@ type BitfsPeerCallResponse = {
   content_type?: string;
   body_json?: unknown;
   body_base64?: string;
-  payment_schemes?: unknown[];
+  payment_schemes?: BitfsPaymentOption[];
   payment_receipt_scheme?: string;
   payment_receipt?: unknown;
+  payment_receipt_base64?: string;
   service_quote?: unknown;
   service_quote_base64?: string;
+  service_receipt_base64?: string;
 } & Record<string, unknown>;
 
 type BitfsCapabilityItem = {
