@@ -209,7 +209,7 @@ func dbListDueWalletBSV21CreateStatuses(ctx context.Context, store *clientDB, no
 
 func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address string) ([]walletFundingCandidate, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletFundingCandidate, error) {
-		s, err := loadWalletUTXOSyncState(db, address)
+		s, err := dbLoadWalletUTXOSyncState(ctx, store, address)
 		if err != nil {
 			return nil, err
 		}
