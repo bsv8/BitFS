@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
@@ -20,13 +19,13 @@ const (
 )
 
 type TriggerPeerCallParams struct {
-	To            string
-	Route         string
-	ContentType   string
-	Body          []byte
-	PaymentMode   string
-	PaymentScheme string
-	ServiceQuote  []byte
+	To                   string
+	Route                string
+	ContentType          string
+	Body                 []byte
+	PaymentMode          string
+	PaymentScheme        string
+	ServiceQuote         []byte
 	RequireActiveFeePool bool
 }
 
@@ -58,7 +57,7 @@ func registerNodeRouteHandlers(rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.DB == nil {
 		return
 	}
-	db := rt.DB
+	store := newClientDB(rt.DB, nil)
 	ncall.Register(rt.Host, nodeSecForRuntime(rt), func(ctx context.Context, meta ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
 		route, bad := normalizeCallRoute(req.Route)
 		if bad != "" {
@@ -73,13 +72,13 @@ func registerNodeRouteHandlers(rt *Runtime) {
 			body := clientCapabilitiesShowBody(rt)
 			return marshalNodeCallProto(&body)
 		case routeInboxMessage:
-			return storeInboxMessage(db, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
+			return storeInboxMessage(store, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
 	}, func(_ context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
 		route := normalizeResolveRoute(req.Route)
-		body, err := buildRouteIndexManifest(db, route)
+		body, err := buildRouteIndexManifest(rt.DB, route)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return ncall.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
@@ -233,49 +232,8 @@ func normalizeContentType(raw string) (string, string) {
 	return contentType, ""
 }
 
-func storeInboxMessage(db *sql.DB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
-	if db == nil {
-		return ncall.CallResp{}, fmt.Errorf("db is nil")
-	}
-	now := time.Now().Unix()
-	result, err := db.Exec(
-		`INSERT INTO inbox_messages(message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		strings.TrimSpace(messageID),
-		strings.TrimSpace(senderPubKeyHex),
-		strings.TrimSpace(targetInput),
-		strings.TrimSpace(route),
-		strings.TrimSpace(contentType),
-		append([]byte(nil), body...),
-		len(body),
-		now,
-	)
-	var inboxID int64
-	switch {
-	case err == nil:
-		inboxID, _ = result.LastInsertId()
-	case strings.Contains(strings.ToLower(err.Error()), "unique constraint failed"):
-		row := db.QueryRow(
-			`SELECT id,received_at_unix FROM inbox_messages WHERE sender_pubkey_hex=? AND message_id=?`,
-			strings.TrimSpace(senderPubKeyHex),
-			strings.TrimSpace(messageID),
-		)
-		if scanErr := row.Scan(&inboxID, &now); scanErr != nil {
-			return ncall.CallResp{}, scanErr
-		}
-	default:
-		return ncall.CallResp{}, err
-	}
-	ack, err := oldproto.Marshal(&inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
-	if err != nil {
-		return ncall.CallResp{}, err
-	}
-	return ncall.CallResp{
-		Ok:          true,
-		Code:        "OK",
-		ContentType: ncall.ContentTypeProto,
-		Body:        ack,
-	}, nil
+func storeInboxMessage(store *clientDB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
+	return dbStoreInboxMessage(context.Background(), store, messageID, senderPubKeyHex, targetInput, route, contentType, body)
 }
 
 func resolveClientTarget(raw string) (string, peer.ID, error) {

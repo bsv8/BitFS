@@ -1,7 +1,7 @@
 package clientapp
 
 import (
-	"database/sql"
+	"context"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -12,40 +12,8 @@ import (
 // 这些 helper 只服务于当前保留下来的 bsv21 create/send 主链路。
 // 旧的 token/ordinal 查询面已经删除，因此这里不再承载任何历史资产影子逻辑。
 
-func loadWalletUTXOsByID(db *sql.DB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	address = strings.TrimSpace(address)
-	if address == "" || len(utxoIDs) == 0 {
-		return []poolcore.UTXO{}, nil
-	}
-	walletID := walletIDByAddress(address)
-	out := make([]poolcore.UTXO, 0, len(utxoIDs))
-	for _, rawID := range utxoIDs {
-		utxoID := strings.ToLower(strings.TrimSpace(rawID))
-		if utxoID == "" {
-			continue
-		}
-		var item poolcore.UTXO
-		err := db.QueryRow(
-			`SELECT txid,vout,value_satoshi
-			 FROM wallet_utxo
-			 WHERE wallet_id=? AND address=? AND utxo_id=? AND state='unspent'`,
-			walletID,
-			address,
-			utxoID,
-		).Scan(&item.TxID, &item.Vout, &item.Value)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("wallet utxo not found: %s", utxoID)
-			}
-			return nil, err
-		}
-		item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-		out = append(out, item)
-	}
-	return out, nil
+func loadWalletUTXOsByID(store *clientDB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
+	return dbLoadWalletUTXOsByID(context.Background(), store, address, utxoIDs)
 }
 
 func mustDecodeHex(raw string) []byte {

@@ -1,0 +1,219 @@
+package clientapp
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+)
+
+// 设计说明：
+// - 直连池和 seed 读取是运行期高频路径；
+// - SQL 留在这里，协议处理只保留校验和签名逻辑；
+// - 文件读取虽然最终走文件系统，但 seed 路径解析也统一收在 db 层。
+
+func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
+	out, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
+		buyer   string
+		seller  string
+		arbiter string
+	}, error) {
+		var out struct {
+			buyer   string
+			seller  string
+			arbiter string
+		}
+		err := db.QueryRow(`SELECT buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).
+			Scan(&out.buyer, &out.seller, &out.arbiter)
+		return out, err
+	})
+	return out.buyer, out.seller, out.arbiter, err
+}
+
+func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+		var dealID string
+		err := db.QueryRow(`SELECT deal_id FROM direct_sessions WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
+		return strings.TrimSpace(dealID), err
+	})
+}
+
+func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+		var seedHash string
+		err := db.QueryRow(`SELECT seed_hash FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
+		return strings.ToLower(strings.TrimSpace(seedHash)), err
+	})
+}
+
+func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (directTransferPoolRow, error) {
+		var row directTransferPoolRow
+		err := db.QueryRow(
+			`SELECT
+				session_id,deal_id,
+				buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+				buyer_pubkey_hex AS buyer_pubkey_hex_alias,
+				seller_pubkey_hex AS seller_pubkey_hex_alias,
+				arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
+				pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks
+			 FROM direct_transfer_pools WHERE session_id=?`,
+			strings.TrimSpace(sessionID),
+		).Scan(
+			&row.SessionID, &row.DealID, &row.BuyerPeerID, &row.SellerPeerID, &row.ArbiterPeerID,
+			&row.BuyerPubKeyHex, &row.SellerPubKeyHex, &row.ArbiterPubKeyHex,
+			&row.PoolAmount, &row.SpendTxFee, &row.SequenceNum, &row.SellerAmount, &row.BuyerAmount,
+			&row.CurrentTxHex, &row.BaseTxHex, &row.BaseTxID, &row.Status, &row.FeeRateSatByte, &row.LockBlocks,
+		)
+		return row, err
+	})
+}
+
+func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req directTransferPoolOpenReq, sessionID string, dealID string, buyerPeerID string, sellerPeerID string, arbiterPubHex string, currentTxHex string, baseTxHex string) error {
+	if store == nil {
+		return fmt.Errorf("db is nil")
+	}
+	now := time.Now().Unix()
+	return store.Do(ctx, func(db *sql.DB) error {
+		if _, err := db.Exec(
+			`INSERT INTO direct_transfer_pools(
+				session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+				pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(session_id) DO UPDATE SET
+				sequence_num=excluded.sequence_num,
+				seller_amount=excluded.seller_amount,
+				buyer_amount=excluded.buyer_amount,
+				current_tx_hex=excluded.current_tx_hex,
+				base_tx_hex=excluded.base_tx_hex,
+				base_txid=excluded.base_txid,
+				status=excluded.status,
+				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
+				lock_blocks=excluded.lock_blocks,
+				updated_at_unix=excluded.updated_at_unix`,
+			sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPubHex,
+			req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
+		); err != nil {
+			return err
+		}
+		_, _ = db.Exec(`UPDATE direct_sessions SET status='active',updated_at_unix=? WHERE session_id=?`, now, sessionID)
+		return nil
+	})
+}
+
+func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, sessionID string, sequence uint32, sellerAmount uint64, buyerAmount uint64, currentTxHex string, delta uint64) error {
+	if store == nil {
+		return fmt.Errorf("db is nil")
+	}
+	now := time.Now().Unix()
+	return store.Do(ctx, func(db *sql.DB) error {
+		if _, err := db.Exec(
+			`UPDATE direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
+			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID,
+		); err != nil {
+			return err
+		}
+		_, err := db.Exec(
+			`UPDATE direct_sessions SET paid_chunks=paid_chunks+1,paid_amount=paid_amount+?,status='chunk_paying',updated_at_unix=? WHERE session_id=?`,
+			delta, now, sessionID,
+		)
+		return err
+	})
+}
+
+func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, sessionID string, sequence uint32, sellerAmount uint64, buyerAmount uint64, currentTxHex string) {
+	if store == nil {
+		return
+	}
+	now := time.Now().Unix()
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		_, _ = db.Exec(`UPDATE direct_transfer_pools SET status='closing',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
+			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID)
+		return nil
+	})
+}
+
+func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string) ([]byte, error) {
+	seedPath, err := clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+		var seedPath string
+		err := db.QueryRow(`SELECT seed_file_path FROM seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedPath)
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("seed not found")
+		}
+		return seedPath, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return os.ReadFile(seedPath)
+}
+
+func dbIsSeedChunkAvailable(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) (bool, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
+		return isSeedChunkAvailable(db, seedHash, chunkIndex)
+	})
+}
+
+func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) ([]byte, error) {
+	meta, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
+		workspacePath string
+		chunkCount    uint32
+	}, error) {
+		var out struct {
+			workspacePath string
+			chunkCount    uint32
+		}
+		if err := db.QueryRow(
+			`SELECT s.chunk_count FROM seeds s WHERE s.seed_hash=?`,
+			strings.ToLower(strings.TrimSpace(seedHash)),
+		).Scan(&out.chunkCount); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return out, fmt.Errorf("seed not found")
+			}
+			return out, err
+		}
+		_ = db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&out.workspacePath)
+		return out, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	if chunkIndex >= meta.chunkCount {
+		return nil, fmt.Errorf("chunk_index out of range")
+	}
+	have, err := dbIsSeedChunkAvailable(ctx, store, seedHash, chunkIndex)
+	if err != nil {
+		return nil, err
+	}
+	if !have {
+		return nil, fmt.Errorf("chunk not available")
+	}
+	filePath := strings.TrimSpace(meta.workspacePath)
+	if filePath == "" {
+		return nil, fmt.Errorf("workspace file not found")
+	}
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	offset := int64(chunkIndex) * seedBlockSize
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	out := make([]byte, seedBlockSize)
+	n, err := io.ReadFull(f, out)
+	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+		return nil, err
+	}
+	if n < seedBlockSize {
+		for i := n; i < seedBlockSize; i++ {
+			out[i] = 0
+		}
+	}
+	return out, nil
+}

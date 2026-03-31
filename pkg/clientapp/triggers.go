@@ -901,7 +901,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"lock_blocks":             req.LockBlocks,
 			"recommended_file_source": "direct_transfer_pool_open",
 		})
-		appendWalletFundFlowFromContext(ctx, buyer.DB, walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(buyer), walletFundFlowEntry{
 			FlowID:          "direct_pool:" + curSessionID,
 			FlowType:        "direct_transfer_pool",
 			RefID:           curSessionID,
@@ -920,7 +920,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 				"sequence":             req.Sequence,
 			},
 		})
-		recordDirectPoolOpenAccounting(buyer.DB, directPoolOpenAccountingInput{
+		dbRecordDirectPoolOpenAccounting(ctx, runtimeStore(buyer), directPoolOpenAccountingInput{
 			SessionID:         curSessionID,
 			DealID:            dealID,
 			BaseTxID:          baseTxID,
@@ -1018,7 +1018,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 		return nil, "", fmt.Errorf("project split tx failed: %w", err)
 	}
 	change := int64(total - target - fee)
-	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
 		FlowID:          flowID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           strings.TrimPrefix(flowID, "direct_pool:"),
@@ -1200,7 +1200,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"pool_amount_satoshi": session.PoolAmountSat,
 		"chunk_price_satoshi": p.Amount,
 	})
-	appendWalletFundFlowFromContext(ctx, buyer.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(buyer), walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           session.SessionID,
@@ -1218,8 +1218,9 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 			"sequence":    req.Sequence,
 		},
 	})
-	recordDirectPoolPayAccounting(
-		buyer.DB,
+	dbRecordDirectPoolPayAccounting(
+		ctx,
+		runtimeStore(buyer),
 		session.SessionID,
 		req.Sequence,
 		p.Amount,
@@ -1342,7 +1343,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 		"transfer_state":        "closed",
 		"transfer_entry_source": "direct_transfer_pool_close",
 	})
-	appendWalletFundFlowFromContext(ctx, buyer.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(buyer), walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           session.SessionID,
@@ -1360,8 +1361,9 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 			"pool_amount_satoshi":   session.PoolAmountSat,
 		},
 	})
-	recordDirectPoolCloseAccounting(
-		buyer.DB,
+	dbRecordDirectPoolCloseAccounting(
+		ctx,
+		runtimeStore(buyer),
 		session.SessionID,
 		finalTxID,
 		merged.Hex(),

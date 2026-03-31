@@ -98,36 +98,8 @@ func (s *httpAPIServer) handleInboxMessages(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "db not initialized"})
 		return
 	}
-	rows, err := s.db.Query(
-		`SELECT id,message_id,sender_pubkey_hex,target_input,route,content_type,body_size_bytes,received_at_unix
-		   FROM inbox_messages
-		  ORDER BY received_at_unix DESC,id DESC`,
-	)
+	items, err := dbListInboxMessages(r.Context(), httpStore(s))
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	defer rows.Close()
-	type item struct {
-		ID             int64  `json:"id"`
-		MessageID      string `json:"message_id"`
-		SenderPubKey   string `json:"sender_pubkey_hex"`
-		TargetInput    string `json:"target_input"`
-		Route          string `json:"route"`
-		ContentType    string `json:"content_type"`
-		BodySizeBytes  int64  `json:"body_size_bytes"`
-		ReceivedAtUnix int64  `json:"received_at_unix"`
-	}
-	items := make([]item, 0)
-	for rows.Next() {
-		var it item
-		if err := rows.Scan(&it.ID, &it.MessageID, &it.SenderPubKey, &it.TargetInput, &it.Route, &it.ContentType, &it.BodySizeBytes, &it.ReceivedAtUnix); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -148,21 +120,7 @@ func (s *httpAPIServer) handleInboxMessageDetail(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 		return
 	}
-	var (
-		messageID      string
-		senderPubKey   string
-		targetInput    string
-		route          string
-		contentType    string
-		bodyBytes      []byte
-		bodySizeBytes  int64
-		receivedAtUnix int64
-	)
-	err = s.db.QueryRow(
-		`SELECT message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix
-		   FROM inbox_messages WHERE id=?`,
-		id,
-	).Scan(&messageID, &senderPubKey, &targetInput, &route, &contentType, &bodyBytes, &bodySizeBytes, &receivedAtUnix)
+	detail, err := dbGetInboxMessageDetail(r.Context(), httpStore(s), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
 		return
@@ -172,16 +130,16 @@ func (s *httpAPIServer) handleInboxMessageDetail(w http.ResponseWriter, r *http.
 		return
 	}
 	out := map[string]any{
-		"id":                id,
-		"message_id":        messageID,
-		"sender_pubkey_hex": senderPubKey,
-		"target_input":      targetInput,
-		"route":             route,
-		"content_type":      contentType,
-		"body_size_bytes":   bodySizeBytes,
-		"received_at_unix":  receivedAtUnix,
+		"id":                detail.ID,
+		"message_id":        detail.MessageID,
+		"sender_pubkey_hex": detail.SenderPubKey,
+		"target_input":      detail.TargetInput,
+		"route":             detail.Route,
+		"content_type":      detail.ContentType,
+		"body_size_bytes":   detail.BodySizeBytes,
+		"received_at_unix":  detail.ReceivedAtUnix,
 	}
-	attachHTTPBodyPayload(out, contentType, bodyBytes)
+	attachHTTPBodyPayload(out, detail.ContentType, detail.BodyBytes)
 	writeJSON(w, http.StatusOK, out)
 }
 
@@ -192,27 +150,8 @@ func (s *httpAPIServer) handleAdminRouteIndexes(w http.ResponseWriter, r *http.R
 	}
 	switch r.Method {
 	case http.MethodGet:
-		rows, err := s.db.Query(`SELECT route,seed_hash,updated_at_unix FROM published_route_indexes ORDER BY route ASC`)
+		items, err := dbListRouteIndexes(r.Context(), httpStore(s))
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		defer rows.Close()
-		type item struct {
-			Route         string `json:"route"`
-			SeedHash      string `json:"seed_hash"`
-			UpdatedAtUnix int64  `json:"updated_at_unix"`
-		}
-		items := make([]item, 0)
-		for rows.Next() {
-			var it item
-			if err := rows.Scan(&it.Route, &it.SeedHash, &it.UpdatedAtUnix); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-				return
-			}
-			items = append(items, it)
-		}
-		if err := rows.Err(); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -226,7 +165,7 @@ func (s *httpAPIServer) handleAdminRouteIndexes(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 			return
 		}
-		updatedAtUnix, err := upsertPublishedRouteIndex(s.db, req.Route, req.SeedHash)
+		updatedAtUnix, err := dbUpsertRouteIndex(r.Context(), httpStore(s), req.Route, req.SeedHash)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
@@ -243,7 +182,7 @@ func (s *httpAPIServer) handleAdminRouteIndexes(w http.ResponseWriter, r *http.R
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "route is required"})
 			return
 		}
-		if _, err := s.db.Exec(`DELETE FROM published_route_indexes WHERE route=?`, route); err != nil {
+		if err := dbDeleteRouteIndex(r.Context(), httpStore(s), route); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}

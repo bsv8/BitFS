@@ -134,14 +134,14 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 		return walletAssetActionPreviewResp{}, err
 	}
 	preview, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletAssetActionPreview, error) {
-		return previewWalletTokenSend(r.Context(), db, s.rt, address, standard, assetKey, amountText, toAddress)
+		return previewWalletTokenSend(r.Context(), newClientDB(db, s.dbActor), s.rt, address, standard, assetKey, amountText, toAddress)
 	})
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
 	if s != nil && s.rt != nil && preview.Feasible {
 		prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenSend, error) {
-			return prepareWalletTokenSend(r.Context(), db, s.rt, address, standard, assetKey, amountText, toAddress)
+			return prepareWalletTokenSend(r.Context(), newClientDB(db, s.dbActor), s.rt, address, standard, assetKey, amountText, toAddress)
 		})
 		if prepareErr == nil {
 			preview = prepared.Preview
@@ -160,9 +160,9 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 	}, nil
 }
 
-func previewWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
+func previewWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
 	requested, _ := parseDecimalText(amountText)
-	candidates, err := loadWalletTokenSpendableCandidates(ctx, db, rt, address, standard, assetKey)
+	candidates, err := loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -179,7 +179,7 @@ func previewWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 	if isPositiveDecimalText(changeText) {
 		assetOutputCount++
 	}
-	feeSelection, fee, fundingNeed, err := previewPlainBSVFeeFunding(db, address, assetInputSats, len(selected), assetOutputCount)
+	feeSelection, fee, fundingNeed, err := previewPlainBSVFeeFunding(store, address, assetInputSats, len(selected), assetOutputCount)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -276,10 +276,10 @@ func previewWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 // - 这里收口的是领域概念“可发送持仓”，不是某个具体外部实现；
 // - 对 bsv21 而言，候选来源分成“本地自有事实”与“外来资产验真结果”两路；
 // - 当前外来资产的唯一验真渠道仍是 WOC，但调用方不应该直接依赖这个实现名。
-func loadWalletTokenSpendableCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+func loadWalletTokenSpendableCandidates(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
 	switch normalizeWalletTokenStandard(standard) {
 	case "bsv21":
-		return loadWalletBSV21SpendableCandidates(ctx, db, rt, address, assetKey)
+		return loadWalletBSV21SpendableCandidates(ctx, store, rt, address, assetKey)
 	default:
 		return nil, fmt.Errorf("invalid token standard")
 	}
@@ -314,8 +314,8 @@ type plainBSVPreviewSelection struct {
 	TotalSatoshi    uint64
 }
 
-func previewPlainBSVFeeFunding(db *sql.DB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int) (plainBSVPreviewSelection, uint64, uint64, error) {
-	return previewPlainBSVFunding(db, address, assetInputSatoshi, assetInputCount, assetOutputCount, uint64(assetOutputCount))
+func previewPlainBSVFeeFunding(store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int) (plainBSVPreviewSelection, uint64, uint64, error) {
+	return previewPlainBSVFunding(store, address, assetInputSatoshi, assetInputCount, assetOutputCount, uint64(assetOutputCount))
 }
 
 // previewPlainBSVFunding 按“固定输出总额 + 矿工费”的口径估算 plain BSV 选币。
@@ -323,8 +323,8 @@ func previewPlainBSVFeeFunding(db *sql.DB, address string, assetInputSatoshi uin
 // - 当前 wallet 资产面只保留 bsv21 send；
 // - fixedOutputSatoshi 既包含 token 承载输出的 1 sat，也包含 bsv21 protocol fee；
 // - 这样 preview/sign 能共用一套 BSV 资金判断，不会在真实构造时低估所需资金。
-func previewPlainBSVFunding(db *sql.DB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int, fixedOutputSatoshi uint64) (plainBSVPreviewSelection, uint64, uint64, error) {
-	candidates, err := listPlainBSVFundingCandidatesFromDB(db, address)
+func previewPlainBSVFunding(store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int, fixedOutputSatoshi uint64) (plainBSVPreviewSelection, uint64, uint64, error) {
+	candidates, err := listPlainBSVFundingCandidatesFromDB(store, address)
 	if err != nil {
 		return plainBSVPreviewSelection{}, 0, 0, err
 	}
@@ -401,43 +401,8 @@ func boolToInt(v bool) int {
 	return 0
 }
 
-func listPlainBSVFundingCandidatesFromDB(db *sql.DB, address string) ([]fundalloc.Candidate, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return []fundalloc.Candidate{}, nil
-	}
-	walletID := walletIDByAddress(address)
-	rows, err := db.Query(
-		`SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,allocation_class,allocation_reason
-		 FROM wallet_utxo
-		 WHERE wallet_id=? AND address=? AND state='unspent'
-		 ORDER BY created_at_unix ASC,value_satoshi ASC,txid ASC,vout ASC`,
-		walletID,
-		address,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := make([]fundalloc.Candidate, 0, 8)
-	for rows.Next() {
-		var item fundalloc.Candidate
-		var allocationClass string
-		var allocationReason string
-		if err := rows.Scan(&item.ID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.CreatedAtUnix, &allocationClass, &allocationReason); err != nil {
-			return nil, err
-		}
-		item.ProtectionClass = fundalloc.ProtectionClass(allocationClass)
-		item.ProtectionReason = strings.TrimSpace(allocationReason)
-		items = append(items, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
+func listPlainBSVFundingCandidatesFromDB(store *clientDB, address string) ([]fundalloc.Candidate, error) {
+	return dbListPlainBSVFundingCandidates(context.Background(), store, address)
 }
 
 func estimateProvisionalP2PKHSize(inputCount int, outputCount int) int {
@@ -507,15 +472,7 @@ func resolveWalletAddressForHTTP(ctx context.Context, s *httpAPIServer) (string,
 		}
 	}
 	return httpDBValue(ctx, s, func(db *sql.DB) (string, error) {
-		var addr string
-		err := db.QueryRow(`SELECT address FROM wallet_utxo ORDER BY updated_at_unix DESC,created_at_unix DESC,utxo_id ASC LIMIT 1`).Scan(&addr)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				return "", nil
-			}
-			return "", err
-		}
-		return strings.TrimSpace(addr), nil
+		return dbResolveWalletAddress(ctx, newClientDB(db, s.dbActor))
 	})
 }
 

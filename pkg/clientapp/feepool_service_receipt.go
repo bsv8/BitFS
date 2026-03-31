@@ -156,7 +156,7 @@ func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, gatewayPeerI
 	session.FinalTxID = strings.TrimSpace(finalTxID)
 	session.Status = "closed"
 	rt.setFeePool(gatewayPeerID, session)
-	appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlow(context.Background(), runtimeStore(rt), walletFundFlowEntry{
 		FlowID:          "fee_pool:" + session.SpendTxID,
 		FlowType:        "fee_pool",
 		RefID:           session.SpendTxID,

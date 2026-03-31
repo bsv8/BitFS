@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -168,7 +169,7 @@ func TestFileHTTPServerServeLocalFullAndRange(t *testing.T) {
 	if err := os.WriteFile(localPath, content, 0o644); err != nil {
 		t.Fatalf("write local file: %v", err)
 	}
-	if err := upsertWorkspaceFileForSeed(t, srv.db, seedHash, localPath, int64(len(content))); err != nil {
+	if err := upsertWorkspaceFileForSeed(t, srv.store, seedHash, localPath, int64(len(content))); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}
 
@@ -209,7 +210,7 @@ func TestFileHTTPServerRejectMultiRange(t *testing.T) {
 	if err := os.WriteFile(localPath, content, 0o644); err != nil {
 		t.Fatalf("write local file: %v", err)
 	}
-	if err := upsertWorkspaceFileForSeed(t, srv.db, seedHash, localPath, int64(len(content))); err != nil {
+	if err := upsertWorkspaceFileForSeed(t, srv.store, seedHash, localPath, int64(len(content))); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}
 
@@ -271,10 +272,10 @@ func TestFileHTTPServerServeLivePlaylistAndMedia(t *testing.T) {
 	if err := os.WriteFile(path1, seg1, 0o644); err != nil {
 		t.Fatalf("write seg1: %v", err)
 	}
-	if err := upsertWorkspaceFileForSeedAt(t, srv.db, seed0, path0, int64(len(seg0)), time.Now().Add(-time.Minute).Unix()); err != nil {
+	if err := upsertWorkspaceFileForSeedAt(t, srv.store, seed0, path0, int64(len(seg0)), time.Now().Add(-time.Minute).Unix()); err != nil {
 		t.Fatalf("insert seg0: %v", err)
 	}
-	if err := upsertWorkspaceFileForSeedAt(t, srv.db, strings.Repeat("c", 64), path1, int64(len(seg1)), time.Now().Unix()); err != nil {
+	if err := upsertWorkspaceFileForSeedAt(t, srv.store, strings.Repeat("c", 64), path1, int64(len(seg1)), time.Now().Unix()); err != nil {
 		t.Fatalf("insert seg1: %v", err)
 	}
 
@@ -339,18 +340,21 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
 	cfg.FSHTTP.MaxConcurrentSessions = 4
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
-	srv := newFileHTTPServer(&Runtime{}, cfg, db, &workspaceManager{cfg: cfg, db: db})
+	srv := newFileHTTPServer(&Runtime{}, cfg, newClientDB(db, nil), &workspaceManager{cfg: cfg, db: db})
 	seedHash := strings.Repeat("a", 64)
 	return srv, seedHash, cfg.Storage.WorkspaceDir
 }
 
-func upsertWorkspaceFileForSeed(t *testing.T, db *sql.DB, seedHash, path string, size int64) error {
-	return upsertWorkspaceFileForSeedAt(t, db, seedHash, path, size, time.Now().Unix())
+func upsertWorkspaceFileForSeed(t *testing.T, store *clientDB, seedHash, path string, size int64) error {
+	return upsertWorkspaceFileForSeedAt(t, store, seedHash, path, size, time.Now().Unix())
 }
 
-func upsertWorkspaceFileForSeedAt(t *testing.T, db *sql.DB, seedHash, path string, size int64, updatedAt int64) error {
+func upsertWorkspaceFileForSeedAt(t *testing.T, store *clientDB, seedHash, path string, size int64, updatedAt int64) error {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)
+	if store == nil || store.db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	_, err := store.db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)
 		ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
 		path, size, updatedAt, seedHash, updatedAt)
 	return err

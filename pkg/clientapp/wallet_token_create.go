@@ -122,14 +122,14 @@ func buildWalletTokenCreatePreview(r *http.Request, s *httpAPIServer, req wallet
 		return walletAssetActionPreviewResp{}, err
 	}
 	preview, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletAssetActionPreview, error) {
-		return previewWalletTokenCreate(db, address, input)
+		return previewWalletTokenCreate(newClientDB(db, s.dbActor), address, input)
 	})
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
 	if s != nil && s.rt != nil && preview.Feasible {
 		prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenCreate, error) {
-			return prepareWalletTokenCreate(r.Context(), db, s.rt, address, input)
+			return prepareWalletTokenCreate(r.Context(), newClientDB(db, s.dbActor), s.rt, address, input)
 		})
 		if prepareErr == nil {
 			preview = prepared.Preview
@@ -161,7 +161,7 @@ func buildWalletTokenCreateSign(r *http.Request, s *httpAPIServer, req walletTok
 		return walletAssetActionSignResp{}, err
 	}
 	prepared, err := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenCreate, error) {
-		return prepareWalletTokenCreate(r.Context(), db, s.rt, address, input)
+		return prepareWalletTokenCreate(r.Context(), newClientDB(db, s.dbActor), s.rt, address, input)
 	})
 	if err != nil {
 		return walletAssetActionSignResp{}, err
@@ -288,9 +288,9 @@ func normalizeWalletTokenCreateInput(tokenStandard string, symbol string, maxSup
 	}, nil
 }
 
-func previewWalletTokenCreate(db *sql.DB, address string, input walletTokenCreateInput) (walletAssetActionPreview, error) {
+func previewWalletTokenCreate(store *clientDB, address string, input walletTokenCreateInput) (walletAssetActionPreview, error) {
 	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan(input.Icon)
-	selectedFee, fee, fundingNeed, err := previewPlainBSVFunding(db, address, 0, 0, outputCount, fixedOutputSatoshi)
+	selectedFee, fee, fundingNeed, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -326,26 +326,26 @@ func previewWalletTokenCreate(db *sql.DB, address string, input walletTokenCreat
 // - `icon` 入参仍然收 seed hash，但链上固定写成 `_0 json + _1 deploy+mint`，避免把 bitfs 元数据塞进 token 正文里；
 // - submit 之后先刷新 wallet_utxo，本地自己 create 出来的 token 可直接进入后续 send 链路；
 // - 外部验真只记录观察进度，不再作为 create / send 的业务前提。
-func prepareWalletTokenCreate(ctx context.Context, db *sql.DB, rt *Runtime, address string, input walletTokenCreateInput) (preparedWalletTokenCreate, error) {
-	if db == nil {
+func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime, address string, input walletTokenCreateInput) (preparedWalletTokenCreate, error) {
+	if store == nil {
 		return preparedWalletTokenCreate{}, fmt.Errorf("db is nil")
 	}
 	if rt == nil {
 		return preparedWalletTokenCreate{}, fmt.Errorf("runtime not initialized")
 	}
 	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan(input.Icon)
-	selectedFee, _, _, err := previewPlainBSVFunding(db, address, 0, 0, outputCount, fixedOutputSatoshi)
+	selectedFee, _, _, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}
 	if !selectedFee.Feasible {
 		return preparedWalletTokenCreate{}, fmt.Errorf("insufficient plain bsv for token create fee")
 	}
-	feeUTXOs, err := loadWalletUTXOsByID(db, address, selectedFee.SelectedUTXOIDs)
+	feeUTXOs, err := loadWalletUTXOsByID(store, address, selectedFee.SelectedUTXOIDs)
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}
-	txHex, txID, fee, changeSatoshi, err := buildWalletBSV21CreateTx(ctx, db, rt, feeUTXOs, input.Symbol, input.MaxSupply, input.Decimals, input.Icon)
+	txHex, txID, fee, changeSatoshi, err := buildWalletBSV21CreateTx(ctx, store, rt, feeUTXOs, input.Symbol, input.MaxSupply, input.Decimals, input.Icon)
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}
@@ -408,11 +408,11 @@ func prepareWalletTokenCreate(ctx context.Context, db *sql.DB, rt *Runtime, addr
 	}, nil
 }
 
-func buildWalletBSV21CreateTx(ctx context.Context, db *sql.DB, rt *Runtime, feeUTXOs []poolcore.UTXO, symbol string, maxSupply string, decimals int, icon string) (string, string, uint64, uint64, error) {
+func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime, feeUTXOs []poolcore.UTXO, symbol string, maxSupply string, decimals int, icon string) (string, string, uint64, uint64, error) {
 	if len(feeUTXOs) == 0 {
 		return "", "", 0, 0, fmt.Errorf("selected fee outputs are empty")
 	}
-	if db == nil {
+	if store == nil {
 		return "", "", 0, 0, fmt.Errorf("db is nil")
 	}
 	if rt == nil {

@@ -4,9 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"strings"
 	"time"
-	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 const (
@@ -41,59 +41,12 @@ func defaultWalletUTXOProtectionForValue(value uint64) (string, string) {
 	return walletUTXOAllocationPlainBSV, ""
 }
 
-func loadCurrentWalletUTXOStateRows(db *sql.DB, address string) (map[string]utxoStateRow, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	walletID := walletIDByAddress(address)
-	rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, strings.TrimSpace(address))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[string]utxoStateRow{}
-	for rows.Next() {
-		var r utxoStateRow
-		if err := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.AllocationClass, &r.AllocationReason, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix); err != nil {
-			return nil, err
-		}
-		r.AllocationClass = normalizeWalletUTXOAllocationClass(r.AllocationClass)
-		r.AllocationReason = strings.TrimSpace(r.AllocationReason)
-		out[strings.ToLower(strings.TrimSpace(r.UTXOID))] = r
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+func loadCurrentWalletUTXOStateRows(store *clientDB, address string) (map[string]utxoStateRow, error) {
+	return dbLoadCurrentWalletUTXOStateRows(context.Background(), store, address)
 }
 
-func listWalletUTXOAssetRows(db *sql.DB, utxoID string) ([]walletUTXOAssetRow, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	rows, err := db.Query(
-		`SELECT utxo_id,wallet_id,address,asset_group,asset_standard,asset_key,asset_symbol,quantity_text,source_name,payload_json,updated_at_unix
-		 FROM wallet_utxo_assets
-		 WHERE utxo_id=?
-		 ORDER BY asset_group ASC,asset_standard ASC,asset_key ASC`,
-		strings.ToLower(strings.TrimSpace(utxoID)),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]walletUTXOAssetRow, 0, 4)
-	for rows.Next() {
-		var item walletUTXOAssetRow
-		if err := rows.Scan(&item.UTXOID, &item.WalletID, &item.Address, &item.AssetGroup, &item.AssetStandard, &item.AssetKey, &item.AssetSymbol, &item.QuantityText, &item.SourceName, &item.PayloadJSON, &item.UpdatedAtUnix); err != nil {
-			return nil, err
-		}
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+func listWalletUTXOAssetRows(store *clientDB, utxoID string) ([]walletUTXOAssetRow, error) {
+	return dbListWalletUTXOAssetRows(context.Background(), store, utxoID)
 }
 
 // refreshWalletAssetProjection 在链同步后清理旧资产影子，并把 `1 sat` 输出维持在受保护状态。
@@ -109,15 +62,12 @@ func refreshWalletAssetProjection(ctx context.Context, rt *Runtime, address stri
 	if address == "" {
 		return fmt.Errorf("wallet address is empty")
 	}
-	loadCurrent := func(db *sql.DB) (map[string]utxoStateRow, error) {
-		return loadCurrentWalletUTXOStateRows(db, address)
-	}
 	var current map[string]utxoStateRow
 	var err error
 	if rt.DBActor != nil {
-		current, err = runtimeDBValue(rt, ctx, loadCurrent)
+		current, err = loadCurrentWalletUTXOStateRows(runtimeStore(rt), address)
 	} else if rt.DB != nil {
-		current, err = loadCurrent(rt.DB)
+		current, err = loadCurrentWalletUTXOStateRows(newClientDB(rt.DB, nil), address)
 	} else {
 		return fmt.Errorf("runtime not initialized")
 	}

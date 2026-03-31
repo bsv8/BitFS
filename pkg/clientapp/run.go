@@ -648,6 +648,7 @@ type Runtime struct {
 	Host            host.Host
 	DB              *sql.DB
 	DBActor         *sqliteactor.Actor
+	store           *clientDB
 	runIn           RunInput
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
@@ -811,6 +812,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	db := openedDB.DB
 	dbActor := openedDB.Actor
+	store := newClientDB(db, dbActor)
 	// 设计说明：
 	// - BitFS 正式运行时的 sqlite 从这里开始统一进入单 owner 模型；
 	// - 初始化阶段仍有一些旧 helper 直接吃 `*sql.DB`，所以当前同时保留 `db` 和 `dbActor`；
@@ -827,6 +829,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	workspaceMgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
+		store:   store,
 		catalog: catalog,
 	}
 	if err := workspaceMgr.EnsureDefaultWorkspace(); err != nil {
@@ -1005,6 +1008,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		Host:                     h,
 		DB:                       db,
 		DBActor:                  dbActor,
+		store:                    store,
 		runIn:                    in,
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,
@@ -1030,7 +1034,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
-		registerSellerHandlers(h, db, rt.live, trace, cfg)
+		registerSellerHandlers(h, rt.store, rt.live, trace, cfg)
 	}
 	if rt.ActionChain == nil {
 		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
@@ -1096,7 +1100,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}()
 	}
 	if cfg.FSHTTP.Enabled {
-		rt.FSHTTP = newFileHTTPServer(rt, &cfg, db, workspaceMgr)
+		rt.FSHTTP = newFileHTTPServer(rt, &cfg, rt.store, workspaceMgr)
 		fsHTTPListener := in.FSHTTPListener
 		in.FSHTTPListener = nil
 		wg.Add(1)
@@ -2205,7 +2209,7 @@ func initIndexDB(db *sql.DB) error {
 	if err := ensureWalletUTXOSyncStateSchema(db); err != nil {
 		return err
 	}
-	if err := migrateLegacyBizUTXOLinks(db); err != nil {
+	if err := migrateLegacyBizUTXOLinks(newClientDB(db, nil)); err != nil {
 		return err
 	}
 	if err := normalizeClientPubKeyColumns(db); err != nil {
@@ -2664,10 +2668,11 @@ func ensureWalletBSV21CreateStatusSchema(db *sql.DB) error {
 	return nil
 }
 
-func migrateLegacyBizUTXOLinks(db *sql.DB) error {
-	if db == nil {
+func migrateLegacyBizUTXOLinks(store *clientDB) error {
+	if store == nil {
 		return fmt.Errorf("db is nil")
 	}
+	return store.Do(context.Background(), func(db *sql.DB) error {
 	exists, err := hasTable(db, "biz_utxo_links")
 	if err != nil {
 		return err
@@ -2701,7 +2706,7 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 			return err
 		}
 		txRole, ioSide, utxoRole := mapLegacyBizUTXORole(sceneType, sceneSubtype, role)
-		if err := appendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
+		if err := dbAppendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
 			BusinessID:    businessID,
 			TxID:          txid,
 			TxRole:        txRole,
@@ -2711,7 +2716,7 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 		}); err != nil {
 			return err
 		}
-		if err := appendFinTxUTXOLinkIfAbsent(db, finTxUTXOLinkEntry{
+		if err := dbAppendFinTxUTXOLinkIfAbsent(db, finTxUTXOLinkEntry{
 			BusinessID:    businessID,
 			TxID:          txid,
 			UTXOID:        utxoID,
@@ -2738,6 +2743,7 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 		return err
 	}
 	return nil
+	})
 }
 
 func mapLegacyBizUTXORole(sceneType string, sceneSubtype string, legacyRole string) (string, string, string) {
@@ -3314,7 +3320,11 @@ func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace pproto.Trac
 	})
 }
 
-func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace pproto.TraceSink, cfg Config) {
+func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, trace pproto.TraceSink, cfg Config) {
+	if store == nil {
+		return
+	}
+	db := store.db
 	pproto.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
@@ -3404,7 +3414,7 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace pp
 		if demandID == "" || !isSeedHashHex(streamID) || buyerPeerID == "" || req.Window == 0 {
 			return dealprod.LiveDemandAnnounceResp{}, fmt.Errorf("invalid live demand announce")
 		}
-		recentSegments, latestIndex, err := listLocalLiveQuoteSegments(db, streamID, int(req.Window))
+		recentSegments, latestIndex, err := listLocalLiveQuoteSegments(store, streamID, int(req.Window))
 		if err != nil {
 			return dealprod.LiveDemandAnnounceResp{}, err
 		}
@@ -3442,18 +3452,18 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace pp
 		if strings.TrimSpace(req.SessionID) == "" || seedHash == "" {
 			return seedGetResp{}, fmt.Errorf("invalid params")
 		}
-		var dealID string
-		if err := db.QueryRow(`SELECT deal_id FROM direct_sessions WHERE session_id=?`, strings.TrimSpace(req.SessionID)).Scan(&dealID); err != nil {
+		dealID, err := dbLoadDirectSessionDealID(context.Background(), store, strings.TrimSpace(req.SessionID))
+		if err != nil {
 			return seedGetResp{}, fmt.Errorf("session not found")
 		}
-		var dealSeedHash string
-		if err := db.QueryRow(`SELECT seed_hash FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&dealSeedHash); err != nil {
+		dealSeedHash, err := dbLoadDirectDealSeedHash(context.Background(), store, strings.TrimSpace(dealID))
+		if err != nil {
 			return seedGetResp{}, fmt.Errorf("deal not found")
 		}
 		if seedHash != strings.ToLower(strings.TrimSpace(dealSeedHash)) {
 			return seedGetResp{}, fmt.Errorf("seed_hash mismatch")
 		}
-		seedBytes, err := loadSeedBytesBySeedHash(db, seedHash)
+		seedBytes, err := dbLoadSeedBytesBySeedHash(context.Background(), store, seedHash)
 		if err != nil {
 			return seedGetResp{}, err
 		}
@@ -3515,13 +3525,13 @@ func registerSellerHandlers(h host.Host, db *sql.DB, live *liveRuntime, trace pp
 		return directSessionOpenResp{SessionID: sessionID, Status: "active"}, nil
 	})
 	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
-		return handleDirectTransferPoolOpen(h, db, cfg, req)
+		return handleDirectTransferPoolOpen(h, store, cfg, req)
 	})
 	pproto.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
-		return handleDirectTransferPoolPay(h, db, cfg, req)
+		return handleDirectTransferPoolPay(h, store, cfg, req)
 	})
 	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
-		return handleDirectTransferPoolClose(h, db, cfg, req)
+		return handleDirectTransferPoolClose(h, store, cfg, req)
 	})
 	pproto.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(_ context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
 		if strings.TrimSpace(req.SessionID) == "" {
@@ -3679,40 +3689,18 @@ func sanitizeMIMEHint(raw string) string {
 	return mediaType
 }
 
-func recommendedFileNameBySeedHash(db *sql.DB, seedHash string) string {
-	if db == nil {
+func recommendedFileNameBySeedHash(store *clientDB, seedHash string) string {
+	if store == nil {
 		return ""
 	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return ""
-	}
-	var stored string
-	if err := db.QueryRow(`SELECT recommended_file_name FROM seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err == nil {
-		if normalized := sanitizeRecommendedFileName(stored); normalized != "" {
-			return normalized
-		}
-	}
-	var p string
-	if err := db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC, path ASC LIMIT 1`, seedHash).Scan(&p); err != nil {
-		return ""
-	}
-	return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(p)))
+	return dbRecommendedFileNameBySeedHash(context.Background(), store, seedHash)
 }
 
-func mimeHintBySeedHash(db *sql.DB, seedHash string) string {
-	if db == nil {
+func mimeHintBySeedHash(store *clientDB, seedHash string) string {
+	if store == nil {
 		return ""
 	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return ""
-	}
-	var stored string
-	if err := db.QueryRow(`SELECT mime_hint FROM seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err != nil {
-		return ""
-	}
-	return sanitizeMIMEHint(stored)
+	return dbMimeHintBySeedHash(context.Background(), store, seedHash)
 }
 
 func configuredArbiterPeerIDs(cfg Config) []string {

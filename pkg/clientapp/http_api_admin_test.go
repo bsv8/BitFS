@@ -357,7 +357,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	appendCommandJournal(db, commandJournalEntry{
+	dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "ck_1",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",
@@ -371,7 +371,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		Payload:       map[string]any{"trigger": "manual"},
 		Result:        map[string]any{"seed_count": 1},
 	})
-	appendCommandJournal(db, commandJournalEntry{
+	dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "fp_1",
 		CommandType:   "fee_pool_internal_only",
 		GatewayPeerID: "gw",
@@ -463,7 +463,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	appendOrchestratorLog(db, orchestratorLogEntry{
+	dbAppendOrchestratorLog(nil, newClientDB(db, nil), orchestratorLogEntry{
 		EventType:      "signal_received",
 		Source:         "workspace_worker",
 		SignalType:     "workspace.tick",
@@ -476,7 +476,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		QueueLength:    1,
 		Payload:        map[string]any{"trigger": "periodic_tick"},
 	})
-	appendOrchestratorLog(db, orchestratorLogEntry{
+	dbAppendOrchestratorLog(nil, newClientDB(db, nil), orchestratorLogEntry{
 		EventType:      "task_dispatch_result",
 		Source:         "orchestrator",
 		SignalType:     "workspace.tick",

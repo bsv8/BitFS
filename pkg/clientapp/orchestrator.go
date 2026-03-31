@@ -591,5 +591,5 @@ func (o *orchestrator) logEvent(e orchestratorLogEntry) {
 	if o == nil || o.rt == nil {
 		return
 	}
-	appendOrchestratorLog(o.rt.DB, e)
+	dbAppendOrchestratorLog(context.Background(), runtimeStore(o.rt), e)
 }

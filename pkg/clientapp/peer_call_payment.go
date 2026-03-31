@@ -278,7 +278,7 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 			nextTxHex = strings.ToLower(hex.EncodeToString(receipt.MergedCurrentTx))
 		}
 		applyFeePoolChargeToSession(chargeCtx.Session, chargeCtx.NextSeq, chargeCtx.NextServerAmount, nextTxHex)
-		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
 			FlowID:          "fee_pool:" + chargeCtx.Session.SpendTxID,
 			FlowType:        "fee_pool",
 			RefID:           chargeCtx.Session.SpendTxID,

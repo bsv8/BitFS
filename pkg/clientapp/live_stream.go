@@ -3,12 +3,10 @@ package clientapp
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -291,33 +289,26 @@ func (lr *liveRuntime) publishedSnapshot(streamID string) (string, []LiveSegment
 	return st.PublisherPubKey, append([]LiveSegmentRef(nil), st.RecentSegments...), true
 }
 
-func listLocalLiveQuoteSegments(db *sql.DB, streamID string, window int) ([]LiveQuoteSegment, uint64, error) {
-	if db == nil {
+func listLocalLiveQuoteSegments(store *clientDB, streamID string, window int) ([]LiveQuoteSegment, uint64, error) {
+	if store == nil {
 		return nil, 0, fmt.Errorf("db not initialized")
 	}
 	streamID = strings.ToLower(strings.TrimSpace(streamID))
 	if !isSeedHashHex(streamID) {
 		return nil, 0, fmt.Errorf("invalid stream_id")
 	}
-	rows, err := db.Query(`SELECT path,seed_hash,updated_at_unix FROM workspace_files WHERE path LIKE ? ORDER BY updated_at_unix ASC, path ASC`,
-		"%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%")
+	rows, err := dbListLiveSegmentWorkspaceEntries(context.Background(), store, streamID)
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 	type item struct {
 		seg LiveQuoteSegment
 		seq uint64
 	}
 	items := make([]item, 0, 16)
 	var latest uint64
-	for rows.Next() {
-		var p, seedHash string
-		var updatedAt int64
-		if err := rows.Scan(&p, &seedHash, &updatedAt); err != nil {
-			return nil, 0, err
-		}
-		segmentBytes, err := os.ReadFile(p)
+	for _, row := range rows {
+		segmentBytes, err := os.ReadFile(row.Path)
 		if err != nil {
 			continue
 		}
@@ -338,7 +329,7 @@ func listLocalLiveQuoteSegments(db *sql.DB, streamID string, window int) ([]Live
 		items = append(items, item{
 			seg: LiveQuoteSegment{
 				SegmentIndex: data.SegmentIndex,
-				SeedHash:     strings.ToLower(strings.TrimSpace(seedHash)),
+				SeedHash:     strings.ToLower(strings.TrimSpace(row.SeedHash)),
 			},
 			seq: seq,
 		})

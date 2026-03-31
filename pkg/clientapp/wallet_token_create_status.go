@@ -87,7 +87,7 @@ func (s *httpAPIServer) handleWalletTokenCreateStatus(w http.ResponseWriter, r *
 		return
 	}
 	item, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletBSV21CreateStatusItem, error) {
-		return loadWalletBSV21CreateStatusByTokenID(db, tokenID)
+		return loadWalletBSV21CreateStatusByTokenID(newClientDB(db, s.dbActor), tokenID)
 	})
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -145,132 +145,19 @@ func normalizeWalletBSV21CreateStatus(status string) string {
 	}
 }
 
-func loadWalletBSV21CreateStatusByTokenID(db *sql.DB, tokenID string) (walletBSV21CreateStatusItem, error) {
-	if db == nil {
-		return walletBSV21CreateStatusItem{}, fmt.Errorf("db is nil")
-	}
-	tokenID = strings.ToLower(strings.TrimSpace(tokenID))
-	if tokenID == "" {
-		return walletBSV21CreateStatusItem{}, fmt.Errorf("token_id is required")
-	}
-	var item walletBSV21CreateStatusItem
-	err := db.QueryRow(
-		`SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,status,created_at_unix,submitted_at_unix,confirmed_at_unix,last_check_at_unix,next_auto_check_at_unix,updated_at_unix,last_check_error
-		 FROM wallet_bsv21_create_status
-		 WHERE token_id=?`,
-		tokenID,
-	).Scan(
-		&item.TokenID,
-		&item.CreateTxID,
-		&item.WalletID,
-		&item.Address,
-		&item.TokenStandard,
-		&item.Symbol,
-		&item.MaxSupply,
-		&item.Decimals,
-		&item.Icon,
-		&item.Status,
-		&item.CreatedAtUnix,
-		&item.SubmittedAtUnix,
-		&item.VerifiedAtUnix,
-		&item.LastVerificationAtUnix,
-		&item.NextVerificationAtUnix,
-		&item.UpdatedAtUnix,
-		&item.LastVerificationError,
-	)
-	if err != nil {
-		return walletBSV21CreateStatusItem{}, err
-	}
-	item.TokenID = strings.ToLower(strings.TrimSpace(item.TokenID))
-	item.CreateTxID = strings.ToLower(strings.TrimSpace(item.CreateTxID))
-	item.WalletID = strings.TrimSpace(item.WalletID)
-	item.Address = strings.TrimSpace(item.Address)
-	item.TokenStandard = strings.TrimSpace(item.TokenStandard)
-	item.Symbol = strings.TrimSpace(item.Symbol)
-	item.MaxSupply = strings.TrimSpace(item.MaxSupply)
-	item.Icon = strings.TrimSpace(item.Icon)
-	item.Status = normalizeWalletBSV21CreateStatus(item.Status)
-	item.LastVerificationError = strings.TrimSpace(item.LastVerificationError)
-	return item, nil
+func loadWalletBSV21CreateStatusByTokenID(store *clientDB, tokenID string) (walletBSV21CreateStatusItem, error) {
+	return dbLoadWalletBSV21CreateStatusByTokenID(context.Background(), store, tokenID)
 }
 
-func upsertWalletBSV21CreateStatus(db *sql.DB, item walletBSV21CreateStatusItem) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	item.TokenID = strings.ToLower(strings.TrimSpace(item.TokenID))
-	item.CreateTxID = strings.ToLower(strings.TrimSpace(item.CreateTxID))
-	item.WalletID = strings.TrimSpace(item.WalletID)
-	item.Address = strings.TrimSpace(item.Address)
-	item.TokenStandard = strings.TrimSpace(item.TokenStandard)
-	item.Symbol = strings.TrimSpace(item.Symbol)
-	item.MaxSupply = strings.TrimSpace(item.MaxSupply)
-	item.Icon = strings.TrimSpace(item.Icon)
-	item.Status = normalizeWalletBSV21CreateStatus(item.Status)
-	item.LastVerificationError = strings.TrimSpace(item.LastVerificationError)
-	if item.TokenID == "" || item.CreateTxID == "" {
-		return fmt.Errorf("token_id and create_txid are required")
-	}
-	if item.TokenStandard == "" {
-		item.TokenStandard = "bsv21"
-	}
-	if item.CreatedAtUnix <= 0 {
-		item.CreatedAtUnix = time.Now().Unix()
-	}
-	if item.SubmittedAtUnix <= 0 {
-		item.SubmittedAtUnix = item.CreatedAtUnix
-	}
-	if item.UpdatedAtUnix <= 0 {
-		item.UpdatedAtUnix = time.Now().Unix()
-	}
-	_, err := db.Exec(
-		`INSERT INTO wallet_bsv21_create_status(
-			token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,status,created_at_unix,submitted_at_unix,confirmed_at_unix,last_check_at_unix,next_auto_check_at_unix,updated_at_unix,last_check_error
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(token_id) DO UPDATE SET
-			create_txid=excluded.create_txid,
-			wallet_id=excluded.wallet_id,
-			address=excluded.address,
-			token_standard=excluded.token_standard,
-			symbol=excluded.symbol,
-			max_supply=excluded.max_supply,
-			decimals=excluded.decimals,
-			icon=excluded.icon,
-			status=excluded.status,
-			submitted_at_unix=excluded.submitted_at_unix,
-			confirmed_at_unix=excluded.confirmed_at_unix,
-			last_check_at_unix=excluded.last_check_at_unix,
-			next_auto_check_at_unix=excluded.next_auto_check_at_unix,
-			updated_at_unix=excluded.updated_at_unix,
-			last_check_error=excluded.last_check_error`,
-		item.TokenID,
-		item.CreateTxID,
-		item.WalletID,
-		item.Address,
-		item.TokenStandard,
-		item.Symbol,
-		item.MaxSupply,
-		item.Decimals,
-		item.Icon,
-		item.Status,
-		item.CreatedAtUnix,
-		item.SubmittedAtUnix,
-		item.VerifiedAtUnix,
-		item.LastVerificationAtUnix,
-		item.NextVerificationAtUnix,
-		item.UpdatedAtUnix,
-		item.LastVerificationError,
-	)
-	return err
+func upsertWalletBSV21CreateStatus(store *clientDB, item walletBSV21CreateStatusItem) error {
+	return dbUpsertWalletBSV21CreateStatus(context.Background(), store, item)
 }
 
 func recordWalletBSV21CreateSubmitted(ctx context.Context, rt *Runtime, item walletBSV21CreateStatusItem) error {
 	if rt == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
-	return runtimeDBDo(rt, ctx, func(db *sql.DB) error {
-		return upsertWalletBSV21CreateStatus(db, item)
-	})
+	return dbUpsertWalletBSV21CreateStatus(ctx, runtimeStore(rt), item)
 }
 
 func scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx context.Context, rt *Runtime, dueAtUnix int64) error {
@@ -280,70 +167,11 @@ func scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx context.Context, rt *R
 	if dueAtUnix <= 0 {
 		dueAtUnix = time.Now().Add(walletBSV21CreateAutoCheckDelay).Unix()
 	}
-	updatedAt := time.Now().Unix()
-	return runtimeDBDo(rt, ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
-			`UPDATE wallet_bsv21_create_status
-			 SET next_auto_check_at_unix=?,updated_at_unix=?
-			 WHERE status=?`,
-			dueAtUnix,
-			updatedAt,
-			walletBSV21CreateStatusPendingExternalVerification,
-		)
-		return err
-	})
+	return dbScheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, runtimeStore(rt), dueAtUnix)
 }
 
-func listDueWalletBSV21CreateStatuses(db *sql.DB, nowUnix int64) ([]walletBSV21CreateStatusItem, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	if nowUnix <= 0 {
-		nowUnix = time.Now().Unix()
-	}
-	rows, err := db.Query(
-		`SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,status,created_at_unix,submitted_at_unix,confirmed_at_unix,last_check_at_unix,next_auto_check_at_unix,updated_at_unix,last_check_error
-		 FROM wallet_bsv21_create_status
-		 WHERE status=? AND next_auto_check_at_unix>0 AND next_auto_check_at_unix<=?
-		 ORDER BY next_auto_check_at_unix ASC,token_id ASC`,
-		walletBSV21CreateStatusPendingExternalVerification,
-		nowUnix,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]walletBSV21CreateStatusItem, 0, 8)
-	for rows.Next() {
-		var item walletBSV21CreateStatusItem
-		if err := rows.Scan(
-			&item.TokenID,
-			&item.CreateTxID,
-			&item.WalletID,
-			&item.Address,
-			&item.TokenStandard,
-			&item.Symbol,
-			&item.MaxSupply,
-			&item.Decimals,
-			&item.Icon,
-			&item.Status,
-			&item.CreatedAtUnix,
-			&item.SubmittedAtUnix,
-			&item.VerifiedAtUnix,
-			&item.LastVerificationAtUnix,
-			&item.NextVerificationAtUnix,
-			&item.UpdatedAtUnix,
-			&item.LastVerificationError,
-		); err != nil {
-			return nil, err
-		}
-		item.Status = normalizeWalletBSV21CreateStatus(item.Status)
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+func listDueWalletBSV21CreateStatuses(store *clientDB, nowUnix int64) ([]walletBSV21CreateStatusItem, error) {
+	return dbListDueWalletBSV21CreateStatuses(context.Background(), store, nowUnix)
 }
 
 func refreshWalletBSV21CreateStatus(ctx context.Context, rt *Runtime, tokenID string, trigger string, clearAutoCheck bool) (walletBSV21CreateStatusItem, error) {
@@ -354,9 +182,7 @@ func refreshWalletBSV21CreateStatus(ctx context.Context, rt *Runtime, tokenID st
 	if tokenID == "" {
 		return walletBSV21CreateStatusItem{}, fmt.Errorf("token_id is required")
 	}
-	item, err := runtimeDBValue(rt, ctx, func(db *sql.DB) (walletBSV21CreateStatusItem, error) {
-		return loadWalletBSV21CreateStatusByTokenID(db, tokenID)
-	})
+	item, err := dbLoadWalletBSV21CreateStatusByTokenID(ctx, runtimeStore(rt), tokenID)
 	if err != nil {
 		return walletBSV21CreateStatusItem{}, err
 	}
@@ -380,9 +206,7 @@ func refreshWalletBSV21CreateStatus(ctx context.Context, rt *Runtime, tokenID st
 			item.NextVerificationAtUnix = 0
 		}
 	}
-	if saveErr := runtimeDBDo(rt, ctx, func(db *sql.DB) error {
-		return upsertWalletBSV21CreateStatus(db, item)
-	}); saveErr != nil {
+	if saveErr := dbUpsertWalletBSV21CreateStatus(ctx, runtimeStore(rt), item); saveErr != nil {
 		return walletBSV21CreateStatusItem{}, saveErr
 	}
 	return item, nil
@@ -393,9 +217,7 @@ func refreshDueWalletBSV21CreateStatuses(ctx context.Context, rt *Runtime, trigg
 		return fmt.Errorf("runtime not initialized")
 	}
 	nowUnix := time.Now().Unix()
-	items, err := runtimeDBValue(rt, ctx, func(db *sql.DB) ([]walletBSV21CreateStatusItem, error) {
-		return listDueWalletBSV21CreateStatuses(db, nowUnix)
-	})
+	items, err := dbListDueWalletBSV21CreateStatuses(ctx, runtimeStore(rt), nowUnix)
 	if err != nil {
 		return err
 	}

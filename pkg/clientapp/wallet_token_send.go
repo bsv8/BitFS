@@ -110,7 +110,7 @@ func buildWalletTokenSendSign(r *http.Request, s *httpAPIServer, req walletToken
 		return walletAssetActionSignResp{}, err
 	}
 	prepared, err := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenSend, error) {
-		return prepareWalletTokenSend(r.Context(), db, s.rt, address, standard, strings.TrimSpace(req.AssetKey), normalizePreviewQuantityText(req.AmountText), strings.TrimSpace(req.ToAddress))
+		return prepareWalletTokenSend(r.Context(), newClientDB(db, s.dbActor), s.rt, address, standard, strings.TrimSpace(req.AssetKey), normalizePreviewQuantityText(req.AmountText), strings.TrimSpace(req.ToAddress))
 	})
 	if err != nil {
 		return walletAssetActionSignResp{}, err
@@ -179,8 +179,8 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 // - create / send 都不能把 WOC 当作业务前提；
 // - 当前可发送持仓由“两路证据”组成：本地自己广播出来的 token 输出 + 当前唯一外来验真渠道确认过的第三方 token；
 // - 这样本地自有链路可继续前进，而外来 token 的验真边界也不会和某个具体实现名绑死。
-func prepareWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (preparedWalletTokenSend, error) {
-	if db == nil {
+func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (preparedWalletTokenSend, error) {
+	if store == nil {
 		return preparedWalletTokenSend{}, fmt.Errorf("db is nil")
 	}
 	if rt == nil {
@@ -193,7 +193,7 @@ func prepareWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 	if requested.scale != 0 {
 		return preparedWalletTokenSend{}, fmt.Errorf("%s amount_text must be an integer", standard)
 	}
-	candidates, err := loadWalletTokenSpendableCandidates(ctx, db, rt, address, standard, assetKey)
+	candidates, err := loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
@@ -234,18 +234,18 @@ func prepareWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 	}
 	tokenOutputCount := walletTokenOutputCount(changeText)
 	overlayFee = bsv21Rules.FeePerOutput * uint64(tokenOutputCount)
-	selectedFee, _, _, err := previewPlainBSVFunding(db, address, uint64(len(selected)), len(selected), tokenOutputCount+boolToInt(overlayFee > 0), uint64(tokenOutputCount)+overlayFee)
+	selectedFee, _, _, err := previewPlainBSVFunding(store, address, uint64(len(selected)), len(selected), tokenOutputCount+boolToInt(overlayFee > 0), uint64(tokenOutputCount)+overlayFee)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
 	if !selectedFee.Feasible {
 		return preparedWalletTokenSend{}, fmt.Errorf("insufficient plain bsv for token send fee")
 	}
-	feeUTXOs, err := loadWalletUTXOsByID(db, address, selectedFee.SelectedUTXOIDs)
+	feeUTXOs, err := loadWalletUTXOsByID(store, address, selectedFee.SelectedUTXOIDs)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
-	txHex, txID, fee, changeSatoshi, overlayFee, err := buildWalletBSV21SendTx(ctx, db, rt, selected, feeUTXOs, assetKey, amountText, changeText, toAddress)
+	txHex, txID, fee, changeSatoshi, overlayFee, err := buildWalletBSV21SendTx(ctx, store, rt, selected, feeUTXOs, assetKey, amountText, changeText, toAddress)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
@@ -342,7 +342,7 @@ func prepareWalletTokenSend(ctx context.Context, db *sql.DB, rt *Runtime, addres
 	}, nil
 }
 
-func buildWalletBSV21SendTx(ctx context.Context, db *sql.DB, rt *Runtime, selected []walletTokenPreviewCandidate, feeUTXOs []poolcore.UTXO, assetKey string, amountText string, changeText string, toAddress string) (string, string, uint64, uint64, uint64, error) {
+func buildWalletBSV21SendTx(ctx context.Context, store *clientDB, rt *Runtime, selected []walletTokenPreviewCandidate, feeUTXOs []poolcore.UTXO, assetKey string, amountText string, changeText string, toAddress string) (string, string, uint64, uint64, uint64, error) {
 	if len(selected) == 0 {
 		return "", "", 0, 0, 0, fmt.Errorf("selected token outputs are empty")
 	}
@@ -393,7 +393,7 @@ func buildWalletBSV21SendTx(ctx context.Context, db *sql.DB, rt *Runtime, select
 	txBuilder := txsdk.NewTransaction()
 	totalInput := uint64(0)
 	for _, item := range selected {
-		lockingScriptHex, lockErr := resolveWalletOutputLockingScriptHex(ctx, db, rt, item.Item.TxID, item.Item.Vout)
+		lockingScriptHex, lockErr := resolveWalletOutputLockingScriptHex(ctx, store, rt, item.Item.TxID, item.Item.Vout)
 		if lockErr != nil {
 			return "", "", 0, 0, 0, lockErr
 		}
@@ -471,12 +471,12 @@ func buildWalletBSV21SendTx(ctx context.Context, db *sql.DB, rt *Runtime, select
 	return strings.ToLower(strings.TrimSpace(txBuilder.Hex())), txID, fee, changeSatoshi, overlayFee, nil
 }
 
-func resolveWalletOutputLockingScriptHex(ctx context.Context, db *sql.DB, rt *Runtime, txid string, vout uint32) (string, error) {
+func resolveWalletOutputLockingScriptHex(ctx context.Context, store *clientDB, rt *Runtime, txid string, vout uint32) (string, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
 		return "", fmt.Errorf("txid is required")
 	}
-	localHex, err := loadWalletLocalBroadcastHex(db, txid)
+	localHex, err := loadWalletLocalBroadcastHex(store, txid)
 	if err != nil {
 		return "", err
 	}
@@ -518,19 +518,8 @@ func walletOutputLockingScriptHexFromTx(tx *txsdk.Transaction, vout uint32) (str
 	return hex.EncodeToString(tx.Outputs[vout].LockingScript.Bytes()), nil
 }
 
-func loadWalletLocalBroadcastHex(db *sql.DB, txid string) (string, error) {
-	if db == nil {
-		return "", fmt.Errorf("db is nil")
-	}
-	var txHex string
-	err := db.QueryRow(`SELECT tx_hex FROM wallet_local_broadcast_txs WHERE txid=?`, txid).Scan(&txHex)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return "", nil
-		}
-		return "", err
-	}
-	return strings.ToLower(strings.TrimSpace(txHex)), nil
+func loadWalletLocalBroadcastHex(store *clientDB, txid string) (string, error) {
+	return dbLoadWalletLocalBroadcastHex(context.Background(), store, txid)
 }
 
 func buildBSV21TransferData(assetKey string, amountText string) ([]byte, error) {

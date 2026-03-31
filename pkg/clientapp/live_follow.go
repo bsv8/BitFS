@@ -2,8 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -55,114 +53,16 @@ func normalizeLiveFollowStatus(st LiveFollowStatus) LiveFollowStatus {
 	return st
 }
 
-func persistLiveFollowStatus(db *sql.DB, st LiveFollowStatus) error {
-	if db == nil {
-		return nil
-	}
-	st = normalizeLiveFollowStatus(st)
-	decisionJSON := "{}"
-	if b, err := json.Marshal(st.LastDecision); err == nil {
-		decisionJSON = string(b)
-	}
-	_, err := db.Exec(`INSERT INTO live_follows(
-		stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-	ON CONFLICT(stream_id) DO UPDATE SET
-		stream_uri=excluded.stream_uri,
-		publisher_pubkey=excluded.publisher_pubkey,
-		have_segment_index=excluded.have_segment_index,
-		last_bought_segment_index=excluded.last_bought_segment_index,
-		last_bought_seed_hash=excluded.last_bought_seed_hash,
-		last_output_file_path=excluded.last_output_file_path,
-		last_quote_seller_pubkey_hex=excluded.last_quote_seller_pubkey_hex,
-		last_decision_json=excluded.last_decision_json,
-		status=excluded.status,
-		last_error=excluded.last_error,
-		updated_at_unix=excluded.updated_at_unix`,
-		st.StreamID,
-		strings.TrimSpace(st.StreamURI),
-		st.PublisherPubKey,
-		st.HaveSegmentIndex,
-		st.LastBoughtSegmentIndex,
-		st.LastBoughtSeedHash,
-		strings.TrimSpace(st.LastOutputFilePath),
-		st.LastQuoteSellerPeerID,
-		decisionJSON,
-		strings.TrimSpace(st.Status),
-		strings.TrimSpace(st.LastError),
-		st.UpdatedAtUnix,
-	)
-	return err
+func persistLiveFollowStatus(store *clientDB, st LiveFollowStatus) error {
+	return dbPersistLiveFollowStatus(context.Background(), store, st)
 }
 
-func loadLiveFollowStatus(db *sql.DB, streamID string) (LiveFollowStatus, bool, error) {
-	if db == nil {
-		return LiveFollowStatus{}, false, nil
-	}
-	var st LiveFollowStatus
-	var decisionJSON string
-	err := db.QueryRow(`SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
-		FROM live_follows WHERE stream_id=?`, strings.ToLower(strings.TrimSpace(streamID))).Scan(
-		&st.StreamURI,
-		&st.PublisherPubKey,
-		&st.HaveSegmentIndex,
-		&st.LastBoughtSegmentIndex,
-		&st.LastBoughtSeedHash,
-		&st.LastOutputFilePath,
-		&st.LastQuoteSellerPeerID,
-		&decisionJSON,
-		&st.Status,
-		&st.LastError,
-		&st.UpdatedAtUnix,
-	)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return LiveFollowStatus{}, false, nil
-		}
-		return LiveFollowStatus{}, false, err
-	}
-	st.StreamID = strings.ToLower(strings.TrimSpace(streamID))
-	if strings.TrimSpace(decisionJSON) != "" {
-		_ = json.Unmarshal([]byte(decisionJSON), &st.LastDecision)
-	}
-	st = normalizeLiveFollowStatus(st)
-	return st, true, nil
+func loadLiveFollowStatus(store *clientDB, streamID string) (LiveFollowStatus, bool, error) {
+	return dbLoadLiveFollowStatus(context.Background(), store, streamID)
 }
 
-func listRunningLiveFollowStatuses(db *sql.DB) ([]LiveFollowStatus, error) {
-	if db == nil {
-		return nil, nil
-	}
-	rows, err := db.Query(`SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
-		FROM live_follows WHERE status='running' ORDER BY updated_at_unix ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]LiveFollowStatus, 0)
-	for rows.Next() {
-		var st LiveFollowStatus
-		var decisionJSON string
-		if err := rows.Scan(
-			&st.StreamID,
-			&st.StreamURI,
-			&st.PublisherPubKey,
-			&st.HaveSegmentIndex,
-			&st.LastBoughtSegmentIndex,
-			&st.LastBoughtSeedHash,
-			&st.LastOutputFilePath,
-			&st.LastQuoteSellerPeerID,
-			&decisionJSON,
-			&st.Status,
-			&st.LastError,
-			&st.UpdatedAtUnix,
-		); err != nil {
-			return nil, err
-		}
-		_ = json.Unmarshal([]byte(decisionJSON), &st.LastDecision)
-		out = append(out, normalizeLiveFollowStatus(st))
-	}
-	return out, nil
+func listRunningLiveFollowStatuses(store *clientDB) ([]LiveFollowStatus, error) {
+	return dbListRunningLiveFollowStatuses(context.Background(), store)
 }
 
 func (lr *liveRuntime) setFollowStatus(streamID string, update func(*LiveFollowStatus)) {
@@ -284,7 +184,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		return LiveFollowStatus{}, err
 	}
 	streamID := strings.ToLower(strings.TrimSpace(subRes.StreamID))
-	persisted, found, err := loadLiveFollowStatus(rt.DB, streamID)
+	persisted, found, err := dbLoadLiveFollowStatus(ctx, runtimeStore(rt), streamID)
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
@@ -335,7 +235,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		}
 		return LiveFollowStatus{}, fmt.Errorf("follow state missing")
 	}
-	if err := persistLiveFollowStatus(rt.DB, st); err != nil {
+	if err := dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st); err != nil {
 		if registered {
 			scheduler.CancelTask(taskName)
 		}
@@ -356,7 +256,7 @@ func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) (map[s
 			st.LastError = err.Error()
 		})
 		if st, ok := rt.live.followStatus(streamID); ok {
-			_ = persistLiveFollowStatus(rt.DB, st)
+			_ = dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st)
 		}
 		return nil, err
 	}
@@ -385,7 +285,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 		st.LastQuoteSellerPeerID = sellerPeerID
 	})
 	if st, ok := rt.live.followStatus(streamID); ok {
-		_ = persistLiveFollowStatus(rt.DB, st)
+		_ = dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st)
 	}
 	if int64(decision.TargetSegmentIndex) <= status.HaveSegmentIndex {
 		return nil
@@ -407,7 +307,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 		st.Status = "running"
 	})
 	if st, ok := rt.live.followStatus(streamID); ok {
-		_ = persistLiveFollowStatus(rt.DB, st)
+		_ = dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st)
 	}
 	obs.Business("bitcast-client", "live_follow_bought_segment", map[string]any{
 		"stream_id":     streamID,
@@ -497,7 +397,7 @@ func TriggerLiveFollowStop(rt *Runtime, streamID string) error {
 	}
 	if st, ok := rt.live.followStatus(streamID); ok {
 		st.Status = "stopped"
-		_ = persistLiveFollowStatus(rt.DB, st)
+		_ = dbPersistLiveFollowStatus(context.Background(), runtimeStore(rt), st)
 	}
 	return nil
 }
@@ -508,7 +408,7 @@ func TriggerLiveFollowStatus(rt *Runtime, streamID string) (LiveFollowStatus, er
 	}
 	st, ok := rt.live.followStatus(streamID)
 	if !ok {
-		loaded, found, err := loadLiveFollowStatus(rt.DB, streamID)
+		loaded, found, err := dbLoadLiveFollowStatus(context.Background(), runtimeStore(rt), streamID)
 		if err != nil {
 			return LiveFollowStatus{}, err
 		}
@@ -525,7 +425,7 @@ func restorePersistedLiveFollows(ctx context.Context, rt *Runtime) {
 	if rt == nil || rt.DB == nil {
 		return
 	}
-	items, err := listRunningLiveFollowStatuses(rt.DB)
+	items, err := dbListRunningLiveFollowStatuses(ctx, runtimeStore(rt))
 	if err != nil {
 		obs.Error("bitcast-client", "live_follow_restore_failed", map[string]any{"error": err.Error()})
 		return

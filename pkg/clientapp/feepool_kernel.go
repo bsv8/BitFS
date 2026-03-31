@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"crypto/rand"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -157,7 +156,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 	st.PauseHaveSat = sum
 	st.LastError = ""
 	k.setState(gwID, st)
-	appendDomainEvent(k.rt.DB, domainEventEntry{
+	dbAppendDomainEvent(ctx, runtimeStore(k.rt), domainEventEntry{
 		CommandID:     "",
 		GatewayPeerID: gwBusinessID,
 		EventName:     "fee_pool_resumed_by_wallet_probe",
@@ -218,7 +217,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			return
 		}
 		events = append(events, name)
-		appendDomainEvent(k.rt.DB, domainEventEntry{
+		dbAppendDomainEvent(ctx, runtimeStore(k.rt), domainEventEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: gwBusinessID,
 			EventName:     name,
@@ -232,7 +231,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		if err != nil {
 			msg = strings.TrimSpace(err.Error())
 		}
-		appendEffectLog(k.rt.DB, effectLogEntry{
+		dbAppendEffectLog(ctx, runtimeStore(k.rt), effectLogEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: gwBusinessID,
 			EffectType:    effectType,
@@ -245,7 +244,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	persist := func(state feePoolKernelGatewayState) feePoolKernelResult {
 		result.EmittedEvents = append([]string(nil), events...)
 		result.StateAfter = state.State
-		appendStateSnapshot(k.rt.DB, stateSnapshotEntry{
+		dbAppendStateSnapshot(ctx, runtimeStore(k.rt), stateSnapshotEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: gwBusinessID,
 			State:         state.State,
@@ -255,7 +254,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			LastError:     state.LastError,
 			Payload:       map[string]any{"command_type": cmd.CommandType},
 		})
-		appendCommandJournal(k.rt.DB, commandJournalEntry{
+		dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
 			CommandID:     cmd.CommandID,
 			CommandType:   cmd.CommandType,
 			GatewayPeerID: gwBusinessID,
@@ -671,104 +670,6 @@ type effectLogEntry struct {
 	Status        string
 	ErrorMessage  string
 	Payload       any
-}
-
-func appendCommandJournal(db *sql.DB, e commandJournalEntry) {
-	if db == nil {
-		return
-	}
-	payload := mustJSON(e.Payload)
-	result := mustJSON(e.Result)
-	accepted := 0
-	if e.Accepted {
-		accepted = 1
-	}
-	_, err := db.Exec(
-		`INSERT INTO command_journal(
-			created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		time.Now().Unix(),
-		strings.TrimSpace(e.CommandID),
-		strings.TrimSpace(e.CommandType),
-		strings.TrimSpace(e.GatewayPeerID),
-		strings.TrimSpace(e.AggregateID),
-		strings.TrimSpace(e.RequestedBy),
-		e.RequestedAt,
-		accepted,
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.ErrorCode),
-		strings.TrimSpace(e.ErrorMessage),
-		strings.TrimSpace(e.StateBefore),
-		strings.TrimSpace(e.StateAfter),
-		e.DurationMS,
-		payload,
-		result,
-	)
-	if err != nil {
-		obs.Error("bitcast-client", "command_journal_append_failed", map[string]any{"error": err.Error(), "command_type": e.CommandType})
-	}
-}
-
-func appendDomainEvent(db *sql.DB, e domainEventEntry) {
-	if db == nil {
-		return
-	}
-	_, err := db.Exec(
-		`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
-		time.Now().Unix(),
-		strings.TrimSpace(e.CommandID),
-		strings.TrimSpace(e.GatewayPeerID),
-		strings.TrimSpace(e.EventName),
-		strings.TrimSpace(e.StateBefore),
-		strings.TrimSpace(e.StateAfter),
-		mustJSON(e.Payload),
-	)
-	if err != nil {
-		obs.Error("bitcast-client", "domain_event_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
-	}
-}
-
-func appendStateSnapshot(db *sql.DB, e stateSnapshotEntry) {
-	if db == nil {
-		return
-	}
-	_, err := db.Exec(
-		`INSERT INTO state_snapshots(
-			created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?)`,
-		time.Now().Unix(),
-		strings.TrimSpace(e.CommandID),
-		strings.TrimSpace(e.GatewayPeerID),
-		strings.TrimSpace(e.State),
-		strings.TrimSpace(e.PauseReason),
-		e.PauseNeedSat,
-		e.PauseHaveSat,
-		strings.TrimSpace(e.LastError),
-		mustJSON(e.Payload),
-	)
-	if err != nil {
-		obs.Error("bitcast-client", "state_snapshot_append_failed", map[string]any{"error": err.Error(), "state": e.State})
-	}
-}
-
-func appendEffectLog(db *sql.DB, e effectLogEntry) {
-	if db == nil {
-		return
-	}
-	_, err := db.Exec(
-		`INSERT INTO effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
-		time.Now().Unix(),
-		strings.TrimSpace(e.CommandID),
-		strings.TrimSpace(e.GatewayPeerID),
-		strings.TrimSpace(e.EffectType),
-		strings.TrimSpace(e.Stage),
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSON(e.Payload),
-	)
-	if err != nil {
-		obs.Error("bitcast-client", "effect_log_append_failed", map[string]any{"error": err.Error(), "effect_type": e.EffectType, "stage": e.Stage})
-	}
 }
 
 func mustJSON(v any) string {

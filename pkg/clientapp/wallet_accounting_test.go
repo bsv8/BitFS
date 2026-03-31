@@ -29,7 +29,7 @@ func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 
 	// 一个最小可解析交易：1 输入，2 输出（seller=700, buyer=290）。
 	finalTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
-	recordDirectPoolCloseAccounting(db, "sess_1", "", finalTxHex, 700, 290, "seller_peer_1")
+	dbRecordDirectPoolCloseAccounting(nil, newClientDB(db, nil), "sess_1", "", finalTxHex, 700, 290, "seller_peer_1")
 
 	var txid string
 	if err := db.QueryRow(`SELECT txid FROM fin_tx_breakdown WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&txid); err != nil {

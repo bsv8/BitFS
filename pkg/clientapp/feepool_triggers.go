@@ -267,7 +267,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		return FeePoolCloseResult{}, fmt.Errorf("session not found by spend_txid: %s", spendTxID)
 	}
 	if strings.TrimSpace(st.Status) == "closed" {
-		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
 			FlowID:          "fee_pool:" + spendTxID,
 			FlowType:        "fee_pool",
 			RefID:           spendTxID,
@@ -343,7 +343,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		"status":             resp.Status,
 	})
 	if resp.Success && strings.TrimSpace(resp.Status) == "closed" {
-		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
 			FlowID:          "fee_pool:" + spendTxID,
 			FlowType:        "fee_pool",
 			RefID:           spendTxID,

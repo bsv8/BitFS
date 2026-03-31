@@ -194,7 +194,7 @@ func TriggerDomainRegisterName(ctx context.Context, rt *Runtime, p TriggerDomain
 	if !submitResp.Ok {
 		return out, nil
 	}
-	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
 		FlowID:          "domain_register:" + out.RegisterTxID,
 		FlowType:        "domain_register",
 		RefID:           out.Name,

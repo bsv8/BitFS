@@ -870,14 +870,11 @@ func (m *chainMaintainer) appendWorkerLog(taskType string, entry chainWorkerLogE
 	if m == nil || m.rt == nil || m.rt.DBActor == nil {
 		return
 	}
-	_ = runtimeDBDo(m.rt, context.Background(), func(db *sql.DB) error {
-		if taskType == chainTaskTip {
-			appendChainTipWorkerLog(db, entry)
-			return nil
-		}
-		appendChainUTXOWorkerLog(db, entry)
-		return nil
-	})
+	if taskType == chainTaskTip {
+		dbAppendChainTipWorkerLog(context.Background(), runtimeStore(m.rt), entry)
+		return
+	}
+	dbAppendChainUTXOWorkerLog(context.Background(), runtimeStore(m.rt), entry)
 }
 
 func clientWalletAddress(rt *Runtime) (string, error) {
@@ -2286,82 +2283,4 @@ func getWalletBalanceFromDB(rt *Runtime) (string, uint64, error) {
 	// - 只要这张表里已经有余额，就不应该因为后续某个 history 游标请求失败而把余额清零；
 	// - 同步错误仍然保留在 wallet_utxo_sync_last_error 等诊断字段里，前端可以继续展示告警。
 	return addr, balance, nil
-}
-
-func appendChainTipWorkerLog(db *sql.DB, e chainWorkerLogEntry) {
-	if db == nil {
-		return
-	}
-	if e.TriggeredAtUnix <= 0 {
-		e.TriggeredAtUnix = time.Now().Unix()
-	}
-	if e.StartedAtUnix <= 0 {
-		e.StartedAtUnix = e.TriggeredAtUnix
-	}
-	if e.EndedAtUnix <= 0 {
-		e.EndedAtUnix = e.StartedAtUnix
-	}
-	_, err := db.Exec(
-		`INSERT INTO chain_tip_worker_logs(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		e.TriggeredAtUnix,
-		e.StartedAtUnix,
-		e.EndedAtUnix,
-		e.DurationMS,
-		strings.TrimSpace(e.TriggerSource),
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSON(e.Result),
-	)
-	if err != nil {
-		obs.Error("bitcast-client", "chain_tip_worker_log_append_failed", map[string]any{"error": err.Error()})
-		return
-	}
-	trimWorkerLogs(db, "chain_tip_worker_logs", chainWorkerLogKeepCount)
-}
-
-func appendChainUTXOWorkerLog(db *sql.DB, e chainWorkerLogEntry) {
-	if db == nil {
-		return
-	}
-	if e.TriggeredAtUnix <= 0 {
-		e.TriggeredAtUnix = time.Now().Unix()
-	}
-	if e.StartedAtUnix <= 0 {
-		e.StartedAtUnix = e.TriggeredAtUnix
-	}
-	if e.EndedAtUnix <= 0 {
-		e.EndedAtUnix = e.StartedAtUnix
-	}
-	_, err := db.Exec(
-		`INSERT INTO chain_utxo_worker_logs(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		e.TriggeredAtUnix,
-		e.StartedAtUnix,
-		e.EndedAtUnix,
-		e.DurationMS,
-		strings.TrimSpace(e.TriggerSource),
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSON(e.Result),
-	)
-	if err != nil {
-		obs.Error("bitcast-client", "chain_utxo_worker_log_append_failed", map[string]any{"error": err.Error()})
-		return
-	}
-	trimWorkerLogs(db, "chain_utxo_worker_logs", chainWorkerLogKeepCount)
-}
-
-func trimWorkerLogs(db *sql.DB, table string, keep int) {
-	if db == nil || strings.TrimSpace(table) == "" || keep <= 0 {
-		return
-	}
-	stmt := fmt.Sprintf(
-		"DELETE FROM %s WHERE id NOT IN (SELECT id FROM %s ORDER BY id DESC LIMIT ?)",
-		table,
-		table,
-	)
-	if _, err := db.Exec(stmt, keep); err != nil {
-		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
-	}
 }

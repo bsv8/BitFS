@@ -1,0 +1,1019 @@
+package clientapp
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv8/BFTP/pkg/obs"
+)
+
+// 设计说明：
+// - 这里收口运行期常见的日志、流水、账务写入；
+// - 外层业务代码只表达“记什么”，不直接写 SQL；
+// - 同一类写入统一走 clientDB，后续要补事务或限流时，只改这里。
+
+func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		if strings.TrimSpace(e.GatewayPeerID) == "" {
+			e.GatewayPeerID = "unknown"
+		}
+		if strings.TrimSpace(e.Direction) == "" {
+			e.Direction = "info"
+		}
+		if strings.TrimSpace(e.Purpose) == "" {
+			e.Purpose = e.EventType
+		}
+		_, err := db.Exec(
+			`INSERT INTO tx_history(created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			e.GatewayPeerID,
+			e.EventType,
+			e.Direction,
+			e.AmountSatoshi,
+			e.Purpose,
+			e.Note,
+			e.PoolID,
+			e.MsgID,
+			e.SequenceNum,
+			e.CycleIndex,
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "tx_history_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
+		}
+		return nil
+	})
+}
+
+func dbAppendWalletFundFlow(ctx context.Context, store *clientDB, e walletFundFlowEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		e.VisitID = strings.TrimSpace(e.VisitID)
+		e.VisitLocator = strings.TrimSpace(e.VisitLocator)
+		e.FlowID = strings.TrimSpace(e.FlowID)
+		if e.FlowID == "" {
+			e.FlowID = "unknown"
+		}
+		e.FlowType = strings.TrimSpace(e.FlowType)
+		if e.FlowType == "" {
+			e.FlowType = "unknown"
+		}
+		e.RefID = strings.TrimSpace(e.RefID)
+		e.Stage = strings.TrimSpace(e.Stage)
+		if e.Stage == "" {
+			e.Stage = "unknown"
+		}
+		e.Direction = strings.TrimSpace(e.Direction)
+		if e.Direction == "" {
+			e.Direction = "unknown"
+		}
+		e.Purpose = strings.TrimSpace(e.Purpose)
+		if e.Purpose == "" {
+			e.Purpose = "unknown"
+		}
+		_, err := db.Exec(
+			`INSERT INTO wallet_fund_flows(
+				created_at_unix,visit_id,visit_locator,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			e.VisitID,
+			e.VisitLocator,
+			e.FlowID,
+			e.FlowType,
+			e.RefID,
+			e.Stage,
+			e.Direction,
+			e.Purpose,
+			e.AmountSatoshi,
+			e.UsedSatoshi,
+			e.ReturnedSatoshi,
+			strings.TrimSpace(e.RelatedTxID),
+			e.Note,
+			mustJSONString(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "wallet_fund_flow_append_failed", map[string]any{
+				"error":   err.Error(),
+				"flow_id": e.FlowID,
+				"stage":   e.Stage,
+			})
+		}
+		return nil
+	})
+}
+
+func dbAppendWalletFundFlowFromContext(ctx context.Context, store *clientDB, e walletFundFlowEntry) {
+	meta := requestVisitMetaFromContext(ctx)
+	if strings.TrimSpace(e.VisitID) == "" {
+		e.VisitID = meta.VisitID
+	}
+	if strings.TrimSpace(e.VisitLocator) == "" {
+		e.VisitLocator = meta.VisitLocator
+	}
+	dbAppendWalletFundFlow(ctx, store, e)
+}
+
+func dbAppendWalletLedgerEntry(ctx context.Context, store *clientDB, e walletLedgerEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		e.TxID = strings.ToLower(strings.TrimSpace(e.TxID))
+		if e.TxID == "" {
+			e.TxID = "unknown"
+		}
+		e.Direction = strings.ToUpper(strings.TrimSpace(e.Direction))
+		if e.Direction == "" {
+			e.Direction = "UNKNOWN"
+		}
+		e.Category = strings.ToUpper(strings.TrimSpace(e.Category))
+		if e.Category == "" {
+			e.Category = "UNKNOWN"
+		}
+		e.Status = strings.ToUpper(strings.TrimSpace(e.Status))
+		if e.Status == "" {
+			e.Status = "UNKNOWN"
+		}
+		if e.OccurredAtUnix <= 0 {
+			e.OccurredAtUnix = time.Now().Unix()
+		}
+		_, err := db.Exec(
+			`INSERT INTO wallet_ledger_entries(
+				created_at_unix,txid,direction,category,amount_satoshi,counterparty_label,status,block_height,occurred_at_unix,raw_ref_id,note,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			e.TxID,
+			e.Direction,
+			e.Category,
+			e.AmountSatoshi,
+			strings.TrimSpace(e.CounterpartyLabel),
+			e.Status,
+			e.BlockHeight,
+			e.OccurredAtUnix,
+			strings.TrimSpace(e.RawRefID),
+			e.Note,
+			mustJSONString(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "wallet_ledger_entry_append_failed", map[string]any{
+				"error":     err.Error(),
+				"txid":      e.TxID,
+				"direction": e.Direction,
+				"category":  e.Category,
+			})
+		}
+		return nil
+	})
+}
+
+func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		if strings.TrimSpace(e.GatewayPeerID) == "" {
+			e.GatewayPeerID = "unknown"
+		}
+		if strings.TrimSpace(e.Action) == "" {
+			e.Action = "unknown"
+		}
+		_, err := db.Exec(
+			`INSERT INTO gateway_events(created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			e.GatewayPeerID,
+			e.Action,
+			e.MsgID,
+			e.SequenceNum,
+			e.PoolID,
+			e.AmountSatoshi,
+			mustJSONString(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action})
+		}
+		return nil
+	})
+}
+
+func dbAppendSaleRecord(ctx context.Context, store *clientDB, e saleRecordEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO sale_records(created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token) VALUES(?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			e.SessionID,
+			e.SeedHash,
+			e.ChunkIndex,
+			e.UnitPriceSatPer64K,
+			e.AmountSatoshi,
+			e.BuyerGatewayPeerID,
+			e.ReleaseToken,
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "sale_record_append_failed", map[string]any{"error": err.Error(), "session_id": e.SessionID})
+		}
+		return nil
+	})
+}
+
+func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestratorLogEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO orchestrator_logs(
+				created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			strings.TrimSpace(e.EventType),
+			strings.TrimSpace(e.Source),
+			strings.TrimSpace(e.SignalType),
+			strings.TrimSpace(e.AggregateKey),
+			strings.TrimSpace(e.IdempotencyKey),
+			strings.TrimSpace(e.CommandType),
+			strings.TrimSpace(e.GatewayPeerID),
+			strings.TrimSpace(e.TaskStatus),
+			e.RetryCount,
+			e.QueueLength,
+			strings.TrimSpace(e.ErrorMessage),
+			mustJSON(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "orchestrator_log_append_failed", map[string]any{
+				"error":      err.Error(),
+				"event_type": strings.TrimSpace(e.EventType),
+			})
+		}
+		return nil
+	})
+}
+
+func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJournalEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		accepted := 0
+		if e.Accepted {
+			accepted = 1
+		}
+		_, err := db.Exec(
+			`INSERT INTO command_journal(
+				created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			strings.TrimSpace(e.CommandID),
+			strings.TrimSpace(e.CommandType),
+			strings.TrimSpace(e.GatewayPeerID),
+			strings.TrimSpace(e.AggregateID),
+			strings.TrimSpace(e.RequestedBy),
+			e.RequestedAt,
+			accepted,
+			strings.TrimSpace(e.Status),
+			strings.TrimSpace(e.ErrorCode),
+			strings.TrimSpace(e.ErrorMessage),
+			strings.TrimSpace(e.StateBefore),
+			strings.TrimSpace(e.StateAfter),
+			e.DurationMS,
+			mustJSON(e.Payload),
+			mustJSON(e.Result),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "command_journal_append_failed", map[string]any{"error": err.Error(), "command_type": e.CommandType})
+		}
+		return nil
+	})
+}
+
+func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			strings.TrimSpace(e.CommandID),
+			strings.TrimSpace(e.GatewayPeerID),
+			strings.TrimSpace(e.EventName),
+			strings.TrimSpace(e.StateBefore),
+			strings.TrimSpace(e.StateAfter),
+			mustJSON(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "domain_event_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
+		}
+		return nil
+	})
+}
+
+func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshotEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO state_snapshots(
+				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			strings.TrimSpace(e.CommandID),
+			strings.TrimSpace(e.GatewayPeerID),
+			strings.TrimSpace(e.State),
+			strings.TrimSpace(e.PauseReason),
+			e.PauseNeedSat,
+			e.PauseHaveSat,
+			strings.TrimSpace(e.LastError),
+			mustJSON(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "state_snapshot_append_failed", map[string]any{"error": err.Error(), "state": e.State})
+		}
+		return nil
+	})
+}
+
+func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		_, err := db.Exec(
+			`INSERT INTO effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			strings.TrimSpace(e.CommandID),
+			strings.TrimSpace(e.GatewayPeerID),
+			strings.TrimSpace(e.EffectType),
+			strings.TrimSpace(e.Stage),
+			strings.TrimSpace(e.Status),
+			strings.TrimSpace(e.ErrorMessage),
+			mustJSON(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "effect_log_append_failed", map[string]any{"error": err.Error(), "effect_type": e.EffectType, "stage": e.Stage})
+		}
+		return nil
+	})
+}
+
+func dbAppendChainTipWorkerLog(ctx context.Context, store *clientDB, e chainWorkerLogEntry) {
+	dbAppendChainWorkerLog(ctx, store, "chain_tip_worker_logs", "chain_tip_worker_log_append_failed", e)
+}
+
+func dbAppendChainUTXOWorkerLog(ctx context.Context, store *clientDB, e chainWorkerLogEntry) {
+	dbAppendChainWorkerLog(ctx, store, "chain_utxo_worker_logs", "chain_utxo_worker_log_append_failed", e)
+}
+
+func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, errorEvent string, e chainWorkerLogEntry) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		if e.TriggeredAtUnix <= 0 {
+			e.TriggeredAtUnix = time.Now().Unix()
+		}
+		if e.StartedAtUnix <= 0 {
+			e.StartedAtUnix = e.TriggeredAtUnix
+		}
+		if e.EndedAtUnix <= 0 {
+			e.EndedAtUnix = e.StartedAtUnix
+		}
+		stmt := fmt.Sprintf(
+			`INSERT INTO %s(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
+			 VALUES(?,?,?,?,?,?,?,?)`,
+			strings.TrimSpace(table),
+		)
+		if _, err := db.Exec(
+			stmt,
+			e.TriggeredAtUnix,
+			e.StartedAtUnix,
+			e.EndedAtUnix,
+			e.DurationMS,
+			strings.TrimSpace(e.TriggerSource),
+			strings.TrimSpace(e.Status),
+			strings.TrimSpace(e.ErrorMessage),
+			mustJSON(e.Result),
+		); err != nil {
+			obs.Error("bitcast-client", errorEvent, map[string]any{"error": err.Error()})
+			return nil
+		}
+		dbTrimWorkerLogs(db, table, chainWorkerLogKeepCount)
+		return nil
+	})
+}
+
+func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
+	if db == nil || strings.TrimSpace(table) == "" || keep <= 0 {
+		return
+	}
+	stmt := fmt.Sprintf(
+		"DELETE FROM %s WHERE id NOT IN (SELECT id FROM %s ORDER BY id DESC LIMIT ?)",
+		table,
+		table,
+	)
+	if _, err := db.Exec(stmt, keep); err != nil {
+		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+	}
+}
+
+func dbAppendFinBusiness(db *sql.DB, e finBusinessEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if e.OccurredAtUnix <= 0 {
+		e.OccurredAtUnix = time.Now().Unix()
+	}
+	e.BusinessID = strings.TrimSpace(e.BusinessID)
+	if e.BusinessID == "" {
+		return fmt.Errorf("business_id is required")
+	}
+	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
+	if e.IdempotencyKey == "" {
+		e.IdempotencyKey = e.BusinessID
+	}
+	_, err := db.Exec(
+		`INSERT INTO fin_business(business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(idempotency_key) DO UPDATE SET
+			status=excluded.status,
+			occurred_at_unix=excluded.occurred_at_unix,
+			note=excluded.note,
+			payload_json=excluded.payload_json`,
+		e.BusinessID,
+		strings.TrimSpace(e.SceneType),
+		strings.TrimSpace(e.SceneSubType),
+		strings.TrimSpace(e.FromPartyID),
+		strings.TrimSpace(e.ToPartyID),
+		strings.TrimSpace(e.RefID),
+		strings.TrimSpace(e.Status),
+		e.OccurredAtUnix,
+		e.IdempotencyKey,
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func dbAppendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return dbAppendFinTxBreakdown(db, e)
+}
+
+func dbAppendFinBusinessTxIfAbsent(db *sql.DB, e finBusinessTxEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM fin_business_txs WHERE business_id=? AND txid=?`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+	).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return dbAppendFinBusinessTx(db, e)
+}
+
+func dbAppendFinTxUTXOLinkIfAbsent(db *sql.DB, e finTxUTXOLinkEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM fin_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+		strings.ToLower(strings.TrimSpace(e.UTXOID)),
+		strings.TrimSpace(e.IOSide),
+		strings.TrimSpace(e.UTXORole),
+	).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return dbAppendFinTxUTXOLink(db, e)
+}
+
+func dbAppendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if e.CreatedAtUnix <= 0 {
+		e.CreatedAtUnix = time.Now().Unix()
+	}
+	_, err := db.Exec(
+		`INSERT INTO fin_tx_breakdown(
+			business_id,txid,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+		e.GrossInputSatoshi,
+		e.ChangeBackSatoshi,
+		e.ExternalInSatoshi,
+		e.CounterpartyOutSat,
+		e.MinerFeeSatoshi,
+		e.NetOutSatoshi,
+		e.NetInSatoshi,
+		e.CreatedAtUnix,
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func dbAppendFinBusinessTx(db *sql.DB, e finBusinessTxEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if e.CreatedAtUnix <= 0 {
+		e.CreatedAtUnix = time.Now().Unix()
+	}
+	_, err := db.Exec(
+		`INSERT INTO fin_business_txs(business_id,txid,tx_role,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?)`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+		strings.TrimSpace(e.TxRole),
+		e.CreatedAtUnix,
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func dbAppendFinTxUTXOLink(db *sql.DB, e finTxUTXOLinkEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if e.CreatedAtUnix <= 0 {
+		e.CreatedAtUnix = time.Now().Unix()
+	}
+	_, err := db.Exec(
+		`INSERT INTO fin_tx_utxo_links(business_id,txid,utxo_id,io_side,utxo_role,amount_satoshi,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
+		strings.TrimSpace(e.BusinessID),
+		strings.ToLower(strings.TrimSpace(e.TxID)),
+		strings.ToLower(strings.TrimSpace(e.UTXOID)),
+		strings.TrimSpace(e.IOSide),
+		strings.TrimSpace(e.UTXORole),
+		e.AmountSatoshi,
+		e.CreatedAtUnix,
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func dbAppendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLinkEntry) error {
+	if err := dbAppendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
+		BusinessID:    e.BusinessID,
+		TxID:          e.TxID,
+		TxRole:        strings.TrimSpace(txRole),
+		CreatedAtUnix: e.CreatedAtUnix,
+		Note:          e.Note,
+		Payload:       e.Payload,
+	}); err != nil {
+		return err
+	}
+	return dbAppendFinTxUTXOLinkIfAbsent(db, e)
+}
+
+func dbAppendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if e.OccurredAtUnix <= 0 {
+		e.OccurredAtUnix = time.Now().Unix()
+	}
+	e.ProcessID = strings.TrimSpace(e.ProcessID)
+	if e.ProcessID == "" {
+		return fmt.Errorf("process_id is required")
+	}
+	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
+	if e.IdempotencyKey == "" {
+		e.IdempotencyKey = e.ProcessID + ":" + strings.TrimSpace(e.EventType)
+	}
+	_, err := db.Exec(
+		`INSERT INTO fin_process_events(process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(idempotency_key) DO UPDATE SET
+			status=excluded.status,
+			occurred_at_unix=excluded.occurred_at_unix,
+			note=excluded.note,
+			payload_json=excluded.payload_json`,
+		e.ProcessID,
+		strings.TrimSpace(e.SceneType),
+		strings.TrimSpace(e.SceneSubType),
+		strings.TrimSpace(e.EventType),
+		strings.TrimSpace(e.Status),
+		strings.TrimSpace(e.RefID),
+		e.OccurredAtUnix,
+		e.IdempotencyKey,
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
+	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+		businessID := strings.TrimSpace(in.BusinessID)
+		if businessID == "" {
+			businessID = "biz_feepool_open_" + randHex(8)
+		}
+		baseTxHex := strings.TrimSpace(in.BaseTxHex)
+		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
+		lockScript := strings.TrimSpace(in.ClientLockScript)
+		var grossInput, changeBack, lockAmount int64
+		if baseTxHex != "" {
+			t, err := transaction.NewTransactionFromHex(baseTxHex)
+			if err != nil {
+				obs.Error("bitcast-client", "wallet_accounting_parse_base_tx_failed", map[string]any{"error": err.Error(), "base_txid": baseTxID})
+			} else {
+				for _, input := range t.Inputs {
+					if input.SourceTxOutput() != nil {
+						grossInput += int64(input.SourceTxOutput().Satoshis)
+						if input.SourceTXID != nil {
+							utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
+							_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
+								BusinessID:    businessID,
+								TxID:          baseTxID,
+								UTXOID:        utxoID,
+								IOSide:        "input",
+								UTXORole:      "wallet_input",
+								AmountSatoshi: int64(input.SourceTxOutput().Satoshis),
+								Note:          "fee pool open input",
+							})
+						}
+					}
+				}
+				for idx, out := range t.Outputs {
+					amount := int64(out.Satoshis)
+					if idx == 0 {
+						lockAmount += amount
+						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
+							BusinessID:    businessID,
+							TxID:          baseTxID,
+							UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
+							IOSide:        "output",
+							UTXORole:      "pool_lock",
+							AmountSatoshi: amount,
+							Note:          "fee pool lock output",
+						})
+						continue
+					}
+					if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
+						changeBack += amount
+						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
+							BusinessID:    businessID,
+							TxID:          baseTxID,
+							UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
+							IOSide:        "output",
+							UTXORole:      "wallet_change",
+							AmountSatoshi: amount,
+							Note:          "wallet change output",
+						})
+					}
+				}
+				if lockAmount == 0 {
+					lockAmount = int64(in.PoolAmountSatoshi)
+				}
+			}
+		}
+		if lockAmount == 0 {
+			lockAmount = int64(in.PoolAmountSatoshi)
+		}
+		minerFee := grossInput - changeBack - lockAmount
+		if minerFee < 0 {
+			minerFee = 0
+		}
+		if err := dbAppendFinBusiness(db, finBusinessEntry{
+			BusinessID:     businessID,
+			SceneType:      "fee_pool",
+			SceneSubType:   "open",
+			FromPartyID:    strings.TrimSpace(in.FromPartyID),
+			ToPartyID:      strings.TrimSpace(in.ToPartyID),
+			RefID:          strings.TrimSpace(in.SpendTxID),
+			Status:         "posted",
+			OccurredAtUnix: time.Now().Unix(),
+			IdempotencyKey: "fee_pool_open:" + strings.TrimSpace(in.SpendTxID),
+			Note:           "fee pool open lock",
+			Payload: map[string]any{
+				"spend_txid": strings.TrimSpace(in.SpendTxID),
+				"base_txid":  baseTxID,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			return
+		}
+		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+			BusinessID:         businessID,
+			TxID:               baseTxID,
+			GrossInputSatoshi:  grossInput,
+			ChangeBackSatoshi:  changeBack,
+			ExternalInSatoshi:  0,
+			CounterpartyOutSat: lockAmount,
+			MinerFeeSatoshi:    minerFee,
+			NetOutSatoshi:      lockAmount + minerFee,
+			NetInSatoshi:       0,
+			Note:               "open lock gross_input-change_back",
+			Payload: map[string]any{
+				"formula": "net_out = counterparty_out + miner_fee",
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+		}
+	})
+}
+
+func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID string, sequence uint32, amount uint64, gatewayPeerID string) {
+	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
+		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+			ProcessID:      processID,
+			SceneType:      "fee_pool",
+			SceneSubType:   "cycle_pay",
+			EventType:      "update",
+			Status:         "applied",
+			RefID:          strings.TrimSpace(spendTxID),
+			OccurredAtUnix: time.Now().Unix(),
+			IdempotencyKey: "fee_pool_cycle_event:" + strings.TrimSpace(spendTxID) + ":" + fmt.Sprint(sequence),
+			Note:           "fee pool cycle event (offchain)",
+			Payload: map[string]any{
+				"sequence":           sequence,
+				"charge_amount_sat":  amount,
+				"gateway_pubkey_hex": strings.TrimSpace(gatewayPeerID),
+				"financial_affected": false,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+		}
+	})
+}
+
+func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) {
+	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
+		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
+		lockScript := strings.TrimSpace(in.ClientLockScript)
+		var grossInput, changeBack, lockAmount int64
+		if t, err := transaction.NewTransactionFromHex(strings.TrimSpace(in.BaseTxHex)); err == nil {
+			for _, input := range t.Inputs {
+				if input.SourceTxOutput() == nil {
+					continue
+				}
+				grossInput += int64(input.SourceTxOutput().Satoshis)
+				if input.SourceTXID != nil {
+					utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
+					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
+						BusinessID:    businessID,
+						TxID:          baseTxID,
+						UTXOID:        utxoID,
+						IOSide:        "input",
+						UTXORole:      "wallet_input",
+						AmountSatoshi: int64(input.SourceTxOutput().Satoshis),
+						Note:          "direct pool open input",
+					})
+				}
+			}
+			for idx, out := range t.Outputs {
+				amount := int64(out.Satoshis)
+				if idx == 0 {
+					lockAmount += amount
+					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
+						BusinessID:    businessID,
+						TxID:          baseTxID,
+						UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
+						IOSide:        "output",
+						UTXORole:      "pool_lock",
+						AmountSatoshi: amount,
+						Note:          "direct pool lock output",
+					})
+					continue
+				}
+				if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
+					changeBack += amount
+					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
+						BusinessID:    businessID,
+						TxID:          baseTxID,
+						UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
+						IOSide:        "output",
+						UTXORole:      "wallet_change",
+						AmountSatoshi: amount,
+						Note:          "wallet change output",
+					})
+				}
+			}
+		}
+		if lockAmount == 0 {
+			lockAmount = int64(in.PoolAmountSatoshi)
+		}
+		minerFee := grossInput - changeBack - lockAmount
+		if minerFee < 0 {
+			minerFee = 0
+		}
+		if err := dbAppendFinBusiness(db, finBusinessEntry{
+			BusinessID:     businessID,
+			SceneType:      "c2c_transfer",
+			SceneSubType:   "open",
+			FromPartyID:    "client:self",
+			ToPartyID:      "seller:" + strings.TrimSpace(in.SellerPeerID),
+			RefID:          strings.TrimSpace(in.SessionID),
+			Status:         "posted",
+			OccurredAtUnix: time.Now().Unix(),
+			IdempotencyKey: "c2c_open:" + strings.TrimSpace(in.SessionID),
+			Note:           "direct transfer pool open lock",
+			Payload: map[string]any{
+				"session_id": strings.TrimSpace(in.SessionID),
+				"deal_id":    strings.TrimSpace(in.DealID),
+				"base_txid":  baseTxID,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			return
+		}
+		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+			BusinessID:         businessID,
+			TxID:               baseTxID,
+			GrossInputSatoshi:  grossInput,
+			ChangeBackSatoshi:  changeBack,
+			ExternalInSatoshi:  0,
+			CounterpartyOutSat: lockAmount,
+			MinerFeeSatoshi:    minerFee,
+			NetOutSatoshi:      lockAmount + minerFee,
+			NetInSatoshi:       0,
+			Note:               "direct open lock gross_input-change_back",
+			Payload:            map[string]any{"session_id": strings.TrimSpace(in.SessionID)},
+		})
+	})
+}
+
+func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) {
+	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+		businessID := fmt.Sprintf("biz_c2c_pay_%s_%d", strings.TrimSpace(sessionID), sequence)
+		if err := dbAppendFinBusiness(db, finBusinessEntry{
+			BusinessID:     businessID,
+			SceneType:      "c2c_transfer",
+			SceneSubType:   "chunk_pay",
+			FromPartyID:    "client:self",
+			ToPartyID:      "seller:" + strings.TrimSpace(sellerPeerID),
+			RefID:          strings.TrimSpace(sessionID),
+			Status:         "posted",
+			OccurredAtUnix: time.Now().Unix(),
+			IdempotencyKey: "c2c_pay:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
+			Note:           "direct transfer chunk pay",
+			Payload:        map[string]any{"sequence": sequence},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+			return
+		}
+		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+			BusinessID:         businessID,
+			TxID:               strings.TrimSpace(relatedTxID),
+			GrossInputSatoshi:  0,
+			ChangeBackSatoshi:  0,
+			ExternalInSatoshi:  0,
+			CounterpartyOutSat: int64(amount),
+			MinerFeeSatoshi:    0,
+			NetOutSatoshi:      int64(amount),
+			NetInSatoshi:       0,
+			Note:               "offchain chunk pay",
+			Payload:            map[string]any{"sequence": sequence},
+		})
+	})
+}
+
+func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) {
+	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+		finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
+		txHex := strings.TrimSpace(finalTxHex)
+		var parsedFinalTx *transaction.Transaction
+		if txHex != "" {
+			t, err := transaction.NewTransactionFromHex(txHex)
+			if err != nil {
+				obs.Error("bitcast-client", "wallet_accounting_parse_final_tx_failed", map[string]any{"error": err.Error(), "final_txid": finalTxID})
+			} else {
+				parsedFinalTx = t
+				if finalTxID == "" {
+					finalTxID = strings.ToLower(strings.TrimSpace(t.TxID().String()))
+				}
+			}
+		}
+		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
+		if err := dbAppendFinBusiness(db, finBusinessEntry{
+			BusinessID:     businessID,
+			SceneType:      "c2c_transfer",
+			SceneSubType:   "close",
+			FromPartyID:    "client:self",
+			ToPartyID:      "seller:" + strings.TrimSpace(sellerPeerID),
+			RefID:          strings.TrimSpace(sessionID),
+			Status:         "posted",
+			OccurredAtUnix: time.Now().Unix(),
+			IdempotencyKey: "c2c_close:" + strings.TrimSpace(sessionID),
+			Note:           "direct transfer settle close",
+			Payload: map[string]any{
+				"seller_amount_satoshi": sellerAmount,
+				"buyer_amount_satoshi":  buyerAmount,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			return
+		}
+		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+			BusinessID:         businessID,
+			TxID:               finalTxID,
+			GrossInputSatoshi:  0,
+			ChangeBackSatoshi:  int64(buyerAmount),
+			ExternalInSatoshi:  0,
+			CounterpartyOutSat: 0,
+			MinerFeeSatoshi:    0,
+			NetOutSatoshi:      0,
+			NetInSatoshi:       0,
+			Note:               "pool settle return",
+			Payload:            map[string]any{"session_id": strings.TrimSpace(sessionID)},
+		})
+		if parsedFinalTx == nil {
+			return
+		}
+		inputValueHint := int64(sellerAmount + buyerAmount)
+		for i, in := range parsedFinalTx.Inputs {
+			if in.SourceTXID == nil {
+				continue
+			}
+			value := int64(0)
+			if i == 0 {
+				value = inputValueHint
+			}
+			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
+			_ = dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
+				BusinessID:    businessID,
+				TxID:          finalTxID,
+				UTXOID:        utxoID,
+				IOSide:        "input",
+				UTXORole:      "pool_input",
+				AmountSatoshi: value,
+				Note:          "direct pool settle input",
+			})
+		}
+		sellerLeft := sellerAmount
+		buyerLeft := buyerAmount
+		for idx, out := range parsedFinalTx.Outputs {
+			amount := out.Satoshis
+			if amount == 0 {
+				continue
+			}
+			utxoRole := "settle_other"
+			note := "direct pool settle output"
+			if sellerLeft > 0 && amount == sellerLeft {
+				utxoRole = "settle_to_seller"
+				note = "direct pool settle output to seller"
+				sellerLeft = 0
+			} else if buyerLeft > 0 && amount == buyerLeft {
+				utxoRole = "settle_to_buyer"
+				note = "direct pool settle output to buyer"
+				buyerLeft = 0
+			}
+			_ = dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
+				BusinessID:    businessID,
+				TxID:          finalTxID,
+				UTXOID:        finalTxID + ":" + fmt.Sprint(idx),
+				IOSide:        "output",
+				UTXORole:      utxoRole,
+				AmountSatoshi: int64(amount),
+				Note:          note,
+			})
+		}
+	})
+}
+
+func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(*sql.DB)) {
+	if store == nil {
+		return
+	}
+	_ = store.Do(ctx, func(db *sql.DB) error {
+		fn(db)
+		return nil
+	})
+}

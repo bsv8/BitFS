@@ -201,7 +201,7 @@ func recordGatewayRuntimeError(rt *Runtime, gw peer.ID, stage string, err error)
 	if rt.gwManager != nil {
 		rt.gwManager.SetRuntimeError(gw, stage, err)
 	}
-	appendGatewayEvent(rt.DB, gatewayEventEntry{
+	dbAppendGatewayEvent(context.Background(), runtimeStore(rt), gatewayEventEntry{
 		GatewayPeerID: gw.String(),
 		Action:        "listen_error",
 		AmountSatoshi: 0,
@@ -512,7 +512,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	}
 	rt.setFeePool(gwID, s)
 
-	appendTxHistory(rt.DB, txHistoryEntry{
+	dbAppendTxHistory(ctx, runtimeStore(rt), txHistoryEntry{
 		GatewayPeerID: gwID,
 		EventType:     "fee_pool_open",
 		Direction:     "info",
@@ -522,7 +522,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		PoolID:        createResp.SpendTxID,
 		SequenceNum:   1,
 	})
-	appendGatewayEvent(rt.DB, gatewayEventEntry{
+	dbAppendGatewayEvent(ctx, runtimeStore(rt), gatewayEventEntry{
 		GatewayPeerID: gwID,
 		Action:        "fee_pool_open",
 		PoolID:        createResp.SpendTxID,
@@ -542,7 +542,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			"fee_rate_sat_per_byte":      info.FeeRateSatPerByte,
 		},
 	})
-	appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlow(ctx, runtimeStore(rt), walletFundFlowEntry{
 		FlowID:          "fee_pool:" + createResp.SpendTxID,
 		FlowType:        "fee_pool",
 		RefID:           createResp.SpendTxID,
@@ -561,7 +561,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			"server_amount":        initialServerAmount,
 		},
 	})
-	recordFeePoolOpenAccounting(rt.DB, feePoolOpenAccountingInput{
+	dbRecordFeePoolOpenAccounting(ctx, runtimeStore(rt), feePoolOpenAccountingInput{
 		BusinessID:        "biz_feepool_open_" + strings.TrimSpace(createResp.SpendTxID),
 		SpendTxID:         createResp.SpendTxID,
 		BaseTxID:          baseOut.BaseTxID,
@@ -573,7 +573,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	})
 	if initialServerAmount > 0 {
 		// open 锁池与首扣是两笔不同业务事件：这里把首扣单独记成 debit。
-		appendTxHistory(rt.DB, txHistoryEntry{
+		dbAppendTxHistory(ctx, runtimeStore(rt), txHistoryEntry{
 			GatewayPeerID: gwID,
 			EventType:     "fee_pool_open_debit",
 			Direction:     "debit",
@@ -583,7 +583,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			PoolID:        createResp.SpendTxID,
 			SequenceNum:   1,
 		})
-		appendGatewayEvent(rt.DB, gatewayEventEntry{
+		dbAppendGatewayEvent(ctx, runtimeStore(rt), gatewayEventEntry{
 			GatewayPeerID: gwID,
 			Action:        "listen_cycle_fee_open",
 			PoolID:        createResp.SpendTxID,
@@ -598,7 +598,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 				"trigger":           "open_create",
 			},
 		})
-		appendWalletFundFlow(rt.DB, walletFundFlowEntry{
+		dbAppendWalletFundFlow(ctx, runtimeStore(rt), walletFundFlowEntry{
 			FlowID:          "fee_pool:" + createResp.SpendTxID,
 			FlowType:        "fee_pool",
 			RefID:           createResp.SpendTxID,
@@ -700,7 +700,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 	sequence := s.Sequence
 
-	appendTxHistory(rt.DB, txHistoryEntry{
+	dbAppendTxHistory(ctx, runtimeStore(rt), txHistoryEntry{
 		GatewayPeerID: s.GatewayPeerID,
 		EventType:     "peer_call",
 		Direction:     "debit",
@@ -710,7 +710,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		PoolID:        s.SpendTxID,
 		SequenceNum:   sequence,
 	})
-	appendGatewayEvent(rt.DB, gatewayEventEntry{
+	dbAppendGatewayEvent(ctx, runtimeStore(rt), gatewayEventEntry{
 		GatewayPeerID: s.GatewayPeerID,
 		Action:        "listen_cycle_fee",
 		PoolID:        s.SpendTxID,
@@ -723,7 +723,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 			"minimum_billing_cycle_seconds": s.BillingCycleSeconds,
 		},
 	})
-	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, sequence, resp.ChargedAmount, s.GatewayPeerID)
+	dbRecordFeePoolCycleEvent(ctx, runtimeStore(rt), s.SpendTxID, sequence, resp.ChargedAmount, s.GatewayPeerID)
 	return nil
 }
 

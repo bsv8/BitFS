@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -239,7 +238,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("query head height failed: %w", err)
 	}
-	state, _, err := loadSelfNodeReachabilityState(rt.DB, nodePubkeyHex)
+	state, _, err := dbLoadSelfNodeReachabilityState(ctx, runtimeStore(rt), nodePubkeyHex)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
@@ -287,7 +286,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		}
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
-	if err := saveSelfNodeReachabilityState(rt.DB, selfNodeReachabilityState{
+	if err := dbSaveSelfNodeReachabilityState(ctx, runtimeStore(rt), selfNodeReachabilityState{
 		NodePubkeyHex: nodePubkeyHex,
 		HeadHeight:    uint64(headHeight),
 		Seq:           announceSeq,
@@ -344,7 +343,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		if err != nil {
 			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 		}
-		if err := saveNodeReachabilityCache(rt.DB, gatewayBusinessID(rt, gw.ID), ann); err != nil {
+		if err := dbSaveNodeReachabilityCache(ctx, runtimeStore(rt), gatewayBusinessID(rt, gw.ID), ann); err != nil {
 			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 		}
 		if err := injectNodeReachabilityAnnouncement(rt, ann); err != nil {
@@ -361,122 +360,20 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	return resp, nil
 }
 
-func loadCachedNodeReachability(db *sql.DB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
-	if db == nil {
-		return broadcastmodule.NodeReachabilityAnnouncement{}, false, nil
-	}
-	targetNodePubkeyHex, err := normalizeCompressedPubKeyHex(targetNodePubkeyHex)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
-	}
-	var (
-		sourceGatewayPubkeyHex string
-		headHeight             uint64
-		seq                    uint64
-		multiaddrsJSON         string
-		publishedAtUnix        int64
-		expiresAtUnix          int64
-		signature              []byte
-	)
-	err = db.QueryRow(
-		`SELECT source_gateway_pubkey_hex,head_height,seq,multiaddrs_json,published_at_unix,expires_at_unix,signature
-		   FROM node_reachability_cache
-		  WHERE target_node_pubkey_hex=? AND expires_at_unix>?`,
-		targetNodePubkeyHex,
-		nowUnix,
-	).Scan(&sourceGatewayPubkeyHex, &headHeight, &seq, &multiaddrsJSON, &publishedAtUnix, &expiresAtUnix, &signature)
-	if err == sql.ErrNoRows {
-		return broadcastmodule.NodeReachabilityAnnouncement{}, false, nil
-	}
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
-	}
-	addrs, err := unmarshalReachabilityStringList(multiaddrsJSON)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
-	}
-	return broadcastmodule.NodeReachabilityAnnouncement{
-		NodePubkeyHex:   targetNodePubkeyHex,
-		Multiaddrs:      addrs,
-		HeadHeight:      headHeight,
-		Seq:             seq,
-		PublishedAtUnix: publishedAtUnix,
-		ExpiresAtUnix:   expiresAtUnix,
-		Signature:       append([]byte(nil), signature...),
-	}, true, nil
+func loadCachedNodeReachability(store *clientDB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
+	return dbLoadCachedNodeReachability(context.Background(), store, targetNodePubkeyHex, nowUnix)
 }
 
-func saveNodeReachabilityCache(db *sql.DB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
-	if db == nil {
-		return nil
-	}
-	ann.NodePubkeyHex = strings.ToLower(strings.TrimSpace(ann.NodePubkeyHex))
-	multiaddrsJSON, err := marshalReachabilityStringList(ann.Multiaddrs)
-	if err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	_, err = db.Exec(
-		`INSERT INTO node_reachability_cache(
-			target_node_pubkey_hex,source_gateway_pubkey_hex,head_height,seq,multiaddrs_json,published_at_unix,expires_at_unix,signature,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(target_node_pubkey_hex) DO UPDATE SET
-			source_gateway_pubkey_hex=excluded.source_gateway_pubkey_hex,
-			head_height=excluded.head_height,
-			seq=excluded.seq,
-			multiaddrs_json=excluded.multiaddrs_json,
-			published_at_unix=excluded.published_at_unix,
-			expires_at_unix=excluded.expires_at_unix,
-			signature=excluded.signature,
-			updated_at_unix=excluded.updated_at_unix`,
-		ann.NodePubkeyHex,
-		strings.ToLower(strings.TrimSpace(sourceGatewayPubkeyHex)),
-		ann.HeadHeight,
-		ann.Seq,
-		multiaddrsJSON,
-		ann.PublishedAtUnix,
-		ann.ExpiresAtUnix,
-		append([]byte(nil), ann.Signature...),
-		now,
-	)
-	return err
+func saveNodeReachabilityCache(store *clientDB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
+	return dbSaveNodeReachabilityCache(context.Background(), store, sourceGatewayPubkeyHex, ann)
 }
 
-func saveSelfNodeReachabilityState(db *sql.DB, state selfNodeReachabilityState) error {
-	if db == nil {
-		return nil
-	}
-	_, err := db.Exec(
-		`INSERT INTO self_node_reachability_state(node_pubkey_hex,head_height,seq,updated_at_unix) VALUES(?,?,?,?)
-		 ON CONFLICT(node_pubkey_hex) DO UPDATE SET
-			head_height=excluded.head_height,
-			seq=excluded.seq,
-			updated_at_unix=excluded.updated_at_unix`,
-		strings.ToLower(strings.TrimSpace(state.NodePubkeyHex)),
-		state.HeadHeight,
-		state.Seq,
-		time.Now().Unix(),
-	)
-	return err
+func saveSelfNodeReachabilityState(store *clientDB, state selfNodeReachabilityState) error {
+	return dbSaveSelfNodeReachabilityState(context.Background(), store, state)
 }
 
-func loadSelfNodeReachabilityState(db *sql.DB, nodePubkeyHex string) (selfNodeReachabilityState, bool, error) {
-	if db == nil {
-		return selfNodeReachabilityState{}, false, nil
-	}
-	var out selfNodeReachabilityState
-	err := db.QueryRow(`SELECT node_pubkey_hex,head_height,seq FROM self_node_reachability_state WHERE node_pubkey_hex=?`, strings.ToLower(strings.TrimSpace(nodePubkeyHex))).Scan(
-		&out.NodePubkeyHex,
-		&out.HeadHeight,
-		&out.Seq,
-	)
-	if err == sql.ErrNoRows {
-		return selfNodeReachabilityState{}, false, nil
-	}
-	if err != nil {
-		return selfNodeReachabilityState{}, false, err
-	}
-	return out, true, nil
+func loadSelfNodeReachabilityState(store *clientDB, nodePubkeyHex string) (selfNodeReachabilityState, bool, error) {
+	return dbLoadSelfNodeReachabilityState(context.Background(), store, nodePubkeyHex)
 }
 
 func announcementFromQueryResp(resp broadcastmodule.NodeReachabilityQueryPaidResp) (broadcastmodule.NodeReachabilityAnnouncement, error) {
@@ -581,7 +478,7 @@ func ensureTargetPeerReachable(ctx context.Context, rt *Runtime, targetPubkeyHex
 		return nil
 	}
 	nowUnix := time.Now().Unix()
-	cachedAnn, cached, err := loadCachedNodeReachability(rt.DB, targetPubkeyHex, nowUnix)
+	cachedAnn, cached, err := dbLoadCachedNodeReachability(ctx, runtimeStore(rt), targetPubkeyHex, nowUnix)
 	if err != nil {
 		return err
 	}

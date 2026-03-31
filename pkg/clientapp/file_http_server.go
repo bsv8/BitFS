@@ -24,6 +24,7 @@ type fileHTTPServer struct {
 	rt        *Runtime
 	cfg       *Config
 	db        *sql.DB
+	store     *clientDB
 	workspace *workspaceManager
 
 	srv *http.Server
@@ -71,11 +72,16 @@ type localLiveSegmentFile struct {
 	IsEnd           bool
 }
 
-func newFileHTTPServer(rt *Runtime, cfg *Config, db *sql.DB, workspace *workspaceManager) *fileHTTPServer {
+func newFileHTTPServer(rt *Runtime, cfg *Config, store *clientDB, workspace *workspaceManager) *fileHTTPServer {
+	db := (*sql.DB)(nil)
+	if store != nil {
+		db = store.db
+	}
 	return &fileHTTPServer{
 		rt:        rt,
 		cfg:       cfg,
 		db:        db,
+		store:     store,
 		workspace: workspace,
 		sessions:  map[string]*fileDownloadSession{},
 	}
@@ -279,15 +285,8 @@ func (s *fileHTTPServer) handleStatus(w http.ResponseWriter, r *http.Request, se
 		})
 		return
 	}
-	row := s.db.QueryRow(`SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,updated_at_unix FROM file_downloads WHERE seed_hash=?`, seedHash)
-	var filePath, status, demandID, lastError string
-	var statusJSON string
-	var fileSize uint64
-	var chunkCount uint32
-	var completed uint32
-	var paid uint64
-	var updated int64
-	if err := row.Scan(&filePath, &fileSize, &chunkCount, &completed, &paid, &status, &demandID, &lastError, &statusJSON, &updated); err != nil {
+	state, err := dbGetFileDownloadState(r.Context(), fileHTTPStore(s), seedHash)
+	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			s.writeJSON(w, http.StatusOK, map[string]any{
 				"seed_hash": seedHash,
@@ -299,22 +298,22 @@ func (s *fileHTTPServer) handleStatus(w http.ResponseWriter, r *http.Request, se
 		s.writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	runtimeState := decodeFileDownloadRuntimeState(statusJSON)
+	runtimeState := decodeFileDownloadRuntimeState(state.StatusJSON)
 	if live, ok := s.liveRuntimeState(seedHash); ok {
 		runtimeState = live
 	}
 	s.writeJSON(w, http.StatusOK, map[string]any{
 		"seed_hash":        seedHash,
-		"state":            status,
-		"file_path":        filePath,
-		"file_size":        fileSize,
-		"chunk_count":      chunkCount,
-		"completed_chunks": completed,
-		"paid_sats":        paid,
-		"demand_id":        demandID,
-		"error":            lastError,
+		"state":            state.Status,
+		"file_path":        state.FilePath,
+		"file_size":        state.FileSize,
+		"chunk_count":      state.ChunkCount,
+		"completed_chunks": state.Completed,
+		"paid_sats":        state.PaidSats,
+		"demand_id":        state.DemandID,
+		"error":            state.LastError,
 		"runtime":          runtimeState,
-		"updated_at_unix":  updated,
+		"updated_at_unix":  state.UpdatedAtUnix,
 	})
 }
 
@@ -618,79 +617,59 @@ func (sess *fileDownloadSession) initMeta(meta seedV1Meta) error {
 }
 
 func (sess *fileDownloadSession) loadStateFromDB() error {
-	row := sess.server.db.QueryRow(`SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json FROM file_downloads WHERE seed_hash=?`, sess.seedHash)
-	var filePath, status, demandID, lastError, statusJSON string
-	var fileSize uint64
-	var chunkCount uint32
-	var completed uint32
-	var paid uint64
-	err := row.Scan(&filePath, &fileSize, &chunkCount, &completed, &paid, &status, &demandID, &lastError, &statusJSON)
+	state, err := dbGetFileDownloadStateNoUpdated(context.Background(), fileHTTPStore(sess.server), sess.seedHash)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		now := time.Now().Unix()
-		_, err = sess.server.db.Exec(`INSERT INTO file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			sess.seedHash, sess.partPath, 0, 0, 0, 0, "queued", "", "", encodeFileDownloadRuntimeState(sess.runtimeState), now, now)
-		return err
+		return dbEnsureFileDownloadQueued(context.Background(), fileHTTPStore(sess.server), sess.seedHash, sess.partPath, encodeFileDownloadRuntimeState(sess.runtimeState))
 	}
 	sess.mu.Lock()
-	sess.partPath = strings.TrimSpace(filePath)
+	sess.partPath = strings.TrimSpace(state.FilePath)
 	if sess.partPath == "" {
 		sess.partPath = filepath.Join(sess.server.cfg.Storage.DataDir, "downloads", sess.seedHash+".part")
 	}
-	sess.fileSize = fileSize
-	sess.chunkCount = chunkCount
-	sess.status = status
-	sess.demandID = demandID
-	sess.lastError = lastError
-	sess.paidSats = paid
-	sess.runtimeState = decodeFileDownloadRuntimeState(statusJSON)
+	sess.fileSize = state.FileSize
+	sess.chunkCount = state.ChunkCount
+	sess.status = state.Status
+	sess.demandID = state.DemandID
+	sess.lastError = state.LastError
+	sess.paidSats = state.PaidSats
+	sess.runtimeState = decodeFileDownloadRuntimeState(state.StatusJSON)
 	sess.refreshChunkPolicySnapshotLocked()
 	sess.mu.Unlock()
 
-	rows, err := sess.server.db.Query(`SELECT chunk_index,status FROM file_download_chunks WHERE seed_hash=?`, sess.seedHash)
+	rows, err := dbListFileDownloadChunks(context.Background(), fileHTTPStore(sess.server), sess.seedHash)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
-	for rows.Next() {
-		var idx uint32
-		var st string
-		if err := rows.Scan(&idx, &st); err != nil {
-			return err
-		}
-		if st == "done" {
-			sess.completed[idx] = true
+	for _, row := range rows {
+		if row.Status == "done" {
+			sess.completed[row.ChunkIndex] = true
 		}
 	}
 	return nil
 }
 
 func (sess *fileDownloadSession) persistStateLocked() {
-	now := time.Now().Unix()
 	completed := uint32(len(sess.completed))
-	sess.runtimeState.UpdatedAtUnix = now
-	if sess.server == nil || sess.server.db == nil {
+	sess.runtimeState.UpdatedAtUnix = time.Now().Unix()
+	if sess.server == nil || fileHTTPStore(sess.server) == nil {
 		return
 	}
-	statusJSON := encodeFileDownloadRuntimeState(sess.runtimeState)
-	_, _ = sess.server.db.Exec(`INSERT INTO file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(seed_hash) DO UPDATE SET
-			file_path=excluded.file_path,
-			file_size=excluded.file_size,
-			chunk_count=excluded.chunk_count,
-			completed_chunks=excluded.completed_chunks,
-			paid_sats=excluded.paid_sats,
-			status=excluded.status,
-			demand_id=excluded.demand_id,
-			last_error=excluded.last_error,
-			status_json=excluded.status_json,
-			updated_at_unix=excluded.updated_at_unix`,
-		sess.seedHash, sess.partPath, sess.fileSize, sess.chunkCount, completed, sess.paidSats, sess.status, sess.demandID, sess.lastError, statusJSON, now, now)
+	_ = dbUpsertFileDownloadState(context.Background(), fileHTTPStore(sess.server), sess.seedHash, fileDownloadStateRow{
+		FilePath:   sess.partPath,
+		FileSize:   sess.fileSize,
+		ChunkCount: sess.chunkCount,
+		Completed:  completed,
+		PaidSats:   sess.paidSats,
+		Status:     sess.status,
+		DemandID:   sess.demandID,
+		LastError:  sess.lastError,
+		StatusJSON: encodeFileDownloadRuntimeState(sess.runtimeState),
+	})
 }
 
 func (sess *fileDownloadSession) markChunkDone(idx uint32, sellerPeerID string, price uint64) {
@@ -698,18 +677,10 @@ func (sess *fileDownloadSession) markChunkDone(idx uint32, sellerPeerID string, 
 	defer sess.mu.Unlock()
 	sess.completed[idx] = true
 	sess.paidSats += price
-	if sess.server == nil || sess.server.db == nil {
+	if sess.server == nil || fileHTTPStore(sess.server) == nil {
 		return
 	}
-	now := time.Now().Unix()
-	_, _ = sess.server.db.Exec(`INSERT INTO file_download_chunks(seed_hash,chunk_index,status,seller_pubkey_hex,price_sats,updated_at_unix)
-		VALUES(?,?,?,?,?,?)
-		ON CONFLICT(seed_hash,chunk_index) DO UPDATE SET
-			status=excluded.status,
-			seller_pubkey_hex=excluded.seller_pubkey_hex,
-			price_sats=excluded.price_sats,
-			updated_at_unix=excluded.updated_at_unix`,
-		sess.seedHash, idx, "done", sellerPeerID, price, now)
+	_ = dbUpsertFileDownloadChunkDone(context.Background(), fileHTTPStore(sess.server), sess.seedHash, idx, sellerPeerID, price)
 	sess.persistStateLocked()
 	sess.cond.Broadcast()
 }
@@ -880,9 +851,7 @@ func (sess *fileDownloadSession) removeWantedRange(start, end uint32) {
 }
 
 func (s *fileHTTPServer) findCompleteLocalFile(seedHash string) (string, uint64, bool) {
-	var p string
-	var size uint64
-	err := s.db.QueryRow(`SELECT wf.path,wf.file_size FROM workspace_files wf WHERE wf.seed_hash=? ORDER BY wf.updated_at_unix DESC LIMIT 1`, seedHash).Scan(&p, &size)
+	p, _, err := dbFindLatestWorkspaceFileBySeedHash(context.Background(), fileHTTPStore(s), seedHash)
 	if err != nil {
 		return "", 0, false
 	}
@@ -996,23 +965,16 @@ func (s *fileHTTPServer) serveBytes(w http.ResponseWriter, r *http.Request, data
 }
 
 func (s *fileHTTPServer) listLocalLiveSegmentFiles(streamID string) ([]localLiveSegmentFile, error) {
-	rows, err := s.db.Query(`SELECT path,seed_hash,updated_at_unix FROM workspace_files WHERE path LIKE ? ORDER BY updated_at_unix ASC, path ASC`, "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%")
+	rows, err := dbListLiveSegmentWorkspaceEntries(context.Background(), fileHTTPStore(s), streamID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := make([]localLiveSegmentFile, 0, 16)
-	for rows.Next() {
-		var p string
-		var seedHash string
-		var updatedAt int64
-		if err := rows.Scan(&p, &seedHash, &updatedAt); err != nil {
-			return nil, err
-		}
-		if st, err := os.Stat(p); err != nil || !st.Mode().IsRegular() {
+	for _, row := range rows {
+		if st, err := os.Stat(row.Path); err != nil || !st.Mode().IsRegular() {
 			continue
 		}
-		segmentBytes, err := os.ReadFile(p)
+		segmentBytes, err := os.ReadFile(row.Path)
 		if err != nil {
 			continue
 		}
@@ -1034,9 +996,9 @@ func (s *fileHTTPServer) listLocalLiveSegmentFiles(streamID string) ([]localLive
 		out = append(out, localLiveSegmentFile{
 			SegmentIndex:    data.SegmentIndex,
 			MediaSequence:   mediaSequence,
-			Path:            p,
-			SeedHash:        strings.ToLower(strings.TrimSpace(seedHash)),
-			UpdatedAtUnix:   updatedAt,
+			Path:            row.Path,
+			SeedHash:        strings.ToLower(strings.TrimSpace(row.SeedHash)),
+			UpdatedAtUnix:   row.UpdatedAtUnix,
 			DurationMs:      data.DurationMs,
 			IsDiscontinuity: data.IsDiscontinuity,
 			InitSeedHash:    data.InitSeedHash,

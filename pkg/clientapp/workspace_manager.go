@@ -9,12 +9,12 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"time"
 )
 
 type workspaceManager struct {
 	cfg     *Config
 	db      *sql.DB
+	store   *clientDB
 	catalog *sellerCatalog
 	mu      sync.Mutex
 }
@@ -45,47 +45,27 @@ type liveCacheStreamStat struct {
 }
 
 func (m *workspaceManager) EnsureDefaultWorkspace() error {
-	if m == nil || m.db == nil || m.cfg == nil {
+	if m == nil || m.cfg == nil {
 		return fmt.Errorf("workspace manager not initialized")
 	}
-	abs, err := filepath.Abs(strings.TrimSpace(m.cfg.Storage.WorkspaceDir))
-	if err != nil {
-		return err
+	store := workspaceStore(m)
+	if store == nil {
+		return fmt.Errorf("workspace manager not initialized")
 	}
-	now := time.Now().Unix()
-	_, err = m.db.Exec(
-		`INSERT INTO workspaces(path,max_bytes,enabled,created_at_unix,updated_at_unix)
-		 VALUES(?,?,1,?,?)
-		 ON CONFLICT(path) DO UPDATE SET enabled=1,updated_at_unix=excluded.updated_at_unix`,
-		abs, int64(0), now, now,
-	)
-	return err
+	return dbEnsureDefaultWorkspace(context.Background(), store, m.cfg.Storage.WorkspaceDir)
 }
 
 func (m *workspaceManager) List() ([]workspaceItem, error) {
-	if m == nil || m.db == nil {
+	store := workspaceStore(m)
+	if store == nil {
 		return nil, fmt.Errorf("workspace manager not initialized")
 	}
-	rows, err := m.db.Query(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces ORDER BY id ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]workspaceItem, 0, 8)
-	for rows.Next() {
-		var it workspaceItem
-		var enabled int64
-		if err := rows.Scan(&it.ID, &it.Path, &it.MaxBytes, &enabled, &it.CreatedAtUnix, &it.UpdatedAtUnix); err != nil {
-			return nil, err
-		}
-		it.Enabled = enabled != 0
-		out = append(out, it)
-	}
-	return out, nil
+	return dbListWorkspaces(context.Background(), store)
 }
 
 func (m *workspaceManager) Add(path string, maxBytes uint64) (workspaceItem, error) {
-	if m == nil || m.db == nil {
+	store := workspaceStore(m)
+	if store == nil {
 		return workspaceItem{}, fmt.Errorf("workspace manager not initialized")
 	}
 	abs, err := filepath.Abs(strings.TrimSpace(path))
@@ -99,55 +79,23 @@ func (m *workspaceManager) Add(path string, maxBytes uint64) (workspaceItem, err
 	if !st.IsDir() {
 		return workspaceItem{}, fmt.Errorf("workspace path is not directory")
 	}
-	now := time.Now().Unix()
-	_, err = m.db.Exec(
-		`INSERT INTO workspaces(path,max_bytes,enabled,created_at_unix,updated_at_unix)
-		 VALUES(?,?,1,?,?)
-		 ON CONFLICT(path) DO UPDATE SET max_bytes=excluded.max_bytes,enabled=1,updated_at_unix=excluded.updated_at_unix`,
-		abs, maxBytes, now, now,
-	)
-	if err != nil {
-		return workspaceItem{}, err
-	}
-	var it workspaceItem
-	var enabled int64
-	err = m.db.QueryRow(
-		`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE path=?`,
-		abs,
-	).Scan(&it.ID, &it.Path, &it.MaxBytes, &enabled, &it.CreatedAtUnix, &it.UpdatedAtUnix)
-	if err != nil {
-		return workspaceItem{}, err
-	}
-	it.Enabled = enabled != 0
-	return it, nil
+	return dbAddWorkspace(context.Background(), store, abs, maxBytes)
 }
 
 func (m *workspaceManager) DeleteByID(id int64) error {
-	if m == nil || m.db == nil {
+	store := workspaceStore(m)
+	if store == nil {
 		return fmt.Errorf("workspace manager not initialized")
 	}
 	if id <= 0 {
 		return fmt.Errorf("invalid workspace id")
 	}
-	var path string
-	if err := m.db.QueryRow(`SELECT path FROM workspaces WHERE id=?`, id).Scan(&path); err != nil {
-		if err == sql.ErrNoRows {
-			return fmt.Errorf("workspace not found")
-		}
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM workspaces WHERE id=?`, id); err != nil {
-		return err
-	}
-	path = filepath.Clean(strings.TrimSpace(path))
-	if path != "" {
-		_, _ = m.db.Exec(`DELETE FROM workspace_files WHERE path=? OR path LIKE ?`, path, path+string(filepath.Separator)+"%")
-	}
-	return m.cleanupOrphanSeedState()
+	return dbDeleteWorkspaceByID(context.Background(), store, id)
 }
 
 func (m *workspaceManager) UpdateByID(id int64, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
-	if m == nil || m.db == nil {
+	store := workspaceStore(m)
+	if store == nil {
 		return workspaceItem{}, fmt.Errorf("workspace manager not initialized")
 	}
 	if id <= 0 {
@@ -156,44 +104,7 @@ func (m *workspaceManager) UpdateByID(id int64, maxBytes *uint64, enabled *bool)
 	if maxBytes == nil && enabled == nil {
 		return workspaceItem{}, fmt.Errorf("no fields to update")
 	}
-
-	var cur workspaceItem
-	var curEnabled int64
-	if err := m.db.QueryRow(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE id=?`, id).
-		Scan(&cur.ID, &cur.Path, &cur.MaxBytes, &curEnabled, &cur.CreatedAtUnix, &cur.UpdatedAtUnix); err != nil {
-		if err == sql.ErrNoRows {
-			return workspaceItem{}, fmt.Errorf("workspace not found")
-		}
-		return workspaceItem{}, err
-	}
-	cur.Enabled = curEnabled != 0
-
-	nextMaxBytes := cur.MaxBytes
-	if maxBytes != nil {
-		nextMaxBytes = *maxBytes
-	}
-	nextEnabled := cur.Enabled
-	if enabled != nil {
-		nextEnabled = *enabled
-	}
-	enabledValue := int64(0)
-	if nextEnabled {
-		enabledValue = 1
-	}
-
-	now := time.Now().Unix()
-	if _, err := m.db.Exec(`UPDATE workspaces SET max_bytes=?,enabled=?,updated_at_unix=? WHERE id=?`, nextMaxBytes, enabledValue, now, id); err != nil {
-		return workspaceItem{}, err
-	}
-
-	var out workspaceItem
-	var outEnabled int64
-	if err := m.db.QueryRow(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE id=?`, id).
-		Scan(&out.ID, &out.Path, &out.MaxBytes, &outEnabled, &out.CreatedAtUnix, &out.UpdatedAtUnix); err != nil {
-		return workspaceItem{}, err
-	}
-	out.Enabled = outEnabled != 0
-	return out, nil
+	return dbUpdateWorkspaceByID(context.Background(), store, id, maxBytes, enabled)
 }
 
 func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (string, error) {
@@ -234,8 +145,7 @@ func (m *workspaceManager) selectOutputPath(relDir string, fileName string, file
 			continue
 		}
 		if it.MaxBytes > 0 {
-			var used uint64
-			_ = m.db.QueryRow(`SELECT COALESCE(SUM(file_size),0) FROM workspace_files WHERE path=? OR path LIKE ?`, it.Path, it.Path+string(filepath.Separator)+"%").Scan(&used)
+			used, _ := dbWorkspaceUsedBytes(context.Background(), workspaceStore(m), it.Path)
 			if used+fileSize > it.MaxBytes {
 				continue
 			}
@@ -339,21 +249,14 @@ func (m *workspaceManager) listLiveCacheStreams() ([]liveCacheStreamStat, uint64
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := m.db.Query(`SELECT path,file_size,updated_at_unix FROM workspace_files`)
+	rows, err := dbListLiveCacheFiles(context.Background(), workspaceStore(m))
 	if err != nil {
 		return nil, 0, err
 	}
-	defer rows.Close()
 	streams := map[string]*liveCacheStreamStat{}
 	var total uint64
-	for rows.Next() {
-		var absPath string
-		var fileSize uint64
-		var updatedAt int64
-		if err := rows.Scan(&absPath, &fileSize, &updatedAt); err != nil {
-			return nil, 0, err
-		}
-		streamID, workspaceDir, ok := classifyLiveWorkspacePath(items, absPath)
+	for _, row := range rows {
+		streamID, workspaceDir, ok := classifyLiveWorkspacePath(items, row.Path)
 		if !ok {
 			continue
 		}
@@ -362,15 +265,15 @@ func (m *workspaceManager) listLiveCacheStreams() ([]liveCacheStreamStat, uint64
 			st = &liveCacheStreamStat{StreamID: streamID}
 			streams[streamID] = st
 		}
-		st.TotalBytes += fileSize
-		if updatedAt > st.NewestUpdatedAtUnix {
-			st.NewestUpdatedAtUnix = updatedAt
+		st.TotalBytes += row.FileSize
+		if row.UpdatedAtUnix > st.NewestUpdatedAtUnix {
+			st.NewestUpdatedAtUnix = row.UpdatedAtUnix
 		}
-		st.Paths = append(st.Paths, absPath)
+		st.Paths = append(st.Paths, row.Path)
 		if !containsString(st.WorkspaceDirs, workspaceDir) {
 			st.WorkspaceDirs = append(st.WorkspaceDirs, workspaceDir)
 		}
-		total += fileSize
+		total += row.FileSize
 	}
 	out := make([]liveCacheStreamStat, 0, len(streams))
 	for _, st := range streams {
@@ -410,29 +313,11 @@ func (m *workspaceManager) deleteLiveStreamCache(st liveCacheStreamStat) error {
 			return err
 		}
 	}
-	if _, err := m.db.Exec(`DELETE FROM workspace_files WHERE path LIKE ?`, "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+st.StreamID+string(filepath.Separator)+"%"); err != nil {
-		return err
-	}
-	return nil
+	return dbDeleteLiveStreamCacheRows(context.Background(), workspaceStore(m), st.StreamID)
 }
 
 func (m *workspaceManager) cleanupOrphanSeedState() error {
-	if _, err := m.db.Exec(`DELETE FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM seed_price_state WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	if _, err := m.db.Exec(`DELETE FROM file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
-		return err
-	}
-	return nil
+	return dbCleanupOrphanSeedState(context.Background(), workspaceStore(m))
 }
 
 func containsString(items []string, want string) bool {
@@ -489,31 +374,7 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		return sellerSeed{}, err
 	}
 
-	now := time.Now().Unix()
-	if _, err := m.db.Exec(
-		`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix)
-		 VALUES(?,?,?,?,?,?)
-		 ON CONFLICT(path) DO UPDATE SET
-		 file_size=excluded.file_size,
-		 mtime_unix=excluded.mtime_unix,
-		 seed_hash=excluded.seed_hash,
-		 seed_locked=excluded.seed_locked,
-		 updated_at_unix=excluded.updated_at_unix`,
-		abs, st.Size(), st.ModTime().Unix(), seedHash, 1, now,
-	); err != nil {
-		return sellerSeed{}, err
-	}
-	if _, err := m.db.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix)
-		 VALUES(?,?,?,?,?,?,?)
-		 ON CONFLICT(seed_hash) DO UPDATE SET
-		 seed_file_path=excluded.seed_file_path,
-		 chunk_count=excluded.chunk_count,
-		 file_size=excluded.file_size,
-		 recommended_file_name=excluded.recommended_file_name,
-		 mime_hint=excluded.mime_hint`,
-		seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, now,
-	); err != nil {
+	if err := dbUpsertDownloadedFile(context.Background(), workspaceStore(m), abs, st.Size(), st.ModTime().Unix(), seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, true); err != nil {
 		return sellerSeed{}, err
 	}
 	available := normalizeChunkIndexes(p.AvailableChunkIndexes, meta.ChunkCount)
@@ -524,23 +385,8 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		}
 		available = contiguousChunkIndexes(haveCount)
 	}
-	existing := make([]uint32, 0, len(available))
-	rows, err := m.db.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
+	available, err = dbMergeSeedAvailableChunks(context.Background(), workspaceStore(m), seedHash, available, meta.ChunkCount)
 	if err != nil {
-		return sellerSeed{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var idx uint32
-		if err := rows.Scan(&idx); err != nil {
-			return sellerSeed{}, err
-		}
-		existing = append(existing, idx)
-	}
-	if len(existing) > 0 {
-		available = normalizeChunkIndexes(append(existing, available...), meta.ChunkCount)
-	}
-	if err := replaceSeedAvailableChunks(m.db, seedHash, available); err != nil {
 		return sellerSeed{}, err
 	}
 

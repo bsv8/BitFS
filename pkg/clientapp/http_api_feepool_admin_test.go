@@ -12,7 +12,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	appendCommandJournal(db, commandJournalEntry{
+	dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "cmd-1",
 		CommandType:   "ensure_active",
 		GatewayPeerID: "gw1",
@@ -29,7 +29,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		Payload:       map[string]any{"x": 1},
 		Result:        map[string]any{"status": "paused"},
 	})
-	appendDomainEvent(db, domainEventEntry{
+	dbAppendDomainEvent(nil, newClientDB(db, nil), domainEventEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		EventName:     "fee_pool_paused_insufficient",
@@ -37,7 +37,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		StateAfter:    "paused_insufficient",
 		Payload:       map[string]any{"need": 100000, "have": 12345},
 	})
-	appendStateSnapshot(db, stateSnapshotEntry{
+	dbAppendStateSnapshot(nil, newClientDB(db, nil), stateSnapshotEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		State:         "paused_insufficient",
@@ -47,7 +47,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		LastError:     "not enough balance",
 		Payload:       map[string]any{"source": "test"},
 	})
-	appendEffectLog(db, effectLogEntry{
+	dbAppendEffectLog(nil, newClientDB(db, nil), effectLogEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		EffectType:    "chain",

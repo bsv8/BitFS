@@ -55,6 +55,7 @@ type taskScheduler struct {
 	service string
 	db      *sql.DB
 	dbActor *sqliteactor.Actor
+	store   *clientDB
 
 	mu       sync.RWMutex
 	tasks    map[string]*periodicTaskRuntime
@@ -71,6 +72,7 @@ func newTaskScheduler(db *sql.DB, dbActor *sqliteactor.Actor, service string) *t
 		service: service,
 		db:      db,
 		dbActor: dbActor,
+		store:   newClientDB(db, dbActor),
 		tasks:   map[string]*periodicTaskRuntime{},
 	}
 }

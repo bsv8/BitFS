@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 )
 
 // 设计说明：
@@ -13,44 +11,65 @@ import (
 // - 新的运行时代码优先通过这些入口取值或执行事务；
 // - 不允许把 `Rows / Tx / Stmt` 逃逸到 helper 外，否则会重新引入单连接重入问题。
 func runtimeDBDo(rt *Runtime, ctx context.Context, fn func(*sql.DB) error) error {
-	if rt == nil || rt.DBActor == nil {
+	store := runtimeStore(rt)
+	if store == nil {
 		return fmt.Errorf("runtime db actor is nil")
 	}
-	return rt.DBActor.Do(ctx, fn)
+	return store.Do(ctx, fn)
 }
 
 func runtimeDBValue[T any](rt *Runtime, ctx context.Context, fn func(*sql.DB) (T, error)) (T, error) {
-	if rt == nil || rt.DBActor == nil {
+	store := runtimeStore(rt)
+	if store == nil {
 		var zero T
 		return zero, fmt.Errorf("runtime db actor is nil")
 	}
-	return sqliteactor.DoValue(ctx, rt.DBActor, fn)
+	return clientDBValue(ctx, store, fn)
 }
 
 func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*sql.DB) (T, error)) (T, error) {
-	if s == nil {
+	store := httpStore(s)
+	if store == nil {
 		var zero T
-		return zero, fmt.Errorf("http api server is nil")
+		return zero, fmt.Errorf("http db is nil")
 	}
-	if s.dbActor != nil {
-		return sqliteactor.DoValue(ctx, s.dbActor, fn)
-	}
-	if s.db != nil {
-		return fn(s.db)
-	}
-	var zero T
-	return zero, fmt.Errorf("http db is nil")
+	return clientDBValue(ctx, store, fn)
 }
 
 func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(*sql.DB) error) error {
+	store := schedulerStore(s)
+	if store == nil {
+		return nil
+	}
+	return store.Do(ctx, fn)
+}
+
+func runtimeStore(rt *Runtime) *clientDB {
+	if rt == nil {
+		return nil
+	}
+	if rt.store != nil {
+		return rt.store
+	}
+	return newClientDB(rt.DB, rt.DBActor)
+}
+
+func httpStore(s *httpAPIServer) *clientDB {
 	if s == nil {
 		return nil
 	}
-	if s.dbActor != nil {
-		return s.dbActor.Do(ctx, fn)
+	if s.store != nil {
+		return s.store
 	}
-	if s.db != nil {
-		return fn(s.db)
+	return newClientDB(s.db, s.dbActor)
+}
+
+func schedulerStore(s *taskScheduler) *clientDB {
+	if s == nil {
+		return nil
 	}
-	return nil
+	if s.store != nil {
+		return s.store
+	}
+	return newClientDB(s.db, s.dbActor)
 }

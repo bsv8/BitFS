@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -48,8 +47,8 @@ type walletUTXOBasicRow struct {
 
 type walletWOCQuantityText string
 
-func loadWalletBSV21SpendableCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
-	if db == nil {
+func loadWalletBSV21SpendableCandidates(ctx context.Context, store *clientDB, rt *Runtime, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+	if store == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
 	if rt == nil || rt.WalletChain == nil {
@@ -60,14 +59,14 @@ func loadWalletBSV21SpendableCandidates(ctx context.Context, db *sql.DB, rt *Run
 	if address == "" || tokenID == "" {
 		return []walletTokenPreviewCandidate{}, nil
 	}
-	rows, err := listWalletUnspentOneSatRows(db, address)
+	rows, err := listWalletUnspentOneSatRows(store, address)
 	if err != nil {
 		return nil, err
 	}
 	if len(rows) == 0 {
 		return []walletTokenPreviewCandidate{}, nil
 	}
-	localCandidates, err := loadWalletBSV21LocalCandidates(db, address, assetKey, rows)
+	localCandidates, err := loadWalletBSV21LocalCandidates(store, address, assetKey, rows)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +74,7 @@ func loadWalletBSV21SpendableCandidates(ctx context.Context, db *sql.DB, rt *Run
 	for _, item := range localCandidates {
 		localSelected[item.Item.UTXOID] = struct{}{}
 	}
-	verifiedIncomingCandidates, err := loadWalletBSV21VerifiedIncomingCandidates(ctx, db, rt, address, assetKey, rows, localSelected)
+	verifiedIncomingCandidates, err := loadWalletBSV21VerifiedIncomingCandidates(ctx, store, rt, address, assetKey, rows, localSelected)
 	if err != nil {
 		if len(localCandidates) > 0 {
 			return localCandidates, nil
@@ -99,7 +98,7 @@ func loadWalletBSV21SpendableCandidates(ctx context.Context, db *sql.DB, rt *Run
 // - 这里表达的是“外来资产验真”边界，而不是把 WOC 本身写成业务真相；
 // - 当前系统只有一个外来验真渠道，所以实现上仍然查询 WOC；
 // - 一旦将来验真渠道变化，调用方仍然保持“拿已验真的外来候选”这个领域语义。
-func loadWalletBSV21VerifiedIncomingCandidates(ctx context.Context, db *sql.DB, rt *Runtime, address string, assetKey string, rows []walletUTXOBasicRow, localSelected map[string]struct{}) ([]walletTokenPreviewCandidate, error) {
+func loadWalletBSV21VerifiedIncomingCandidates(ctx context.Context, store *clientDB, rt *Runtime, address string, assetKey string, rows []walletUTXOBasicRow, localSelected map[string]struct{}) ([]walletTokenPreviewCandidate, error) {
 	items, err := queryWalletBSV21WOCUnspent(ctx, rt, address)
 	if err != nil {
 		return nil, err
@@ -259,43 +258,8 @@ func queryWalletBSV21WOCUnspent(ctx context.Context, rt *Runtime, address string
 	return parsed.Tokens, nil
 }
 
-func listWalletUnspentOneSatRows(db *sql.DB, address string) ([]walletUTXOBasicRow, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return []walletUTXOBasicRow{}, nil
-	}
-	walletID := walletIDByAddress(address)
-	rows, err := db.Query(
-		`SELECT utxo_id,txid,vout,value_satoshi,allocation_class,allocation_reason,created_at_unix
-		 FROM wallet_utxo
-		 WHERE wallet_id=? AND address=? AND state='unspent' AND value_satoshi=1
-		 ORDER BY created_at_unix ASC,txid ASC,vout ASC`,
-		walletID,
-		address,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]walletUTXOBasicRow, 0, 8)
-	for rows.Next() {
-		var item walletUTXOBasicRow
-		if err := rows.Scan(&item.UTXOID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.AllocationClass, &item.AllocationReason, &item.CreatedAtUnix); err != nil {
-			return nil, err
-		}
-		item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-		item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-		item.AllocationClass = normalizeWalletUTXOAllocationClass(item.AllocationClass)
-		item.AllocationReason = strings.TrimSpace(item.AllocationReason)
-		out = append(out, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+func listWalletUnspentOneSatRows(store *clientDB, address string) ([]walletUTXOBasicRow, error) {
+	return dbListWalletUnspentOneSatRows(context.Background(), store, address)
 }
 
 // loadWalletBSV21LocalCandidates 只认“当前钱包自己广播出来、且目前仍未花费”的 token 输出。
@@ -303,8 +267,8 @@ func listWalletUnspentOneSatRows(db *sql.DB, address string) ([]walletUTXOBasicR
 // - create / send 不能再把 WOC 当作业务前提；
 // - 因此本地自己构造并成功广播的 token 输出，应该直接进入可继续 send 的候选集；
 // - 第三方打进来的 token 不走这里，而是留给外来资产验真边界单独补充。
-func loadWalletBSV21LocalCandidates(db *sql.DB, address string, assetKey string, rows []walletUTXOBasicRow) ([]walletTokenPreviewCandidate, error) {
-	if db == nil {
+func loadWalletBSV21LocalCandidates(store *clientDB, address string, assetKey string, rows []walletUTXOBasicRow) ([]walletTokenPreviewCandidate, error) {
+	if store == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
 	address = strings.TrimSpace(address)
@@ -313,7 +277,7 @@ func loadWalletBSV21LocalCandidates(db *sql.DB, address string, assetKey string,
 		return []walletTokenPreviewCandidate{}, nil
 	}
 	walletID := walletIDByAddress(address)
-	localRows, err := loadWalletLocalBroadcastRows(db, walletID, address)
+	localRows, err := loadWalletLocalBroadcastRows(store, walletID, address)
 	if err != nil {
 		return nil, err
 	}
@@ -407,36 +371,8 @@ func walletLocalBSV21CandidateFromPayload(txid string, vout uint32, payload map[
 	}
 }
 
-func loadWalletLocalBroadcastRows(db *sql.DB, walletID string, address string) ([]walletLocalBroadcastRow, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	rows, err := db.Query(
-		`SELECT txid,tx_hex,created_at_unix,updated_at_unix,observed_at_unix
-		 FROM wallet_local_broadcast_txs
-		 WHERE wallet_id=? AND address=?
-		 ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`,
-		strings.TrimSpace(walletID),
-		strings.TrimSpace(address),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]walletLocalBroadcastRow, 0, 8)
-	for rows.Next() {
-		var row walletLocalBroadcastRow
-		if err := rows.Scan(&row.TxID, &row.TxHex, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.ObservedAtUnix); err != nil {
-			return nil, err
-		}
-		row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
-		row.TxHex = strings.ToLower(strings.TrimSpace(row.TxHex))
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return orderWalletLocalBroadcastRows(out)
+func loadWalletLocalBroadcastRows(store *clientDB, walletID string, address string) ([]walletLocalBroadcastRow, error) {
+	return dbLoadWalletLocalBroadcastRows(context.Background(), store, walletID, address)
 }
 
 func loadWalletTxOutputScriptHashMap(ctx context.Context, rt *Runtime, txid string, txHexCache map[string]string, hashCache map[string]map[string][]uint32) (map[string][]uint32, error) {

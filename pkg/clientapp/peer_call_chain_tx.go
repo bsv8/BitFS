@@ -146,7 +146,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	if err := applyLocalBroadcastWalletTxBytes(rt, built.RawTx, "peer_call_chain_tx"); err != nil {
 		return ncall.CallResp{}, err
 	}
-	appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
 		FlowID:          "chain_tx:" + built.TxID,
 		FlowType:        "chain_tx",
 		RefID:           strings.TrimSpace(req.Route),

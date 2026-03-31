@@ -36,66 +36,38 @@ func listWalletFundingCandidates(rt *Runtime) ([]walletFundingCandidate, error) 
 	if err != nil {
 		return nil, err
 	}
-	load := func(db *sql.DB) ([]walletFundingCandidate, error) {
-		s, err := loadWalletUTXOSyncState(db, addr)
-		if err != nil {
-			return nil, err
-		}
-		if s.UpdatedAtUnix <= 0 {
-			return nil, fmt.Errorf("wallet utxo sync state not ready")
-		}
-		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
-		}
-		if strings.TrimSpace(s.LastError) != "" {
-			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
-		}
-		walletID := walletIDByAddress(addr)
-		rows, err := db.Query(
-			`SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,allocation_class,allocation_reason
-			 FROM wallet_utxo
-			 WHERE wallet_id=? AND address=? AND state='unspent'
-			 ORDER BY created_at_unix ASC,value_satoshi ASC,txid ASC,vout ASC`,
-			walletID,
-			addr,
-		)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		out := make([]walletFundingCandidate, 0, s.UTXOCount)
-		for rows.Next() {
-			var item walletFundingCandidate
-			if err := rows.Scan(
-				&item.UTXOID,
-				&item.UTXO.TxID,
-				&item.UTXO.Vout,
-				&item.UTXO.Value,
-				&item.CreatedAtUnix,
-				&item.AllocationClass,
-				&item.AllocationReason,
-			); err != nil {
-				return nil, err
-			}
-			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-			item.UTXO.TxID = strings.ToLower(strings.TrimSpace(item.UTXO.TxID))
-			item.AllocationClass = normalizeWalletUTXOAllocationClass(item.AllocationClass)
-			item.AllocationReason = strings.TrimSpace(item.AllocationReason)
-			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
-	}
 	// 设计说明：
 	// - 正式运行时必须走 sqliteactor；
 	// - 这里保留 DB 直读回退，只为了最小测试夹具不必把整个 actor 运行时一并拉起来。
 	if rt.DBActor != nil {
-		return runtimeDBValue(rt, context.Background(), load)
+		items, err := dbListWalletFundingCandidates(context.Background(), runtimeStore(rt), addr)
+		if err != nil {
+			return nil, err
+		}
+		s, err := runtimeDBValue(rt, context.Background(), func(db *sql.DB) (walletUTXOSyncState, error) {
+			return loadWalletUTXOSyncState(db, addr)
+		})
+		if err != nil {
+			return nil, err
+		}
+		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
+		}
+		return items, nil
 	}
 	if rt.DB != nil {
-		return load(rt.DB)
+		items, err := dbListWalletFundingCandidates(context.Background(), newClientDB(rt.DB, nil), addr)
+		if err != nil {
+			return nil, err
+		}
+		s, err := loadWalletUTXOSyncState(rt.DB, addr)
+		if err != nil {
+			return nil, err
+		}
+		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
+		}
+		return items, nil
 	}
 	return nil, fmt.Errorf("runtime not initialized")
 }
