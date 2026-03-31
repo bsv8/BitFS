@@ -43,13 +43,15 @@ type clientKernelResult struct {
 // clientKernel 是客户端统一业务内核入口：外部只发命令，不直接调用域内业务函数。
 type clientKernel struct {
 	rt      *Runtime
+	store   *clientDB
 	feePool *feePoolKernel
 }
 
-func newClientKernel(rt *Runtime) *clientKernel {
+func newClientKernel(rt *Runtime, store *clientDB) *clientKernel {
 	return &clientKernel{
 		rt:      rt,
-		feePool: newFeePoolKernel(rt),
+		store:   store,
+		feePool: newFeePoolKernel(rt, store),
 	}
 }
 
@@ -115,7 +117,7 @@ func (k *clientKernel) rejectWithAudit(cmd clientKernelCommand, gatewayPeerID, a
 		stateAfter = stateBefore
 	}
 	if k != nil && k.rt != nil {
-		dbAppendCommandJournal(context.Background(), runtimeStore(k.rt), commandJournalEntry{
+		dbAppendCommandJournal(context.Background(), k.store, commandJournalEntry{
 			CommandID:     cmd.CommandID,
 			CommandType:   cmd.CommandType,
 			GatewayPeerID: strings.TrimSpace(gatewayPeerID),
@@ -236,7 +238,7 @@ func (k *clientKernel) dispatchWorkspaceSync(ctx context.Context, cmd clientKern
 		errCode = "workspace_sync_failed"
 		errMsg = err.Error()
 	}
-	dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
+	dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 		CommandID:     cmd.CommandID,
 		CommandType:   cmd.CommandType,
 		GatewayPeerID: "workspace",
@@ -292,7 +294,7 @@ func (k *clientKernel) runDirectDownloadCore(ctx context.Context, p directDownlo
 		errCode = "direct_download_core_failed"
 		errMsg = err.Error()
 	}
-	dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
+	dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 		CommandID:     cmdID,
 		CommandType:   clientKernelCommandDirectDownloadCore,
 		GatewayPeerID: strings.TrimSpace(out.GatewayPeerID),
@@ -340,7 +342,7 @@ func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p Transf
 		errCode = "direct_transfer_by_strategy_failed"
 		errMsg = err.Error()
 	}
-	dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
+	dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 		CommandID:     cmdID,
 		CommandType:   clientKernelCommandTransferByStrategy,
 		GatewayPeerID: "direct",
@@ -386,7 +388,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 	now := time.Now()
 	snap, err := TriggerLiveGetLatest(k.rt, streamID)
 	if err != nil {
-		dbAppendEffectLog(ctx, runtimeStore(k.rt), effectLogEntry{
+		dbAppendEffectLog(ctx, k.store, effectLogEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: "live",
 			EffectType:    "live_snapshot",
@@ -395,7 +397,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			ErrorMessage:  err.Error(),
 			Payload:       map[string]any{"stream_id": streamID},
 		})
-		dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
+		dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 			CommandID:     cmd.CommandID,
 			CommandType:   cmd.CommandType,
 			GatewayPeerID: "live",
@@ -431,7 +433,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 		DecayPerMinuteBPS:   k.rt.runIn.Seller.Pricing.LiveDecayPerMinuteBPS,
 	}, now)
 	if err != nil {
-		dbAppendEffectLog(ctx, runtimeStore(k.rt), effectLogEntry{
+		dbAppendEffectLog(ctx, k.store, effectLogEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: "live",
 			EffectType:    "live_plan",
@@ -452,7 +454,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			StateAfter:   "live_plan",
 		}
 	}
-	dbAppendDomainEvent(ctx, runtimeStore(k.rt), domainEventEntry{
+	dbAppendDomainEvent(ctx, k.store, domainEventEntry{
 		CommandID:     cmd.CommandID,
 		GatewayPeerID: "live",
 		EventName:     "live_plan_decided",
@@ -465,7 +467,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			"target_seed_hash":     shortToken(decision.SeedHash),
 		},
 	})
-	dbAppendStateSnapshot(ctx, runtimeStore(k.rt), stateSnapshotEntry{
+	dbAppendStateSnapshot(ctx, k.store, stateSnapshotEntry{
 		CommandID:     cmd.CommandID,
 		GatewayPeerID: "live",
 		State:         "live_plan",
@@ -479,7 +481,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			"target_segment_index": decision.TargetSegmentIndex,
 		},
 	})
-	dbAppendEffectLog(ctx, runtimeStore(k.rt), effectLogEntry{
+	dbAppendEffectLog(ctx, k.store, effectLogEntry{
 		CommandID:     cmd.CommandID,
 		GatewayPeerID: "live",
 		EffectType:    "live_plan",
@@ -502,7 +504,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			"decision":           decision,
 		},
 	}
-	dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
+	dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 		CommandID:     cmd.CommandID,
 		CommandType:   cmd.CommandType,
 		GatewayPeerID: "live",

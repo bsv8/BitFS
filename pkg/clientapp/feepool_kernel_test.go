@@ -56,7 +56,7 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("reconcile wallet utxo set failed: %v", err)
 	}
-	need, have, err := probeListenOpenNeedAndWallet(rt, dualInfo(1000, 20))
+	need, have, err := probeListenOpenNeedAndWallet(rt, newClientDB(db, nil), dualInfo(1000, 20))
 	if err != nil {
 		t.Fatalf("probe listen open need failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("reconcile wallet utxo set failed: %v", err)
 	}
-	need, have, err := probeListenOpenNeedAndWallet(rt, dualInfo(100, 1000))
+	need, have, err := probeListenOpenNeedAndWallet(rt, newClientDB(db, nil), dualInfo(100, 1000))
 	if err != nil {
 		t.Fatalf("probe listen open need failed: %v", err)
 	}

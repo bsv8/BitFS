@@ -109,7 +109,7 @@ func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePl
 	if rt == nil || rt.Host == nil {
 		return LivePlanResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := ensureClientKernel(rt)
+	kernel := rt.kernel
 	if kernel == nil {
 		return LivePlanResult{}, fmt.Errorf("client kernel not initialized")
 	}

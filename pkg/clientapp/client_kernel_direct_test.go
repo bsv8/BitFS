@@ -121,7 +121,7 @@ func TestKernelDispatchRejectedWritesJournal(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			db := newWalletAPITestDB(t)
 			rt := &Runtime{DB: db}
-			k := newClientKernel(rt)
+			k := newClientKernel(rt, newClientDB(db, nil))
 			if c.prepare != nil {
 				c.prepare(k)
 			}

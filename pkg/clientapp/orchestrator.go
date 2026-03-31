@@ -435,7 +435,7 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 		RetryCount:     task.RetryCount,
 		QueueLength:    queueLen,
 	})
-	kernel := ensureClientKernel(o.rt)
+	kernel := o.rt.kernel
 	if kernel == nil {
 		o.failTask(task, fmt.Errorf("client kernel not initialized"), true)
 		return

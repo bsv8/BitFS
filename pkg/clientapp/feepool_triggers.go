@@ -107,7 +107,7 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePo
 	if rt == nil || rt.Host == nil {
 		return FeePoolEnsureActiveResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := ensureClientKernel(rt)
+	kernel := rt.kernel
 	if kernel == nil {
 		return FeePoolEnsureActiveResult{}, fmt.Errorf("client kernel not initialized")
 	}

@@ -49,7 +49,7 @@ func runDirectDownloadCore(ctx context.Context, rt *Runtime, p directDownloadCor
 	if rt == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := ensureClientKernel(rt)
+	kernel := rt.kernel
 	if kernel == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("client kernel not initialized")
 	}

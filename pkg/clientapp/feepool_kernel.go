@@ -65,16 +65,18 @@ type feePoolKernelGatewayState struct {
 
 // feePoolKernel 负责费用池业务主状态机：外部只能发命令，状态迁移只在内核发生。
 type feePoolKernel struct {
-	rt *Runtime
+	rt    *Runtime
+	store *clientDB
 
 	mu     sync.Mutex
 	states map[string]feePoolKernelGatewayState
 	locks  map[string]*sync.Mutex
 }
 
-func newFeePoolKernel(rt *Runtime) *feePoolKernel {
+func newFeePoolKernel(rt *Runtime, store *clientDB) *feePoolKernel {
 	return &feePoolKernel{
 		rt:     rt,
+		store:  store,
 		states: map[string]feePoolKernelGatewayState{},
 		locks:  map[string]*sync.Mutex{},
 	}
@@ -140,7 +142,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 	if st.State != feePoolKernelStatePausedInsufficient {
 		return
 	}
-	sum, err := walletUTXOBalanceSatoshi(k.rt)
+	sum, err := walletUTXOBalanceSatoshi(k.store, k.rt)
 	if err != nil {
 		return
 	}
@@ -156,7 +158,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 	st.PauseHaveSat = sum
 	st.LastError = ""
 	k.setState(gwID, st)
-	dbAppendDomainEvent(ctx, runtimeStore(k.rt), domainEventEntry{
+	dbAppendDomainEvent(ctx, k.store, domainEventEntry{
 		CommandID:     "",
 		GatewayPeerID: gwBusinessID,
 		EventName:     "fee_pool_resumed_by_wallet_probe",
@@ -217,7 +219,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			return
 		}
 		events = append(events, name)
-		dbAppendDomainEvent(ctx, runtimeStore(k.rt), domainEventEntry{
+		dbAppendDomainEvent(ctx, k.store, domainEventEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: gwBusinessID,
 			EventName:     name,
@@ -231,7 +233,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		if err != nil {
 			msg = strings.TrimSpace(err.Error())
 		}
-		dbAppendEffectLog(ctx, runtimeStore(k.rt), effectLogEntry{
+		dbAppendEffectLog(ctx, k.store, effectLogEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: gwBusinessID,
 			EffectType:    effectType,
@@ -244,7 +246,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	persist := func(state feePoolKernelGatewayState) feePoolKernelResult {
 		result.EmittedEvents = append([]string(nil), events...)
 		result.StateAfter = state.State
-		dbAppendStateSnapshot(ctx, runtimeStore(k.rt), stateSnapshotEntry{
+		dbAppendStateSnapshot(ctx, k.store, stateSnapshotEntry{
 			CommandID:     cmd.CommandID,
 			GatewayPeerID: gwBusinessID,
 			State:         state.State,
@@ -254,7 +256,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			LastError:     state.LastError,
 			Payload:       map[string]any{"command_type": cmd.CommandType},
 		})
-		dbAppendCommandJournal(ctx, runtimeStore(k.rt), commandJournalEntry{
+		dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 			CommandID:     cmd.CommandID,
 			CommandType:   cmd.CommandType,
 			GatewayPeerID: gwBusinessID,
@@ -320,7 +322,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		// 内核规则：
 		// - 余额不足属于“状态判定”，不是 open 执行失败；
 		// - 判定不足时直接进入 paused_insufficient，不进入创建流程。
-		need, have, probeErr := probeListenOpenNeedAndWallet(k.rt, info)
+		need, have, probeErr := probeListenOpenNeedAndWallet(k.rt, k.store, info)
 		if probeErr != nil {
 			result.Status = "failed"
 			result.ErrorCode = "wallet_probe_failed"
@@ -467,7 +469,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			logEffect("rpc", "fee_pool_info", "failed", err, nil)
 			return persist(st)
 		}
-		need, have, probeErr := probeListenOpenNeedAndWallet(k.rt, info)
+		need, have, probeErr := probeListenOpenNeedAndWallet(k.rt, k.store, info)
 		if probeErr != nil {
 			result.Status = "failed"
 			result.ErrorCode = "wallet_probe_failed"
@@ -591,7 +593,7 @@ func shortToken(s string) string {
 	return v[:4] + "..." + v[len(v)-4:]
 }
 
-func probeListenOpenNeedAndWallet(rt *Runtime, info poolcore.InfoResp) (uint64, uint64, error) {
+func probeListenOpenNeedAndWallet(rt *Runtime, store *clientDB, info poolcore.InfoResp) (uint64, uint64, error) {
 	if rt == nil {
 		return 0, 0, fmt.Errorf("runtime not initialized")
 	}
@@ -602,14 +604,14 @@ func probeListenOpenNeedAndWallet(rt *Runtime, info poolcore.InfoResp) (uint64, 
 	if info.MinimumPoolAmountSatoshi > 0 && need < info.MinimumPoolAmountSatoshi {
 		need = info.MinimumPoolAmountSatoshi
 	}
-	have, err := walletUTXOBalanceSatoshi(rt)
+	have, err := walletUTXOBalanceSatoshi(store, rt)
 	if err != nil {
 		return 0, 0, err
 	}
 	return need, have, nil
 }
 
-func walletUTXOBalanceSatoshi(rt *Runtime) (uint64, error) {
+func walletUTXOBalanceSatoshi(store *clientDB, rt *Runtime) (uint64, error) {
 	if rt == nil {
 		return 0, fmt.Errorf("runtime not initialized")
 	}
@@ -617,7 +619,7 @@ func walletUTXOBalanceSatoshi(rt *Runtime) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
-	_, bal, err := getWalletBalanceFromDB(rt)
+	_, bal, err := getWalletBalanceFromDB(context.Background(), store, rt)
 	if err != nil {
 		return 0, err
 	}

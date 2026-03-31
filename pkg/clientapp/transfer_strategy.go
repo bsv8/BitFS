@@ -421,7 +421,7 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 	if buyer == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := ensureClientKernel(buyer)
+	kernel := buyer.kernel
 	if kernel == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("client kernel not initialized")
 	}

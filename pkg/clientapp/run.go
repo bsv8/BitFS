@@ -1027,7 +1027,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rtCtx, rtCancel := context.WithCancel(ctx)
 	rt.bgCancel = rtCancel
 	rt.taskSched = newTaskScheduler(db, dbActor, "bitcast-client")
-	rt.kernel = newClientKernel(rt)
+	rt.kernel = newClientKernel(rt, store)
 	rt.orch = newOrchestrator(rt)
 	registerLiveHandlers(rt)
 	registerNodeRouteHandlers(rt)

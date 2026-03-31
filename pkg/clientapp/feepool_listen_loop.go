@@ -135,7 +135,7 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 				continue
 			}
 			seen[gwID] = struct{}{}
-			if kernel := ensureClientKernel(rt); kernel != nil {
+			if kernel := rt.kernel; kernel != nil {
 				kernel.tryResumeFeePoolPausedGateway(ctx, gwID)
 				if kernel.isFeePoolPaused(gwID) {
 					if !waitRechargeState[gwID] {
@@ -226,7 +226,7 @@ func shouldRunListenBillingLoop(openRes clientKernelResult) bool {
 }
 
 func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger string) (map[string]any, error) {
-	kernel := ensureClientKernel(rt)
+	kernel := rt.kernel
 	if rt == nil || kernel == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
