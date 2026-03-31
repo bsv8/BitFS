@@ -1082,7 +1082,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		rt.orch.Start(rtCtx)
 	}
 	// 链维护进程：统一串行调度链 API 查询，业务侧只读本地快照。
-	startChainMaintainer(rtCtx, rt)
+	startChainMaintainer(rtCtx, rt, store)
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
 	startListenLoops(rtCtx, rt)
 	// 自动地址声明发布与 listen loop 并列存在：

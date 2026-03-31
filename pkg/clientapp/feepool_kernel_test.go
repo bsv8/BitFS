@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -136,7 +137,8 @@ func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []poolcore.U
 		live[strings.ToLower(u.TxID)+":"+fmt.Sprint(u.Vout)] = u
 	}
 	return reconcileWalletUTXOSet(
-		db,
+		context.Background(),
+		newClientDB(db, nil),
 		address,
 		liveWalletSnapshot{
 			Live:               live,

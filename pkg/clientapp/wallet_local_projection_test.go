@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strings"
@@ -236,7 +237,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		Count:              1,
 	}
 	cursor := walletUTXOHistoryCursor{WalletID: walletID, NextConfirmedHeight: 1, RoundTipHeight: 1}
-	if err := reconcileWalletUTXOSet(db, addr, staleSnapshot, nil, cursor, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
+	if err := reconcileWalletUTXOSet(context.Background(), newClientDB(db, nil), addr, staleSnapshot, nil, cursor, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
 		t.Fatalf("reconcileWalletUTXOSet: %v", err)
 	}
 

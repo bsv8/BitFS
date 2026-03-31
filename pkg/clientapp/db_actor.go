@@ -48,10 +48,7 @@ func runtimeStore(rt *Runtime) *clientDB {
 	if rt == nil {
 		return nil
 	}
-	if rt.store != nil {
-		return rt.store
-	}
-	return newClientDB(rt.DB, rt.DBActor)
+	return rt.store
 }
 
 func httpStore(s *httpAPIServer) *clientDB {
