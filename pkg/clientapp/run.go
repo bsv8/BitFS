@@ -645,10 +645,10 @@ func (in RunInput) toConfig() Config {
 }
 
 type Runtime struct {
-	Host            host.Host
-	DB              *sql.DB
-	DBActor         *sqliteactor.Actor
-	store           *clientDB
+	Host host.Host
+	// DB              *sql.DB
+	// DBActor         *sqliteactor.Actor
+	// store           *clientDB
 	runIn           RunInput
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
@@ -1005,10 +1005,10 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		"protocol_doc_name": BBroadcastProtocolName,
 	})
 	rt := &Runtime{
-		Host:                     h,
-		DB:                       db,
-		DBActor:                  dbActor,
-		store:                    store,
+		Host: h,
+		// DB:                       db,
+		// DBActor:                  dbActor,
+		// store:                    store,
 		runIn:                    in,
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,
@@ -1034,7 +1034,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
-		registerSellerHandlers(h, rt.store, rt.live, trace, cfg)
+		registerSellerHandlers(h, store, rt.live, trace, cfg)
 	}
 	if rt.ActionChain == nil {
 		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
@@ -1100,7 +1100,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}()
 	}
 	if cfg.FSHTTP.Enabled {
-		rt.FSHTTP = newFileHTTPServer(rt, &cfg, rt.store, workspaceMgr)
+		rt.FSHTTP = newFileHTTPServer(rt, &cfg, store, workspaceMgr)
 		fsHTTPListener := in.FSHTTPListener
 		in.FSHTTPListener = nil
 		wg.Add(1)
