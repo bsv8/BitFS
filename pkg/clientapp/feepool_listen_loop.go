@@ -11,11 +11,14 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
+	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
+	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -644,10 +647,6 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	if rt == nil || s == nil {
 		return fmt.Errorf("session missing")
 	}
-	payMu := rt.feePoolPayMutex(gw.String())
-	payMu.Lock()
-	defer payMu.Unlock()
-
 	latest, ok := rt.getFeePool(gw.String())
 	if !ok || latest == nil || strings.TrimSpace(latest.SpendTxID) == "" {
 		return fmt.Errorf("session missing")
@@ -665,133 +664,66 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		return errListenFeePoolRotateRequired
 	}
 	offerPayment := listenOfferPaymentSatoshi(rt, s)
-
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		return err
-	}
-
-	// 监听续费现在只走“budget_for_service”语义：client 给预算，gateway 回本次可成交时长。
-	payloadRaw, err := poolcore.MarshalListenCycleQuotePayload(0, 0)
-	if err != nil {
-		return err
-	}
-	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              s,
-		GatewayPeerID:        gw,
-		ServiceType:          poolcore.QuoteServiceTypeListenCycle,
-		Target:               "listen_cycle_fee",
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeBudgetForService,
-		ProposedPaymentSat:   offerPayment,
+	rawBody, err := oldproto.Marshal(&broadcastmodule.ListenCycleReq{
+		ProposedPaymentSatoshi: offerPayment,
 	})
 	if err != nil {
-		return fmt.Errorf("request listen quote failed: %w", err)
+		return err
 	}
-	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
-		Session:             s,
-		ClientActor:         clientActor,
-		GatewayPub:          quoted.GatewayPub,
-		ServiceQuoteRaw:     quoted.ServiceQuoteRaw,
-		ServiceQuote:        quoted.ServiceQuote,
-		ChargeReason:        quoted.ChargeReason,
-		NextSequence:        quoted.NextSequence,
-		NextServerAmount:    quoted.NextServerAmount,
-		ServiceDeadlineUnix: quoted.GrantedServiceDeadlineUnix,
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:                   gw.String(),
+		Route:                broadcastmodule.RouteBroadcastV1ListenCycle,
+		ContentType:          ncall.ContentTypeProto,
+		Body:                 rawBody,
+		RequireActiveFeePool: true,
 	})
 	if err != nil {
-		return fmt.Errorf("build listen proof tx failed: %w", err)
+		return err
 	}
-	clientSig, err := ce.ClientDualFeePoolSpendTXUpdateSign(built.UpdatedTx, clientActor.PrivKey, quoted.GatewayPub)
-	if err != nil {
-		return fmt.Errorf("client sign update failed: %w", err)
-	}
-
-	req := poolcore.PayConfirmReq{
-		ClientID:            rt.runIn.ClientID,
-		SpendTxID:           s.SpendTxID,
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		Fee:                 s.SpendTxFeeSat,
-		ClientSig:           append([]byte(nil), (*clientSig)...),
-		ChargeReason:        quoted.ChargeReason,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		ProofIntent:         append([]byte(nil), built.ProofIntent...),
-		SignedProofCommit:   append([]byte(nil), built.SignedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
-	}
-	out, err := callNodePoolPayConfirm(ctx, rt, gw, req)
+	resp, err := decodeListenCycleRouteResp(callResp)
 	if err != nil {
 		return err
 	}
-	if !out.Success {
-		return fmt.Errorf("pay_confirm rejected: %s", strings.TrimSpace(out.Error))
+	if !resp.Success {
+		reason := strings.TrimSpace(resp.Error)
+		if reason == "" {
+			reason = strings.TrimSpace(resp.Status)
+		}
+		if reason == "" {
+			reason = "listen cycle rejected"
+		}
+		return errors.New(reason)
 	}
-	if err := verifyServiceReceiptOrFreeze(ctx, rt, gw, s, out.MergedCurrentTx, expectedServiceReceipt{
-		ServiceType:        "listen_cycle_fee",
-		OfferHash:          quoted.ServiceQuote.OfferHash,
-		ResultPayloadBytes: nil,
-	}, out.ServiceReceipt); err != nil {
-		return err
+	latest, ok = rt.getFeePool(gw.String())
+	if ok && latest != nil {
+		s = latest
 	}
-
-	nextTxHex := built.UpdatedTx.Hex()
-	if len(out.MergedCurrentTx) > 0 {
-		nextTxHex = strings.ToLower(hex.EncodeToString(out.MergedCurrentTx))
-	}
-	// client 侧应优先保存 gateway 回签后的共同状态，争议时才能直接拿去等高广播。
-	applyFeePoolChargeToSession(s, out.Sequence, out.ServerAmount, nextTxHex)
+	sequence := s.Sequence
 
 	appendTxHistory(rt.DB, txHistoryEntry{
 		GatewayPeerID: s.GatewayPeerID,
-		EventType:     "pay_confirm",
+		EventType:     "peer_call",
 		Direction:     "debit",
-		AmountSatoshi: -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+		AmountSatoshi: -int64(resp.ChargedAmount),
 		Purpose:       "listen_cycle_fee",
-		Note:          fmt.Sprintf("spend_txid=%s seq=%d server_amount=%d updated_txid=%s", s.SpendTxID, out.Sequence, out.ServerAmount, out.UpdatedTxID),
+		Note:          fmt.Sprintf("route=%s spend_txid=%s seq=%d updated_txid=%s", broadcastmodule.RouteBroadcastV1ListenCycle, s.SpendTxID, sequence, resp.UpdatedTxID),
 		PoolID:        s.SpendTxID,
-		SequenceNum:   out.Sequence,
+		SequenceNum:   sequence,
 	})
 	appendGatewayEvent(rt.DB, gatewayEventEntry{
 		GatewayPeerID: s.GatewayPeerID,
 		Action:        "listen_cycle_fee",
 		PoolID:        s.SpendTxID,
-		SequenceNum:   out.Sequence,
-		AmountSatoshi: int64(quoted.ServiceQuote.ChargeAmountSatoshi),
+		SequenceNum:   sequence,
+		AmountSatoshi: int64(resp.ChargedAmount),
 		Payload: map[string]any{
-			"pay_confirm":                    out,
-			"quote_status":                   quoted.QuoteStatus,
-			"offer_payment_satoshi":          offerPayment,
-			"granted_service_deadline_unix":  quoted.GrantedServiceDeadlineUnix,
-			"granted_duration_seconds":       quoted.GrantedDurationSeconds,
-			"minimum_cycle_fee_satoshi":      s.SingleCycleFeeSatoshi,
-			"minimum_billing_cycle_seconds":  s.BillingCycleSeconds,
-			"quoted_charge_amount_satoshi":   quoted.ServiceQuote.ChargeAmountSatoshi,
-			"quoted_server_amount_after_sat": quoted.NextServerAmount,
-			"quoted_sequence_number":         quoted.NextSequence,
-		},
-	})
-	appendWalletFundFlow(rt.DB, walletFundFlowEntry{
-		FlowID:          "fee_pool:" + s.SpendTxID,
-		FlowType:        "fee_pool",
-		RefID:           s.SpendTxID,
-		Stage:           "use_cycle",
-		Direction:       "out",
-		Purpose:         "listen_cycle_fee",
-		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     out.UpdatedTxID,
-		Note:            fmt.Sprintf("sequence=%d", out.Sequence),
-		Payload: map[string]any{
-			"pay_confirm":                   out,
-			"quote_status":                  quoted.QuoteStatus,
+			"route_resp":                    resp,
 			"offer_payment_satoshi":         offerPayment,
-			"granted_service_deadline_unix": quoted.GrantedServiceDeadlineUnix,
-			"granted_duration_seconds":      quoted.GrantedDurationSeconds,
+			"minimum_cycle_fee_satoshi":     s.SingleCycleFeeSatoshi,
+			"minimum_billing_cycle_seconds": s.BillingCycleSeconds,
 		},
 	})
-	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, out.Sequence, quoted.ServiceQuote.ChargeAmountSatoshi, s.GatewayPeerID)
+	recordFeePoolCycleEvent(rt.DB, s.SpendTxID, sequence, resp.ChargedAmount, s.GatewayPeerID)
 	return nil
 }
 

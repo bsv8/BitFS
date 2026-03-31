@@ -27,6 +27,7 @@ type TriggerPeerCallParams struct {
 	PaymentMode   string
 	PaymentScheme string
 	ServiceQuote  []byte
+	RequireActiveFeePool bool
 }
 
 type TriggerPeerResolveParams struct {
@@ -114,7 +115,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
 	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
-		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.ServiceQuote, p.PaymentScheme)
+		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.ServiceQuote, p.PaymentScheme, p.RequireActiveFeePool)
 	}
 	out, err = callNodeRoute(ctx, rt, peerID, req)
 	if err != nil {
@@ -124,9 +125,9 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		return out, nil
 	}
 	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentRequired(ctx, rt, peerID, req, out.PaymentSchemes)
+		return quotePeerCallFromPaymentRequired(ctx, rt, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
 	}
-	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentSchemes)
+	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
 	if payErr != nil {
 		return ncall.CallResp{}, payErr
 	}

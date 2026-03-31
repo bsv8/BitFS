@@ -3,13 +3,11 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -229,31 +227,6 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	info, err := callNodePoolInfo(ctx, rt, gw.ID)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
-	preferredScheme := preferredPaymentScheme(rt)
-	if preferredScheme == defaultPreferredPaymentScheme {
-		if kernel := ensureClientKernel(rt); kernel != nil {
-			kres := kernel.dispatch(ctx, clientKernelCommand{
-				CommandType:   clientKernelCommandFeePoolEnsureActive,
-				GatewayPeerID: gw.ID.String(),
-				RequestedBy:   "trigger_node_reachability_announce",
-				Payload: map[string]any{
-					"trigger":     "node_reachability_announce",
-					"ttl_seconds": ttlSeconds,
-				},
-				AllowWhenPaused: true,
-			})
-			if kres.Status != "applied" {
-				if strings.TrimSpace(kres.ErrorMessage) != "" {
-					return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
-				}
-				return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
-			}
-		}
-	}
 	nodePubkeyHex, err := localPubKeyHex(rt.Host)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
@@ -300,130 +273,19 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	charge := info.SinglePublishFeeSatoshi
-	if charge == 0 {
-		charge = 1
-	}
-	payloadRaw, err := broadcastmodule.MarshalNodeReachabilityAnnounceQuotePayload(signedAnnouncement)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-	}
 	body := &broadcastmodule.NodeReachabilityAnnounceReq{
 		SignedAnnouncement: append([]byte(nil), signedAnnouncement...),
 	}
-	if preferredScheme == ncall.PaymentSchemeChainTxV1 {
-		resp, err := withGatewayRouteChainTxCall(ctx, rt, gatewayRouteChainTxCallArgs[broadcastmodule.NodeReachabilityAnnouncePaidResp]{
-			GatewayPeerID: gw.ID,
-			Charge:        charge,
-			ServiceType:   broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
-			Target:        nodePubkeyHex,
-			QuotePayload:  payloadRaw,
-			Route:         broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce,
-			Body:          body,
-			Decode:        decodeNodeReachabilityAnnounceRouteResp,
-		}, func(state gatewayRouteChainTxCallState[broadcastmodule.NodeReachabilityAnnouncePaidResp]) error {
-			resp := state.Response
-			if !resp.Success {
-				msg := strings.TrimSpace(resp.Error)
-				if msg == "" {
-					msg = "gateway announce node reachability failed"
-				}
-				return fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-			}
-			payload, err := broadcastmodule.MarshalNodeReachabilityAnnounceServicePayload(resp)
-			if err != nil {
-				return err
-			}
-			if err := verifyPeerCallServiceReceipt(rt, gw.ID, expectedServiceReceipt{
-				ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityAnnounce,
-				OfferHash:          state.Quoted.ServiceQuote.OfferHash,
-				ResultPayloadBytes: payload,
-			}, resp.ServiceReceipt); err != nil {
-				return err
-			}
-			if err := applyLocalBroadcastWalletTxBytes(rt, state.Built.RawTx, "gateway_route_chain_tx"); err != nil {
-				return err
-			}
-			appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-				FlowID:          "chain_tx:" + state.Built.TxID,
-				FlowType:        "chain_tx",
-				RefID:           broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce,
-				Stage:           "use_node_reachability_announce",
-				Direction:       "out",
-				Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
-				AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi + state.Built.MinerFeeSatoshi),
-				UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi + state.Built.MinerFeeSatoshi),
-				ReturnedSatoshi: 0,
-				RelatedTxID:     strings.TrimSpace(state.Receipt.PaymentTxID),
-				Note:            fmt.Sprintf("node_pubkey_hex=%s ttl_seconds=%d", nodePubkeyHex, ttlSeconds),
-				Payload:         resp,
-			})
-			return nil
-		})
-		if err != nil {
-			return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
-		}
-		return resp, nil
-	}
-	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.NodeReachabilityAnnouncePaidResp]{
-		GatewayPeerID: gw.ID,
-		Charge:        charge,
-		ServiceType:   broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
-		Target:        nodePubkeyHex,
-		QuotePayload:  payloadRaw,
-		Route:         broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce,
-		Body:          body,
-		Decode:        decodeNodeReachabilityAnnounceRouteResp,
-	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.NodeReachabilityAnnouncePaidResp]) error {
-		resp := state.Response
-		if !resp.Success {
-			msg := strings.TrimSpace(resp.Error)
-			if msg == "" {
-				msg = "gateway announce node reachability failed"
-			}
-			return fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-		}
-		payload, err := broadcastmodule.MarshalNodeReachabilityAnnounceServicePayload(resp)
-		if err != nil {
-			return err
-		}
-		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
-			ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityAnnounce,
-			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
-			ResultPayloadBytes: payload,
-		}, resp.ServiceReceipt); err != nil {
-			return err
-		}
-		nextTxHex := state.UpdatedTxHex
-		if len(resp.MergedCurrentTx) > 0 {
-			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
-		}
-		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
-		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + state.Session.SpendTxID,
-			FlowType:        "fee_pool",
-			RefID:           state.Session.SpendTxID,
-			Stage:           "use_node_reachability_announce",
-			Direction:       "out",
-			Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce,
-			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
-			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
-			ReturnedSatoshi: 0,
-			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
-			Note:            fmt.Sprintf("head_height=%d seq=%d ttl_seconds=%d", headHeight, announceSeq, ttlSeconds),
-			Payload: map[string]any{
-				"node_pubkey_hex":        nodePubkeyHex,
-				"head_height":            headHeight,
-				"seq":                    announceSeq,
-				"ttl_seconds":            ttlSeconds,
-				"updated_txid":           strings.TrimSpace(resp.UpdatedTxID),
-				"charged_amount_satoshi": resp.ChargedAmount,
-			},
-		})
-		return nil
-	})
+	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce, body, decodeNodeReachabilityAnnounceRouteResp)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+	}
+	if !resp.Success {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			msg = "gateway announce node reachability failed"
+		}
+		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
 	if err := saveSelfNodeReachabilityState(rt.DB, selfNodeReachabilityState{
 		NodePubkeyHex: nodePubkeyHex,
@@ -437,7 +299,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		"node_pubkey_hex":        nodePubkeyHex,
 		"head_height":            headHeight,
 		"seq":                    announceSeq,
-		"charged_amount_satoshi": charge,
+		"charged_amount_satoshi": resp.ChargedAmount,
 		"updated_txid":           strings.TrimSpace(resp.UpdatedTxID),
 	})
 	return resp, nil
@@ -463,157 +325,19 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 	}
-	info, err := callNodePoolInfo(ctx, rt, gw.ID)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
-	preferredScheme := preferredPaymentScheme(rt)
-	if preferredScheme == defaultPreferredPaymentScheme {
-		if kernel := ensureClientKernel(rt); kernel != nil {
-			kres := kernel.dispatch(ctx, clientKernelCommand{
-				CommandType:   clientKernelCommandFeePoolEnsureActive,
-				GatewayPeerID: gw.ID.String(),
-				RequestedBy:   "trigger_node_reachability_query",
-				Payload: map[string]any{
-					"trigger":                "node_reachability_query",
-					"target_node_pubkey_hex": targetNodePubkeyHex,
-				},
-				AllowWhenPaused: true,
-			})
-			if kres.Status != "applied" {
-				if strings.TrimSpace(kres.ErrorMessage) != "" {
-					return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.ErrorMessage)
-				}
-				return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("ensure fee pool failed: %s", kres.Status)
-			}
-		}
-	}
-	charge := info.SingleQueryFeeSatoshi
-	if charge == 0 {
-		charge = 1
-	}
-	payloadRaw, err := broadcastmodule.MarshalNodeReachabilityQueryQuotePayload(targetNodePubkeyHex)
-	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-	}
 	body := &broadcastmodule.NodeReachabilityQueryReq{
 		TargetNodePubkeyHex: targetNodePubkeyHex,
 	}
-	if preferredScheme == ncall.PaymentSchemeChainTxV1 {
-		resp, err := withGatewayRouteChainTxCall(ctx, rt, gatewayRouteChainTxCallArgs[broadcastmodule.NodeReachabilityQueryPaidResp]{
-			GatewayPeerID: gw.ID,
-			Charge:        charge,
-			ServiceType:   broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
-			Target:        targetNodePubkeyHex,
-			QuotePayload:  payloadRaw,
-			Route:         broadcastmodule.RouteBroadcastV1NodeReachabilityQuery,
-			Body:          body,
-			Decode:        decodeNodeReachabilityQueryRouteResp,
-		}, func(state gatewayRouteChainTxCallState[broadcastmodule.NodeReachabilityQueryPaidResp]) error {
-			resp := state.Response
-			if !resp.Success {
-				msg := strings.TrimSpace(resp.Error)
-				if msg == "" {
-					msg = "gateway query node reachability failed"
-				}
-				return fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-			}
-			payload, err := broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
-			if err != nil {
-				return err
-			}
-			if err := verifyPeerCallServiceReceipt(rt, gw.ID, expectedServiceReceipt{
-				ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityQuery,
-				OfferHash:          state.Quoted.ServiceQuote.OfferHash,
-				ResultPayloadBytes: payload,
-			}, resp.ServiceReceipt); err != nil {
-				return err
-			}
-			if err := applyLocalBroadcastWalletTxBytes(rt, state.Built.RawTx, "gateway_route_chain_tx"); err != nil {
-				return err
-			}
-			appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-				FlowID:          "chain_tx:" + state.Built.TxID,
-				FlowType:        "chain_tx",
-				RefID:           broadcastmodule.RouteBroadcastV1NodeReachabilityQuery,
-				Stage:           "use_node_reachability_query",
-				Direction:       "out",
-				Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
-				AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi + state.Built.MinerFeeSatoshi),
-				UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi + state.Built.MinerFeeSatoshi),
-				ReturnedSatoshi: 0,
-				RelatedTxID:     strings.TrimSpace(state.Receipt.PaymentTxID),
-				Note:            fmt.Sprintf("target_node_pubkey_hex=%s found=%t", targetNodePubkeyHex, resp.Found),
-				Payload:         resp,
-			})
-			return nil
-		})
-		if err != nil {
-			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-		}
-		if resp.Found {
-			ann, err := announcementFromQueryResp(resp)
-			if err != nil {
-				return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-			}
-			if err := saveNodeReachabilityCache(rt.DB, gatewayBusinessID(rt, gw.ID), ann); err != nil {
-				return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
-			}
-		}
-		return resp, nil
-	}
-	resp, err := withGatewayRouteFeePoolCall(ctx, rt, gatewayRouteFeePoolCallArgs[broadcastmodule.NodeReachabilityQueryPaidResp]{
-		GatewayPeerID: gw.ID,
-		Charge:        charge,
-		ServiceType:   broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
-		Target:        targetNodePubkeyHex,
-		QuotePayload:  payloadRaw,
-		Route:         broadcastmodule.RouteBroadcastV1NodeReachabilityQuery,
-		Body:          body,
-		Decode:        decodeNodeReachabilityQueryRouteResp,
-	}, func(state gatewayRouteFeePoolCallState[broadcastmodule.NodeReachabilityQueryPaidResp]) error {
-		resp := state.Response
-		if !resp.Success {
-			msg := strings.TrimSpace(resp.Error)
-			if msg == "" {
-				msg = "gateway query node reachability failed"
-			}
-			return fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-		}
-		payload, err := broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
-		if err != nil {
-			return err
-		}
-		if err := verifyServiceReceiptOrFreeze(ctx, rt, gw.ID, state.Session, resp.MergedCurrentTx, expectedServiceReceipt{
-			ServiceType:        broadcastmodule.ServiceTypeNodeReachabilityQuery,
-			OfferHash:          state.Quoted.ServiceQuote.OfferHash,
-			ResultPayloadBytes: payload,
-		}, resp.ServiceReceipt); err != nil {
-			return err
-		}
-		nextTxHex := state.UpdatedTxHex
-		if len(resp.MergedCurrentTx) > 0 {
-			nextTxHex = strings.ToLower(hex.EncodeToString(resp.MergedCurrentTx))
-		}
-		applyFeePoolChargeToSession(state.Session, state.Quoted.NextSequence, state.Quoted.NextServerAmount, nextTxHex)
-		appendWalletFundFlowFromContext(ctx, rt.DB, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + state.Session.SpendTxID,
-			FlowType:        "fee_pool",
-			RefID:           state.Session.SpendTxID,
-			Stage:           "use_node_reachability_query",
-			Direction:       "out",
-			Purpose:         broadcastmodule.QuoteServiceTypeNodeReachabilityQuery,
-			AmountSatoshi:   -int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
-			UsedSatoshi:     int64(state.Quoted.ServiceQuote.ChargeAmountSatoshi),
-			ReturnedSatoshi: 0,
-			RelatedTxID:     strings.TrimSpace(resp.UpdatedTxID),
-			Note:            fmt.Sprintf("target_node_pubkey_hex=%s found=%t", targetNodePubkeyHex, resp.Found),
-			Payload:         resp,
-		})
-		return nil
-	})
+	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityQuery, body, decodeNodeReachabilityQueryRouteResp)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+	}
+	if !resp.Success {
+		msg := strings.TrimSpace(resp.Error)
+		if msg == "" {
+			msg = "gateway query node reachability failed"
+		}
+		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
 	if resp.Found {
 		ann, err := announcementFromQueryResp(resp)
@@ -631,7 +355,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		"gateway_pubkey_hex":     gatewayBusinessID(rt, gw.ID),
 		"target_node_pubkey_hex": targetNodePubkeyHex,
 		"found":                  resp.Found,
-		"charged_amount_satoshi": charge,
+		"charged_amount_satoshi": resp.ChargedAmount,
 		"updated_txid":           strings.TrimSpace(resp.UpdatedTxID),
 	})
 	return resp, nil

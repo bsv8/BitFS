@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -25,6 +26,46 @@ func marshalFeePoolPaymentPayload(session *feePoolSession, quoted feePoolService
 		SignedProofCommit:   append([]byte(nil), signedProofCommit...),
 		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
 	})
+}
+
+func triggerTypedPeerCall[T any](ctx context.Context, rt *Runtime, to string, route string, body oldproto.Message, decode func(ncall.CallResp) (T, error)) (T, ncall.CallResp, error) {
+	var zero T
+	if decode == nil {
+		return zero, ncall.CallResp{}, fmt.Errorf("route response decoder missing")
+	}
+	rawBody, err := oldproto.Marshal(body)
+	if err != nil {
+		return zero, ncall.CallResp{}, err
+	}
+	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
+		To:          strings.TrimSpace(to),
+		Route:       strings.TrimSpace(route),
+		ContentType: ncall.ContentTypeProto,
+		Body:        rawBody,
+	})
+	if err != nil {
+		return zero, ncall.CallResp{}, err
+	}
+	resp, err := decode(callResp)
+	if err != nil {
+		return zero, ncall.CallResp{}, err
+	}
+	return resp, callResp, nil
+}
+
+func decodeListenCycleRouteResp(callResp ncall.CallResp) (broadcastmodule.ListenCyclePaidResp, error) {
+	var resp broadcastmodule.ListenCyclePaidResp
+	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
+		return broadcastmodule.ListenCyclePaidResp{}, err
+	}
+	if receipt, ok := parseFeePoolRouteReceipt(callResp); ok {
+		resp.ChargedAmount = receipt.ChargedAmountSatoshi
+		resp.UpdatedTxID = receipt.UpdatedTxID
+		resp.MergedCurrentTx = append([]byte(nil), receipt.MergedCurrentTx...)
+		resp.ProofStatePayload = append([]byte(nil), receipt.ProofStatePayload...)
+	}
+	resp.ServiceReceipt = append([]byte(nil), callResp.ServiceReceipt...)
+	return resp, nil
 }
 
 func decodeDemandPublishRouteResp(callResp ncall.CallResp) (broadcastmodule.DemandPublishPaidResp, error) {

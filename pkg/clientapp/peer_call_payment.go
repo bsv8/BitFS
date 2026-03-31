@@ -28,14 +28,14 @@ type feePoolChargeContext struct {
 	SignedProofCommit  []byte
 }
 
-func retryPeerCallWithAutoPayment(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, options []*ncall.PaymentOption) (ncall.CallResp, error) {
+func retryPeerCallWithAutoPayment(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, options []*ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, error) {
 	option, ok := choosePeerCallPaymentOption(options, preferredPaymentScheme(rt))
 	if !ok {
 		return ncall.CallResp{}, fmt.Errorf("no supported payment option")
 	}
 	switch strings.TrimSpace(option.Scheme) {
 	case ncall.PaymentSchemePool2of2V1:
-		quotedResp, quoted, info, err := quotePeerCallWithFeePool2of2(ctx, rt, peerID, req, option)
+		quotedResp, quoted, info, err := quotePeerCallWithFeePool2of2(ctx, rt, peerID, req, option, requireActiveFeePool)
 		if err != nil {
 			return ncall.CallResp{}, err
 		}
@@ -57,14 +57,14 @@ func retryPeerCallWithAutoPayment(ctx context.Context, rt *Runtime, peerID peer.
 	}
 }
 
-func quotePeerCallFromPaymentRequired(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, options []*ncall.PaymentOption) (ncall.CallResp, error) {
+func quotePeerCallFromPaymentRequired(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, options []*ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, error) {
 	option, ok := choosePeerCallPaymentOption(options, preferredPaymentScheme(rt))
 	if !ok {
 		return ncall.CallResp{}, fmt.Errorf("no supported payment option")
 	}
 	switch strings.TrimSpace(option.Scheme) {
 	case ncall.PaymentSchemePool2of2V1:
-		resp, _, _, err := quotePeerCallWithFeePool2of2(ctx, rt, peerID, req, option)
+		resp, _, _, err := quotePeerCallWithFeePool2of2(ctx, rt, peerID, req, option, requireActiveFeePool)
 		return resp, err
 	case ncall.PaymentSchemeChainTxV1:
 		resp, _, err := quotePeerCallWithChainTx(ctx, rt, peerID, req, option)
@@ -74,7 +74,7 @@ func quotePeerCallFromPaymentRequired(ctx context.Context, rt *Runtime, peerID p
 	}
 }
 
-func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, rawQuote []byte, preferredScheme string) (ncall.CallResp, error) {
+func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, rawQuote []byte, preferredScheme string, requireActiveFeePool bool) (ncall.CallResp, error) {
 	if rt == nil || rt.Host == nil {
 		return ncall.CallResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -112,7 +112,7 @@ func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, peerID peer.
 		payMu.Lock()
 		defer payMu.Unlock()
 
-		info, _, err := ensurePeerFeePoolSessionForChargeLocked(ctx, rt, peerID, option.PaymentDomain, option.AmountSatoshi, option)
+		info, _, err := ensurePeerFeePoolSessionForChargeLocked(ctx, rt, peerID, option.PaymentDomain, option.AmountSatoshi, option, requireActiveFeePool)
 		if err != nil {
 			return ncall.CallResp{}, err
 		}
@@ -180,7 +180,7 @@ func chooseAcceptedQuotePaymentScheme(preferredScheme string) (string, error) {
 	return normalizePreferredPaymentScheme(preferredScheme)
 }
 
-func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (ncall.CallResp, feePoolServiceQuoteBuilt, poolcore.InfoResp, error) {
+func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, feePoolServiceQuoteBuilt, poolcore.InfoResp, error) {
 	if rt == nil || rt.Host == nil {
 		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -195,7 +195,7 @@ func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, peerID peer.
 	payMu.Lock()
 	defer payMu.Unlock()
 
-	info, gw, err := ensurePeerFeePoolSessionForChargeLocked(ctx, rt, peerID, option.PaymentDomain, charge, option)
+	info, gw, err := ensurePeerFeePoolSessionForChargeLocked(ctx, rt, peerID, option.PaymentDomain, charge, option, requireActiveFeePool)
 	if err != nil {
 		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, err
 	}
@@ -203,13 +203,17 @@ func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, peerID peer.
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
 		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, fmt.Errorf("fee pool session missing for peer=%s", gw.ID)
 	}
+	serviceParamsPayload, err := buildPeerCallServiceParamsPayload(strings.TrimSpace(req.Route), req.Body)
+	if err != nil {
+		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, err
+	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:              session,
 		GatewayPeerID:        gw.ID,
 		ServiceDomain:        strings.TrimSpace(option.PaymentDomain),
 		ServiceType:          peerCallQuotedServiceType(req.Route),
 		Target:               buildPeerCallQuoteTarget(req),
-		ServiceParamsPayload: append([]byte(nil), req.Body...),
+		ServiceParamsPayload: append([]byte(nil), serviceParamsPayload...),
 		PricingMode:          normalizePeerCallPricingMode(option),
 		ProposedPaymentSat:   charge,
 	})
@@ -280,7 +284,7 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 			RefID:           chargeCtx.Session.SpendTxID,
 			Stage:           "use_peer_call",
 			Direction:       "out",
-			Purpose:         "peer_call_fee",
+			Purpose:         nonEmptyPeerCallPurpose(quoted.ChargeReason, req.Route),
 			AmountSatoshi:   -int64(chargeCtx.Charge),
 			UsedSatoshi:     int64(chargeCtx.Charge),
 			ReturnedSatoshi: 0,
@@ -289,6 +293,7 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 			Payload: map[string]any{
 				"route":               strings.TrimSpace(req.Route),
 				"payment_domain":      strings.TrimSpace(option.PaymentDomain),
+				"charge_reason":       strings.TrimSpace(quoted.ChargeReason),
 				"charged_amount_sat":  receipt.ChargedAmountSatoshi,
 				"sequence_number":     chargeCtx.NextSeq,
 				"server_amount":       chargeCtx.NextServerAmount,
@@ -301,6 +306,12 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, peerID pe
 
 func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
 	switch strings.TrimSpace(route) {
+	case broadcastmodule.RouteBroadcastV1ListenCycle:
+		var resp broadcastmodule.ListenCyclePaidResp
+		if err := oldproto.Unmarshal(body, &resp); err != nil {
+			return nil, fmt.Errorf("decode broadcast listen cycle body failed: %w", err)
+		}
+		return broadcastmodule.MarshalListenCycleServicePayload(resp)
 	case broadcastmodule.RouteBroadcastV1DemandPublish:
 		var resp broadcastmodule.DemandPublishPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
@@ -360,7 +371,50 @@ func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
 	}
 }
 
-func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, peerID peer.ID, paymentDomain string, charge uint64, option *ncall.PaymentOption) (poolcore.InfoResp, peer.AddrInfo, error) {
+func buildPeerCallServiceParamsPayload(route string, body []byte) ([]byte, error) {
+	switch strings.TrimSpace(route) {
+	case broadcastmodule.RouteBroadcastV1ListenCycle:
+		var req broadcastmodule.ListenCycleReq
+		if err := oldproto.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("decode broadcast listen cycle request failed: %w", err)
+		}
+		return poolcore.MarshalListenCycleQuotePayload(req.RequestedDurationSeconds, req.RequestedUntilUnix, req.ProposedPaymentSatoshi)
+	case broadcastmodule.RouteBroadcastV1DemandPublish:
+		var req broadcastmodule.DemandPublishReq
+		if err := oldproto.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("decode broadcast demand publish request failed: %w", err)
+		}
+		return broadcastmodule.MarshalDemandPublishQuotePayload(req.SeedHash, req.ChunkCount, req.BuyerAddrs)
+	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
+		var req broadcastmodule.DemandPublishBatchReq
+		if err := oldproto.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("decode broadcast demand publish batch request failed: %w", err)
+		}
+		return broadcastmodule.MarshalDemandPublishBatchQuotePayload(req.Items, req.BuyerAddrs)
+	case broadcastmodule.RouteBroadcastV1LiveDemandPublish:
+		var req broadcastmodule.LiveDemandPublishReq
+		if err := oldproto.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("decode broadcast live demand publish request failed: %w", err)
+		}
+		return broadcastmodule.MarshalLiveDemandPublishQuotePayload(req.StreamID, req.HaveSegmentIndex, req.Window, req.BuyerAddrs)
+	case broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce:
+		var req broadcastmodule.NodeReachabilityAnnounceReq
+		if err := oldproto.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("decode broadcast node reachability announce request failed: %w", err)
+		}
+		return broadcastmodule.MarshalNodeReachabilityAnnounceQuotePayload(req.SignedAnnouncement)
+	case broadcastmodule.RouteBroadcastV1NodeReachabilityQuery:
+		var req broadcastmodule.NodeReachabilityQueryReq
+		if err := oldproto.Unmarshal(body, &req); err != nil {
+			return nil, fmt.Errorf("decode broadcast node reachability query request failed: %w", err)
+		}
+		return broadcastmodule.MarshalNodeReachabilityQueryQuotePayload(req.TargetNodePubkeyHex)
+	default:
+		return append([]byte(nil), body...), nil
+	}
+}
+
+func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, peerID peer.ID, paymentDomain string, charge uint64, option *ncall.PaymentOption, requireActiveFeePool bool) (poolcore.InfoResp, peer.AddrInfo, error) {
 	var info poolcore.InfoResp
 	var err error
 	if rt == nil || rt.Host == nil {
@@ -375,6 +429,12 @@ func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, p
 		if cur.ClientAmount >= charge+cur.SpendTxFeeSat {
 			return info, gw, nil
 		}
+		if requireActiveFeePool {
+			return info, gw, errListenFeePoolRotateRequired
+		}
+	}
+	if requireActiveFeePool {
+		return info, gw, fmt.Errorf("active fee pool session missing for peer=%s", gw.ID)
 	}
 	autoRenewRounds := rt.runIn.Listen.AutoRenewRounds
 	if autoRenewRounds == 0 {
@@ -467,6 +527,8 @@ func buildPeerCallQuoteTarget(req ncall.CallReq) string {
 
 func peerCallQuotedServiceType(route string) string {
 	switch strings.TrimSpace(route) {
+	case broadcastmodule.RouteBroadcastV1ListenCycle:
+		return poolcore.QuoteServiceTypeListenCycle
 	case broadcastmodule.RouteBroadcastV1DemandPublish:
 		return broadcastmodule.QuoteServiceTypeDemandPublish
 	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
@@ -484,6 +546,8 @@ func peerCallQuotedServiceType(route string) string {
 
 func peerCallReceiptServiceType(route string) string {
 	switch strings.TrimSpace(route) {
+	case broadcastmodule.RouteBroadcastV1ListenCycle:
+		return broadcastmodule.ServiceTypeListenCycle
 	case broadcastmodule.RouteBroadcastV1DemandPublish:
 		return broadcastmodule.ServiceTypeDemandPublish
 	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
@@ -523,4 +587,14 @@ func decorateQuotedPeerCallPaymentOption(option *ncall.PaymentOption, amountSato
 	copyItem.ServiceQuantityUnit = strings.TrimSpace(unit)
 	copyItem.QuoteStatus = strings.TrimSpace(quoteStatus)
 	return &copyItem
+}
+
+func nonEmptyPeerCallPurpose(chargeReason string, route string) string {
+	if strings.TrimSpace(chargeReason) != "" {
+		return strings.TrimSpace(chargeReason)
+	}
+	if strings.TrimSpace(route) != "" {
+		return strings.TrimSpace(route)
+	}
+	return "peer_call_fee"
 }

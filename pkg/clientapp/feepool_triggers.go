@@ -176,7 +176,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 	}
 
 	underpay := sess.SingleCycleFeeSatoshi - 1
-	payloadRaw, err := poolcore.MarshalListenCycleQuotePayload(0, 0)
+	payloadRaw, err := poolcore.MarshalListenCycleQuotePayload(0, 0, 0)
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
 	}

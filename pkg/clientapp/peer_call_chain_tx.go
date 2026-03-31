@@ -60,6 +60,10 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	if rt == nil || rt.Host == nil {
 		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
+	serviceParamsPayload, err := buildPeerCallServiceParamsPayload(strings.TrimSpace(req.Route), req.Body)
+	if err != nil {
+		return peerCallChainTxQuoteBuilt{}, err
+	}
 	gatewayPub, err := gatewayPublicKeyFromPeer(rt, peerID)
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
@@ -68,7 +72,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 		ServiceType:          peerCallQuotedServiceType(req.Route),
 		ServiceNodePubkeyHex: strings.ToLower(hex.EncodeToString(gatewayPub.Compressed())),
 		ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
-		RequestParams:        append([]byte(nil), req.Body...),
+		RequestParams:        append([]byte(nil), serviceParamsPayload...),
 		CreatedAtUnix:        time.Now().Unix(),
 	}
 	rawOffer, err := payflow.MarshalServiceOffer(offer)
@@ -78,7 +82,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	resp, err := callNodeServiceQuote(ctx, rt, peerID, poolcore.ServiceQuoteReq{
 		ClientID:             rt.runIn.ClientID,
 		ServiceOffer:         rawOffer,
-		ServiceParamsPayload: append([]byte(nil), req.Body...),
+		ServiceParamsPayload: append([]byte(nil), serviceParamsPayload...),
 	})
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
@@ -94,7 +98,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
-	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, rt.runIn.ClientID, peerCallQuotedServiceType(req.Route), req.Body, time.Now().Unix()); err != nil {
+	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, rt.runIn.ClientID, peerCallQuotedServiceType(req.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
 	chargeReason := strings.TrimSpace(req.Route)
@@ -148,7 +152,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 		RefID:           strings.TrimSpace(req.Route),
 		Stage:           "use_peer_call",
 		Direction:       "out",
-		Purpose:         "peer_call_fee",
+		Purpose:         nonEmptyPeerCallPurpose(quoted.ChargeReason, req.Route),
 		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi + built.MinerFeeSatoshi),
 		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi + built.MinerFeeSatoshi),
 		ReturnedSatoshi: 0,
@@ -157,6 +161,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 		Payload: map[string]any{
 			"route":                strings.TrimSpace(req.Route),
 			"payment_domain":       strings.TrimSpace(option.PaymentDomain),
+			"charge_reason":        strings.TrimSpace(quoted.ChargeReason),
 			"payment_scheme":       ncall.PaymentSchemeChainTxV1,
 			"quote_charge_sat":     quoted.ServiceQuote.ChargeAmountSatoshi,
 			"miner_fee_sat":        built.MinerFeeSatoshi,
