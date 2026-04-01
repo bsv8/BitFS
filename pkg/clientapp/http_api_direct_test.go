@@ -12,13 +12,31 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
-		VALUES(?,?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?,?)`,
-		"dmd_1", "seller_1", 1000, 10, 1700000100, "f1.bin", "application/javascript", "ff", `["arb_1","arb_2"]`, 1700000001,
-		"dmd_2", "seller_2", 2000, 20, 1700000200, "f2.bin", "text/css", "0f", `["arb_3"]`, 1700000002,
+	_, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix)
+		VALUES(?,?,?), (?,?,?)`,
+		"dmd_1", "seed_1", 1700000000,
+		"dmd_2", "seed_2", 1700000001,
 	)
 	if err != nil {
-		t.Fatalf("insert direct_quotes: %v", err)
+		t.Fatalf("insert demands: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO demand_quotes(
+			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?,?,?)`,
+		"dmd_1", "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1000, 10, 3, 1234, "f1.bin", "application/javascript", "ff", 1893427200, 1700000001,
+		"dmd_2", "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 2000, 20, 4, 2234, "f2.bin", "text/css", "0f", 1893427200, 1700000002,
+	)
+	if err != nil {
+		t.Fatalf("insert demand_quotes: %v", err)
+	}
+	_, err = db.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex)
+		VALUES(?,?),(?,?),(?,?)`,
+		1, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		1, "03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		2, "02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+	)
+	if err != nil {
+		t.Fatalf("insert demand_quote_arbiters: %v", err)
 	}
 	_, err = db.Exec(`INSERT INTO direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,

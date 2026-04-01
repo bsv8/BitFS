@@ -1587,7 +1587,7 @@ func cfgBool(v *bool, def bool) bool {
 // registerDirectQuoteSubmitHandler 注册买方接收报价入口。
 // 设计说明：
 // - direct quote 是“卖方 -> 买方”回推路径，买方即便不是 seller 模式也必须可接收；
-// - 该入口只负责落库 direct_quotes，不涉及卖方资源读取，因此可全端默认启用。
+// - 该入口只负责落库 demand_quotes 和 demand_quote_arbiters，不涉及卖方资源读取，因此可全端默认启用。
 func registerDirectQuoteSubmitHandler(h host.Host, store *clientDB, trace pproto.TraceSink) {
 	pproto.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(ctx context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
@@ -1618,7 +1618,7 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		if demandID == "" || seedHash == "" || buyerPeerID == "" || req.ChunkCount == 0 {
 			return dealprod.DemandAnnounceResp{}, fmt.Errorf("invalid demand announce")
 		}
-		if err := dbRecordDemandDedup(ctx, store, demandID, seedHash); err != nil {
+		if err := dbRecordDemand(ctx, store, demandID, seedHash); err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
 		seed, ok, err := dbLoadSellerSeedSnapshot(ctx, store, seedHash)
@@ -1670,7 +1670,7 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			ExpiresAtUnix:       time.Now().Add(10 * time.Minute).Unix(),
 			RecommendedFileName: seed.RecommendedFileName,
 			MIMEHint:            seed.MIMEHint,
-			ArbiterPeerIDs:      configuredArbiterPeerIDs(cfg),
+			ArbiterPeerIDs:      configuredArbiterPubHexes(cfg),
 			AvailableChunkBitmapHex: chunkBitmapHexFromIndexes(
 				availableChunks,
 				seed.ChunkCount,
@@ -1846,6 +1846,10 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink,
 			return fmt.Errorf("invalid available_chunk_bitmap_hex")
 		}
 	}
+	arbiterPubHexes, err := normalizePubHexList(p.ArbiterPeerIDs)
+	if err != nil {
+		return err
+	}
 	if err := pproto.CallProto(ctx, h, buyerID, ProtoQuoteDirectSubmit, clientSec(trace), directQuoteSubmitReq{
 		DemandID:             strings.TrimSpace(p.DemandID),
 		SellerPeerID:         strings.ToLower(strings.TrimSpace(sellerClientID)),
@@ -1856,7 +1860,7 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink,
 		ExpiresAtUnix:        p.ExpiresAtUnix,
 		RecommendedFileName:  sanitizeRecommendedFileName(p.RecommendedFileName),
 		MIMEHint:             sanitizeMIMEHint(p.MIMEHint),
-		ArbiterPeerIDs:       normalizePeerIDList(p.ArbiterPeerIDs),
+		ArbiterPeerIDs:       arbiterPubHexes,
 		AvailableChunkBitmap: bitmapBytes,
 	}, &resp); err != nil {
 		return err
@@ -1965,19 +1969,23 @@ func mimeHintBySeedHash(store *clientDB, seedHash string) string {
 	return dbMimeHintBySeedHash(context.Background(), store, seedHash)
 }
 
-func configuredArbiterPeerIDs(cfg Config) []string {
+func configuredArbiterPubHexes(cfg Config) []string {
 	out := make([]string, 0, len(cfg.Network.Arbiters))
 	for _, a := range cfg.Network.Arbiters {
 		if !a.Enabled {
 			continue
 		}
-		ai, err := parseAddr(strings.TrimSpace(a.Addr))
-		if err != nil || ai == nil {
+		pubHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(a.Pubkey))
+		if err != nil {
 			continue
 		}
-		out = append(out, ai.ID.String())
+		out = append(out, pubHex)
 	}
-	return normalizePeerIDList(out)
+	normalized, err := normalizePubHexList(out)
+	if err != nil {
+		return nil
+	}
+	return normalized
 }
 
 func normalizePeerIDList(in []string) []string {

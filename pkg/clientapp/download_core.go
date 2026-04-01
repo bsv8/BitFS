@@ -107,9 +107,18 @@ func runDirectDownloadCoreLegacy(ctx context.Context, store *clientDB, rt *Runti
 		"first_recommended_name":  quotes[0].RecommendedFileName,
 	})
 
-	arbiter := strings.TrimSpace(p.ArbiterPeerID)
-	if arbiter == "" && len(rt.HealthyArbiters) > 0 {
-		arbiter = rt.HealthyArbiters[0].ID.String()
+	arbiter := strings.ToLower(strings.TrimSpace(p.ArbiterPeerID))
+	if arbiter == "" {
+		arbiterList := ownArbiterPubHexes(rt)
+		if len(arbiterList) == 0 {
+			return directDownloadCoreResult{}, fmt.Errorf("no available arbiter")
+		}
+		arbiter = arbiterList[0]
+	} else {
+		arbiter, err = normalizeCompressedPubKeyHex(arbiter)
+		if err != nil {
+			return directDownloadCoreResult{}, fmt.Errorf("invalid arbiter pubkey: %w", err)
+		}
 	}
 	startStep(hooks, downloadStepTransfer, map[string]string{
 		"chunk_count": strconv.FormatUint(uint64(p.TransferChunkCount), 10),

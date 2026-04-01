@@ -185,6 +185,9 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		"success":   resp.Success,
 		"error":     strings.TrimSpace(resp.Error),
 	})
+	if err := dbRecordDemand(ctx, store, resp.DemandID, seedHash); err != nil {
+		return broadcastmodule.DemandPublishPaidResp{}, err
+	}
 	return resp, nil
 }
 
@@ -231,6 +234,14 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 		"success":         resp.Success,
 		"error":           strings.TrimSpace(resp.Error),
 	})
+	for _, item := range resp.Items {
+		if item == nil {
+			continue
+		}
+		if err := dbRecordDemand(ctx, store, item.DemandID, item.SeedHash); err != nil {
+			return broadcastmodule.DemandPublishBatchPaidResp{}, err
+		}
+	}
 	return resp, nil
 }
 
@@ -461,7 +472,7 @@ type LiveQuoteItem struct {
 }
 
 func TriggerClientListDirectQuotes(ctx context.Context, store *clientDB, demandID string) ([]DirectQuoteItem, error) {
-	page, err := dbListDirectQuotes(ctx, store, directQuoteFilter{
+	page, err := dbListDemandQuotes(ctx, store, demandQuoteFilter{
 		Limit:    1000,
 		Offset:   0,
 		DemandID: strings.TrimSpace(demandID),
@@ -474,14 +485,15 @@ func TriggerClientListDirectQuotes(ctx context.Context, store *clientDB, demandI
 	for _, raw := range page.Items {
 		it := DirectQuoteItem{
 			DemandID:                raw.DemandID,
-			SellerPeerID:            raw.SellerPeerID,
-			SeedPrice:               raw.SeedPrice,
-			ChunkPrice:              raw.ChunkPrice,
+			SellerPeerID:            raw.SellerPubHex,
+			SeedPrice:               raw.SeedPriceSatoshi,
+			ChunkPrice:              raw.ChunkPriceSatoshi,
 			ChunkCount:              raw.ChunkCount,
-			FileSize:                raw.FileSize,
+			FileSize:                raw.FileSizeBytes,
 			ExpiresAtUnix:           raw.ExpiresAtUnix,
 			RecommendedFileName:     raw.RecommendedFileName,
-			MIMEHint:                raw.MIMEHint,
+			MIMEHint:                raw.MimeType,
+			SellerArbiterPeerIDs:    append([]string(nil), raw.SellerArbiterPubHexes...),
 			AvailableChunkBitmapHex: raw.AvailableChunkBitmapHex,
 		}
 		if strings.TrimSpace(it.AvailableChunkBitmapHex) != "" {
@@ -654,9 +666,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
-	arbiterPID, err := peer.Decode(strings.TrimSpace(p.ArbiterPeerID))
+	arbiterPubHex := strings.ToLower(strings.TrimSpace(p.ArbiterPeerID))
+	arbiterPID, err := peerIDFromSecp256k1PubHex(arbiterPubHex)
 	if err != nil {
-		return directTransferPoolOpenResult{}, fmt.Errorf("invalid arbiter peer id: %w", err)
+		return directTransferPoolOpenResult{}, fmt.Errorf("invalid arbiter pubkey hex: %w", err)
 	}
 	arbiterPub := buyer.Host.Peerstore().PubKey(arbiterPID)
 	if arbiterPub == nil {
@@ -666,7 +679,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
-	arbiterPubHex := strings.ToLower(hex.EncodeToString(arbiterRaw))
+	arbiterPubHex = strings.ToLower(hex.EncodeToString(arbiterRaw))
 	arbiterPubKey, err := ec.PublicKeyFromString(arbiterPubHex)
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
@@ -1465,17 +1478,22 @@ func resolveDealArbiter(buyer *Runtime, sellerArbiters []string, override string
 	if buyer == nil {
 		return "", fmt.Errorf("runtime not initialized")
 	}
-	own := ownArbiterPeerIDs(buyer)
+	own := ownArbiterPubHexes(buyer)
 	if len(own) == 0 {
 		return "", fmt.Errorf("buyer has no configured arbiter")
 	}
 	sellerSet := map[string]struct{}{}
-	for _, id := range normalizePeerIDList(sellerArbiters) {
+	normalizedSellerArbiters, err := normalizePubHexList(sellerArbiters)
+	if err != nil {
+		return "", err
+	}
+	for _, id := range normalizedSellerArbiters {
 		sellerSet[id] = struct{}{}
 	}
 	pin := strings.TrimSpace(override)
 	if pin != "" {
-		if _, err := peer.Decode(pin); err != nil {
+		pin = strings.ToLower(pin)
+		if _, err := normalizeCompressedPubKeyHex(pin); err != nil {
 			return "", fmt.Errorf("invalid arbiter_pubkey_hex override: %w", err)
 		}
 		if _, ok := sellerSet[pin]; !ok {
@@ -1501,7 +1519,7 @@ func resolveDealArbiter(buyer *Runtime, sellerArbiters []string, override string
 	return "", fmt.Errorf("no common arbiter between buyer and seller")
 }
 
-func ownArbiterPeerIDs(rt *Runtime) []string {
+func ownArbiterPubHexes(rt *Runtime) []string {
 	if rt == nil {
 		return nil
 	}
@@ -1510,22 +1528,48 @@ func ownArbiterPeerIDs(rt *Runtime) []string {
 		if !a.Enabled {
 			continue
 		}
-		ai, err := parseAddr(strings.TrimSpace(a.Addr))
-		if err != nil || ai == nil {
+		pubHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(a.Pubkey))
+		if err != nil {
 			continue
 		}
-		ids = append(ids, ai.ID.String())
+		ids = append(ids, pubHex)
 	}
-	ids = normalizePeerIDList(ids)
+	ids, _ = normalizePubHexList(ids)
 	if len(ids) > 0 {
 		return ids
 	}
-	// 回退：用已连接仲裁列表（保持连接顺序）。
+	// 回退：用已连接仲裁列表（保持连接顺序），再转成 pubkey hex。
 	fallback := make([]string, 0, len(rt.HealthyArbiters))
 	for _, ai := range rt.HealthyArbiters {
-		fallback = append(fallback, ai.ID.String())
+		if rt.Host == nil {
+			continue
+		}
+		pub := rt.Host.Peerstore().PubKey(ai.ID)
+		if pub == nil {
+			continue
+		}
+		raw, err := pub.Raw()
+		if err != nil {
+			continue
+		}
+		if hexPub, err := normalizeCompressedPubKeyHex(hex.EncodeToString(raw)); err == nil {
+			fallback = append(fallback, hexPub)
+		}
 	}
-	return normalizePeerIDList(fallback)
+	out, _ := normalizePubHexList(fallback)
+	return out
+}
+
+// defaultArbiterPubHex 统一给下载链路挑一个默认仲裁者。
+// 设计说明：
+// - 只返回 pub hex，不再把 peer ID 当成系统内 ID 继续传下去；
+// - 优先用配置里显式启用的仲裁者，再退回到已连通仲裁者的 pub hex。
+func defaultArbiterPubHex(rt *Runtime) string {
+	ids := ownArbiterPubHexes(rt)
+	if len(ids) == 0 {
+		return ""
+	}
+	return ids[0]
 }
 
 type DirectDealAcceptParams struct {

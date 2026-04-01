@@ -5,36 +5,37 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // 管理页和调试页的只读查询统一放在 db 内，handler 只负责参数和回包。
 
-type directQuoteFilter struct {
+type demandQuoteFilter struct {
 	Limit        int
 	Offset       int
 	DemandID     string
-	SellerPeerID string
+	SellerPubHex string
 }
 
-type directQuotePage struct {
+type demandQuotePage struct {
 	Total int
-	Items []directQuoteItem
+	Items []demandQuoteItem
 }
 
-type directQuoteItem struct {
-	ID                      int64           `json:"id"`
-	DemandID                string          `json:"demand_id"`
-	SellerPeerID            string          `json:"seller_pubkey_hex"`
-	SeedPrice               uint64          `json:"seed_price"`
-	ChunkPrice              uint64          `json:"chunk_price"`
-	ChunkCount              uint32          `json:"chunk_count"`
-	FileSize                uint64          `json:"file_size"`
-	ExpiresAtUnix           int64           `json:"expires_at_unix"`
-	RecommendedFileName     string          `json:"recommended_file_name"`
-	MIMEHint                string          `json:"mime_hint,omitempty"`
-	AvailableChunkBitmapHex string          `json:"available_chunk_bitmap_hex"`
-	SellerArbiterPeerIDs    json.RawMessage `json:"seller_arbiter_pubkey_hexes"`
-	CreatedAtUnix           int64           `json:"created_at_unix"`
+type demandQuoteItem struct {
+	ID                      int64    `json:"id"`
+	DemandID                string   `json:"demand_id"`
+	SellerPubHex            string   `json:"seller_pubkey_hex"`
+	SeedPriceSatoshi        uint64   `json:"seed_price"`
+	ChunkPriceSatoshi       uint64   `json:"chunk_price"`
+	ChunkCount              uint32   `json:"chunk_count"`
+	FileSizeBytes           uint64   `json:"file_size"`
+	RecommendedFileName     string   `json:"recommended_file_name"`
+	MimeType                string   `json:"mime_hint,omitempty"`
+	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex"`
+	SellerArbiterPubHexes   []string `json:"seller_arbiter_pubkey_hexes,omitempty"`
+	ExpiresAtUnix           int64    `json:"expires_at_unix"`
+	CreatedAtUnix           int64    `json:"created_at_unix"`
 }
 
 type directDealFilter struct {
@@ -207,53 +208,103 @@ type gatewayEventItem struct {
 	Payload       json.RawMessage `json:"payload"`
 }
 
-func dbListDirectQuotes(ctx context.Context, store *clientDB, f directQuoteFilter) (directQuotePage, error) {
+func dbListDemandQuotes(ctx context.Context, store *clientDB, f demandQuoteFilter) (demandQuotePage, error) {
 	if store == nil {
-		return directQuotePage{}, fmt.Errorf("client db is nil")
+		return demandQuotePage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (directQuotePage, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (demandQuotePage, error) {
 		where := ""
 		args := make([]any, 0, 4)
 		if f.DemandID != "" {
 			where += " AND demand_id=?"
 			args = append(args, f.DemandID)
 		}
-		if f.SellerPeerID != "" {
-			where += " AND seller_pubkey_hex=?"
-			args = append(args, f.SellerPeerID)
+		if f.SellerPubHex != "" {
+			where += " AND seller_pub_hex=?"
+			args = append(args, f.SellerPubHex)
 		}
-		var out directQuotePage
-		if err := db.QueryRow("SELECT COUNT(1) FROM direct_quotes WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return directQuotePage{}, err
+		var out demandQuotePage
+		if err := db.QueryRow("SELECT COUNT(1) FROM demand_quotes WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+			return demandQuotePage{}, err
 		}
-		rows, err := db.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM demand_quotes WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
-			return directQuotePage{}, err
+			return demandQuotePage{}, err
 		}
 		defer rows.Close()
-		out.Items = make([]directQuoteItem, 0, f.Limit)
+		out.Items = make([]demandQuoteItem, 0, f.Limit)
 		for rows.Next() {
-			it, err := scanDirectQuoteItem(rows)
+			it, err := scanDemandQuoteItem(rows)
 			if err != nil {
-				return directQuotePage{}, err
+				return demandQuotePage{}, err
 			}
 			out.Items = append(out.Items, it)
 		}
 		if err := rows.Err(); err != nil {
-			return directQuotePage{}, err
+			return demandQuotePage{}, err
+		}
+		if err := hydrateDemandQuoteArbiters(ctx, db, out.Items); err != nil {
+			return demandQuotePage{}, err
 		}
 		return out, nil
 	})
 }
 
-func dbGetDirectQuoteItem(ctx context.Context, store *clientDB, id int64) (directQuoteItem, error) {
+func dbGetDemandQuoteItem(ctx context.Context, store *clientDB, id int64) (demandQuoteItem, error) {
 	if store == nil {
-		return directQuoteItem{}, fmt.Errorf("client db is nil")
+		return demandQuoteItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (directQuoteItem, error) {
-		row := db.QueryRow(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix FROM direct_quotes WHERE id=?`, id)
-		return scanDirectQuoteItem(row)
+	return clientDBValue(ctx, store, func(db *sql.DB) (demandQuoteItem, error) {
+		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM demand_quotes WHERE id=?`, id)
+		it, err := scanDemandQuoteItem(row)
+		if err != nil {
+			return demandQuoteItem{}, err
+		}
+		items := []demandQuoteItem{it}
+		if err := hydrateDemandQuoteArbiters(ctx, db, items); err != nil {
+			return demandQuoteItem{}, err
+		}
+		return items[0], nil
 	})
+}
+
+func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQuoteItem) error {
+	if db == nil || len(items) == 0 {
+		return nil
+	}
+	ids := make([]int64, 0, len(items))
+	byID := make(map[int64]*demandQuoteItem, len(items))
+	for i := range items {
+		ids = append(ids, items[i].ID)
+		byID[items[i].ID] = &items[i]
+		items[i].SellerArbiterPubHexes = nil
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, 0, len(ids))
+	args := make([]any, 0, len(ids))
+	for _, id := range ids {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+	query := `SELECT quote_id,arbiter_pub_hex FROM demand_quote_arbiters WHERE quote_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY quote_id ASC, id ASC`
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var quoteID int64
+		var arbiterPubHex string
+		if err := rows.Scan(&quoteID, &arbiterPubHex); err != nil {
+			return err
+		}
+		if it, ok := byID[quoteID]; ok {
+			it.SellerArbiterPubHexes = append(it.SellerArbiterPubHexes, arbiterPubHex)
+		}
+	}
+	return rows.Err()
 }
 
 func dbListDirectDeals(ctx context.Context, store *clientDB, f directDealFilter) (directDealPage, error) {
@@ -602,18 +653,16 @@ func dbGetGatewayEventItem(ctx context.Context, store *clientDB, id int64) (gate
 	})
 }
 
-type scanDirectQuote interface {
+type scanDemandQuote interface {
 	Scan(dest ...any) error
 }
 
-func scanDirectQuoteItem(row scanDirectQuote) (directQuoteItem, error) {
-	var out directQuoteItem
-	var arbiterIDs string
-	err := row.Scan(&out.ID, &out.DemandID, &out.SellerPeerID, &out.SeedPrice, &out.ChunkPrice, &out.ChunkCount, &out.FileSize, &out.ExpiresAtUnix, &out.RecommendedFileName, &out.MIMEHint, &out.AvailableChunkBitmapHex, &arbiterIDs, &out.CreatedAtUnix)
+func scanDemandQuoteItem(row scanDemandQuote) (demandQuoteItem, error) {
+	var out demandQuoteItem
+	err := row.Scan(&out.ID, &out.DemandID, &out.SellerPubHex, &out.SeedPriceSatoshi, &out.ChunkPriceSatoshi, &out.ChunkCount, &out.FileSizeBytes, &out.RecommendedFileName, &out.MimeType, &out.AvailableChunkBitmapHex, &out.ExpiresAtUnix, &out.CreatedAtUnix)
 	if err != nil {
-		return directQuoteItem{}, err
+		return demandQuoteItem{}, err
 	}
-	out.SellerArbiterPeerIDs = json.RawMessage(arbiterIDs)
 	return out, nil
 }
 

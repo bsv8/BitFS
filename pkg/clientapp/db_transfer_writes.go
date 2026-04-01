@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -16,53 +15,73 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
+	demandID := strings.TrimSpace(req.DemandID)
+	sellerPubHex = strings.ToLower(strings.TrimSpace(sellerPubHex))
+	if demandID == "" || sellerPubHex == "" {
+		return fmt.Errorf("demand_id and seller_pub_hex are required")
+	}
 	now := time.Now().Unix()
-	arbIDsJSON, err := json.Marshal(normalizePeerIDList(req.ArbiterPeerIDs))
+	availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
+	recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
+	mimeType := sanitizeMIMEHint(req.MIMEHint)
+	arbiterPubHexes, err := normalizePubHexList(req.ArbiterPeerIDs)
 	if err != nil {
 		return err
 	}
-	availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
-	recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
-	mimeHint := sanitizeMIMEHint(req.MIMEHint)
-	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
-			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
-			 seed_price=excluded.seed_price,
-			 chunk_price=excluded.chunk_price,
-			 chunk_count=excluded.chunk_count,
-			 file_size=excluded.file_size,
-			 expires_at_unix=excluded.expires_at_unix,
-			 recommended_file_name=excluded.recommended_file_name,
-			 mime_hint=excluded.mime_hint,
-			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
-			 seller_arbiter_pubkey_hexes_json=excluded.seller_arbiter_pubkey_hexes_json,
-			 created_at_unix=excluded.created_at_unix`,
-			strings.TrimSpace(req.DemandID),
-			strings.ToLower(strings.TrimSpace(sellerPubHex)),
+	return store.Tx(ctx, func(tx *sql.Tx) error {
+		_, err := tx.Exec(
+			`INSERT INTO demand_quotes(
+				demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(demand_id,seller_pub_hex) DO UPDATE SET
+				seed_price_satoshi=excluded.seed_price_satoshi,
+				chunk_price_satoshi=excluded.chunk_price_satoshi,
+				chunk_count=excluded.chunk_count,
+				file_size_bytes=excluded.file_size_bytes,
+				recommended_file_name=excluded.recommended_file_name,
+				mime_type=excluded.mime_type,
+				available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
+				expires_at_unix=excluded.expires_at_unix,
+				created_at_unix=excluded.created_at_unix`,
+			demandID,
+			sellerPubHex,
 			req.SeedPrice,
 			req.ChunkPrice,
 			req.ChunkCount,
 			req.FileSize,
-			req.ExpiresAtUnix,
 			recommendedName,
-			mimeHint,
+			mimeType,
 			availableChunkBitmapHex,
-			string(arbIDsJSON),
+			req.ExpiresAtUnix,
 			now,
 		)
-		return err
+		if err != nil {
+			return err
+		}
+		var quoteID int64
+		if err := tx.QueryRow(`SELECT id FROM demand_quotes WHERE demand_id=? AND seller_pub_hex=?`, demandID, sellerPubHex).Scan(&quoteID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`DELETE FROM demand_quote_arbiters WHERE quote_id=?`, quoteID); err != nil {
+			return err
+		}
+		for _, arbiterPubHex := range arbiterPubHexes {
+			if _, err := tx.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)
+				ON CONFLICT(quote_id,arbiter_pub_hex) DO NOTHING`, quoteID, arbiterPubHex); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
-func dbRecordDemandDedup(ctx context.Context, store *clientDB, demandID string, seedHash string) error {
+func dbRecordDemand(ctx context.Context, store *clientDB, demandID string, seedHash string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO demand_dedup(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)
+			`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)
 			 ON CONFLICT(demand_id) DO NOTHING`,
 			strings.TrimSpace(demandID),
 			strings.ToLower(strings.TrimSpace(seedHash)),

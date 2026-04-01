@@ -841,11 +841,11 @@ func (s *httpAPIServer) handleDirectQuotes(w http.ResponseWriter, r *http.Reques
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
 	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
-	page, err := dbListDirectQuotes(r.Context(), httpStore(s), directQuoteFilter{
+	page, err := dbListDemandQuotes(r.Context(), httpStore(s), demandQuoteFilter{
 		Limit:        limit,
 		Offset:       offset,
 		DemandID:     demandID,
-		SellerPeerID: sellerPeerID,
+		SellerPubHex: sellerPeerID,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -869,7 +869,7 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	it, err := dbGetDirectQuoteItem(r.Context(), httpStore(s), int64(id))
+	it, err := dbGetDemandQuoteItem(r.Context(), httpStore(s), int64(id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
