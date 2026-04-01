@@ -39,13 +39,13 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
 	if _, err := receiverDB.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		strings.Repeat("ab", 32),
-		"/tmp/movie.mp4",
+		1,
 		4096,
+		"/tmp/movie.mp4",
 		"movie.mp4",
 		"video/mp4",
-		time.Now().Unix(),
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
@@ -140,13 +140,13 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB}
 
 	if _, err := receiverDB.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		strings.Repeat("cd", 32),
-		"/tmp/song.mp3",
+		1,
 		1024,
+		"/tmp/song.mp3",
 		"song.mp3",
 		"audio/mpeg",
-		time.Now().Unix(),
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}

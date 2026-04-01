@@ -8,15 +8,14 @@ type WorkspacesManagerProps = {
   items: Workspace[];
   busy: boolean;
   onAdd: (path: string, maxBytes: number) => Promise<void>;
-  onUpdate: (id: number, maxBytes: number, enabled: boolean) => Promise<void>;
-  onDelete: (id: number) => Promise<void>;
+  onUpdate: (workspacePath: string, maxBytes: number, enabled: boolean) => Promise<void>;
+  onDelete: (workspacePath: string) => Promise<void>;
   onPickDirectory: () => Promise<string>;
 };
 
 type WorkspaceDraft = {
   mode: "create" | "edit";
-  id: number;
-  path: string;
+  workspacePath: string;
   maxBytes: string;
   enabled: boolean;
 };
@@ -42,7 +41,7 @@ export function WorkspacesManager({
           className="primary-button"
           type="button"
           disabled={busy}
-          onClick={() => setDraft({ mode: "create", id: 0, path: "", maxBytes: String(1024 * 1024 * 1024), enabled: true })}
+          onClick={() => setDraft({ mode: "create", workspacePath: "", maxBytes: String(1024 * 1024 * 1024), enabled: true })}
         >
           添加工作区
         </button>
@@ -52,43 +51,38 @@ export function WorkspacesManager({
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>启用</th>
               <th>路径</th>
-              <th>已用</th>
+              <th>启用</th>
               <th>上限</th>
-              <th>更新时间</th>
+              <th>创建时间</th>
               <th>操作</th>
             </tr>
           </thead>
           <tbody>
             {items.length === 0 ? (
               <tr>
-                <td colSpan={7} className="empty-cell">当前没有工作区。</td>
+                <td colSpan={5} className="empty-cell">当前没有工作区。</td>
               </tr>
             ) : items.map((item) => (
-              <tr key={item.id}>
-                <td>{item.id}</td>
+              <tr key={item.workspace_path}>
+                <td title={item.workspace_path}>{item.workspace_path}</td>
                 <td>{item.enabled ? "是" : "否"}</td>
-                <td title={item.path}>{item.path}</td>
-                <td>{formatBytes(item.used_bytes)}</td>
                 <td>{formatBytes(item.max_bytes)}</td>
-                <td>{formatTime(item.updated_at_unix)}</td>
+                <td>{formatTime(item.created_at_unix)}</td>
                 <td className="row-actions">
                   <button
                     className="ghost-button"
                     type="button"
                     onClick={() => setDraft({
                       mode: "edit",
-                      id: item.id,
-                      path: item.path,
+                      workspacePath: item.workspace_path,
                       maxBytes: String(item.max_bytes),
                       enabled: item.enabled
                     })}
                   >
                     编辑
                   </button>
-                  <button className="ghost-button danger" type="button" onClick={() => void onDelete(item.id)}>删除</button>
+                  <button className="ghost-button danger" type="button" onClick={() => void onDelete(item.workspace_path)}>删除</button>
                 </td>
               </tr>
             ))}
@@ -104,10 +98,10 @@ export function WorkspacesManager({
               event.preventDefault();
               const maxBytes = Math.max(0, Math.floor(Number(draft.maxBytes || 0)));
               if (draft.mode === "create") {
-                void onAdd(draft.path, maxBytes).then(() => setDraft(null));
+                void onAdd(draft.workspacePath, maxBytes).then(() => setDraft(null));
                 return;
               }
-              void onUpdate(draft.id, maxBytes, draft.enabled).then(() => setDraft(null));
+              void onUpdate(draft.workspacePath, maxBytes, draft.enabled).then(() => setDraft(null));
             }}
           >
             <label>
@@ -115,9 +109,9 @@ export function WorkspacesManager({
               <div className="field-row">
                 <input
                   className="text-input"
-                  value={draft.path}
+                  value={draft.workspacePath}
                   disabled={draft.mode !== "create"}
-                  onChange={(event) => setDraft({ ...draft, path: event.target.value })}
+                  onChange={(event) => setDraft({ ...draft, workspacePath: event.target.value })}
                   placeholder="/data/bitfs-workspace"
                 />
                 {draft.mode === "create" ? (
@@ -126,7 +120,7 @@ export function WorkspacesManager({
                     type="button"
                     onClick={() => void onPickDirectory().then((pickedPath) => {
                       if (pickedPath) {
-                        setDraft((current) => current ? { ...current, path: pickedPath } : current);
+                        setDraft((current) => current ? { ...current, workspacePath: pickedPath } : current);
                       }
                     })}
                   >

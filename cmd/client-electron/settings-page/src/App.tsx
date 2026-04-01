@@ -501,15 +501,15 @@ export default function App() {
                   await loadAll(staticPath);
                 });
               }}
-              onUpdate={async (id, maxBytes, enabled) => {
+              onUpdate={async (workspacePath, maxBytes, enabled) => {
                 await runBusyTask(async () => {
-                  await updateWorkspace(id, { max_bytes: maxBytes, enabled });
+                  await updateWorkspace(workspacePath, { max_bytes: maxBytes, enabled });
                   await loadAll(staticPath);
                 });
               }}
-              onDelete={async (id) => {
+              onDelete={async (workspacePath) => {
                 await runBusyTask(async () => {
-                  await deleteWorkspace(id);
+                  await deleteWorkspace(workspacePath);
                   await loadAll(staticPath);
                 });
               }}

@@ -41,13 +41,13 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	callerHost.Peerstore().AddAddrs(targetHost.ID(), targetHost.Addrs(), time.Minute)
 
 	if _, err := targetDB.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		strings.Repeat("ef", 32),
-		"/tmp/song.mp3",
+		1,
 		2048,
+		"/tmp/song.mp3",
 		"song.mp3",
 		"audio/mpeg",
-		time.Now().Unix(),
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}

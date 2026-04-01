@@ -2511,7 +2511,8 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
-	if _, err := dbGetSeedFilePathByHash(r.Context(), httpStore(s), seedHash); err != nil {
+	store := httpStore(s)
+	if _, err := dbGetSeedFilePathByHash(r.Context(), store, seedHash); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "seed not found"})
 			return
@@ -2520,40 +2521,25 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	unit, total, err := func() (uint64, uint64, error) {
-		seedPath, err := dbGetSeedFilePathByHash(r.Context(), httpStore(s), seedHash)
-		if err != nil {
+		if err := dbUpsertSeedPricingPolicy(store.db, seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
 			return 0, 0, err
 		}
-		out, err := clientDBValue(r.Context(), httpStore(s), func(db *sql.DB) (struct {
-			unit  uint64
-			total uint64
-		}, error) {
-			unit, total, err := upsertSeedPriceState(db, seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, seedPath)
-			if err != nil {
-				return struct {
-					unit  uint64
-					total uint64
-				}{}, err
-			}
-			return struct {
-				unit  uint64
-				total uint64
-			}{unit: unit, total: total}, nil
-		})
-		if err != nil {
+		var chunkCount uint32
+		if err := store.db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 			return 0, 0, err
 		}
-		return out.unit, out.total, nil
+		return req.FloorPriceSatPer64K, req.FloorPriceSatPer64K * uint64(chunkCount), nil
 	}()
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                     true,
-		"seed_hash":              seedHash,
-		"unit_price_sat_per_64k": unit,
-		"seed_price_satoshi":     total,
+		"ok":                 true,
+		"seed_hash":          seedHash,
+		"chunk_price_sat":    unit,
+		"seed_price_satoshi": total,
+		"pricing_source":     "user",
 	})
 }
 
@@ -3787,9 +3773,9 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": it})
 	case http.MethodPut:
-		id := int64(parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000))
-		if id <= 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
+		if workspacePath == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is required"})
 			return
 		}
 		var req struct {
@@ -3800,7 +3786,7 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 			return
 		}
-		it, err := s.workspace.UpdateByID(id, req.MaxBytes, req.Enabled)
+		it, err := s.workspace.UpdateByPath(workspacePath, req.MaxBytes, req.Enabled)
 		if err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "not found") {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
@@ -3815,12 +3801,12 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": it})
 	case http.MethodDelete:
-		id := int64(parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000))
-		if id <= 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
+		if workspacePath == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is required"})
 			return
 		}
-		if err := s.workspace.DeleteByID(id); err != nil {
+		if err := s.workspace.DeleteByPath(workspacePath); err != nil {
 			if strings.Contains(strings.ToLower(err.Error()), "not found") {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 				return
@@ -3832,7 +3818,7 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "id": id})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "workspace_path": workspacePath})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
@@ -4445,17 +4431,8 @@ func (s *httpAPIServer) handleAdminStaticEntry(w http.ResponseWriter, r *http.Re
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		prefix := filepath.Clean(abs) + string(filepath.Separator) + "%"
-		if err := dbDeleteStaticPriceByPrefix(r.Context(), httpStore(s), prefix); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
 	} else {
 		if err := os.Remove(abs); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		if err := dbDeleteStaticPriceByPath(r.Context(), httpStore(s), abs); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
@@ -4517,20 +4494,20 @@ func (s *httpAPIServer) handleAdminStaticPriceSet(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path is directory"})
 		return
 	}
-	if _, err := dbUpsertStaticFilePrice(r.Context(), httpStore(s), abs, req.FloorPriceSatPer64K, req.ResaleDiscountBPS); err != nil {
+	seedHash, unit, total, pricingBound, err := dbBindStaticPriceToSeed2(r.Context(), httpStore(s), abs, req.FloorPriceSatPer64K, req.ResaleDiscountBPS)
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	seedHash, unit, total, pricingBound, _ := dbBindStaticPriceToSeed2(r.Context(), httpStore(s), abs, req.FloorPriceSatPer64K, req.ResaleDiscountBPS)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                           true,
 		"path":                         rel,
+		"seed_hash":                    seedHash,
 		"floor_unit_price_sat_per_64k": req.FloorPriceSatPer64K,
 		"resale_discount_bps":          req.ResaleDiscountBPS,
-		"seed_hash":                    seedHash,
-		"pricing_bound":                pricingBound,
-		"unit_price_sat_per_64k":       unit,
 		"seed_price_satoshi":           total,
+		"chunk_price_sat":              unit,
+		"pricing_bound":                pricingBound,
 	})
 }
 

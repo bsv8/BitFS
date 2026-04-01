@@ -931,11 +931,11 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 		t.Fatalf("unexpected recent segment count: %d", len(latest.RecentSegments))
 	}
 
-	var outPath string
-	if err := db.QueryRow(`SELECT path FROM workspace_files WHERE path LIKE ? ORDER BY updated_at_unix DESC LIMIT 1`, "%"+streamID+"%").Scan(&outPath); err != nil {
+	var workspacePath, filePath string
+	if err := db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE file_path LIKE ? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, "%"+streamID+"%").Scan(&workspacePath, &filePath); err != nil {
 		t.Fatalf("query live segment path: %v", err)
 	}
-	if _, err := os.Stat(outPath); err != nil {
+	if _, err := os.Stat(workspacePathJoin(workspacePath, filePath)); err != nil {
 		t.Fatalf("live segment output missing: %v", err)
 	}
 }

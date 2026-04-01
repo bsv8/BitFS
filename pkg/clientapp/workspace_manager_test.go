@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
@@ -95,7 +94,7 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 	assertCount(`SELECT COUNT(1) FROM seeds`, 2)
 
 	// 删除 ws2 后，相关索引数据应被清理；再扫描会清理孤儿 seed 文件。
-	if err := mgr.DeleteByID(ws2Item.ID); err != nil {
+	if err := mgr.DeleteByPath(ws2Item.WorkspacePath); err != nil {
 		t.Fatalf("delete ws2: %v", err)
 	}
 	if _, err := mgr.SyncOnce(context.Background()); err != nil {
@@ -103,7 +102,7 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 	}
 
 	var ws2Files int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE path LIKE ?`, ws2+string(filepath.Separator)+"%").Scan(&ws2Files); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE workspace_path=?`, ws2).Scan(&ws2Files); err != nil {
 		t.Fatalf("query ws2 files: %v", err)
 	}
 	if ws2Files != 0 {
@@ -188,7 +187,7 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 
 	var gotSeedHash string
 	var gotLocked int64
-	err = db.QueryRow(`SELECT seed_hash,seed_locked FROM workspace_files WHERE path=?`, partialPath).Scan(&gotSeedHash, &gotLocked)
+	err = db.QueryRow(`SELECT seed_hash,seed_locked FROM workspace_files WHERE workspace_path=? AND file_path=?`, ws, filepath.Base(partialPath)).Scan(&gotSeedHash, &gotLocked)
 	if err != nil {
 		t.Fatalf("query workspace file: %v", err)
 	}
@@ -216,14 +215,14 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 	}
 
 	var availCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM seed_available_chunks WHERE seed_hash=?`, seedHash).Scan(&availCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM seed_chunk_supply WHERE seed_hash=?`, seedHash).Scan(&availCount); err != nil {
 		t.Fatalf("count available chunks: %v", err)
 	}
 	if availCount != 1 {
 		t.Fatalf("available chunk count mismatch: got=%d want=1", availCount)
 	}
 	var idx uint32
-	if err := db.QueryRow(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=?`, seedHash).Scan(&idx); err != nil {
+	if err := db.QueryRow(`SELECT chunk_index FROM seed_chunk_supply WHERE seed_hash=?`, seedHash).Scan(&idx); err != nil {
 		t.Fatalf("query available chunk index: %v", err)
 	}
 	if idx != 0 {
@@ -299,18 +298,16 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 	if err := os.WriteFile(newPath, []byte(strings.Repeat("n", 30)), 0o644); err != nil {
 		t.Fatalf("write new seg: %v", err)
 	}
-	oldTime := time.Now().Add(-time.Hour).Unix()
-	newTime := time.Now().Unix()
-	if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)`, oldPath, 60, oldTime, strings.Repeat("c", 64), oldTime); err != nil {
+	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamOld, "000000.seg"), strings.Repeat("c", 64), 0); err != nil {
 		t.Fatalf("insert old workspace file: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)`, newPath, 30, newTime, strings.Repeat("d", 64), newTime); err != nil {
+	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamNew, "000000.seg"), strings.Repeat("d", 64), 0); err != nil {
 		t.Fatalf("insert new workspace file: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, strings.Repeat("c", 64), filepath.Join(dataDir, "seeds", "c.bse"), 1, 60, oldTime); err != nil {
+	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("c", 64), 1, 60, filepath.Join(dataDir, "seeds", "c.bse"), "", ""); err != nil {
 		t.Fatalf("insert old seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, strings.Repeat("d", 64), filepath.Join(dataDir, "seeds", "d.bse"), 1, 30, newTime); err != nil {
+	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("d", 64), 1, 30, filepath.Join(dataDir, "seeds", "d.bse"), "", ""); err != nil {
 		t.Fatalf("insert new seed: %v", err)
 	}
 
@@ -324,7 +321,7 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 		t.Fatalf("new stream file should remain: %v", err)
 	}
 	var remain int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE path LIKE ?`, "%"+streamOld+"%").Scan(&remain); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE file_path LIKE ?`, "%"+streamOld+"%").Scan(&remain); err != nil {
 		t.Fatalf("count old stream files: %v", err)
 	}
 	if remain != 0 {

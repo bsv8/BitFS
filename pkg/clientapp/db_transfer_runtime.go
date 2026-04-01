@@ -152,19 +152,15 @@ func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash st
 	return os.ReadFile(seedPath)
 }
 
-func dbIsSeedChunkAvailable(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) (bool, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
-		return isSeedChunkAvailable(db, seedHash, chunkIndex)
-	})
-}
-
 func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) ([]byte, error) {
 	meta, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
 		workspacePath string
+		filePath      string
 		chunkCount    uint32
 	}, error) {
 		var out struct {
 			workspacePath string
+			filePath      string
 			chunkCount    uint32
 		}
 		if err := db.QueryRow(
@@ -176,7 +172,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			}
 			return out, err
 		}
-		_ = db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&out.workspacePath)
+		_ = db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&out.workspacePath, &out.filePath)
 		return out, nil
 	})
 	if err != nil {
@@ -192,7 +188,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 	if !have {
 		return nil, fmt.Errorf("chunk not available")
 	}
-	filePath := strings.TrimSpace(meta.workspacePath)
+	filePath := workspacePathJoin(meta.workspacePath, meta.filePath)
 	if filePath == "" {
 		return nil, fmt.Errorf("workspace file not found")
 	}

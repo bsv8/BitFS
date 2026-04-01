@@ -161,11 +161,11 @@ func dbRecommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedH
 				return normalized, nil
 			}
 		}
-		var p string
-		if err := db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC, path ASC LIMIT 1`, seedHash).Scan(&p); err != nil {
+		var workspacePath, filePath string
+		if err := db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
 			return "", nil
 		}
-		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(p))), nil
+		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(workspacePathJoin(workspacePath, filePath)))), nil
 	})
 	if err != nil {
 		return ""

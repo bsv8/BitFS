@@ -354,8 +354,16 @@ func upsertWorkspaceFileForSeedAt(t *testing.T, store *clientDB, seedHash, path 
 	if store == nil || store.db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	_, err := store.db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,updated_at_unix) VALUES(?,?,?,?,?)
-		ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
-		path, size, updatedAt, seedHash, updatedAt)
+	workspacePath := filepath.Dir(filepath.Dir(filepath.Dir(path)))
+	if workspacePath == "." {
+		workspacePath = filepath.Dir(path)
+	}
+	filePath, err := filepath.Rel(workspacePath, path)
+	if err != nil {
+		return err
+	}
+	_, err = store.db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)
+		ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
+		workspacePath, filepath.ToSlash(filePath), seedHash, 0)
 	return err
 }

@@ -42,7 +42,7 @@ export function StaticFileManager({
       <div className="panel-head">
         <div>
           <p className="panel-kicker">Storage</p>
-          <h2>静态文件</h2>
+          <h2>静态文件与 seed 策略</h2>
         </div>
         <div className="panel-actions">
           <button className="ghost-button" type="button" disabled={busy} onClick={() => onNavigate("/")}>根目录</button>
@@ -67,7 +67,7 @@ export function StaticFileManager({
               <th>大小</th>
               <th>修改时间</th>
               <th>Seed</th>
-              <th>底价</th>
+              <th>Seed 底价</th>
               <th>操作</th>
             </tr>
           </thead>
@@ -137,7 +137,7 @@ export function StaticFileManager({
         </form>
       </Modal>
 
-      <Modal title="设置文件价格" open={Boolean(priceDraft)} onClose={() => setPriceDraft(null)}>
+      <Modal title="设置 seed 价格策略" open={Boolean(priceDraft)} onClose={() => setPriceDraft(null)}>
         {priceDraft ? (
           <form
             className="form-stack"
@@ -151,7 +151,7 @@ export function StaticFileManager({
             }}
           >
             <label>
-              <span>底价 sat/64k</span>
+              <span>Seed 底价 sat/64k</span>
               <input
                 className="text-input"
                 type="number"

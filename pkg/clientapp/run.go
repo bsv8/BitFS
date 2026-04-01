@@ -824,6 +824,13 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, err
 	}
+	if err := dbSyncSystemSeedPricingPolicies(db, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
+		_ = dbActor.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
 
 	catalog := &sellerCatalog{seeds: map[string]sellerSeed{}}
 	workspaceMgr := &workspaceManager{
@@ -1567,37 +1574,34 @@ func applySQLitePragmas(db *sql.DB) error {
 
 func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[string]sellerSeed, error) {
 	now := time.Now().Unix()
-	seenPaths := map[string]struct{}{}
 	catalog := map[string]sellerSeed{}
 	seedsDir := filepath.Join(cfg.Storage.DataDir, "seeds")
-	type workspaceFileRef struct {
+	type existingRef struct {
 		SeedHash string
 		Locked   bool
 	}
-	existing := map[string]workspaceFileRef{}
-	rowsExists, err := db.Query(`SELECT path,seed_hash,seed_locked FROM workspace_files`)
+	existing := map[string]existingRef{}
+	rowsExists, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM workspace_files`)
 	if err != nil {
 		return nil, err
 	}
 	defer rowsExists.Close()
 	for rowsExists.Next() {
-		var path, seedHash string
+		var workspacePath, filePath, seedHash string
 		var locked int64
-		if err := rowsExists.Scan(&path, &seedHash, &locked); err != nil {
+		if err := rowsExists.Scan(&workspacePath, &filePath, &seedHash, &locked); err != nil {
 			return nil, err
 		}
-		existing[filepath.Clean(strings.TrimSpace(path))] = workspaceFileRef{
-			SeedHash: strings.ToLower(strings.TrimSpace(seedHash)),
-			Locked:   locked != 0,
-		}
+		key := workspacePath + "\x00" + filePath
+		existing[key] = existingRef{SeedHash: normalizeSeedHashHex(seedHash), Locked: locked != 0}
 	}
-
 	workspaces, err := listEnabledWorkspacePaths(db, cfg.Storage.WorkspaceDir)
 	if err != nil {
 		return nil, err
 	}
-
+	seen := map[string]struct{}{}
 	for _, workspace := range workspaces {
+		workspace = filepath.Clean(strings.TrimSpace(workspace))
 		err = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return err
@@ -1607,10 +1611,7 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 				return ctx.Err()
 			default:
 			}
-			if d.IsDir() {
-				return nil
-			}
-			if !d.Type().IsRegular() {
+			if d.IsDir() || !d.Type().IsRegular() {
 				return nil
 			}
 			abs, err := filepath.Abs(path)
@@ -1618,37 +1619,44 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 				return err
 			}
 			abs = filepath.Clean(abs)
-			seenPaths[abs] = struct{}{}
+			rel, err := filepath.Rel(workspace, abs)
+			if err != nil {
+				return err
+			}
+			fileRel := filepath.ToSlash(filepath.Clean(rel))
+			key := workspace + "\x00" + fileRel
+			seen[key] = struct{}{}
 			st, err := os.Stat(abs)
 			if err != nil {
 				return err
 			}
-			if ref, ok := existing[abs]; ok && ref.Locked && ref.SeedHash != "" {
-				if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), ref.SeedHash, 1, now); err != nil {
+			if ref, ok := existing[key]; ok && ref.Locked && ref.SeedHash != "" {
+				if _, err := db.Exec(
+					`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked)
+					 VALUES(?,?,?,?)
+					 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
+					workspace, fileRel, ref.SeedHash, 1,
+				); err != nil {
 					return err
 				}
 				var chunkCount uint32
-				var seedPath string
-				var recommendedName string
-				var mimeHint string
-				if err := db.QueryRow(`SELECT chunk_count,seed_file_path,recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, ref.SeedHash).Scan(&chunkCount, &seedPath, &recommendedName, &mimeHint); err == nil {
-					unit, total, err := upsertSeedPriceState(db, ref.SeedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
-					if err != nil {
-						return err
-					}
+				var seedPath, recommendedName, mimeHint string
+				if err := db.QueryRow(`SELECT chunk_count,seed_file_path,recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, ref.SeedHash).
+					Scan(&chunkCount, &seedPath, &recommendedName, &mimeHint); err == nil {
+					policy, _ := dbLoadSeedPricingPolicy(db, ref.SeedHash)
 					catalog[ref.SeedHash] = sellerSeed{
 						SeedHash:            ref.SeedHash,
 						ChunkCount:          chunkCount,
-						ChunkPrice:          unit,
-						SeedPrice:           total,
+						ChunkPrice:          policy.FloorPriceSatPer64K,
+						SeedPrice:           policy.FloorPriceSatPer64K * uint64(chunkCount),
 						RecommendedFileName: sanitizeRecommendedFileName(recommendedName),
 						MIMEHint:            sanitizeMIMEHint(mimeHint),
 					}
+					_ = seedPath
 					return nil
 				} else if !errors.Is(err, sql.ErrNoRows) {
 					return err
 				}
-				// 数据兜底：若锁定路径缺失 seed 行，回退为普通扫描重建映射。
 			}
 			seedBytes, seedHash, chunkCount, err := buildSeedV1(abs)
 			if err != nil {
@@ -1658,26 +1666,40 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			if err := writeIfChanged(seedPath, seedBytes); err != nil {
 				return err
 			}
-			if _, err := db.Exec(`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET file_size=excluded.file_size,mtime_unix=excluded.mtime_unix,seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked,updated_at_unix=excluded.updated_at_unix`, abs, st.Size(), st.ModTime().Unix(), seedHash, 0, now); err != nil {
-				return err
-			}
 			recommendedName := sanitizeRecommendedFileName(filepath.Base(abs))
 			mimeHint := sanitizeMIMEHint(guessContentType(abs, nil))
-			if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET seed_file_path=excluded.seed_file_path,chunk_count=excluded.chunk_count,file_size=excluded.file_size,recommended_file_name=excluded.recommended_file_name,mime_hint=excluded.mime_hint`, seedHash, seedPath, chunkCount, st.Size(), recommendedName, mimeHint, now); err != nil {
+			if _, err := db.Exec(
+				`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked)
+				 VALUES(?,?,?,?)
+				 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
+				workspace, fileRel, seedHash, 0,
+			); err != nil {
 				return err
 			}
-			if err := replaceSeedAvailableChunks(db, seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
+			if _, err := db.Exec(
+				`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
+				 VALUES(?,?,?,?,?,?)
+				 ON CONFLICT(seed_hash) DO UPDATE SET
+				 chunk_count=excluded.chunk_count,
+				 file_size=excluded.file_size,
+				 seed_file_path=excluded.seed_file_path,
+				 recommended_file_name=excluded.recommended_file_name,
+				 mime_hint=excluded.mime_hint`,
+				seedHash, chunkCount, st.Size(), seedPath, recommendedName, mimeHint,
+			); err != nil {
 				return err
 			}
-			unit, total, err := upsertSeedPriceState(db, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, seedPath)
-			if err != nil {
+			if err := dbReplaceSeedChunkSupply(context.Background(), newClientDB(db, nil), seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
+				return err
+			}
+			if err := dbUpsertSeedPricingPolicy(db, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, "system", now); err != nil {
 				return err
 			}
 			catalog[seedHash] = sellerSeed{
 				SeedHash:            seedHash,
 				ChunkCount:          chunkCount,
-				ChunkPrice:          unit,
-				SeedPrice:           total,
+				ChunkPrice:          cfg.Seller.Pricing.FloorPriceSatPer64K,
+				SeedPrice:           cfg.Seller.Pricing.FloorPriceSatPer64K * uint64(chunkCount),
 				RecommendedFileName: recommendedName,
 				MIMEHint:            mimeHint,
 			}
@@ -1687,26 +1709,24 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 			return nil, err
 		}
 	}
-
-	rows, err := db.Query(`SELECT path FROM workspace_files`)
+	rows, err := db.Query(`SELECT workspace_path,file_path FROM workspace_files`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
+		var workspacePath, filePath string
+		if err := rows.Scan(&workspacePath, &filePath); err != nil {
 			return nil, err
 		}
-		if _, ok := seenPaths[p]; ok {
+		if _, ok := seen[workspacePath+"\x00"+filePath]; ok {
 			continue
 		}
-		if _, err := db.Exec(`DELETE FROM workspace_files WHERE path=?`, p); err != nil {
+		if _, err := db.Exec(`DELETE FROM workspace_files WHERE workspace_path=? AND file_path=?`, workspacePath, filePath); err != nil {
 			return nil, err
 		}
 	}
-
-	orphanRows, err := db.Query(`SELECT s.seed_hash,s.seed_file_path FROM seeds s LEFT JOIN workspace_files wf ON wf.seed_hash=s.seed_hash GROUP BY s.seed_hash,s.seed_file_path HAVING COUNT(wf.path)=0`)
+	orphanRows, err := db.Query(`SELECT seed_hash,seed_file_path FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`)
 	if err != nil {
 		return nil, err
 	}
@@ -1720,21 +1740,9 @@ func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[str
 		if _, err := db.Exec(`DELETE FROM seeds WHERE seed_hash=?`, seedHash); err != nil {
 			return nil, err
 		}
-		if _, err := db.Exec(`DELETE FROM seed_price_state WHERE seed_hash=?`, seedHash); err != nil {
-			return nil, err
-		}
-		if _, err := db.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash=?`, seedHash); err != nil {
-			return nil, err
-		}
-		if _, err := db.Exec(`DELETE FROM file_downloads WHERE seed_hash=?`, seedHash); err != nil {
-			return nil, err
-		}
-		if _, err := db.Exec(`DELETE FROM file_download_chunks WHERE seed_hash=?`, seedHash); err != nil {
-			return nil, err
-		}
 		delete(catalog, seedHash)
 	}
-	obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "path_count": len(seenPaths)})
+	obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(workspaces)})
 	return catalog, nil
 }
 
@@ -1742,7 +1750,7 @@ func listEnabledWorkspacePaths(db *sql.DB, fallback string) ([]string, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
-	rows, err := db.Query(`SELECT path FROM workspaces WHERE enabled=1 ORDER BY id ASC`)
+	rows, err := db.Query(`SELECT workspace_path FROM workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1886,7 +1894,7 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 				DecayPerMinuteBPS:   cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
 			}, time.Now())
 		}
-		availableChunks, err := listSeedAvailableChunks(db, seedHash)
+		availableChunks, err := dbListSeedChunkSupply(context.Background(), newClientDB(db, nil), seedHash)
 		if err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
@@ -2424,35 +2432,6 @@ func buildSeedV1(path string) ([]byte, string, uint32, error) {
 	return seedBytes, hex.EncodeToString(h[:]), chunkCount, nil
 }
 
-func upsertSeedPriceState(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, seedPath string) (uint64, uint64, error) {
-	var lastBuy sql.NullInt64
-	_ = db.QueryRow(`SELECT last_buy_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&lastBuy)
-	resale := uint64(0)
-	if lastBuy.Valid && lastBuy.Int64 > 0 {
-		resale = uint64(lastBuy.Int64) * discountBPS / 10000
-	}
-	unit := floorUnit
-	if resale > unit {
-		unit = resale
-	}
-	seedInfo, err := os.Stat(seedPath)
-	if err != nil {
-		return 0, 0, err
-	}
-	seedChunks := ceilDiv(uint64(seedInfo.Size()), seedBlockSize)
-	total := unit * seedChunks
-	now := time.Now().Unix()
-	_, err = db.Exec(`INSERT INTO seed_price_state(seed_hash,last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps,unit_price_sat_per_64k,updated_at_unix) VALUES(?,?,?,?,?,?) ON CONFLICT(seed_hash) DO UPDATE SET floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k,resale_discount_bps=excluded.resale_discount_bps,unit_price_sat_per_64k=excluded.unit_price_sat_per_64k,updated_at_unix=excluded.updated_at_unix`, seedHash, nullInt64Value(lastBuy), floorUnit, discountBPS, unit, now)
-	return unit, total, err
-}
-
-func nullInt64Value(v sql.NullInt64) any {
-	if v.Valid {
-		return v.Int64
-	}
-	return nil
-}
-
 func writeIfChanged(path string, data []byte) error {
 	old, err := os.ReadFile(path)
 	if err == nil && bytes.Equal(old, data) {
@@ -2625,94 +2604,6 @@ func contiguousChunkIndexes(chunkCount uint32) []uint32 {
 	return out
 }
 
-func replaceSeedAvailableChunks(db *sql.DB, seedHash string, indexes []uint32) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return fmt.Errorf("seed_hash required")
-	}
-	indexes = normalizeChunkIndexes(indexes, 0)
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func() {
-		_ = tx.Rollback()
-	}
-	if _, err := tx.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash=?`, seedHash); err != nil {
-		rollback()
-		return err
-	}
-	if len(indexes) > 0 {
-		stmt, err := tx.Prepare(`INSERT INTO seed_available_chunks(seed_hash,chunk_index,updated_at_unix) VALUES(?,?,?)`)
-		if err != nil {
-			rollback()
-			return err
-		}
-		defer stmt.Close()
-		now := time.Now().Unix()
-		for _, idx := range indexes {
-			if _, err := stmt.Exec(seedHash, idx, now); err != nil {
-				rollback()
-				return err
-			}
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		rollback()
-		return err
-	}
-	return nil
-}
-
-func listSeedAvailableChunks(db *sql.DB, seedHash string) ([]uint32, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return nil, fmt.Errorf("seed_hash required")
-	}
-	rows, err := db.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]uint32, 0, 128)
-	for rows.Next() {
-		var idx uint32
-		if err := rows.Scan(&idx); err != nil {
-			return nil, err
-		}
-		out = append(out, idx)
-	}
-	if len(out) > 0 {
-		return out, nil
-	}
-	// 兼容旧数据：若尚未写入块状态，按当前文件长度推导前缀可用块。
-	var seedChunkCount uint32
-	if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&seedChunkCount); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var fileSize uint64
-	if err := db.QueryRow(`SELECT file_size FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, seedHash).Scan(&fileSize); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	have := uint32(ceilDiv(fileSize, seedBlockSize))
-	if have > seedChunkCount {
-		have = seedChunkCount
-	}
-	return contiguousChunkIndexes(have), nil
-}
-
 // loadSellerSeedFromDB 从数据库读取卖方报价所需 seed 快照。
 // 设计约束：卖方侧是否可报价以 DB 为唯一真相，不依赖内存镜像状态。
 func loadSellerSeedFromDB(db *sql.DB, seedHash string) (sellerSeed, bool, error) {
@@ -2725,124 +2616,41 @@ func loadSellerSeedFromDB(db *sql.DB, seedHash string) (sellerSeed, bool, error)
 	}
 	var out sellerSeed
 	var unitPrice uint64
-	err := db.QueryRow(
-		`SELECT s.seed_hash,s.chunk_count,COALESCE(p.unit_price_sat_per_64k,0),s.file_size,s.recommended_file_name,s.mime_hint
-		   FROM seeds s
-		   LEFT JOIN seed_price_state p ON p.seed_hash=s.seed_hash
-		  WHERE s.seed_hash=?`,
+	var policyRow seedPricingPolicyRow
+	var havePolicy bool
+	if err := db.QueryRow(
+		`SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM seed_pricing_policy WHERE seed_hash=?`,
 		seedHash,
-	).Scan(&out.SeedHash, &out.ChunkCount, &unitPrice, &out.FileSize, &out.RecommendedFileName, &out.MIMEHint)
+	).Scan(&policyRow.SeedHash, &policyRow.FloorPriceSatPer64K, &policyRow.ResaleDiscountBPS, &policyRow.PricingSource, &policyRow.UpdatedAtUnix); err == nil {
+		havePolicy = true
+		unitPrice = policyRow.FloorPriceSatPer64K
+	} else if !errors.Is(err, sql.ErrNoRows) {
+		return sellerSeed{}, false, err
+	}
+	var seedPath string
+	err := db.QueryRow(
+		`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
+		   FROM seeds
+		  WHERE seed_hash=?`,
+		seedHash,
+	).Scan(&out.SeedHash, &out.ChunkCount, &out.FileSize, &out.RecommendedFileName, &out.MIMEHint)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return sellerSeed{}, false, nil
 		}
 		return sellerSeed{}, false, err
 	}
+	_ = seedPath
 	out.SeedHash = seedHash
 	out.ChunkPrice = unitPrice
 	out.SeedPrice = unitPrice * uint64(out.ChunkCount)
 	out.RecommendedFileName = sanitizeRecommendedFileName(out.RecommendedFileName)
 	out.MIMEHint = sanitizeMIMEHint(out.MIMEHint)
+	if !havePolicy {
+		out.ChunkPrice = 0
+		out.SeedPrice = 0
+	}
 	return out, true, nil
-}
-
-func isSeedChunkAvailable(db *sql.DB, seedHash string, chunkIndex uint32) (bool, error) {
-	if db == nil {
-		return false, fmt.Errorf("db is nil")
-	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return false, fmt.Errorf("seed_hash required")
-	}
-	var one int
-	err := db.QueryRow(`SELECT 1 FROM seed_available_chunks WHERE seed_hash=? AND chunk_index=? LIMIT 1`, seedHash, chunkIndex).Scan(&one)
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, sql.ErrNoRows) {
-		var cnt int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM seed_available_chunks WHERE seed_hash=?`, seedHash).Scan(&cnt); err != nil {
-			return false, err
-		}
-		if cnt > 0 {
-			return false, nil
-		}
-		// 兼容旧数据：若还没有块状态表记录，按当前文件长度推导“前缀块可用”。
-		var seedChunkCount uint32
-		if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&seedChunkCount); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return false, nil
-			}
-			return false, err
-		}
-		var fileSize uint64
-		if err := db.QueryRow(`SELECT file_size FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, seedHash).Scan(&fileSize); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return false, nil
-			}
-			return false, err
-		}
-		have := uint32(ceilDiv(fileSize, seedBlockSize))
-		if have > seedChunkCount {
-			have = seedChunkCount
-		}
-		return chunkIndex < have, nil
-	}
-	return false, err
-}
-
-func loadChunkBytesBySeedHash(db *sql.DB, seedHash string, chunkIndex uint32) ([]byte, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	var filePath string
-	var chunkCount uint32
-	if err := db.QueryRow(
-		`SELECT s.seed_file_path, s.chunk_count FROM seeds s WHERE s.seed_hash=?`,
-		strings.ToLower(strings.TrimSpace(seedHash)),
-	).Scan(&filePath, &chunkCount); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("seed not found")
-		}
-		return nil, err
-	}
-	if chunkIndex >= chunkCount {
-		return nil, fmt.Errorf("chunk_index out of range")
-	}
-	have, err := isSeedChunkAvailable(db, seedHash, chunkIndex)
-	if err != nil {
-		return nil, err
-	}
-	if !have {
-		return nil, fmt.Errorf("chunk not available")
-	}
-	var workspacePath string
-	if err := db.QueryRow(`SELECT path FROM workspace_files WHERE seed_hash=? ORDER BY updated_at_unix DESC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&workspacePath); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("workspace file not found")
-		}
-		return nil, err
-	}
-	f, err := os.Open(workspacePath)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	offset := int64(chunkIndex) * seedBlockSize
-	if _, err := f.Seek(offset, io.SeekStart); err != nil {
-		return nil, err
-	}
-	out := make([]byte, seedBlockSize)
-	n, err := io.ReadFull(f, out)
-	if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	if n < seedBlockSize {
-		for i := n; i < seedBlockSize; i++ {
-			out[i] = 0
-		}
-	}
-	return out, nil
 }
 
 func (c *sellerCatalog) Replace(seeds map[string]sellerSeed) {

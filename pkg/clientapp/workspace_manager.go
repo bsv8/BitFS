@@ -20,12 +20,10 @@ type workspaceManager struct {
 }
 
 type workspaceItem struct {
-	ID            int64  `json:"id"`
-	Path          string `json:"path"`
+	WorkspacePath string `json:"workspace_path"`
 	MaxBytes      uint64 `json:"max_bytes"`
 	Enabled       bool   `json:"enabled"`
 	CreatedAtUnix int64  `json:"created_at_unix"`
-	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
 type registerDownloadedFileParams struct {
@@ -82,29 +80,29 @@ func (m *workspaceManager) Add(path string, maxBytes uint64) (workspaceItem, err
 	return dbAddWorkspace(context.Background(), store, abs, maxBytes)
 }
 
-func (m *workspaceManager) DeleteByID(id int64) error {
+func (m *workspaceManager) DeleteByPath(workspacePath string) error {
 	store := workspaceStore(m)
 	if store == nil {
 		return fmt.Errorf("workspace manager not initialized")
 	}
-	if id <= 0 {
-		return fmt.Errorf("invalid workspace id")
+	if strings.TrimSpace(workspacePath) == "" {
+		return fmt.Errorf("workspace path is required")
 	}
-	return dbDeleteWorkspaceByID(context.Background(), store, id)
+	return dbDeleteWorkspaceByPath(context.Background(), store, workspacePath)
 }
 
-func (m *workspaceManager) UpdateByID(id int64, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
+func (m *workspaceManager) UpdateByPath(workspacePath string, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
 	store := workspaceStore(m)
 	if store == nil {
 		return workspaceItem{}, fmt.Errorf("workspace manager not initialized")
 	}
-	if id <= 0 {
-		return workspaceItem{}, fmt.Errorf("invalid workspace id")
+	if strings.TrimSpace(workspacePath) == "" {
+		return workspaceItem{}, fmt.Errorf("workspace path is required")
 	}
 	if maxBytes == nil && enabled == nil {
 		return workspaceItem{}, fmt.Errorf("no fields to update")
 	}
-	return dbUpdateWorkspaceByID(context.Background(), store, id, maxBytes, enabled)
+	return dbUpdateWorkspaceByPath(context.Background(), store, workspacePath, maxBytes, enabled)
 }
 
 func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (string, error) {
@@ -140,12 +138,12 @@ func (m *workspaceManager) selectOutputPath(relDir string, fileName string, file
 		if !it.Enabled {
 			continue
 		}
-		free, ferr := freeBytesUnderPath(it.Path)
+		free, ferr := freeBytesUnderPath(it.WorkspacePath)
 		if ferr != nil {
 			continue
 		}
 		if it.MaxBytes > 0 {
-			used, _ := dbWorkspaceUsedBytes(context.Background(), workspaceStore(m), it.Path)
+			used, _ := dbWorkspaceUsedBytes(context.Background(), workspaceStore(m), it.WorkspacePath)
 			if used+fileSize > it.MaxBytes {
 				continue
 			}
@@ -154,9 +152,9 @@ func (m *workspaceManager) selectOutputPath(relDir string, fileName string, file
 			continue
 		}
 		if relDir != "" {
-			return filepath.Join(it.Path, relDir, name), nil
+			return filepath.Join(it.WorkspacePath, relDir, name), nil
 		}
-		return filepath.Join(it.Path, name), nil
+		return filepath.Join(it.WorkspacePath, name), nil
 	}
 	return "", fmt.Errorf("no workspace has enough capacity")
 }
@@ -256,7 +254,8 @@ func (m *workspaceManager) listLiveCacheStreams() ([]liveCacheStreamStat, uint64
 	streams := map[string]*liveCacheStreamStat{}
 	var total uint64
 	for _, row := range rows {
-		streamID, workspaceDir, ok := classifyLiveWorkspacePath(items, row.Path)
+		fullPath := workspacePathJoin(row.WorkspacePath, row.FilePath)
+		streamID, workspaceDir, ok := classifyLiveWorkspacePath(items, fullPath)
 		if !ok {
 			continue
 		}
@@ -265,15 +264,17 @@ func (m *workspaceManager) listLiveCacheStreams() ([]liveCacheStreamStat, uint64
 			st = &liveCacheStreamStat{StreamID: streamID}
 			streams[streamID] = st
 		}
-		st.TotalBytes += row.FileSize
-		if row.UpdatedAtUnix > st.NewestUpdatedAtUnix {
-			st.NewestUpdatedAtUnix = row.UpdatedAtUnix
+		if info, err := os.Stat(fullPath); err == nil {
+			st.TotalBytes += uint64(info.Size())
+			total += uint64(info.Size())
+			if info.ModTime().Unix() > st.NewestUpdatedAtUnix {
+				st.NewestUpdatedAtUnix = info.ModTime().Unix()
+			}
 		}
-		st.Paths = append(st.Paths, row.Path)
+		st.Paths = append(st.Paths, fullPath)
 		if !containsString(st.WorkspaceDirs, workspaceDir) {
 			st.WorkspaceDirs = append(st.WorkspaceDirs, workspaceDir)
 		}
-		total += row.FileSize
 	}
 	out := make([]liveCacheStreamStat, 0, len(streams))
 	for _, st := range streams {
@@ -288,7 +289,7 @@ func classifyLiveWorkspacePath(items []workspaceItem, absPath string) (string, s
 		if !it.Enabled {
 			continue
 		}
-		root := filepath.Clean(strings.TrimSpace(it.Path))
+		root := filepath.Clean(strings.TrimSpace(it.WorkspacePath))
 		prefix := root + string(filepath.Separator)
 		if !strings.HasPrefix(absPath, prefix) {
 			continue
@@ -374,7 +375,7 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		return sellerSeed{}, err
 	}
 
-	if err := dbUpsertDownloadedFile(context.Background(), workspaceStore(m), abs, st.Size(), st.ModTime().Unix(), seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, true); err != nil {
+	if err := dbUpsertDownloadedFile(context.Background(), workspaceStore(m), abs, seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, true); err != nil {
 		return sellerSeed{}, err
 	}
 	available := normalizeChunkIndexes(p.AvailableChunkIndexes, meta.ChunkCount)
@@ -385,29 +386,20 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		}
 		available = contiguousChunkIndexes(haveCount)
 	}
-	available, err = dbMergeSeedAvailableChunks(context.Background(), workspaceStore(m), seedHash, available, meta.ChunkCount)
-	if err != nil {
-		return sellerSeed{}, err
-	}
-
-	unit, total, err := upsertSeedPriceState(
-		m.db,
-		seedHash,
-		m.cfg.Seller.Pricing.FloorPriceSatPer64K,
-		m.cfg.Seller.Pricing.ResaleDiscountBPS,
-		seedPath,
-	)
-	if err != nil {
+	if err := dbReplaceSeedChunkSupply(context.Background(), workspaceStore(m), seedHash, available); err != nil {
 		return sellerSeed{}, err
 	}
 	seed := sellerSeed{
 		SeedHash:            seedHash,
 		FileSize:            meta.FileSize,
 		ChunkCount:          meta.ChunkCount,
-		ChunkPrice:          unit,
-		SeedPrice:           total,
+		ChunkPrice:          m.cfg.Seller.Pricing.FloorPriceSatPer64K,
+		SeedPrice:           m.cfg.Seller.Pricing.FloorPriceSatPer64K * uint64(meta.ChunkCount),
 		RecommendedFileName: recommendedName,
 		MIMEHint:            mimeHint,
+	}
+	if m.catalog != nil {
+		m.catalog.Upsert(seed)
 	}
 	return seed, nil
 }

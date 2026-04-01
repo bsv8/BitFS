@@ -157,12 +157,12 @@ export function addWorkspace(path: string, maxBytes: number): Promise<unknown> {
   });
 }
 
-export function updateWorkspace(id: number, data: Partial<Workspace>): Promise<unknown> {
-  return requestJSON("PUT", `/api/v1/admin/workspaces?id=${id}`, data);
+export function updateWorkspace(workspacePath: string, data: Partial<Workspace>): Promise<unknown> {
+  return requestJSON("PUT", `/api/v1/admin/workspaces?workspace_path=${encodeURIComponent(workspacePath)}`, data);
 }
 
-export function deleteWorkspace(id: number): Promise<unknown> {
-  return requestJSON("DELETE", `/api/v1/admin/workspaces?id=${id}`);
+export function deleteWorkspace(workspacePath: string): Promise<unknown> {
+  return requestJSON("DELETE", `/api/v1/admin/workspaces?workspace_path=${encodeURIComponent(workspacePath)}`);
 }
 
 export function pickWorkspaceDirectory() {

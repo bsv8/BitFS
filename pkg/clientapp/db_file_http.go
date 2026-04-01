@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -153,9 +154,13 @@ func dbFindLatestWorkspaceFileBySeedHash(ctx context.Context, store *clientDB, s
 	}
 	out, err := clientDBValue(ctx, store, func(db *sql.DB) (result, error) {
 		var out result
-		err := db.QueryRow(`SELECT wf.path,wf.file_size FROM workspace_files wf WHERE wf.seed_hash=? ORDER BY wf.updated_at_unix DESC LIMIT 1`, seedHash).Scan(&out.path, &out.size)
-		if err != nil {
+		var workspacePath, filePath string
+		if err := db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
 			return out, err
+		}
+		out.path = workspacePathJoin(workspacePath, filePath)
+		if st, err := os.Stat(out.path); err == nil {
+			out.size = uint64(st.Size())
 		}
 		return out, nil
 	})

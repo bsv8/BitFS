@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ensureClientDBSchema 是客户端数据库结构就绪的唯一入口。
@@ -69,23 +70,43 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 
 	stmts := []string{
 		// 核心表
-		`CREATE TABLE IF NOT EXISTS workspace_files(path TEXT PRIMARY KEY, file_size INTEGER, mtime_unix INTEGER, seed_hash TEXT NOT NULL, seed_locked INTEGER NOT NULL DEFAULT 0, updated_at_unix INTEGER)`,
 		`CREATE TABLE IF NOT EXISTS workspaces(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			path TEXT NOT NULL UNIQUE,
-			max_bytes INTEGER NOT NULL,
+			workspace_path TEXT PRIMARY KEY,
 			enabled INTEGER NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL
+			max_bytes INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, recommended_file_name TEXT NOT NULL DEFAULT '', mime_hint TEXT NOT NULL DEFAULT '', created_at_unix INTEGER)`,
-		`CREATE TABLE IF NOT EXISTS seed_available_chunks(
+		`CREATE TABLE IF NOT EXISTS seeds(
+			seed_hash TEXT PRIMARY KEY,
+			chunk_count INTEGER NOT NULL,
+			file_size INTEGER NOT NULL,
+			seed_file_path TEXT NOT NULL,
+			recommended_file_name TEXT NOT NULL DEFAULT '',
+			mime_hint TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS workspace_files(
+			workspace_path TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			seed_hash TEXT NOT NULL,
+			seed_locked INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(workspace_path,file_path),
+			FOREIGN KEY(workspace_path) REFERENCES workspaces(workspace_path) ON DELETE CASCADE,
+			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS seed_chunk_supply(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			PRIMARY KEY(seed_hash,chunk_index)
+			PRIMARY KEY(seed_hash,chunk_index),
+			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
 		)`,
-		`CREATE TABLE IF NOT EXISTS seed_price_state(seed_hash TEXT PRIMARY KEY, last_buy_unit_price_sat_per_64k INTEGER, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, unit_price_sat_per_64k INTEGER, updated_at_unix INTEGER)`,
+		`CREATE TABLE IF NOT EXISTS seed_pricing_policy(
+			seed_hash TEXT PRIMARY KEY,
+			floor_unit_price_sat_per_64k INTEGER NOT NULL,
+			resale_discount_bps INTEGER NOT NULL,
+			pricing_source TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+		)`,
 		`CREATE TABLE IF NOT EXISTS demand_dedup(demand_id TEXT PRIMARY KEY, seed_hash TEXT, created_at_unix INTEGER)`,
 
 		// 交易历史
@@ -545,14 +566,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL
 		)`,
 
-		// 静态定价
-		`CREATE TABLE IF NOT EXISTS static_file_prices(
-			path TEXT PRIMARY KEY,
-			floor_unit_price_sat_per_64k INTEGER NOT NULL,
-			resale_discount_bps INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`,
-
 		// 直播相关
 		`CREATE TABLE IF NOT EXISTS live_follows(
 			stream_id TEXT PRIMARY KEY,
@@ -635,9 +648,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 基础索引（不依赖迁移的）
-		`CREATE INDEX IF NOT EXISTS idx_workspace_seed_hash ON workspace_files(seed_hash)`,
-		`CREATE INDEX IF NOT EXISTS idx_seed_available_chunks_seed ON seed_available_chunks(seed_hash,chunk_index)`,
-		`CREATE INDEX IF NOT EXISTS idx_workspaces_path ON workspaces(path)`,
+		`CREATE INDEX IF NOT EXISTS idx_workspace_files_seed_hash ON workspace_files(seed_hash, workspace_path, file_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_workspace_files_workspace ON workspace_files(workspace_path, file_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_seed_chunk_supply_seed ON seed_chunk_supply(seed_hash,chunk_index)`,
+		`CREATE INDEX IF NOT EXISTS idx_workspaces_enabled ON workspaces(enabled, workspace_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_seed_pricing_policy_updated ON seed_pricing_policy(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_downloads_updated ON file_downloads(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_file_download_chunks_seed ON file_download_chunks(seed_hash,chunk_index)`,
 		`CREATE INDEX IF NOT EXISTS idx_live_quotes_demand ON live_quotes(demand_id, created_at_unix DESC)`,
@@ -699,7 +714,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_task ON scheduler_task_runs(task_name, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_status ON scheduler_task_runs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_started ON scheduler_task_runs(started_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_static_file_prices_updated ON static_file_prices(updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_inbox_messages_received_at ON inbox_messages(received_at_unix DESC,id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_published_route_indexes_updated ON published_route_indexes(updated_at_unix DESC,route ASC)`,
 	}
@@ -726,11 +740,8 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureWalletFundFlowsSchema(db); err != nil {
 		return fmt.Errorf("wallet_fund_flows: %w", err)
 	}
-	if err := ensureSeedsSchema(db); err != nil {
-		return fmt.Errorf("seeds: %w", err)
-	}
-	if err := ensureWorkspaceFilesSchema(db); err != nil {
-		return fmt.Errorf("workspace_files: %w", err)
+	if err := ensureWorkspaceStorageSchema(db); err != nil {
+		return fmt.Errorf("workspace storage: %w", err)
 	}
 	if err := ensureFileDownloadsSchema(db); err != nil {
 		return fmt.Errorf("file_downloads: %w", err)
@@ -913,57 +924,580 @@ func ensureWalletFundFlowsSchema(db *sql.DB) error {
 	return nil
 }
 
-// ensureSeedsSchema 处理 seeds 表的历史列迁移
-func ensureSeedsSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(seeds)`)
+// ensureWorkspaceStorageSchema 迁移客户端本地库存的核心五张表。
+// 设计说明：
+// - 这里不做列级兼容补丁，直接按新模型重建；
+// - 老表里的旧口径会一次性搬走，再删除；
+// - 这样后续业务代码只面对唯一真相。
+func ensureWorkspaceStorageSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if err := ensureWorkspaceStorageBaseTables(db); err != nil {
+		return err
+	}
+	legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, err := legacyWorkspaceStoragePresent(db)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	hasRecommendedFileName := false
-	hasMIMEHint := false
-
-	for rows.Next() {
-		var cid int
-		var name string
-		var typ string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "recommended_file_name") {
-			hasRecommendedFileName = true
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "mime_hint") {
-			hasMIMEHint = true
-		}
+	if !legacyWorkspaces && !legacyFiles && !legacySeeds && !legacySupply && !legacyPolicy {
+		return nil
 	}
+	return migrateWorkspaceStorageLegacy(db)
+}
 
-	if !hasRecommendedFileName {
-		if _, err := db.Exec(`ALTER TABLE seeds ADD COLUMN recommended_file_name TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
+func ensureWorkspaceStorageBaseTables(db *sql.DB) error {
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS workspaces(
+			workspace_path TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL,
+			max_bytes INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS seeds(
+			seed_hash TEXT PRIMARY KEY,
+			chunk_count INTEGER NOT NULL,
+			file_size INTEGER NOT NULL,
+			seed_file_path TEXT NOT NULL,
+			recommended_file_name TEXT NOT NULL DEFAULT '',
+			mime_hint TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE TABLE IF NOT EXISTS workspace_files(
+			workspace_path TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			seed_hash TEXT NOT NULL,
+			seed_locked INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(workspace_path,file_path),
+			FOREIGN KEY(workspace_path) REFERENCES workspaces(workspace_path) ON DELETE CASCADE,
+			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS seed_chunk_supply(
+			seed_hash TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL,
+			PRIMARY KEY(seed_hash,chunk_index),
+			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+		)`,
+		`CREATE TABLE IF NOT EXISTS seed_pricing_policy(
+			seed_hash TEXT PRIMARY KEY,
+			floor_unit_price_sat_per_64k INTEGER NOT NULL,
+			resale_discount_bps INTEGER NOT NULL,
+			pricing_source TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+		)`,
 	}
-	if !hasMIMEHint {
-		if _, err := db.Exec(`ALTER TABLE seeds ADD COLUMN mime_hint TEXT NOT NULL DEFAULT ''`); err != nil {
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// ensureWorkspaceFilesSchema 处理 workspace_files 表的历史列迁移
-func ensureWorkspaceFilesSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(workspace_files)`)
+func legacyWorkspaceStoragePresent(db *sql.DB) (bool, bool, bool, bool, bool, error) {
+	legacyWorkspaces := false
+	legacyFiles := false
+	legacySeeds := false
+	legacySupply := false
+	legacyPolicy := false
+
+	if cols, err := tableColumns(db, "workspaces"); err != nil {
+		return false, false, false, false, false, err
+	} else if len(cols) > 0 {
+		if _, ok := cols["id"]; ok {
+			legacyWorkspaces = true
+		}
+		if _, ok := cols["path"]; ok {
+			legacyWorkspaces = true
+		}
+		if _, ok := cols["updated_at_unix"]; ok {
+			legacyWorkspaces = true
+		}
+	}
+	if cols, err := tableColumns(db, "workspace_files"); err != nil {
+		return false, false, false, false, false, err
+	} else if len(cols) > 0 {
+		if _, ok := cols["path"]; ok {
+			legacyFiles = true
+		}
+		if _, ok := cols["file_size"]; ok {
+			legacyFiles = true
+		}
+		if _, ok := cols["mtime_unix"]; ok {
+			legacyFiles = true
+		}
+		if _, ok := cols["updated_at_unix"]; ok {
+			legacyFiles = true
+		}
+	}
+	if cols, err := tableColumns(db, "seeds"); err != nil {
+		return false, false, false, false, false, err
+	} else if len(cols) > 0 {
+		if _, ok := cols["created_at_unix"]; ok {
+			legacySeeds = true
+		}
+	}
+	if exists, err := hasTable(db, "seed_available_chunks"); err != nil {
+		return false, false, false, false, false, err
+	} else if exists {
+		legacySupply = true
+	}
+	if exists, err := hasTable(db, "seed_price_state"); err != nil {
+		return false, false, false, false, false, err
+	} else if exists {
+		legacyPolicy = true
+	}
+	if exists, err := hasTable(db, "static_file_prices"); err != nil {
+		return false, false, false, false, false, err
+	} else if exists {
+		legacyPolicy = true
+	}
+	return legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, nil
+}
+
+func migrateWorkspaceStorageLegacy(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspaces_new`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspace_files_new`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seeds_new`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_chunk_supply_new`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_pricing_policy_new`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE workspaces_new(
+			workspace_path TEXT PRIMARY KEY,
+			enabled INTEGER NOT NULL,
+			max_bytes INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL
+		)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE workspace_files_new(
+			workspace_path TEXT NOT NULL,
+			file_path TEXT NOT NULL,
+			seed_hash TEXT NOT NULL,
+			seed_locked INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY(workspace_path,file_path)
+		)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE seeds_new(
+			seed_hash TEXT PRIMARY KEY,
+			chunk_count INTEGER NOT NULL,
+			file_size INTEGER NOT NULL,
+			seed_file_path TEXT NOT NULL,
+			recommended_file_name TEXT NOT NULL DEFAULT '',
+			mime_hint TEXT NOT NULL DEFAULT ''
+		)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE seed_chunk_supply_new(
+			seed_hash TEXT NOT NULL,
+			chunk_index INTEGER NOT NULL,
+			PRIMARY KEY(seed_hash,chunk_index)
+		)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE seed_pricing_policy_new(
+			seed_hash TEXT PRIMARY KEY,
+			floor_unit_price_sat_per_64k INTEGER NOT NULL,
+			resale_discount_bps INTEGER NOT NULL,
+			pricing_source TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`); err != nil {
+		rollback()
+		return err
+	}
+	if err := migrateWorkspaceRowsLegacy(tx); err != nil {
+		rollback()
+		return err
+	}
+	if err := migrateWorkspaceFileRowsLegacy(tx); err != nil {
+		rollback()
+		return err
+	}
+	if err := migrateSeedRowsLegacy(tx); err != nil {
+		rollback()
+		return err
+	}
+	if err := migrateSeedChunkSupplyLegacy(tx); err != nil {
+		rollback()
+		return err
+	}
+	if err := migrateSeedPricingPolicyLegacy(tx); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspace_files`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspaces`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seeds`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_chunk_supply`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_pricing_policy`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_available_chunks`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_price_state`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS static_file_prices`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE workspaces_new RENAME TO workspaces`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE workspace_files_new RENAME TO workspace_files`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE seeds_new RENAME TO seeds`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE seed_chunk_supply_new RENAME TO seed_chunk_supply`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE seed_pricing_policy_new RENAME TO seed_pricing_policy`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return nil
+}
+
+func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
+	cols, err := tableColumnsTx(tx, "workspaces")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, ok := cols["workspace_path"]; ok && !containsAny(cols, "id", "path", "updated_at_unix") {
+		_, err = tx.Exec(`INSERT OR IGNORE INTO workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) SELECT workspace_path,enabled,max_bytes,created_at_unix FROM workspaces`)
+		return err
+	}
+	rows, err := tx.Query(`SELECT path,max_bytes,enabled,created_at_unix FROM workspaces`)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	for rows.Next() {
+		var path string
+		var maxBytes int64
+		var enabled int64
+		var created int64
+		if err := rows.Scan(&path, &maxBytes, &enabled, &created); err != nil {
+			return err
+		}
+		abs, err := normalizeWorkspacePath(path)
+		if err != nil {
+			continue
+		}
+		if created <= 0 {
+			created = 1
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, abs, enabled, maxBytes, created); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
 
-	hasSeedLocked := false
+func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
+	cols, err := tableColumnsTx(tx, "workspace_files")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, ok := cols["workspace_path"]; ok {
+		if _, ok2 := cols["file_path"]; ok2 && !containsAny(cols, "path", "file_size", "mtime_unix", "updated_at_unix") {
+			_, err = tx.Exec(`INSERT OR IGNORE INTO workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) SELECT workspace_path,file_path,lower(trim(seed_hash)),COALESCE(seed_locked,0) FROM workspace_files`)
+			return err
+		}
+	}
+	rows, err := tx.Query(`SELECT path,seed_hash,COALESCE(seed_locked,0) FROM workspace_files`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	workspaceRoots, err := legacyWorkspaceRoots(tx)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var absPath, seedHash string
+		var locked int64
+		if err := rows.Scan(&absPath, &seedHash, &locked); err != nil {
+			return err
+		}
+		resolved, ok := resolveWorkspaceRelativePath(absPath, workspaceRoots)
+		if !ok {
+			continue
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, resolved.WorkspacePath, resolved.FilePath, normalizeSeedHashHex(seedHash), locked); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+func migrateSeedRowsLegacy(tx *sql.Tx) error {
+	cols, err := tableColumnsTx(tx, "seeds")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(`SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint FROM seeds`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seedHash string
+		var chunkCount int64
+		var fileSize int64
+		var seedPath, recommendedName, mimeHint string
+		if err := rows.Scan(&seedHash, &chunkCount, &fileSize, &seedPath, &recommendedName, &mimeHint); err != nil {
+			return err
+		}
+		seedHash = normalizeSeedHashHex(seedHash)
+		if seedHash == "" {
+			continue
+		}
+		if chunkCount < 0 {
+			chunkCount = 0
+		}
+		if fileSize < 0 {
+			fileSize = 0
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO seeds_new(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, chunkCount, fileSize, strings.TrimSpace(seedPath), sanitizeRecommendedFileName(recommendedName), sanitizeMIMEHint(mimeHint)); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// 迁移规则：
+// - 旧库有 seed_available_chunks 时，只信旧表记录；
+// - 某个 seed 在旧表里没有记录，就迁空；
+// - 只有旧库没有 seed_available_chunks 时，才按 chunk_count 补全。
+func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DELETE FROM seed_chunk_supply_new`); err != nil {
+		return err
+	}
+	haveLegacySupply := hasTableValue(tx, "seed_available_chunks")
+	rows, err := tx.Query(`SELECT seed_hash,chunk_count FROM seeds_new`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seedHash string
+		var chunkCount int64
+		if err := rows.Scan(&seedHash, &chunkCount); err != nil {
+			return err
+		}
+		seedHash = normalizeSeedHashHex(seedHash)
+		if seedHash == "" {
+			continue
+		}
+		if haveLegacySupply {
+			supplyRows, err := tx.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
+			if err != nil {
+				return err
+			}
+			for supplyRows.Next() {
+				var idx int64
+				if err := supplyRows.Scan(&idx); err != nil {
+					_ = supplyRows.Close()
+					return err
+				}
+				if idx < 0 {
+					continue
+				}
+				if _, err := tx.Exec(`INSERT OR REPLACE INTO seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, uint32(idx)); err != nil {
+					_ = supplyRows.Close()
+					return err
+				}
+			}
+			if err := supplyRows.Err(); err != nil {
+				_ = supplyRows.Close()
+				return err
+			}
+			_ = supplyRows.Close()
+			continue
+		}
+		if chunkCount < 0 {
+			chunkCount = 0
+		}
+		for _, idx := range contiguousChunkIndexes(uint32(chunkCount)) {
+			if _, err := tx.Exec(`INSERT OR REPLACE INTO seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
+				return err
+			}
+		}
+	}
+	return rows.Err()
+}
+
+func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
+	if _, err := tx.Exec(`DELETE FROM seed_pricing_policy_new`); err != nil {
+		return err
+	}
+	if !hasTableValue(tx, "seed_price_state") {
+		return nil
+	}
+	now := time.Now().Unix()
+	seedRows, err := tx.Query(`SELECT seed_hash FROM seeds_new`)
+	if err != nil {
+		return err
+	}
+	defer seedRows.Close()
+	for seedRows.Next() {
+		var seedHash string
+		if err := seedRows.Scan(&seedHash); err != nil {
+			return err
+		}
+		seedHash = normalizeSeedHashHex(seedHash)
+		if seedHash == "" {
+			continue
+		}
+		floor := uint64(0)
+		resale := uint64(0)
+		source := "system"
+		var lastBuy sql.NullInt64
+		var floorInt sql.NullInt64
+		var resaleInt sql.NullInt64
+		if err := tx.QueryRow(`SELECT last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&lastBuy, &floorInt, &resaleInt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				continue
+			}
+			return err
+		}
+		if floorInt.Valid && floorInt.Int64 > 0 {
+			floor = uint64(floorInt.Int64)
+		}
+		if resaleInt.Valid && resaleInt.Int64 >= 0 {
+			resale = uint64(resaleInt.Int64)
+		}
+		if lastBuy.Valid && lastBuy.Int64 > 0 {
+			source = "user"
+		}
+		if floor == 0 {
+			continue
+		}
+		if resale > 10000 {
+			resale = 10000
+		}
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO seed_pricing_policy_new(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, seedHash, floor, resale, source, now); err != nil {
+			return err
+		}
+	}
+	return seedRows.Err()
+}
+
+func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
+	rows, err := tx.Query(`SELECT workspace_path FROM workspaces`)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return nil, err
+		}
+		if root, err = normalizeWorkspacePath(root); err == nil && root != "" {
+			out = append(out, root)
+		}
+	}
+	if len(out) == 0 {
+		rows, err = tx.Query(`SELECT path FROM workspaces`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var root string
+			if err := rows.Scan(&root); err != nil {
+				return nil, err
+			}
+			if root, err = normalizeWorkspacePath(root); err == nil && root != "" {
+				out = append(out, root)
+			}
+		}
+	}
+	return out, nil
+}
+
+func tableColumnsTx(tx *sql.Tx, table string) (map[string]struct{}, error) {
+	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
 	for rows.Next() {
 		var cid int
 		var name string
@@ -972,19 +1506,26 @@ func ensureWorkspaceFilesSchema(db *sql.DB) error {
 		var dflt sql.NullString
 		var pk int
 		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
+			return nil, err
 		}
-		if strings.EqualFold(strings.TrimSpace(name), "seed_locked") {
-			hasSeedLocked = true
-			break
-		}
+		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 	}
+	return out, rows.Err()
+}
 
-	if hasSeedLocked {
-		return nil
+func containsAny(cols map[string]struct{}, names ...string) bool {
+	for _, name := range names {
+		if _, ok := cols[strings.ToLower(strings.TrimSpace(name))]; ok {
+			return true
+		}
 	}
-	_, err = db.Exec(`ALTER TABLE workspace_files ADD COLUMN seed_locked INTEGER NOT NULL DEFAULT 0`)
-	return err
+	return false
+}
+
+func hasTableValue(tx *sql.Tx, table string) bool {
+	var one int
+	err := tx.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&one)
+	return err == nil
 }
 
 // ensureFileDownloadsSchema 处理 file_downloads 表的历史列迁移

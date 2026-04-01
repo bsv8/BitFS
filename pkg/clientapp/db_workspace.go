@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,11 +16,10 @@ type workspaceFilesPage struct {
 }
 
 type workspaceFileItem struct {
-	Path          string `json:"path"`
-	FileSize      int64  `json:"file_size"`
-	MtimeUnix     int64  `json:"mtime_unix"`
+	WorkspacePath string `json:"workspace_path"`
+	FilePath      string `json:"file_path"`
 	SeedHash      string `json:"seed_hash"`
-	UpdatedAtUnix int64  `json:"updated_at_unix"`
+	SeedLocked    bool   `json:"seed_locked"`
 }
 
 type workspaceSeedsPage struct {
@@ -28,22 +28,21 @@ type workspaceSeedsPage struct {
 }
 
 type workspaceSeedItem struct {
-	SeedHash              string `json:"seed_hash"`
-	SeedFilePath          string `json:"seed_file_path"`
-	ChunkCount            uint32 `json:"chunk_count"`
-	FileSize              int64  `json:"file_size"`
-	CreatedAtUnix         int64  `json:"created_at_unix"`
-	UnitPriceSatPer64K    uint64 `json:"unit_price_sat_per_64k"`
-	LastBuyPriceSatPer64K uint64 `json:"last_buy_unit_price_sat_per_64k"`
-	FloorPriceSatPer64K   uint64 `json:"floor_unit_price_sat_per_64k"`
-	ResaleDiscountBPS     uint64 `json:"resale_discount_bps"`
-	PriceUpdatedAtUnix    int64  `json:"price_updated_at_unix"`
+	SeedHash            string `json:"seed_hash"`
+	SeedFilePath        string `json:"seed_file_path"`
+	ChunkCount          uint32 `json:"chunk_count"`
+	FileSize            int64  `json:"file_size"`
+	FloorPriceSatPer64K uint64 `json:"floor_unit_price_sat_per_64k"`
+	ResaleDiscountBPS   uint64 `json:"resale_discount_bps"`
+	PricingSource       string `json:"pricing_source"`
+	PriceUpdatedAtUnix  int64  `json:"price_updated_at_unix"`
 }
 
 type workspaceFileRow struct {
-	Path          string
-	FileSize      uint64
-	UpdatedAtUnix int64
+	WorkspacePath string
+	FilePath      string
+	SeedHash      string
+	SeedLocked    bool
 }
 
 func workspaceStore(m *workspaceManager) *clientDB {
@@ -60,17 +59,17 @@ func dbEnsureDefaultWorkspace(ctx context.Context, store *clientDB, workspaceDir
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	abs, err := filepath.Abs(strings.TrimSpace(workspaceDir))
+	abs, err := normalizeWorkspacePath(workspaceDir)
 	if err != nil {
 		return err
 	}
 	now := time.Now().Unix()
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO workspaces(path,max_bytes,enabled,created_at_unix,updated_at_unix)
-			 VALUES(?,?,1,?,?)
-			 ON CONFLICT(path) DO UPDATE SET enabled=1,updated_at_unix=excluded.updated_at_unix`,
-			abs, int64(0), now, now,
+			`INSERT INTO workspaces(workspace_path,enabled,max_bytes,created_at_unix)
+			 VALUES(?,1,?,?)
+			 ON CONFLICT(workspace_path) DO UPDATE SET enabled=1`,
+			abs, int64(0), now,
 		)
 		return err
 	})
@@ -81,7 +80,7 @@ func dbListWorkspaces(ctx context.Context, store *clientDB) ([]workspaceItem, er
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]workspaceItem, error) {
-		rows, err := db.Query(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces ORDER BY id ASC`)
+		rows, err := db.Query(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM workspaces ORDER BY workspace_path ASC`)
 		if err != nil {
 			return nil, err
 		}
@@ -90,7 +89,7 @@ func dbListWorkspaces(ctx context.Context, store *clientDB) ([]workspaceItem, er
 		for rows.Next() {
 			var it workspaceItem
 			var enabled int64
-			if err := rows.Scan(&it.ID, &it.Path, &it.MaxBytes, &enabled, &it.CreatedAtUnix, &it.UpdatedAtUnix); err != nil {
+			if err := rows.Scan(&it.WorkspacePath, &it.MaxBytes, &enabled, &it.CreatedAtUnix); err != nil {
 				return nil, err
 			}
 			it.Enabled = enabled != 0
@@ -107,13 +106,17 @@ func dbAddWorkspace(ctx context.Context, store *clientDB, absPath string, maxByt
 	if store == nil {
 		return workspaceItem{}, fmt.Errorf("client db is nil")
 	}
+	absPath, err := normalizeWorkspacePath(absPath)
+	if err != nil {
+		return workspaceItem{}, err
+	}
 	now := time.Now().Unix()
 	return clientDBValue(ctx, store, func(db *sql.DB) (workspaceItem, error) {
 		if _, err := db.Exec(
-			`INSERT INTO workspaces(path,max_bytes,enabled,created_at_unix,updated_at_unix)
-			 VALUES(?,?,1,?,?)
-			 ON CONFLICT(path) DO UPDATE SET max_bytes=excluded.max_bytes,enabled=1,updated_at_unix=excluded.updated_at_unix`,
-			absPath, maxBytes, now, now,
+			`INSERT INTO workspaces(workspace_path,max_bytes,enabled,created_at_unix)
+			 VALUES(?, ?, 1, ?)
+			 ON CONFLICT(workspace_path) DO UPDATE SET max_bytes=excluded.max_bytes,enabled=1`,
+			absPath, maxBytes, now,
 		); err != nil {
 			return workspaceItem{}, err
 		}
@@ -121,24 +124,28 @@ func dbAddWorkspace(ctx context.Context, store *clientDB, absPath string, maxByt
 	})
 }
 
-func dbDeleteWorkspaceByID(ctx context.Context, store *clientDB, id int64) error {
+func dbDeleteWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
+	workspacePath, err := normalizeWorkspacePath(workspacePath)
+	if err != nil {
+		return err
+	}
 	return store.Tx(ctx, func(tx *sql.Tx) error {
 		var path string
-		if err := tx.QueryRow(`SELECT path FROM workspaces WHERE id=?`, id).Scan(&path); err != nil {
+		if err := tx.QueryRow(`SELECT workspace_path FROM workspaces WHERE workspace_path=?`, workspacePath).Scan(&path); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("workspace not found")
 			}
 			return err
 		}
-		if _, err := tx.Exec(`DELETE FROM workspaces WHERE id=?`, id); err != nil {
+		if _, err := tx.Exec(`DELETE FROM workspaces WHERE workspace_path=?`, workspacePath); err != nil {
 			return err
 		}
 		path = filepath.Clean(strings.TrimSpace(path))
 		if path != "" {
-			if _, err := tx.Exec(`DELETE FROM workspace_files WHERE path=? OR path LIKE ?`, path, path+string(filepath.Separator)+"%"); err != nil {
+			if _, err := tx.Exec(`DELETE FROM workspace_files WHERE workspace_path=?`, path); err != nil {
 				return err
 			}
 		}
@@ -146,12 +153,16 @@ func dbDeleteWorkspaceByID(ctx context.Context, store *clientDB, id int64) error
 	})
 }
 
-func dbUpdateWorkspaceByID(ctx context.Context, store *clientDB, id int64, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
+func dbUpdateWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath string, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
 	if store == nil {
 		return workspaceItem{}, fmt.Errorf("client db is nil")
 	}
+	workspacePath, err := normalizeWorkspacePath(workspacePath)
+	if err != nil {
+		return workspaceItem{}, err
+	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (workspaceItem, error) {
-		cur, err := dbLoadWorkspaceByID(db, id)
+		cur, err := dbLoadWorkspaceByPath(db, workspacePath)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return workspaceItem{}, fmt.Errorf("workspace not found")
@@ -170,26 +181,37 @@ func dbUpdateWorkspaceByID(ctx context.Context, store *clientDB, id int64, maxBy
 		if nextEnabled {
 			enabledValue = 1
 		}
-		now := time.Now().Unix()
-		if _, err := db.Exec(`UPDATE workspaces SET max_bytes=?,enabled=?,updated_at_unix=? WHERE id=?`, nextMaxBytes, enabledValue, now, id); err != nil {
+		if _, err := db.Exec(`UPDATE workspaces SET max_bytes=?,enabled=? WHERE workspace_path=?`, nextMaxBytes, enabledValue, workspacePath); err != nil {
 			return workspaceItem{}, err
 		}
-		return dbLoadWorkspaceByID(db, id)
+		return dbLoadWorkspaceByPath(db, workspacePath)
 	})
 }
 
 func dbWorkspaceUsedBytes(ctx context.Context, store *clientDB, rootPath string) (uint64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
 	rootPath = filepath.Clean(strings.TrimSpace(rootPath))
-	return clientDBValue(ctx, store, func(db *sql.DB) (uint64, error) {
-		var used uint64
-		if err := db.QueryRow(`SELECT COALESCE(SUM(file_size),0) FROM workspace_files WHERE path=? OR path LIKE ?`, rootPath, rootPath+string(filepath.Separator)+"%").Scan(&used); err != nil {
-			return 0, err
+	if rootPath == "" {
+		return 0, fmt.Errorf("workspace path is empty")
+	}
+	var used uint64
+	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		return used, nil
+		if d.IsDir() {
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		st, err := os.Stat(path)
+		if err != nil {
+			return err
+		}
+		used += uint64(st.Size())
+		return nil
 	})
+	return used, err
 }
 
 func dbListLiveCacheFiles(ctx context.Context, store *clientDB) ([]workspaceFileRow, error) {
@@ -197,7 +219,7 @@ func dbListLiveCacheFiles(ctx context.Context, store *clientDB) ([]workspaceFile
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]workspaceFileRow, error) {
-		rows, err := db.Query(`SELECT path,file_size,updated_at_unix FROM workspace_files`)
+		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM workspace_files`)
 		if err != nil {
 			return nil, err
 		}
@@ -205,9 +227,11 @@ func dbListLiveCacheFiles(ctx context.Context, store *clientDB) ([]workspaceFile
 		out := make([]workspaceFileRow, 0, 64)
 		for rows.Next() {
 			var it workspaceFileRow
-			if err := rows.Scan(&it.Path, &it.FileSize, &it.UpdatedAtUnix); err != nil {
+			var locked int64
+			if err := rows.Scan(&it.WorkspacePath, &it.FilePath, &it.SeedHash, &locked); err != nil {
 				return nil, err
 			}
+			it.SeedLocked = locked != 0
 			out = append(out, it)
 		}
 		if err := rows.Err(); err != nil {
@@ -221,9 +245,8 @@ func dbDeleteLiveStreamCacheRows(ctx context.Context, store *clientDB, streamID 
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	pattern := "%" + string(filepath.Separator) + "live" + string(filepath.Separator) + streamID + string(filepath.Separator) + "%"
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(`DELETE FROM workspace_files WHERE path LIKE ?`, pattern)
+		_, err := db.Exec(`DELETE FROM workspace_files WHERE file_path LIKE ?`, "live/"+strings.ToLower(strings.TrimSpace(streamID))+"/%")
 		return err
 	})
 }
@@ -239,10 +262,10 @@ func dbCleanupOrphanSeedStateTx(tx *sql.Tx) error {
 	if _, err := tx.Exec(`DELETE FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM seed_price_state WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM seed_pricing_policy WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM seed_chunk_supply WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(`DELETE FROM file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
@@ -254,71 +277,68 @@ func dbCleanupOrphanSeedStateTx(tx *sql.Tx) error {
 	return nil
 }
 
-func dbMergeSeedAvailableChunks(ctx context.Context, store *clientDB, seedHash string, incoming []uint32, chunkCount uint32) ([]uint32, error) {
-	if store == nil {
-		return nil, fmt.Errorf("client db is nil")
-	}
-	return clientDBTxValue(ctx, store, func(tx *sql.Tx) ([]uint32, error) {
-		existing := make([]uint32, 0, len(incoming))
-		rows, err := tx.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var idx uint32
-			if err := rows.Scan(&idx); err != nil {
-				return nil, err
-			}
-			existing = append(existing, idx)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		merged := normalizeChunkIndexes(append(existing, incoming...), chunkCount)
-		if err := replaceSeedAvailableChunksTx(tx, seedHash, merged); err != nil {
-			return nil, err
-		}
-		return merged, nil
-	})
-}
-
-func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string, fileSize int64, mtimeUnix int64, seedHash string, seedPath string, chunkCount uint32, fullFileSize uint64, recommendedName string, mimeHint string, seedLocked bool) error {
+func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string, seedHash string, seedPath string, chunkCount uint32, fullFileSize uint64, recommendedName string, mimeHint string, seedLocked bool) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	now := time.Now().Unix()
 	lockedValue := int64(0)
 	if seedLocked {
 		lockedValue = 1
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
+		roots, err := dbListWorkspaceRoots(db)
+		if err != nil {
+			return err
+		}
+		resolved, ok := resolveWorkspaceRelativePath(absPath, roots)
+		if !ok {
+			return fmt.Errorf("output path is outside registered workspaces")
+		}
 		if _, err := db.Exec(
-			`INSERT INTO workspace_files(path,file_size,mtime_unix,seed_hash,seed_locked,updated_at_unix)
-			 VALUES(?,?,?,?,?,?)
-			 ON CONFLICT(path) DO UPDATE SET
-			 file_size=excluded.file_size,
-			 mtime_unix=excluded.mtime_unix,
+			`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked)
+			 VALUES(?,?,?,?)
+			 ON CONFLICT(workspace_path,file_path) DO UPDATE SET
 			 seed_hash=excluded.seed_hash,
-			 seed_locked=excluded.seed_locked,
-			 updated_at_unix=excluded.updated_at_unix`,
-			absPath, fileSize, mtimeUnix, seedHash, lockedValue, now,
+			 seed_locked=excluded.seed_locked`,
+			resolved.WorkspacePath, resolved.FilePath, seedHash, lockedValue,
 		); err != nil {
 			return err
 		}
-		_, err := db.Exec(
-			`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?)
+		_, err = db.Exec(
+			`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
+			 VALUES(?,?,?,?,?,?)
 			 ON CONFLICT(seed_hash) DO UPDATE SET
-			 seed_file_path=excluded.seed_file_path,
 			 chunk_count=excluded.chunk_count,
 			 file_size=excluded.file_size,
+			 seed_file_path=excluded.seed_file_path,
 			 recommended_file_name=excluded.recommended_file_name,
 			 mime_hint=excluded.mime_hint`,
-			seedHash, seedPath, chunkCount, fullFileSize, recommendedName, mimeHint, now,
+			seedHash, chunkCount, fullFileSize, seedPath, recommendedName, mimeHint,
 		)
 		return err
 	})
+}
+
+func dbListWorkspaceRoots(db *sql.DB) ([]string, error) {
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	rows, err := db.Query(`SELECT workspace_path FROM workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var root string
+		if err := rows.Scan(&root); err != nil {
+			return nil, err
+		}
+		if root, err = normalizeWorkspacePath(root); err == nil && root != "" {
+			out = append(out, root)
+		}
+	}
+	return out, rows.Err()
 }
 
 func dbListWorkspaceFiles(ctx context.Context, store *clientDB, limit int, offset int, pathLike string) (workspaceFilesPage, error) {
@@ -329,14 +349,15 @@ func dbListWorkspaceFiles(ctx context.Context, store *clientDB, limit int, offse
 		where := ""
 		args := []any{}
 		if pathLike != "" {
-			where = " WHERE path LIKE ?"
+			where = " WHERE workspace_path LIKE ? OR file_path LIKE ?"
+			args = append(args, "%"+pathLike+"%")
 			args = append(args, "%"+pathLike+"%")
 		}
 		var out workspaceFilesPage
 		if err := db.QueryRow("SELECT COUNT(1) FROM workspace_files"+where, args...).Scan(&out.Total); err != nil {
 			return workspaceFilesPage{}, err
 		}
-		rows, err := db.Query(`SELECT path,file_size,mtime_unix,seed_hash,updated_at_unix FROM workspace_files`+where+` ORDER BY updated_at_unix DESC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM workspace_files`+where+` ORDER BY workspace_path ASC,file_path ASC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 		if err != nil {
 			return workspaceFilesPage{}, err
 		}
@@ -344,9 +365,11 @@ func dbListWorkspaceFiles(ctx context.Context, store *clientDB, limit int, offse
 		out.Items = make([]workspaceFileItem, 0, limit)
 		for rows.Next() {
 			var it workspaceFileItem
-			if err := rows.Scan(&it.Path, &it.FileSize, &it.MtimeUnix, &it.SeedHash, &it.UpdatedAtUnix); err != nil {
+			var locked int64
+			if err := rows.Scan(&it.WorkspacePath, &it.FilePath, &it.SeedHash, &locked); err != nil {
 				return workspaceFilesPage{}, err
 			}
+			it.SeedLocked = locked != 0
 			out.Items = append(out.Items, it)
 		}
 		if err := rows.Err(); err != nil {
@@ -375,14 +398,15 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 			return workspaceSeedsPage{}, err
 		}
 		rows, err := db.Query(`
-			SELECT s.seed_hash,s.seed_file_path,s.chunk_count,s.file_size,s.created_at_unix,
-			       COALESCE(p.unit_price_sat_per_64k,0), COALESCE(p.last_buy_unit_price_sat_per_64k,0),
-			       COALESCE(p.floor_unit_price_sat_per_64k,0), COALESCE(p.resale_discount_bps,0),
+			SELECT s.seed_hash,s.seed_file_path,s.chunk_count,s.file_size,
+			       COALESCE(p.floor_unit_price_sat_per_64k,0),
+			       COALESCE(p.resale_discount_bps,0),
+			       COALESCE(p.pricing_source,'system'),
 			       COALESCE(p.updated_at_unix,0)
 			FROM seeds s
-			LEFT JOIN seed_price_state p ON p.seed_hash=s.seed_hash
+			LEFT JOIN seed_pricing_policy p ON p.seed_hash=s.seed_hash
 			`+where+`
-			ORDER BY s.created_at_unix DESC
+			ORDER BY s.seed_hash ASC
 			LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 		if err != nil {
 			return workspaceSeedsPage{}, err
@@ -396,11 +420,9 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 				&it.SeedFilePath,
 				&it.ChunkCount,
 				&it.FileSize,
-				&it.CreatedAtUnix,
-				&it.UnitPriceSatPer64K,
-				&it.LastBuyPriceSatPer64K,
 				&it.FloorPriceSatPer64K,
 				&it.ResaleDiscountBPS,
+				&it.PricingSource,
 				&it.PriceUpdatedAtUnix,
 			); err != nil {
 				return workspaceSeedsPage{}, err
@@ -414,55 +436,14 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 	})
 }
 
-func dbLoadWorkspaceByID(db *sql.DB, id int64) (workspaceItem, error) {
-	var out workspaceItem
-	var enabled int64
-	err := db.QueryRow(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE id=?`, id).
-		Scan(&out.ID, &out.Path, &out.MaxBytes, &enabled, &out.CreatedAtUnix, &out.UpdatedAtUnix)
-	if err != nil {
-		return workspaceItem{}, err
-	}
-	out.Enabled = enabled != 0
-	return out, nil
-}
-
 func dbLoadWorkspaceByPath(db *sql.DB, absPath string) (workspaceItem, error) {
 	var out workspaceItem
 	var enabled int64
-	err := db.QueryRow(`SELECT id,path,max_bytes,enabled,created_at_unix,updated_at_unix FROM workspaces WHERE path=?`, absPath).
-		Scan(&out.ID, &out.Path, &out.MaxBytes, &enabled, &out.CreatedAtUnix, &out.UpdatedAtUnix)
+	err := db.QueryRow(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM workspaces WHERE workspace_path=?`, absPath).
+		Scan(&out.WorkspacePath, &out.MaxBytes, &enabled, &out.CreatedAtUnix)
 	if err != nil {
 		return workspaceItem{}, err
 	}
 	out.Enabled = enabled != 0
 	return out, nil
-}
-
-func replaceSeedAvailableChunksTx(tx *sql.Tx, seedHash string, indexes []uint32) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return fmt.Errorf("seed_hash required")
-	}
-	indexes = normalizeChunkIndexes(indexes, 0)
-	if _, err := tx.Exec(`DELETE FROM seed_available_chunks WHERE seed_hash=?`, seedHash); err != nil {
-		return err
-	}
-	if len(indexes) == 0 {
-		return nil
-	}
-	stmt, err := tx.Prepare(`INSERT INTO seed_available_chunks(seed_hash,chunk_index,updated_at_unix) VALUES(?,?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
-	now := time.Now().Unix()
-	for _, idx := range indexes {
-		if _, err := stmt.Exec(seedHash, idx, now); err != nil {
-			return err
-		}
-	}
-	return nil
 }

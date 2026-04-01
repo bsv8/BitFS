@@ -29,13 +29,10 @@ export type ArbitersResp = {
 };
 
 export type Workspace = {
-  id: number;
-  path: string;
+  workspace_path: string;
   max_bytes: number;
-  used_bytes: number;
   enabled: boolean;
   created_at_unix: number;
-  updated_at_unix: number;
 };
 
 export type WorkspacesResp = {
