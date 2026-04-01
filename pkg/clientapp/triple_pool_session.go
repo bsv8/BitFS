@@ -22,8 +22,8 @@ type triplePoolSession struct {
 	DemandID         string
 	SessionID        string
 	DealID           string
-	SellerPeerID     string
-	ArbiterPeerID    string
+	SellerPubHex     string
+	ArbiterPubHex    string
 	PoolAmountSat    uint64
 	SpendTxFeeSat    uint64
 	OpenSequence     uint32
@@ -46,9 +46,9 @@ type triplePoolSession struct {
 type directTransferPoolRow struct {
 	SessionID        string
 	DealID           string
-	BuyerPeerID      string
-	SellerPeerID     string
-	ArbiterPeerID    string
+	BuyerPubHex      string
+	SellerPubHex     string
+	ArbiterPubHex    string
 	BuyerPubKeyHex   string
 	SellerPubKeyHex  string
 	ArbiterPubKeyHex string
@@ -152,13 +152,13 @@ func (r *Runtime) releaseTransferPoolSessionMutex(sessionID string) {
 func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 	sessionID := strings.TrimSpace(req.SessionID)
 	dealID := strings.TrimSpace(req.DealID)
-	buyerPeerID, err := normalizeCompressedPubKeyHex(req.BuyerPeerID)
+	buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPeerID)
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: strings.TrimSpace(req.SessionID), Status: "rejected", Error: "invalid buyer pubkey"}, nil
 	}
 	arbiterPeerID := strings.TrimSpace(req.ArbiterPeerID)
 	arbiterPubHex := strings.ToLower(strings.TrimSpace(req.ArbiterPubKey))
-	if sessionID == "" || dealID == "" || buyerPeerID == "" || arbiterPeerID == "" || arbiterPubHex == "" {
+	if sessionID == "" || dealID == "" || buyerPubHex == "" || arbiterPeerID == "" || arbiterPubHex == "" {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid open request"}, nil
 	}
 	if req.Sequence == 0 {
@@ -171,18 +171,18 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "amounts do not match pool"}, nil
 	}
 
-	sellerPeerID := strings.ToLower(strings.TrimSpace(localPubHex(h)))
-	dealBuyerPeerID, dealSellerPeerID, dealArbiterPeerID, err := dbLoadDirectDealParties(context.Background(), store, dealID)
+	sellerPubHex := strings.ToLower(strings.TrimSpace(localPubHex(h)))
+	dealBuyerPubHex, dealSellerPubHex, dealArbiterPubHex, err := dbLoadDirectDealParties(context.Background(), store, dealID)
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
-	if buyerPeerID != strings.ToLower(strings.TrimSpace(dealBuyerPeerID)) {
+	if buyerPubHex != strings.ToLower(strings.TrimSpace(dealBuyerPubHex)) {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "buyer mismatch"}, nil
 	}
-	if sellerPeerID == "" || sellerPeerID != strings.ToLower(strings.TrimSpace(dealSellerPeerID)) {
+	if sellerPubHex == "" || sellerPubHex != strings.ToLower(strings.TrimSpace(dealSellerPubHex)) {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "seller mismatch"}, nil
 	}
-	if arbiterPeerID != strings.TrimSpace(dealArbiterPeerID) {
+	if arbiterPeerID != strings.TrimSpace(dealArbiterPubHex) {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "arbiter mismatch"}, nil
 	}
 
@@ -190,7 +190,7 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
 	}
-	buyerPub, err := ec.PublicKeyFromString(buyerPeerID)
+	buyerPub, err := ec.PublicKeyFromString(buyerPubHex)
 	if err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer secp256k1 pubkey"}, nil
 	}
@@ -223,7 +223,7 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
 
-	if err := dbUpsertDirectTransferPoolOpen(context.Background(), store, req, sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPubHex, currentTxHex, baseTxHex); err != nil {
+	if err := dbUpsertDirectTransferPoolOpen(context.Background(), store, req, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, currentTxHex, baseTxHex); err != nil {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_open_ok", map[string]any{

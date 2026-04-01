@@ -289,7 +289,7 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 				LocalReady:          false,
 				RecommendedFileName: sanitizeRecommendedFileName(best.RecommendedFileName),
 				MIMEHint:            sanitizeMIMEHint(best.MimeType),
-				FileSize:            best.FileSize,
+				FileSize:            best.FileSizeBytes,
 				ChunkCount:          best.ChunkCount,
 				SeedPrice:           best.SeedPrice,
 				ChunkPrice:          best.ChunkPrice,

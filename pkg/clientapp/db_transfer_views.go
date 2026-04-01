@@ -44,9 +44,9 @@ type directTransferPoolFilter struct {
 	SessionID     string
 	DealID        string
 	Status        string
-	SellerPeerID  string
-	BuyerPeerID   string
-	ArbiterPeerID string
+	SellerPubHex  string
+	BuyerPubHex   string
+	ArbiterPubHex string
 }
 
 type directTransferPoolPage struct {
@@ -55,27 +55,24 @@ type directTransferPoolPage struct {
 }
 
 type directTransferPoolItem struct {
-	SessionID        string  `json:"session_id"`
-	DealID           string  `json:"deal_id"`
-	BuyerPeerID      string  `json:"buyer_pubkey_hex"`
-	SellerPeerID     string  `json:"seller_pubkey_hex"`
-	ArbiterPeerID    string  `json:"arbiter_pubkey_hex"`
-	BuyerPubkeyHex   string  `json:"buyer_pubkey_hex"`
-	SellerPubkeyHex  string  `json:"seller_pubkey_hex"`
-	ArbiterPubkeyHex string  `json:"arbiter_pubkey_hex"`
-	PoolAmount       uint64  `json:"pool_amount"`
-	SpendTxFee       uint64  `json:"spend_tx_fee"`
-	SequenceNum      uint32  `json:"sequence_num"`
-	SellerAmount     uint64  `json:"seller_amount"`
-	BuyerAmount      uint64  `json:"buyer_amount"`
-	CurrentTxHex     string  `json:"current_tx_hex"`
-	BaseTxHex        string  `json:"base_tx_hex"`
-	BaseTxID         string  `json:"base_txid"`
-	Status           string  `json:"status"`
-	FeeRateSatByte   float64 `json:"fee_rate_sat_byte"`
-	LockBlocks       uint32  `json:"lock_blocks"`
-	CreatedAtUnix    int64   `json:"created_at_unix"`
-	UpdatedAtUnix    int64   `json:"updated_at_unix"`
+	SessionID      string  `json:"session_id"`
+	DealID         string  `json:"deal_id"`
+	BuyerPubHex    string  `json:"buyer_pubkey_hex"`
+	SellerPubHex   string  `json:"seller_pubkey_hex"`
+	ArbiterPubHex  string  `json:"arbiter_pubkey_hex"`
+	PoolAmount     uint64  `json:"pool_amount"`
+	SpendTxFee     uint64  `json:"spend_tx_fee"`
+	SequenceNum    uint32  `json:"sequence_num"`
+	SellerAmount   uint64  `json:"seller_amount"`
+	BuyerAmount    uint64  `json:"buyer_amount"`
+	CurrentTxHex   string  `json:"current_tx_hex"`
+	BaseTxHex      string  `json:"base_tx_hex"`
+	BaseTxID       string  `json:"base_txid"`
+	Status         string  `json:"status"`
+	FeeRateSatByte float64 `json:"fee_rate_sat_byte"`
+	LockBlocks     uint32  `json:"lock_blocks"`
+	CreatedAtUnix  int64   `json:"created_at_unix"`
+	UpdatedAtUnix  int64   `json:"updated_at_unix"`
 }
 
 type purchaseFilter struct {
@@ -286,17 +283,17 @@ func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTra
 			where += " AND status=?"
 			args = append(args, f.Status)
 		}
-		if f.SellerPeerID != "" {
+		if f.SellerPubHex != "" {
 			where += " AND seller_pubkey_hex=?"
-			args = append(args, f.SellerPeerID)
+			args = append(args, f.SellerPubHex)
 		}
-		if f.BuyerPeerID != "" {
+		if f.BuyerPubHex != "" {
 			where += " AND buyer_pubkey_hex=?"
-			args = append(args, f.BuyerPeerID)
+			args = append(args, f.BuyerPubHex)
 		}
-		if f.ArbiterPeerID != "" {
+		if f.ArbiterPubHex != "" {
 			where += " AND arbiter_pubkey_hex=?"
-			args = append(args, f.ArbiterPeerID)
+			args = append(args, f.ArbiterPubHex)
 		}
 		var out directTransferPoolPage
 		if err := db.QueryRow("SELECT COUNT(1) FROM direct_transfer_pools WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
@@ -305,9 +302,6 @@ func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTra
 		rows, err := db.Query(`SELECT
 			session_id,deal_id,
 			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
-			buyer_pubkey_hex AS buyer_pubkey_hex_alias,
-			seller_pubkey_hex AS seller_pubkey_hex_alias,
-			arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
 			FROM direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
@@ -337,9 +331,6 @@ func dbGetDirectTransferPoolItem(ctx context.Context, store *clientDB, sessionID
 		row := db.QueryRow(`SELECT
 			session_id,deal_id,
 			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
-			buyer_pubkey_hex AS buyer_pubkey_hex_alias,
-			seller_pubkey_hex AS seller_pubkey_hex_alias,
-			arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
 			FROM direct_transfer_pools WHERE session_id=?`, sessionID)
 		return scanDirectTransferPoolItem(row)
@@ -560,10 +551,10 @@ type scanDirectTransferPool interface {
 func scanDirectTransferPoolItem(row scanDirectTransferPool) (directTransferPoolItem, error) {
 	var out directTransferPoolItem
 	err := row.Scan(
-		&out.SessionID, &out.DealID, &out.BuyerPeerID, &out.SellerPeerID, &out.ArbiterPeerID,
-		&out.BuyerPubkeyHex, &out.SellerPubkeyHex, &out.ArbiterPubkeyHex, &out.PoolAmount, &out.SpendTxFee,
-		&out.SequenceNum, &out.SellerAmount, &out.BuyerAmount, &out.CurrentTxHex, &out.BaseTxHex, &out.BaseTxID,
-		&out.Status, &out.FeeRateSatByte, &out.LockBlocks, &out.CreatedAtUnix, &out.UpdatedAtUnix,
+		&out.SessionID, &out.DealID, &out.BuyerPubHex, &out.SellerPubHex, &out.ArbiterPubHex,
+		&out.PoolAmount, &out.SpendTxFee, &out.SequenceNum, &out.SellerAmount, &out.BuyerAmount,
+		&out.CurrentTxHex, &out.BaseTxHex, &out.BaseTxID, &out.Status, &out.FeeRateSatByte, &out.LockBlocks,
+		&out.CreatedAtUnix, &out.UpdatedAtUnix,
 	)
 	if err != nil {
 		return directTransferPoolItem{}, err

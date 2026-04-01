@@ -66,7 +66,7 @@ func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID
 			 FROM direct_transfer_pools WHERE session_id=?`,
 			strings.TrimSpace(sessionID),
 		).Scan(
-			&row.SessionID, &row.DealID, &row.BuyerPeerID, &row.SellerPeerID, &row.ArbiterPeerID,
+			&row.SessionID, &row.DealID, &row.BuyerPubHex, &row.SellerPubHex, &row.ArbiterPubHex,
 			&row.BuyerPubKeyHex, &row.SellerPubKeyHex, &row.ArbiterPubKeyHex,
 			&row.PoolAmount, &row.SpendTxFee, &row.SequenceNum, &row.SellerAmount, &row.BuyerAmount,
 			&row.CurrentTxHex, &row.BaseTxHex, &row.BaseTxID, &row.Status, &row.FeeRateSatByte, &row.LockBlocks,
@@ -75,7 +75,7 @@ func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID
 	})
 }
 
-func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req directTransferPoolOpenReq, sessionID string, dealID string, buyerPeerID string, sellerPeerID string, arbiterPubHex string, currentTxHex string, baseTxHex string) error {
+func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req directTransferPoolOpenReq, sessionID string, dealID string, buyerPubHex string, sellerPubHex string, arbiterPubHex string, currentTxHex string, baseTxHex string) error {
 	if store == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -97,7 +97,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
 				lock_blocks=excluded.lock_blocks,
 				updated_at_unix=excluded.updated_at_unix`,
-			sessionID, dealID, buyerPeerID, sellerPeerID, arbiterPubHex,
+			sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex,
 			req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
 		); err != nil {
 			return err

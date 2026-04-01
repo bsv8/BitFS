@@ -24,7 +24,7 @@ type TransferChunksByStrategyParams struct {
 	DemandID        string `json:"demand_id"`
 	SeedHash        string `json:"seed_hash"`
 	ChunkCount      uint32 `json:"chunk_count"` // 0 表示按 seed 元信息全量下载
-	ArbiterPeerID   string `json:"arbiter_pubkey_hex,omitempty"`
+	ArbiterPubHex   string `json:"arbiter_pubkey_hex,omitempty"`
 	MaxSeedPrice    uint64 `json:"max_seed_price,omitempty"`
 	MaxChunkPrice   uint64 `json:"max_chunk_price,omitempty"`
 	Strategy        string `json:"strategy,omitempty"`
@@ -64,7 +64,7 @@ type transferSellerWorker struct {
 	buyer         *Runtime
 	store         *clientDB
 	quote         DirectQuoteItem
-	arbiterPeerID string
+	arbiterPubHex string
 	seedHash      string
 	poolAmount    uint64
 	// availableChunks 为空表示“未声明限制（默认认为可提供全部块）”。
@@ -188,7 +188,7 @@ func (w *transferSellerWorker) recordPurchaseDone(ctx context.Context, chunkInde
 	if err := dbAppendPurchaseDone(ctx, w.store, purchaseDoneEntry{
 		DemandID:      strings.TrimSpace(w.quote.DemandID),
 		SellerPubHex:  strings.TrimSpace(w.quote.SellerPubHex),
-		ArbiterPubHex: strings.TrimSpace(w.arbiterPeerID),
+		ArbiterPubHex: strings.TrimSpace(w.arbiterPubHex),
 		ChunkIndex:    chunkIndex,
 		ObjectHash:    strings.ToLower(strings.TrimSpace(objectHash)),
 		AmountSatoshi: amount,
@@ -214,8 +214,8 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 		"seed_price":        w.quote.SeedPrice,
 	})
 	openRes, err := triggerDirectTransferPoolOpen(ctx, w.store, w.buyer, directTransferPoolOpenParams{
-		SellerPeerID:  w.quote.SellerPubHex,
-		ArbiterPeerID: w.arbiterPeerID,
+		SellerPubHex:  w.quote.SellerPubHex,
+		ArbiterPubHex: w.arbiterPubHex,
 		DemandID:      w.quote.DemandID,
 		SeedHash:      w.seedHash,
 		SeedPrice:     w.quote.SeedPrice,
@@ -255,7 +255,7 @@ func (w *transferSellerWorker) fetchChunk(ctx context.Context, chunkIndex uint32
 	}
 	begin := time.Now()
 	payRes, err := triggerDirectTransferPoolPay(ctx, w.store, w.buyer, directTransferPoolPayParams{
-		SellerPeerID: w.quote.SellerPubHex,
+		SellerPubHex: w.quote.SellerPubHex,
 		SessionID:    w.sessionID,
 		Amount:       w.quote.ChunkPrice,
 		SeedHash:     w.seedHash,
@@ -277,7 +277,7 @@ func (w *transferSellerWorker) closeSession(ctx context.Context) error {
 		return nil
 	}
 	closeRes, err := triggerDirectTransferPoolClose(ctx, w.store, w.buyer, directTransferPoolCloseParams{
-		SellerPeerID: w.quote.SellerPubHex,
+		SellerPubHex: w.quote.SellerPubHex,
 		SessionID:    w.sessionID,
 	})
 	if err == nil {
@@ -475,7 +475,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		"max_chunk_price":    p.MaxChunkPrice,
 		"pool_amount":        p.PoolAmount,
 		"max_chunk_retries":  p.MaxChunkRetries,
-		"arbiter_pubkey_hex": shortID(p.ArbiterPeerID),
+		"arbiter_pubkey_hex": shortID(p.ArbiterPubHex),
 	})
 
 	quotes, err := TriggerClientListDirectQuotes(ctx, store, strings.TrimSpace(p.DemandID))
@@ -518,7 +518,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		Store:         store,
 		Quotes:        filtered,
 		SeedHash:      seedHash,
-		ArbiterPeerID: p.ArbiterPeerID,
+		ArbiterPubHex: p.ArbiterPubHex,
 		PoolAmount:    p.PoolAmount,
 		OnQuoteRejected: func(q DirectQuoteItem, err error) {
 			rejectedByArbiter++
@@ -528,11 +528,11 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 				"error":             err.Error(),
 			})
 		},
-		OnQuoteAccepted: func(q DirectQuoteItem, arbiterPeerID string) {
+		OnQuoteAccepted: func(q DirectQuoteItem, arbiterPubHex string) {
 			logTransferStrategy("evt_transfer_strategy_seller_accepted", map[string]any{
 				"seller_pubkey_hex":  shortID(q.SellerPubHex),
 				"demand_id":          strings.TrimSpace(q.DemandID),
-				"arbiter_pubkey_hex": shortID(arbiterPeerID),
+				"arbiter_pubkey_hex": shortID(arbiterPubHex),
 				"chunk_price":        q.ChunkPrice,
 				"seed_price":         q.SeedPrice,
 				"chunk_have":         len(q.AvailableChunkIndexes),

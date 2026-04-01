@@ -22,7 +22,7 @@ type directDownloadCoreParams struct {
 	GatewayPeerID      string
 	QuoteMaxRetry      int
 	QuoteInterval      time.Duration
-	ArbiterPeerID      string
+	ArbiterPubHex      string
 	MaxSeedPrice       uint64
 	MaxChunkPrice      uint64
 	Strategy           string
@@ -107,7 +107,7 @@ func runDirectDownloadCoreImpl(ctx context.Context, store *clientDB, rt *Runtime
 		"first_recommended_name":  quotes[0].RecommendedFileName,
 	})
 
-	arbiter := strings.ToLower(strings.TrimSpace(p.ArbiterPeerID))
+	arbiter := strings.ToLower(strings.TrimSpace(p.ArbiterPubHex))
 	if arbiter == "" {
 		arbiterList := ownArbiterPubHexes(rt)
 		if len(arbiterList) == 0 {
@@ -128,7 +128,7 @@ func runDirectDownloadCoreImpl(ctx context.Context, store *clientDB, rt *Runtime
 		DemandID:        pub.DemandID,
 		SeedHash:        seedHash,
 		ChunkCount:      p.TransferChunkCount,
-		ArbiterPeerID:   arbiter,
+		ArbiterPubHex:   arbiter,
 		MaxSeedPrice:    p.MaxSeedPrice,
 		MaxChunkPrice:   p.MaxChunkPrice,
 		Strategy:        p.Strategy,

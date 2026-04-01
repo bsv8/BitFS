@@ -1645,16 +1645,16 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		}
 		if err := submitDirectQuote(ctx, h, trace, DirectQuoteParams{
 			DemandID:            demandID,
-			BuyerPeerID:         buyerPeerID,
+			BuyerPubHex:         buyerPeerID,
 			BuyerAddrs:          req.BuyerAddrs,
 			SeedPrice:           seed.SeedPrice,
 			ChunkPrice:          seed.ChunkPrice,
 			ChunkCount:          seed.ChunkCount,
-			FileSize:            seed.FileSize,
+			FileSizeBytes:       seed.FileSize,
 			ExpiresAtUnix:       time.Now().Add(10 * time.Minute).Unix(),
 			RecommendedFileName: seed.RecommendedFileName,
-			MIMEHint:            seed.MIMEHint,
-			ArbiterPeerIDs:      configuredArbiterPubHexes(cfg),
+			MimeType:            seed.MIMEHint,
+			ArbiterPubHexes:     configuredArbiterPubHexes(cfg),
 			AvailableChunkBitmapHex: chunkBitmapHexFromIndexes(
 				availableChunks,
 				seed.ChunkCount,
@@ -1775,13 +1775,13 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink,
 	if h == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
-	if strings.TrimSpace(p.DemandID) == "" || strings.TrimSpace(p.BuyerPeerID) == "" || p.SeedPrice == 0 || p.ChunkPrice == 0 {
+	if strings.TrimSpace(p.DemandID) == "" || strings.TrimSpace(p.BuyerPubHex) == "" || p.SeedPrice == 0 || p.ChunkPrice == 0 {
 		return fmt.Errorf("invalid params")
 	}
 	if p.ExpiresAtUnix == 0 {
 		p.ExpiresAtUnix = time.Now().Add(10 * time.Minute).Unix()
 	}
-	buyerID, err := peerIDFromClientID(strings.TrimSpace(p.BuyerPeerID))
+	buyerID, err := peerIDFromClientID(strings.TrimSpace(p.BuyerPubHex))
 	if err != nil {
 		return err
 	}
@@ -1811,7 +1811,7 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink,
 			return fmt.Errorf("invalid available_chunk_bitmap_hex")
 		}
 	}
-	arbiterPubHexes, err := normalizePubHexList(p.ArbiterPeerIDs)
+	arbiterPubHexes, err := normalizePubHexList(p.ArbiterPubHexes)
 	if err != nil {
 		return err
 	}
@@ -1821,10 +1821,10 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink,
 		SeedPrice:            p.SeedPrice,
 		ChunkPrice:           p.ChunkPrice,
 		ChunkCount:           p.ChunkCount,
-		FileSize:             p.FileSize,
+		FileSize:             p.FileSizeBytes,
 		ExpiresAtUnix:        p.ExpiresAtUnix,
 		RecommendedFileName:  sanitizeRecommendedFileName(p.RecommendedFileName),
-		MIMEHint:             sanitizeMIMEHint(p.MIMEHint),
+		MIMEHint:             sanitizeMIMEHint(p.MimeType),
 		ArbiterPeerIDs:       arbiterPubHexes,
 		AvailableChunkBitmap: bitmapBytes,
 	}, &resp); err != nil {

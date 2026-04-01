@@ -249,7 +249,7 @@ func TestPrePaymentFailureDoesNotWritePurchase(t *testing.T) {
 			SeedPrice:    120,
 			ChunkPrice:   33,
 		},
-		arbiterPeerID: "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		arbiterPubHex: "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
 		seedHash:      "seed_no_write",
 	}
 
@@ -420,7 +420,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		Store:         store,
 		Quotes:        quotes,
 		SeedHash:      seedHash,
-		ArbiterPeerID: arbPubHex,
+		ArbiterPubHex: arbPubHex,
 		PoolAmount:    20000,
 	})
 	if err != nil {

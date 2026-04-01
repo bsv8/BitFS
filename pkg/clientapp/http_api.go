@@ -887,9 +887,9 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 		SessionID:     sessionID,
 		DealID:        dealID,
 		Status:        status,
-		SellerPeerID:  sellerPeerID,
-		BuyerPeerID:   buyerPeerID,
-		ArbiterPeerID: arbiterPeerID,
+		SellerPubHex:  sellerPeerID,
+		BuyerPubHex:   buyerPeerID,
+		ArbiterPubHex: arbiterPeerID,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

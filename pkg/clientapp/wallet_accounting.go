@@ -108,7 +108,7 @@ type directPoolOpenAccountingInput struct {
 	BaseTxHex         string
 	ClientLockScript  string
 	PoolAmountSatoshi uint64
-	SellerPeerID      string
+	SellerPubHex      string
 }
 
 func recordWalletChainAccounting(db *sql.DB, txid string, category string, walletInSat int64, walletOutSat int64, netSat int64, payload map[string]any) {

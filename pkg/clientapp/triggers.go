@@ -412,16 +412,16 @@ func gatewayBusinessID(rt *Runtime, pid peer.ID) string {
 
 type DirectQuoteParams struct {
 	DemandID                string   `json:"demand_id"`
-	BuyerPeerID             string   `json:"buyer_pubkey_hex"`
+	BuyerPubHex             string   `json:"buyer_pubkey_hex"`
 	BuyerAddrs              []string `json:"buyer_addrs"`
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
 	ChunkCount              uint32   `json:"chunk_count"`
-	FileSize                uint64   `json:"file_size"`
+	FileSizeBytes           uint64   `json:"file_size"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
-	MIMEHint                string   `json:"mime_hint,omitempty"`
-	ArbiterPeerIDs          []string `json:"arbiter_pubkey_hexes,omitempty"`
+	MimeType                string   `json:"mime_hint,omitempty"`
+	ArbiterPubHexes         []string `json:"arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 }
 
@@ -438,7 +438,7 @@ type DirectQuoteItem struct {
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
 	ChunkCount              uint32   `json:"chunk_count"`
-	FileSize                uint64   `json:"file_size"`
+	FileSizeBytes           uint64   `json:"file_size"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
 	MimeType                string   `json:"mime_hint,omitempty"`
@@ -489,7 +489,7 @@ func TriggerClientListDirectQuotes(ctx context.Context, store *clientDB, demandI
 			SeedPrice:               raw.SeedPriceSatoshi,
 			ChunkPrice:              raw.ChunkPriceSatoshi,
 			ChunkCount:              raw.ChunkCount,
-			FileSize:                raw.FileSizeBytes,
+			FileSizeBytes:           raw.FileSizeBytes,
 			ExpiresAtUnix:           raw.ExpiresAtUnix,
 			RecommendedFileName:     raw.RecommendedFileName,
 			MimeType:                raw.MimeType,
@@ -575,8 +575,8 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 }
 
 type directTransferPoolOpenParams struct {
-	SellerPeerID  string
-	ArbiterPeerID string
+	SellerPubHex  string
+	ArbiterPubHex string
 	DemandID      string
 	SeedHash      string
 	SeedPrice     uint64
@@ -596,7 +596,7 @@ type directTransferPoolOpenResult struct {
 }
 
 type directTransferPoolPayParams struct {
-	SellerPeerID string
+	SellerPubHex string
 	SessionID    string
 	Amount       uint64
 	SeedHash     string
@@ -610,7 +610,7 @@ type directTransferPoolPayResult struct {
 }
 
 type directTransferPoolCloseParams struct {
-	SellerPeerID string
+	SellerPubHex string
 	SessionID    string
 }
 
@@ -629,13 +629,13 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	dealID := strings.TrimSpace(p.DealID)
 	if dealID == "" {
 		deal, err := TriggerClientAcceptDirectDeal(ctx, buyer, DirectDealAcceptParams{
-			SellerPeerID:  p.SellerPeerID,
+			SellerPubHex:  p.SellerPubHex,
 			DemandID:      p.DemandID,
 			SeedHash:      p.SeedHash,
 			SeedPrice:     p.SeedPrice,
 			ChunkPrice:    p.ChunkPrice,
 			ExpiresAtUnix: p.ExpiresAtUnix,
-			ArbiterPeerID: p.ArbiterPeerID,
+			ArbiterPubHex: p.ArbiterPubHex,
 		})
 		if err != nil {
 			return directTransferPoolOpenResult{}, err
@@ -647,11 +647,11 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 		sessionID = "tp_" + randHex(8)
 	}
 
-	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
+	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
-	sellerPubHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(p.SellerPeerID))
+	sellerPubHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(p.SellerPubHex))
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
@@ -659,7 +659,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
-	arbiterPubHex := strings.ToLower(strings.TrimSpace(p.ArbiterPeerID))
+	arbiterPubHex := strings.ToLower(strings.TrimSpace(p.ArbiterPubHex))
 	arbiterPID, err := peerIDFromSecp256k1PubHex(arbiterPubHex)
 	if err != nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("invalid arbiter pubkey hex: %w", err)
@@ -782,7 +782,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			SessionID:      curSessionID,
 			DealID:         dealID,
 			BuyerPeerID:    strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
-			ArbiterPeerID:  strings.TrimSpace(p.ArbiterPeerID),
+			ArbiterPeerID:  strings.TrimSpace(p.ArbiterPubHex),
 			ArbiterPubKey:  arbiterPubHex,
 			PoolAmount:     baseResp.Amount,
 			SpendTxFee:     spendFee,
@@ -842,8 +842,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			DemandID:         strings.TrimSpace(p.DemandID),
 			SessionID:        curSessionID,
 			DealID:           dealID,
-			SellerPeerID:     strings.TrimSpace(p.SellerPeerID),
-			ArbiterPeerID:    req.ArbiterPeerID,
+			SellerPubHex:     strings.TrimSpace(p.SellerPubHex),
+			ArbiterPubHex:    req.ArbiterPeerID,
 			PoolAmountSat:    req.PoolAmount,
 			SpendTxFeeSat:    req.SpendTxFee,
 			OpenSequence:     req.Sequence,
@@ -866,7 +866,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"demand_id":               strings.TrimSpace(p.DemandID),
 			"deal_id":                 dealID,
 			"session_id":              curSessionID,
-			"seller_pubkey_hex":       strings.TrimSpace(p.SellerPeerID),
+			"seller_pubkey_hex":       strings.TrimSpace(p.SellerPubHex),
 			"arbiter_pubkey_hex":      req.ArbiterPeerID,
 			"open_sequence":           req.Sequence,
 			"open_base_txid":          baseTxID,
@@ -902,7 +902,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			BaseTxHex:         baseResp.Tx.Hex(),
 			ClientLockScript:  clientLockScript,
 			PoolAmountSatoshi: req.PoolAmount,
-			SellerPeerID:      strings.TrimSpace(p.SellerPeerID),
+			SellerPubHex:      strings.TrimSpace(p.SellerPubHex),
 		})
 		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_end", map[string]any{
 			"session_id": req.SessionID,
@@ -1071,7 +1071,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	if !ok || session == nil {
 		return directTransferPoolPayResult{}, fmt.Errorf("transfer pool session missing")
 	}
-	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
+	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
@@ -1161,8 +1161,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		"demand_id":           strings.TrimSpace(session.DemandID),
 		"deal_id":             strings.TrimSpace(session.DealID),
 		"session_id":          session.SessionID,
-		"seller_pubkey_hex":   strings.TrimSpace(session.SellerPeerID),
-		"arbiter_pubkey_hex":  strings.TrimSpace(session.ArbiterPeerID),
+		"seller_pubkey_hex":   strings.TrimSpace(session.SellerPubHex),
+		"arbiter_pubkey_hex":  strings.TrimSpace(session.ArbiterPubHex),
 		"seed_hash":           seedHash,
 		"chunk_hash":          chunkHash,
 		"chunk_index":         p.ChunkIndex,
@@ -1199,7 +1199,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		session.SessionID,
 		req.Sequence,
 		p.Amount,
-		strings.TrimSpace(session.SellerPeerID),
+		strings.TrimSpace(session.SellerPubHex),
 		strings.TrimSpace(merged.TxID().String()),
 	)
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
@@ -1225,7 +1225,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 	if !ok || session == nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("transfer pool session missing")
 	}
-	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
+	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
@@ -1303,8 +1303,8 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		"demand_id":             strings.TrimSpace(session.DemandID),
 		"deal_id":               strings.TrimSpace(session.DealID),
 		"session_id":            session.SessionID,
-		"seller_pubkey_hex":     strings.TrimSpace(session.SellerPeerID),
-		"arbiter_pubkey_hex":    strings.TrimSpace(session.ArbiterPeerID),
+		"seller_pubkey_hex":     strings.TrimSpace(session.SellerPubHex),
+		"arbiter_pubkey_hex":    strings.TrimSpace(session.ArbiterPubHex),
 		"open_sequence":         session.OpenSequence,
 		"open_base_txid":        strings.TrimSpace(session.BaseTxID),
 		"pool_amount_satoshi":   session.PoolAmountSat,
@@ -1344,7 +1344,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		merged.Hex(),
 		session.SellerAmount,
 		session.BuyerAmount,
-		strings.TrimSpace(session.SellerPeerID),
+		strings.TrimSpace(session.SellerPubHex),
 	)
 	buyer.deleteTriplePool(session.SessionID)
 	buyer.releaseTransferPoolSessionMutex(session.SessionID)
@@ -1559,20 +1559,20 @@ func defaultArbiterPubHex(rt *Runtime) string {
 }
 
 type DirectDealAcceptParams struct {
-	SellerPeerID  string `json:"seller_pubkey_hex"`
+	SellerPubHex  string `json:"seller_pubkey_hex"`
 	DemandID      string `json:"demand_id"`
 	SeedHash      string `json:"seed_hash"`
 	SeedPrice     uint64 `json:"seed_price"`
 	ChunkPrice    uint64 `json:"chunk_price"`
 	ExpiresAtUnix int64  `json:"expires_at_unix"`
-	ArbiterPeerID string `json:"arbiter_pubkey_hex,omitempty"`
+	ArbiterPubHex string `json:"arbiter_pubkey_hex,omitempty"`
 }
 
 func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p DirectDealAcceptParams) (directDealAcceptResp, error) {
 	if buyer == nil || buyer.Host == nil {
 		return directDealAcceptResp{}, fmt.Errorf("runtime not initialized")
 	}
-	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
+	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
 	if err != nil {
 		return directDealAcceptResp{}, err
 	}
@@ -1584,7 +1584,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 		SeedPrice:     p.SeedPrice,
 		ChunkPrice:    p.ChunkPrice,
 		ExpiresAtUnix: p.ExpiresAtUnix,
-		ArbiterPeerID: strings.TrimSpace(p.ArbiterPeerID),
+		ArbiterPeerID: strings.TrimSpace(p.ArbiterPubHex),
 	}, &resp)
 	if err != nil {
 		return directDealAcceptResp{}, err

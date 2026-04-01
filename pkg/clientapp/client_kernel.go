@@ -360,7 +360,7 @@ func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p Transf
 			"demand_id":          strings.TrimSpace(p.DemandID),
 			"seed_hash":          strings.ToLower(strings.TrimSpace(p.SeedHash)),
 			"chunk_count":        p.ChunkCount,
-			"arbiter_pubkey_hex": strings.TrimSpace(p.ArbiterPeerID),
+			"arbiter_pubkey_hex": strings.TrimSpace(p.ArbiterPubHex),
 			"strategy":           strings.TrimSpace(p.Strategy),
 			"pool_amount":        p.PoolAmount,
 		},

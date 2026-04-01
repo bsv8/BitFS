@@ -13,10 +13,10 @@ type speedPriceBootstrapParams struct {
 	Store           *clientDB
 	Quotes          []DirectQuoteItem
 	SeedHash        string
-	ArbiterPeerID   string
+	ArbiterPubHex   string
 	PoolAmount      uint64
 	OnQuoteRejected func(q DirectQuoteItem, err error)
-	OnQuoteAccepted func(q DirectQuoteItem, arbiterPeerID string)
+	OnQuoteAccepted func(q DirectQuoteItem, arbiterPubHex string)
 	OnSeedProbeFail func(w *transferSellerWorker, reason string, err error)
 	OnSeedProbeOK   func(w *transferSellerWorker, meta seedV1Meta)
 }
@@ -49,7 +49,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 
 	workers := make([]*transferSellerWorker, 0, len(quotes))
 	for _, q := range quotes {
-		arbiterPeerID, err := resolveDealArbiter(p.Buyer, q.SellerArbiterPubHexes, p.ArbiterPeerID)
+		arbiterPubHex, err := resolveDealArbiter(p.Buyer, q.SellerArbiterPubHexes, p.ArbiterPubHex)
 		if err != nil {
 			if p.OnQuoteRejected != nil {
 				p.OnQuoteRejected(q, err)
@@ -57,13 +57,13 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 			continue
 		}
 		if p.OnQuoteAccepted != nil {
-			p.OnQuoteAccepted(q, arbiterPeerID)
+			p.OnQuoteAccepted(q, arbiterPubHex)
 		}
 		workers = append(workers, &transferSellerWorker{
 			buyer:           p.Buyer,
 			store:           p.Store,
 			quote:           q,
-			arbiterPeerID:   arbiterPeerID,
+			arbiterPubHex:   arbiterPubHex,
 			seedHash:        seedHash,
 			poolAmount:      p.PoolAmount,
 			availableChunks: chunkIndexSet(q.AvailableChunkIndexes),

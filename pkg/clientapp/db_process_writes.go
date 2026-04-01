@@ -879,7 +879,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			SceneType:      "c2c_transfer",
 			SceneSubType:   "open",
 			FromPartyID:    "client:self",
-			ToPartyID:      "seller:" + strings.TrimSpace(in.SellerPeerID),
+			ToPartyID:      "seller:" + strings.TrimSpace(in.SellerPubHex),
 			RefID:          strings.TrimSpace(in.SessionID),
 			Status:         "posted",
 			OccurredAtUnix: time.Now().Unix(),
