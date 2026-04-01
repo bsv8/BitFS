@@ -53,6 +53,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		Route:         req.Route,
 		ContentType:   req.ContentType,
 		Body:          body,
+		Store:         s.store,
 		PaymentMode:   req.PaymentMode,
 		PaymentScheme: req.PaymentScheme,
 		ServiceQuote:  serviceQuote,
@@ -81,7 +82,7 @@ func (s *httpAPIServer) handleResolve(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerPeerResolve(r.Context(), s.rt, TriggerPeerResolveParams{To: req.To, Route: req.Route})
+	resp, err := TriggerPeerResolve(r.Context(), s.rt, TriggerPeerResolveParams{To: req.To, Route: req.Route, Store: s.store})
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return

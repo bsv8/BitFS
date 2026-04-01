@@ -19,7 +19,7 @@ func (s *httpAPIServer) handleDomainRegister(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerDomainRegisterName(r.Context(), s.rt, req)
+	resp, err := TriggerDomainRegisterName(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -41,7 +41,7 @@ func (s *httpAPIServer) handleDomainSetTarget(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerDomainSetTarget(r.Context(), s.rt, req)
+	resp, err := TriggerDomainSetTarget(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return

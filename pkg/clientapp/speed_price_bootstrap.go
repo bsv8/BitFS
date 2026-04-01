@@ -10,6 +10,7 @@ import (
 type speedPriceBootstrapParams struct {
 	Ctx             context.Context
 	Buyer           *Runtime
+	Store           *clientDB
 	Quotes          []DirectQuoteItem
 	SeedHash        string
 	ArbiterPeerID   string
@@ -60,6 +61,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 		}
 		workers = append(workers, &transferSellerWorker{
 			buyer:           p.Buyer,
+			store:           p.Store,
 			quote:           q,
 			arbiterPeerID:   arbiterPeerID,
 			seedHash:        seedHash,

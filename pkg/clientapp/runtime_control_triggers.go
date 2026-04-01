@@ -39,8 +39,7 @@ func TriggerEmitFeePoolTickSignal(rt *Runtime, p EmitFeePoolTickSignalParams) (E
 	if rt == nil {
 		return EmitFeePoolTickSignalResult{}, fmt.Errorf("runtime not initialized")
 	}
-	orch := getClientOrchestrator(rt)
-	if orch == nil {
+	if rt == nil || rt.orch == nil {
 		return EmitFeePoolTickSignalResult{}, fmt.Errorf("orchestrator not initialized")
 	}
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
@@ -56,7 +55,7 @@ func TriggerEmitFeePoolTickSignal(rt *Runtime, p EmitFeePoolTickSignalParams) (E
 		source = "trigger_emit_feepool_tick"
 	}
 	for i := 0; i < n; i++ {
-		orch.EmitSignal(orchestratorSignal{
+		rt.orch.EmitSignal(orchestratorSignal{
 			Source:       source,
 			Type:         orchestratorSignalFeePoolTick,
 			AggregateKey: gw.ID.String(),

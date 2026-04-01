@@ -72,7 +72,8 @@ type OrchestratorStatus struct {
 }
 
 type orchestrator struct {
-	rt *Runtime
+	rt    *Runtime
+	store *clientDB
 
 	dedupWindow    time.Duration
 	retryMax       int
@@ -91,7 +92,7 @@ type orchestrator struct {
 	lastTip     uint32
 }
 
-func newOrchestrator(rt *Runtime) *orchestrator {
+func newOrchestrator(rt *Runtime, store *clientDB) *orchestrator {
 	if rt == nil {
 		return nil
 	}
@@ -106,6 +107,7 @@ func newOrchestrator(rt *Runtime) *orchestrator {
 	}
 	return &orchestrator{
 		rt:             rt,
+		store:          store,
 		dedupWindow:    10 * time.Second,
 		retryMax:       5,
 		backoffCap:     120 * time.Second,
@@ -208,7 +210,7 @@ func (o *orchestrator) runWorkspaceSignalWorker(ctx context.Context) {
 	}
 	// 唯一入口：按扫描间隔发 workspace.tick，后续统一进入 kernel 执行 SyncOnce。
 	interval := time.Duration(o.rt.runIn.Scan.RescanIntervalSeconds) * time.Second
-	scheduler := ensureRuntimeTaskScheduler(o.rt)
+	scheduler := ensureRuntimeTaskScheduler(o.rt, o.store)
 	if scheduler == nil {
 		return
 	}
@@ -588,8 +590,8 @@ func (o *orchestrator) setStartedAt(unix int64) {
 }
 
 func (o *orchestrator) logEvent(e orchestratorLogEntry) {
-	if o == nil || o.rt == nil {
+	if o == nil || o.store == nil {
 		return
 	}
-	dbAppendOrchestratorLog(context.Background(), runtimeStore(o.rt), e)
+	dbAppendOrchestratorLog(context.Background(), o.store, e)
 }

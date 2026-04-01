@@ -19,7 +19,7 @@ func (s *httpAPIServer) handleGatewayReachabilityAnnounce(w http.ResponseWriter,
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerGatewayAnnounceNodeReachability(r.Context(), s.rt, req)
+	resp, err := TriggerGatewayAnnounceNodeReachability(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -41,7 +41,7 @@ func (s *httpAPIServer) handleGatewayReachabilityQuery(w http.ResponseWriter, r 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerGatewayQueryNodeReachability(r.Context(), s.rt, req)
+	resp, err := TriggerGatewayQueryNodeReachability(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return

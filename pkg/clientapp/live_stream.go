@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -67,7 +66,7 @@ type liveRuntime struct {
 	received    map[string]LiveSubscriberSnapshot
 	segmentMeta map[string]liveSegmentMeta
 	follows     map[string]*liveFollowState
-	autoBuyFn   func(context.Context, *Runtime, LivePurchaseDecision, LiveSubscriberSnapshot) (liveAutoBuyResult, error)
+	autoBuyFn   func(context.Context, *clientDB, *Runtime, LivePurchaseDecision, LiveSubscriberSnapshot) (liveAutoBuyResult, error)
 }
 
 func newLiveRuntime() *liveRuntime {
@@ -350,7 +349,7 @@ func listLocalLiveQuoteSegments(store *clientDB, streamID string, window int) ([
 	return out, latest, nil
 }
 
-func registerLiveHandlers(rt *Runtime) {
+func registerLiveHandlers(store *clientDB, rt *Runtime) {
 	if rt == nil || rt.Host == nil || rt.live == nil {
 		return
 	}
@@ -400,7 +399,7 @@ func registerLiveHandlers(rt *Runtime) {
 		return liveHeadPushResp{Status: "stored"}, nil
 	})
 	pproto.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(_ context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
-		if rt.DB == nil || strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamID))) || len(req.RecentSegments) == 0 {
+		if store == nil || strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamID))) || len(req.RecentSegments) == 0 {
 			return liveQuoteSubmitResp{}, fmt.Errorf("invalid live quote")
 		}
 		recent := make([]LiveQuoteSegment, 0, len(req.RecentSegments))
@@ -417,26 +416,14 @@ func registerLiveHandlers(rt *Runtime) {
 		if len(recent) == 0 {
 			return liveQuoteSubmitResp{}, fmt.Errorf("empty live quote segments")
 		}
-		recentJSON, err := json.Marshal(recent)
-		if err != nil {
-			return liveQuoteSubmitResp{}, err
-		}
-		if _, err := rt.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
-			VALUES(?,?,?,?,?,?,?)
-			ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
-				stream_id=excluded.stream_id,
-				latest_segment_index=excluded.latest_segment_index,
-				recent_segments_json=excluded.recent_segments_json,
-				expires_at_unix=excluded.expires_at_unix,
-				created_at_unix=excluded.created_at_unix`,
-			strings.TrimSpace(req.DemandID),
-			strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
-			strings.ToLower(strings.TrimSpace(req.StreamID)),
-			req.LatestSegmentIndex,
-			string(recentJSON),
-			req.ExpiresAtUnix,
-			time.Now().Unix(),
-		); err != nil {
+		if err := dbUpsertLiveQuote(context.Background(), store, LiveQuoteItem{
+			DemandID:           strings.TrimSpace(req.DemandID),
+			SellerPeerID:       strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
+			StreamID:           strings.ToLower(strings.TrimSpace(req.StreamID)),
+			LatestSegmentIndex: req.LatestSegmentIndex,
+			RecentSegments:     recent,
+			ExpiresAtUnix:      req.ExpiresAtUnix,
+		}); err != nil {
 			return liveQuoteSubmitResp{}, err
 		}
 		return liveQuoteSubmitResp{Status: "stored"}, nil

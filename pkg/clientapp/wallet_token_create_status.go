@@ -121,7 +121,7 @@ func (s *httpAPIServer) handleWalletTokenCreateStatusRefresh(w http.ResponseWrit
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	item, err := refreshWalletBSV21CreateStatus(r.Context(), s.rt, req.TokenID, "http_wallet_token_create_status_refresh", false)
+	item, err := refreshWalletBSV21CreateStatus(r.Context(), s.store, s.rt, req.TokenID, "http_wallet_token_create_status_refresh", false)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "token create status not found"})
@@ -153,36 +153,36 @@ func upsertWalletBSV21CreateStatus(store *clientDB, item walletBSV21CreateStatus
 	return dbUpsertWalletBSV21CreateStatus(context.Background(), store, item)
 }
 
-func recordWalletBSV21CreateSubmitted(ctx context.Context, rt *Runtime, item walletBSV21CreateStatusItem) error {
-	if rt == nil {
+func recordWalletBSV21CreateSubmitted(ctx context.Context, store *clientDB, rt *Runtime, item walletBSV21CreateStatusItem) error {
+	if store == nil || rt == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
-	return dbUpsertWalletBSV21CreateStatus(ctx, runtimeStore(rt), item)
+	return dbUpsertWalletBSV21CreateStatus(ctx, store, item)
 }
 
-func scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx context.Context, rt *Runtime, dueAtUnix int64) error {
-	if rt == nil {
+func scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx context.Context, store *clientDB, rt *Runtime, dueAtUnix int64) error {
+	if store == nil || rt == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
 	if dueAtUnix <= 0 {
 		dueAtUnix = time.Now().Add(walletBSV21CreateAutoCheckDelay).Unix()
 	}
-	return dbScheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, runtimeStore(rt), dueAtUnix)
+	return dbScheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, store, dueAtUnix)
 }
 
 func listDueWalletBSV21CreateStatuses(store *clientDB, nowUnix int64) ([]walletBSV21CreateStatusItem, error) {
 	return dbListDueWalletBSV21CreateStatuses(context.Background(), store, nowUnix)
 }
 
-func refreshWalletBSV21CreateStatus(ctx context.Context, rt *Runtime, tokenID string, trigger string, clearAutoCheck bool) (walletBSV21CreateStatusItem, error) {
-	if rt == nil {
+func refreshWalletBSV21CreateStatus(ctx context.Context, store *clientDB, rt *Runtime, tokenID string, trigger string, clearAutoCheck bool) (walletBSV21CreateStatusItem, error) {
+	if store == nil || rt == nil {
 		return walletBSV21CreateStatusItem{}, fmt.Errorf("runtime not initialized")
 	}
 	tokenID = strings.ToLower(strings.TrimSpace(tokenID))
 	if tokenID == "" {
 		return walletBSV21CreateStatusItem{}, fmt.Errorf("token_id is required")
 	}
-	item, err := dbLoadWalletBSV21CreateStatusByTokenID(ctx, runtimeStore(rt), tokenID)
+	item, err := dbLoadWalletBSV21CreateStatusByTokenID(ctx, store, tokenID)
 	if err != nil {
 		return walletBSV21CreateStatusItem{}, err
 	}
@@ -206,23 +206,23 @@ func refreshWalletBSV21CreateStatus(ctx context.Context, rt *Runtime, tokenID st
 			item.NextVerificationAtUnix = 0
 		}
 	}
-	if saveErr := dbUpsertWalletBSV21CreateStatus(ctx, runtimeStore(rt), item); saveErr != nil {
+	if saveErr := dbUpsertWalletBSV21CreateStatus(ctx, store, item); saveErr != nil {
 		return walletBSV21CreateStatusItem{}, saveErr
 	}
 	return item, nil
 }
 
-func refreshDueWalletBSV21CreateStatuses(ctx context.Context, rt *Runtime, trigger string) error {
-	if rt == nil {
+func refreshDueWalletBSV21CreateStatuses(ctx context.Context, store *clientDB, rt *Runtime, trigger string) error {
+	if store == nil || rt == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
 	nowUnix := time.Now().Unix()
-	items, err := dbListDueWalletBSV21CreateStatuses(ctx, runtimeStore(rt), nowUnix)
+	items, err := dbListDueWalletBSV21CreateStatuses(ctx, store, nowUnix)
 	if err != nil {
 		return err
 	}
 	for _, item := range items {
-		if _, err := refreshWalletBSV21CreateStatus(ctx, rt, item.TokenID, trigger, true); err != nil {
+		if _, err := refreshWalletBSV21CreateStatus(ctx, store, rt, item.TokenID, trigger, true); err != nil {
 			return err
 		}
 	}

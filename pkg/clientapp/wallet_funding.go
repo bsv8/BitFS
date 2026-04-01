@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 
@@ -24,11 +23,11 @@ type walletFundingCandidate struct {
 	AllocationReason string
 }
 
-// listWalletFundingCandidates 从本地钱包快照读取“可用于资金决策”的原始候选输出。
+// listWalletFundingCandidates 走显式 store 读取钱包快照，返回候选输出与保护信息。
 // 设计说明：
-// - 这里故意把“识别结果”和“金额”一起读出来，让后续分配器始终先看保护分类，再谈选币；
-// - 当前只为普通 BSV 分配服务，未来 tokens / ordinals 接进来后，仍可复用同一批候选元数据。
-func listWalletFundingCandidates(rt *Runtime) ([]walletFundingCandidate, error) {
+// - 这里保留“识别结果 + 金额”一起读出的方式，让后续分配器先看保护分类，再谈选币；
+// - 不再从 Runtime 里回退取 DB，依赖必须由上游显式传入。
+func listWalletFundingCandidates(ctx context.Context, store *clientDB, rt *Runtime) ([]walletFundingCandidate, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -36,45 +35,39 @@ func listWalletFundingCandidates(rt *Runtime) ([]walletFundingCandidate, error) 
 	if err != nil {
 		return nil, err
 	}
-	// 设计说明：
-	// - 正式运行时必须走 sqliteactor；
-	// - 这里保留 DB 直读回退，只为了最小测试夹具不必把整个 actor 运行时一并拉起来。
-	if rt.DBActor != nil {
-		items, err := dbListWalletFundingCandidates(context.Background(), runtimeStore(rt), addr)
-		if err != nil {
-			return nil, err
-		}
-		s, err := runtimeDBValue(rt, context.Background(), func(db *sql.DB) (walletUTXOSyncState, error) {
-			return loadWalletUTXOSyncState(db, addr)
+	if store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+	items, err := dbListWalletFundingCandidates(ctx, store, addr)
+	if err != nil {
+		return nil, err
+	}
+	s, err := dbLoadWalletUTXOSyncState(ctx, store, addr)
+	if err != nil {
+		return nil, err
+	}
+	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
+		return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
+	}
+	out := make([]walletFundingCandidate, 0, len(items))
+	for _, item := range items {
+		out = append(out, walletFundingCandidate{
+			UTXOID:           item.UTXOID,
+			UTXO:             item.UTXO,
+			CreatedAtUnix:    item.CreatedAtUnix,
+			AllocationClass:  item.AllocationClass,
+			AllocationReason: item.AllocationReason,
 		})
-		if err != nil {
-			return nil, err
-		}
-		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
-		}
-		return items, nil
 	}
-	if rt.DB != nil {
-		items, err := dbListWalletFundingCandidates(context.Background(), newClientDB(rt.DB, nil), addr)
-		if err != nil {
-			return nil, err
-		}
-		s, err := loadWalletUTXOSyncState(rt.DB, addr)
-		if err != nil {
-			return nil, err
-		}
-		if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-			return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
-		}
-		return items, nil
-	}
-	return nil, fmt.Errorf("runtime not initialized")
+	return out, nil
 }
 
-// listEligiblePlainBSVWalletUTXOs 返回“允许普通 BSV 业务花费”的输出集合。
-func listEligiblePlainBSVWalletUTXOs(rt *Runtime) ([]poolcore.UTXO, error) {
-	candidates, err := listWalletFundingCandidates(rt)
+// listEligiblePlainBSVWalletUTXOs 走显式 store 读取钱包快照，再按同一套规则筛出可花的普通 BSV 输出。
+// 设计说明：
+// - 这里只换数据入口，不改普通 BSV 的筛选规则；
+// - 这样费用池和其他流程可以逐步脱离 Runtime 上的旧 DB 入口。
+func listEligiblePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
+	candidates, err := listWalletFundingCandidates(ctx, store, rt)
 	if err != nil {
 		return nil, err
 	}
@@ -103,9 +96,9 @@ func listEligiblePlainBSVWalletUTXOs(rt *Runtime) ([]poolcore.UTXO, error) {
 }
 
 // allocatePlainBSVWalletUTXOs 为普通 BSV 支出选择一组输入。
-func allocatePlainBSVWalletUTXOs(rt *Runtime, purpose string, target uint64) ([]poolcore.UTXO, error) {
+func allocatePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runtime, purpose string, target uint64) ([]poolcore.UTXO, error) {
 	_ = strings.TrimSpace(purpose)
-	candidates, err := listWalletFundingCandidates(rt)
+	candidates, err := listWalletFundingCandidates(ctx, store, rt)
 	if err != nil {
 		return nil, err
 	}

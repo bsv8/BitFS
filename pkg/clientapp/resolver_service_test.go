@@ -30,10 +30,12 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	targetHost, targetPubkeyHex := newSecpHost(t)
 	defer targetHost.Close()
 
-	callerRT := &Runtime{Host: callerHost, DB: callerDB}
-	targetRT := &Runtime{Host: targetHost, DB: targetDB}
+	callerRT := &Runtime{Host: callerHost}
+	targetRT := &Runtime{Host: targetHost}
+	callerStore := newClientDB(callerDB, nil)
+	targetStore := newClientDB(targetDB, nil)
 	registerFakeDomainResolveHandler(resolverHost, "mp3.david", targetPubkeyHex, time.Now().Add(time.Hour).Unix())
-	registerNodeRouteHandlers(targetRT)
+	registerNodeRouteHandlers(targetRT, targetStore)
 
 	callerHost.Peerstore().AddAddrs(resolverHost.ID(), resolverHost.Addrs(), time.Minute)
 	callerHost.Peerstore().AddAddrs(targetHost.ID(), targetHost.Addrs(), time.Minute)
@@ -53,7 +55,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("upsert route index: %v", err)
 	}
 
-	resolveResp, err := TriggerResolverResolve(context.Background(), callerRT, TriggerResolverResolveParams{
+	resolveResp, err := TriggerResolverResolve(context.Background(), callerStore, callerRT, TriggerResolverResolveParams{
 		ResolverPubkeyHex: resolverPubkeyHex,
 		Name:              "MP3.DAVID",
 	})
@@ -67,6 +69,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	resolveRespFromTarget, err := TriggerPeerResolve(context.Background(), callerRT, TriggerPeerResolveParams{
 		To:    resolveResp.TargetPubkeyHex,
 		Route: "album",
+		Store: callerStore,
 	})
 	if err != nil {
 		t.Fatalf("trigger client resolve failed: %v", err)
@@ -96,12 +99,13 @@ func TestHTTPAPIResolverResolve(t *testing.T) {
 	targetHost, targetPubkeyHex := newSecpHost(t)
 	defer targetHost.Close()
 
-	callerRT := &Runtime{Host: callerHost, DB: callerDB}
+	callerRT := &Runtime{Host: callerHost}
+	callerStore := newClientDB(callerDB, nil)
 	registerFakeDomainResolveHandler(resolverHost, "movie.david", targetPubkeyHex, time.Now().Add(time.Hour).Unix())
 
 	callerHost.Peerstore().AddAddrs(resolverHost.ID(), resolverHost.Addrs(), time.Minute)
 
-	callerSrv := &httpAPIServer{rt: callerRT, db: callerDB}
+	callerSrv := &httpAPIServer{rt: callerRT, db: callerDB, store: callerStore}
 	req := httptest.NewRequest(http.MethodPost, "/api/v1/resolvers/resolve", strings.NewReader(`{"resolver_pubkey_hex":"`+resolverPubkeyHex+`","name":"movie.david"}`))
 	rec := httptest.NewRecorder()
 	callerSrv.handleResolverResolve(rec, req)

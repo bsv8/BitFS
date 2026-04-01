@@ -285,7 +285,7 @@ func (k *clientKernel) runDirectDownloadCore(ctx context.Context, p directDownlo
 	}
 	cmdID := newKernelCommandID()
 	startAt := time.Now()
-	out, err := runDirectDownloadCoreLegacy(ctx, k.rt, p, hooks)
+	out, err := runDirectDownloadCoreLegacy(ctx, k.store, k.rt, p, hooks)
 	status := "applied"
 	errCode := ""
 	errMsg := ""
@@ -333,7 +333,7 @@ func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p Transf
 	}
 	cmdID := newKernelCommandID()
 	startAt := time.Now()
-	out, err := triggerTransferChunksByStrategyLegacy(ctx, k.rt, p)
+	out, err := triggerTransferChunksByStrategyLegacy(ctx, k.store, k.rt, p)
 	status := "applied"
 	errCode := ""
 	errMsg := ""

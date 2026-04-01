@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/modules/domain"
+	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 )
 
 // WalletBusinessRequest 是页面交给钱包的签名业务原文。
@@ -64,11 +64,11 @@ type walletBusinessPreparedTx struct {
 
 type walletBusinessTemplate interface {
 	TemplateID() string
-	Prepare(context.Context, *Runtime, WalletBusinessRequest) (walletBusinessPreparedTx, error)
+	Prepare(context.Context, *clientDB, *Runtime, WalletBusinessRequest) (walletBusinessPreparedTx, error)
 }
 
-func TriggerWalletBusinessPreview(ctx context.Context, rt *Runtime, req WalletBusinessRequest) (WalletBusinessPreviewResp, error) {
-	prepared, err := prepareWalletBusinessTx(ctx, rt, req)
+func TriggerWalletBusinessPreview(ctx context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (WalletBusinessPreviewResp, error) {
+	prepared, err := prepareWalletBusinessTx(ctx, store, rt, req)
 	if err != nil {
 		return WalletBusinessPreviewResp{}, err
 	}
@@ -80,8 +80,8 @@ func TriggerWalletBusinessPreview(ctx context.Context, rt *Runtime, req WalletBu
 	}, nil
 }
 
-func TriggerWalletBusinessSign(ctx context.Context, rt *Runtime, req WalletBusinessRequest) (WalletBusinessSignResp, error) {
-	prepared, err := prepareWalletBusinessTx(ctx, rt, req)
+func TriggerWalletBusinessSign(ctx context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (WalletBusinessSignResp, error) {
+	prepared, err := prepareWalletBusinessTx(ctx, store, rt, req)
 	if err != nil {
 		return WalletBusinessSignResp{}, err
 	}
@@ -120,9 +120,9 @@ func TriggerWalletBusinessSign(ctx context.Context, rt *Runtime, req WalletBusin
 	}, nil
 }
 
-func prepareWalletBusinessTx(ctx context.Context, rt *Runtime, req WalletBusinessRequest) (walletBusinessPreparedTx, error) {
+func prepareWalletBusinessTx(ctx context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (walletBusinessPreparedTx, error) {
 	_ = ctx
-	if rt == nil || rt.DB == nil || rt.ActionChain == nil {
+	if rt == nil || store == nil || rt.ActionChain == nil {
 		return walletBusinessPreparedTx{}, fmt.Errorf("runtime not initialized")
 	}
 	signerPubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(req.SignerPubkeyHex))
@@ -142,7 +142,7 @@ func prepareWalletBusinessTx(ctx context.Context, rt *Runtime, req WalletBusines
 		preview := buildUnknownWalletBusinessPreview(signerPubkeyHex, templateID)
 		return walletBusinessPreparedTx{Preview: preview}, nil
 	}
-	prepared, err := tpl.Prepare(ctx, rt, WalletBusinessRequest{
+	prepared, err := tpl.Prepare(ctx, store, rt, WalletBusinessRequest{
 		SignerPubkeyHex:     signerPubkeyHex,
 		SignedEnvelope:      envelopeRaw,
 		ExpectedPreviewHash: strings.TrimSpace(req.ExpectedPreviewHash),

@@ -48,7 +48,7 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		t.Fatalf("save cfg: %v", err)
 	}
 
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
 	rt.runIn.ConfigPath = configPath
 	srv := &httpAPIServer{
 		rt:  rt,
@@ -128,8 +128,9 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
-	scheduler := ensureRuntimeTaskScheduler(rt)
+	store := newClientDB(db, nil)
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	scheduler := ensureRuntimeTaskScheduler(rt, store)
 	if scheduler == nil {
 		t.Fatalf("scheduler not initialized")
 	}
@@ -162,7 +163,7 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 	if _, err := db.Exec(`UPDATE scheduler_tasks SET last_error='mock error', failure_count=2 WHERE task_name=?`, "listen_billing_tick:gw-1"); err != nil {
 		t.Fatalf("update scheduler task mock error: %v", err)
 	}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, store: newClientDB(db, nil)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
@@ -258,7 +259,7 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
@@ -314,7 +315,7 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/runs?status=failed&mode=dynamic", nil)
 	rec := httptest.NewRecorder()
@@ -394,7 +395,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10&offset=0", nil)
@@ -498,7 +499,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs?event_type=signal_received&limit=10&offset=0", nil)
@@ -600,7 +601,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if err := SaveConfigFile(configPath, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
 	rt.runIn.ConfigPath = configPath
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
@@ -752,13 +753,17 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subCfg.Storage.DataDir = t.TempDir()
 
 	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), DB: db, live: newLiveRuntime()}
-	registerLiveHandlers(pubRT)
-	registerLiveHandlers(subRT)
+	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), live: newLiveRuntime()}
+	pubStore := newClientDB(db, nil)
+	subStore := newClientDB(db, nil)
+	pubRT.kernel = newClientKernel(pubRT, pubStore)
+	subRT.kernel = newClientKernel(subRT, subStore)
+	registerLiveHandlers(nil, pubRT)
+	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
 
 	pubSrv := &httpAPIServer{rt: pubRT, cfg: &pubCfg}
-	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg, db: db}
+	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg, db: db, store: newClientDB(db, nil)}
 
 	streamID := strings.Repeat("ab", 32)
 
@@ -815,7 +820,7 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 		t.Fatalf("live plan status: got=%d body=%s", recPlan.Code, recPlan.Body.String())
 	}
 
-	if _, err := subRT.DB.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+	if _, err := db.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
 		VALUES(?,?,?,?,?,?,?)`,
 		"ldmd_http",
 		"seller-live",
@@ -869,8 +874,8 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := workspace.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	rt := &Runtime{Host: h, DB: db, runIn: NewRunInputFromConfig(cfg, ""), Workspace: workspace, live: newLiveRuntime()}
-	registerLiveHandlers(rt)
+	rt := &Runtime{Host: h, runIn: NewRunInputFromConfig(cfg, ""), Workspace: workspace, live: newLiveRuntime()}
+	registerLiveHandlers(newClientDB(db, nil), rt)
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, workspace: workspace}
 
 	req0 := httptest.NewRequest(http.MethodPost, "/api/v1/live/publish/segment", strings.NewReader(`{
@@ -977,12 +982,15 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
 
-	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), DB: db, live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), DB: db, Workspace: subWorkspace, live: newLiveRuntime()}
-	registerLiveHandlers(pubRT)
-	registerLiveHandlers(subRT)
+	pubStore := newClientDB(db, nil)
+	subStore := newClientDB(db, nil)
+	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
+	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), Workspace: subWorkspace, live: newLiveRuntime()}
+	subRT.kernel = newClientKernel(subRT, subStore)
+	registerLiveHandlers(nil, pubRT)
+	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
-	subRT.live.autoBuyFn = func(_ context.Context, _ *Runtime, decision LivePurchaseDecision, _ LiveSubscriberSnapshot) (liveAutoBuyResult, error) {
+	subRT.live.autoBuyFn = func(_ context.Context, _ *clientDB, _ *Runtime, decision LivePurchaseDecision, _ LiveSubscriberSnapshot) (liveAutoBuyResult, error) {
 		outPath, err := subWorkspace.SelectLiveSegmentOutputPath(streamID, decision.TargetSegmentIndex, 1)
 		if err != nil {
 			return liveAutoBuyResult{}, err
@@ -994,8 +1002,8 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 		}, nil
 	}
 
-	pubSrv := &httpAPIServer{rt: pubRT, cfg: &pubCfg}
-	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg}
+	pubSrv := &httpAPIServer{rt: pubRT, cfg: &pubCfg, store: pubStore}
+	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg, store: subStore}
 	reqURI := httptest.NewRequest(http.MethodGet, "/api/v1/live/subscribe-uri?stream_id="+streamID, nil)
 	recURI := httptest.NewRecorder()
 	pubSrv.handleLiveSubscribeURI(recURI, reqURI)
@@ -1053,7 +1061,7 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	}
 
 	subRT.live = newLiveRuntime()
-	loaded, err := TriggerLiveFollowStatus(subRT, streamID)
+	loaded, err := TriggerLiveFollowStatus(newClientDB(db, nil), subRT, streamID)
 	if err != nil {
 		t.Fatalf("load persisted follow status failed: %v", err)
 	}

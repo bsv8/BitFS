@@ -30,9 +30,11 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	receiverHost, receiverPubKeyHex := newSecpHost(t)
 	defer receiverHost.Close()
 
-	senderRT := &Runtime{Host: senderHost, DB: senderDB}
-	receiverRT := &Runtime{Host: receiverHost, DB: receiverDB}
-	registerNodeRouteHandlers(receiverRT)
+	senderRT := &Runtime{Host: senderHost}
+	receiverRT := &Runtime{Host: receiverHost}
+	senderStore := newClientDB(senderDB, nil)
+	receiverStore := newClientDB(receiverDB, nil)
+	registerNodeRouteHandlers(receiverRT, receiverStore)
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
@@ -56,6 +58,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 		Route:       routeInboxMessage,
 		ContentType: "application/json",
 		Body:        []byte(`{"subject":"hello","message":"world"}`),
+		Store:       senderStore,
 	})
 	if err != nil {
 		t.Fatalf("call failed: %v", err)
@@ -78,7 +81,8 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	}
 
 	resolveOut, err := TriggerPeerResolve(context.Background(), senderRT, TriggerPeerResolveParams{
-		To: receiverPubKeyHex,
+		To:    receiverPubKeyHex,
+		Store: senderStore,
 	})
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
@@ -101,6 +105,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 		To:          receiverPubKeyHex,
 		Route:       ncall.RouteNodeV1CapabilitiesShow,
 		ContentType: ncall.ContentTypeProto,
+		Store:       senderStore,
 	})
 	if err != nil {
 		t.Fatalf("capabilities_show failed: %v", err)
@@ -123,13 +128,15 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	receiverHost, receiverPubKeyHex := newSecpHost(t)
 	defer receiverHost.Close()
 
-	senderRT := &Runtime{Host: senderHost, DB: senderDB}
-	receiverRT := &Runtime{Host: receiverHost, DB: receiverDB}
-	registerNodeRouteHandlers(receiverRT)
+	senderRT := &Runtime{Host: senderHost}
+	receiverRT := &Runtime{Host: receiverHost}
+	senderStore := newClientDB(senderDB, nil)
+	receiverStore := newClientDB(receiverDB, nil)
+	registerNodeRouteHandlers(receiverRT, receiverStore)
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
-	senderSrv := &httpAPIServer{rt: senderRT, db: senderDB}
+	senderSrv := &httpAPIServer{rt: senderRT, db: senderDB, store: senderStore}
 	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB}
 
 	if _, err := receiverDB.Exec(

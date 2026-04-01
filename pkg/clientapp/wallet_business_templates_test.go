@@ -16,8 +16,8 @@ import (
 func TestTriggerWalletBusinessPreview_UnknownTemplateShowsHighWarning(t *testing.T) {
 	t.Parallel()
 
-	rt := newWalletBusinessTestRuntime(t)
-	resp, err := TriggerWalletBusinessPreview(context.Background(), rt, WalletBusinessRequest{
+	rt, store := newWalletBusinessTestRuntime(t)
+	resp, err := TriggerWalletBusinessPreview(context.Background(), store, rt, WalletBusinessRequest{
 		SignerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		SignedEnvelope:  []byte(`[["unknown-template-v1","x"],"abcd"]`),
 	})
@@ -44,7 +44,7 @@ func TestTriggerWalletBusinessPreview_UnknownTemplateShowsHighWarning(t *testing
 func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testing.T) {
 	t.Parallel()
 
-	rt := newWalletBusinessTestRuntime(t)
+	rt, store := newWalletBusinessTestRuntime(t)
 	clientPubkeyHex := rt.runIn.ClientID
 	targetPubkeyHex, err := clientIDFromPrivHex("3333333333333333333333333333333333333333333333333333333333333333")
 	if err != nil {
@@ -71,7 +71,7 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 		t.Fatalf("signEnvelopeForTest failed: %v", err)
 	}
 
-	previewResp, err := TriggerWalletBusinessPreview(context.Background(), rt, WalletBusinessRequest{
+	previewResp, err := TriggerWalletBusinessPreview(context.Background(), store, rt, WalletBusinessRequest{
 		SignerPubkeyHex: domainPubkeyHex,
 		SignedEnvelope:  signedEnvelope,
 	})
@@ -87,7 +87,7 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 	if previewResp.Preview.MinerFeeSatoshi == 0 {
 		t.Fatalf("miner fee should be calculated")
 	}
-	signResp, err := TriggerWalletBusinessSign(context.Background(), rt, WalletBusinessRequest{
+	signResp, err := TriggerWalletBusinessSign(context.Background(), store, rt, WalletBusinessRequest{
 		SignerPubkeyHex:     domainPubkeyHex,
 		SignedEnvelope:      signedEnvelope,
 		ExpectedPreviewHash: previewResp.Preview.PreviewHash,
@@ -106,7 +106,7 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 	}
 }
 
-func newWalletBusinessTestRuntime(t *testing.T) *Runtime {
+func newWalletBusinessTestRuntime(t *testing.T) (*Runtime, *clientDB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
 	db, err := sql.Open("sqlite", dbPath)
@@ -130,7 +130,6 @@ func newWalletBusinessTestRuntime(t *testing.T) *Runtime {
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = clientPrivHex
 	rt := &Runtime{
-		DB:          db,
 		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
 		ActionChain: &feePoolKernelMockChain{},
 	}
@@ -144,7 +143,7 @@ func newWalletBusinessTestRuntime(t *testing.T) *Runtime {
 	}); err != nil {
 		t.Fatalf("seedWalletUTXOsForKernelTest failed: %v", err)
 	}
-	return rt
+	return rt, newClientDB(db, nil)
 }
 
 func signEnvelopeForTest(privHex string, fields []any) ([]byte, error) {

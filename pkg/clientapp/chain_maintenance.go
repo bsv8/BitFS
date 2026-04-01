@@ -161,9 +161,9 @@ func newChainMaintainer(rt *Runtime, store *clientDB) *chainMaintainer {
 		return nil
 	}
 	return &chainMaintainer{
-		rt:    rt,
-		store: store,
-		queue: make(chan chainTask, 32),
+		rt:            rt,
+		store:         store,
+		queue:         make(chan chainTask, 32),
 		pendingByType: map[string]bool{},
 		inFlightByType: map[string]bool{
 			chainTaskTip:  false,
@@ -254,7 +254,7 @@ func (m *chainMaintainer) runTipWorker(ctx context.Context) {
 	if m == nil || m.rt == nil {
 		return
 	}
-	scheduler := ensureRuntimeTaskScheduler(m.rt)
+	scheduler := ensureRuntimeTaskScheduler(m.rt, m.store)
 	if scheduler == nil {
 		return
 	}
@@ -281,7 +281,7 @@ func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
 	if m == nil || m.rt == nil {
 		return
 	}
-	scheduler := ensureRuntimeTaskScheduler(m.rt)
+	scheduler := ensureRuntimeTaskScheduler(m.rt, m.store)
 	if scheduler == nil {
 		return
 	}
@@ -567,7 +567,7 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 	}
 	emitted := false
 	if before.TipHeight > 0 && tip > before.TipHeight {
-		if err := scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, m.rt, time.Now().Add(walletBSV21CreateAutoCheckDelay).Unix()); err != nil {
+		if err := scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, m.store, m.rt, time.Now().Add(walletBSV21CreateAutoCheckDelay).Unix()); err != nil {
 			obs.Error("bitcast-client", "wallet_bsv21_create_auto_check_schedule_failed", map[string]any{
 				"error":        err.Error(),
 				"tip_from":     before.TipHeight,
@@ -577,8 +577,8 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 				"runtime_type": fmt.Sprintf("%T", m.rt.WalletChain),
 			})
 		}
-		if orch := getClientOrchestrator(m.rt); orch != nil {
-			orch.EmitSignal(orchestratorSignal{
+		if m.rt != nil && m.rt.orch != nil {
+			m.rt.orch.EmitSignal(orchestratorSignal{
 				Source:       "chain_tip_worker",
 				Type:         orchestratorSignalChainTip,
 				AggregateKey: "chain:tip",
@@ -757,7 +757,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"total_duration_ms": durationMS,
 	})
 	stepStart = time.Now()
-	if err := refreshWalletAssetProjection(ctx, m.rt, addr, task.TriggerSource); err != nil {
+	if err := refreshWalletAssetProjection(ctx, m.store, addr, task.TriggerSource); err != nil {
 		logWalletSyncStepError(meta, "refresh_wallet_asset_projection", err, map[string]any{
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
@@ -767,7 +767,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		})
 	}
 	stepStart = time.Now()
-	if err := refreshDueWalletBSV21CreateStatuses(ctx, m.rt, task.TriggerSource); err != nil {
+	if err := refreshDueWalletBSV21CreateStatuses(ctx, m.store, m.rt, task.TriggerSource); err != nil {
 		logWalletSyncStepError(meta, "refresh_due_wallet_bsv21_create_statuses", err, map[string]any{
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
@@ -1481,8 +1481,8 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 	return s.UpdatedAtUnix > 0 && s.UpdatedAtUnix < startedAtUnix
 }
 
-func getWalletUTXOsFromDB(rt *Runtime) ([]poolcore.UTXO, error) {
-	return listEligiblePlainBSVWalletUTXOs(rt)
+func getWalletUTXOsFromDB(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
+	return listEligiblePlainBSVWalletUTXOs(ctx, store, rt)
 }
 
 func getWalletBalanceFromDB(ctx context.Context, store *clientDB, rt *Runtime) (string, uint64, error) {

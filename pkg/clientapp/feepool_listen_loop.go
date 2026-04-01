@@ -27,8 +27,8 @@ var (
 	errListenFeePoolStop           = errors.New("listen fee pool stopped")
 )
 
-func startListenLoops(ctx context.Context, rt *Runtime) {
-	if rt == nil || rt.Host == nil || rt.DB == nil {
+func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
+	if rt == nil || rt.Host == nil || store == nil {
 		return
 	}
 	if !cfgBool(rt.runIn.Listen.Enabled, true) {
@@ -43,7 +43,7 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 	if intervalSec == 0 {
 		intervalSec = 5
 	}
-	scheduler := ensureRuntimeTaskScheduler(rt)
+	scheduler := ensureRuntimeTaskScheduler(rt, store)
 	if scheduler == nil {
 		return
 	}
@@ -84,7 +84,7 @@ func startListenLoops(ctx context.Context, rt *Runtime) {
 			Interval:  time.Duration(cycleSec) * time.Second,
 			Immediate: false,
 			Run: func(runCtx context.Context, trigger string) (map[string]any, error) {
-				return runListenLoop(runCtx, rt, gw, trigger)
+				return runListenLoop(runCtx, rt, store, gw, trigger)
 			},
 		}
 		var err error
@@ -194,14 +194,14 @@ func snapshotHealthyGateways(rt *Runtime) []peer.AddrInfo {
 	return append([]peer.AddrInfo(nil), rt.HealthyGWs...)
 }
 
-func recordGatewayRuntimeError(rt *Runtime, gw peer.ID, stage string, err error) {
+func recordGatewayRuntimeError(rt *Runtime, store *clientDB, gw peer.ID, stage string, err error) {
 	if rt == nil || gw == "" || err == nil {
 		return
 	}
 	if rt.gwManager != nil {
 		rt.gwManager.SetRuntimeError(gw, stage, err)
 	}
-	dbAppendGatewayEvent(context.Background(), runtimeStore(rt), gatewayEventEntry{
+	dbAppendGatewayEvent(context.Background(), store, gatewayEventEntry{
 		GatewayPeerID: gw.String(),
 		Action:        "listen_error",
 		AmountSatoshi: 0,
@@ -225,9 +225,12 @@ func shouldRunListenBillingLoop(openRes clientKernelResult) bool {
 	return openRes.Accepted && strings.TrimSpace(openRes.Status) == "applied"
 }
 
-func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger string) (map[string]any, error) {
+func runListenLoop(ctx context.Context, rt *Runtime, store *clientDB, gw peer.AddrInfo, trigger string) (map[string]any, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
 	kernel := rt.kernel
-	if rt == nil || kernel == nil {
+	if kernel == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	openRes := kernel.dispatch(ctx, clientKernelCommand{
@@ -246,8 +249,8 @@ func runListenLoop(ctx context.Context, rt *Runtime, gw peer.AddrInfo, trigger s
 			"trigger":            trigger,
 		}, nil
 	}
-	if orch := getClientOrchestrator(rt); orch != nil {
-		orch.EmitSignal(orchestratorSignal{
+	if rt != nil && rt.orch != nil {
+		rt.orch.EmitSignal(orchestratorSignal{
 			Source:       "listen_loop",
 			Type:         orchestratorSignalFeePoolTick,
 			AggregateKey: gw.ID.String(),
@@ -294,29 +297,35 @@ func listenBillingTaskName(gatewayPeerID string) string {
 	return "listen_billing_tick:" + gatewayPeerID
 }
 
-func ensureActiveFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
-	return ensureActiveFeePoolWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
+func ensureActiveFeePool(ctx context.Context, rt *Runtime, store *clientDB, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return ensureActiveFeePoolWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
 }
 
-func ensureActiveFeePoolWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp, sec pproto.SecurityConfig) (*feePoolSession, error) {
-	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
+func ensureActiveFeePoolWithSecurity(ctx context.Context, rt *Runtime, store *clientDB, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp, sec pproto.SecurityConfig) (*feePoolSession, error) {
+	if rt == nil || rt.Host == nil || store == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	gwID := gw.ID.String()
 	if existing, ok := rt.getFeePool(gwID); ok && existing != nil && existing.Status == "active" && existing.SpendTxID != "" {
 		return existing, nil
 	}
-	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, sec)
+	return createFeePoolSessionWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, sec)
 }
 
 // createFeePoolSession 在链上创建新的费用池并注册为当前 active 会话。
 // 设计说明：监听轮换场景要求“先开新池再关旧池”，因此新池创建流程必须可复用。
-func createFeePoolSession(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
-	return createFeePoolSessionWithSecurity(ctx, rt, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
+func createFeePoolSession(ctx context.Context, rt *Runtime, store *clientDB, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return createFeePoolSessionWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
 }
 
-func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp, _ pproto.SecurityConfig) (*feePoolSession, error) {
-	if rt == nil || rt.Host == nil || rt.DB == nil || rt.ActionChain == nil {
+func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *clientDB, gw peer.AddrInfo, autoRenewRounds uint64, info poolcore.InfoResp, _ pproto.SecurityConfig) (*feePoolSession, error) {
+	if rt == nil || rt.Host == nil || store == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	gwID := gw.ID.String()
@@ -351,7 +360,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	allocMu.Lock()
 	defer allocMu.Unlock()
 
-	utxos, err := getWalletUTXOsFromDB(rt)
+	utxos, err := listEligiblePlainBSVWalletUTXOs(ctx, store, rt)
 	if err != nil {
 		return nil, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}
@@ -375,7 +384,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		poolAmount = info.MinimumPoolAmountSatoshi
 	}
 
-	tip, err := getTipHeightFromDB(rt)
+	tip, err := getTipHeightFromDB(ctx, store)
 	if err != nil {
 		return nil, fmt.Errorf("load tip height from snapshot failed: %w", err)
 	}
@@ -512,7 +521,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	}
 	rt.setFeePool(gwID, s)
 
-	dbAppendTxHistory(ctx, runtimeStore(rt), txHistoryEntry{
+	dbAppendTxHistory(ctx, store, txHistoryEntry{
 		GatewayPeerID: gwID,
 		EventType:     "fee_pool_open",
 		Direction:     "info",
@@ -522,7 +531,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 		PoolID:        createResp.SpendTxID,
 		SequenceNum:   1,
 	})
-	dbAppendGatewayEvent(ctx, runtimeStore(rt), gatewayEventEntry{
+	dbAppendGatewayEvent(ctx, store, gatewayEventEntry{
 		GatewayPeerID: gwID,
 		Action:        "fee_pool_open",
 		PoolID:        createResp.SpendTxID,
@@ -542,7 +551,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			"fee_rate_sat_per_byte":      info.FeeRateSatPerByte,
 		},
 	})
-	dbAppendWalletFundFlow(ctx, runtimeStore(rt), walletFundFlowEntry{
+	dbAppendWalletFundFlow(ctx, store, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + createResp.SpendTxID,
 		FlowType:        "fee_pool",
 		RefID:           createResp.SpendTxID,
@@ -561,7 +570,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			"server_amount":        initialServerAmount,
 		},
 	})
-	dbRecordFeePoolOpenAccounting(ctx, runtimeStore(rt), feePoolOpenAccountingInput{
+	dbRecordFeePoolOpenAccounting(ctx, store, feePoolOpenAccountingInput{
 		BusinessID:        "biz_feepool_open_" + strings.TrimSpace(createResp.SpendTxID),
 		SpendTxID:         createResp.SpendTxID,
 		BaseTxID:          baseOut.BaseTxID,
@@ -573,7 +582,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 	})
 	if initialServerAmount > 0 {
 		// open 锁池与首扣是两笔不同业务事件：这里把首扣单独记成 debit。
-		dbAppendTxHistory(ctx, runtimeStore(rt), txHistoryEntry{
+		dbAppendTxHistory(ctx, store, txHistoryEntry{
 			GatewayPeerID: gwID,
 			EventType:     "fee_pool_open_debit",
 			Direction:     "debit",
@@ -583,7 +592,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			PoolID:        createResp.SpendTxID,
 			SequenceNum:   1,
 		})
-		dbAppendGatewayEvent(ctx, runtimeStore(rt), gatewayEventEntry{
+		dbAppendGatewayEvent(ctx, store, gatewayEventEntry{
 			GatewayPeerID: gwID,
 			Action:        "listen_cycle_fee_open",
 			PoolID:        createResp.SpendTxID,
@@ -598,7 +607,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 				"trigger":           "open_create",
 			},
 		})
-		dbAppendWalletFundFlow(ctx, runtimeStore(rt), walletFundFlowEntry{
+		dbAppendWalletFundFlow(ctx, store, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + createResp.SpendTxID,
 			FlowType:        "fee_pool",
 			RefID:           createResp.SpendTxID,
@@ -617,7 +626,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, gw peer.
 			},
 		})
 	}
-	if err := applyLocalBroadcastWalletTx(rt, baseResp.Tx.Hex(), "fee_pool_open_base"); err != nil {
+	if err := applyLocalBroadcastWalletTx(ctx, store, rt, baseResp.Tx.Hex(), "fee_pool_open_base"); err != nil {
 		return nil, fmt.Errorf("project fee pool base tx to wallet utxo failed: %w", err)
 	}
 
@@ -643,7 +652,7 @@ func mergeOpenedFeePoolCurrentTx(spendTxHex string, serverSig []byte, clientSig 
 	return merged.Hex(), nil
 }
 
-func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolSession) error {
+func payOneListenCycle(ctx context.Context, rt *Runtime, store *clientDB, gw peer.ID, s *feePoolSession) error {
 	if rt == nil || s == nil {
 		return fmt.Errorf("session missing")
 	}
@@ -675,6 +684,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		Route:                broadcastmodule.RouteBroadcastV1ListenCycle,
 		ContentType:          ncall.ContentTypeProto,
 		Body:                 rawBody,
+		Store:                store,
 		RequireActiveFeePool: true,
 	})
 	if err != nil {
@@ -700,7 +710,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 	}
 	sequence := s.Sequence
 
-	dbAppendTxHistory(ctx, runtimeStore(rt), txHistoryEntry{
+	dbAppendTxHistory(ctx, store, txHistoryEntry{
 		GatewayPeerID: s.GatewayPeerID,
 		EventType:     "peer_call",
 		Direction:     "debit",
@@ -710,7 +720,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 		PoolID:        s.SpendTxID,
 		SequenceNum:   sequence,
 	})
-	dbAppendGatewayEvent(ctx, runtimeStore(rt), gatewayEventEntry{
+	dbAppendGatewayEvent(ctx, store, gatewayEventEntry{
 		GatewayPeerID: s.GatewayPeerID,
 		Action:        "listen_cycle_fee",
 		PoolID:        s.SpendTxID,
@@ -723,7 +733,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, gw peer.ID, s *feePoolS
 			"minimum_billing_cycle_seconds": s.BillingCycleSeconds,
 		},
 	})
-	dbRecordFeePoolCycleEvent(ctx, runtimeStore(rt), s.SpendTxID, sequence, resp.ChargedAmount, s.GatewayPeerID)
+	dbRecordFeePoolCycleEvent(ctx, store, s.SpendTxID, sequence, resp.ChargedAmount, s.GatewayPeerID)
 	return nil
 }
 
@@ -755,7 +765,7 @@ func listenOfferPaymentSatoshi(rt *Runtime, s *feePoolSession) uint64 {
 }
 
 // rotateListenFeePool 处理监听费用池轮换：先开新池并切换，再异步重试关闭旧池。
-func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old *feePoolSession, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
+func rotateListenFeePool(ctx context.Context, rt *Runtime, store *clientDB, gw peer.AddrInfo, old *feePoolSession, autoRenewRounds uint64, info poolcore.InfoResp) (*feePoolSession, error) {
 	if rt == nil || old == nil {
 		return nil, fmt.Errorf("session missing")
 	}
@@ -765,7 +775,7 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old
 		"old_client_fund": old.ClientAmount,
 		"need":            old.SingleCycleFeeSatoshi + old.SpendTxFeeSat,
 	})
-	next, err := createFeePoolSession(ctx, rt, gw, autoRenewRounds, info)
+	next, err := createFeePoolSession(ctx, rt, store, gw, autoRenewRounds, info)
 	if err != nil {
 		if isWalletInsufficientForListen(err) {
 			return nil, fmt.Errorf("%w: wallet insufficient for new fee pool: %v", errListenFeePoolStop, err)
@@ -785,7 +795,7 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old
 			"gateway":        gatewayPeerID,
 			"old_spend_txid": oldSpendTxID,
 		})
-		if closeErr := closeOldFeePoolWithRetry(rt, oldSpendTxID, gatewayPeerID); closeErr != nil {
+		if closeErr := closeOldFeePoolWithRetry(store, rt, oldSpendTxID, gatewayPeerID); closeErr != nil {
 			obs.Error("bitcast-client", "fee_pool_rotate_close_old_failed", map[string]any{
 				"gateway":        gatewayPeerID,
 				"old_spend_txid": oldSpendTxID,
@@ -802,7 +812,7 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, gw peer.AddrInfo, old
 	return next, nil
 }
 
-func closeOldFeePoolWithRetry(rt *Runtime, oldSpendTxID string, gatewayPeerID string) error {
+func closeOldFeePoolWithRetry(store *clientDB, rt *Runtime, oldSpendTxID string, gatewayPeerID string) error {
 	const attemptTimeout = 30 * time.Second
 	backoffs := []time.Duration{0, 2 * time.Second, 5 * time.Second}
 	var lastErr error
@@ -812,7 +822,7 @@ func closeOldFeePoolWithRetry(rt *Runtime, oldSpendTxID string, gatewayPeerID st
 		}
 		attempt := i + 1
 		closeCtx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
-		_, err := TriggerGatewayFeePoolCloseBySpendTxID(closeCtx, rt, FeePoolCloseBySpendTxIDParams{
+		_, err := TriggerGatewayFeePoolCloseBySpendTxID(closeCtx, store, rt, FeePoolCloseBySpendTxIDParams{
 			SpendTxID:     oldSpendTxID,
 			GatewayPeerID: gatewayPeerID,
 		})

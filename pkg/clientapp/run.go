@@ -1026,11 +1026,11 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	rtCtx, rtCancel := context.WithCancel(ctx)
 	rt.bgCancel = rtCancel
-	rt.taskSched = newTaskScheduler(db, dbActor, "bitcast-client")
+	rt.taskSched = newTaskScheduler(store, "bitcast-client")
 	rt.kernel = newClientKernel(rt, store)
-	rt.orch = newOrchestrator(rt)
-	registerLiveHandlers(rt)
-	registerNodeRouteHandlers(rt)
+	rt.orch = newOrchestrator(rt, store)
+	registerLiveHandlers(store, rt)
+	registerNodeRouteHandlers(rt, store)
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, db, trace)
 	if cfg.Seller.Enabled {
@@ -1084,11 +1084,11 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	// 链维护进程：统一串行调度链 API 查询，业务侧只读本地快照。
 	startChainMaintainer(rtCtx, rt, store)
 	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
-	startListenLoops(rtCtx, rt)
+	startListenLoops(rtCtx, rt, store)
 	// 自动地址声明发布与 listen loop 并列存在：
 	// - listen 解决“我是否持续监听网关广播”；
 	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
-	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt)
+	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt, store)
 	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
 		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, dbActor, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
@@ -1118,7 +1118,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}()
 	}
 
-	go restorePersistedLiveFollows(rtCtx, rt)
+	go restorePersistedLiveFollows(rtCtx, store, rt)
 
 	rt.closeFn = func() error {
 		if rt.bgCancel != nil {

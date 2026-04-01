@@ -28,7 +28,7 @@ func marshalFeePoolPaymentPayload(session *feePoolSession, quoted feePoolService
 	})
 }
 
-func triggerTypedPeerCall[T any](ctx context.Context, rt *Runtime, to string, route string, body oldproto.Message, decode func(ncall.CallResp) (T, error)) (T, ncall.CallResp, error) {
+func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runtime, to string, route string, body oldproto.Message, decode func(ncall.CallResp) (T, error)) (T, ncall.CallResp, error) {
 	var zero T
 	if decode == nil {
 		return zero, ncall.CallResp{}, fmt.Errorf("route response decoder missing")
@@ -42,6 +42,7 @@ func triggerTypedPeerCall[T any](ctx context.Context, rt *Runtime, to string, ro
 		Route:       strings.TrimSpace(route),
 		ContentType: ncall.ContentTypeProto,
 		Body:        rawBody,
+		Store:       store,
 	})
 	if err != nil {
 		return zero, ncall.CallResp{}, err

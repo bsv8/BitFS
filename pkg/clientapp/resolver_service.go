@@ -32,7 +32,7 @@ type resolverResolveResp struct {
 // - 这样壳内只理解 name -> pubkey_hex，不再直接耦合 domain 的旧专用 paid proto。
 func registerResolverHandlers(_ *Runtime) {}
 
-func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverResolveParams) (resolverResolveResp, error) {
+func TriggerResolverResolve(ctx context.Context, store *clientDB, rt *Runtime, p TriggerResolverResolveParams) (resolverResolveResp, error) {
 	var out resolverResolveResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
@@ -54,6 +54,7 @@ func TriggerResolverResolve(ctx context.Context, rt *Runtime, p TriggerResolverR
 		Route:       domainmodule.RouteDomainV1Resolve,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
+		Store:       store,
 	})
 	if err != nil {
 		return out, err

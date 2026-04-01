@@ -35,14 +35,14 @@ type builtPeerCallChainTx struct {
 	ChangeSatoshi   uint64
 }
 
-func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (ncall.CallResp, peerCallChainTxQuoteBuilt, error) {
+func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (ncall.CallResp, peerCallChainTxQuoteBuilt, error) {
 	if rt == nil || rt.Host == nil {
 		return ncall.CallResp{}, peerCallChainTxQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
 	if option == nil {
 		return ncall.CallResp{}, peerCallChainTxQuoteBuilt{}, fmt.Errorf("payment option missing")
 	}
-	quoted, err := requestPeerCallChainTxQuote(ctx, rt, peerID, req, option)
+	quoted, err := requestPeerCallChainTxQuote(ctx, rt, store, peerID, req, option)
 	if err != nil {
 		return ncall.CallResp{}, peerCallChainTxQuoteBuilt{}, err
 	}
@@ -56,7 +56,7 @@ func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, peerID peer.ID, 
 	}, quoted, nil
 }
 
-func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error) {
+func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error) {
 	if rt == nil || rt.Host == nil {
 		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
@@ -115,8 +115,8 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	}, nil
 }
 
-func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error) {
-	built, err := buildPeerCallChainTx(rt, quoted.GatewayPub, quoted.ServiceQuoteRaw, quoted.ServiceQuote)
+func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error) {
+	built, err := buildPeerCallChainTx(ctx, store, rt, quoted.GatewayPub, quoted.ServiceQuoteRaw, quoted.ServiceQuote)
 	if err != nil {
 		return ncall.CallResp{}, err
 	}
@@ -143,10 +143,10 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	if txid := strings.ToLower(strings.TrimSpace(receipt.PaymentTxID)); txid != "" && !strings.EqualFold(txid, built.TxID) {
 		return ncall.CallResp{}, fmt.Errorf("payment receipt txid mismatch")
 	}
-	if err := applyLocalBroadcastWalletTxBytes(rt, built.RawTx, "peer_call_chain_tx"); err != nil {
+	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, built.RawTx, "peer_call_chain_tx"); err != nil {
 		return ncall.CallResp{}, err
 	}
-	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          "chain_tx:" + built.TxID,
 		FlowType:        "chain_tx",
 		RefID:           strings.TrimSpace(req.Route),
@@ -183,7 +183,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, peerID peer.I
 	return out, nil
 }
 
-func buildPeerCallChainTx(rt *Runtime, gatewayPub *ec.PublicKey, rawQuote []byte, quote payflow.ServiceQuote) (builtPeerCallChainTx, error) {
+func buildPeerCallChainTx(ctx context.Context, store *clientDB, rt *Runtime, gatewayPub *ec.PublicKey, rawQuote []byte, quote payflow.ServiceQuote) (builtPeerCallChainTx, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return builtPeerCallChainTx{}, fmt.Errorf("runtime not initialized")
 	}
@@ -191,7 +191,7 @@ func buildPeerCallChainTx(rt *Runtime, gatewayPub *ec.PublicKey, rawQuote []byte
 	if err != nil {
 		return builtPeerCallChainTx{}, err
 	}
-	utxos, err := getWalletUTXOsFromDB(rt)
+	utxos, err := getWalletUTXOsFromDB(ctx, store, rt)
 	if err != nil {
 		return builtPeerCallChainTx{}, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}

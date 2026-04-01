@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 )
 
@@ -53,8 +52,6 @@ type periodicTaskRuntime struct {
 
 type taskScheduler struct {
 	service string
-	db      *sql.DB
-	dbActor *sqliteactor.Actor
 	store   *clientDB
 
 	mu       sync.RWMutex
@@ -63,28 +60,26 @@ type taskScheduler struct {
 	wg       sync.WaitGroup
 }
 
-func newTaskScheduler(db *sql.DB, dbActor *sqliteactor.Actor, service string) *taskScheduler {
+func newTaskScheduler(store *clientDB, service string) *taskScheduler {
 	service = strings.TrimSpace(service)
 	if service == "" {
 		service = "bitcast-client"
 	}
 	return &taskScheduler{
 		service: service,
-		db:      db,
-		dbActor: dbActor,
-		store:   newClientDB(db, dbActor),
+		store:   store,
 		tasks:   map[string]*periodicTaskRuntime{},
 	}
 }
 
-func ensureRuntimeTaskScheduler(rt *Runtime) *taskScheduler {
+func ensureRuntimeTaskScheduler(rt *Runtime, store *clientDB) *taskScheduler {
 	if rt == nil {
 		return nil
 	}
 	rt.taskSchedMu.Lock()
 	defer rt.taskSchedMu.Unlock()
 	if rt.taskSched == nil {
-		rt.taskSched = newTaskScheduler(rt.DB, rt.DBActor, "bitcast-client")
+		rt.taskSched = newTaskScheduler(store, "bitcast-client")
 	}
 	return rt.taskSched
 }

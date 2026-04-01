@@ -291,7 +291,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = infoErr.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_info", infoErr)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_info", infoErr)
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_info_failed"
 			result.ErrorMessage = infoErr.Error()
@@ -330,7 +330,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = probeErr.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "wallet_probe", probeErr)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "wallet_probe", probeErr)
 			logEffect("wallet", "fee_pool_open_precheck", "failed", probeErr, nil)
 			addEvent("fee_pool_open_precheck_failed", map[string]any{"error": probeErr.Error()}, beforeState.State, st.State)
 			return persist(st)
@@ -344,7 +344,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.PauseHaveSat = have
 			st.LastError = errMsg
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_open_precheck", errInsufficient)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_open_precheck", errInsufficient)
 			result.Status = "paused"
 			result.ErrorCode = "wallet_insufficient"
 			result.ErrorMessage = errMsg
@@ -359,7 +359,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			return persist(st)
 		}
 
-		sess, err := ensureActiveFeePool(ctx, k.rt, gw, k.rt.runIn.Listen.AutoRenewRounds, info)
+		sess, err := ensureActiveFeePool(ctx, k.rt, k.store, gw, k.rt.runIn.Listen.AutoRenewRounds, info)
 		if err != nil {
 			if isWalletInsufficientForListen(err) {
 				need, have := parseNeedHave(err.Error())
@@ -369,7 +369,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 				st.PauseHaveSat = have
 				st.LastError = err.Error()
 				k.setState(gwID, st)
-				recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_open", err)
+				recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_open", err)
 				result.Status = "paused"
 				result.ErrorCode = "wallet_insufficient"
 				result.ErrorMessage = err.Error()
@@ -386,7 +386,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = err.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_open", err)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_open", err)
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_open_failed"
 			result.ErrorMessage = err.Error()
@@ -425,7 +425,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			addEvent("fee_pool_cycle_skipped_missing_session", map[string]any{}, beforeState.State, st.State)
 			return persist(st)
 		}
-		payErr := payOneListenCycle(ctx, k.rt, gw.ID, sess)
+		payErr := payOneListenCycle(ctx, k.rt, k.store, gw.ID, sess)
 		if payErr == nil {
 			st.State = feePoolKernelStateActive
 			st.LastError = ""
@@ -442,7 +442,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = payErr.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_pay", payErr)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_pay", payErr)
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_pay_failed"
 			result.ErrorMessage = payErr.Error()
@@ -462,7 +462,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = err.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_info", err)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_info", err)
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_info_failed"
 			result.ErrorMessage = err.Error()
@@ -477,7 +477,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = probeErr.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "wallet_probe", probeErr)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "wallet_probe", probeErr)
 			logEffect("wallet", "fee_pool_rotate_precheck", "failed", probeErr, nil)
 			addEvent("fee_pool_rotate_precheck_failed", map[string]any{"error": probeErr.Error()}, beforeState.State, st.State)
 			return persist(st)
@@ -491,7 +491,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.PauseHaveSat = have
 			st.LastError = errMsg
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_rotate_precheck", errInsufficient)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_rotate_precheck", errInsufficient)
 			result.Status = "paused"
 			result.ErrorCode = "wallet_insufficient"
 			result.ErrorMessage = errMsg
@@ -505,7 +505,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			addEvent("fee_pool_paused_insufficient", map[string]any{"need": need, "have": have, "stage": "rotate_precheck"}, beforeState.State, st.State)
 			return persist(st)
 		}
-		next, rotateErr := rotateListenFeePool(ctx, k.rt, gw, sess, k.rt.runIn.Listen.AutoRenewRounds, info)
+		next, rotateErr := rotateListenFeePool(ctx, k.rt, k.store, gw, sess, k.rt.runIn.Listen.AutoRenewRounds, info)
 		if rotateErr != nil {
 			if strings.Contains(strings.ToLower(rotateErr.Error()), strings.ToLower(errListenFeePoolStop.Error())) {
 				need, have := parseNeedHave(rotateErr.Error())
@@ -515,7 +515,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 				st.PauseHaveSat = have
 				st.LastError = rotateErr.Error()
 				k.setState(gwID, st)
-				recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_rotate_open", rotateErr)
+				recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_rotate_open", rotateErr)
 				result.Status = "paused"
 				result.ErrorCode = "wallet_insufficient"
 				result.ErrorMessage = rotateErr.Error()
@@ -533,7 +533,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			st.State = feePoolKernelStateFailed
 			st.LastError = rotateErr.Error()
 			k.setState(gwID, st)
-			recordGatewayRuntimeError(k.rt, gw.ID, "fee_pool_rotate_open", rotateErr)
+			recordGatewayRuntimeError(k.rt, k.store, gw.ID, "fee_pool_rotate_open", rotateErr)
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_rotate_failed"
 			result.ErrorMessage = rotateErr.Error()

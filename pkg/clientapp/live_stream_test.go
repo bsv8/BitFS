@@ -87,10 +87,23 @@ func TestLiveSubscribeAndPublishLatest(t *testing.T) {
 	subHost, _ := newSecpHost(t)
 	defer subHost.Close()
 
+	subDBPath := filepath.Join(t.TempDir(), "sub.sqlite")
+	subDB, err := sql.Open("sqlite", subDBPath)
+	if err != nil {
+		t.Fatalf("open sub db: %v", err)
+	}
+	defer subDB.Close()
+	if err := applySQLitePragmas(subDB); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(subDB); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
 	pubRT := &Runtime{Host: pubHost, live: newLiveRuntime()}
 	subRT := &Runtime{Host: subHost, live: newLiveRuntime()}
-	registerLiveHandlers(pubRT)
-	registerLiveHandlers(subRT)
+	registerLiveHandlers(nil, pubRT)
+	registerLiveHandlers(newClientDB(subDB, nil), subRT)
 
 	pubHex, err := localPubKeyHex(pubHost)
 	if err != nil {
@@ -148,9 +161,9 @@ func TestLiveQuoteSubmitAndList(t *testing.T) {
 	sellerHost, _ := newSecpHost(t)
 	defer sellerHost.Close()
 
-	buyerRT := &Runtime{Host: buyerHost, DB: buyerDB, live: newLiveRuntime()}
+	buyerRT := &Runtime{Host: buyerHost, live: newLiveRuntime()}
 	sellerRT := &Runtime{Host: sellerHost, live: newLiveRuntime()}
-	registerLiveHandlers(buyerRT)
+	registerLiveHandlers(newClientDB(buyerDB, nil), buyerRT)
 	sellerHost.Peerstore().AddAddrs(buyerHost.ID(), buyerHost.Addrs(), time.Minute)
 	buyerPub, err := localPubKeyHex(buyerHost)
 	if err != nil {
@@ -170,7 +183,7 @@ func TestLiveQuoteSubmitAndList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("submit live quote failed: %v", err)
 	}
-	quotes, err := TriggerClientListLiveQuotes(context.Background(), buyerRT, "ldmd_test")
+	quotes, err := TriggerClientListLiveQuotes(context.Background(), newClientDB(buyerDB, nil), "ldmd_test")
 	if err != nil {
 		t.Fatalf("list live quotes failed: %v", err)
 	}

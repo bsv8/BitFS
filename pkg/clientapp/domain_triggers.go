@@ -168,8 +168,8 @@ type builtDomainRegisterTx struct {
 // 设计说明：
 // - 这里返回时，要么注册已经成功写链并拿到服务端回执，要么明确失败且不会偷偷广播；
 // - 注册交易在客户端本地构造，但不自行广播，保持“确认资格后才上链”的语义。
-func TriggerDomainRegisterName(ctx context.Context, rt *Runtime, p TriggerDomainRegisterNameParams) (TriggerDomainRegisterNameResult, error) {
-	prepared, err := TriggerDomainPrepareRegister(ctx, rt, TriggerDomainPrepareRegisterParams{
+func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainRegisterNameParams) (TriggerDomainRegisterNameResult, error) {
+	prepared, err := TriggerDomainPrepareRegister(ctx, store, rt, TriggerDomainPrepareRegisterParams{
 		ResolverPubkeyHex: p.ResolverPubkeyHex,
 		ResolverAddr:      p.ResolverAddr,
 		Name:              p.Name,
@@ -182,7 +182,7 @@ func TriggerDomainRegisterName(ctx context.Context, rt *Runtime, p TriggerDomain
 	if !prepared.Ok {
 		return out, nil
 	}
-	submitResp, err := TriggerDomainSubmitPreparedRegister(ctx, rt, TriggerDomainSubmitPreparedRegisterParams{
+	submitResp, err := TriggerDomainSubmitPreparedRegister(ctx, store, rt, TriggerDomainSubmitPreparedRegisterParams{
 		ResolverPubkeyHex: p.ResolverPubkeyHex,
 		ResolverAddr:      p.ResolverAddr,
 		RegisterTxHex:     prepared.RegisterTxHex,
@@ -194,7 +194,7 @@ func TriggerDomainRegisterName(ctx context.Context, rt *Runtime, p TriggerDomain
 	if !submitResp.Ok {
 		return out, nil
 	}
-	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          "domain_register:" + out.RegisterTxID,
 		FlowType:        "domain_register",
 		RefID:           out.Name,
@@ -269,7 +269,7 @@ func applyDomainRegisterSubmitResult(out TriggerDomainRegisterNameResult, submit
 // 设计意图：
 // - 让 e2e 可以验证锁冲突、锁过期等边界，而不绕过真实费用池与签名链路；
 // - 返回时若成功，代表服务端已为该 client 持有一个有效锁，可继续在锁期内构造并提交注册交易。
-func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomainRegisterLockParams) (TriggerDomainRegisterLockResult, error) {
+func TriggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainRegisterLockParams) (TriggerDomainRegisterLockResult, error) {
 	var out TriggerDomainRegisterLockResult
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
@@ -277,7 +277,7 @@ func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomain
 	if strings.TrimSpace(rt.runIn.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
-	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, rt, p.ResolverPubkeyHex, p.ResolverAddr)
+	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
 	if err != nil {
 		return out, err
 	}
@@ -290,7 +290,7 @@ func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomain
 		return out, fmt.Errorf("target_pubkey_hex invalid: %w", err)
 	}
 
-	queryOut, err := triggerDomainQueryName(ctx, rt, resolverPubkeyHex, resolverPeerID, name)
+	queryOut, err := triggerDomainQueryName(ctx, store, rt, resolverPubkeyHex, resolverPeerID, name)
 	if err != nil {
 		return out, fmt.Errorf("domain query step failed: %w", err)
 	}
@@ -323,7 +323,7 @@ func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomain
 		return out, nil
 	}
 
-	lockResp, err := triggerDomainRegisterLock(ctx, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
+	lockResp, err := triggerDomainRegisterLock(ctx, store, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
 	if err != nil {
 		return out, fmt.Errorf("domain register lock step failed: %w", err)
 	}
@@ -364,7 +364,7 @@ func TriggerDomainRegisterLock(ctx context.Context, rt *Runtime, p TriggerDomain
 // 设计意图：
 // - 让 e2e 可以验证 lock_missing、broadcast_failed 等 RegisterSubmit 边界；
 // - 返回的 tx_hex 仍然是按正式注册流程构造的真实交易，可直接再提交给 domain。
-func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDomainPrepareRegisterParams) (TriggerDomainPrepareRegisterResult, error) {
+func TriggerDomainPrepareRegister(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainPrepareRegisterParams) (TriggerDomainPrepareRegisterResult, error) {
 	var out TriggerDomainPrepareRegisterResult
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
@@ -372,7 +372,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 	if strings.TrimSpace(rt.runIn.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
-	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, rt, p.ResolverPubkeyHex, p.ResolverAddr)
+	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
 	if err != nil {
 		return out, err
 	}
@@ -385,7 +385,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 		return out, fmt.Errorf("target_pubkey_hex invalid: %w", err)
 	}
 
-	queryOut, err := triggerDomainQueryName(ctx, rt, resolverPubkeyHex, resolverPeerID, name)
+	queryOut, err := triggerDomainQueryName(ctx, store, rt, resolverPubkeyHex, resolverPeerID, name)
 	if err != nil {
 		return out, fmt.Errorf("domain query step failed: %w", err)
 	}
@@ -418,7 +418,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 		return out, nil
 	}
 
-	lockResp, err := triggerDomainRegisterLock(ctx, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
+	lockResp, err := triggerDomainRegisterLock(ctx, store, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.RegisterLockFeeSatoshi)
 	if err != nil {
 		return out, fmt.Errorf("domain register lock step failed: %w", err)
 	}
@@ -454,7 +454,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 	allocMu.Lock()
 	defer allocMu.Unlock()
 
-	registerTxRaw, registerTxID, err := buildDomainRegisterTx(rt, lockResp.SignedQuoteJSON, quote)
+	registerTxRaw, registerTxID, err := buildDomainRegisterTx(store, rt, lockResp.SignedQuoteJSON, quote)
 	if err != nil {
 		return out, err
 	}
@@ -470,7 +470,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, rt *Runtime, p TriggerDom
 // 设计意图：
 // - 与 TriggerDomainPrepareRegister 配合，覆盖“锁还在 / 锁过期 / 广播失败”三类 RegisterSubmit 行为；
 // - 提交成功后，仍然会把本地已广播交易投影回钱包，保持与正式注册入口一致。
-func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p TriggerDomainSubmitPreparedRegisterParams) (TriggerDomainSubmitPreparedRegisterResult, error) {
+func TriggerDomainSubmitPreparedRegister(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainSubmitPreparedRegisterParams) (TriggerDomainSubmitPreparedRegisterResult, error) {
 	var out TriggerDomainSubmitPreparedRegisterResult
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
@@ -478,7 +478,7 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p Tri
 	if strings.TrimSpace(rt.runIn.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
-	resolverPubkeyHex, _, err := ensureDomainPeerConnected(ctx, rt, p.ResolverPubkeyHex, p.ResolverAddr)
+	resolverPubkeyHex, _, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
 	if err != nil {
 		return out, err
 	}
@@ -490,7 +490,7 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p Tri
 	if err != nil {
 		return out, fmt.Errorf("register_tx_hex invalid: %w", err)
 	}
-	submitResp, err := triggerDomainRegisterSubmit(ctx, rt, resolverPubkeyHex, registerTxRaw)
+	submitResp, err := triggerDomainRegisterSubmit(ctx, rt, store, resolverPubkeyHex, registerTxRaw)
 	if err != nil {
 		return out, fmt.Errorf("domain register submit step failed: %w", err)
 	}
@@ -515,7 +515,7 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p Tri
 		}
 		out.RegisterTxID = parsed.TxID().String()
 	}
-	if err := applyLocalBroadcastWalletTxBytes(rt, registerTxRaw, "domain_register_submit"); err != nil {
+	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, registerTxRaw, "domain_register_submit"); err != nil {
 		return out, err
 	}
 	out.Ok = true
@@ -527,7 +527,7 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, rt *Runtime, p Tri
 // 设计说明：
 // - 这里先付费查询一次，拿到最新状态与精确 set_target 费率，避免用 publish 最大值粗扣；
 // - 只有当前 owner 才允许更新 target。
-func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSetTargetParams) (TriggerDomainSetTargetResult, error) {
+func TriggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainSetTargetParams) (TriggerDomainSetTargetResult, error) {
 	var out TriggerDomainSetTargetResult
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
@@ -535,7 +535,7 @@ func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSet
 	if strings.TrimSpace(rt.runIn.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
-	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, rt, p.ResolverPubkeyHex, p.ResolverAddr)
+	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
 	if err != nil {
 		return out, err
 	}
@@ -548,7 +548,7 @@ func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSet
 		return out, fmt.Errorf("target_pubkey_hex invalid: %w", err)
 	}
 
-	queryOut, err := triggerDomainQueryName(ctx, rt, resolverPubkeyHex, resolverPeerID, name)
+	queryOut, err := triggerDomainQueryName(ctx, store, rt, resolverPubkeyHex, resolverPeerID, name)
 	if err != nil {
 		return out, fmt.Errorf("domain query step failed: %w", err)
 	}
@@ -575,7 +575,7 @@ func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSet
 		return out, nil
 	}
 
-	resp, err := triggerDomainSetTarget(ctx, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.SetTargetFeeSatoshi)
+	resp, err := triggerDomainSetTarget(ctx, store, rt, resolverPubkeyHex, name, targetPubkeyHex, queryResp.SetTargetFeeSatoshi)
 	if err != nil {
 		return out, err
 	}
@@ -605,7 +605,7 @@ func TriggerDomainSetTarget(ctx context.Context, rt *Runtime, p TriggerDomainSet
 	return out, nil
 }
 
-func ensureDomainPeerConnected(ctx context.Context, rt *Runtime, resolverPubkeyHex string, resolverAddr string) (string, peer.ID, error) {
+func ensureDomainPeerConnected(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, resolverAddr string) (string, peer.ID, error) {
 	resolverPubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(resolverPubkeyHex))
 	if err != nil {
 		return "", "", fmt.Errorf("resolver_pubkey_hex invalid: %w", err)
@@ -627,13 +627,13 @@ func ensureDomainPeerConnected(ctx context.Context, rt *Runtime, resolverPubkeyH
 			return "", "", fmt.Errorf("connect resolver failed: %w", err)
 		}
 	}
-	if err := ensureTargetPeerReachable(ctx, rt, resolverPubkeyHex, resolverPeerID); err != nil {
+	if err := ensureTargetPeerReachable(ctx, store, rt, resolverPubkeyHex, resolverPeerID); err != nil {
 		return "", "", err
 	}
 	return resolverPubkeyHex, resolverPeerID, nil
 }
 
-func triggerDomainQueryName(ctx context.Context, rt *Runtime, resolverPubkeyHex string, resolverPeerID peer.ID, name string) (domainQueryResult, error) {
+func triggerDomainQueryName(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, resolverPeerID peer.ID, name string) (domainQueryResult, error) {
 	if rt == nil || rt.Host == nil {
 		return domainQueryResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -646,6 +646,7 @@ func triggerDomainQueryName(ctx context.Context, rt *Runtime, resolverPubkeyHex 
 		Route:       domainmodule.RouteDomainV1Query,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
+		Store:       store,
 	})
 	if err != nil {
 		return domainQueryResult{}, err
@@ -660,7 +661,7 @@ func triggerDomainQueryName(ctx context.Context, rt *Runtime, resolverPubkeyHex 
 	return domainQueryResult{ResolverPeerID: resolverPeerID, Response: resp}, nil
 }
 
-func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.RegisterLockPaidResp, error) {
+func triggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.RegisterLockPaidResp, error) {
 	payload, err := oldproto.Marshal(&domainmodule.NameTargetRouteReq{
 		Name:            name,
 		TargetPubkeyHex: targetPubkeyHex,
@@ -673,6 +674,7 @@ func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPubkeyH
 		Route:       domainmodule.RouteDomainV1Lock,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
+		Store:       store,
 	})
 	if err != nil {
 		return domainmodule.RegisterLockPaidResp{}, err
@@ -687,7 +689,7 @@ func triggerDomainRegisterLock(ctx context.Context, rt *Runtime, resolverPubkeyH
 	return resp, nil
 }
 
-func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPubkeyHex string, registerTx []byte) (domainmodule.RegisterSubmitResp, error) {
+func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, store *clientDB, resolverPubkeyHex string, registerTx []byte) (domainmodule.RegisterSubmitResp, error) {
 	payload, err := oldproto.Marshal(&domainmodule.RegisterSubmitReq{RegisterTx: append([]byte(nil), registerTx...)})
 	if err != nil {
 		return domainmodule.RegisterSubmitResp{}, err
@@ -697,6 +699,7 @@ func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPubke
 		Route:       domainmodule.RouteDomainV1RegisterSubmit,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
+		Store:       store,
 	})
 	if err != nil {
 		return domainmodule.RegisterSubmitResp{}, err
@@ -711,7 +714,7 @@ func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, resolverPubke
 	return routeResp, nil
 }
 
-func triggerDomainSetTarget(ctx context.Context, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.SetTargetPaidResp, error) {
+func triggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.SetTargetPaidResp, error) {
 	payload, err := oldproto.Marshal(&domainmodule.NameTargetRouteReq{
 		Name:            name,
 		TargetPubkeyHex: targetPubkeyHex,
@@ -724,6 +727,7 @@ func triggerDomainSetTarget(ctx context.Context, rt *Runtime, resolverPubkeyHex 
 		Route:       domainmodule.RouteDomainV1SetTarget,
 		ContentType: ncall.ContentTypeProto,
 		Body:        payload,
+		Store:       store,
 	})
 	if err != nil {
 		return domainmodule.SetTargetPaidResp{}, err
@@ -786,15 +790,15 @@ func verifyRegisterQuote(resolverPubkeyHex string, raw []byte) (domainRegisterQu
 	return out, nil
 }
 
-func buildDomainRegisterTx(rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) ([]byte, string, error) {
-	built, err := buildDomainRegisterTxDetailed(rt, signedQuoteJSON, quote)
+func buildDomainRegisterTx(store *clientDB, rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) ([]byte, string, error) {
+	built, err := buildDomainRegisterTxDetailed(store, rt, signedQuoteJSON, quote)
 	if err != nil {
 		return nil, "", err
 	}
 	return built.RawTx, built.TxID, nil
 }
 
-func buildDomainRegisterTxDetailed(rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) (builtDomainRegisterTx, error) {
+func buildDomainRegisterTxDetailed(store *clientDB, rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) (builtDomainRegisterTx, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("runtime chain not initialized")
 	}
@@ -802,7 +806,7 @@ func buildDomainRegisterTxDetailed(rt *Runtime, signedQuoteJSON []byte, quote do
 	if err != nil {
 		return builtDomainRegisterTx{}, err
 	}
-	utxos, err := getWalletUTXOsFromDB(rt)
+	utxos, err := getWalletUTXOsFromDB(context.Background(), store, rt)
 	if err != nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}

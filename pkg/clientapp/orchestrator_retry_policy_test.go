@@ -4,7 +4,7 @@ import "testing"
 
 func TestOrchestratorIsRetryableFailure(t *testing.T) {
 	t.Parallel()
-	o := newOrchestrator(&Runtime{})
+	o := newOrchestrator(&Runtime{}, nil)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")
 	}

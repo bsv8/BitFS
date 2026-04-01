@@ -56,7 +56,7 @@ func runDirectDownloadCore(ctx context.Context, rt *Runtime, p directDownloadCor
 	return kernel.runDirectDownloadCore(ctx, p, hooks)
 }
 
-func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
+func runDirectDownloadCoreLegacy(ctx context.Context, store *clientDB, rt *Runtime, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
 	if rt == nil || rt.Host == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -74,7 +74,7 @@ func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownl
 		"seed_hash":   seedHash,
 		"chunk_count": strconv.FormatUint(uint64(demandChunkCount), 10),
 	})
-	pub, err := TriggerGatewayPublishDemand(ctx, rt, PublishDemandParams{
+	pub, err := TriggerGatewayPublishDemand(ctx, store, rt, PublishDemandParams{
 		SeedHash:      seedHash,
 		ChunkCount:    demandChunkCount,
 		GatewayPeerID: gw,
@@ -89,7 +89,7 @@ func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownl
 	})
 
 	startStep(hooks, downloadStepListQuotes, map[string]string{"demand_id": pub.DemandID})
-	quotes, err := waitDirectQuotes(ctx, rt, pub.DemandID, p.QuoteMaxRetry, p.QuoteInterval, p.MaxSeedPrice, p.MaxChunkPrice)
+	quotes, err := waitDirectQuotes(ctx, store, rt, pub.DemandID, p.QuoteMaxRetry, p.QuoteInterval, p.MaxSeedPrice, p.MaxChunkPrice)
 	if err != nil {
 		failStep(hooks, downloadStepListQuotes, err, nil)
 		return directDownloadCoreResult{}, fmt.Errorf("list direct quotes failed: %w", err)
@@ -115,7 +115,7 @@ func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownl
 		"chunk_count": strconv.FormatUint(uint64(p.TransferChunkCount), 10),
 		"strategy":    strategyNameOrDefault(p.Strategy),
 	})
-	transfer, err := TriggerTransferChunksByStrategy(ctx, rt, TransferChunksByStrategyParams{
+	transfer, err := TriggerTransferChunksByStrategy(ctx, store, rt, TransferChunksByStrategyParams{
 		DemandID:        pub.DemandID,
 		SeedHash:        seedHash,
 		ChunkCount:      p.TransferChunkCount,
@@ -146,7 +146,7 @@ func runDirectDownloadCoreLegacy(ctx context.Context, rt *Runtime, p directDownl
 	}, nil
 }
 
-func waitDirectQuotes(ctx context.Context, rt *Runtime, demandID string, maxRetry int, interval time.Duration, maxSeedPrice uint64, maxChunkPrice uint64) ([]DirectQuoteItem, error) {
+func waitDirectQuotes(ctx context.Context, store *clientDB, rt *Runtime, demandID string, maxRetry int, interval time.Duration, maxSeedPrice uint64, maxChunkPrice uint64) ([]DirectQuoteItem, error) {
 	if maxRetry <= 0 {
 		maxRetry = 12
 	}
@@ -154,7 +154,7 @@ func waitDirectQuotes(ctx context.Context, rt *Runtime, demandID string, maxRetr
 		interval = 2 * time.Second
 	}
 	for i := 0; i < maxRetry; i++ {
-		quotes, err := TriggerClientListDirectQuotes(ctx, rt, demandID)
+		quotes, err := TriggerClientListDirectQuotes(ctx, store, demandID)
 		if err != nil {
 			return nil, err
 		}

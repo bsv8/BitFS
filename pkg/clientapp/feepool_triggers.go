@@ -42,7 +42,7 @@ type FeePoolCloseResult struct {
 }
 
 // TriggerGatewayFeePoolClose 触发关闭费用池通道并广播 final tx（用于 e2e 清理环境）。
-func TriggerGatewayFeePoolClose(ctx context.Context, rt *Runtime) (FeePoolCloseResult, error) {
+func TriggerGatewayFeePoolClose(ctx context.Context, store *clientDB, rt *Runtime) (FeePoolCloseResult, error) {
 	if rt == nil || rt.Host == nil {
 		return FeePoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -57,7 +57,7 @@ func TriggerGatewayFeePoolClose(ctx context.Context, rt *Runtime) (FeePoolCloseR
 		return FeePoolCloseResult{}, fmt.Errorf("fee pool session missing for gateway=%s", gw.ID.String())
 	}
 	// 统一走按 spend_txid 的网关状态驱动收尾，避免本地会话金额滞后导致 close 失败。
-	return TriggerGatewayFeePoolCloseBySpendTxID(ctx, rt, FeePoolCloseBySpendTxIDParams{
+	return TriggerGatewayFeePoolCloseBySpendTxID(ctx, store, rt, FeePoolCloseBySpendTxIDParams{
 		SpendTxID:     sess.SpendTxID,
 		GatewayPeerID: gatewayID,
 	})
@@ -103,7 +103,7 @@ type FeePoolListenUnderpayProbeResult struct {
 }
 
 // TriggerGatewayFeePoolEnsureActive 显式触发费用池内核执行 ensure_active 命令（用于 e2e/运维触发）。
-func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePoolEnsureActiveParams) (FeePoolEnsureActiveResult, error) {
+func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt *Runtime, p FeePoolEnsureActiveParams) (FeePoolEnsureActiveResult, error) {
 	if rt == nil || rt.Host == nil {
 		return FeePoolEnsureActiveResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -143,7 +143,7 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, rt *Runtime, p FeePo
 }
 
 // TriggerGatewayFeePoolListenUnderpayProbe 仅用于 e2e：发送“低于单轮监听费”的 pay_confirm，验证网关拒绝策略。
-func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, p FeePoolListenUnderpayProbeParams) (FeePoolListenUnderpayProbeResult, error) {
+func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, store *clientDB, rt *Runtime, p FeePoolListenUnderpayProbeParams) (FeePoolListenUnderpayProbeResult, error) {
 	if rt == nil || rt.Host == nil {
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -245,7 +245,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, rt *Runtime, 
 }
 
 // TriggerGatewayFeePoolCloseBySpendTxID 按 spend_txid 触发关闭费用池通道并广播 final tx（运维/回收工具用）。
-func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p FeePoolCloseBySpendTxIDParams) (FeePoolCloseResult, error) {
+func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB, rt *Runtime, p FeePoolCloseBySpendTxIDParams) (FeePoolCloseResult, error) {
 	if rt == nil || rt.Host == nil {
 		return FeePoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -267,7 +267,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		return FeePoolCloseResult{}, fmt.Errorf("session not found by spend_txid: %s", spendTxID)
 	}
 	if strings.TrimSpace(st.Status) == "closed" {
-		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + spendTxID,
 			FlowType:        "fee_pool",
 			RefID:           spendTxID,
@@ -343,7 +343,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, rt *Runtime, p F
 		"status":             resp.Status,
 	})
 	if resp.Success && strings.TrimSpace(resp.Status) == "closed" {
-		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 			FlowID:          "fee_pool:" + spendTxID,
 			FlowType:        "fee_pool",
 			RefID:           spendTxID,

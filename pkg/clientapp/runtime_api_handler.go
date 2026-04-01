@@ -13,19 +13,14 @@ func NewRuntimeAPIHandler(rt *Runtime) (http.Handler, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime is nil")
 	}
-	if rt.DB == nil {
-		return nil, fmt.Errorf("runtime db is nil")
-	}
-	if rt.DBActor == nil {
-		return nil, fmt.Errorf("runtime db actor is nil")
-	}
 	if rt.Host == nil {
 		return nil, fmt.Errorf("runtime host is nil")
 	}
 	if rt.Workspace == nil {
 		return nil, fmt.Errorf("runtime workspace is nil")
 	}
-	cfg := rt.runIn.toConfig()
-	srv := newHTTPAPIServer(rt, &cfg, rt.DB, rt.DBActor, rt.Host, rt.HealthyGWs, rt.Workspace, rt.rpcTrace)
-	return srv.Handler()
+	if rt.HTTP == nil {
+		return nil, fmt.Errorf("runtime http server is nil")
+	}
+	return rt.HTTP.Handler()
 }

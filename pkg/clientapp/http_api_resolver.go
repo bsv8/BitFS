@@ -22,7 +22,7 @@ func (s *httpAPIServer) handleResolverResolve(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerResolverResolve(r.Context(), s.rt, TriggerResolverResolveParams{
+	resp, err := TriggerResolverResolve(r.Context(), s.store, s.rt, TriggerResolverResolveParams{
 		ResolverPubkeyHex: req.ResolverPubkeyHex,
 		Name:              req.Name,
 	})

@@ -33,7 +33,6 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	t.Parallel()
 	db := newKernelTestDB(t)
 	rt := &Runtime{
-		DB: db,
 		runIn: RunInput{
 			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
 		},
@@ -72,7 +71,6 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	t.Parallel()
 	db := newKernelTestDB(t)
 	rt := &Runtime{
-		DB: db,
 		runIn: RunInput{
 			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
 		},

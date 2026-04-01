@@ -23,6 +23,7 @@ type TriggerPeerCallParams struct {
 	Route                string
 	ContentType          string
 	Body                 []byte
+	Store                *clientDB
 	PaymentMode          string
 	PaymentScheme        string
 	ServiceQuote         []byte
@@ -32,6 +33,7 @@ type TriggerPeerCallParams struct {
 type TriggerPeerResolveParams struct {
 	To    string
 	Route string
+	Store *clientDB
 }
 
 type inboxReceipt struct {
@@ -53,11 +55,10 @@ type routeIndexManifest struct {
 // - bitfs.peer.call 未来会承接多支付协议，因此这里先统一“所有节点共用一个外壳”；
 // - client 自己目前只暴露 inbox.message、capabilities_show 与 route index resolve；
 // - 业务层 route 继续由各自服务挂载，壳不需要知道 domain/gateway 的细节。
-func registerNodeRouteHandlers(rt *Runtime) {
-	if rt == nil || rt.Host == nil || rt.DB == nil {
+func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
+	if rt == nil || rt.Host == nil || store == nil {
 		return
 	}
-	store := newClientDB(rt.DB, nil)
 	ncall.Register(rt.Host, nodeSecForRuntime(rt), func(ctx context.Context, meta ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
 		route, bad := normalizeCallRoute(req.Route)
 		if bad != "" {
@@ -76,9 +77,11 @@ func registerNodeRouteHandlers(rt *Runtime) {
 		default:
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-	}, func(_ context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
+	}, func(ctx context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
 		route := normalizeResolveRoute(req.Route)
-		body, err := buildRouteIndexManifest(rt.DB, route)
+		body, err := clientDBValue(ctx, store, func(db *sql.DB) ([]byte, error) {
+			return buildRouteIndexManifest(db, route)
+		})
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return ncall.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
@@ -103,7 +106,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	if err != nil {
 		return out, err
 	}
-	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
+	if err := ensureTargetPeerReachable(ctx, p.Store, rt, to, peerID); err != nil {
 		return out, err
 	}
 	req := ncall.CallReq{
@@ -114,7 +117,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
 	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
-		return payPeerCallWithAcceptedQuote(ctx, rt, peerID, req, p.ServiceQuote, p.PaymentScheme, p.RequireActiveFeePool)
+		return payPeerCallWithAcceptedQuote(ctx, rt, p.Store, peerID, req, p.ServiceQuote, p.PaymentScheme, p.RequireActiveFeePool)
 	}
 	out, err = callNodeRoute(ctx, rt, peerID, req)
 	if err != nil {
@@ -124,9 +127,9 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		return out, nil
 	}
 	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentRequired(ctx, rt, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
+		return quotePeerCallFromPaymentRequired(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
 	}
-	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
+	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
 	if payErr != nil {
 		return ncall.CallResp{}, payErr
 	}
@@ -142,7 +145,7 @@ func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolvePa
 	if err != nil {
 		return out, err
 	}
-	if err := ensureTargetPeerReachable(ctx, rt, to, peerID); err != nil {
+	if err := ensureTargetPeerReachable(ctx, p.Store, rt, to, peerID); err != nil {
 		return out, err
 	}
 	err = pproto.CallProto(ctx, rt.Host, peerID, ncall.ProtoNodeResolve, nodeSecForRuntime(rt), ncall.ResolveReq{

@@ -9,7 +9,8 @@ import (
 func TestKernelDirectDownloadCoreWritesJournal(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	rt := &Runtime{DB: db}
+	rt := &Runtime{}
+	rt.kernel = newClientKernel(rt, newClientDB(db, nil))
 
 	_, err := runDirectDownloadCore(context.Background(), rt, directDownloadCoreParams{
 		SeedHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
@@ -40,9 +41,10 @@ func TestKernelDirectDownloadCoreWritesJournal(t *testing.T) {
 func TestKernelTransferByStrategyWritesJournal(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	rt := &Runtime{DB: db}
+	rt := &Runtime{}
+	rt.kernel = newClientKernel(rt, newClientDB(db, nil))
 
-	_, err := TriggerTransferChunksByStrategy(context.Background(), rt, TransferChunksByStrategyParams{
+	_, err := TriggerTransferChunksByStrategy(context.Background(), newClientDB(db, nil), rt, TransferChunksByStrategyParams{
 		DemandID: "dmd_test",
 		SeedHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 	})
@@ -120,7 +122,8 @@ func TestKernelDispatchRejectedWritesJournal(t *testing.T) {
 		c := c
 		t.Run(c.name, func(t *testing.T) {
 			db := newWalletAPITestDB(t)
-			rt := &Runtime{DB: db}
+			rt := &Runtime{}
+			rt.kernel = newClientKernel(rt, newClientDB(db, nil))
 			k := newClientKernel(rt, newClientDB(db, nil))
 			if c.prepare != nil {
 				c.prepare(k)

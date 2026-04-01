@@ -21,38 +21,38 @@ type expectedServiceReceipt struct {
 	ResultPayloadBytes []byte
 }
 
-func verifyServiceReceiptOrFreeze(ctx context.Context, rt *Runtime, gatewayPeerID peer.ID, session *feePoolSession, mergedCurrentTx []byte, expected expectedServiceReceipt, receiptRaw []byte) error {
+func verifyServiceReceiptOrFreeze(ctx context.Context, rt *Runtime, store *clientDB, gatewayPeerID peer.ID, session *feePoolSession, mergedCurrentTx []byte, expected expectedServiceReceipt, receiptRaw []byte) error {
 	if session == nil {
 		return fmt.Errorf("fee pool session missing")
 	}
 	if len(receiptRaw) == 0 {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_missing")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "service_receipt_missing")
 		return fmt.Errorf("service receipt missing")
 	}
 	receipt, err := payflow.UnmarshalServiceReceipt(receiptRaw)
 	if err != nil {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_decode_failed")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "service_receipt_decode_failed")
 		return fmt.Errorf("decode service receipt failed: %w", err)
 	}
 	gatewayPub, err := gatewayPublicKeyFromPeer(rt, gatewayPeerID)
 	if err != nil {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "gateway_pubkey_missing")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "gateway_pubkey_missing")
 		return err
 	}
 	if err := payflow.VerifyServiceReceiptSignature(receipt, gatewayPub); err != nil {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_signature_invalid")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "service_receipt_signature_invalid")
 		return err
 	}
 	if !strings.EqualFold(strings.TrimSpace(receipt.ServiceType), strings.TrimSpace(expected.ServiceType)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_type_mismatch")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "service_receipt_type_mismatch")
 		return fmt.Errorf("service receipt type mismatch")
 	}
 	if !strings.EqualFold(strings.TrimSpace(receipt.OfferHash), strings.TrimSpace(expected.OfferHash)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_offer_hash_mismatch")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "service_receipt_offer_hash_mismatch")
 		return fmt.Errorf("service receipt offer_hash mismatch")
 	}
 	if !strings.EqualFold(strings.TrimSpace(receipt.ResultHash), payflow.HashPayloadBytes(expected.ResultPayloadBytes)) {
-		freezeFeePoolSessionForReceipt(rt, gatewayPeerID, session, mergedCurrentTx, "service_receipt_payload_hash_mismatch")
+		freezeFeePoolSessionForReceipt(rt, store, gatewayPeerID, session, mergedCurrentTx, "service_receipt_payload_hash_mismatch")
 		return fmt.Errorf("service receipt payload hash mismatch")
 	}
 	return nil
@@ -73,7 +73,7 @@ func gatewayPublicKeyFromPeer(rt *Runtime, gatewayPeerID peer.ID) (*ec.PublicKey
 	return ec.PublicKeyFromString(strings.ToLower(hex.EncodeToString(raw)))
 }
 
-func freezeFeePoolSessionForReceipt(rt *Runtime, gatewayPeerID peer.ID, session *feePoolSession, mergedCurrentTx []byte, reason string) {
+func freezeFeePoolSessionForReceipt(rt *Runtime, store *clientDB, gatewayPeerID peer.ID, session *feePoolSession, mergedCurrentTx []byte, reason string) {
 	if rt == nil || session == nil {
 		return
 	}
@@ -85,14 +85,14 @@ func freezeFeePoolSessionForReceipt(rt *Runtime, gatewayPeerID peer.ID, session 
 	session.SuspiciousReason = strings.TrimSpace(reason)
 	session.SuspiciousAtUnix = time.Now().Unix()
 	rt.setFeePool(gatewayPeerID.String(), session)
-	armSuspiciousFeePoolSettlementTask(rt, gatewayPeerID, session)
+	armSuspiciousFeePoolSettlementTask(rt, store, gatewayPeerID, session)
 }
 
-func armSuspiciousFeePoolSettlementTask(rt *Runtime, gatewayPeerID peer.ID, session *feePoolSession) {
+func armSuspiciousFeePoolSettlementTask(rt *Runtime, store *clientDB, gatewayPeerID peer.ID, session *feePoolSession) {
 	if rt == nil || session == nil || rt.ActionChain == nil {
 		return
 	}
-	scheduler := ensureRuntimeTaskScheduler(rt)
+	scheduler := ensureRuntimeTaskScheduler(rt, store)
 	if scheduler == nil {
 		return
 	}
@@ -110,12 +110,12 @@ func armSuspiciousFeePoolSettlementTask(rt *Runtime, gatewayPeerID peer.ID, sess
 		Immediate: true,
 		Timeout:   20 * time.Second,
 		Run: func(ctx context.Context, trigger string) (map[string]any, error) {
-			return runSuspiciousFeePoolSettlement(ctx, rt, gwID, spendTxID)
+			return runSuspiciousFeePoolSettlement(ctx, rt, store, gwID, spendTxID)
 		},
 	})
 }
 
-func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, gatewayPeerID string, spendTxID string) (map[string]any, error) {
+func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, store *clientDB, gatewayPeerID string, spendTxID string) (map[string]any, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -150,13 +150,13 @@ func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, gatewayPeerI
 	if err != nil {
 		return nil, fmt.Errorf("broadcast suspicious fee pool current tx failed: %w", err)
 	}
-	if err := applyLocalBroadcastWalletTx(rt, session.CurrentTxHex, "fee_pool_suspicious_expiry_settle"); err != nil {
+	if err := applyLocalBroadcastWalletTx(context.Background(), store, rt, session.CurrentTxHex, "fee_pool_suspicious_expiry_settle"); err != nil {
 		return nil, fmt.Errorf("project suspicious fee pool current tx failed: %w", err)
 	}
 	session.FinalTxID = strings.TrimSpace(finalTxID)
 	session.Status = "closed"
 	rt.setFeePool(gatewayPeerID, session)
-	dbAppendWalletFundFlow(context.Background(), runtimeStore(rt), walletFundFlowEntry{
+	dbAppendWalletFundFlow(context.Background(), store, walletFundFlowEntry{
 		FlowID:          "fee_pool:" + session.SpendTxID,
 		FlowType:        "fee_pool",
 		RefID:           session.SpendTxID,

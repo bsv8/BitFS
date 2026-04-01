@@ -126,7 +126,7 @@ func (lr *liveRuntime) stopFollow(streamID string) bool {
 	return true
 }
 
-func liveAutoBuySegment(ctx context.Context, rt *Runtime, decision LivePurchaseDecision, snapshot LiveSubscriberSnapshot) (liveAutoBuyResult, error) {
+func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decision LivePurchaseDecision, snapshot LiveSubscriberSnapshot) (liveAutoBuyResult, error) {
 	if rt == nil || rt.Workspace == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -171,7 +171,7 @@ func liveAutoBuySegment(ctx context.Context, rt *Runtime, decision LivePurchaseD
 	}, nil
 }
 
-func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (LiveFollowStatus, error) {
+func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, rawURI string) (LiveFollowStatus, error) {
 	if rt == nil || rt.live == nil {
 		return LiveFollowStatus{}, fmt.Errorf("runtime not initialized")
 	}
@@ -184,7 +184,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		return LiveFollowStatus{}, err
 	}
 	streamID := strings.ToLower(strings.TrimSpace(subRes.StreamID))
-	persisted, found, err := dbLoadLiveFollowStatus(ctx, runtimeStore(rt), streamID)
+	persisted, found, err := dbLoadLiveFollowStatus(ctx, store, streamID)
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
@@ -192,7 +192,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 	if tick <= 0 {
 		tick = 3 * time.Second
 	}
-	scheduler := ensureRuntimeTaskScheduler(rt)
+	scheduler := ensureRuntimeTaskScheduler(rt, store)
 	if scheduler == nil {
 		return LiveFollowStatus{}, fmt.Errorf("task scheduler not initialized")
 	}
@@ -205,7 +205,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		Interval:  tick,
 		Immediate: true,
 		Run: func(runCtx context.Context, _ string) (map[string]any, error) {
-			return runLiveFollowLoop(runCtx, rt, streamID)
+			return runLiveFollowLoop(runCtx, store, rt, streamID)
 		},
 	}); err != nil {
 		return LiveFollowStatus{}, err
@@ -235,7 +235,7 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 		}
 		return LiveFollowStatus{}, fmt.Errorf("follow state missing")
 	}
-	if err := dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st); err != nil {
+	if err := dbPersistLiveFollowStatus(ctx, store, st); err != nil {
 		if registered {
 			scheduler.CancelTask(taskName)
 		}
@@ -244,19 +244,19 @@ func TriggerLiveFollowStart(ctx context.Context, rt *Runtime, rawURI string) (Li
 	return st, nil
 }
 
-func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) (map[string]any, error) {
+func runLiveFollowLoop(ctx context.Context, store *clientDB, rt *Runtime, streamID string) (map[string]any, error) {
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	default:
 	}
-	if err := liveFollowOnce(ctx, rt, streamID); err != nil {
+	if err := liveFollowOnce(ctx, store, rt, streamID); err != nil {
 		rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
 			st.Status = "running"
 			st.LastError = err.Error()
 		})
 		if st, ok := rt.live.followStatus(streamID); ok {
-			_ = dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st)
+			_ = dbPersistLiveFollowStatus(ctx, store, st)
 		}
 		return nil, err
 	}
@@ -266,9 +266,9 @@ func runLiveFollowLoop(ctx context.Context, rt *Runtime, streamID string) (map[s
 	}, nil
 }
 
-func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
+func liveFollowOnce(ctx context.Context, store *clientDB, rt *Runtime, streamID string) error {
 	status, _ := rt.live.followStatus(streamID)
-	snap, sellerPeerID, err := discoverLiveSnapshotForFollow(ctx, rt, streamID, status.HaveSegmentIndex)
+	snap, sellerPeerID, err := discoverLiveSnapshotForFollow(ctx, store, rt, streamID, status.HaveSegmentIndex)
 	if err != nil {
 		return err
 	}
@@ -285,7 +285,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 		st.LastQuoteSellerPeerID = sellerPeerID
 	})
 	if st, ok := rt.live.followStatus(streamID); ok {
-		_ = dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st)
+		_ = dbPersistLiveFollowStatus(ctx, store, st)
 	}
 	if int64(decision.TargetSegmentIndex) <= status.HaveSegmentIndex {
 		return nil
@@ -294,7 +294,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 	if autoBuy == nil {
 		autoBuy = liveAutoBuySegment
 	}
-	res, err := autoBuy(ctx, rt, decision, snap)
+	res, err := autoBuy(ctx, store, rt, decision, snap)
 	if err != nil {
 		return err
 	}
@@ -307,7 +307,7 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 		st.Status = "running"
 	})
 	if st, ok := rt.live.followStatus(streamID); ok {
-		_ = dbPersistLiveFollowStatus(ctx, runtimeStore(rt), st)
+		_ = dbPersistLiveFollowStatus(ctx, store, st)
 	}
 	obs.Business("bitcast-client", "live_follow_bought_segment", map[string]any{
 		"stream_id":     streamID,
@@ -318,19 +318,19 @@ func liveFollowOnce(ctx context.Context, rt *Runtime, streamID string) error {
 	return nil
 }
 
-func discoverLiveSnapshotForFollow(ctx context.Context, rt *Runtime, streamID string, haveSegmentIndex int64) (LiveSubscriberSnapshot, string, error) {
+func discoverLiveSnapshotForFollow(ctx context.Context, store *clientDB, rt *Runtime, streamID string, haveSegmentIndex int64) (LiveSubscriberSnapshot, string, error) {
 	if rt != nil && len(rt.HealthyGWs) > 0 {
 		window := rt.runIn.Live.Publish.BroadcastWindow
 		if window == 0 {
 			window = 10
 		}
-		pub, err := TriggerGatewayPublishLiveDemand(ctx, rt, PublishLiveDemandParams{
+		pub, err := TriggerGatewayPublishLiveDemand(ctx, store, rt, PublishLiveDemandParams{
 			StreamID:         streamID,
 			HaveSegmentIndex: haveSegmentIndex,
 			Window:           window,
 		})
 		if err == nil && strings.TrimSpace(pub.DemandID) != "" {
-			if snap, sellerPeerID, ok := waitBestLiveQuoteSnapshot(ctx, rt, streamID, strings.TrimSpace(pub.DemandID)); ok {
+			if snap, sellerPeerID, ok := waitBestLiveQuoteSnapshot(ctx, store, rt, streamID, strings.TrimSpace(pub.DemandID)); ok {
 				return snap, sellerPeerID, nil
 			}
 		}
@@ -339,10 +339,10 @@ func discoverLiveSnapshotForFollow(ctx context.Context, rt *Runtime, streamID st
 	return snap, "", err
 }
 
-func waitBestLiveQuoteSnapshot(ctx context.Context, rt *Runtime, streamID, demandID string) (LiveSubscriberSnapshot, string, bool) {
+func waitBestLiveQuoteSnapshot(ctx context.Context, store *clientDB, rt *Runtime, streamID, demandID string) (LiveSubscriberSnapshot, string, bool) {
 	deadline := time.Now().Add(4 * time.Second)
 	for {
-		quotes, err := TriggerClientListLiveQuotes(ctx, rt, demandID)
+		quotes, err := TriggerClientListLiveQuotes(ctx, store, demandID)
 		if err == nil {
 			if snap, sellerPeerID, ok := bestLiveQuoteSnapshot(streamID, quotes); ok {
 				return snap, sellerPeerID, true
@@ -388,8 +388,8 @@ func bestLiveQuoteSnapshot(streamID string, quotes []LiveQuoteItem) (LiveSubscri
 	}, strings.ToLower(strings.TrimSpace(best.SellerPeerID)), true
 }
 
-func TriggerLiveFollowStop(rt *Runtime, streamID string) error {
-	if rt == nil || rt.live == nil {
+func TriggerLiveFollowStop(store *clientDB, rt *Runtime, streamID string) error {
+	if store == nil || rt == nil || rt.live == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
 	if !rt.live.stopFollow(streamID) {
@@ -397,18 +397,18 @@ func TriggerLiveFollowStop(rt *Runtime, streamID string) error {
 	}
 	if st, ok := rt.live.followStatus(streamID); ok {
 		st.Status = "stopped"
-		_ = dbPersistLiveFollowStatus(context.Background(), runtimeStore(rt), st)
+		_ = dbPersistLiveFollowStatus(context.Background(), store, st)
 	}
 	return nil
 }
 
-func TriggerLiveFollowStatus(rt *Runtime, streamID string) (LiveFollowStatus, error) {
-	if rt == nil || rt.live == nil {
+func TriggerLiveFollowStatus(store *clientDB, rt *Runtime, streamID string) (LiveFollowStatus, error) {
+	if store == nil || rt == nil || rt.live == nil {
 		return LiveFollowStatus{}, fmt.Errorf("runtime not initialized")
 	}
 	st, ok := rt.live.followStatus(streamID)
 	if !ok {
-		loaded, found, err := dbLoadLiveFollowStatus(context.Background(), runtimeStore(rt), streamID)
+		loaded, found, err := dbLoadLiveFollowStatus(context.Background(), store, streamID)
 		if err != nil {
 			return LiveFollowStatus{}, err
 		}
@@ -421,11 +421,11 @@ func TriggerLiveFollowStatus(rt *Runtime, streamID string) (LiveFollowStatus, er
 	return st, nil
 }
 
-func restorePersistedLiveFollows(ctx context.Context, rt *Runtime) {
-	if rt == nil || rt.DB == nil {
+func restorePersistedLiveFollows(ctx context.Context, store *clientDB, rt *Runtime) {
+	if rt == nil || store == nil {
 		return
 	}
-	items, err := dbListRunningLiveFollowStatuses(ctx, runtimeStore(rt))
+	items, err := dbListRunningLiveFollowStatuses(ctx, store)
 	if err != nil {
 		obs.Error("bitcast-client", "live_follow_restore_failed", map[string]any{"error": err.Error()})
 		return
@@ -434,7 +434,7 @@ func restorePersistedLiveFollows(ctx context.Context, rt *Runtime) {
 		if strings.TrimSpace(it.StreamURI) == "" {
 			continue
 		}
-		if _, err := TriggerLiveFollowStart(ctx, rt, it.StreamURI); err != nil {
+		if _, err := TriggerLiveFollowStart(ctx, store, rt, it.StreamURI); err != nil {
 			obs.Error("bitcast-client", "live_follow_restore_item_failed", map[string]any{
 				"stream_id": it.StreamID,
 				"error":     err.Error(),

@@ -19,7 +19,7 @@ func (s *httpAPIServer) handleWalletBusinessPreview(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerWalletBusinessPreview(r.Context(), s.rt, req)
+	resp, err := TriggerWalletBusinessPreview(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -41,7 +41,7 @@ func (s *httpAPIServer) handleWalletBusinessSign(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerWalletBusinessSign(r.Context(), s.rt, req)
+	resp, err := TriggerWalletBusinessSign(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return

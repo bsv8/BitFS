@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -59,7 +60,7 @@ func TestInitIndexDB_MigratesLegacyChainTables(t *testing.T) {
 		}
 	}
 
-	state, err := loadChainTipState(db)
+	state, err := dbLoadChainTipState(context.Background(), newClientDB(db, nil))
 	if err != nil {
 		t.Fatalf("loadChainTipState: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -153,7 +154,7 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 		t.Fatalf("seed wallet_utxo: %v", err)
 	}
 
-	srv := &httpAPIServer{db: db, rt: rt}
+	srv := &httpAPIServer{db: db, rt: rt, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/chain/utxo/status", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminChainUTXOStatus(rec, req)

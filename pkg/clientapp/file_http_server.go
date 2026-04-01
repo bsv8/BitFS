@@ -423,7 +423,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	if err != nil {
 		return err
 	}
-	pub, err := TriggerGatewayPublishDemand(ctx, sess.server.rt, PublishDemandParams{SeedHash: sess.seedHash, ChunkCount: 1, GatewayPeerID: gw.ID.String()})
+	pub, err := TriggerGatewayPublishDemand(ctx, sess.server.store, sess.server.rt, PublishDemandParams{SeedHash: sess.seedHash, ChunkCount: 1, GatewayPeerID: gw.ID.String()})
 	if err != nil {
 		return err
 	}
@@ -442,6 +442,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	workers, meta, seedBytes, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
 		Ctx:      ctx,
 		Buyer:    sess.server.rt,
+		Store:    sess.server.store,
 		Quotes:   quotes,
 		SeedHash: sess.seedHash,
 		OnQuoteRejected: func(q DirectQuoteItem, err error) {
@@ -582,7 +583,7 @@ func (sess *fileDownloadSession) waitQuotes(ctx context.Context, demandID string
 	}
 	maxChunk := sess.server.cfg.FSHTTP.MaxChunkPriceSatPer64K
 	for {
-		quotes, err := TriggerClientListDirectQuotes(ctx, sess.server.rt, demandID)
+		quotes, err := TriggerClientListDirectQuotes(ctx, sess.server.store, demandID)
 		if err != nil {
 			return nil, err
 		}

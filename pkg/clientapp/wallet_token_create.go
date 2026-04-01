@@ -219,7 +219,7 @@ func buildWalletTokenCreateSubmit(r *http.Request, s *httpAPIServer, req walletA
 	if finalTxID == "" {
 		finalTxID = localTxID
 	}
-	if err := applyLocalBroadcastWalletTx(s.rt, txHex, "wallet_token_create_submit"); err != nil {
+	if err := applyLocalBroadcastWalletTx(r.Context(), s.store, s.rt, txHex, "wallet_token_create_submit"); err != nil {
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token create failed: %w", err)
 	}
 	addr, _ := clientWalletAddress(s.rt)
@@ -239,7 +239,7 @@ func buildWalletTokenCreateSubmit(r *http.Request, s *httpAPIServer, req walletA
 		SubmittedAtUnix: nowUnix,
 		UpdatedAtUnix:   nowUnix,
 	}
-	if err := recordWalletBSV21CreateSubmitted(r.Context(), s.rt, statusItem); err != nil {
+	if err := recordWalletBSV21CreateSubmitted(r.Context(), s.store, s.rt, statusItem); err != nil {
 		return walletAssetActionSubmitResp{}, fmt.Errorf("record token create status failed: %w", err)
 	}
 	return walletAssetActionSubmitResp{

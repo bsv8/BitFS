@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -147,7 +146,7 @@ func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePl
 	}, nil
 }
 
-func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDemandParams) (broadcastmodule.DemandPublishPaidResp, error) {
+func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandParams) (broadcastmodule.DemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -171,7 +170,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 		BuyerAddrs: buyerAddrs,
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
-	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1DemandPublish, body, decodeDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1DemandPublish, body, decodeDemandPublishRouteResp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return broadcastmodule.DemandPublishPaidResp{}, err
@@ -189,7 +188,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, rt *Runtime, p PublishDema
 	return resp, nil
 }
 
-func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p PublishDemandBatchParams) (broadcastmodule.DemandPublishBatchPaidResp, error) {
+func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandBatchParams) (broadcastmodule.DemandPublishBatchPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -217,7 +216,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 		BuyerAddrs: localAdvertiseAddrs(rt),
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
-	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1DemandPublishBatch, body, decodeDemandPublishBatchRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1DemandPublishBatch, body, decodeDemandPublishBatchRouteResp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
 		return broadcastmodule.DemandPublishBatchPaidResp{}, err
@@ -235,7 +234,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, rt *Runtime, p Publis
 	return resp, nil
 }
 
-func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p PublishLiveDemandParams) (broadcastmodule.LiveDemandPublishPaidResp, error) {
+func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishLiveDemandParams) (broadcastmodule.LiveDemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -256,7 +255,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, rt *Runtime, p Publish
 		Window:           p.Window,
 		BuyerAddrs:       localAdvertiseAddrs(rt),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1LiveDemandPublish, body, decodeLiveDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1LiveDemandPublish, body, decodeLiveDemandPublishRouteResp)
 	if err != nil {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, err
 	}
@@ -461,35 +460,29 @@ type LiveQuoteItem struct {
 	ExpiresAtUnix      int64              `json:"expires_at_unix"`
 }
 
-func TriggerClientListDirectQuotes(ctx context.Context, rt *Runtime, demandID string) ([]DirectQuoteItem, error) {
-	_ = ctx
-	if rt == nil || rt.DB == nil {
-		return nil, fmt.Errorf("runtime not initialized")
-	}
-	demandID = strings.TrimSpace(demandID)
-	if demandID == "" {
-		return nil, fmt.Errorf("demand_id required")
-	}
-	rows, err := rt.DB.Query(`SELECT demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,seller_arbiter_pubkey_hexes_json,available_chunk_bitmap_hex FROM direct_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+func TriggerClientListDirectQuotes(ctx context.Context, store *clientDB, demandID string) ([]DirectQuoteItem, error) {
+	page, err := dbListDirectQuotes(ctx, store, directQuoteFilter{
+		Limit:    1000,
+		Offset:   0,
+		DemandID: strings.TrimSpace(demandID),
+	})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	out := make([]DirectQuoteItem, 0, 4)
 	now := time.Now().Unix()
-	for rows.Next() {
-		var it DirectQuoteItem
-		var sellerArbitersJSON string
-		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.SeedPrice, &it.ChunkPrice, &it.ChunkCount, &it.FileSize, &it.ExpiresAtUnix, &it.RecommendedFileName, &it.MIMEHint, &sellerArbitersJSON, &it.AvailableChunkBitmapHex); err != nil {
-			return nil, err
-		}
-		it.RecommendedFileName = sanitizeRecommendedFileName(it.RecommendedFileName)
-		it.MIMEHint = sanitizeMIMEHint(it.MIMEHint)
-		if strings.TrimSpace(sellerArbitersJSON) != "" {
-			var ids []string
-			if err := json.Unmarshal([]byte(sellerArbitersJSON), &ids); err == nil {
-				it.SellerArbiterPeerIDs = normalizePeerIDList(ids)
-			}
+	for _, raw := range page.Items {
+		it := DirectQuoteItem{
+			DemandID:                raw.DemandID,
+			SellerPeerID:            raw.SellerPeerID,
+			SeedPrice:               raw.SeedPrice,
+			ChunkPrice:              raw.ChunkPrice,
+			ChunkCount:              raw.ChunkCount,
+			FileSize:                raw.FileSize,
+			ExpiresAtUnix:           raw.ExpiresAtUnix,
+			RecommendedFileName:     raw.RecommendedFileName,
+			MIMEHint:                raw.MIMEHint,
+			AvailableChunkBitmapHex: raw.AvailableChunkBitmapHex,
 		}
 		if strings.TrimSpace(it.AvailableChunkBitmapHex) != "" {
 			norm, err := normalizeChunkBitmapHex(it.AvailableChunkBitmapHex)
@@ -518,33 +511,16 @@ func TriggerClientSubmitLiveQuote(ctx context.Context, seller *Runtime, p LiveQu
 	return submitLiveQuote(ctx, seller.Host, seller.rpcTrace, p)
 }
 
-func TriggerClientListLiveQuotes(ctx context.Context, rt *Runtime, demandID string) ([]LiveQuoteItem, error) {
-	_ = ctx
-	if rt == nil || rt.DB == nil {
-		return nil, fmt.Errorf("runtime not initialized")
-	}
-	demandID = strings.TrimSpace(demandID)
-	if demandID == "" {
-		return nil, fmt.Errorf("demand_id required")
-	}
-	rows, err := rt.DB.Query(`SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+func TriggerClientListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]LiveQuoteItem, error) {
+	rows, err := dbListLiveQuotes(ctx, store, demandID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	now := time.Now().Unix()
 	out := make([]LiveQuoteItem, 0, 4)
-	for rows.Next() {
-		var it LiveQuoteItem
-		var recentJSON string
-		if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.StreamID, &it.LatestSegmentIndex, &recentJSON, &it.ExpiresAtUnix); err != nil {
-			return nil, err
-		}
+	for _, it := range rows {
 		if it.ExpiresAtUnix > 0 && it.ExpiresAtUnix < now {
 			continue
-		}
-		if strings.TrimSpace(recentJSON) != "" {
-			_ = json.Unmarshal([]byte(recentJSON), &it.RecentSegments)
 		}
 		out = append(out, it)
 	}
@@ -630,7 +606,7 @@ type directTransferPoolCloseResult struct {
 	FinalTxID string
 }
 
-func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
+func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
 	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -736,11 +712,11 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			allocMu.Lock()
 			defer allocMu.Unlock()
 
-			selected, err := allocatePlainBSVWalletUTXOs(buyer, "direct_transfer_pool_open", target)
+			selected, err := allocatePlainBSVWalletUTXOs(ctx, store, buyer, "direct_transfer_pool_open", target)
 			if err != nil {
 				return nil, "", err
 			}
-			return splitUTXOsToTarget(ctx, buyer, "direct_pool:"+curSessionID, clientActor, selected, target, 0.5)
+			return splitUTXOsToTarget(ctx, store, buyer, "direct_pool:"+curSessionID, clientActor, selected, target, 0.5)
 		}()
 		if err != nil {
 			if isRetryableTransferPoolSplitErr(err) && attempt < maxOpenAttempt {
@@ -782,7 +758,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 		if err != nil {
 			return directTransferPoolOpenResult{}, fmt.Errorf("build transfer pool base tx failed: %w", err)
 		}
-		tip, err := getTipHeightFromDB(buyer)
+		tip, err := getTipHeightFromDB(ctx, store)
 		if err != nil {
 			return directTransferPoolOpenResult{}, fmt.Errorf("load tip height from snapshot failed: %w", err)
 		}
@@ -860,7 +836,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			}
 			return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed: %w", err)
 		}
-		if err := applyLocalBroadcastWalletTx(buyer, baseResp.Tx.Hex(), "direct_transfer_pool_open_base"); err != nil {
+		if err := applyLocalBroadcastWalletTx(ctx, store, buyer, baseResp.Tx.Hex(), "direct_transfer_pool_open_base"); err != nil {
 			return directTransferPoolOpenResult{}, fmt.Errorf("project transfer pool base tx failed: %w", err)
 		}
 		buyer.setTriplePool(&triplePoolSession{
@@ -901,7 +877,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 			"lock_blocks":             req.LockBlocks,
 			"recommended_file_source": "direct_transfer_pool_open",
 		})
-		dbAppendWalletFundFlowFromContext(ctx, runtimeStore(buyer), walletFundFlowEntry{
+		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 			FlowID:          "direct_pool:" + curSessionID,
 			FlowType:        "direct_transfer_pool",
 			RefID:           curSessionID,
@@ -920,7 +896,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 				"sequence":             req.Sequence,
 			},
 		})
-		dbRecordDirectPoolOpenAccounting(ctx, runtimeStore(buyer), directPoolOpenAccountingInput{
+		dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
 			SessionID:         curSessionID,
 			DealID:            dealID,
 			BaseTxID:          baseTxID,
@@ -940,7 +916,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, buyer *Runtime, p direct
 	return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed after retries: %w", lastErr)
 }
 
-func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *poolcore.Actor, selected []poolcore.UTXO, target uint64, feeRateSatPerKB float64) ([]poolcore.UTXO, string, error) {
+func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt *Runtime, flowID string, actor *poolcore.Actor, selected []poolcore.UTXO, target uint64, feeRateSatPerKB float64) ([]poolcore.UTXO, string, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return nil, "", fmt.Errorf("runtime chain not initialized")
 	}
@@ -1014,11 +990,11 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 	if splitTxID == "" {
 		splitTxID = localTxID
 	}
-	if err := applyLocalBroadcastWalletTx(rt, splitTx.Hex(), "direct_transfer_pool_split"); err != nil {
+	if err := applyLocalBroadcastWalletTx(ctx, store, rt, splitTx.Hex(), "direct_transfer_pool_split"); err != nil {
 		return nil, "", fmt.Errorf("project split tx failed: %w", err)
 	}
 	change := int64(total - target - fee)
-	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(rt), walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          flowID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           strings.TrimPrefix(flowID, "direct_pool:"),
@@ -1040,7 +1016,7 @@ func splitUTXOsToTarget(ctx context.Context, rt *Runtime, flowID string, actor *
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		utxos, err := getWalletUTXOsFromDB(rt)
+		utxos, err := getWalletUTXOsFromDB(ctx, store, rt)
 		if err == nil {
 			for _, u := range utxos {
 				if strings.EqualFold(strings.TrimSpace(u.TxID), splitTxID) && u.Vout == 0 && u.Value == target {
@@ -1079,7 +1055,7 @@ func sumUTXOValue(utxos []poolcore.UTXO) uint64 {
 	return sum
 }
 
-func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directTransferPoolPayParams) (directTransferPoolPayResult, error) {
+func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolPayParams) (directTransferPoolPayResult, error) {
 	if buyer == nil || buyer.Host == nil {
 		return directTransferPoolPayResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -1200,7 +1176,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 		"pool_amount_satoshi": session.PoolAmountSat,
 		"chunk_price_satoshi": p.Amount,
 	})
-	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(buyer), walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           session.SessionID,
@@ -1220,7 +1196,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 	})
 	dbRecordDirectPoolPayAccounting(
 		ctx,
-		runtimeStore(buyer),
+		store,
 		session.SessionID,
 		req.Sequence,
 		p.Amount,
@@ -1238,7 +1214,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, buyer *Runtime, p directT
 	return directTransferPoolPayResult{Sequence: req.Sequence, Chunk: chunk}, nil
 }
 
-func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p directTransferPoolCloseParams) (directTransferPoolCloseResult, error) {
+func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolCloseParams) (directTransferPoolCloseResult, error) {
 	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -1317,7 +1293,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	if err != nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("broadcast transfer pool final tx failed: %w", err)
 	}
-	if err := applyLocalBroadcastWalletTx(buyer, merged.Hex(), "direct_transfer_pool_close_final"); err != nil {
+	if err := applyLocalBroadcastWalletTx(ctx, store, buyer, merged.Hex(), "direct_transfer_pool_close_final"); err != nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("project transfer pool final tx failed: %w", err)
 	}
 	session.FinalTxID = finalTxID
@@ -1343,7 +1319,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 		"transfer_state":        "closed",
 		"transfer_entry_source": "direct_transfer_pool_close",
 	})
-	dbAppendWalletFundFlowFromContext(ctx, runtimeStore(buyer), walletFundFlowEntry{
+	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          "direct_pool:" + session.SessionID,
 		FlowType:        "direct_transfer_pool",
 		RefID:           session.SessionID,
@@ -1363,7 +1339,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, buyer *Runtime, p direc
 	})
 	dbRecordDirectPoolCloseAccounting(
 		ctx,
-		runtimeStore(buyer),
+		store,
 		session.SessionID,
 		finalTxID,
 		merged.Hex(),

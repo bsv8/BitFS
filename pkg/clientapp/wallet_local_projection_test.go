@@ -32,7 +32,7 @@ func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T)
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -85,11 +85,11 @@ func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T)
 	}
 	txID := strings.ToLower(tx.TxID().String())
 
-	if err := applyLocalBroadcastWalletProjection(rt, tx, "test_local_projection"); err != nil {
+	if err := applyLocalBroadcastWalletProjection(context.Background(), newClientDB(db, nil), rt, tx, "test_local_projection"); err != nil {
 		t.Fatalf("applyLocalBroadcastWalletProjection: %v", err)
 	}
 
-	utxos, err := getWalletUTXOsFromDB(rt)
+	utxos, err := getWalletUTXOsFromDB(context.Background(), newClientDB(db, nil), rt)
 	if err != nil {
 		t.Fatalf("getWalletUTXOsFromDB: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T)
 		t.Fatalf("spent input txid mismatch: got=%s want=%s", spentTxID, txID)
 	}
 
-	syncState, err := loadWalletUTXOSyncState(db, addr)
+	syncState, err := dbLoadWalletUTXOSyncState(context.Background(), newClientDB(db, nil), addr)
 	if err != nil {
 		t.Fatalf("loadWalletUTXOSyncState: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -223,7 +223,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 	}
 	localTxID := strings.ToLower(localTx.TxID().String())
 
-	if err := applyLocalBroadcastWalletProjection(rt, localTx, "test_local_projection"); err != nil {
+	if err := applyLocalBroadcastWalletProjection(context.Background(), newClientDB(db, nil), rt, localTx, "test_local_projection"); err != nil {
 		t.Fatalf("applyLocalBroadcastWalletProjection: %v", err)
 	}
 
@@ -241,7 +241,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		t.Fatalf("reconcileWalletUTXOSet: %v", err)
 	}
 
-	utxos, err := getWalletUTXOsFromDB(rt)
+	utxos, err := getWalletUTXOsFromDB(context.Background(), newClientDB(db, nil), rt)
 	if err != nil {
 		t.Fatalf("getWalletUTXOsFromDB: %v", err)
 	}
@@ -289,7 +289,7 @@ func TestGetWalletUTXOsFromDB_ExcludesProtectedAssetOutputs(t *testing.T) {
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
-	rt := &Runtime{DB: db, runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -344,7 +344,7 @@ func TestGetWalletUTXOsFromDB_ExcludesProtectedAssetOutputs(t *testing.T) {
 		t.Fatalf("seed plain wallet_utxo: %v", err)
 	}
 
-	utxos, err := getWalletUTXOsFromDB(rt)
+	utxos, err := getWalletUTXOsFromDB(context.Background(), newClientDB(db, nil), rt)
 	if err != nil {
 		t.Fatalf("getWalletUTXOsFromDB: %v", err)
 	}

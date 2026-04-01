@@ -89,7 +89,7 @@ func shouldAutoNodeReachabilityAnnounce(nowUnix int64, state autoNodeReachabilit
 	return false
 }
 
-func startAutoNodeReachabilityAnnounceLoop(ctx context.Context, rt *Runtime) {
+func startAutoNodeReachabilityAnnounceLoop(ctx context.Context, rt *Runtime, store *clientDB) {
 	if rt == nil || rt.Host == nil {
 		return
 	}
@@ -107,15 +107,15 @@ func startAutoNodeReachabilityAnnounceLoop(ctx context.Context, rt *Runtime) {
 		ticker := time.NewTicker(autoNodeReachabilityAnnounceCheckInterval)
 		defer ticker.Stop()
 		state := autoNodeReachabilityAnnounceState{}
-		runAutoNodeReachabilityAnnouncePass(ctx, rt, "startup", &state)
+		runAutoNodeReachabilityAnnouncePass(ctx, rt, store, "startup", &state)
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				runAutoNodeReachabilityAnnouncePass(ctx, rt, "tick", &state)
+				runAutoNodeReachabilityAnnouncePass(ctx, rt, store, "tick", &state)
 			case reason := <-eventCh:
-				runAutoNodeReachabilityAnnouncePass(ctx, rt, reason, &state)
+				runAutoNodeReachabilityAnnouncePass(ctx, rt, store, reason, &state)
 			}
 		}
 	}()
@@ -140,7 +140,7 @@ func (n *autoNodeReachabilityNotifiee) Disconnected(libnetwork.Network, libnetwo
 func (n *autoNodeReachabilityNotifiee) OpenedStream(libnetwork.Network, libnetwork.Stream) {}
 func (n *autoNodeReachabilityNotifiee) ClosedStream(libnetwork.Network, libnetwork.Stream) {}
 
-func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, reason string, state *autoNodeReachabilityAnnounceState) {
+func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store *clientDB, reason string, state *autoNodeReachabilityAnnounceState) {
 	if rt == nil || rt.Host == nil || state == nil {
 		return
 	}
@@ -174,7 +174,7 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, reaso
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	if _, err := TriggerGatewayAnnounceNodeReachability(callCtx, rt, AnnounceNodeReachabilityParams{
+	if _, err := TriggerGatewayAnnounceNodeReachability(callCtx, store, rt, AnnounceNodeReachabilityParams{
 		TTLSeconds:    ttlSeconds,
 		GatewayPeerID: gateway,
 	}); err != nil {
@@ -211,7 +211,7 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, reaso
 // - head_height + seq 是声明版本，不和费用池 sequence 混用；
 // - TTL 属于节点本地设置，gateway 不替节点决定声明寿命；
 // - 广播声明必须由节点自己签名，方便以后跨 gateway 转发时仍能验证主体。
-func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p AnnounceNodeReachabilityParams) (broadcastmodule.NodeReachabilityAnnouncePaidResp, error) {
+func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p AnnounceNodeReachabilityParams) (broadcastmodule.NodeReachabilityAnnouncePaidResp, error) {
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -238,7 +238,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("query head height failed: %w", err)
 	}
-	state, _, err := dbLoadSelfNodeReachabilityState(ctx, runtimeStore(rt), nodePubkeyHex)
+	state, _, err := dbLoadSelfNodeReachabilityState(ctx, store, nodePubkeyHex)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
@@ -275,7 +275,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 	body := &broadcastmodule.NodeReachabilityAnnounceReq{
 		SignedAnnouncement: append([]byte(nil), signedAnnouncement...),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce, body, decodeNodeReachabilityAnnounceRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce, body, decodeNodeReachabilityAnnounceRouteResp)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
 	}
@@ -286,7 +286,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 		}
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
-	if err := dbSaveSelfNodeReachabilityState(ctx, runtimeStore(rt), selfNodeReachabilityState{
+	if err := dbSaveSelfNodeReachabilityState(ctx, store, selfNodeReachabilityState{
 		NodePubkeyHex: nodePubkeyHex,
 		HeadHeight:    uint64(headHeight),
 		Seq:           announceSeq,
@@ -309,7 +309,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, rt *Runtime, p 
 // - 查询未命中也收费，因此 RPC 成功后不管 found 与否都要落账；
 // - 缓存是客户端行为：gateway 只返回最新有效声明，客户端自己决定何时复查；
 // - 查询成功后把多地址全部注入 peerstore，连接层不做“最佳地址”裁判。
-func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p QueryNodeReachabilityParams) (broadcastmodule.NodeReachabilityQueryPaidResp, error) {
+func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p QueryNodeReachabilityParams) (broadcastmodule.NodeReachabilityQueryPaidResp, error) {
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -327,7 +327,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 	body := &broadcastmodule.NodeReachabilityQueryReq{
 		TargetNodePubkeyHex: targetNodePubkeyHex,
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityQuery, body, decodeNodeReachabilityQueryRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityQuery, body, decodeNodeReachabilityQueryRouteResp)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 	}
@@ -343,7 +343,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, rt *Runtime, p Que
 		if err != nil {
 			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 		}
-		if err := dbSaveNodeReachabilityCache(ctx, runtimeStore(rt), gatewayBusinessID(rt, gw.ID), ann); err != nil {
+		if err := dbSaveNodeReachabilityCache(ctx, store, gatewayBusinessID(rt, gw.ID), ann); err != nil {
 			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
 		}
 		if err := injectNodeReachabilityAnnouncement(rt, ann); err != nil {
@@ -470,7 +470,7 @@ func unmarshalReachabilityStringList(raw string) ([]string, error) {
 	return out, nil
 }
 
-func ensureTargetPeerReachable(ctx context.Context, rt *Runtime, targetPubkeyHex string, pid peer.ID) error {
+func ensureTargetPeerReachable(ctx context.Context, store *clientDB, rt *Runtime, targetPubkeyHex string, pid peer.ID) error {
 	if rt == nil || rt.Host == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
@@ -478,7 +478,7 @@ func ensureTargetPeerReachable(ctx context.Context, rt *Runtime, targetPubkeyHex
 		return nil
 	}
 	nowUnix := time.Now().Unix()
-	cachedAnn, cached, err := dbLoadCachedNodeReachability(ctx, runtimeStore(rt), targetPubkeyHex, nowUnix)
+	cachedAnn, cached, err := dbLoadCachedNodeReachability(ctx, store, targetPubkeyHex, nowUnix)
 	if err != nil {
 		return err
 	}
@@ -493,7 +493,7 @@ func ensureTargetPeerReachable(ctx context.Context, rt *Runtime, targetPubkeyHex
 	if err := connectViaPeerstore(ctx, rt, pid); err == nil {
 		return nil
 	}
-	queryResp, err := TriggerGatewayQueryNodeReachability(ctx, rt, QueryNodeReachabilityParams{
+	queryResp, err := TriggerGatewayQueryNodeReachability(ctx, store, rt, QueryNodeReachabilityParams{
 		TargetNodePubkeyHex: targetPubkeyHex,
 	})
 	if err != nil {

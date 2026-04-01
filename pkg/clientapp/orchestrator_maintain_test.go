@@ -10,7 +10,7 @@ import (
 func TestOrchestratorReconcileSignal_FeePoolTickUsesMaintain(t *testing.T) {
 	t.Parallel()
 
-	o := newOrchestrator(&Runtime{})
+	o := newOrchestrator(&Runtime{}, nil)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")
 	}
@@ -37,7 +37,7 @@ func TestOrchestratorReconcileSignal_ChainTipUsesMaintain(t *testing.T) {
 		},
 	}
 	rt.runIn.Listen.Enabled = boolPtr(true)
-	o := newOrchestrator(rt)
+	o := newOrchestrator(rt, nil)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")
 	}
@@ -67,7 +67,7 @@ func TestOrchestratorReconcileSignal_ChainTipSkipsWhenListenDisabled(t *testing.
 		},
 	}
 	rt.runIn.Listen.Enabled = boolPtr(false)
-	o := newOrchestrator(rt)
+	o := newOrchestrator(rt, nil)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")
 	}

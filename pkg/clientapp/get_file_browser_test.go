@@ -17,7 +17,7 @@ func TestHandleGetFilePlan_LocalResource(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	seedHash, filePath, fileBody := prepareLocalSeedFixture(t, db, "hello bitfs browser")
 
 	reqBody, err := json.Marshal(getFilePlanRequest{
@@ -68,7 +68,7 @@ func TestHandleGetFileContent_LocalResource(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	seedHash, _, fileBody := prepareLocalSeedFixture(t, db, "<html><body>bitfs</body></html>")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/get-file/content?seed_hash="+seedHash, nil)
@@ -89,7 +89,7 @@ func TestHandleGetFileContent_LocalResourceUsesStoredMIMEHint(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	seedHash, filePath, fileBody := prepareLocalSeedFixture(t, db, `(function(){const root=document.getElementById("root");})();`)
 
 	hashPath := filepath.Join(filepath.Dir(filePath), seedHash)
@@ -122,7 +122,7 @@ func TestHandleGetFileStatus_LocalResource(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	seedHash, filePath, fileBody := prepareLocalSeedFixture(t, db, "status local")
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/get-file/status?seed_hash="+seedHash, nil)
@@ -196,7 +196,7 @@ func TestHandleGetFileEnsure_LocalResource(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	seedHash, filePath, _ := prepareLocalSeedFixture(t, db, "ensure local")
 
 	reqBody, err := json.Marshal(getFileEnsureRequest{SeedHash: seedHash})

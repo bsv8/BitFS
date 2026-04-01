@@ -163,7 +163,7 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 	if finalTxID == "" {
 		finalTxID = localTxID
 	}
-	if err := applyLocalBroadcastWalletTx(s.rt, txHex, "wallet_token_send_submit"); err != nil {
+	if err := applyLocalBroadcastWalletTx(r.Context(), s.store, s.rt, txHex, "wallet_token_send_submit"); err != nil {
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed: %w", err)
 	}
 	return walletAssetActionSubmitResp{

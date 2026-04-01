@@ -507,16 +507,14 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 	if s != nil && s.rt != nil {
 		walletChainBaseURL = walletChainBaseURLOfRuntime(s.rt)
 		walletChainType = walletChainTypeOfRuntime(s.rt)
-		addr, bal, err := walletAddressAndOnchainBalance(s.rt)
+		addr, bal, err := walletAddressAndOnchainBalance(r.Context(), s.store, s.rt)
 		walletAddr = addr
 		onchainBal = int64(bal)
 		if err != nil {
 			onchainBalErr = err.Error()
 		}
 		if strings.TrimSpace(walletAddr) != "" {
-			if syncState, syncErr := httpDBValue(r.Context(), s, func(db *sql.DB) (walletUTXOSyncState, error) {
-				return loadWalletUTXOSyncState(db, walletAddr)
-			}); syncErr == nil {
+			if syncState, syncErr := dbLoadWalletUTXOSyncState(r.Context(), s.store, walletAddr); syncErr == nil {
 				walletUTXOSyncUpdatedAtUnix = syncState.UpdatedAtUnix
 				walletUTXOSyncLastError = strings.TrimSpace(syncState.LastError)
 				walletUTXOSyncLastTrigger = strings.TrimSpace(syncState.LastTrigger)
@@ -527,9 +525,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 				walletUTXOSyncLastHTTPStatus = syncState.LastHTTPStatus
 				walletUTXOSyncStateIsStale, walletUTXOSyncStateStaleReason = walletUTXOSyncStateStaleness(syncState, runtimeStartedAtUnix)
 			}
-			if aggregate, aggErr := httpDBValue(r.Context(), s, func(db *sql.DB) (walletUTXOAggregateStats, error) {
-				return loadWalletUTXOAggregate(db, walletAddr)
-			}); aggErr == nil {
+			if aggregate, aggErr := dbLoadWalletUTXOAggregate(r.Context(), s.store, walletAddr); aggErr == nil {
 				walletUTXOTotalCount = aggregate.UTXOCount
 				walletUTXOTotalBalanceSatoshi = int64(aggregate.BalanceSatoshi)
 				walletPlainBSVUTXOCount = aggregate.PlainBSVUTXOCount
@@ -541,7 +537,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 			}
 		}
 	}
-	if s != nil && (s.dbActor != nil || s.db != nil) {
+	if s != nil && s.store != nil {
 		if schedulerState, err := httpDBValue(r.Context(), s, func(db *sql.DB) (schedulerTaskSnapshot, error) {
 			return loadSchedulerTaskSnapshot(db, "chain_utxo_sync")
 		}); err == nil {
@@ -705,8 +701,8 @@ func loadSchedulerTaskSnapshot(db *sql.DB, taskName string) (schedulerTaskSnapsh
 	return out, nil
 }
 
-func walletAddressAndOnchainBalance(rt *Runtime) (string, uint64, error) {
-	return getWalletBalanceFromDB(rt)
+func walletAddressAndOnchainBalance(ctx context.Context, store *clientDB, rt *Runtime) (string, uint64, error) {
+	return getWalletBalanceFromDB(ctx, store, rt)
 }
 
 func walletChainBaseURLOfRuntime(rt *Runtime) string {
@@ -1666,7 +1662,7 @@ func (s *httpAPIServer) handleAdminChainTipStatus(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	state, err := loadChainTipState(s.db)
+	state, err := dbLoadChainTipState(r.Context(), s.store)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -1688,12 +1684,12 @@ func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	state, err := loadWalletUTXOSyncState(s.db, addr)
+	state, err := dbLoadWalletUTXOSyncState(r.Context(), s.store, addr)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	stats, err := loadWalletUTXOAggregate(s.db, addr)
+	stats, err := dbLoadWalletUTXOAggregate(r.Context(), s.store, addr)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2653,7 +2649,7 @@ func (s *httpAPIServer) handleLiveDemandPublish(w http.ResponseWriter, r *http.R
 			req.Window = 10
 		}
 	}
-	resp, err := TriggerGatewayPublishLiveDemand(r.Context(), s.rt, PublishLiveDemandParams{
+	resp, err := TriggerGatewayPublishLiveDemand(r.Context(), s.store, s.rt, PublishLiveDemandParams{
 		StreamID:         req.StreamID,
 		HaveSegmentIndex: req.HaveSegmentIndex,
 		Window:           req.Window,
@@ -2680,7 +2676,7 @@ func (s *httpAPIServer) handleLiveQuotes(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "demand_id is required"})
 		return
 	}
-	quotes, err := TriggerClientListLiveQuotes(r.Context(), s.rt, demandID)
+	quotes, err := TriggerClientListLiveQuotes(r.Context(), s.store, demandID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -3007,7 +3003,7 @@ func (s *httpAPIServer) handleLiveFollowStart(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	st, err := TriggerLiveFollowStart(r.Context(), s.rt, req.StreamURI)
+	st, err := TriggerLiveFollowStart(r.Context(), s.store, s.rt, req.StreamURI)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -3031,7 +3027,7 @@ func (s *httpAPIServer) handleLiveFollowStop(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if err := TriggerLiveFollowStop(s.rt, req.StreamID); err != nil {
+	if err := TriggerLiveFollowStop(s.store, s.rt, req.StreamID); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -3048,7 +3044,7 @@ func (s *httpAPIServer) handleLiveFollowStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 	streamID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream_id")))
-	st, err := TriggerLiveFollowStatus(s.rt, streamID)
+	st, err := TriggerLiveFollowStatus(s.store, s.rt, streamID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return

@@ -254,7 +254,7 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 	}
 	publishCtx, cancel := context.WithTimeout(ctx, filePlanTimeout(s.cfg))
 	defer cancel()
-	pub, err := TriggerGatewayPublishDemandBatch(publishCtx, s.rt, PublishDemandBatchParams{
+	pub, err := TriggerGatewayPublishDemandBatch(publishCtx, s.store, s.rt, PublishDemandBatchParams{
 		Items:         missing,
 		GatewayPeerID: strings.TrimSpace(gwOverride),
 	})
@@ -270,6 +270,7 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 	}
 	bestQuotes, reasons, timedOut, err := waitBestStaticQuotesBySeedHash(
 		publishCtx,
+		s.store,
 		s.rt,
 		demandBySeedHash,
 		filePlanQuoteRetry(s.cfg),
@@ -350,6 +351,7 @@ func (s *httpAPIServer) downloadStaticSeedToWorkspace(ctx context.Context, seedH
 	workers, meta, seedBytes, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
 		Ctx:      ctx,
 		Buyer:    s.rt,
+		Store:    s.store,
 		Quotes:   []DirectQuoteItem{quote},
 		SeedHash: seedHash,
 	})
@@ -658,7 +660,7 @@ func filePlanQuoteRetry(cfg *Config) int {
 	return retry
 }
 
-func waitBestStaticQuotesBySeedHash(ctx context.Context, rt *Runtime, demandBySeedHash map[string]string, maxRetry int, interval time.Duration) (map[string]DirectQuoteItem, map[string]string, map[string]bool, error) {
+func waitBestStaticQuotesBySeedHash(ctx context.Context, store *clientDB, rt *Runtime, demandBySeedHash map[string]string, maxRetry int, interval time.Duration) (map[string]DirectQuoteItem, map[string]string, map[string]bool, error) {
 	if len(demandBySeedHash) == 0 {
 		return map[string]DirectQuoteItem{}, map[string]string{}, map[string]bool{}, nil
 	}
@@ -677,7 +679,7 @@ func waitBestStaticQuotesBySeedHash(ctx context.Context, rt *Runtime, demandBySe
 	}
 	for attempt := 0; attempt < maxRetry; attempt++ {
 		for seedHash, demandID := range pending {
-			quotes, err := TriggerClientListDirectQuotes(ctx, rt, demandID)
+			quotes, err := TriggerClientListDirectQuotes(ctx, store, demandID)
 			if err != nil {
 				return nil, nil, nil, err
 			}

@@ -62,6 +62,7 @@ type transferChunkResult struct {
 
 type transferSellerWorker struct {
 	buyer         *Runtime
+	store         *clientDB
 	quote         DirectQuoteItem
 	arbiterPeerID string
 	seedHash      string
@@ -191,7 +192,7 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 		"chunk_price":       w.quote.ChunkPrice,
 		"seed_price":        w.quote.SeedPrice,
 	})
-	openRes, err := triggerDirectTransferPoolOpen(ctx, w.buyer, directTransferPoolOpenParams{
+	openRes, err := triggerDirectTransferPoolOpen(ctx, w.store, w.buyer, directTransferPoolOpenParams{
 		SellerPeerID:  w.quote.SellerPeerID,
 		ArbiterPeerID: w.arbiterPeerID,
 		DemandID:      w.quote.DemandID,
@@ -232,7 +233,7 @@ func (w *transferSellerWorker) fetchChunk(ctx context.Context, chunkIndex uint32
 		return nil, 0, err
 	}
 	begin := time.Now()
-	payRes, err := triggerDirectTransferPoolPay(ctx, w.buyer, directTransferPoolPayParams{
+	payRes, err := triggerDirectTransferPoolPay(ctx, w.store, w.buyer, directTransferPoolPayParams{
 		SellerPeerID: w.quote.SellerPeerID,
 		SessionID:    w.sessionID,
 		Amount:       w.quote.ChunkPrice,
@@ -252,7 +253,7 @@ func (w *transferSellerWorker) closeSession(ctx context.Context) error {
 	if !w.opened || strings.TrimSpace(w.sessionID) == "" {
 		return nil
 	}
-	closeRes, err := triggerDirectTransferPoolClose(ctx, w.buyer, directTransferPoolCloseParams{
+	closeRes, err := triggerDirectTransferPoolClose(ctx, w.store, w.buyer, directTransferPoolCloseParams{
 		SellerPeerID: w.quote.SellerPeerID,
 		SessionID:    w.sessionID,
 	})
@@ -417,7 +418,7 @@ func strategyNameOrDefault(name string) string {
 	return TransferStrategySmart
 }
 
-func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
+func TriggerTransferChunksByStrategy(ctx context.Context, store *clientDB, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
 	if buyer == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -428,7 +429,7 @@ func TriggerTransferChunksByStrategy(ctx context.Context, buyer *Runtime, p Tran
 	return kernel.runTransferChunksByStrategy(ctx, p)
 }
 
-func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
+func triggerTransferChunksByStrategyLegacy(ctx context.Context, store *clientDB, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
 	// 设计说明：
 	// 1) 先做报价硬过滤（价格上限 + 可用仲裁）；
 	// 2) 再构造卖家 worker（每个 worker 维护独立 transfer-pool 会话）；
@@ -458,7 +459,7 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 		"arbiter_pubkey_hex": shortID(p.ArbiterPeerID),
 	})
 
-	quotes, err := TriggerClientListDirectQuotes(ctx, buyer, strings.TrimSpace(p.DemandID))
+	quotes, err := TriggerClientListDirectQuotes(ctx, store, strings.TrimSpace(p.DemandID))
 	if err != nil {
 		return TransferChunksByStrategyResult{}, err
 	}
@@ -495,6 +496,7 @@ func triggerTransferChunksByStrategyLegacy(ctx context.Context, buyer *Runtime, 
 	workers, seedMeta, seedBytes, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
 		Ctx:           ctx,
 		Buyer:         buyer,
+		Store:         store,
 		Quotes:        filtered,
 		SeedHash:      seedHash,
 		ArbiterPeerID: p.ArbiterPeerID,

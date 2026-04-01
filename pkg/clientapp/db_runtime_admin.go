@@ -700,7 +700,7 @@ func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walle
 	if err != nil {
 		return walletUTXOItem{}, err
 	}
-	assets, err := listWalletUTXOAssetRows(store, utxoID)
+	assets, err := dbListWalletUTXOAssetRows(ctx, store, utxoID)
 	if err == nil && len(assets) > 0 {
 		out.Assets = assets
 	}

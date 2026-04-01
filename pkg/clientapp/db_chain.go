@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -240,4 +239,3 @@ func dbUpdateWalletUTXOHistoryCursorError(ctx context.Context, store *clientDB, 
 		return err
 	})
 }
-
