@@ -162,7 +162,14 @@ func (m *workspaceManager) selectOutputPath(relDir string, fileName string, file
 func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	seeds, err := scanAndSyncWorkspace(ctx, m.cfg, m.db)
+	if m == nil || m.cfg == nil {
+		return nil, fmt.Errorf("workspace manager not initialized")
+	}
+	store := workspaceStore(m)
+	if store == nil {
+		return nil, fmt.Errorf("workspace manager not initialized")
+	}
+	seeds, err := dbScanAndSyncWorkspace(ctx, store, *m.cfg)
 	if err != nil {
 		return nil, err
 	}

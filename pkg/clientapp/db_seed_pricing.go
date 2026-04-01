@@ -20,8 +20,35 @@ func dbLoadSeedPricingPolicy(db *sql.DB, seedHash string) (seedPricingPolicyRow,
 	if db == nil {
 		return seedPricingPolicyRow{}, fmt.Errorf("db is nil")
 	}
+	return dbLoadSeedPricingPolicyQuery(db, seedHash)
+}
+
+func dbLoadSeedPricingPolicyTx(tx *sql.Tx, seedHash string) (seedPricingPolicyRow, error) {
+	if tx == nil {
+		return seedPricingPolicyRow{}, fmt.Errorf("tx is nil")
+	}
+	return dbLoadSeedPricingPolicyQuery(tx, seedHash)
+}
+
+func dbUpsertSeedPricingPolicy(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	return dbUpsertSeedPricingPolicyExec(db, seedHash, floorUnit, discountBPS, source, updatedAtUnix)
+}
+
+func dbUpsertSeedPricingPolicyTx(tx *sql.Tx, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	return dbUpsertSeedPricingPolicyExec(tx, seedHash, floorUnit, discountBPS, source, updatedAtUnix)
+}
+
+func dbLoadSeedPricingPolicyQuery(queryer interface {
+	QueryRow(string, ...any) *sql.Row
+}, seedHash string) (seedPricingPolicyRow, error) {
 	var out seedPricingPolicyRow
-	err := db.QueryRow(`SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM seed_pricing_policy WHERE seed_hash=?`, normalizeSeedHashHex(seedHash)).
+	err := queryer.QueryRow(`SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM seed_pricing_policy WHERE seed_hash=?`, normalizeSeedHashHex(seedHash)).
 		Scan(&out.SeedHash, &out.FloorPriceSatPer64K, &out.ResaleDiscountBPS, &out.PricingSource, &out.UpdatedAtUnix)
 	if err != nil {
 		return seedPricingPolicyRow{}, err
@@ -29,10 +56,9 @@ func dbLoadSeedPricingPolicy(db *sql.DB, seedHash string) (seedPricingPolicyRow,
 	return out, nil
 }
 
-func dbUpsertSeedPricingPolicy(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
+func dbUpsertSeedPricingPolicyExec(execer interface {
+	Exec(string, ...any) (sql.Result, error)
+}, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
 	seedHash = normalizeSeedHashHex(seedHash)
 	if seedHash == "" {
 		return fmt.Errorf("seed_hash required")
@@ -41,7 +67,7 @@ func dbUpsertSeedPricingPolicy(db *sql.DB, seedHash string, floorUnit, discountB
 	if source != "user" && source != "system" {
 		source = "system"
 	}
-	_, err := db.Exec(
+	_, err := execer.Exec(
 		`INSERT INTO seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix)
 		 VALUES(?,?,?,?,?)
 		 ON CONFLICT(seed_hash) DO UPDATE SET

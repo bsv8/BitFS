@@ -8,11 +8,9 @@ import (
 	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"io/fs"
 	"mime"
 	"net"
 	"os"
@@ -1039,7 +1037,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	registerLiveHandlers(store, rt)
 	registerNodeRouteHandlers(rt, store)
 	registerResolverHandlers(rt)
-	registerDirectQuoteSubmitHandler(h, db, trace)
+	registerDirectQuoteSubmitHandler(h, store, trace)
 	if cfg.Seller.Enabled {
 		registerSellerHandlers(h, store, rt.live, trace, cfg)
 	}
@@ -1572,211 +1570,6 @@ func applySQLitePragmas(db *sql.DB) error {
 // 注意：数据库初始化与迁移逻辑已统一移至 db_init.go，通过 ensureClientDBSchema 入口调用。
 // 该文件不再包含 initIndexDB 及其相关迁移函数，以保持 run.go 只保留启动顺序。
 
-func scanAndSyncWorkspace(ctx context.Context, cfg *Config, db *sql.DB) (map[string]sellerSeed, error) {
-	now := time.Now().Unix()
-	catalog := map[string]sellerSeed{}
-	seedsDir := filepath.Join(cfg.Storage.DataDir, "seeds")
-	type existingRef struct {
-		SeedHash string
-		Locked   bool
-	}
-	existing := map[string]existingRef{}
-	rowsExists, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM workspace_files`)
-	if err != nil {
-		return nil, err
-	}
-	defer rowsExists.Close()
-	for rowsExists.Next() {
-		var workspacePath, filePath, seedHash string
-		var locked int64
-		if err := rowsExists.Scan(&workspacePath, &filePath, &seedHash, &locked); err != nil {
-			return nil, err
-		}
-		key := workspacePath + "\x00" + filePath
-		existing[key] = existingRef{SeedHash: normalizeSeedHashHex(seedHash), Locked: locked != 0}
-	}
-	workspaces, err := listEnabledWorkspacePaths(db, cfg.Storage.WorkspaceDir)
-	if err != nil {
-		return nil, err
-	}
-	seen := map[string]struct{}{}
-	for _, workspace := range workspaces {
-		workspace = filepath.Clean(strings.TrimSpace(workspace))
-		err = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
-			if err != nil {
-				return err
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			if d.IsDir() || !d.Type().IsRegular() {
-				return nil
-			}
-			abs, err := filepath.Abs(path)
-			if err != nil {
-				return err
-			}
-			abs = filepath.Clean(abs)
-			rel, err := filepath.Rel(workspace, abs)
-			if err != nil {
-				return err
-			}
-			fileRel := filepath.ToSlash(filepath.Clean(rel))
-			key := workspace + "\x00" + fileRel
-			seen[key] = struct{}{}
-			st, err := os.Stat(abs)
-			if err != nil {
-				return err
-			}
-			if ref, ok := existing[key]; ok && ref.Locked && ref.SeedHash != "" {
-				if _, err := db.Exec(
-					`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked)
-					 VALUES(?,?,?,?)
-					 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
-					workspace, fileRel, ref.SeedHash, 1,
-				); err != nil {
-					return err
-				}
-				var chunkCount uint32
-				var seedPath, recommendedName, mimeHint string
-				if err := db.QueryRow(`SELECT chunk_count,seed_file_path,recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, ref.SeedHash).
-					Scan(&chunkCount, &seedPath, &recommendedName, &mimeHint); err == nil {
-					policy, _ := dbLoadSeedPricingPolicy(db, ref.SeedHash)
-					catalog[ref.SeedHash] = sellerSeed{
-						SeedHash:            ref.SeedHash,
-						ChunkCount:          chunkCount,
-						ChunkPrice:          policy.FloorPriceSatPer64K,
-						SeedPrice:           policy.FloorPriceSatPer64K * uint64(chunkCount),
-						RecommendedFileName: sanitizeRecommendedFileName(recommendedName),
-						MIMEHint:            sanitizeMIMEHint(mimeHint),
-					}
-					_ = seedPath
-					return nil
-				} else if !errors.Is(err, sql.ErrNoRows) {
-					return err
-				}
-			}
-			seedBytes, seedHash, chunkCount, err := buildSeedV1(abs)
-			if err != nil {
-				return err
-			}
-			seedPath := filepath.Join(seedsDir, strings.ToLower(seedHash)+".bse")
-			if err := writeIfChanged(seedPath, seedBytes); err != nil {
-				return err
-			}
-			recommendedName := sanitizeRecommendedFileName(filepath.Base(abs))
-			mimeHint := sanitizeMIMEHint(guessContentType(abs, nil))
-			if _, err := db.Exec(
-				`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked)
-				 VALUES(?,?,?,?)
-				 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
-				workspace, fileRel, seedHash, 0,
-			); err != nil {
-				return err
-			}
-			if _, err := db.Exec(
-				`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
-				 VALUES(?,?,?,?,?,?)
-				 ON CONFLICT(seed_hash) DO UPDATE SET
-				 chunk_count=excluded.chunk_count,
-				 file_size=excluded.file_size,
-				 seed_file_path=excluded.seed_file_path,
-				 recommended_file_name=excluded.recommended_file_name,
-				 mime_hint=excluded.mime_hint`,
-				seedHash, chunkCount, st.Size(), seedPath, recommendedName, mimeHint,
-			); err != nil {
-				return err
-			}
-			if err := dbReplaceSeedChunkSupply(context.Background(), newClientDB(db, nil), seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
-				return err
-			}
-			if err := dbUpsertSeedPricingPolicy(db, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, "system", now); err != nil {
-				return err
-			}
-			catalog[seedHash] = sellerSeed{
-				SeedHash:            seedHash,
-				ChunkCount:          chunkCount,
-				ChunkPrice:          cfg.Seller.Pricing.FloorPriceSatPer64K,
-				SeedPrice:           cfg.Seller.Pricing.FloorPriceSatPer64K * uint64(chunkCount),
-				RecommendedFileName: recommendedName,
-				MIMEHint:            mimeHint,
-			}
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	rows, err := db.Query(`SELECT workspace_path,file_path FROM workspace_files`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var workspacePath, filePath string
-		if err := rows.Scan(&workspacePath, &filePath); err != nil {
-			return nil, err
-		}
-		if _, ok := seen[workspacePath+"\x00"+filePath]; ok {
-			continue
-		}
-		if _, err := db.Exec(`DELETE FROM workspace_files WHERE workspace_path=? AND file_path=?`, workspacePath, filePath); err != nil {
-			return nil, err
-		}
-	}
-	orphanRows, err := db.Query(`SELECT seed_hash,seed_file_path FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`)
-	if err != nil {
-		return nil, err
-	}
-	defer orphanRows.Close()
-	for orphanRows.Next() {
-		var seedHash, seedPath string
-		if err := orphanRows.Scan(&seedHash, &seedPath); err != nil {
-			return nil, err
-		}
-		_ = os.Remove(seedPath)
-		if _, err := db.Exec(`DELETE FROM seeds WHERE seed_hash=?`, seedHash); err != nil {
-			return nil, err
-		}
-		delete(catalog, seedHash)
-	}
-	obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(workspaces)})
-	return catalog, nil
-}
-
-func listEnabledWorkspacePaths(db *sql.DB, fallback string) ([]string, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	rows, err := db.Query(`SELECT workspace_path FROM workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]string, 0, 8)
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
-			return nil, err
-		}
-		p = filepath.Clean(strings.TrimSpace(p))
-		if p == "" {
-			continue
-		}
-		out = append(out, p)
-	}
-	if len(out) > 0 {
-		return out, nil
-	}
-	fallback = filepath.Clean(strings.TrimSpace(fallback))
-	if fallback == "" {
-		return nil, fmt.Errorf("no workspace configured")
-	}
-	return []string{fallback}, nil
-}
-
 func errString(err error) string {
 	if err == nil {
 		return ""
@@ -1795,8 +1588,8 @@ func cfgBool(v *bool, def bool) bool {
 // 设计说明：
 // - direct quote 是“卖方 -> 买方”回推路径，买方即便不是 seller 模式也必须可接收；
 // - 该入口只负责落库 direct_quotes，不涉及卖方资源读取，因此可全端默认启用。
-func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace pproto.TraceSink) {
-	pproto.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(_ context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
+func registerDirectQuoteSubmitHandler(h host.Host, store *clientDB, trace pproto.TraceSink) {
+	pproto.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(ctx context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
 		}
@@ -1807,41 +1600,7 @@ func registerDirectQuoteSubmitHandler(h host.Host, db *sql.DB, trace pproto.Trac
 		if req.ExpiresAtUnix > 0 && req.ExpiresAtUnix < time.Now().Unix() {
 			return directQuoteSubmitResp{}, fmt.Errorf("direct quote expired")
 		}
-		arbIDs := normalizePeerIDList(req.ArbiterPeerIDs)
-		arbIDsJSON, err := json.Marshal(arbIDs)
-		if err != nil {
-			return directQuoteSubmitResp{}, err
-		}
-		availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
-		recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
-		mimeHint := sanitizeMIMEHint(req.MIMEHint)
-		if _, err := db.Exec(
-			`INSERT INTO direct_quotes(demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
-			 seed_price=excluded.seed_price,
-			 chunk_price=excluded.chunk_price,
-			 chunk_count=excluded.chunk_count,
-			 file_size=excluded.file_size,
-			 expires_at_unix=excluded.expires_at_unix,
-			 recommended_file_name=excluded.recommended_file_name,
-			 mime_hint=excluded.mime_hint,
-			 available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
-			 seller_arbiter_pubkey_hexes_json=excluded.seller_arbiter_pubkey_hexes_json,
-			 created_at_unix=excluded.created_at_unix`,
-			strings.TrimSpace(req.DemandID),
-			sellerPubHex,
-			req.SeedPrice,
-			req.ChunkPrice,
-			req.ChunkCount,
-			req.FileSize,
-			req.ExpiresAtUnix,
-			recommendedName,
-			mimeHint,
-			availableChunkBitmapHex,
-			string(arbIDsJSON),
-			time.Now().Unix(),
-		); err != nil {
+		if err := dbUpsertDirectQuote(ctx, store, req, sellerPubHex); err != nil {
 			return directQuoteSubmitResp{}, err
 		}
 		return directQuoteSubmitResp{Status: "stored"}, nil
@@ -1852,7 +1611,6 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 	if store == nil {
 		return
 	}
-	db := store.db
 	pproto.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
 		demandID := strings.TrimSpace(req.DemandID)
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
@@ -1860,15 +1618,10 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		if demandID == "" || seedHash == "" || buyerPeerID == "" || req.ChunkCount == 0 {
 			return dealprod.DemandAnnounceResp{}, fmt.Errorf("invalid demand announce")
 		}
-		now := time.Now().Unix()
-		if _, err := db.Exec(
-			`INSERT INTO demand_dedup(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)
-			 ON CONFLICT(demand_id) DO NOTHING`,
-			demandID, seedHash, now,
-		); err != nil {
+		if err := dbRecordDemandDedup(ctx, store, demandID, seedHash); err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
-		seed, ok, err := loadSellerSeedFromDB(db, seedHash)
+		seed, ok, err := dbLoadSellerSeedSnapshot(ctx, store, seedHash)
 		if err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
@@ -1894,7 +1647,7 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 				DecayPerMinuteBPS:   cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
 			}, time.Now())
 		}
-		availableChunks, err := dbListSeedChunkSupply(context.Background(), newClientDB(db, nil), seedHash)
+		availableChunks, err := dbListSeedChunkSupply(ctx, store, seedHash)
 		if err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
@@ -1975,29 +1728,29 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		return dealprod.LiveDemandAnnounceResp{Status: "quoted"}, nil
 	})
 
-	pproto.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(_ context.Context, req seedGetReq) (seedGetResp, error) {
+	pproto.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(ctx context.Context, req seedGetReq) (seedGetResp, error) {
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 		if strings.TrimSpace(req.SessionID) == "" || seedHash == "" {
 			return seedGetResp{}, fmt.Errorf("invalid params")
 		}
-		dealID, err := dbLoadDirectSessionDealID(context.Background(), store, strings.TrimSpace(req.SessionID))
+		dealID, err := dbLoadDirectSessionDealID(ctx, store, strings.TrimSpace(req.SessionID))
 		if err != nil {
 			return seedGetResp{}, fmt.Errorf("session not found")
 		}
-		dealSeedHash, err := dbLoadDirectDealSeedHash(context.Background(), store, strings.TrimSpace(dealID))
+		dealSeedHash, err := dbLoadDirectDealSeedHash(ctx, store, strings.TrimSpace(dealID))
 		if err != nil {
 			return seedGetResp{}, fmt.Errorf("deal not found")
 		}
 		if seedHash != strings.ToLower(strings.TrimSpace(dealSeedHash)) {
 			return seedGetResp{}, fmt.Errorf("seed_hash mismatch")
 		}
-		seedBytes, err := dbLoadSeedBytesBySeedHash(context.Background(), store, seedHash)
+		seedBytes, err := dbLoadSeedBytesBySeedHash(ctx, store, seedHash)
 		if err != nil {
 			return seedGetResp{}, err
 		}
 		return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
 	})
-	pproto.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(_ context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
+	pproto.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(ctx context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.BuyerPeerID) == "" || strings.TrimSpace(req.SeedHash) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directDealAcceptResp{}, fmt.Errorf("invalid direct deal accept")
 		}
@@ -2013,20 +1766,7 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			return directDealAcceptResp{}, fmt.Errorf("direct quote expired")
 		}
 		dealID := "ddeal_" + randHex(8)
-		if _, err := db.Exec(
-			`INSERT INTO direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			dealID,
-			strings.TrimSpace(req.DemandID),
-			buyerPubHex,
-			sellerPubHex,
-			strings.ToLower(strings.TrimSpace(req.SeedHash)),
-			req.SeedPrice,
-			req.ChunkPrice,
-			strings.TrimSpace(req.ArbiterPeerID),
-			"accepted",
-			time.Now().Unix(),
-		); err != nil {
+		if err := dbInsertDirectDeal(ctx, store, dealID, req, buyerPubHex, sellerPubHex); err != nil {
 			return directDealAcceptResp{}, err
 		}
 		return directDealAcceptResp{
@@ -2036,18 +1776,12 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			Status:       "accepted",
 		}, nil
 	})
-	pproto.HandleProto[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(_ context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
+	pproto.HandleProto[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(ctx context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
 		if strings.TrimSpace(req.DealID) == "" {
 			return directSessionOpenResp{}, fmt.Errorf("deal_id required")
 		}
-		var chunkPrice uint64
-		if err := db.QueryRow(`SELECT chunk_price FROM direct_deals WHERE deal_id=?`, req.DealID).Scan(&chunkPrice); err != nil {
-			return directSessionOpenResp{}, err
-		}
-		sessionID := "dsess_" + randHex(8)
-		now := time.Now().Unix()
-		if _, err := db.Exec(`INSERT INTO direct_sessions(session_id,deal_id,chunk_price,paid_chunks,paid_amount,released_chunks,released_amount,status,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			sessionID, strings.TrimSpace(req.DealID), chunkPrice, 0, 0, 0, 0, "active", now, now); err != nil {
+		sessionID, err := dbOpenDirectSession(ctx, store, req.DealID)
+		if err != nil {
 			return directSessionOpenResp{}, err
 		}
 		return directSessionOpenResp{SessionID: sessionID, Status: "active"}, nil
@@ -2061,11 +1795,11 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 		return handleDirectTransferPoolClose(h, store, cfg, req)
 	})
-	pproto.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(_ context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
+	pproto.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(ctx context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
 		if strings.TrimSpace(req.SessionID) == "" {
 			return directSessionCloseResp{}, fmt.Errorf("session_id required")
 		}
-		if _, err := db.Exec(`UPDATE direct_sessions SET status='finalized',updated_at_unix=? WHERE session_id=?`, time.Now().Unix(), req.SessionID); err != nil {
+		if err := dbFinalizeDirectSession(ctx, store, req.SessionID); err != nil {
 			return directSessionCloseResp{}, err
 		}
 		return directSessionCloseResp{SessionID: req.SessionID, Status: "finalized"}, nil
@@ -2479,24 +2213,6 @@ func peerIDFromSecp256k1PubHex(pubHex string) (peer.ID, error) {
 	return peer.IDFromPublicKey(pub)
 }
 
-func loadSeedBytesBySeedHash(db *sql.DB, seedHash string) ([]byte, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	var seedPath string
-	if err := db.QueryRow(`SELECT seed_file_path FROM seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedPath); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("seed not found")
-		}
-		return nil, err
-	}
-	b, err := os.ReadFile(seedPath)
-	if err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
 func normalizeChunkIndexes(in []uint32, maxExclusive uint32) []uint32 {
 	if len(in) == 0 {
 		return nil
@@ -2602,55 +2318,6 @@ func contiguousChunkIndexes(chunkCount uint32) []uint32 {
 		out = append(out, i)
 	}
 	return out
-}
-
-// loadSellerSeedFromDB 从数据库读取卖方报价所需 seed 快照。
-// 设计约束：卖方侧是否可报价以 DB 为唯一真相，不依赖内存镜像状态。
-func loadSellerSeedFromDB(db *sql.DB, seedHash string) (sellerSeed, bool, error) {
-	if db == nil {
-		return sellerSeed{}, false, fmt.Errorf("db is nil")
-	}
-	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-	if seedHash == "" {
-		return sellerSeed{}, false, nil
-	}
-	var out sellerSeed
-	var unitPrice uint64
-	var policyRow seedPricingPolicyRow
-	var havePolicy bool
-	if err := db.QueryRow(
-		`SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM seed_pricing_policy WHERE seed_hash=?`,
-		seedHash,
-	).Scan(&policyRow.SeedHash, &policyRow.FloorPriceSatPer64K, &policyRow.ResaleDiscountBPS, &policyRow.PricingSource, &policyRow.UpdatedAtUnix); err == nil {
-		havePolicy = true
-		unitPrice = policyRow.FloorPriceSatPer64K
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return sellerSeed{}, false, err
-	}
-	var seedPath string
-	err := db.QueryRow(
-		`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
-		   FROM seeds
-		  WHERE seed_hash=?`,
-		seedHash,
-	).Scan(&out.SeedHash, &out.ChunkCount, &out.FileSize, &out.RecommendedFileName, &out.MIMEHint)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return sellerSeed{}, false, nil
-		}
-		return sellerSeed{}, false, err
-	}
-	_ = seedPath
-	out.SeedHash = seedHash
-	out.ChunkPrice = unitPrice
-	out.SeedPrice = unitPrice * uint64(out.ChunkCount)
-	out.RecommendedFileName = sanitizeRecommendedFileName(out.RecommendedFileName)
-	out.MIMEHint = sanitizeMIMEHint(out.MIMEHint)
-	if !havePolicy {
-		out.ChunkPrice = 0
-		out.SeedPrice = 0
-	}
-	return out, true, nil
 }
 
 func (c *sellerCatalog) Replace(seeds map[string]sellerSeed) {
