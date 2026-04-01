@@ -2,90 +2,32 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
-	"path/filepath"
 	"reflect"
 	"testing"
 )
 
-func TestDemandQuoteLegacyMigration(t *testing.T) {
+func TestClientDBInitSkipsLegacyDemandTables(t *testing.T) {
 	t.Parallel()
 
-	db := openClientDBForLegacyDemandQuoteTest(t)
-	defer func() { _ = db.Close() }()
-
-	if err := createLegacyDemandQuoteSchema(db); err != nil {
-		t.Fatalf("create legacy schema: %v", err)
+	db := newWalletAPITestDB(t)
+	legacyTables := []string{
+		"demand_dedup",
+		"direct_quotes",
+		"direct_sessions",
+		"sale_records",
 	}
-	if _, err := db.Exec(`INSERT INTO demand_dedup(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, " dmd_legacy ", " SEED_LEGACY ", 1700000001); err != nil {
-		t.Fatalf("insert legacy demand: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO direct_quotes(
-			demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		" dmd_legacy ", "02AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 111, 22, 3, 4096, 1893427200, "legacy.bin", "Text/Plain", "ff", `[" 02CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC ","03DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD","02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]`, 1700000002,
-	); err != nil {
-		t.Fatalf("insert legacy quote: %v", err)
-	}
-
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
-	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db second pass: %v", err)
-	}
-
-	var demandCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM demands`).Scan(&demandCount); err != nil {
-		t.Fatalf("count demands: %v", err)
-	}
-	if demandCount != 1 {
-		t.Fatalf("unexpected demand count: %d", demandCount)
-	}
-	var seedHash string
-	if err := db.QueryRow(`SELECT seed_hash FROM demands WHERE demand_id=?`, "dmd_legacy").Scan(&seedHash); err != nil {
-		t.Fatalf("load demand: %v", err)
-	}
-	if seedHash != "seed_legacy" {
-		t.Fatalf("seed hash mismatch: got=%q want=%q", seedHash, "seed_legacy")
-	}
-
-	var quote demandQuoteItem
-	if err := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM demand_quotes WHERE demand_id=?`, "dmd_legacy").
-		Scan(&quote.ID, &quote.DemandID, &quote.SellerPubHex, &quote.SeedPriceSatoshi, &quote.ChunkPriceSatoshi, &quote.ChunkCount, &quote.FileSizeBytes, &quote.RecommendedFileName, &quote.MimeType, &quote.AvailableChunkBitmapHex, &quote.ExpiresAtUnix, &quote.CreatedAtUnix); err != nil {
-		t.Fatalf("load quote: %v", err)
-	}
-	if quote.SellerPubHex != "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
-		t.Fatalf("seller pub hex mismatch: %s", quote.SellerPubHex)
-	}
-	if quote.MimeType != "text/plain" {
-		t.Fatalf("mime type mismatch: %s", quote.MimeType)
-	}
-	var arbiterRows []string
-	rows, err := db.Query(`SELECT arbiter_pub_hex FROM demand_quote_arbiters WHERE quote_id=? ORDER BY arbiter_pub_hex`, quote.ID)
-	if err != nil {
-		t.Fatalf("query arbiters: %v", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var arb string
-		if err := rows.Scan(&arb); err != nil {
-			t.Fatalf("scan arbiter: %v", err)
+	for _, table := range legacyTables {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("has table %s: %v", table, err)
 		}
-		arbiterRows = append(arbiterRows, arb)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iter arbiters: %v", err)
-	}
-	if !reflect.DeepEqual(arbiterRows, []string{
-		"02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
-		"03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
-	}) {
-		t.Fatalf("arbiter migration mismatch: %+v", arbiterRows)
+		if exists {
+			t.Fatalf("legacy table should not exist anymore: %s", table)
+		}
 	}
 }
 
-func TestDemandQuoteOverwriteAndArbiters(t *testing.T) {
+func TestDemandQuoteCurrentSchema(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
@@ -188,11 +130,11 @@ func TestDemandQuoteReadPathsAndArbiterSelection(t *testing.T) {
 	if len(quotes) != 1 {
 		t.Fatalf("unexpected quote count: %d", len(quotes))
 	}
-	if quotes[0].SellerPeerID != seller {
-		t.Fatalf("seller mismatch: %s", quotes[0].SellerPeerID)
+	if quotes[0].SellerPubHex != seller {
+		t.Fatalf("seller mismatch: %s", quotes[0].SellerPubHex)
 	}
-	if !reflect.DeepEqual(quotes[0].SellerArbiterPeerIDs, []string{arb1, arb2}) {
-		t.Fatalf("arbiter list mismatch: %+v", quotes[0].SellerArbiterPeerIDs)
+	if !reflect.DeepEqual(quotes[0].SellerArbiterPubHexes, []string{arb1, arb2}) {
+		t.Fatalf("arbiter list mismatch: %+v", quotes[0].SellerArbiterPubHexes)
 	}
 
 	item, err := dbGetDemandQuoteItem(context.Background(), store, 1)
@@ -211,58 +153,11 @@ func TestDemandQuoteReadPathsAndArbiterSelection(t *testing.T) {
 		{Enabled: true, Pubkey: arb2},
 		{Enabled: true, Pubkey: "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
 	}
-	gotArbiter, err := resolveDealArbiter(buyer, quotes[0].SellerArbiterPeerIDs, "")
+	gotArbiter, err := resolveDealArbiter(buyer, quotes[0].SellerArbiterPubHexes, "")
 	if err != nil {
 		t.Fatalf("resolve arbiter: %v", err)
 	}
 	if gotArbiter != arb2 {
 		t.Fatalf("unexpected arbiter: got=%s want=%s", gotArbiter, arb2)
 	}
-}
-
-func openClientDBForLegacyDemandQuoteTest(t *testing.T) *sql.DB {
-	t.Helper()
-
-	base := t.TempDir()
-	dbPath := filepath.Join(base, "index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	t.Cleanup(func() { _ = db.Close() })
-	if err := applySQLitePragmas(db); err != nil {
-		t.Fatalf("apply pragmas: %v", err)
-	}
-	return db
-}
-
-func createLegacyDemandQuoteSchema(db *sql.DB) error {
-	stmts := []string{
-		`CREATE TABLE demand_dedup(
-			demand_id TEXT PRIMARY KEY,
-			seed_hash TEXT,
-			created_at_unix INTEGER
-		)`,
-		`CREATE TABLE direct_quotes(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			demand_id TEXT NOT NULL,
-			seller_pubkey_hex TEXT NOT NULL,
-			seed_price INTEGER NOT NULL,
-			chunk_price INTEGER NOT NULL,
-			chunk_count INTEGER NOT NULL DEFAULT 0,
-			file_size INTEGER NOT NULL DEFAULT 0,
-			expires_at_unix INTEGER NOT NULL,
-			recommended_file_name TEXT NOT NULL DEFAULT '',
-			mime_hint TEXT NOT NULL DEFAULT '',
-			available_chunk_bitmap_hex TEXT NOT NULL DEFAULT '',
-			seller_arbiter_pubkey_hexes_json TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL
-		)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return err
-		}
-	}
-	return nil
 }

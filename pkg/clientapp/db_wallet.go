@@ -8,17 +8,17 @@ import (
 )
 
 type walletSummaryCounters struct {
-	FlowCount          int64
-	TotalIn            int64
-	TotalOut           int64
-	TotalUsed          int64
-	TotalReturned      int64
-	LedgerCount        int64
-	LedgerIn           int64
-	LedgerOut          int64
-	TxCount            int64
-	SaleCount          int64
-	GatewayEventCount  int64
+	FlowCount         int64
+	TotalIn           int64
+	TotalOut          int64
+	TotalUsed         int64
+	TotalReturned     int64
+	LedgerCount       int64
+	LedgerIn          int64
+	LedgerOut         int64
+	TxCount           int64
+	PurchaseCount     int64
+	GatewayEventCount int64
 }
 
 type walletLedgerFilter struct {
@@ -67,7 +67,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		if err := db.QueryRow(`SELECT COUNT(1) FROM tx_history`).Scan(&out.TxCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
-		if err := db.QueryRow(`SELECT COUNT(1) FROM sale_records`).Scan(&out.SaleCount); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(1) FROM purchases WHERE status='done'`).Scan(&out.PurchaseCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
 		if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events`).Scan(&out.GatewayEventCount); err != nil {

@@ -447,7 +447,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 		SeedHash: sess.seedHash,
 		OnQuoteRejected: func(q DirectQuoteItem, err error) {
 			fields := map[string]any{
-				"seller_pubkey_hex": q.SellerPeerID,
+				"seller_pubkey_hex": q.SellerPubHex,
 				"reason":            "arbiter_unavailable",
 			}
 			if err != nil {
@@ -457,7 +457,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 		},
 		OnQuoteAccepted: func(q DirectQuoteItem, arbiterPeerID string) {
 			sess.strategyLog("bootstrap_quote_accepted", map[string]any{
-				"seller_pubkey_hex":  q.SellerPeerID,
+				"seller_pubkey_hex":  q.SellerPubHex,
 				"arbiter_pubkey_hex": arbiterPeerID,
 				"chunk_price":        q.ChunkPrice,
 				"seed_price":         q.SeedPrice,
@@ -465,7 +465,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 		},
 		OnSeedProbeFail: func(w *transferSellerWorker, reason string, err error) {
 			fields := map[string]any{
-				"seller_pubkey_hex": w.quote.SellerPeerID,
+				"seller_pubkey_hex": w.quote.SellerPubHex,
 				"reason":            reason,
 			}
 			if err != nil {
@@ -475,7 +475,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 		},
 		OnSeedProbeOK: func(w *transferSellerWorker, meta seedV1Meta) {
 			sess.strategyLog("bootstrap_seed_probe_ok", map[string]any{
-				"seller_pubkey_hex": w.quote.SellerPeerID,
+				"seller_pubkey_hex": w.quote.SellerPubHex,
 				"chunk_count":       meta.ChunkCount,
 				"file_size":         meta.FileSize,
 			})
@@ -539,7 +539,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 						return 0, err
 					}
 				}
-				sess.markChunkDone(chunkIndex, w.quote.SellerPeerID, w.quote.ChunkPrice)
+				sess.markChunkDone(chunkIndex, w.quote.SellerPubHex, w.quote.ChunkPrice)
 				return uint64(writeN), nil
 			},
 		})

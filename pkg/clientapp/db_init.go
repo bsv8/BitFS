@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -130,16 +129,19 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			sequence_num INTEGER NOT NULL,
 			cycle_index INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS sale_records(
+		`CREATE TABLE IF NOT EXISTS purchases(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			session_id TEXT NOT NULL,
-			seed_hash TEXT NOT NULL,
+			demand_id TEXT NOT NULL,
+			seller_pub_hex TEXT NOT NULL,
+			arbiter_pub_hex TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
-			unit_price_sat_per_64k INTEGER NOT NULL,
+			object_hash TEXT NOT NULL,
 			amount_satoshi INTEGER NOT NULL,
-			buyer_gateway_pubkey_hex TEXT NOT NULL,
-			release_token TEXT NOT NULL
+			status TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			finished_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(demand_id) REFERENCES demands(demand_id) ON DELETE CASCADE
 		)`,
 		`CREATE TABLE IF NOT EXISTS gateway_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -177,6 +179,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			FOREIGN KEY(quote_id) REFERENCES demand_quotes(id) ON DELETE CASCADE,
 			UNIQUE(quote_id, arbiter_pub_hex)
 		)`,
+		// 运行期辅助表：只保存 direct transfer 的 deal 上下文，不承载对外事实语义。
 		`CREATE TABLE IF NOT EXISTS direct_deals(
 			deal_id TEXT PRIMARY KEY,
 			demand_id TEXT NOT NULL,
@@ -199,18 +202,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			expires_at_unix INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id, seller_pubkey_hex)
-		)`,
-		`CREATE TABLE IF NOT EXISTS direct_sessions(
-			session_id TEXT PRIMARY KEY,
-			deal_id TEXT NOT NULL,
-			chunk_price INTEGER NOT NULL,
-			paid_chunks INTEGER NOT NULL,
-			paid_amount INTEGER NOT NULL,
-			released_chunks INTEGER NOT NULL,
-			released_amount INTEGER NOT NULL,
-			status TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS direct_transfer_pools(
 			session_id TEXT PRIMARY KEY,
@@ -671,7 +662,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_live_quotes_demand ON live_quotes(demand_id, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_node_reachability_cache_expires ON node_reachability_cache(expires_at_unix DESC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_tx_history_created_at ON tx_history(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_sale_records_created_at ON sale_records(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_purchases_created_at ON purchases(created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_purchases_demand_created ON purchases(demand_id, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_purchases_seller_created ON purchases(seller_pub_hex, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_purchases_status_created ON purchases(status, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_purchases_history_lookup ON purchases(demand_id, chunk_index, seller_pub_hex, arbiter_pub_hex, created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_created_at ON wallet_fund_flows(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
@@ -752,8 +747,7 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 
-	// 各个模块的历史迁移
-	if err := ensureDemandQuoteSchema(db); err != nil {
+	if err := ensureDemandQuoteCurrentSchema(db); err != nil {
 		return fmt.Errorf("demand quote schema: %w", err)
 	}
 	if err := ensureWalletFundFlowsSchema(db); err != nil {
@@ -819,140 +813,6 @@ func normalizeClientDBData(db *sql.DB) error {
 }
 
 // ==================== 以下是具体的迁移函数实现 ====================
-
-// ensureDemandQuoteSchema 负责 demand / quote 域的历史搬运。
-// 设计说明：
-// - 先把旧表里的需求和报价数据搬进新表；
-// - 再把旧表里的仲裁者 JSON 拆成关系表；
-// - 整个过程可重复执行，重复跑只会更新当前状态，不会堆重复脏数据。
-func ensureDemandQuoteSchema(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	hasLegacyDemand, err := hasTable(db, "demand_dedup")
-	if err != nil {
-		return fmt.Errorf("check legacy demand table: %w", err)
-	}
-	hasLegacyQuotes, err := hasTable(db, "direct_quotes")
-	if err != nil {
-		return fmt.Errorf("check legacy quote table: %w", err)
-	}
-	if hasLegacyQuotes {
-		if err := ensureDirectQuotesSchema(db); err != nil {
-			return fmt.Errorf("legacy direct quotes preparation: %w", err)
-		}
-	}
-	if hasLegacyDemand || hasLegacyQuotes {
-		if err := migrateDemandQuoteLegacyData(db); err != nil {
-			return err
-		}
-	}
-	if err := ensureDemandQuoteCurrentSchema(db); err != nil {
-		return err
-	}
-	return nil
-}
-
-// ensureDirectQuotesSchema 处理 direct_quotes 表的历史列迁移，仅用于旧表作为迁移源时的规范化。
-func ensureDirectQuotesSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(direct_quotes)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	hasRecommendedFileName := false
-	hasMIMEHint := false
-	hasAvailableChunkBitmapHex := false
-	hasAvailableChunksJSON := false
-	hasChunkCount := false
-	hasFileSize := false
-
-	for rows.Next() {
-		var cid int
-		var name string
-		var typ string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "recommended_file_name") {
-			hasRecommendedFileName = true
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "mime_hint") {
-			hasMIMEHint = true
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "available_chunk_bitmap_hex") {
-			hasAvailableChunkBitmapHex = true
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "available_chunk_indexes_json") {
-			hasAvailableChunksJSON = true
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "chunk_count") {
-			hasChunkCount = true
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "file_size") {
-			hasFileSize = true
-		}
-	}
-
-	if !hasChunkCount {
-		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
-		}
-	}
-	if !hasFileSize {
-		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
-		}
-	}
-	if !hasRecommendedFileName {
-		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN recommended_file_name TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-	}
-	if !hasMIMEHint {
-		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN mime_hint TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-	}
-	if !hasAvailableChunkBitmapHex {
-		if _, err := db.Exec(`ALTER TABLE direct_quotes ADD COLUMN available_chunk_bitmap_hex TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-		hasAvailableChunkBitmapHex = true
-	}
-
-	// 迁移旧格式的 available_chunk_indexes_json 到新格式
-	if hasAvailableChunkBitmapHex && hasAvailableChunksJSON {
-		rows, err := db.Query(`SELECT id,available_chunk_indexes_json FROM direct_quotes`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var id int64
-			var rawJSON string
-			if err := rows.Scan(&id, &rawJSON); err != nil {
-				return err
-			}
-			if strings.TrimSpace(rawJSON) == "" {
-				continue
-			}
-			var indexes []uint32
-			if err := json.Unmarshal([]byte(rawJSON), &indexes); err != nil {
-				continue
-			}
-			bitmap := chunkBitmapHexFromIndexes(indexes, 0)
-			if _, err := db.Exec(`UPDATE direct_quotes SET available_chunk_bitmap_hex=? WHERE id=?`, bitmap, id); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
 
 func ensureDemandQuoteCurrentSchema(db *sql.DB) error {
 	if db == nil {
@@ -1185,196 +1045,6 @@ func demandQuoteTableMissingFK(db *sql.DB, table string, fromColumn string, pare
 		}
 	}
 	return true, rows.Err()
-}
-
-func migrateDemandQuoteLegacyData(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func() {
-		_ = tx.Rollback()
-	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateLegacyDemandRows(tx); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateLegacyDemandQuoteRows(tx); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
-		rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		rollback()
-		return err
-	}
-	return nil
-}
-
-func migrateLegacyDemandRows(tx *sql.Tx) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	if !hasTableValue(tx, "demand_dedup") {
-		return nil
-	}
-	rows, err := tx.Query(`SELECT demand_id,seed_hash,created_at_unix FROM demand_dedup`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var demandID string
-		var seedHash string
-		var createdAtUnix int64
-		if err := rows.Scan(&demandID, &seedHash, &createdAtUnix); err != nil {
-			return err
-		}
-		demandID = strings.TrimSpace(demandID)
-		if demandID == "" {
-			return fmt.Errorf("legacy demand row has empty demand_id")
-		}
-		seedHash = strings.ToLower(strings.TrimSpace(seedHash))
-		if seedHash == "" {
-			return fmt.Errorf("legacy demand row has empty seed_hash for demand_id=%s", demandID)
-		}
-		if createdAtUnix <= 0 {
-			createdAtUnix = time.Now().Unix()
-		}
-		if _, err := tx.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)
-			ON CONFLICT(demand_id) DO UPDATE SET
-				seed_hash=excluded.seed_hash,
-				created_at_unix=excluded.created_at_unix`,
-			demandID, seedHash, createdAtUnix,
-		); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-func migrateLegacyDemandQuoteRows(tx *sql.Tx) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	if !hasTableValue(tx, "direct_quotes") {
-		return nil
-	}
-	rows, err := tx.Query(`SELECT id,demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix
-		FROM direct_quotes ORDER BY id ASC`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			id                        int64
-			demandID                  string
-			sellerPubHex              string
-			seedPrice                 int64
-			chunkPrice                int64
-			chunkCount                int64
-			fileSizeBytes             int64
-			expiresAtUnix             int64
-			recommendedFileName       string
-			mimeType                  string
-			availableChunkBitmapHex   string
-			sellerArbiterPubHexesJSON string
-			createdAtUnix             int64
-		)
-		if err := rows.Scan(&id, &demandID, &sellerPubHex, &seedPrice, &chunkPrice, &chunkCount, &fileSizeBytes, &expiresAtUnix, &recommendedFileName, &mimeType, &availableChunkBitmapHex, &sellerArbiterPubHexesJSON, &createdAtUnix); err != nil {
-			return err
-		}
-		_ = id
-		demandID = strings.TrimSpace(demandID)
-		if demandID == "" {
-			return fmt.Errorf("legacy quote row has empty demand_id")
-		}
-		var demandExists int64
-		if err := tx.QueryRow(`SELECT 1 FROM demands WHERE demand_id=?`, demandID).Scan(&demandExists); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return fmt.Errorf("legacy quote row missing demand record for demand_id=%s", demandID)
-			}
-			return err
-		}
-		sellerPubHexNorm, err := normalizeCompressedPubKeyHex(sellerPubHex)
-		if err != nil {
-			return fmt.Errorf("legacy quote row invalid seller pubkey for demand_id=%s: %w", demandID, err)
-		}
-		bitmapHex, err := normalizeChunkBitmapHex(availableChunkBitmapHex)
-		if err != nil {
-			return fmt.Errorf("legacy quote row invalid bitmap for demand_id=%s seller_pub_hex=%s: %w", demandID, sellerPubHexNorm, err)
-		}
-		recName := sanitizeRecommendedFileName(recommendedFileName)
-		mime := sanitizeMIMEHint(mimeType)
-		if fileSizeBytes < 0 || seedPrice < 0 || chunkPrice < 0 || chunkCount < 0 {
-			return fmt.Errorf("legacy quote row has negative numeric value for demand_id=%s seller_pub_hex=%s", demandID, sellerPubHexNorm)
-		}
-		if createdAtUnix <= 0 {
-			createdAtUnix = time.Now().Unix()
-		}
-		if expiresAtUnix <= 0 {
-			expiresAtUnix = createdAtUnix
-		}
-		if _, err := tx.Exec(`INSERT INTO demand_quotes(
-				demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(demand_id,seller_pub_hex) DO UPDATE SET
-				seed_price_satoshi=excluded.seed_price_satoshi,
-				chunk_price_satoshi=excluded.chunk_price_satoshi,
-				chunk_count=excluded.chunk_count,
-				file_size_bytes=excluded.file_size_bytes,
-				recommended_file_name=excluded.recommended_file_name,
-				mime_type=excluded.mime_type,
-				available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
-				expires_at_unix=excluded.expires_at_unix,
-				created_at_unix=excluded.created_at_unix`,
-			demandID, sellerPubHexNorm, seedPrice, chunkPrice, chunkCount, fileSizeBytes, recName, mime, bitmapHex, expiresAtUnix, createdAtUnix,
-		); err != nil {
-			return err
-		}
-		var quoteID int64
-		if err := tx.QueryRow(`SELECT id FROM demand_quotes WHERE demand_id=? AND seller_pub_hex=?`, demandID, sellerPubHexNorm).Scan(&quoteID); err != nil {
-			return err
-		}
-		if _, err := tx.Exec(`DELETE FROM demand_quote_arbiters WHERE quote_id=?`, quoteID); err != nil {
-			return err
-		}
-		arbiterPubHexes, err := decodeLegacyQuoteArbiterPubHexes(sellerArbiterPubHexesJSON)
-		if err != nil {
-			return fmt.Errorf("legacy quote row invalid arbiter list for demand_id=%s seller_pub_hex=%s: %w", demandID, sellerPubHexNorm, err)
-		}
-		for _, arbiterPubHex := range arbiterPubHexes {
-			if _, err := tx.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)
-				ON CONFLICT(quote_id,arbiter_pub_hex) DO NOTHING`, quoteID, arbiterPubHex); err != nil {
-				return err
-			}
-		}
-	}
-	return rows.Err()
-}
-
-func decodeLegacyQuoteArbiterPubHexes(rawJSON string) ([]string, error) {
-	rawJSON = strings.TrimSpace(rawJSON)
-	if rawJSON == "" {
-		return nil, nil
-	}
-	var items []string
-	if err := json.Unmarshal([]byte(rawJSON), &items); err != nil {
-		return nil, fmt.Errorf("invalid arbiter json")
-	}
-	return normalizePubHexList(items)
 }
 
 func normalizePubHexList(in []string) ([]string, error) {
@@ -2384,7 +2054,6 @@ func normalizeClientPubKeyColumns(db *sql.DB) error {
 		column     string
 		allowEmpty bool
 	}{
-		{table: "direct_quotes", column: "seller_pubkey_hex"},
 		{table: "direct_deals", column: "buyer_pubkey_hex"},
 		{table: "direct_deals", column: "seller_pubkey_hex"},
 		{table: "direct_transfer_pools", column: "buyer_pubkey_hex"},

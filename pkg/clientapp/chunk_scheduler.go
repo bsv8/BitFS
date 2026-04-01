@@ -13,7 +13,7 @@ import (
 )
 
 type speedPriceSellerState struct {
-	SellerPeerID        string  `json:"seller_pubkey_hex"`
+	SellerPubHex        string  `json:"seller_pubkey_hex"`
 	ChunkPrice          uint64  `json:"chunk_price"`
 	SeedPrice           uint64  `json:"seed_price"`
 	SuccessChunks       uint32  `json:"success_chunks"`
@@ -181,7 +181,7 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 					reason = "unknown"
 				}
 				pruneReasonHistogram[reason]++
-				sellerPruneReasons[w.quote.SellerPeerID] = reason
+				sellerPruneReasons[w.quote.SellerPubHex] = reason
 			}
 			if w.broken {
 				reason := strings.TrimSpace(w.brokenReason)
@@ -189,10 +189,10 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 					reason = "unknown"
 				}
 				brokenReasonHistogram[reason]++
-				sellerBrokenReasons[w.quote.SellerPeerID] = reason
+				sellerBrokenReasons[w.quote.SellerPubHex] = reason
 			}
 			sellers = append(sellers, speedPriceSellerState{
-				SellerPeerID:        w.quote.SellerPeerID,
+				SellerPubHex:        w.quote.SellerPubHex,
 				ChunkPrice:          w.quote.ChunkPrice,
 				SeedPrice:           w.quote.SeedPrice,
 				SuccessChunks:       w.successCount,
@@ -296,7 +296,7 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 			ready[workerIdx] = false
 			p.Workers[workerIdx].assignCh <- chunkIdx
 			dispatched = true
-			emit("assign", nil, map[string]any{"chunk_index": chunkIdx, "seller_pubkey_hex": p.Workers[workerIdx].quote.SellerPeerID})
+			emit("assign", nil, map[string]any{"chunk_index": chunkIdx, "seller_pubkey_hex": p.Workers[workerIdx].quote.SellerPubHex})
 		}
 
 		if len(p.Pending) == 0 && len(inflight) == 0 {
@@ -341,7 +341,7 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 					return completedBytes, err
 				}
 				p.Pending[res.chunkIndex] = true
-				emit("retry", res.err, map[string]any{"chunk_index": res.chunkIndex, "retry_count": retryCount[res.chunkIndex], "seller_pubkey_hex": w.quote.SellerPeerID})
+				emit("retry", res.err, map[string]any{"chunk_index": res.chunkIndex, "retry_count": retryCount[res.chunkIndex], "seller_pubkey_hex": w.quote.SellerPubHex})
 				continue
 			}
 			hash := sha256.Sum256(res.chunk)
@@ -357,7 +357,7 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 					return completedBytes, err
 				}
 				p.Pending[res.chunkIndex] = true
-				emit("retry_hash", fmt.Errorf("chunk hash mismatch"), map[string]any{"chunk_index": res.chunkIndex, "retry_count": retryCount[res.chunkIndex], "seller_pubkey_hex": w.quote.SellerPeerID})
+				emit("retry_hash", fmt.Errorf("chunk hash mismatch"), map[string]any{"chunk_index": res.chunkIndex, "retry_count": retryCount[res.chunkIndex], "seller_pubkey_hex": w.quote.SellerPubHex})
 				continue
 			}
 			written, err := p.OnChunk(res.chunkIndex, res.chunk, w, res.elapsed)
@@ -373,7 +373,7 @@ func runSpeedPriceChunkScheduler(p speedPriceChunkSchedulerParams) (uint64, erro
 			w.resetFailureStreak()
 			w.updateSuccess(len(res.chunk), res.elapsed)
 			p.Strategy.OnChunkDone(time.Now(), completedBytes, p.Workers)
-			emit("chunk_ok", nil, map[string]any{"chunk_index": res.chunkIndex, "seller_pubkey_hex": w.quote.SellerPeerID, "chunk_bytes": len(res.chunk), "elapsed_ms": res.elapsed.Milliseconds()})
+			emit("chunk_ok", nil, map[string]any{"chunk_index": res.chunkIndex, "seller_pubkey_hex": w.quote.SellerPubHex, "chunk_bytes": len(res.chunk), "elapsed_ms": res.elapsed.Milliseconds()})
 		case <-p.Ctx.Done():
 			closeWorkers()
 			err := p.Ctx.Err()

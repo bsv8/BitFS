@@ -418,7 +418,7 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 		}
 		if err := dbUpsertLiveQuote(context.Background(), store, LiveQuoteItem{
 			DemandID:           strings.TrimSpace(req.DemandID),
-			SellerPeerID:       strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
+			SellerPubHex:       strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
 			StreamID:           strings.ToLower(strings.TrimSpace(req.StreamID)),
 			LatestSegmentIndex: req.LatestSegmentIndex,
 			RecentSegments:     recent,

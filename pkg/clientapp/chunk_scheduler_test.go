@@ -6,8 +6,8 @@ func TestPickDispatchChunkRespectAvailableChunks(t *testing.T) {
 	t.Parallel()
 
 	workers := []*transferSellerWorker{
-		{quote: DirectQuoteItem{SellerPeerID: "s1"}, availableChunks: chunkIndexSet([]uint32{0})},
-		{quote: DirectQuoteItem{SellerPeerID: "s2"}, availableChunks: chunkIndexSet([]uint32{1})},
+		{quote: DirectQuoteItem{SellerPubHex: "s1"}, availableChunks: chunkIndexSet([]uint32{0})},
+		{quote: DirectQuoteItem{SellerPubHex: "s2"}, availableChunks: chunkIndexSet([]uint32{1})},
 	}
 	ready := []int{0, 1}
 	pending := map[uint32]bool{0: true, 1: true}
@@ -32,7 +32,7 @@ func TestHasAnyProviderForPending(t *testing.T) {
 	t.Parallel()
 
 	workers := []*transferSellerWorker{
-		{quote: DirectQuoteItem{SellerPeerID: "s1"}, availableChunks: chunkIndexSet([]uint32{0})},
+		{quote: DirectQuoteItem{SellerPubHex: "s1"}, availableChunks: chunkIndexSet([]uint32{0})},
 	}
 	if !hasAnyProviderForPending(map[uint32]bool{0: true}, workers) {
 		t.Fatalf("chunk 0 should have provider")

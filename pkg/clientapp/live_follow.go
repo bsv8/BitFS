@@ -20,7 +20,7 @@ type LiveFollowStatus struct {
 	LastBoughtSegmentIndex uint64               `json:"last_bought_segment_index,omitempty"`
 	LastBoughtSeedHash     string               `json:"last_bought_seed_hash,omitempty"`
 	LastOutputFilePath     string               `json:"last_output_file_path,omitempty"`
-	LastQuoteSellerPeerID  string               `json:"last_quote_seller_pubkey_hex,omitempty"`
+	LastQuoteSellerPubHex  string               `json:"last_quote_seller_pubkey_hex,omitempty"`
 	LastDecision           LivePurchaseDecision `json:"last_decision"`
 	Status                 string               `json:"status"`
 	LastError              string               `json:"last_error,omitempty"`
@@ -43,7 +43,7 @@ func normalizeLiveFollowStatus(st LiveFollowStatus) LiveFollowStatus {
 	st.StreamID = strings.ToLower(strings.TrimSpace(st.StreamID))
 	st.PublisherPubKey = strings.ToLower(strings.TrimSpace(st.PublisherPubKey))
 	st.LastBoughtSeedHash = strings.ToLower(strings.TrimSpace(st.LastBoughtSeedHash))
-	st.LastQuoteSellerPeerID = strings.ToLower(strings.TrimSpace(st.LastQuoteSellerPeerID))
+	st.LastQuoteSellerPubHex = strings.ToLower(strings.TrimSpace(st.LastQuoteSellerPubHex))
 	if st.HaveSegmentIndex == 0 && st.LastBoughtSeedHash == "" {
 		st.HaveSegmentIndex = -1
 	}
@@ -282,7 +282,7 @@ func liveFollowOnce(ctx context.Context, store *clientDB, rt *Runtime, streamID 
 	decision := plan.Decision
 	rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
 		st.LastDecision = decision
-		st.LastQuoteSellerPeerID = sellerPeerID
+		st.LastQuoteSellerPubHex = sellerPeerID
 	})
 	if st, ok := rt.live.followStatus(streamID); ok {
 		_ = dbPersistLiveFollowStatus(ctx, store, st)
@@ -385,7 +385,7 @@ func bestLiveQuoteSnapshot(streamID string, quotes []LiveQuoteItem) (LiveSubscri
 		StreamID:       streamID,
 		RecentSegments: normalizeLiveSegmentRefs(recent),
 		UpdatedAtUnix:  time.Now().Unix(),
-	}, strings.ToLower(strings.TrimSpace(best.SellerPeerID)), true
+	}, strings.ToLower(strings.TrimSpace(best.SellerPubHex)), true
 }
 
 func TriggerLiveFollowStop(store *clientDB, rt *Runtime, streamID string) error {

@@ -434,15 +434,15 @@ func TriggerClientSubmitDirectQuote(ctx context.Context, seller *Runtime, p Dire
 
 type DirectQuoteItem struct {
 	DemandID                string   `json:"demand_id"`
-	SellerPeerID            string   `json:"seller_pubkey_hex"`
+	SellerPubHex            string   `json:"seller_pubkey_hex"`
 	SeedPrice               uint64   `json:"seed_price"`
 	ChunkPrice              uint64   `json:"chunk_price"`
 	ChunkCount              uint32   `json:"chunk_count"`
 	FileSize                uint64   `json:"file_size"`
 	ExpiresAtUnix           int64    `json:"expires_at_unix"`
 	RecommendedFileName     string   `json:"recommended_file_name,omitempty"`
-	MIMEHint                string   `json:"mime_hint,omitempty"`
-	SellerArbiterPeerIDs    []string `json:"seller_arbiter_pubkey_hexes,omitempty"`
+	MimeType                string   `json:"mime_hint,omitempty"`
+	SellerArbiterPubHexes   []string `json:"seller_arbiter_pubkey_hexes,omitempty"`
 	AvailableChunkBitmapHex string   `json:"available_chunk_bitmap_hex,omitempty"`
 	AvailableChunkIndexes   []uint32 `json:"available_chunk_indexes,omitempty"`
 }
@@ -464,7 +464,7 @@ type LiveQuoteParams struct {
 
 type LiveQuoteItem struct {
 	DemandID           string             `json:"demand_id"`
-	SellerPeerID       string             `json:"seller_pubkey_hex"`
+	SellerPubHex       string             `json:"seller_pubkey_hex"`
 	StreamID           string             `json:"stream_id"`
 	LatestSegmentIndex uint64             `json:"latest_segment_index"`
 	RecentSegments     []LiveQuoteSegment `json:"recent_segments"`
@@ -485,15 +485,15 @@ func TriggerClientListDirectQuotes(ctx context.Context, store *clientDB, demandI
 	for _, raw := range page.Items {
 		it := DirectQuoteItem{
 			DemandID:                raw.DemandID,
-			SellerPeerID:            raw.SellerPubHex,
+			SellerPubHex:            raw.SellerPubHex,
 			SeedPrice:               raw.SeedPriceSatoshi,
 			ChunkPrice:              raw.ChunkPriceSatoshi,
 			ChunkCount:              raw.ChunkCount,
 			FileSize:                raw.FileSizeBytes,
 			ExpiresAtUnix:           raw.ExpiresAtUnix,
 			RecommendedFileName:     raw.RecommendedFileName,
-			MIMEHint:                raw.MimeType,
-			SellerArbiterPeerIDs:    append([]string(nil), raw.SellerArbiterPubHexes...),
+			MimeType:                raw.MimeType,
+			SellerArbiterPubHexes:   append([]string(nil), raw.SellerArbiterPubHexes...),
 			AvailableChunkBitmapHex: raw.AvailableChunkBitmapHex,
 		}
 		if strings.TrimSpace(it.AvailableChunkBitmapHex) != "" {
@@ -644,14 +644,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	}
 	sessionID := strings.TrimSpace(p.SessionID)
 	if sessionID == "" {
-		sess, err := TriggerClientOpenDirectSession(ctx, buyer, OpenDirectSessionParams{
-			SellerPeerID: p.SellerPeerID,
-			DealID:       dealID,
-		})
-		if err != nil {
-			return directTransferPoolOpenResult{}, err
-		}
-		sessionID = strings.TrimSpace(sess.SessionID)
+		sessionID = "tp_" + randHex(8)
 	}
 
 	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
@@ -709,14 +702,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	for attempt := 1; attempt <= maxOpenAttempt; attempt++ {
 		curSessionID := sessionID
 		if attempt > 1 && !sessionPinned {
-			sess, err := TriggerClientOpenDirectSession(ctx, buyer, OpenDirectSessionParams{
-				SellerPeerID: p.SellerPeerID,
-				DealID:       dealID,
-			})
-			if err != nil {
-				return directTransferPoolOpenResult{}, err
-			}
-			curSessionID = strings.TrimSpace(sess.SessionID)
+			curSessionID = "tp_" + randHex(8)
 		}
 
 		poolInputs, splitTxID, err := func() ([]poolcore.UTXO, string, error) {
@@ -1602,52 +1588,6 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 	}, &resp)
 	if err != nil {
 		return directDealAcceptResp{}, err
-	}
-	return resp, nil
-}
-
-type OpenDirectSessionParams struct {
-	SellerPeerID string `json:"seller_pubkey_hex"`
-	DealID       string `json:"deal_id"`
-}
-
-func TriggerClientOpenDirectSession(ctx context.Context, buyer *Runtime, p OpenDirectSessionParams) (directSessionOpenResp, error) {
-	if buyer == nil || buyer.Host == nil {
-		return directSessionOpenResp{}, fmt.Errorf("runtime not initialized")
-	}
-	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
-	if err != nil {
-		return directSessionOpenResp{}, err
-	}
-	var resp directSessionOpenResp
-	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionOpen, clientSec(buyer.rpcTrace), directSessionOpenReq{
-		DealID: strings.TrimSpace(p.DealID),
-	}, &resp)
-	if err != nil {
-		return directSessionOpenResp{}, err
-	}
-	return resp, nil
-}
-
-type CloseDirectSessionParams struct {
-	SellerPeerID string `json:"seller_pubkey_hex"`
-	SessionID    string `json:"session_id"`
-}
-
-func TriggerClientCloseDirectSession(ctx context.Context, buyer *Runtime, p CloseDirectSessionParams) (directSessionCloseResp, error) {
-	if buyer == nil || buyer.Host == nil {
-		return directSessionCloseResp{}, fmt.Errorf("runtime not initialized")
-	}
-	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPeerID))
-	if err != nil {
-		return directSessionCloseResp{}, err
-	}
-	var resp directSessionCloseResp
-	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectSessionClose, clientSec(buyer.rpcTrace), directSessionCloseReq{
-		SessionID: strings.TrimSpace(p.SessionID),
-	}, &resp)
-	if err != nil {
-		return directSessionCloseResp{}, err
 	}
 	return resp, nil
 }

@@ -185,13 +185,6 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 	if arbiterPeerID != strings.TrimSpace(dealArbiterPeerID) {
 		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "arbiter mismatch"}, nil
 	}
-	sessDealID, err := dbLoadDirectSessionDealID(context.Background(), store, sessionID)
-	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "session not found"}, nil
-	}
-	if strings.TrimSpace(sessDealID) != dealID {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "session/deal mismatch"}, nil
-	}
 
 	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
 	if err != nil {
@@ -334,15 +327,6 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 	if err := dbUpdateDirectTransferPoolPay(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta); err != nil {
 		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
-	dbAppendSaleRecord(context.Background(), store, saleRecordEntry{
-		SessionID:          sessionID,
-		SeedHash:           seedHash,
-		ChunkIndex:         resolvedChunkIndex,
-		UnitPriceSatPer64K: delta,
-		AmountSatoshi:      delta,
-		BuyerGatewayPeerID: "direct",
-		ReleaseToken:       "pay_hash:" + shortHash(chunkHash),
-	})
 	obs.Business("bitcast-client", "direct_transfer_pool_pay_ok", map[string]any{
 		"session_id":    sessionID,
 		"sequence":      req.Sequence,

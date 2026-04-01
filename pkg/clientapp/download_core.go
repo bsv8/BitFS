@@ -10,7 +10,7 @@ import (
 
 const (
 	downloadStepPublishDemand = "publish_demand"
-	downloadStepListQuotes    = "list_direct_quotes"
+	downloadStepListQuotes    = "list_demand_quotes"
 	downloadStepTransfer      = "direct_transfer"
 )
 
@@ -53,10 +53,10 @@ func runDirectDownloadCore(ctx context.Context, rt *Runtime, p directDownloadCor
 	if kernel == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("client kernel not initialized")
 	}
-	return kernel.runDirectDownloadCore(ctx, p, hooks)
+	return kernel.runDirectDownloadCoreImpl(ctx, p, hooks)
 }
 
-func runDirectDownloadCoreLegacy(ctx context.Context, store *clientDB, rt *Runtime, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
+func runDirectDownloadCoreImpl(ctx context.Context, store *clientDB, rt *Runtime, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
 	if rt == nil || rt.Host == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -103,7 +103,7 @@ func runDirectDownloadCoreLegacy(ctx context.Context, store *clientDB, rt *Runti
 	doneStep(hooks, downloadStepListQuotes, map[string]string{
 		"seller_count":            strconv.Itoa(len(quotes)),
 		"selected_file_name":      fileName,
-		"first_seller_pubkey_hex": quotes[0].SellerPeerID,
+		"first_seller_pubkey_hex": quotes[0].SellerPubHex,
 		"first_recommended_name":  quotes[0].RecommendedFileName,
 	})
 
@@ -241,7 +241,7 @@ func pickRecommendedMIMEHint(quotes []DirectQuoteItem) string {
 	bestCount := -1
 	bestPos := 1 << 30
 	for i, q := range quotes {
-		mimeHint := sanitizeMIMEHint(q.MIMEHint)
+		mimeHint := sanitizeMIMEHint(q.MimeType)
 		if mimeHint == "" {
 			continue
 		}

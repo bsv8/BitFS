@@ -38,60 +38,6 @@ type demandQuoteItem struct {
 	CreatedAtUnix           int64    `json:"created_at_unix"`
 }
 
-type directDealFilter struct {
-	Limit        int
-	Offset       int
-	DemandID     string
-	DealID       string
-	SellerPeerID string
-	BuyerPeerID  string
-	Status       string
-}
-
-type directDealPage struct {
-	Total int
-	Items []directDealItem
-}
-
-type directDealItem struct {
-	DealID        string `json:"deal_id"`
-	DemandID      string `json:"demand_id"`
-	BuyerPeerID   string `json:"buyer_pubkey_hex"`
-	SellerPeerID  string `json:"seller_pubkey_hex"`
-	SeedHash      string `json:"seed_hash"`
-	SeedPrice     uint64 `json:"seed_price"`
-	ChunkPrice    uint64 `json:"chunk_price"`
-	ArbiterPeerID string `json:"arbiter_pubkey_hex"`
-	Status        string `json:"status"`
-	CreatedAtUnix int64  `json:"created_at_unix"`
-}
-
-type directSessionFilter struct {
-	Limit     int
-	Offset    int
-	SessionID string
-	DealID    string
-	Status    string
-}
-
-type directSessionPage struct {
-	Total int
-	Items []directSessionItem
-}
-
-type directSessionItem struct {
-	SessionID      string `json:"session_id"`
-	DealID         string `json:"deal_id"`
-	ChunkPrice     uint64 `json:"chunk_price"`
-	PaidChunks     uint32 `json:"paid_chunks"`
-	PaidAmount     uint64 `json:"paid_amount"`
-	ReleasedChunks uint32 `json:"released_chunks"`
-	ReleasedAmount uint64 `json:"released_amount"`
-	Status         string `json:"status"`
-	CreatedAtUnix  int64  `json:"created_at_unix"`
-	UpdatedAtUnix  int64  `json:"updated_at_unix"`
-}
-
 type directTransferPoolFilter struct {
 	Limit         int
 	Offset        int
@@ -132,6 +78,43 @@ type directTransferPoolItem struct {
 	UpdatedAtUnix    int64   `json:"updated_at_unix"`
 }
 
+type purchaseFilter struct {
+	Limit         int
+	Offset        int
+	DemandID      string
+	SellerPubHex  string
+	ArbiterPubHex string
+	Status        string
+}
+
+type purchasePage struct {
+	Total int
+	Items []purchaseItem
+}
+
+type purchaseItem struct {
+	ID             int64  `json:"id"`
+	DemandID       string `json:"demand_id"`
+	SellerPubHex   string `json:"seller_pubkey_hex"`
+	ArbiterPubHex  string `json:"arbiter_pubkey_hex"`
+	ChunkIndex     uint32 `json:"chunk_index"`
+	ObjectHash     string `json:"object_hash"`
+	AmountSatoshi  uint64 `json:"amount_satoshi"`
+	Status         string `json:"status"`
+	ErrorMessage   string `json:"error_message"`
+	CreatedAtUnix  int64  `json:"created_at_unix"`
+	FinishedAtUnix int64  `json:"finished_at_unix"`
+}
+
+type purchaseDemandSummary struct {
+	DemandID               string `json:"demand_id"`
+	SeedPurchaseCount      int64  `json:"seed_purchase_count"`
+	ChunkPurchaseCount     int64  `json:"chunk_purchase_count"`
+	TotalPurchaseCount     int64  `json:"total_purchase_count"`
+	ChunkPurchaseAmountSat int64  `json:"chunk_purchase_amount_satoshi"`
+	TotalPurchaseAmountSat int64  `json:"total_purchase_amount_satoshi"`
+}
+
 type txHistoryFilter struct {
 	Limit     int
 	Offset    int
@@ -159,29 +142,6 @@ type txHistoryItem struct {
 	MsgID         string `json:"msg_id,omitempty"`
 	SequenceNum   uint32 `json:"sequence_num,omitempty"`
 	CycleIndex    uint32 `json:"cycle_index,omitempty"`
-}
-
-type saleRecordFilter struct {
-	Limit    int
-	Offset   int
-	SeedHash string
-}
-
-type saleRecordPage struct {
-	Total int
-	Items []saleRecordItem
-}
-
-type saleRecordItem struct {
-	ID                 int64  `json:"id"`
-	CreatedAtUnix      int64  `json:"created_at_unix"`
-	SessionID          string `json:"session_id"`
-	SeedHash           string `json:"seed_hash"`
-	ChunkIndex         uint32 `json:"chunk_index"`
-	UnitPriceSatPer64K uint64 `json:"unit_price_sat_per_64k"`
-	AmountSatoshi      uint64 `json:"amount_satoshi"`
-	BuyerGatewayPeerID string `json:"buyer_gateway_pubkey_hex"`
-	ReleaseToken       string `json:"release_token"`
 }
 
 type gatewayEventFilter struct {
@@ -307,120 +267,6 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 	return rows.Err()
 }
 
-func dbListDirectDeals(ctx context.Context, store *clientDB, f directDealFilter) (directDealPage, error) {
-	if store == nil {
-		return directDealPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (directDealPage, error) {
-		where := ""
-		args := make([]any, 0, 8)
-		if f.DemandID != "" {
-			where += " AND demand_id=?"
-			args = append(args, f.DemandID)
-		}
-		if f.DealID != "" {
-			where += " AND deal_id=?"
-			args = append(args, f.DealID)
-		}
-		if f.SellerPeerID != "" {
-			where += " AND seller_pubkey_hex=?"
-			args = append(args, f.SellerPeerID)
-		}
-		if f.BuyerPeerID != "" {
-			where += " AND buyer_pubkey_hex=?"
-			args = append(args, f.BuyerPeerID)
-		}
-		if f.Status != "" {
-			where += " AND status=?"
-			args = append(args, f.Status)
-		}
-		var out directDealPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM direct_deals WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return directDealPage{}, err
-		}
-		rows, err := db.Query(`SELECT deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix FROM direct_deals WHERE 1=1`+where+` ORDER BY created_at_unix DESC,deal_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
-		if err != nil {
-			return directDealPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]directDealItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanDirectDealItem(rows)
-			if err != nil {
-				return directDealPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return directDealPage{}, err
-		}
-		return out, nil
-	})
-}
-
-func dbGetDirectDealItem(ctx context.Context, store *clientDB, dealID string) (directDealItem, error) {
-	if store == nil {
-		return directDealItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (directDealItem, error) {
-		row := db.QueryRow(`SELECT deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix FROM direct_deals WHERE deal_id=?`, dealID)
-		return scanDirectDealItem(row)
-	})
-}
-
-func dbListDirectSessions(ctx context.Context, store *clientDB, f directSessionFilter) (directSessionPage, error) {
-	if store == nil {
-		return directSessionPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (directSessionPage, error) {
-		where := ""
-		args := make([]any, 0, 6)
-		if f.SessionID != "" {
-			where += " AND session_id=?"
-			args = append(args, f.SessionID)
-		}
-		if f.DealID != "" {
-			where += " AND deal_id=?"
-			args = append(args, f.DealID)
-		}
-		if f.Status != "" {
-			where += " AND status=?"
-			args = append(args, f.Status)
-		}
-		var out directSessionPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM direct_sessions WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return directSessionPage{}, err
-		}
-		rows, err := db.Query(`SELECT session_id,deal_id,chunk_price,paid_chunks,paid_amount,released_chunks,released_amount,status,created_at_unix,updated_at_unix FROM direct_sessions WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
-		if err != nil {
-			return directSessionPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]directSessionItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanDirectSessionItem(rows)
-			if err != nil {
-				return directSessionPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return directSessionPage{}, err
-		}
-		return out, nil
-	})
-}
-
-func dbGetDirectSessionItem(ctx context.Context, store *clientDB, sessionID string) (directSessionItem, error) {
-	if store == nil {
-		return directSessionItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (directSessionItem, error) {
-		row := db.QueryRow(`SELECT session_id,deal_id,chunk_price,paid_chunks,paid_amount,released_chunks,released_amount,status,created_at_unix,updated_at_unix FROM direct_sessions WHERE session_id=?`, sessionID)
-		return scanDirectSessionItem(row)
-	})
-}
-
 func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
 	if store == nil {
 		return directTransferPoolPage{}, fmt.Errorf("client db is nil")
@@ -500,6 +346,93 @@ func dbGetDirectTransferPoolItem(ctx context.Context, store *clientDB, sessionID
 	})
 }
 
+func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (purchasePage, error) {
+	if store == nil {
+		return purchasePage{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (purchasePage, error) {
+		where := ""
+		args := make([]any, 0, 8)
+		if f.DemandID != "" {
+			where += " AND demand_id=?"
+			args = append(args, f.DemandID)
+		}
+		if f.SellerPubHex != "" {
+			where += " AND seller_pub_hex=?"
+			args = append(args, f.SellerPubHex)
+		}
+		if f.ArbiterPubHex != "" {
+			where += " AND arbiter_pub_hex=?"
+			args = append(args, f.ArbiterPubHex)
+		}
+		if f.Status != "" {
+			where += " AND status=?"
+			args = append(args, strings.ToLower(strings.TrimSpace(f.Status)))
+		}
+		var out purchasePage
+		if err := db.QueryRow("SELECT COUNT(1) FROM purchases WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+			return purchasePage{}, err
+		}
+		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
+			FROM purchases WHERE 1=1`+where+` ORDER BY created_at_unix DESC,id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		if err != nil {
+			return purchasePage{}, err
+		}
+		defer rows.Close()
+		out.Items = make([]purchaseItem, 0, f.Limit)
+		for rows.Next() {
+			var it purchaseItem
+			if err := rows.Scan(&it.ID, &it.DemandID, &it.SellerPubHex, &it.ArbiterPubHex, &it.ChunkIndex, &it.ObjectHash, &it.AmountSatoshi, &it.Status, &it.ErrorMessage, &it.CreatedAtUnix, &it.FinishedAtUnix); err != nil {
+				return purchasePage{}, err
+			}
+			out.Items = append(out.Items, it)
+		}
+		if err := rows.Err(); err != nil {
+			return purchasePage{}, err
+		}
+		return out, nil
+	})
+}
+
+func dbGetPurchaseItem(ctx context.Context, store *clientDB, id int64) (purchaseItem, error) {
+	if store == nil {
+		return purchaseItem{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (purchaseItem, error) {
+		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix FROM purchases WHERE id=?`, id)
+		var it purchaseItem
+		if err := row.Scan(&it.ID, &it.DemandID, &it.SellerPubHex, &it.ArbiterPubHex, &it.ChunkIndex, &it.ObjectHash, &it.AmountSatoshi, &it.Status, &it.ErrorMessage, &it.CreatedAtUnix, &it.FinishedAtUnix); err != nil {
+			return purchaseItem{}, err
+		}
+		return it, nil
+	})
+}
+
+func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID string) (purchaseDemandSummary, error) {
+	if store == nil {
+		return purchaseDemandSummary{}, fmt.Errorf("client db is nil")
+	}
+	demandID = strings.TrimSpace(demandID)
+	if demandID == "" {
+		return purchaseDemandSummary{}, fmt.Errorf("demand_id is required")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (purchaseDemandSummary, error) {
+		var out purchaseDemandSummary
+		out.DemandID = demandID
+		err := db.QueryRow(`
+			SELECT
+				COALESCE(SUM(CASE WHEN status='done' AND chunk_index=0 THEN 1 ELSE 0 END),0),
+				COALESCE(SUM(CASE WHEN status='done' AND chunk_index>=1 THEN 1 ELSE 0 END),0),
+				COUNT(1),
+				COALESCE(SUM(CASE WHEN status='done' AND chunk_index>=1 THEN amount_satoshi ELSE 0 END),0),
+				COALESCE(SUM(CASE WHEN status='done' THEN amount_satoshi ELSE 0 END),0)
+			FROM purchases
+			WHERE demand_id=?
+		`, demandID).Scan(&out.SeedPurchaseCount, &out.ChunkPurchaseCount, &out.TotalPurchaseCount, &out.ChunkPurchaseAmountSat, &out.TotalPurchaseAmountSat)
+		return out, err
+	})
+}
+
 func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (txHistoryPage, error) {
 	if store == nil {
 		return txHistoryPage{}, fmt.Errorf("client db is nil")
@@ -555,52 +488,6 @@ func dbGetTxHistoryItem(ctx context.Context, store *clientDB, id int64) (txHisto
 	return clientDBValue(ctx, store, func(db *sql.DB) (txHistoryItem, error) {
 		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE id=?`, id)
 		return scanTxHistoryItem(row)
-	})
-}
-
-func dbListSaleRecords(ctx context.Context, store *clientDB, f saleRecordFilter) (saleRecordPage, error) {
-	if store == nil {
-		return saleRecordPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (saleRecordPage, error) {
-		where := ""
-		args := make([]any, 0, 2)
-		if f.SeedHash != "" {
-			where = " WHERE seed_hash=?"
-			args = append(args, f.SeedHash)
-		}
-		var out saleRecordPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM sale_records"+where, args...).Scan(&out.Total); err != nil {
-			return saleRecordPage{}, err
-		}
-		rows, err := db.Query(`SELECT id,created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token
-			 FROM sale_records`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
-		if err != nil {
-			return saleRecordPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]saleRecordItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanSaleRecordItem(rows)
-			if err != nil {
-				return saleRecordPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return saleRecordPage{}, err
-		}
-		return out, nil
-	})
-}
-
-func dbGetSaleRecordItem(ctx context.Context, store *clientDB, id int64) (saleRecordItem, error) {
-	if store == nil {
-		return saleRecordItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (saleRecordItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token FROM sale_records WHERE id=?`, id)
-		return scanSaleRecordItem(row)
 	})
 }
 
@@ -666,32 +553,6 @@ func scanDemandQuoteItem(row scanDemandQuote) (demandQuoteItem, error) {
 	return out, nil
 }
 
-type scanDirectDeal interface {
-	Scan(dest ...any) error
-}
-
-func scanDirectDealItem(row scanDirectDeal) (directDealItem, error) {
-	var out directDealItem
-	err := row.Scan(&out.DealID, &out.DemandID, &out.BuyerPeerID, &out.SellerPeerID, &out.SeedHash, &out.SeedPrice, &out.ChunkPrice, &out.ArbiterPeerID, &out.Status, &out.CreatedAtUnix)
-	if err != nil {
-		return directDealItem{}, err
-	}
-	return out, nil
-}
-
-type scanDirectSession interface {
-	Scan(dest ...any) error
-}
-
-func scanDirectSessionItem(row scanDirectSession) (directSessionItem, error) {
-	var out directSessionItem
-	err := row.Scan(&out.SessionID, &out.DealID, &out.ChunkPrice, &out.PaidChunks, &out.PaidAmount, &out.ReleasedChunks, &out.ReleasedAmount, &out.Status, &out.CreatedAtUnix, &out.UpdatedAtUnix)
-	if err != nil {
-		return directSessionItem{}, err
-	}
-	return out, nil
-}
-
 type scanDirectTransferPool interface {
 	Scan(dest ...any) error
 }
@@ -719,19 +580,6 @@ func scanTxHistoryItem(row scanTxHistory) (txHistoryItem, error) {
 	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.EventType, &out.Direction, &out.AmountSatoshi, &out.Purpose, &out.Note, &out.PoolID, &out.MsgID, &out.SequenceNum, &out.CycleIndex)
 	if err != nil {
 		return txHistoryItem{}, err
-	}
-	return out, nil
-}
-
-type scanSaleRecord interface {
-	Scan(dest ...any) error
-}
-
-func scanSaleRecordItem(row scanSaleRecord) (saleRecordItem, error) {
-	var out saleRecordItem
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.SessionID, &out.SeedHash, &out.ChunkIndex, &out.UnitPriceSatPer64K, &out.AmountSatoshi, &out.BuyerGatewayPeerID, &out.ReleaseToken)
-	if err != nil {
-		return saleRecordItem{}, err
 	}
 	return out, nil
 }

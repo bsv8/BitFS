@@ -40,16 +40,6 @@ type txHistoryEntry struct {
 	CycleIndex    uint32
 }
 
-type saleRecordEntry struct {
-	SessionID          string
-	SeedHash           string
-	ChunkIndex         uint32
-	UnitPriceSatPer64K uint64
-	AmountSatoshi      uint64
-	BuyerGatewayPeerID string
-	ReleaseToken       string
-}
-
 type gatewayEventEntry struct {
 	GatewayPeerID string
 	Action        string
@@ -254,16 +244,13 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
 		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
 		mux.HandleFunc(prefix+"/v1/direct/quotes/detail", s.withAuth(s.handleDirectQuoteDetail))
-		mux.HandleFunc(prefix+"/v1/direct/deals", s.withAuth(s.handleDirectDeals))
-		mux.HandleFunc(prefix+"/v1/direct/deals/detail", s.withAuth(s.handleDirectDealDetail))
-		mux.HandleFunc(prefix+"/v1/direct/sessions", s.withAuth(s.handleDirectSessions))
-		mux.HandleFunc(prefix+"/v1/direct/sessions/detail", s.withAuth(s.handleDirectSessionDetail))
 		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPools))
 		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetail))
 		mux.HandleFunc(prefix+"/v1/transactions", s.withAuth(s.handleTransactions))
 		mux.HandleFunc(prefix+"/v1/transactions/detail", s.withAuth(s.handleTransactionDetail))
-		mux.HandleFunc(prefix+"/v1/sales", s.withAuth(s.handleSales))
-		mux.HandleFunc(prefix+"/v1/sales/detail", s.withAuth(s.handleSaleDetail))
+		mux.HandleFunc(prefix+"/v1/purchases", s.withAuth(s.handlePurchases))
+		mux.HandleFunc(prefix+"/v1/purchases/detail", s.withAuth(s.handlePurchaseDetail))
+		mux.HandleFunc(prefix+"/v1/purchases/summary", s.withAuth(s.handlePurchaseSummary))
 		mux.HandleFunc(prefix+"/v1/gateways/events", s.withAuth(s.handleGatewayEvents))
 		mux.HandleFunc(prefix+"/v1/gateways/events/detail", s.withAuth(s.handleGatewayEventDetail))
 		mux.HandleFunc(prefix+"/v1/files/get-file", s.withAuth(s.handleGetFileStart))
@@ -562,7 +549,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 	resp := map[string]any{
 		"flow_count":                                      counters.FlowCount,
 		"tx_event_count":                                  counters.TxCount,
-		"sale_count":                                      counters.SaleCount,
+		"purchase_count":                                  counters.PurchaseCount,
 		"gateway_event_count":                             counters.GatewayEventCount,
 		"total_in_satoshi":                                counters.TotalIn,
 		"total_out_satoshi":                               counters.TotalOut,
@@ -881,112 +868,6 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, it)
 }
 
-func (s *httpAPIServer) handleDirectDeals(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
-	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
-	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
-	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_pubkey_hex"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	page, err := dbListDirectDeals(r.Context(), httpStore(s), directDealFilter{
-		Limit:        limit,
-		Offset:       offset,
-		DemandID:     demandID,
-		DealID:       dealID,
-		SellerPeerID: sellerPeerID,
-		BuyerPeerID:  buyerPeerID,
-		Status:       status,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total":  page.Total,
-		"limit":  limit,
-		"offset": offset,
-		"items":  page.Items,
-	})
-}
-
-func (s *httpAPIServer) handleDirectDealDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
-	if dealID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "deal_id is required"})
-		return
-	}
-	it, err := dbGetDirectDealItem(r.Context(), httpStore(s), dealID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
-func (s *httpAPIServer) handleDirectSessions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-	dealID := strings.TrimSpace(r.URL.Query().Get("deal_id"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	page, err := dbListDirectSessions(r.Context(), httpStore(s), directSessionFilter{
-		Limit:     limit,
-		Offset:    offset,
-		SessionID: sessionID,
-		DealID:    dealID,
-		Status:    status,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total":  page.Total,
-		"limit":  limit,
-		"offset": offset,
-		"items":  page.Items,
-	})
-}
-
-func (s *httpAPIServer) handleDirectSessionDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	sessionID := strings.TrimSpace(r.URL.Query().Get("session_id"))
-	if sessionID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
-		return
-	}
-	it, err := dbGetDirectSessionItem(r.Context(), httpStore(s), sessionID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
 func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1097,18 +978,24 @@ func (s *httpAPIServer) handleTransactionDetail(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, it)
 }
 
-func (s *httpAPIServer) handleSales(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handlePurchases(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	seedHash := strings.TrimSpace(r.URL.Query().Get("seed_hash"))
-	page, err := dbListSaleRecords(r.Context(), httpStore(s), saleRecordFilter{
-		Limit:    limit,
-		Offset:   offset,
-		SeedHash: seedHash,
+	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
+	sellerPubHex := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
+	arbiterPubHex := strings.TrimSpace(r.URL.Query().Get("arbiter_pubkey_hex"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	page, err := dbListPurchases(r.Context(), httpStore(s), purchaseFilter{
+		Limit:         limit,
+		Offset:        offset,
+		DemandID:      demandID,
+		SellerPubHex:  sellerPubHex,
+		ArbiterPubHex: arbiterPubHex,
+		Status:        status,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -1122,7 +1009,7 @@ func (s *httpAPIServer) handleSales(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *httpAPIServer) handleSaleDetail(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handlePurchaseDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -1132,7 +1019,7 @@ func (s *httpAPIServer) handleSaleDetail(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	it, err := dbGetSaleRecordItem(r.Context(), httpStore(s), int64(id))
+	it, err := dbGetPurchaseItem(r.Context(), httpStore(s), int64(id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -1142,6 +1029,24 @@ func (s *httpAPIServer) handleSaleDetail(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handlePurchaseSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	demandID := strings.TrimSpace(r.URL.Query().Get("demand_id"))
+	if demandID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "demand_id is required"})
+		return
+	}
+	summary, err := dbSummarizeDemandPurchases(r.Context(), httpStore(s), demandID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func (s *httpAPIServer) handleGatewayEvents(w http.ResponseWriter, r *http.Request) {

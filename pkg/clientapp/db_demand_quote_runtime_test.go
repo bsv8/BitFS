@@ -103,25 +103,6 @@ func TestDefaultArbiterPubHexUsesPubHexFallback(t *testing.T) {
 	}
 }
 
-func TestDemandQuoteLegacyMigrationRejectsOrphanQuote(t *testing.T) {
-	db := openClientDBForLegacyDemandQuoteTest(t)
-
-	if err := createLegacyDemandQuoteSchema(db); err != nil {
-		t.Fatalf("create legacy schema: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO direct_quotes(
-			demand_id,seller_pubkey_hex,seed_price,chunk_price,chunk_count,file_size,expires_at_unix,recommended_file_name,mime_hint,available_chunk_bitmap_hex,seller_arbiter_pubkey_hexes_json,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"dmd_missing", "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 111, 22, 3, 4096, 1893427200, "legacy.bin", "text/plain", "ff", `[]`, 1700000002,
-	); err != nil {
-		t.Fatalf("insert legacy quote: %v", err)
-	}
-
-	if err := initIndexDB(db); err == nil {
-		t.Fatalf("expected migration failure for orphan legacy quote")
-	}
-}
-
 func TestDemandQuoteForeignKeysRejectOrphanRows(t *testing.T) {
 	db := newDemandQuoteFKTestDB(t)
 

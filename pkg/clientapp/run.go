@@ -41,18 +41,16 @@ const (
 	BBroadcastProtocolName             = "Bitcast Broadcast Protocol"
 	ProtoHealth            protocol.ID = "/bsv-transfer/healthz/1.0.0"
 
-	ProtoArbHealth          protocol.ID = "/bsv-transfer/arbiter/healthz/1.0.0"
-	ProtoSeedGet            protocol.ID = "/bsv-transfer/client/seed/get/1.0.0"
-	ProtoQuoteDirectSubmit  protocol.ID = "/bsv-transfer/client/quote/direct_submit/1.0.0"
-	ProtoLiveQuoteSubmit    protocol.ID = "/bsv-transfer/client/live_quote/submit/1.0.0"
-	ProtoDirectDealAccept   protocol.ID = "/bsv-transfer/client/deal/accept/1.0.0"
-	ProtoDirectSessionOpen  protocol.ID = "/bsv-transfer/client/session/open/1.0.0"
-	ProtoDirectSessionClose protocol.ID = "/bsv-transfer/client/session/close/1.0.0"
-	ProtoTransferPoolOpen   protocol.ID = "/bsv-transfer/client/transfer-pool/open/1.0.0"
-	ProtoTransferPoolPay    protocol.ID = "/bsv-transfer/client/transfer-pool/pay/1.0.0"
-	ProtoTransferPoolClose  protocol.ID = "/bsv-transfer/client/transfer-pool/close/1.0.0"
-	ProtoLiveSubscribe      protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
-	ProtoLiveHeadPush       protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
+	ProtoArbHealth         protocol.ID = "/bsv-transfer/arbiter/healthz/1.0.0"
+	ProtoSeedGet           protocol.ID = "/bsv-transfer/client/seed/get/1.0.0"
+	ProtoQuoteDirectSubmit protocol.ID = "/bsv-transfer/client/quote/direct_submit/1.0.0"
+	ProtoLiveQuoteSubmit   protocol.ID = "/bsv-transfer/client/live_quote/submit/1.0.0"
+	ProtoDirectDealAccept  protocol.ID = "/bsv-transfer/client/deal/accept/1.0.0"
+	ProtoTransferPoolOpen  protocol.ID = "/bsv-transfer/client/transfer-pool/open/1.0.0"
+	ProtoTransferPoolPay   protocol.ID = "/bsv-transfer/client/transfer-pool/pay/1.0.0"
+	ProtoTransferPoolClose protocol.ID = "/bsv-transfer/client/transfer-pool/close/1.0.0"
+	ProtoLiveSubscribe     protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
+	ProtoLiveHeadPush      protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
 
 	bootPeerConnectTimeout = 5 * time.Second
 	bootPeerHealthTimeout  = 5 * time.Second
@@ -102,20 +100,6 @@ type directDealAcceptResp struct {
 	SellerPeerID string `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
 	ChunkPrice   uint64 `protobuf:"varint,3,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
 	Status       string `protobuf:"bytes,4,opt,name=status,proto3" json:"status"`
-}
-type directSessionOpenReq struct {
-	DealID string `protobuf:"bytes,1,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
-}
-type directSessionOpenResp struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
-}
-type directSessionCloseReq struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-}
-type directSessionCloseResp struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
 }
 
 type directTransferPoolOpenReq struct {
@@ -1733,11 +1717,11 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		if strings.TrimSpace(req.SessionID) == "" || seedHash == "" {
 			return seedGetResp{}, fmt.Errorf("invalid params")
 		}
-		dealID, err := dbLoadDirectSessionDealID(ctx, store, strings.TrimSpace(req.SessionID))
+		row, err := dbLoadDirectTransferPoolRow(ctx, store, strings.TrimSpace(req.SessionID))
 		if err != nil {
 			return seedGetResp{}, fmt.Errorf("session not found")
 		}
-		dealSeedHash, err := dbLoadDirectDealSeedHash(ctx, store, strings.TrimSpace(dealID))
+		dealSeedHash, err := dbLoadDirectDealSeedHash(ctx, store, strings.TrimSpace(row.DealID))
 		if err != nil {
 			return seedGetResp{}, fmt.Errorf("deal not found")
 		}
@@ -1776,16 +1760,6 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			Status:       "accepted",
 		}, nil
 	})
-	pproto.HandleProto[directSessionOpenReq, directSessionOpenResp](h, ProtoDirectSessionOpen, clientSec(trace), func(ctx context.Context, req directSessionOpenReq) (directSessionOpenResp, error) {
-		if strings.TrimSpace(req.DealID) == "" {
-			return directSessionOpenResp{}, fmt.Errorf("deal_id required")
-		}
-		sessionID, err := dbOpenDirectSession(ctx, store, req.DealID)
-		if err != nil {
-			return directSessionOpenResp{}, err
-		}
-		return directSessionOpenResp{SessionID: sessionID, Status: "active"}, nil
-	})
 	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 		return handleDirectTransferPoolOpen(h, store, cfg, req)
 	})
@@ -1794,15 +1768,6 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 	})
 	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 		return handleDirectTransferPoolClose(h, store, cfg, req)
-	})
-	pproto.HandleProto[directSessionCloseReq, directSessionCloseResp](h, ProtoDirectSessionClose, clientSec(trace), func(ctx context.Context, req directSessionCloseReq) (directSessionCloseResp, error) {
-		if strings.TrimSpace(req.SessionID) == "" {
-			return directSessionCloseResp{}, fmt.Errorf("session_id required")
-		}
-		if err := dbFinalizeDirectSession(ctx, store, req.SessionID); err != nil {
-			return directSessionCloseResp{}, err
-		}
-		return directSessionCloseResp{SessionID: req.SessionID, Status: "finalized"}, nil
 	})
 }
 

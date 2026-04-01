@@ -95,6 +95,7 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
+	// 这里只写运行期上下文，给后续 transfer-pool 和 seed 读取串线，不是事实主表。
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
 			`INSERT INTO direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
@@ -110,38 +111,6 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 			"accepted",
 			time.Now().Unix(),
 		)
-		return err
-	})
-}
-
-func dbOpenDirectSession(ctx context.Context, store *clientDB, dealID string) (string, error) {
-	if store == nil {
-		return "", fmt.Errorf("client db is nil")
-	}
-	var sessionID string
-	err := store.Tx(ctx, func(tx *sql.Tx) error {
-		var chunkPrice uint64
-		if err := tx.QueryRow(`SELECT chunk_price FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&chunkPrice); err != nil {
-			return err
-		}
-		sessionID = "dsess_" + randHex(8)
-		now := time.Now().Unix()
-		_, err := tx.Exec(`INSERT INTO direct_sessions(session_id,deal_id,chunk_price,paid_chunks,paid_amount,released_chunks,released_amount,status,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			sessionID, strings.TrimSpace(dealID), chunkPrice, 0, 0, 0, 0, "active", now, now)
-		return err
-	})
-	if err != nil {
-		return "", err
-	}
-	return sessionID, nil
-}
-
-func dbFinalizeDirectSession(ctx context.Context, store *clientDB, sessionID string) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(`UPDATE direct_sessions SET status='finalized',updated_at_unix=? WHERE session_id=?`, time.Now().Unix(), strings.TrimSpace(sessionID))
 		return err
 	})
 }

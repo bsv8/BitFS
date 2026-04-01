@@ -279,13 +279,13 @@ func (k *clientKernel) dispatchWorkspaceSync(ctx context.Context, cmd clientKern
 	}
 }
 
-func (k *clientKernel) runDirectDownloadCore(ctx context.Context, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
+func (k *clientKernel) runDirectDownloadCoreImpl(ctx context.Context, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
 	if k == nil || k.rt == nil {
 		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
 	}
 	cmdID := newKernelCommandID()
 	startAt := time.Now()
-	out, err := runDirectDownloadCoreLegacy(ctx, k.store, k.rt, p, hooks)
+	out, err := runDirectDownloadCoreImpl(ctx, k.store, k.rt, p, hooks)
 	status := "applied"
 	errCode := ""
 	errMsg := ""
@@ -333,7 +333,7 @@ func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p Transf
 	}
 	cmdID := newKernelCommandID()
 	startAt := time.Now()
-	out, err := triggerTransferChunksByStrategyLegacy(ctx, k.store, k.rt, p)
+	out, err := triggerTransferChunksByStrategyImpl(ctx, k.store, k.rt, p)
 	status := "applied"
 	errCode := ""
 	errMsg := ""

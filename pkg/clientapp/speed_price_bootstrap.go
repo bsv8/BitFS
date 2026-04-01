@@ -49,7 +49,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 
 	workers := make([]*transferSellerWorker, 0, len(quotes))
 	for _, q := range quotes {
-		arbiterPeerID, err := resolveDealArbiter(p.Buyer, q.SellerArbiterPeerIDs, p.ArbiterPeerID)
+		arbiterPeerID, err := resolveDealArbiter(p.Buyer, q.SellerArbiterPubHexes, p.ArbiterPeerID)
 		if err != nil {
 			if p.OnQuoteRejected != nil {
 				p.OnQuoteRejected(q, err)
@@ -84,7 +84,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 			continue
 		}
 		seedRes, err := TriggerClientSeedGet(p.Ctx, p.Buyer, SeedGetParams{
-			SellerPeerID: w.quote.SellerPeerID,
+			SellerPeerID: w.quote.SellerPubHex,
 			SessionID:    w.sessionID,
 			SeedHash:     seedHash,
 		})
@@ -119,6 +119,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 		if p.OnSeedProbeOK != nil {
 			p.OnSeedProbeOK(w, meta)
 		}
+		w.recordPurchaseDone(p.Ctx, 0, p.SeedHash, w.quote.SeedPrice)
 		return workers, meta, append([]byte(nil), seedRes.Seed...), nil
 	}
 	_ = closeTransferWorkers(context.Background(), workers)

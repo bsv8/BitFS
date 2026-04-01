@@ -37,20 +37,6 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		if kind == "resp" {
 			return &directDealAcceptResp{}, true
 		}
-	case string(ProtoDirectSessionOpen):
-		if kind == "req" {
-			return &directSessionOpenReq{}, true
-		}
-		if kind == "resp" {
-			return &directSessionOpenResp{}, true
-		}
-	case string(ProtoDirectSessionClose):
-		if kind == "req" {
-			return &directSessionCloseReq{}, true
-		}
-		if kind == "resp" {
-			return &directSessionCloseResp{}, true
-		}
 	case string(ProtoTransferPoolOpen):
 		if kind == "req" {
 			return &directTransferPoolOpenReq{}, true

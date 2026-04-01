@@ -22,9 +22,9 @@ func TestBuildTransferStrategyIgnoreUnknown(t *testing.T) {
 func TestSmartStrategyPruneWorstOnSaturation(t *testing.T) {
 	s := newSmartDispatchStrategy()
 	workers := []*transferSellerWorker{
-		{quote: DirectQuoteItem{SellerPeerID: "a", ChunkPrice: 10}, emaBPS: 1000},
-		{quote: DirectQuoteItem{SellerPeerID: "b", ChunkPrice: 10}, emaBPS: 200},
-		{quote: DirectQuoteItem{SellerPeerID: "c", ChunkPrice: 20}, emaBPS: 500},
+		{quote: DirectQuoteItem{SellerPubHex: "a", ChunkPrice: 10}, emaBPS: 1000},
+		{quote: DirectQuoteItem{SellerPubHex: "b", ChunkPrice: 10}, emaBPS: 200},
+		{quote: DirectQuoteItem{SellerPubHex: "c", ChunkPrice: 20}, emaBPS: 500},
 	}
 
 	now := time.Now()

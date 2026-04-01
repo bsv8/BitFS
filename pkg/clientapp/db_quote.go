@@ -28,7 +28,7 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 		for rows.Next() {
 			var it LiveQuoteItem
 			var recentJSON string
-			if err := rows.Scan(&it.DemandID, &it.SellerPeerID, &it.StreamID, &it.LatestSegmentIndex, &recentJSON, &it.ExpiresAtUnix); err != nil {
+			if err := rows.Scan(&it.DemandID, &it.SellerPubHex, &it.StreamID, &it.LatestSegmentIndex, &recentJSON, &it.ExpiresAtUnix); err != nil {
 				return nil, err
 			}
 			if strings.TrimSpace(recentJSON) != "" {
@@ -48,7 +48,7 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	if strings.TrimSpace(item.DemandID) == "" || strings.TrimSpace(item.SellerPeerID) == "" || strings.TrimSpace(item.StreamID) == "" {
+	if strings.TrimSpace(item.DemandID) == "" || strings.TrimSpace(item.SellerPubHex) == "" || strings.TrimSpace(item.StreamID) == "" {
 		return fmt.Errorf("live quote keys are required")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
@@ -65,7 +65,7 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 				expires_at_unix=excluded.expires_at_unix,
 				created_at_unix=excluded.created_at_unix`,
 			strings.TrimSpace(item.DemandID),
-			strings.ToLower(strings.TrimSpace(item.SellerPeerID)),
+			strings.ToLower(strings.TrimSpace(item.SellerPubHex)),
 			strings.ToLower(strings.TrimSpace(item.StreamID)),
 			item.LatestSegmentIndex,
 			string(recentJSON),

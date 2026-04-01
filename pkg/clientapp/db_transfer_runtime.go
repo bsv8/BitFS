@@ -17,6 +17,7 @@ import (
 // - 文件读取虽然最终走文件系统，但 seed 路径解析也统一收在 db 层。
 
 func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
+	// 运行期辅助查询：只给 direct transfer 串 buyer / seller / arbiter 上下文。
 	out, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
 		buyer   string
 		seller  string
@@ -37,12 +38,13 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var dealID string
-		err := db.QueryRow(`SELECT deal_id FROM direct_sessions WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
+		err := db.QueryRow(`SELECT deal_id FROM direct_transfer_pools WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
 		return strings.TrimSpace(dealID), err
 	})
 }
 
 func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
+	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedHash string
 		err := db.QueryRow(`SELECT seed_hash FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
@@ -100,7 +102,6 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		); err != nil {
 			return err
 		}
-		_, _ = db.Exec(`UPDATE direct_sessions SET status='active',updated_at_unix=? WHERE session_id=?`, now, sessionID)
 		return nil
 	})
 }
@@ -117,11 +118,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		); err != nil {
 			return err
 		}
-		_, err := db.Exec(
-			`UPDATE direct_sessions SET paid_chunks=paid_chunks+1,paid_amount=paid_amount+?,status='chunk_paying',updated_at_unix=? WHERE session_id=?`,
-			delta, now, sessionID,
-		)
-		return err
+		return nil
 	})
 }
 

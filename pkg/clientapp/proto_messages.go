@@ -46,22 +46,6 @@ func (m *directDealAcceptResp) Reset()         { *m = directDealAcceptResp{} }
 func (m *directDealAcceptResp) String() string { return oldproto.CompactTextString(m) }
 func (*directDealAcceptResp) ProtoMessage()    {}
 
-func (m *directSessionOpenReq) Reset()         { *m = directSessionOpenReq{} }
-func (m *directSessionOpenReq) String() string { return oldproto.CompactTextString(m) }
-func (*directSessionOpenReq) ProtoMessage()    {}
-
-func (m *directSessionOpenResp) Reset()         { *m = directSessionOpenResp{} }
-func (m *directSessionOpenResp) String() string { return oldproto.CompactTextString(m) }
-func (*directSessionOpenResp) ProtoMessage()    {}
-
-func (m *directSessionCloseReq) Reset()         { *m = directSessionCloseReq{} }
-func (m *directSessionCloseReq) String() string { return oldproto.CompactTextString(m) }
-func (*directSessionCloseReq) ProtoMessage()    {}
-
-func (m *directSessionCloseResp) Reset()         { *m = directSessionCloseResp{} }
-func (m *directSessionCloseResp) String() string { return oldproto.CompactTextString(m) }
-func (*directSessionCloseResp) ProtoMessage()    {}
-
 func (m *directTransferPoolOpenReq) Reset()         { *m = directTransferPoolOpenReq{} }
 func (m *directTransferPoolOpenReq) String() string { return oldproto.CompactTextString(m) }
 func (*directTransferPoolOpenReq) ProtoMessage()    {}

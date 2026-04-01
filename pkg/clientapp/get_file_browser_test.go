@@ -225,14 +225,14 @@ func TestSelectBestStaticQuote_OnlyAcceptsCompleteCoverage(t *testing.T) {
 	t.Parallel()
 
 	incomplete := DirectQuoteItem{
-		SellerPeerID:          "seller-a",
+		SellerPubHex:          "seller-a",
 		SeedPrice:             10,
 		ChunkPrice:            1,
 		ChunkCount:            3,
 		AvailableChunkIndexes: []uint32{0, 1},
 	}
 	complete := DirectQuoteItem{
-		SellerPeerID:          "seller-b",
+		SellerPubHex:          "seller-b",
 		SeedPrice:             20,
 		ChunkPrice:            1,
 		ChunkCount:            3,
@@ -243,8 +243,8 @@ func TestSelectBestStaticQuote_OnlyAcceptsCompleteCoverage(t *testing.T) {
 	if !ok {
 		t.Fatalf("select best quote failed: %s", reason)
 	}
-	if best.SellerPeerID != complete.SellerPeerID {
-		t.Fatalf("unexpected quote selected: got=%s want=%s", best.SellerPeerID, complete.SellerPeerID)
+	if best.SellerPubHex != complete.SellerPubHex {
+		t.Fatalf("unexpected quote selected: got=%s want=%s", best.SellerPubHex, complete.SellerPubHex)
 	}
 }
 

@@ -16,6 +16,17 @@ import (
 // - 外层业务代码只表达“记什么”，不直接写 SQL；
 // - 同一类写入统一走 clientDB，后续要补事务或限流时，只改这里。
 
+type purchaseDoneEntry struct {
+	DemandID       string
+	SellerPubHex   string
+	ArbiterPubHex  string
+	ChunkIndex     uint32
+	ObjectHash     string
+	AmountSatoshi  uint64
+	CreatedAtUnix  int64
+	FinishedAtUnix int64
+}
+
 func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 	if store == nil {
 		return
@@ -48,6 +59,58 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 			obs.Error("bitcast-client", "tx_history_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
 		}
 		return nil
+	})
+}
+
+func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEntry) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		if strings.TrimSpace(e.DemandID) == "" {
+			return fmt.Errorf("demand_id is required")
+		}
+		if strings.TrimSpace(e.SellerPubHex) == "" {
+			return fmt.Errorf("seller_pub_hex is required")
+		}
+		if strings.TrimSpace(e.ArbiterPubHex) == "" {
+			return fmt.Errorf("arbiter_pub_hex is required")
+		}
+		if e.AmountSatoshi == 0 {
+			return fmt.Errorf("amount_satoshi must be positive")
+		}
+		now := time.Now().Unix()
+		createdAtUnix := e.CreatedAtUnix
+		if createdAtUnix <= 0 {
+			createdAtUnix = now
+		}
+		finishedAtUnix := e.FinishedAtUnix
+		if finishedAtUnix <= 0 {
+			finishedAtUnix = now
+		}
+		_, err := db.Exec(
+			`INSERT INTO purchases(
+				demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			strings.TrimSpace(e.DemandID),
+			strings.ToLower(strings.TrimSpace(e.SellerPubHex)),
+			strings.ToLower(strings.TrimSpace(e.ArbiterPubHex)),
+			e.ChunkIndex,
+			strings.ToLower(strings.TrimSpace(e.ObjectHash)),
+			e.AmountSatoshi,
+			"done",
+			"",
+			createdAtUnix,
+			finishedAtUnix,
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "purchase_append_failed", map[string]any{
+				"error":       err.Error(),
+				"demand_id":   strings.TrimSpace(e.DemandID),
+				"chunk_index": e.ChunkIndex,
+			})
+		}
+		return err
 	})
 }
 
@@ -198,29 +261,6 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 		)
 		if err != nil {
 			obs.Error("bitcast-client", "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action})
-		}
-		return nil
-	})
-}
-
-func dbAppendSaleRecord(ctx context.Context, store *clientDB, e saleRecordEntry) {
-	if store == nil {
-		return
-	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
-			`INSERT INTO sale_records(created_at_unix,session_id,seed_hash,chunk_index,unit_price_sat_per_64k,amount_satoshi,buyer_gateway_pubkey_hex,release_token) VALUES(?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			e.SessionID,
-			e.SeedHash,
-			e.ChunkIndex,
-			e.UnitPriceSatPer64K,
-			e.AmountSatoshi,
-			e.BuyerGatewayPeerID,
-			e.ReleaseToken,
-		)
-		if err != nil {
-			obs.Error("bitcast-client", "sale_record_append_failed", map[string]any{"error": err.Error(), "session_id": e.SessionID})
 		}
 		return nil
 	})

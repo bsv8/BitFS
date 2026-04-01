@@ -90,9 +90,9 @@ func TestComputeLiveQuotePrices(t *testing.T) {
 }
 
 func TestBestLiveQuoteSnapshot(t *testing.T) {
-	snap, sellerPeerID, ok := bestLiveQuoteSnapshot(strings.Repeat("a", 64), []LiveQuoteItem{
+	snap, sellerPubHex, ok := bestLiveQuoteSnapshot(strings.Repeat("a", 64), []LiveQuoteItem{
 		{
-			SellerPeerID:       "seller-old",
+			SellerPubHex:       "seller-old",
 			StreamID:           strings.Repeat("a", 64),
 			LatestSegmentIndex: 11,
 			RecentSegments: []LiveQuoteSegment{
@@ -101,7 +101,7 @@ func TestBestLiveQuoteSnapshot(t *testing.T) {
 			},
 		},
 		{
-			SellerPeerID:       "seller-new",
+			SellerPubHex:       "seller-new",
 			StreamID:           strings.Repeat("a", 64),
 			LatestSegmentIndex: 12,
 			RecentSegments: []LiveQuoteSegment{
@@ -112,8 +112,8 @@ func TestBestLiveQuoteSnapshot(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected snapshot")
 	}
-	if sellerPeerID != "seller-new" {
-		t.Fatalf("unexpected seller peer id: %s", sellerPeerID)
+	if sellerPubHex != "seller-new" {
+		t.Fatalf("unexpected seller pub hex: %s", sellerPubHex)
 	}
 	if len(snap.RecentSegments) != 1 || snap.RecentSegments[0].SeedHash != strings.Repeat("d", 64) {
 		t.Fatalf("unexpected snapshot: %+v", snap)

@@ -288,7 +288,7 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 				Status:              "quoted",
 				LocalReady:          false,
 				RecommendedFileName: sanitizeRecommendedFileName(best.RecommendedFileName),
-				MIMEHint:            sanitizeMIMEHint(best.MIMEHint),
+				MIMEHint:            sanitizeMIMEHint(best.MimeType),
 				FileSize:            best.FileSize,
 				ChunkCount:          best.ChunkCount,
 				SeedPrice:           best.SeedPrice,
@@ -422,7 +422,7 @@ func (s *httpAPIServer) downloadStaticSeedToWorkspace(ctx context.Context, seedH
 		Seed:                  seedBytes,
 		AvailableChunkIndexes: contiguousChunkIndexes(meta.ChunkCount),
 		RecommendedFileName:   quote.RecommendedFileName,
-		MIMEHint:              quote.MIMEHint,
+		MIMEHint:              quote.MimeType,
 	}); err != nil {
 		return "", err
 	}
