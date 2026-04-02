@@ -682,21 +682,6 @@ func directTransferPoolAccountingSource(sessionID string, allocationKind string,
 	return "pool_allocation", directTransferPoolAllocationID(sessionID, allocationKind, sequenceNum)
 }
 
-// directTransferPoolAccountingSourceID 查询 allocation_id 对应的自增 id
-// 第二步整改：用于财务写入时获取事实表主键
-func directTransferPoolAccountingSourceID(db *sql.DB, sessionID string, allocationKind string, sequenceNum uint32) (string, int64, error) {
-	allocationID := directTransferPoolAllocationID(sessionID, allocationKind, sequenceNum)
-	if allocationID == "" {
-		return "", 0, fmt.Errorf("allocation_id is required")
-	}
-	var id int64
-	err := db.QueryRow(`SELECT id FROM pool_allocations WHERE allocation_id=?`, allocationID).Scan(&id)
-	if err != nil {
-		return "", 0, fmt.Errorf("lookup pool_allocation id failed: %w", err)
-	}
-	return "pool_allocation", id, nil
-}
-
 func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
 	dbRecordAccounting(ctx, store, func(db *sql.DB) {
 		businessID := strings.TrimSpace(in.BusinessID)
@@ -842,23 +827,19 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 	})
 }
 
-func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) {
-	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
+		sourceType := "pool_allocation"
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
-
-		// 第二步整改：查询 pool_allocations.id 作为 source_id，查不到直接失败（不写数据）
-		sourceType, sourceID, err := directTransferPoolAccountingSourceID(db, strings.TrimSpace(in.SessionID), "open", 1)
-		if err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_source_lookup_failed", map[string]any{
-				"error":      err.Error(),
-				"scene":      "c2c_open",
-				"session_id": strings.TrimSpace(in.SessionID),
-			})
-			return // 查不到事实主键，阻断写入
-		}
-		sourceIDStr := fmt.Sprintf("%d", sourceID)
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(in.SessionID), "open", 1)
+		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
+		if err != nil {
+			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
+		}
 		lockScript := strings.TrimSpace(in.ClientLockScript)
 		var grossInput, changeBack, lockAmount int64
 		if t, err := transaction.NewTransactionFromHex(strings.TrimSpace(in.BaseTxHex)); err == nil {
@@ -919,7 +900,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
 			SourceType:        sourceType,
-			SourceID:          sourceIDStr,
+			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			FromPartyID:       "client:self",
@@ -936,12 +917,12 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
-			return
+			return err
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
 			SourceType:        sourceType,
-			SourceID:          sourceIDStr,
+			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			EventType:         "accounting",
@@ -957,6 +938,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			return err
 		}
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
@@ -973,32 +955,29 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			Payload:            map[string]any{"session_id": strings.TrimSpace(in.SessionID)},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			return err
 		}
+		return nil
 	})
 }
 
-func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) {
-	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
 		businessID := fmt.Sprintf("biz_c2c_pay_%s_%d", strings.TrimSpace(sessionID), sequence)
-
-		// 第二步整改：查询 pool_allocations.id 作为 source_id，查不到直接失败
-		sourceType, sourceID, err := directTransferPoolAccountingSourceID(db, strings.TrimSpace(sessionID), "pay", sequence)
-		if err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_source_lookup_failed", map[string]any{
-				"error":      err.Error(),
-				"scene":      "c2c_pay",
-				"session_id": strings.TrimSpace(sessionID),
-				"sequence":   sequence,
-			})
-			return // 查不到事实主键，阻断写入
-		}
-		sourceIDStr := fmt.Sprintf("%d", sourceID)
+		sourceType := "pool_allocation"
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
+		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
+		if err != nil {
+			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
+		}
 
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
 			SourceType:        sourceType,
-			SourceID:          sourceIDStr,
+			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
 			FromPartyID:       "client:self",
@@ -1013,12 +992,12 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
-			return
+			return err
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			SourceType:        sourceType,
-			SourceID:          sourceIDStr,
+			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
 			EventType:         "accounting",
@@ -1032,6 +1011,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+			return err
 		}
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
@@ -1048,12 +1028,17 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 			Payload:            map[string]any{"sequence": sequence},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+			return err
 		}
+		return nil
 	})
 }
 
-func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) {
-	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
 		finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
 		txHex := strings.TrimSpace(finalTxHex)
 		var parsedFinalTx *transaction.Transaction
@@ -1069,24 +1054,16 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			}
 		}
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
-
-		// 第二步整改：查询 pool_allocations.id 作为 source_id，查不到直接失败
-		sourceType, sourceID, err := directTransferPoolAccountingSourceID(db, strings.TrimSpace(sessionID), "close", sequence)
+		sourceType := "pool_allocation"
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "close", sequence)
+		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
 		if err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_source_lookup_failed", map[string]any{
-				"error":      err.Error(),
-				"scene":      "c2c_close",
-				"session_id": strings.TrimSpace(sessionID),
-				"sequence":   sequence,
-			})
-			return // 查不到事实主键，阻断写入
+			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		sourceIDStr := fmt.Sprintf("%d", sourceID)
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
 			SourceType:        sourceType,
-			SourceID:          sourceIDStr,
+			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
 			FromPartyID:       "client:self",
@@ -1102,12 +1079,12 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
-			return
+			return err
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			SourceType:        sourceType,
-			SourceID:          sourceIDStr,
+			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
 			EventType:         "accounting",
@@ -1122,6 +1099,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			return err
 		}
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
@@ -1138,9 +1116,10 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			Payload:            map[string]any{"session_id": strings.TrimSpace(sessionID)},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			return err
 		}
 		if parsedFinalTx == nil {
-			return
+			return nil
 		}
 		inputValueHint := int64(sellerAmount + buyerAmount)
 		for i, in := range parsedFinalTx.Inputs {
@@ -1152,7 +1131,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				value = inputValueHint
 			}
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
-			_ = dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
+			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
 				BusinessID:    businessID,
 				TxID:          finalTxID,
 				UTXOID:        utxoID,
@@ -1160,7 +1139,9 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				UTXORole:      "pool_input",
 				AmountSatoshi: value,
 				Note:          "direct pool settle input",
-			})
+			}); err != nil {
+				return err
+			}
 		}
 		sellerLeft := sellerAmount
 		buyerLeft := buyerAmount
@@ -1180,7 +1161,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				note = "direct pool settle output to buyer"
 				buyerLeft = 0
 			}
-			_ = dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
+			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
 				BusinessID:    businessID,
 				TxID:          finalTxID,
 				UTXOID:        finalTxID + ":" + fmt.Sprint(idx),
@@ -1188,8 +1169,11 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				UTXORole:      utxoRole,
 				AmountSatoshi: int64(amount),
 				Note:          note,
-			})
+			}); err != nil {
+				return err
+			}
 		}
+		return nil
 	})
 }
 

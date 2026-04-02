@@ -851,6 +851,64 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 	}
 }
 
+// TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID
+// 第二阶段兼容层：查询可以继续用 txid，但底层必须换算成 chain_payments.id
+func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	txid := "tx_chain_query_test"
+
+	if err := recordWalletChainAccounting(db, txid, "REPAYMENT", 0, 5000, 5000, map[string]any{"test": true}); err != nil {
+		t.Fatalf("record wallet chain accounting failed: %v", err)
+	}
+
+	var chainPaymentID int64
+	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
+		t.Fatalf("chain_payment lookup failed: %v", err)
+	}
+	wantSourceID := fmt.Sprintf("%d", chainPaymentID)
+
+	bizPage, err := dbListFinanceBusinessesByTxID(ctx, store, txid, 10, 0)
+	if err != nil {
+		t.Fatalf("business lookup by txid failed: %v", err)
+	}
+	if bizPage.Total != 1 || len(bizPage.Items) != 1 {
+		t.Fatalf("business lookup by txid mismatch: total=%d items=%d", bizPage.Total, len(bizPage.Items))
+	}
+	if bizPage.Items[0].SourceType != "chain_payment" || bizPage.Items[0].SourceID != wantSourceID {
+		t.Fatalf("business lookup by txid returned wrong source: %+v", bizPage.Items[0])
+	}
+
+	if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+		ProcessID:         "proc_wallet_chain_query_" + txid,
+		SourceType:        "chain_payment",
+		SourceID:          wantSourceID,
+		AccountingScene:   "wallet_transfer",
+		AccountingSubType: "query_probe",
+		EventType:         "accounting",
+		Status:            "applied",
+		IdempotencyKey:    "wallet_chain_query:" + txid,
+		Note:              "query probe",
+		Payload:           map[string]any{"txid": txid},
+	}); err != nil {
+		t.Fatalf("append process event failed: %v", err)
+	}
+
+	procPage, err := dbListFinanceProcessEventsByTxID(ctx, store, txid, 10, 0)
+	if err != nil {
+		t.Fatalf("process lookup by txid failed: %v", err)
+	}
+	if procPage.Total != 1 || len(procPage.Items) != 1 {
+		t.Fatalf("process lookup by txid mismatch: total=%d items=%d", procPage.Total, len(procPage.Items))
+	}
+	if procPage.Items[0].SourceType != "chain_payment" || procPage.Items[0].SourceID != wantSourceID {
+		t.Fatalf("process lookup by txid returned wrong source: %+v", procPage.Items[0])
+	}
+}
+
 // TestRecordWalletChainAccounting_ChainPaymentUTXOLinks 验证 wallet_chain 链路补 utxo links
 func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	t.Parallel()
@@ -915,5 +973,51 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	}
 	if count != 1 {
 		t.Fatalf("expected 1 utxo link, got %d", count)
+	}
+}
+
+// TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts
+// 第二阶段硬约束：查不到 pool_allocations.id 时，直连池财务写入必须直接失败
+func TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	openErr := dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         "sess_missing_fact_1",
+		DealID:            "deal_missing_fact_1",
+		BaseTxID:          "base_tx_missing_fact_1",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+	})
+	if openErr == nil {
+		t.Fatal("expected open accounting to fail without pool allocation fact")
+	}
+
+	payErr := dbRecordDirectPoolPayAccounting(ctx, store, "sess_missing_fact_1", 2, 300, "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "pay_tx_missing_fact_1")
+	if payErr == nil {
+		t.Fatal("expected pay accounting to fail without pool allocation fact")
+	}
+
+	closeErr := dbRecordDirectPoolCloseAccounting(ctx, store, "sess_missing_fact_1", 3, "close_tx_missing_fact_1", baseTxHex, 700, 290, "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	if closeErr == nil {
+		t.Fatal("expected close accounting to fail without pool allocation fact")
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id IN (?,?,?)`,
+		"biz_c2c_open_sess_missing_fact_1",
+		"biz_c2c_pay_sess_missing_fact_1_2",
+		"biz_c2c_close_sess_missing_fact_1",
+	).Scan(&count); err != nil {
+		t.Fatalf("count fin_business failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("expected no finance rows to be written, got %d", count)
 	}
 }

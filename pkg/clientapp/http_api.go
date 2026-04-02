@@ -1802,10 +1802,19 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	// pool_allocation_id 自动映射为 source_type/source_id
+	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
+		poolAllocID, err := dbGetPoolAllocationIDByAllocationID(r.Context(), httpStore(s), poolAllocationID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeBusinessItem{}})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
 		sourceType = "pool_allocation"
-		sourceID = poolAllocationID
+		sourceID = fmt.Sprintf("%d", poolAllocID)
 	}
 
 	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
@@ -1876,10 +1885,19 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	// pool_allocation_id 自动映射为 source_type/source_id
+	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
+		poolAllocID, err := dbGetPoolAllocationIDByAllocationID(r.Context(), httpStore(s), poolAllocationID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeProcessEventItem{}})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
 		sourceType = "pool_allocation"
-		sourceID = poolAllocationID
+		sourceID = fmt.Sprintf("%d", poolAllocID)
 	}
 
 	page, err := dbListFinanceProcessEvents(r.Context(), httpStore(s), financeProcessEventFilter{

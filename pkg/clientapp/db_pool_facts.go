@@ -199,6 +199,29 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 	return strings.ToLower(strings.TrimSpace(parsed.TxID().String())), nil
 }
 
+// dbGetPoolAllocationIDByAllocationIDDB 按 allocation_id 查 pool_allocations.id
+// 设计说明：
+// - 写入层和读层都只认事实表自增主键；
+// - allocation_id 只作为旧入口和 payload 保留，不再直接承担 source_id 语义。
+func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
+	allocationID = strings.TrimSpace(allocationID)
+	if allocationID == "" {
+		return 0, fmt.Errorf("allocation_id is required")
+	}
+	var id int64
+	err := db.QueryRow(
+		`SELECT id FROM pool_allocations WHERE allocation_id=?`,
+		allocationID,
+	).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
 // dbGetPoolAllocationIDByAllocationID 按 allocation_id 查自增 id
 // 第二步整改：财务来源从业务键切换到事实表自增主键
 func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, allocationID string) (int64, error) {
@@ -206,15 +229,7 @@ func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, a
 		return 0, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		var id int64
-		err := db.QueryRow(
-			`SELECT id FROM pool_allocations WHERE allocation_id=?`,
-			strings.TrimSpace(allocationID),
-		).Scan(&id)
-		if err != nil {
-			return 0, err
-		}
-		return id, nil
+		return dbGetPoolAllocationIDByAllocationIDDB(db, allocationID)
 	})
 }
 
@@ -224,10 +239,14 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 	if tx == nil {
 		return 0, fmt.Errorf("tx is nil")
 	}
+	allocationID = strings.TrimSpace(allocationID)
+	if allocationID == "" {
+		return 0, fmt.Errorf("allocation_id is required")
+	}
 	var id int64
 	err := tx.QueryRow(
 		`SELECT id FROM pool_allocations WHERE allocation_id=?`,
-		strings.TrimSpace(allocationID),
+		allocationID,
 	).Scan(&id)
 	if err != nil {
 		return 0, err

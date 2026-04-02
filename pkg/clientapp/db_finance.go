@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -355,18 +356,13 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 	if allocationID == "" {
 		return financeBusinessPage{}, fmt.Errorf("allocation_id is required")
 	}
-	// 先查 pool_allocations.id
 	poolAllocID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
 	if err != nil {
-		// 如果查不到，回退到旧逻辑（兼容历史数据）
-		return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
-			Limit:      limit,
-			Offset:     offset,
-			SourceType: "pool_allocation",
-			SourceID:   allocationID,
-		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return financeBusinessPage{Items: []financeBusinessItem{}}, nil
+		}
+		return financeBusinessPage{}, err
 	}
-	// 新逻辑：使用自增 id 查询
 	return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
 		Limit:      limit,
 		Offset:     offset,
@@ -382,18 +378,13 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 	if allocationID == "" {
 		return financeProcessEventPage{}, fmt.Errorf("allocation_id is required")
 	}
-	// 先查 pool_allocations.id
 	poolAllocID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
 	if err != nil {
-		// 如果查不到，回退到旧逻辑（兼容历史数据）
-		return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
-			Limit:      limit,
-			Offset:     offset,
-			SourceType: "pool_allocation",
-			SourceID:   allocationID,
-		})
+		if errors.Is(err, sql.ErrNoRows) {
+			return financeProcessEventPage{Items: []financeProcessEventItem{}}, nil
+		}
+		return financeProcessEventPage{}, err
 	}
-	// 新逻辑：使用自增 id 查询
 	return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:      limit,
 		Offset:     offset,

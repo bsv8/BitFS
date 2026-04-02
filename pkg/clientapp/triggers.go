@@ -895,7 +895,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 				"sequence":             req.Sequence,
 			},
 		})
-		dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		if err := dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
 			SessionID:         curSessionID,
 			DealID:            dealID,
 			BaseTxID:          baseTxID,
@@ -903,7 +903,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			ClientLockScript:  clientLockScript,
 			PoolAmountSatoshi: req.PoolAmount,
 			SellerPubHex:      strings.TrimSpace(p.SellerPubHex),
-		})
+		}); err != nil {
+			obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_open_accounting_failed", map[string]any{"error": err.Error(), "session_id": curSessionID})
+			return directTransferPoolOpenResult{}, err
+		}
 		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_end", map[string]any{
 			"session_id": req.SessionID,
 			"base_txid":  baseTxID,
@@ -1193,7 +1196,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 			"sequence":    req.Sequence,
 		},
 	})
-	dbRecordDirectPoolPayAccounting(
+	if err := dbRecordDirectPoolPayAccounting(
 		ctx,
 		store,
 		session.SessionID,
@@ -1201,7 +1204,10 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		p.Amount,
 		strings.TrimSpace(session.SellerPubHex),
 		strings.TrimSpace(merged.TxID().String()),
-	)
+	); err != nil {
+		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
+		return directTransferPoolPayResult{}, err
+	}
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
 		"session_id":    req.SessionID,
 		"sequence":      req.Sequence,
@@ -1336,7 +1342,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 			"pool_amount_satoshi":   session.PoolAmountSat,
 		},
 	})
-	dbRecordDirectPoolCloseAccounting(
+	if err := dbRecordDirectPoolCloseAccounting(
 		ctx,
 		store,
 		session.SessionID,
@@ -1346,7 +1352,10 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		session.SellerAmount,
 		session.BuyerAmount,
 		strings.TrimSpace(session.SellerPubHex),
-	)
+	); err != nil {
+		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_close_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
+		return directTransferPoolCloseResult{}, err
+	}
 	buyer.deleteTriplePool(session.SessionID)
 	buyer.releaseTransferPoolSessionMutex(session.SessionID)
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_close_end", map[string]any{
