@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // ensureClientDBSchema 是客户端数据库结构就绪的唯一入口。
@@ -503,6 +505,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			business_id TEXT NOT NULL,
 			txid TEXT NOT NULL,
+			tx_role TEXT,
 			gross_input_satoshi INTEGER NOT NULL,
 			change_back_satoshi INTEGER NOT NULL,
 			external_in_satoshi INTEGER NOT NULL,
@@ -744,6 +747,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_process ON fin_process_events(process_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business_txid ON fin_tx_breakdown(business_id, txid)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_business ON fin_business_txs(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_txid ON fin_business_txs(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_business ON fin_tx_utxo_links(business_id, id DESC)`,
@@ -979,6 +983,7 @@ func ensureFinAccountingSchema(db *sql.DB) error {
 		{table: "fin_process_events", col: "source_id", stmt: `ALTER TABLE fin_process_events ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
 		{table: "fin_process_events", col: "accounting_scene", stmt: `ALTER TABLE fin_process_events ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
 		{table: "fin_process_events", col: "accounting_subtype", stmt: `ALTER TABLE fin_process_events ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_tx_breakdown", col: "tx_role", stmt: `ALTER TABLE fin_tx_breakdown ADD COLUMN tx_role TEXT`},
 	}
 
 	for _, m := range migrations {
@@ -1037,6 +1042,11 @@ func normalizeClientDBData(db *sql.DB) error {
 	// 3. 老业务 UTXO 链接迁移
 	if err := migrateLegacyBizUTXOLinks(db); err != nil {
 		return fmt.Errorf("biz_utxo_links migration: %w", err)
+	}
+
+	// 4. fin_tx_breakdown tx_role 第一轮回填与异常清单
+	if err := migrateFinTxBreakdownTxRole(db); err != nil {
+		return fmt.Errorf("fin_tx_breakdown tx_role migration: %w", err)
 	}
 
 	return nil
@@ -2018,6 +2028,147 @@ func migrateLegacyChainTables(db *sql.DB) error {
 	if _, err := db.Exec(`DROP TABLE IF EXISTS wallet_chain_tx_raw`); err != nil {
 		return err
 	}
+	return nil
+}
+
+// migrateFinTxBreakdownTxRole 是第一轮过渡的核心回填函数。
+// 设计说明：
+//   - 用 fin_business_txs 按 (business_id, txid) 回填 fin_tx_breakdown.tx_role
+//   - 回填后输出三类异常清单，供人工审查，第一轮不自动修复
+//   - 不中断启动，异常只打日志
+func migrateFinTxBreakdownTxRole(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	cols, err := tableColumns(db, "fin_tx_breakdown")
+	if err != nil {
+		return fmt.Errorf("inspect fin_tx_breakdown: %w", err)
+	}
+	if _, ok := cols["tx_role"]; !ok {
+		return nil
+	}
+
+	// 1. 回填：把旧表角色搬到新表
+	if _, err := db.Exec(`
+		UPDATE fin_tx_breakdown
+		   SET tx_role = (
+			   SELECT bt.tx_role
+			     FROM fin_business_txs bt
+			    WHERE bt.business_id = fin_tx_breakdown.business_id
+			      AND bt.txid = fin_tx_breakdown.txid
+			    LIMIT 1
+		   )
+		 WHERE tx_role IS NULL
+		   AND EXISTS (
+			   SELECT 1 FROM fin_business_txs bt
+			    WHERE bt.business_id = fin_tx_breakdown.business_id
+			      AND bt.txid = fin_tx_breakdown.txid
+		   )
+	`); err != nil {
+		return fmt.Errorf("backfill tx_role: %w", err)
+	}
+
+	// 2. 异常清单 1：breakdown 有，但 business_txs 没有
+	rows1, err := db.Query(`
+		SELECT b.business_id, b.txid
+		  FROM fin_tx_breakdown b
+		 WHERE b.tx_role IS NOT NULL
+		   AND NOT EXISTS (
+			   SELECT 1 FROM fin_business_txs bt
+			    WHERE bt.business_id = b.business_id
+			      AND bt.txid = b.txid
+		   )
+		 LIMIT 100
+	`)
+	if err != nil {
+		return fmt.Errorf("query orphan breakdown: %w", err)
+	}
+	defer rows1.Close()
+	for rows1.Next() {
+		var bid, txid string
+		if err := rows1.Scan(&bid, &txid); err != nil {
+			return err
+		}
+		obs.Important("bitcast-client", "fin_tx_breakdown_orphan", map[string]any{"business_id": bid, "txid": txid})
+	}
+	if err := rows1.Err(); err != nil {
+		return err
+	}
+
+	// 3. 异常清单 2：business_txs 有，但 breakdown 没有
+	rows2, err := db.Query(`
+		SELECT bt.business_id, bt.txid, bt.tx_role
+		  FROM fin_business_txs bt
+		 WHERE NOT EXISTS (
+			   SELECT 1 FROM fin_tx_breakdown b
+			    WHERE b.business_id = bt.business_id
+			      AND b.txid = bt.txid
+		   )
+		 LIMIT 100
+	`)
+	if err != nil {
+		return fmt.Errorf("query missing breakdown: %w", err)
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var bid, txid, txRole string
+		if err := rows2.Scan(&bid, &txid, &txRole); err != nil {
+			return err
+		}
+		obs.Important("bitcast-client", "fin_business_txs_missing_breakdown", map[string]any{"business_id": bid, "txid": txid, "tx_role": txRole})
+	}
+	if err := rows2.Err(); err != nil {
+		return err
+	}
+
+	// 4. 异常清单 3：breakdown 存在但 tx_role 为 NULL（关键遗留债）
+	rows3, err := db.Query(`
+		SELECT business_id, txid
+		  FROM fin_tx_breakdown
+		 WHERE tx_role IS NULL
+		 LIMIT 100
+	`)
+	if err != nil {
+		return fmt.Errorf("query null tx_role: %w", err)
+	}
+	defer rows3.Close()
+	for rows3.Next() {
+		var bid, txid string
+		if err := rows3.Scan(&bid, &txid); err != nil {
+			return err
+		}
+		obs.Important("bitcast-client", "fin_tx_breakdown_null_tx_role", map[string]any{"business_id": bid, "txid": txid})
+	}
+	if err := rows3.Err(); err != nil {
+		return err
+	}
+
+	// 5. 异常清单 4：同一个 (business_id, txid) 在两表中角色不一致
+	rows4, err := db.Query(`
+		SELECT b.business_id, b.txid, b.tx_role, bt.tx_role
+		  FROM fin_tx_breakdown b
+		  JOIN fin_business_txs bt
+		    ON bt.business_id = b.business_id
+		   AND bt.txid = b.txid
+		 WHERE b.tx_role IS NOT NULL
+		   AND b.tx_role != bt.tx_role
+		 LIMIT 100
+	`)
+	if err != nil {
+		return fmt.Errorf("query role mismatch: %w", err)
+	}
+	defer rows4.Close()
+	for rows4.Next() {
+		var bid, txid, br, btr string
+		if err := rows4.Scan(&bid, &txid, &br, &btr); err != nil {
+			return err
+		}
+		obs.Important("bitcast-client", "fin_tx_role_mismatch", map[string]any{"business_id": bid, "txid": txid, "breakdown_role": br, "business_txs_role": btr})
+	}
+	if err := rows4.Err(); err != nil {
+		return err
+	}
+
 	return nil
 }
 

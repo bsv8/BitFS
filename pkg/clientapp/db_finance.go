@@ -120,6 +120,7 @@ type financeBreakdownItem struct {
 	ID                 int64           `json:"id"`
 	BusinessID         string          `json:"business_id"`
 	TxID               string          `json:"txid"`
+	TxRole             string          `json:"tx_role"`
 	GrossInputSatoshi  int64           `json:"gross_input_satoshi"`
 	ChangeBackSatoshi  int64           `json:"change_back_satoshi"`
 	ExternalInSatoshi  int64           `json:"external_in_satoshi"`
@@ -390,7 +391,7 @@ func dbListFinanceBreakdowns(ctx context.Context, store *clientDB, f financeBrea
 			return financeBreakdownPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT id,business_id,txid,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+			`SELECT id,business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
 			 FROM fin_tx_breakdown WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -403,7 +404,7 @@ func dbListFinanceBreakdowns(ctx context.Context, store *clientDB, f financeBrea
 			var it financeBreakdownItem
 			var payload string
 			if err := rows.Scan(
-				&it.ID, &it.BusinessID, &it.TxID, &it.GrossInputSatoshi, &it.ChangeBackSatoshi, &it.ExternalInSatoshi, &it.CounterpartyOutSat,
+				&it.ID, &it.BusinessID, &it.TxID, &it.TxRole, &it.GrossInputSatoshi, &it.ChangeBackSatoshi, &it.ExternalInSatoshi, &it.CounterpartyOutSat,
 				&it.MinerFeeSatoshi, &it.NetOutSatoshi, &it.NetInSatoshi, &it.CreatedAtUnix, &it.Note, &payload,
 			); err != nil {
 				return financeBreakdownPage{}, err
@@ -426,11 +427,11 @@ func dbGetFinanceBreakdown(ctx context.Context, store *clientDB, id int64) (fina
 		var out financeBreakdownItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT id,business_id,txid,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+			`SELECT id,business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
 			 FROM fin_tx_breakdown WHERE id=?`,
 			id,
 		).Scan(
-			&out.ID, &out.BusinessID, &out.TxID, &out.GrossInputSatoshi, &out.ChangeBackSatoshi, &out.ExternalInSatoshi, &out.CounterpartyOutSat,
+			&out.ID, &out.BusinessID, &out.TxID, &out.TxRole, &out.GrossInputSatoshi, &out.ChangeBackSatoshi, &out.ExternalInSatoshi, &out.CounterpartyOutSat,
 			&out.MinerFeeSatoshi, &out.NetOutSatoshi, &out.NetInSatoshi, &out.CreatedAtUnix, &out.Note, &payload,
 		)
 		if err != nil {
@@ -461,7 +462,7 @@ func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOL
 			args = append(args, f.UTXOID)
 		}
 		if f.TxRole != "" {
-			where += " AND bt.tx_role=?"
+			where += " AND b.tx_role=?"
 			args = append(args, f.TxRole)
 		}
 		if f.IOSide != "" {
@@ -474,23 +475,23 @@ func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOL
 		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (l.business_id LIKE ? OR l.txid LIKE ? OR l.utxo_id LIKE ? OR l.note LIKE ? OR bt.tx_role LIKE ? OR l.utxo_role LIKE ?)"
+			where += " AND (l.business_id LIKE ? OR l.txid LIKE ? OR l.utxo_id LIKE ? OR l.note LIKE ? OR b.tx_role LIKE ? OR l.utxo_role LIKE ?)"
 			args = append(args, like, like, like, like, like, like)
 		}
 		var out financeUTXOLinkPage
 		if err := db.QueryRow(
 			`SELECT COUNT(1)
 			   FROM fin_tx_utxo_links l
-			   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE 1=1`+where,
 			args...,
 		).Scan(&out.Total); err != nil {
 			return financeUTXOLinkPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT l.id,l.business_id,l.txid,l.utxo_id,bt.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
+			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
 			   FROM fin_tx_utxo_links l
-			   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE 1=1`+where+` ORDER BY l.id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -523,9 +524,9 @@ func dbGetFinanceUTXOLink(ctx context.Context, store *clientDB, id int64) (finan
 		var out financeUTXOLinkItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT l.id,l.business_id,l.txid,l.utxo_id,bt.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
+			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
 			   FROM fin_tx_utxo_links l
-			   JOIN fin_business_txs bt ON bt.business_id=l.business_id AND bt.txid=l.txid
+			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE l.id=?`,
 			id,
 		).Scan(&out.ID, &out.BusinessID, &out.TxID, &out.UTXOID, &out.TxRole, &out.IOSide, &out.UTXORole, &out.AmountSatoshi, &out.CreatedAtUnix, &out.Note, &payload)

@@ -34,6 +34,7 @@ type finBusinessEntry struct {
 type finTxBreakdownEntry struct {
 	BusinessID         string
 	TxID               string
+	TxRole             string
 	GrossInputSatoshi  int64
 	ChangeBackSatoshi  int64
 	ExternalInSatoshi  int64
@@ -205,9 +206,10 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
 		return
 	}
-	_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+	if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 		BusinessID:         businessID,
 		TxID:               txid,
+		TxRole:             sceneSubType,
 		GrossInputSatoshi:  walletInSat,
 		ChangeBackSatoshi:  changeBack,
 		ExternalInSatoshi:  externalIn,
@@ -217,5 +219,7 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		NetInSatoshi:       netIn,
 		Note:               "wallet chain derived breakdown",
 		Payload:            payload,
-	})
+	}); err != nil {
+		obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
+	}
 }

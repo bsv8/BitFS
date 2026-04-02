@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -514,12 +515,28 @@ func dbAppendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	var n int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&n); err != nil {
-		return err
+	e.TxRole = strings.TrimSpace(e.TxRole)
+	if e.TxRole == "" {
+		return fmt.Errorf("tx_role is required for fin_tx_breakdown")
 	}
-	if n > 0 {
-		return nil
+	var existingRole sql.NullString
+	err := db.QueryRow(`SELECT tx_role FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
+	if err == nil {
+		if existingRole.Valid && existingRole.String == e.TxRole {
+			return nil
+		}
+		if !existingRole.Valid {
+			// 过渡期：旧数据 tx_role 为 NULL，允许补写
+			_, updErr := db.Exec(`UPDATE fin_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, e.TxRole, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID)))
+			if updErr != nil {
+				return fmt.Errorf("fin_tx_breakdown backfill tx_role failed for (%s,%s): %w", e.BusinessID, e.TxID, updErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("fin_tx_breakdown role mismatch for (%s,%s): existing=%s, want=%s", e.BusinessID, e.TxID, existingRole.String, e.TxRole)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
 	return dbAppendFinTxBreakdown(db, e)
 }
@@ -572,10 +589,11 @@ func dbAppendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
 	}
 	_, err := db.Exec(
 		`INSERT INTO fin_tx_breakdown(
-			business_id,txid,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		strings.TrimSpace(e.BusinessID),
 		strings.ToLower(strings.TrimSpace(e.TxID)),
+		strings.TrimSpace(e.TxRole),
 		e.GrossInputSatoshi,
 		e.ChangeBackSatoshi,
 		e.ExternalInSatoshi,
@@ -632,10 +650,30 @@ func dbAppendFinTxUTXOLink(db *sql.DB, e finTxUTXOLinkEntry) error {
 }
 
 func dbAppendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLinkEntry) error {
+	txRole = strings.TrimSpace(txRole)
+	if txRole == "" {
+		return fmt.Errorf("tx_role is required for business utxo fact")
+	}
+	// 过渡期规则：UTXO 明细必须挂到一条已成立的 TX 财务事实上
+	var existingRole sql.NullString
+	err := db.QueryRow(`SELECT tx_role FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("fin_tx_breakdown missing for (%s,%s) before appending utxo link", e.BusinessID, e.TxID)
+		}
+		return err
+	}
+	if !existingRole.Valid {
+		return fmt.Errorf("fin_tx_breakdown tx_role is null for (%s,%s), cannot append utxo link until backfilled", e.BusinessID, e.TxID)
+	}
+	if existingRole.String != txRole {
+		return fmt.Errorf("fin_tx_breakdown role mismatch for (%s,%s): existing=%s, want=%s", e.BusinessID, e.TxID, existingRole.String, txRole)
+	}
+	// 双写过渡期：继续写旧表做兼容
 	if err := dbAppendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
 		BusinessID:    e.BusinessID,
 		TxID:          e.TxID,
-		TxRole:        strings.TrimSpace(txRole),
+		TxRole:        txRole,
 		CreatedAtUnix: e.CreatedAtUnix,
 		Note:          e.Note,
 		Payload:       e.Payload,
@@ -790,6 +828,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
 			TxID:               baseTxID,
+			TxRole:             "open_base",
 			GrossInputSatoshi:  grossInput,
 			ChangeBackSatoshi:  changeBack,
 			ExternalInSatoshi:  0,
@@ -940,9 +979,10 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 		}
-		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
 			TxID:               baseTxID,
+			TxRole:             "open_base",
 			GrossInputSatoshi:  grossInput,
 			ChangeBackSatoshi:  changeBack,
 			ExternalInSatoshi:  0,
@@ -952,7 +992,9 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			NetInSatoshi:       0,
 			Note:               "direct open lock gross_input-change_back",
 			Payload:            map[string]any{"session_id": strings.TrimSpace(in.SessionID)},
-		})
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+		}
 	})
 }
 
@@ -998,9 +1040,10 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 		}
-		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
 			TxID:               strings.TrimSpace(relatedTxID),
+			TxRole:             "pay",
 			GrossInputSatoshi:  0,
 			ChangeBackSatoshi:  0,
 			ExternalInSatoshi:  0,
@@ -1010,7 +1053,9 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 			NetInSatoshi:       0,
 			Note:               "offchain chunk pay",
 			Payload:            map[string]any{"sequence": sequence},
-		})
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+		}
 	})
 }
 
@@ -1106,9 +1151,10 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 		}
-		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
 			TxID:               finalTxID,
+			TxRole:             "close_final",
 			GrossInputSatoshi:  0,
 			ChangeBackSatoshi:  int64(buyerAmount),
 			ExternalInSatoshi:  0,
@@ -1118,7 +1164,9 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			NetInSatoshi:       0,
 			Note:               "pool settle return",
 			Payload:            map[string]any{"session_id": strings.TrimSpace(sessionID)},
-		})
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+		}
 		if parsedFinalTx == nil {
 			return
 		}
