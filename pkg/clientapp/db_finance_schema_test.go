@@ -286,3 +286,61 @@ func TestInitIndexDB_FreshSchemaKeepsPoolFactTables(t *testing.T) {
 		}
 	}
 }
+
+func TestInitIndexDB_CreatesFinanceReadIndexes(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	wantIndexes := map[string][]string{
+		"fin_business": {
+			"idx_fin_business_scene",
+			"idx_fin_business_source",
+			"idx_fin_business_accounting",
+		},
+		"fin_process_events": {
+			"idx_fin_process_events_scene",
+			"idx_fin_process_events_source",
+			"idx_fin_process_events_accounting",
+		},
+	}
+	for table, wants := range wantIndexes {
+		got, err := tableIndexNamesForTable(db, table)
+		if err != nil {
+			t.Fatalf("inspect %s indexes failed: %v", table, err)
+		}
+		for _, want := range wants {
+			if !containsString(got, want) {
+				t.Fatalf("missing index %s on %s", want, table)
+			}
+		}
+	}
+}
+
+func tableIndexNamesForTable(db *sql.DB, table string) ([]string, error) {
+	rows, err := db.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]string, 0, 8)
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return nil, err
+		}
+		out = append(out, name)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}

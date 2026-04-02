@@ -1782,6 +1782,11 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
+	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
+	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
+	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
+	accountingSubType := strings.TrimSpace(r.URL.Query().Get("accounting_subtype"))
 	sceneType := strings.TrimSpace(r.URL.Query().Get("scene_type"))
 	sceneSubType := strings.TrimSpace(r.URL.Query().Get("scene_subtype"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
@@ -1789,18 +1794,26 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
 	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
+		sourceType = "pool_allocation"
+		sourceID = poolAllocationID
+	}
 
 	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
-		Limit:        limit,
-		Offset:       offset,
-		BusinessID:   businessID,
-		SceneType:    sceneType,
-		SceneSubType: sceneSubType,
-		Status:       status,
-		FromPartyID:  fromPartyID,
-		ToPartyID:    toPartyID,
-		RefID:        refID,
-		Query:        q,
+		Limit:             limit,
+		Offset:            offset,
+		BusinessID:        businessID,
+		SourceType:        sourceType,
+		SourceID:          sourceID,
+		AccountingScene:   accountingScene,
+		AccountingSubtype: accountingSubType,
+		SceneType:         sceneType,
+		SceneSubType:      sceneSubType,
+		Status:            status,
+		FromPartyID:       fromPartyID,
+		ToPartyID:         toPartyID,
+		RefID:             refID,
+		Query:             q,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -1845,23 +1858,36 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	processID := strings.TrimSpace(r.URL.Query().Get("process_id"))
+	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
+	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
+	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
+	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
+	accountingSubType := strings.TrimSpace(r.URL.Query().Get("accounting_subtype"))
 	sceneType := strings.TrimSpace(r.URL.Query().Get("scene_type"))
 	sceneSubType := strings.TrimSpace(r.URL.Query().Get("scene_subtype"))
 	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
+		sourceType = "pool_allocation"
+		sourceID = poolAllocationID
+	}
 
 	page, err := dbListFinanceProcessEvents(r.Context(), httpStore(s), financeProcessEventFilter{
-		Limit:        limit,
-		Offset:       offset,
-		ProcessID:    processID,
-		SceneType:    sceneType,
-		SceneSubType: sceneSubType,
-		EventType:    eventType,
-		Status:       status,
-		RefID:        refID,
-		Query:        q,
+		Limit:             limit,
+		Offset:            offset,
+		ProcessID:         processID,
+		SourceType:        sourceType,
+		SourceID:          sourceID,
+		AccountingScene:   accountingScene,
+		AccountingSubtype: accountingSubType,
+		SceneType:         sceneType,
+		SceneSubType:      sceneSubType,
+		EventType:         eventType,
+		Status:            status,
+		RefID:             refID,
+		Query:             q,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

@@ -804,6 +804,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureFinAccountingSchema(db); err != nil {
 		return fmt.Errorf("fin accounting schema: %w", err)
 	}
+	if err := ensureFinAccountingIndexes(db); err != nil {
+		return fmt.Errorf("fin accounting indexes: %w", err)
+	}
 	if err := ensureLiveFollowsSchema(db); err != nil {
 		return fmt.Errorf("live_follows: %w", err)
 	}
@@ -994,6 +997,26 @@ func ensureFinAccountingSchema(db *sql.DB) error {
 		}
 		if _, err := db.Exec(m.stmt); err != nil {
 			return fmt.Errorf("add %s.%s: %w", m.table, m.col, err)
+		}
+	}
+	return nil
+}
+
+// ensureFinAccountingIndexes 只创建 finance 新口径查询所需的索引。
+// 说明：要放在列补齐之后执行，老库迁移时不能提前碰还不存在的列。
+func ensureFinAccountingIndexes(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	stmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_fin_business_source ON fin_business(source_type, source_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_business_accounting ON fin_business(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_source ON fin_process_events(source_type, source_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_accounting ON fin_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
 		}
 	}
 	return nil

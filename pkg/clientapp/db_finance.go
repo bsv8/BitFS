@@ -5,19 +5,24 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type financeBusinessFilter struct {
-	Limit        int
-	Offset       int
-	BusinessID   string
-	SceneType    string
-	SceneSubType string
-	Status       string
-	FromPartyID  string
-	ToPartyID    string
-	RefID        string
-	Query        string
+	Limit             int
+	Offset            int
+	BusinessID        string
+	SourceType        string
+	SourceID          string
+	AccountingScene   string
+	AccountingSubtype string
+	SceneType         string
+	SceneSubType      string
+	Status            string
+	FromPartyID       string
+	ToPartyID         string
+	RefID             string
+	Query             string
 }
 
 type financeBusinessPage struct {
@@ -26,29 +31,37 @@ type financeBusinessPage struct {
 }
 
 type financeBusinessItem struct {
-	BusinessID     string          `json:"business_id"`
-	SceneType      string          `json:"scene_type"`
-	SceneSubType   string          `json:"scene_subtype"`
-	FromPartyID    string          `json:"from_party_id"`
-	ToPartyID      string          `json:"to_party_id"`
-	RefID          string          `json:"ref_id"`
-	Status         string          `json:"status"`
-	OccurredAtUnix int64           `json:"occurred_at_unix"`
-	IdempotencyKey string          `json:"idempotency_key"`
-	Note           string          `json:"note"`
-	Payload        json.RawMessage `json:"payload"`
+	BusinessID        string          `json:"business_id"`
+	SceneType         string          `json:"scene_type"`
+	SceneSubType      string          `json:"scene_subtype"`
+	SourceType        string          `json:"source_type"`
+	SourceID          string          `json:"source_id"`
+	AccountingScene   string          `json:"accounting_scene"`
+	AccountingSubtype string          `json:"accounting_subtype"`
+	FromPartyID       string          `json:"from_party_id"`
+	ToPartyID         string          `json:"to_party_id"`
+	RefID             string          `json:"ref_id"`
+	Status            string          `json:"status"`
+	OccurredAtUnix    int64           `json:"occurred_at_unix"`
+	IdempotencyKey    string          `json:"idempotency_key"`
+	Note              string          `json:"note"`
+	Payload           json.RawMessage `json:"payload"`
 }
 
 type financeProcessEventFilter struct {
-	Limit        int
-	Offset       int
-	ProcessID    string
-	SceneType    string
-	SceneSubType string
-	EventType    string
-	Status       string
-	RefID        string
-	Query        string
+	Limit             int
+	Offset            int
+	ProcessID         string
+	SourceType        string
+	SourceID          string
+	AccountingScene   string
+	AccountingSubtype string
+	SceneType         string
+	SceneSubType      string
+	EventType         string
+	Status            string
+	RefID             string
+	Query             string
 }
 
 type financeProcessEventPage struct {
@@ -57,17 +70,21 @@ type financeProcessEventPage struct {
 }
 
 type financeProcessEventItem struct {
-	ID             int64           `json:"id"`
-	ProcessID      string          `json:"process_id"`
-	SceneType      string          `json:"scene_type"`
-	SceneSubType   string          `json:"scene_subtype"`
-	EventType      string          `json:"event_type"`
-	Status         string          `json:"status"`
-	RefID          string          `json:"ref_id"`
-	OccurredAtUnix int64           `json:"occurred_at_unix"`
-	IdempotencyKey string          `json:"idempotency_key"`
-	Note           string          `json:"note"`
-	Payload        json.RawMessage `json:"payload"`
+	ID                int64           `json:"id"`
+	ProcessID         string          `json:"process_id"`
+	SceneType         string          `json:"scene_type"`
+	SceneSubType      string          `json:"scene_subtype"`
+	SourceType        string          `json:"source_type"`
+	SourceID          string          `json:"source_id"`
+	AccountingScene   string          `json:"accounting_scene"`
+	AccountingSubtype string          `json:"accounting_subtype"`
+	EventType         string          `json:"event_type"`
+	Status            string          `json:"status"`
+	RefID             string          `json:"ref_id"`
+	OccurredAtUnix    int64           `json:"occurred_at_unix"`
+	IdempotencyKey    string          `json:"idempotency_key"`
+	Note              string          `json:"note"`
+	Payload           json.RawMessage `json:"payload"`
 }
 
 type financeBreakdownFilter struct {
@@ -141,6 +158,22 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			where += " AND business_id=?"
 			args = append(args, f.BusinessID)
 		}
+		if f.SourceType != "" {
+			where += " AND source_type=?"
+			args = append(args, f.SourceType)
+		}
+		if f.SourceID != "" {
+			where += " AND source_id=?"
+			args = append(args, f.SourceID)
+		}
+		if f.AccountingScene != "" {
+			where += " AND accounting_scene=?"
+			args = append(args, f.AccountingScene)
+		}
+		if f.AccountingSubtype != "" {
+			where += " AND accounting_subtype=?"
+			args = append(args, f.AccountingSubtype)
+		}
 		if f.SceneType != "" {
 			where += " AND scene_type=?"
 			args = append(args, f.SceneType)
@@ -167,15 +200,15 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (business_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ?)"
-			args = append(args, like, like, like, like)
+			where += " AND (business_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
+			args = append(args, like, like, like, like, like, like, like, like)
 		}
 		var out financeBusinessPage
 		if err := db.QueryRow("SELECT COUNT(1) FROM fin_business WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeBusinessPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT business_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_business WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,business_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -187,7 +220,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		for rows.Next() {
 			var it financeBusinessItem
 			var payload string
-			if err := rows.Scan(&it.BusinessID, &it.SceneType, &it.SceneSubType, &it.FromPartyID, &it.ToPartyID, &it.RefID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			if err := rows.Scan(&it.BusinessID, &it.SceneType, &it.SceneSubType, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.RefID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
 				return financeBusinessPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
@@ -208,10 +241,10 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		var out financeBusinessItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT business_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_business WHERE business_id=?`,
 			businessID,
-		).Scan(&out.BusinessID, &out.SceneType, &out.SceneSubType, &out.FromPartyID, &out.ToPartyID, &out.RefID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+		).Scan(&out.BusinessID, &out.SceneType, &out.SceneSubType, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.RefID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
 			return financeBusinessItem{}, err
 		}
@@ -230,6 +263,22 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		if f.ProcessID != "" {
 			where += " AND process_id=?"
 			args = append(args, f.ProcessID)
+		}
+		if f.SourceType != "" {
+			where += " AND source_type=?"
+			args = append(args, f.SourceType)
+		}
+		if f.SourceID != "" {
+			where += " AND source_id=?"
+			args = append(args, f.SourceID)
+		}
+		if f.AccountingScene != "" {
+			where += " AND accounting_scene=?"
+			args = append(args, f.AccountingScene)
+		}
+		if f.AccountingSubtype != "" {
+			where += " AND accounting_subtype=?"
+			args = append(args, f.AccountingSubtype)
 		}
 		if f.SceneType != "" {
 			where += " AND scene_type=?"
@@ -253,15 +302,15 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (process_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ?)"
-			args = append(args, like, like, like, like)
+			where += " AND (process_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
+			args = append(args, like, like, like, like, like, like, like, like)
 		}
 		var out financeProcessEventPage
 		if err := db.QueryRow("SELECT COUNT(1) FROM fin_process_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeProcessEventPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT id,process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT id,process_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_process_events WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -273,7 +322,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		for rows.Next() {
 			var it financeProcessEventItem
 			var payload string
-			if err := rows.Scan(&it.ID, &it.ProcessID, &it.SceneType, &it.SceneSubType, &it.EventType, &it.Status, &it.RefID, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			if err := rows.Scan(&it.ID, &it.ProcessID, &it.SceneType, &it.SceneSubType, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.EventType, &it.Status, &it.RefID, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
 				return financeProcessEventPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
@@ -294,15 +343,33 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 		var out financeProcessEventItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT id,process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT id,process_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_process_events WHERE id=?`,
 			id,
-		).Scan(&out.ID, &out.ProcessID, &out.SceneType, &out.SceneSubType, &out.EventType, &out.Status, &out.RefID, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+		).Scan(&out.ID, &out.ProcessID, &out.SceneType, &out.SceneSubType, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.EventType, &out.Status, &out.RefID, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
 			return financeProcessEventItem{}, err
 		}
 		out.Payload = json.RawMessage(payload)
 		return out, nil
+	})
+}
+
+func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeBusinessPage, error) {
+	return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:      limit,
+		Offset:     offset,
+		SourceType: "pool_allocation",
+		SourceID:   strings.TrimSpace(allocationID),
+	})
+}
+
+func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeProcessEventPage, error) {
+	return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
+		Limit:      limit,
+		Offset:     offset,
+		SourceType: "pool_allocation",
+		SourceID:   strings.TrimSpace(allocationID),
 	})
 }
 
