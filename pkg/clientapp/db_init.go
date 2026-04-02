@@ -223,7 +223,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-
 		// 钱包资金流水
 		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -439,6 +438,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			business_id TEXT PRIMARY KEY,
 			scene_type TEXT NOT NULL,
 			scene_subtype TEXT NOT NULL,
+			source_type TEXT NOT NULL DEFAULT '',
+			source_id TEXT NOT NULL DEFAULT '',
+			accounting_scene TEXT NOT NULL DEFAULT '',
+			accounting_subtype TEXT NOT NULL DEFAULT '',
 			from_party_id TEXT NOT NULL,
 			to_party_id TEXT NOT NULL,
 			ref_id TEXT NOT NULL,
@@ -453,6 +456,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			process_id TEXT NOT NULL,
 			scene_type TEXT NOT NULL,
 			scene_subtype TEXT NOT NULL,
+			source_type TEXT NOT NULL DEFAULT '',
+			source_id TEXT NOT NULL DEFAULT '',
+			accounting_scene TEXT NOT NULL DEFAULT '',
+			accounting_subtype TEXT NOT NULL DEFAULT '',
 			event_type TEXT NOT NULL,
 			status TEXT NOT NULL,
 			ref_id TEXT NOT NULL,
@@ -759,6 +766,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureFileDownloadsSchema(db); err != nil {
 		return fmt.Errorf("file_downloads: %w", err)
 	}
+	if err := ensureFinAccountingSchema(db); err != nil {
+		return fmt.Errorf("fin accounting schema: %w", err)
+	}
 	if err := ensureLiveFollowsSchema(db); err != nil {
 		return fmt.Errorf("live_follows: %w", err)
 	}
@@ -785,6 +795,46 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
 	}
 
+	return nil
+}
+
+// ensureFinAccountingSchema 只补财务表的新口径列，不改旧口径行为。
+// 设计说明：
+// - 新库由 CREATE TABLE 直接带上新列；
+// - 老库靠这里补列，避免启动时因缺列失败；
+// - 这一批只铺轨，不改任何写入和读取逻辑。
+func ensureFinAccountingSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+
+	migrations := []struct {
+		table string
+		col   string
+		stmt  string
+	}{
+		{table: "fin_business", col: "source_type", stmt: `ALTER TABLE fin_business ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_business", col: "source_id", stmt: `ALTER TABLE fin_business ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_business", col: "accounting_scene", stmt: `ALTER TABLE fin_business ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_business", col: "accounting_subtype", stmt: `ALTER TABLE fin_business ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_process_events", col: "source_type", stmt: `ALTER TABLE fin_process_events ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_process_events", col: "source_id", stmt: `ALTER TABLE fin_process_events ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_process_events", col: "accounting_scene", stmt: `ALTER TABLE fin_process_events ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
+		{table: "fin_process_events", col: "accounting_subtype", stmt: `ALTER TABLE fin_process_events ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+	}
+
+	for _, m := range migrations {
+		cols, err := tableColumns(db, m.table)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", m.table, err)
+		}
+		if _, ok := cols[strings.ToLower(m.col)]; ok {
+			continue
+		}
+		if _, err := db.Exec(m.stmt); err != nil {
+			return fmt.Errorf("add %s.%s: %w", m.table, m.col, err)
+		}
+	}
 	return nil
 }
 
