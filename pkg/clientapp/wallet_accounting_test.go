@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
 
 func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
@@ -462,7 +461,6 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 	}
 }
 
-
 // TestFinBusinessIdempotency 验证 fin_business 幂等写入
 // 第六次迭代整改：验证 ON CONFLICT(idempotency_key) DO UPDATE 幂等性
 func TestFinBusinessIdempotency(t *testing.T) {
@@ -502,10 +500,10 @@ func TestFinBusinessIdempotency(t *testing.T) {
 		AccountingSubType: "open",
 		FromPartyID:       "client:self",
 		ToPartyID:         "seller:abc",
-		Status:            "posted", // 更新状态
+		Status:            "posted",   // 更新状态
 		OccurredAtUnix:    1700000002, // 更新时间
 		IdempotencyKey:    idempotencyKey,
-		Note:              "second write", // 更新 note
+		Note:              "second write",           // 更新 note
 		Payload:           map[string]any{"seq": 2}, // 更新 payload
 	}); err != nil {
 		t.Fatalf("second write (idempotent update) failed: %v", err)
@@ -580,10 +578,10 @@ func TestFinProcessEventIdempotency(t *testing.T) {
 		AccountingScene:   "c2c_transfer",
 		AccountingSubType: "pay",
 		EventType:         "accounting",
-		Status:            "applied", // 更新状态
+		Status:            "applied",  // 更新状态
 		OccurredAtUnix:    1700000002, // 更新时间
 		IdempotencyKey:    idempotencyKey,
-		Note:              "second event", // 更新 note
+		Note:              "second event",                // 更新 note
 		Payload:           map[string]any{"amount": 200}, // 更新 payload
 	}); err != nil {
 		t.Fatalf("second write (idempotent update) failed: %v", err)
@@ -705,62 +703,5 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 	}
 	if txRole != "internal_change" {
 		t.Fatalf("expected tx_role=internal_change, got=%s", txRole)
-	}
-}
-
-// TestFinTxBreakdownNullTxRole_BackfillAndBlockUTXO 验证过渡期 NULL tx_role 的处理规则
-func TestFinTxBreakdownNullTxRole_BackfillAndBlockUTXO(t *testing.T) {
-	t.Parallel()
-	db := newWalletAccountingTestDB(t)
-
-	// 场景 A：breakdown 已存在但 tx_role 为 NULL，IfAbsent 应该补写成功
-	bidA := "biz_null_role_a"
-	txidA := "tx_null_role_a"
-	if _, err := db.Exec(
-		`INSERT INTO fin_tx_breakdown(business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json)
-		 VALUES(?,?,NULL,0,0,0,0,0,0,0,?,'','{}')`,
-		bidA, txidA, time.Now().Unix(),
-	); err != nil {
-		t.Fatalf("seed null breakdown failed: %v", err)
-	}
-	if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
-		BusinessID: bidA,
-		TxID:       txidA,
-		TxRole:     "open_base",
-		Note:       "backfill test",
-		Payload:    map[string]any{},
-	}); err != nil {
-		t.Fatalf("backfill null tx_role failed: %v", err)
-	}
-	var backfilled string
-	if err := db.QueryRow(`SELECT tx_role FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, bidA, txidA).Scan(&backfilled); err != nil {
-		t.Fatalf("query backfilled role failed: %v", err)
-	}
-	if backfilled != "open_base" {
-		t.Fatalf("expected backfilled tx_role=open_base, got=%s", backfilled)
-	}
-
-	// 场景 B：breakdown 已存在但 tx_role 为 NULL，UTXO 挂接应该被拒绝
-	bidB := "biz_null_role_b"
-	txidB := "tx_null_role_b"
-	if _, err := db.Exec(
-		`INSERT INTO fin_tx_breakdown(business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json)
-		 VALUES(?,?,NULL,0,0,0,0,0,0,0,?,'','{}')`,
-		bidB, txidB, time.Now().Unix(),
-	); err != nil {
-		t.Fatalf("seed null breakdown for utxo failed: %v", err)
-	}
-	err := dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-		BusinessID: bidB,
-		TxID:       txidB,
-		UTXOID:     txidB + ":0",
-		IOSide:     "output",
-		UTXORole:   "pool_lock",
-	})
-	if err == nil {
-		t.Fatalf("expected error when appending utxo to null tx_role breakdown, got nil")
-	}
-	if !strings.Contains(err.Error(), "tx_role is null") {
-		t.Fatalf("expected error containing 'tx_role is null', got: %v", err)
 	}
 }

@@ -191,6 +191,60 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 }
 
+func TestInitIndexDB_FinalizesFinTxBreakdown(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	hasOldTable, err := hasTable(db, "fin_business_txs")
+	if err != nil {
+		t.Fatalf("check fin_business_txs failed: %v", err)
+	}
+	if hasOldTable {
+		t.Fatalf("fin_business_txs should be dropped after finalization")
+	}
+
+	cols, err := tableColumns(db, "fin_tx_breakdown")
+	if err != nil {
+		t.Fatalf("inspect fin_tx_breakdown columns failed: %v", err)
+	}
+	if _, ok := cols["tx_role"]; !ok {
+		t.Fatalf("fin_tx_breakdown missing tx_role")
+	}
+	if notNull, err := tableColumnNotNull(db, "fin_tx_breakdown", "tx_role"); err != nil {
+		t.Fatalf("inspect fin_tx_breakdown tx_role notnull failed: %v", err)
+	} else if !notNull {
+		t.Fatalf("fin_tx_breakdown.tx_role should be NOT NULL after finalization")
+	}
+
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fin_tx_breakdown", []string{"business_id", "txid"}); err != nil {
+		t.Fatalf("inspect fin_tx_breakdown unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatalf("fin_tx_breakdown should keep unique constraint on (business_id, txid)")
+	}
+
+	for _, indexName := range []string{
+		"idx_fin_tx_breakdown_business",
+		"idx_fin_tx_breakdown_txid",
+		"idx_fin_tx_breakdown_business_txid",
+	} {
+		hasIndex, err := tableHasIndex(db, "fin_tx_breakdown", indexName)
+		if err != nil {
+			t.Fatalf("inspect %s failed: %v", indexName, err)
+		}
+		if !hasIndex {
+			t.Fatalf("missing index %s on fin_tx_breakdown", indexName)
+		}
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("second initIndexDB failed: %v", err)
+	}
+}
+
 func TestInitIndexDB_MigratesPoolFactTables(t *testing.T) {
 	t.Parallel()
 

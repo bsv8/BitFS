@@ -526,12 +526,7 @@ func dbAppendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
 			return nil
 		}
 		if !existingRole.Valid {
-			// 过渡期：旧数据 tx_role 为 NULL，允许补写
-			_, updErr := db.Exec(`UPDATE fin_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, e.TxRole, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID)))
-			if updErr != nil {
-				return fmt.Errorf("fin_tx_breakdown backfill tx_role failed for (%s,%s): %w", e.BusinessID, e.TxID, updErr)
-			}
-			return nil
+			return fmt.Errorf("fin_tx_breakdown tx_role is null for (%s,%s), final schema required", e.BusinessID, e.TxID)
 		}
 		return fmt.Errorf("fin_tx_breakdown role mismatch for (%s,%s): existing=%s, want=%s", e.BusinessID, e.TxID, existingRole.String, e.TxRole)
 	}
@@ -539,24 +534,6 @@ func dbAppendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
 		return err
 	}
 	return dbAppendFinTxBreakdown(db, e)
-}
-
-func dbAppendFinBusinessTxIfAbsent(db *sql.DB, e finBusinessTxEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	var n int
-	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_business_txs WHERE business_id=? AND txid=?`,
-		strings.TrimSpace(e.BusinessID),
-		strings.ToLower(strings.TrimSpace(e.TxID)),
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	return dbAppendFinBusinessTx(db, e)
 }
 
 func dbAppendFinTxUTXOLinkIfAbsent(db *sql.DB, e finTxUTXOLinkEntry) error {
@@ -608,25 +585,6 @@ func dbAppendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
 	return err
 }
 
-func dbAppendFinBusinessTx(db *sql.DB, e finBusinessTxEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if e.CreatedAtUnix <= 0 {
-		e.CreatedAtUnix = time.Now().Unix()
-	}
-	_, err := db.Exec(
-		`INSERT INTO fin_business_txs(business_id,txid,tx_role,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?)`,
-		strings.TrimSpace(e.BusinessID),
-		strings.ToLower(strings.TrimSpace(e.TxID)),
-		strings.TrimSpace(e.TxRole),
-		e.CreatedAtUnix,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-	)
-	return err
-}
-
 func dbAppendFinTxUTXOLink(db *sql.DB, e finTxUTXOLinkEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -654,7 +612,7 @@ func dbAppendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLink
 	if txRole == "" {
 		return fmt.Errorf("tx_role is required for business utxo fact")
 	}
-	// 过渡期规则：UTXO 明细必须挂到一条已成立的 TX 财务事实上
+	// 第二轮规则：UTXO 明细必须挂到一条已成立的 TX 财务事实上
 	var existingRole sql.NullString
 	err := db.QueryRow(`SELECT tx_role FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
 	if err != nil {
@@ -664,22 +622,12 @@ func dbAppendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLink
 		return err
 	}
 	if !existingRole.Valid {
-		return fmt.Errorf("fin_tx_breakdown tx_role is null for (%s,%s), cannot append utxo link until backfilled", e.BusinessID, e.TxID)
+		return fmt.Errorf("fin_tx_breakdown tx_role is null for (%s,%s), cannot append utxo link", e.BusinessID, e.TxID)
 	}
 	if existingRole.String != txRole {
 		return fmt.Errorf("fin_tx_breakdown role mismatch for (%s,%s): existing=%s, want=%s", e.BusinessID, e.TxID, existingRole.String, txRole)
 	}
-	// 双写过渡期：继续写旧表做兼容
-	if err := dbAppendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
-		BusinessID:    e.BusinessID,
-		TxID:          e.TxID,
-		TxRole:        txRole,
-		CreatedAtUnix: e.CreatedAtUnix,
-		Note:          e.Note,
-		Payload:       e.Payload,
-	}); err != nil {
-		return err
-	}
+	// 第二轮只写新表
 	return dbAppendFinTxUTXOLinkIfAbsent(db, e)
 }
 

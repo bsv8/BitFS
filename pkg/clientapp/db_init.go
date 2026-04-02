@@ -517,16 +517,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS fin_business_txs(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			business_id TEXT NOT NULL,
-			txid TEXT NOT NULL,
-			tx_role TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			UNIQUE(business_id,txid)
-		)`,
 		`CREATE TABLE IF NOT EXISTS fin_tx_utxo_links(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			business_id TEXT NOT NULL,
@@ -748,8 +738,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business_txid ON fin_tx_breakdown(business_id, txid)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_business ON fin_business_txs(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_txid ON fin_business_txs(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_business ON fin_tx_utxo_links(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_utxo ON fin_tx_utxo_links(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_txid ON fin_tx_utxo_links(txid, id DESC)`,
@@ -1044,9 +1032,9 @@ func normalizeClientDBData(db *sql.DB) error {
 		return fmt.Errorf("biz_utxo_links migration: %w", err)
 	}
 
-	// 4. fin_tx_breakdown tx_role 第一轮回填与异常清单
-	if err := migrateFinTxBreakdownTxRole(db); err != nil {
-		return fmt.Errorf("fin_tx_breakdown tx_role migration: %w", err)
+	// 4. fin_tx_breakdown 第二轮收口迁移
+	if err := finalizeFinTxBreakdownAsPrimaryFact(db); err != nil {
+		return fmt.Errorf("finalize fin_tx_breakdown: %w", err)
 	}
 
 	return nil
@@ -2031,24 +2019,66 @@ func migrateLegacyChainTables(db *sql.DB) error {
 	return nil
 }
 
-// migrateFinTxBreakdownTxRole 是第一轮过渡的核心回填函数。
+// finalizeFinTxBreakdownAsPrimaryFact 是第二轮收口迁移函数。
 // 设计说明：
-//   - 用 fin_business_txs 按 (business_id, txid) 回填 fin_tx_breakdown.tx_role
-//   - 回填后输出三类异常清单，供人工审查，第一轮不自动修复
-//   - 不中断启动，异常只打日志
-func migrateFinTxBreakdownTxRole(db *sql.DB) error {
+//   - 已完成的库直接跳过，不重复重建
+//   - 未完成时先补齐 tx_role，再校验，再重建成最终态
+//   - 迁移失败则阻断启动
+func finalizeFinTxBreakdownAsPrimaryFact(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	cols, err := tableColumns(db, "fin_tx_breakdown")
+
+	finalized, err := isFinTxBreakdownFinalized(db)
 	if err != nil {
-		return fmt.Errorf("inspect fin_tx_breakdown: %w", err)
+		return fmt.Errorf("inspect fin_tx_breakdown final state: %w", err)
 	}
-	if _, ok := cols["tx_role"]; !ok {
+	if finalized {
+		obs.Important("bitcast-client", "fin_tx_breakdown_finalized", map[string]any{
+			"skipped": true,
+			"reason":  "already finalized",
+		})
 		return nil
 	}
 
-	// 1. 回填：把旧表角色搬到新表
+	hasOldTable, err := hasTable(db, "fin_business_txs")
+	if err != nil {
+		return fmt.Errorf("check fin_business_txs table: %w", err)
+	}
+
+	// 1. 若旧表存在则回填 tx_role
+	if hasOldTable {
+		if err := backfillFinTxBreakdownTxRoleFromOldTable(db); err != nil {
+			return fmt.Errorf("backfill tx_role: %w", err)
+		}
+	}
+
+	// 2. 校验债务
+	if err := validateFinTxBreakdownDebts(db, hasOldTable); err != nil {
+		return fmt.Errorf("validate debts: %w", err)
+	}
+
+	// 3. 重建为强约束版
+	if err := rebuildFinTxBreakdownWithConstraints(db); err != nil {
+		return fmt.Errorf("rebuild with constraints: %w", err)
+	}
+
+	// 4. 删除旧表
+	if hasOldTable {
+		if _, err := db.Exec(`DROP TABLE IF EXISTS fin_business_txs`); err != nil {
+			return fmt.Errorf("drop fin_business_txs: %w", err)
+		}
+	}
+
+	obs.Important("bitcast-client", "fin_tx_breakdown_finalized", map[string]any{
+		"skipped": false,
+		"reason":  "rebuild completed",
+	})
+	return nil
+}
+
+// backfillFinTxBreakdownTxRoleFromOldTable 从旧表回填 tx_role
+func backfillFinTxBreakdownTxRoleFromOldTable(db *sql.DB) error {
 	if _, err := db.Exec(`
 		UPDATE fin_tx_breakdown
 		   SET tx_role = (
@@ -2065,108 +2095,114 @@ func migrateFinTxBreakdownTxRole(db *sql.DB) error {
 			      AND bt.txid = fin_tx_breakdown.txid
 		   )
 	`); err != nil {
-		return fmt.Errorf("backfill tx_role: %w", err)
-	}
-
-	// 2. 异常清单 1：breakdown 有，但 business_txs 没有
-	rows1, err := db.Query(`
-		SELECT b.business_id, b.txid
-		  FROM fin_tx_breakdown b
-		 WHERE b.tx_role IS NOT NULL
-		   AND NOT EXISTS (
-			   SELECT 1 FROM fin_business_txs bt
-			    WHERE bt.business_id = b.business_id
-			      AND bt.txid = b.txid
-		   )
-		 LIMIT 100
-	`)
-	if err != nil {
-		return fmt.Errorf("query orphan breakdown: %w", err)
-	}
-	defer rows1.Close()
-	for rows1.Next() {
-		var bid, txid string
-		if err := rows1.Scan(&bid, &txid); err != nil {
-			return err
-		}
-		obs.Important("bitcast-client", "fin_tx_breakdown_orphan", map[string]any{"business_id": bid, "txid": txid})
-	}
-	if err := rows1.Err(); err != nil {
 		return err
 	}
+	return nil
+}
 
-	// 3. 异常清单 2：business_txs 有，但 breakdown 没有
-	rows2, err := db.Query(`
-		SELECT bt.business_id, bt.txid, bt.tx_role
-		  FROM fin_business_txs bt
-		 WHERE NOT EXISTS (
-			   SELECT 1 FROM fin_tx_breakdown b
-			    WHERE b.business_id = bt.business_id
-			      AND b.txid = bt.txid
-		   )
-		 LIMIT 100
-	`)
-	if err != nil {
-		return fmt.Errorf("query missing breakdown: %w", err)
-	}
-	defer rows2.Close()
-	for rows2.Next() {
-		var bid, txid, txRole string
-		if err := rows2.Scan(&bid, &txid, &txRole); err != nil {
+// validateFinTxBreakdownDebts 处理第二轮收口前的剩余债务：
+//   - 旧表缺行直接失败
+//   - tx_role 为空则尽量补齐，补不齐则失败
+func validateFinTxBreakdownDebts(db *sql.DB, hasOldTable bool) error {
+	// 1. missing_breakdown：旧表有、新表没有，直接失败
+	if hasOldTable {
+		var missingCount int
+		if err := db.QueryRow(`
+			SELECT COUNT(1) FROM fin_business_txs bt
+			 WHERE NOT EXISTS (
+				   SELECT 1 FROM fin_tx_breakdown b
+				    WHERE b.business_id = bt.business_id
+				      AND b.txid = bt.txid
+			   )`).Scan(&missingCount); err != nil {
 			return err
 		}
-		obs.Important("bitcast-client", "fin_business_txs_missing_breakdown", map[string]any{"business_id": bid, "txid": txid, "tx_role": txRole})
-	}
-	if err := rows2.Err(); err != nil {
-		return err
+		if missingCount > 0 {
+			return fmt.Errorf("missing_breakdown count %d: cannot reconstruct, must fix manually", missingCount)
+		}
 	}
 
-	// 4. 异常清单 3：breakdown 存在但 tx_role 为 NULL（关键遗留债）
-	rows3, err := db.Query(`
-		SELECT business_id, txid
-		  FROM fin_tx_breakdown
-		 WHERE tx_role IS NULL
-		 LIMIT 100
-	`)
+	// 2. null_tx_role：能推断就补，推断不出就失败
+	nullRows, err := db.Query(`SELECT business_id, txid FROM fin_tx_breakdown WHERE tx_role IS NULL`)
 	if err != nil {
 		return fmt.Errorf("query null tx_role: %w", err)
 	}
-	defer rows3.Close()
-	for rows3.Next() {
+	defer nullRows.Close()
+	for nullRows.Next() {
 		var bid, txid string
-		if err := rows3.Scan(&bid, &txid); err != nil {
+		if err := nullRows.Scan(&bid, &txid); err != nil {
 			return err
 		}
-		obs.Important("bitcast-client", "fin_tx_breakdown_null_tx_role", map[string]any{"business_id": bid, "txid": txid})
+		inferredRole, err := inferFinTxBreakdownTxRole(db, bid, txid)
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE fin_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, inferredRole, bid, txid); err != nil {
+			return err
+		}
 	}
-	if err := rows3.Err(); err != nil {
+	if err := nullRows.Err(); err != nil {
 		return err
 	}
 
-	// 5. 异常清单 4：同一个 (business_id, txid) 在两表中角色不一致
-	rows4, err := db.Query(`
-		SELECT b.business_id, b.txid, b.tx_role, bt.tx_role
-		  FROM fin_tx_breakdown b
-		  JOIN fin_business_txs bt
-		    ON bt.business_id = b.business_id
-		   AND bt.txid = b.txid
-		 WHERE b.tx_role IS NOT NULL
-		   AND b.tx_role != bt.tx_role
-		 LIMIT 100
-	`)
-	if err != nil {
-		return fmt.Errorf("query role mismatch: %w", err)
+	return nil
+}
+
+// rebuildFinTxBreakdownWithConstraints 重建 fin_tx_breakdown 为强约束版
+func rebuildFinTxBreakdownWithConstraints(db *sql.DB) error {
+	// 0. 先清掉可能残留的中间表，避免上次失败留下脏壳影响本次收口
+	if _, err := db.Exec(`DROP TABLE IF EXISTS fin_tx_breakdown_new`); err != nil {
+		return fmt.Errorf("drop stale fin_tx_breakdown_new: %w", err)
 	}
-	defer rows4.Close()
-	for rows4.Next() {
-		var bid, txid, br, btr string
-		if err := rows4.Scan(&bid, &txid, &br, &btr); err != nil {
-			return err
+
+	// 1. 创建新表（带 NOT NULL 和 UNIQUE）
+	if _, err := db.Exec(`
+		CREATE TABLE IF NOT EXISTS fin_tx_breakdown_new(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			business_id TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			tx_role TEXT NOT NULL,
+			gross_input_satoshi INTEGER NOT NULL,
+			change_back_satoshi INTEGER NOT NULL,
+			external_in_satoshi INTEGER NOT NULL,
+			counterparty_out_satoshi INTEGER NOT NULL,
+			miner_fee_satoshi INTEGER NOT NULL,
+			net_out_satoshi INTEGER NOT NULL,
+			net_in_satoshi INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			UNIQUE(business_id, txid)
+		)`); err != nil {
+		return fmt.Errorf("create fin_tx_breakdown_new: %w", err)
+	}
+
+	// 2. 复制数据（让 UNIQUE 约束自然拒绝重复）
+	if _, err := db.Exec(`
+		INSERT INTO fin_tx_breakdown_new(business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json)
+		SELECT business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+		  FROM fin_tx_breakdown
+		 WHERE tx_role IS NOT NULL`); err != nil {
+		return fmt.Errorf("copy to fin_tx_breakdown_new: %w", err)
+	}
+
+	// 3. 替换旧表
+	if _, err := db.Exec(`DROP TABLE fin_tx_breakdown`); err != nil {
+		return fmt.Errorf("drop old fin_tx_breakdown: %w", err)
+	}
+	if _, err := db.Exec(`ALTER TABLE fin_tx_breakdown_new RENAME TO fin_tx_breakdown`); err != nil {
+		return fmt.Errorf("rename fin_tx_breakdown_new: %w", err)
+	}
+
+	// 4. 立即补回读写所需的索引，保证这里本身就是闭环
+	indexStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business_txid ON fin_tx_breakdown(business_id, txid)`,
+	}
+	for _, stmt := range indexStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("create fin_tx_breakdown index: %w", err)
 		}
-		obs.Important("bitcast-client", "fin_tx_role_mismatch", map[string]any{"business_id": bid, "txid": txid, "breakdown_role": br, "business_txs_role": btr})
-	}
-	if err := rows4.Err(); err != nil {
-		return err
 	}
 
 	return nil
@@ -2562,15 +2598,6 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(
-		`DELETE FROM fin_business_txs
-		 WHERE business_id IN (
-			 SELECT business_id FROM fin_business
-			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
-		 )`,
-	); err != nil {
-		return err
-	}
 	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑
 	if legacyExists {
 		if _, err = tx.Exec(
@@ -2632,15 +2659,19 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 			return err
 		}
 		txRole, ioSide, utxoRole := mapLegacyBizUTXORole(sceneType, sceneSubtype, role)
-		if err := dbAppendFinBusinessTxIfAbsent(db, finBusinessTxEntry{
-			BusinessID:    businessID,
-			TxID:          txid,
-			TxRole:        txRole,
-			CreatedAtUnix: createdAtUnix,
-			Note:          note,
-			Payload:       rawJSONPayload(payload),
-		}); err != nil {
+		// 第二轮：只写 fin_tx_utxo_links，必须先有 fin_tx_breakdown 存在
+		// 尝试更新已存在的 breakdown 角色，若不存在则失败
+		result, err := db.Exec(`UPDATE fin_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, txRole, businessID, txid)
+		if err != nil {
 			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			// legacy 迁移不允许补空壳，必须先有真实 breakdown
+			return fmt.Errorf("cannot migrate legacy utxo for (%s,%s): fin_tx_breakdown not found", businessID, txid)
 		}
 		if err := dbAppendFinTxUTXOLinkIfAbsent(db, finTxUTXOLinkEntry{
 			BusinessID:    businessID,
@@ -2723,6 +2754,66 @@ func hasTable(db *sql.DB, name string) (bool, error) {
 	return true, nil
 }
 
+// isFinTxBreakdownFinalized 判断第二轮收口是否已经完成。
+// 说明：只要仍然能看到旧表、可空 tx_role、缺少唯一约束或缺少关键索引，就不能跳过。
+func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
+	hasBreakdown, err := hasTable(db, "fin_tx_breakdown")
+	if err != nil {
+		return false, err
+	}
+	if !hasBreakdown {
+		return false, nil
+	}
+
+	hasOldTable, err := hasTable(db, "fin_business_txs")
+	if err != nil {
+		return false, err
+	}
+	if hasOldTable {
+		return false, nil
+	}
+
+	cols, err := tableColumns(db, "fin_tx_breakdown")
+	if err != nil {
+		return false, err
+	}
+	if _, ok := cols["tx_role"]; !ok {
+		return false, nil
+	}
+
+	hasNotNull, err := tableColumnNotNull(db, "fin_tx_breakdown", "tx_role")
+	if err != nil {
+		return false, err
+	}
+	if !hasNotNull {
+		return false, nil
+	}
+
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "fin_tx_breakdown", []string{"business_id", "txid"})
+	if err != nil {
+		return false, err
+	}
+	if !hasUnique {
+		return false, nil
+	}
+
+	for _, indexName := range []string{
+		"idx_fin_tx_breakdown_business",
+		"idx_fin_tx_breakdown_txid",
+		"idx_fin_tx_breakdown_business_txid",
+	} {
+		hasIndex, err := tableHasIndex(db, "fin_tx_breakdown", indexName)
+		if err != nil {
+			return false, err
+		}
+		if !hasIndex {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
 // tableColumns 获取表的所有列名
 func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
@@ -2745,6 +2836,177 @@ func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
 	}
 	return out, rows.Err()
+}
+
+// tableColumnNotNull 检查指定列是否存在且为 NOT NULL。
+func tableColumnNotNull(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var typ string
+		var notnull int
+		var dflt sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(column)) {
+			return notnull != 0, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// tableHasIndex 检查指定表是否存在给定索引名。
+func tableHasIndex(db *sql.DB, table, indexName string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(strings.TrimSpace(name), strings.TrimSpace(indexName)) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// tableHasUniqueIndexOnColumns 检查指定表是否已经有目标唯一约束。
+// 这里接受 SQLite 的隐式唯一索引和显式唯一索引，只看列组合是否一致。
+func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (bool, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	want := make([]string, 0, len(columns))
+	for _, col := range columns {
+		want = append(want, strings.ToLower(strings.TrimSpace(col)))
+	}
+
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique int
+		var origin string
+		var partial int
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return false, err
+		}
+		if unique == 0 {
+			continue
+		}
+		idxCols, err := tableIndexColumns(db, name)
+		if err != nil {
+			return false, err
+		}
+		if len(idxCols) != len(want) {
+			continue
+		}
+		match := true
+		for i := range want {
+			if idxCols[i] != want[i] {
+				match = false
+				break
+			}
+		}
+		if match {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// tableIndexColumns 读取单个索引覆盖的列顺序。
+func tableIndexColumns(db *sql.DB, indexName string) ([]string, error) {
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%s)", strings.TrimSpace(indexName)))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type indexCol struct {
+		seq  int
+		name string
+	}
+	cols := make([]indexCol, 0, 4)
+	for rows.Next() {
+		var seqno int
+		var cid int
+		var name sql.NullString
+		if err := rows.Scan(&seqno, &cid, &name); err != nil {
+			return nil, err
+		}
+		if !name.Valid {
+			return nil, fmt.Errorf("index %s has unnamed column at seq %d", indexName, seqno)
+		}
+		cols = append(cols, indexCol{seq: seqno, name: strings.ToLower(strings.TrimSpace(name.String))})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	out := make([]string, len(cols))
+	for _, col := range cols {
+		if col.seq < 0 || col.seq >= len(cols) {
+			return nil, fmt.Errorf("index %s has invalid seq %d", indexName, col.seq)
+		}
+		out[col.seq] = col.name
+	}
+	return out, nil
+}
+
+// inferFinTxBreakdownTxRole 从业务标识和业务主表推断 tx_role。
+func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
+	switch {
+	case strings.HasPrefix(bid, "biz_feepool_open_") || strings.HasPrefix(bid, "biz_c2c_open_"):
+		return "open_base", nil
+	case strings.HasPrefix(bid, "biz_c2c_pay_"):
+		return "pay", nil
+	case strings.HasPrefix(bid, "biz_c2c_close_"):
+		return "close_final", nil
+	case strings.HasPrefix(bid, "biz_wallet_chain_"):
+		var accountingSubtype string
+		if err := db.QueryRow(`SELECT accounting_subtype FROM fin_business WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
+			return "", fmt.Errorf("cannot infer tx_role for (%s,%s): business record not found", bid, txid)
+		}
+		switch accountingSubtype {
+		case "send":
+			return "send", nil
+		case "receive":
+			return "receive", nil
+		default:
+			return "wallet_chain", nil
+		}
+	default:
+		return "", fmt.Errorf("cannot infer tx_role for (%s,%s): unknown business type", bid, txid)
+	}
 }
 
 // rawJSONPayload 用于标记原始 JSON 字符串类型
