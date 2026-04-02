@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -69,6 +70,35 @@ type finTxUTXOLinkEntry struct {
 	Payload       any
 }
 
+// chainPaymentUTXOFact 是钱包链记账上游显式传入的 UTXO 明细。
+// 设计说明：
+//   - recordWalletChainAccounting 只负责落事实，不再根据汇总值猜测 link
+//   - 这里只接能稳定识别出来的本地钱包 UTXO
+type chainPaymentUTXOFact struct {
+	UTXOID        string
+	IOSide        string
+	UTXORole      string
+	AmountSatoshi int64
+	Note          string
+	Payload       any
+}
+
+// walletChainAccountingInput 是钱包链事实写入的显式输入。
+// 设计说明：
+//   - 交易汇总字段继续保留，用于 chain_payments / fin_tx_breakdown
+//   - UTXO 明细必须由上游显式传入，不能从 payload 临时猜
+//   - ProcessEvents 允许在同一笔事务里一并落库
+type walletChainAccountingInput struct {
+	TxID            string
+	Category        string
+	WalletInputSat  int64
+	WalletOutputSat int64
+	NetSat          int64
+	Payload         any
+	UTXOFacts       []chainPaymentUTXOFact
+	ProcessEvents   []finProcessEventEntry
+}
+
 // finProcessEventEntry 流程事件写入条目
 // 第六次迭代起只使用主口径字段
 // 设计说明：
@@ -129,17 +159,24 @@ type directPoolOpenAccountingInput struct {
 	SellerPubHex      string
 }
 
+func walletChainAccountingRoleAllowed(role string) bool {
+	switch strings.TrimSpace(role) {
+	case "wallet_input", "wallet_change", "external_in", "fee_pool_settle":
+		return true
+	default:
+		return false
+	}
+}
 
-func recordWalletChainAccounting(db *sql.DB, txid string, category string, walletInSat int64, walletOutSat int64, netSat int64, payload map[string]any) error {
+func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	txid = strings.ToLower(strings.TrimSpace(txid))
+	txid := strings.ToLower(strings.TrimSpace(in.TxID))
 	if txid == "" {
 		return fmt.Errorf("txid is required")
 	}
 
-	// 第二步整改：先 upsert chain_payments，获取自增 id 作为财务来源，失败则阻断
 	paymentSubType := "unknown"
 	status := "confirmed"
 	fromParty := "wallet:self"
@@ -150,13 +187,13 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 	netOut := int64(0)
 	changeBack := int64(0)
 
-	switch strings.ToUpper(strings.TrimSpace(category)) {
+	switch strings.ToUpper(strings.TrimSpace(in.Category)) {
 	case "CHANGE":
 		paymentSubType = "internal_change"
-		changeBack = walletOutSat
+		changeBack = in.WalletOutputSat
 	case "REPAYMENT":
 		paymentSubType = "external_in"
-		externalIn = netSat
+		externalIn = in.NetSat
 		if externalIn < 0 {
 			externalIn = 0
 		}
@@ -164,9 +201,9 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		fromParty = "external:unknown"
 	case "THIRD_PARTY":
 		paymentSubType = "external_out"
-		counterpartyOut = walletInSat - walletOutSat
+		counterpartyOut = in.WalletInputSat - in.WalletOutputSat
 		if counterpartyOut < 0 {
-			counterpartyOut = -netSat
+			counterpartyOut = -in.NetSat
 		}
 		if counterpartyOut < 0 {
 			counterpartyOut = 0
@@ -175,34 +212,34 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		toParty = "external:unknown"
 	case "FEE_POOL":
 		paymentSubType = "fee_pool_settle"
-		changeBack = walletOutSat
+		changeBack = in.WalletOutputSat
 	default:
-		if netSat > 0 {
+		if in.NetSat > 0 {
 			paymentSubType = "external_in"
-			externalIn = netSat
-			netIn = netSat
+			externalIn = in.NetSat
+			netIn = in.NetSat
 			fromParty = "external:unknown"
-		} else if netSat < 0 {
+		} else if in.NetSat < 0 {
 			paymentSubType = "external_out"
-			counterpartyOut = -netSat
-			netOut = -netSat
+			counterpartyOut = -in.NetSat
+			netOut = -in.NetSat
 			toParty = "external:unknown"
 		}
 	}
+	now := time.Now().Unix()
 
-	// Upsert chain_payments 获取自增 id，失败则阻断
 	chainPaymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      paymentSubType,
 		Status:              status,
-		WalletInputSatoshi:  walletInSat,
-		WalletOutputSatoshi: walletOutSat,
-		NetAmountSatoshi:    netSat,
+		WalletInputSatoshi:  in.WalletInputSat,
+		WalletOutputSatoshi: in.WalletOutputSat,
+		NetAmountSatoshi:    in.NetSat,
 		BlockHeight:         0,
-		OccurredAtUnix:      time.Now().Unix(),
+		OccurredAtUnix:      now,
 		FromPartyID:         fromParty,
 		ToPartyID:           toParty,
-		Payload:             payload,
+		Payload:             in.Payload,
 	})
 	if err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_chain_payment_failed", map[string]any{"error": err.Error(), "txid": txid})
@@ -223,10 +260,10 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		FromPartyID:       fromParty,
 		ToPartyID:         toParty,
 		Status:            "posted",
-		OccurredAtUnix:    time.Now().Unix(),
+		OccurredAtUnix:    now,
 		IdempotencyKey:    "wallet_chain:" + txid,
 		Note:              "wallet chain sync accounting",
-		Payload:           payload,
+		Payload:           in.Payload,
 	}); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
 		return fmt.Errorf("append fin_business failed: %w", err)
@@ -235,7 +272,7 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		BusinessID:         businessID,
 		TxID:               txid,
 		TxRole:             paymentSubType,
-		GrossInputSatoshi:  walletInSat,
+		GrossInputSatoshi:  in.WalletInputSat,
 		ChangeBackSatoshi:  changeBack,
 		ExternalInSatoshi:  externalIn,
 		CounterpartyOutSat: counterpartyOut,
@@ -243,10 +280,90 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		NetOutSatoshi:      netOut,
 		NetInSatoshi:       netIn,
 		Note:               "wallet chain derived breakdown",
-		Payload:            payload,
+		Payload:            in.Payload,
 	}); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
 		return fmt.Errorf("append fin_tx_breakdown failed: %w", err)
 	}
+
+	for _, fact := range in.UTXOFacts {
+		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+		if utxoID == "" {
+			return fmt.Errorf("utxo_id is required")
+		}
+		ioSide := strings.TrimSpace(fact.IOSide)
+		utxoRole := strings.TrimSpace(fact.UTXORole)
+		if ioSide == "" || utxoRole == "" {
+			return fmt.Errorf("io_side and utxo_role are required")
+		}
+		if !walletChainAccountingRoleAllowed(utxoRole) {
+			continue
+		}
+		exists, err := dbWalletUTXOExistsConn(db, utxoID)
+		if err != nil {
+			return fmt.Errorf("check wallet_utxo existence failed: %w", err)
+		}
+		if !exists {
+			continue
+		}
+		if err := dbAppendChainPaymentUTXOLinkIfAbsentDB(db, chainPaymentUTXOLinkEntry{
+			ChainPaymentID: chainPaymentID,
+			UTXOID:         utxoID,
+			IOSide:         ioSide,
+			UTXORole:       utxoRole,
+			AmountSatoshi:  fact.AmountSatoshi,
+			CreatedAtUnix:  now,
+			Note:           fact.Note,
+			Payload:        fact.Payload,
+		}); err != nil {
+			return fmt.Errorf("append chain_payment_utxo_link failed: %w", err)
+		}
+	}
+
+	for _, e := range in.ProcessEvents {
+		event := e
+		if strings.TrimSpace(event.SourceType) == "" {
+			event.SourceType = sourceType
+		}
+		if strings.TrimSpace(event.SourceID) == "" {
+			event.SourceID = sourceID
+		}
+		if event.OccurredAtUnix <= 0 {
+			event.OccurredAtUnix = now
+		}
+		if err := dbAppendFinProcessEvent(db, event); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
+			return fmt.Errorf("append fin_process_events failed: %w", err)
+		}
+	}
+	return nil
+}
+
+func recordWalletChainAccounting(db *sql.DB, in walletChainAccountingInput) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	// 先把事实放进同一笔事务里，避免主表成功但 link 或财务表缺一块。
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin wallet chain accounting tx failed: %w", err)
+	}
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		_ = tx.Rollback()
+	}()
+
+	// 先写链上支付事实主表，再补关系和财务表，全部在同一笔事务里。
+	if err := recordWalletChainAccountingConn(tx, in); err != nil {
+		return err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit wallet chain accounting failed: %w", err)
+	}
+	committed = true
 	return nil
 }

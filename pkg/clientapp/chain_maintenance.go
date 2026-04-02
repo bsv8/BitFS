@@ -1407,6 +1407,93 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 	return strings.HasSuffix(outputScriptHex, walletScriptHex)
 }
 
+func buildWalletChainAccountingInputFromTxDetail(db sqlConn, address string, detail whatsonchain.TxDetail) (walletChainAccountingInput, bool, error) {
+	txid := strings.ToLower(strings.TrimSpace(detail.TxID))
+	if txid == "" {
+		return walletChainAccountingInput{}, false, nil
+	}
+	scriptHex, err := walletAddressLockScriptHex(address)
+	if err != nil {
+		return walletChainAccountingInput{}, false, err
+	}
+
+	inputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vin))
+	outputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vout))
+	var walletInputSat int64
+	var walletOutputSat int64
+	hasWalletInput := false
+	hasWalletOutput := false
+
+	for _, in := range detail.Vin {
+		utxoID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
+		amount, ok, err := dbWalletUTXOValueConn(db, utxoID)
+		if err != nil {
+			return walletChainAccountingInput{}, false, err
+		}
+		if !ok {
+			continue
+		}
+		hasWalletInput = true
+		walletInputSat += amount
+		inputFacts = append(inputFacts, chainPaymentUTXOFact{
+			UTXOID:        utxoID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AmountSatoshi: amount,
+			Note:          "wallet input by chain sync",
+		})
+	}
+
+	for _, out := range detail.Vout {
+		if !walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
+			continue
+		}
+		amount := int64(txOutputValueSatoshi(out))
+		if amount <= 0 {
+			continue
+		}
+		hasWalletOutput = true
+		walletOutputSat += amount
+		role := "external_in"
+		if hasWalletInput {
+			role = "wallet_change"
+		}
+		outputFacts = append(outputFacts, chainPaymentUTXOFact{
+			UTXOID:        txid + ":" + fmt.Sprint(out.N),
+			IOSide:        "output",
+			UTXORole:      role,
+			AmountSatoshi: amount,
+			Note:          "wallet output by chain sync",
+		})
+	}
+
+	if !hasWalletInput && !hasWalletOutput {
+		return walletChainAccountingInput{}, false, nil
+	}
+
+	category := "REPAYMENT"
+	switch {
+	case hasWalletInput && hasWalletOutput:
+		category = "CHANGE"
+	case hasWalletInput && !hasWalletOutput:
+		category = "THIRD_PARTY"
+	}
+
+	return walletChainAccountingInput{
+		TxID:            txid,
+		Category:        category,
+		WalletInputSat:  walletInputSat,
+		WalletOutputSat: walletOutputSat,
+		NetSat:          walletOutputSat - walletInputSat,
+		Payload: map[string]any{
+			"txid":           txid,
+			"wallet_address": strings.TrimSpace(address),
+			"source":         "wallet_chain_sync",
+		},
+		UTXOFacts: append(inputFacts, outputFacts...),
+	}, true, nil
+}
+
 func matchWalletOutput(txid string, out whatsonchain.TxOutput, scriptHex string) (string, uint64, bool) {
 	if strings.TrimSpace(txid) == "" {
 		return "", 0, false

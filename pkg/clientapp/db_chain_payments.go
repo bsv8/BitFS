@@ -8,6 +8,11 @@ import (
 	"time"
 )
 
+type sqlConn interface {
+	Exec(query string, args ...any) (sql.Result, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
 // chainPaymentEntry chain_payments 写入条目
 // 第二步整改：为 wallet_chain 财务来源切换提供事实层支持
 type chainPaymentEntry struct {
@@ -48,7 +53,7 @@ func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEn
 }
 
 // dbUpsertChainPaymentDB 在已打开的 sql.DB 上执行 upsert
-func dbUpsertChainPaymentDB(db *sql.DB, e chainPaymentEntry) (int64, error) {
+func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -175,7 +180,7 @@ func dbAppendChainPaymentUTXOLinkIfAbsent(ctx context.Context, store *clientDB, 
 }
 
 // dbAppendChainPaymentUTXOLinkIfAbsentDB 在已打开的 sql.DB 上执行幂等追加
-func dbAppendChainPaymentUTXOLinkIfAbsentDB(db *sql.DB, e chainPaymentUTXOLinkEntry) error {
+func dbAppendChainPaymentUTXOLinkIfAbsentDB(db sqlConn, e chainPaymentUTXOLinkEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -226,4 +231,42 @@ func dbAppendChainPaymentUTXOLinkIfAbsentDB(db *sql.DB, e chainPaymentUTXOLinkEn
 		mustJSONString(e.Payload),
 	)
 	return err
+}
+
+func dbWalletUTXOExistsConn(db sqlConn, utxoID string) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("db is nil")
+	}
+	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+	if utxoID == "" {
+		return false, fmt.Errorf("utxo_id is required")
+	}
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&one)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func dbWalletUTXOValueConn(db sqlConn, utxoID string) (int64, bool, error) {
+	if db == nil {
+		return 0, false, fmt.Errorf("db is nil")
+	}
+	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+	if utxoID == "" {
+		return 0, false, fmt.Errorf("utxo_id is required")
+	}
+	var value int64
+	err := db.QueryRow(`SELECT value_satoshi FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&value)
+	if err == sql.ErrNoRows {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, err
+	}
+	return value, true, nil
 }

@@ -139,6 +139,34 @@ func reconcileWalletUTXOSet(ctx context.Context, store *clientDB, address string
 		if err = markObservedWalletLocalBroadcastTxsTx(tx, observedLocalTxIDs, updatedAt); err != nil {
 			return err
 		}
+		accountedTxIDs := map[string]struct{}{}
+		recordWalletChainTx := func(detail whatsonchain.TxDetail) error {
+			input, ok, err := buildWalletChainAccountingInputFromTxDetail(tx, address, detail)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return nil
+			}
+			if _, seen := accountedTxIDs[input.TxID]; seen {
+				return nil
+			}
+			if err := recordWalletChainAccountingConn(tx, input); err != nil {
+				return err
+			}
+			accountedTxIDs[input.TxID] = struct{}{}
+			return nil
+		}
+		for _, hist := range history {
+			if err := recordWalletChainTx(hist.Tx); err != nil {
+				return err
+			}
+		}
+		for _, detail := range snapshot.ObservedMempoolTxs {
+			if err := recordWalletChainTx(detail); err != nil {
+				return err
+			}
+		}
 		stats := summarizeWalletUTXOState(existing)
 
 		if _, err = tx.Exec(

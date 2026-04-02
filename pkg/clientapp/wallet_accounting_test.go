@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
 func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
@@ -61,6 +65,20 @@ func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 		t.Fatalf("init db: %v", err)
 	}
 	return db
+}
+
+func seedWalletUTXO(t *testing.T, db *sql.DB, utxoID string, txid string, vout int, value int64) {
+	t.Helper()
+	_, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, "wallet1", "addr1", txid, vout, value, "confirmed", "plain_bsv", "",
+		txid, "", 1700000001, 1700000001, 0,
+	)
+	if err != nil {
+		t.Fatalf("insert wallet_utxo %s failed: %v", utxoID, err)
+	}
 }
 
 func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
@@ -742,7 +760,16 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
 	txid := "tx_chain_role_1"
-	recordWalletChainAccounting(db, txid, "CHANGE", 1000, 800, -200, map[string]any{"test": true})
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		TxID:            txid,
+		Category:        "CHANGE",
+		WalletInputSat:  1000,
+		WalletOutputSat: 800,
+		NetSat:          -200,
+		Payload:         map[string]any{"test": true},
+	}); err != nil {
+		t.Fatalf("record wallet chain accounting failed: %v", err)
+	}
 
 	var txRole string
 	if err := db.QueryRow(
@@ -818,7 +845,16 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
 	txid := "tx_chain_payment_id_test"
-	recordWalletChainAccounting(db, txid, "REPAYMENT", 0, 5000, 5000, map[string]any{"test": true})
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		TxID:            txid,
+		Category:        "REPAYMENT",
+		WalletInputSat:  0,
+		WalletOutputSat: 5000,
+		NetSat:          5000,
+		Payload:         map[string]any{"test": true},
+	}); err != nil {
+		t.Fatalf("record wallet chain accounting failed: %v", err)
+	}
 
 	// 验证 chain_payments 记录已创建
 	var chainPaymentID int64
@@ -861,7 +897,14 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T)
 	store := newClientDB(db, nil)
 	txid := "tx_chain_query_test"
 
-	if err := recordWalletChainAccounting(db, txid, "REPAYMENT", 0, 5000, 5000, map[string]any{"test": true}); err != nil {
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		TxID:            txid,
+		Category:        "REPAYMENT",
+		WalletInputSat:  0,
+		WalletOutputSat: 5000,
+		NetSat:          5000,
+		Payload:         map[string]any{"test": true},
+	}); err != nil {
 		t.Fatalf("record wallet chain accounting failed: %v", err)
 	}
 
@@ -914,65 +957,261 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
 
-	// 需要先创建 wallet_utxo 记录（因为外键约束）
 	txid := "tx_chain_utxo_link_test"
-	utxoID := txid + ":0"
-	_, err := db.Exec(`INSERT INTO wallet_utxo(
-		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
-		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		utxoID, "wallet1", "addr1", txid, 0, 3000, "confirmed", "plain_bsv", "",
-		txid, "", 1700000001, 1700000001, 0,
-	)
-	if err != nil {
-		t.Fatalf("insert wallet_utxo failed: %v", err)
-	}
+	inputUTXO := txid + ":0"
+	changeUTXO := txid + ":1"
+	counterpartyUTXO := txid + ":2"
+	seedWalletUTXO(t, db, inputUTXO, txid, 0, 3000)
+	seedWalletUTXO(t, db, changeUTXO, txid, 1, 800)
+	seedWalletUTXO(t, db, counterpartyUTXO, txid, 2, 600)
 
-	// 手动测试 chain_payment 和 utxo link 的创建
-	ctx := context.Background()
-	store := newClientDB(db, nil)
-
-	paymentID, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
-		TxID:                txid,
-		PaymentSubType:      "external_in",
-		Status:              "confirmed",
-		WalletInputSatoshi:  0,
-		WalletOutputSatoshi: 3000,
-		NetAmountSatoshi:    3000,
-		BlockHeight:         100,
-		OccurredAtUnix:      1700000001,
-		FromPartyID:         "external:unknown",
-		ToPartyID:           "wallet:self",
-		Payload:             map[string]any{"test": true},
-	})
-	if err != nil {
-		t.Fatalf("upsert chain_payment failed: %v", err)
-	}
-
-	// 追加 utxo link
-	if err := dbAppendChainPaymentUTXOLinkIfAbsent(ctx, store, chainPaymentUTXOLinkEntry{
-		ChainPaymentID: paymentID,
-		UTXOID:         utxoID,
-		IOSide:         "output",
-		UTXORole:       "external_in",
-		AmountSatoshi:  3000,
-		CreatedAtUnix:  1700000001,
-		Note:           "test link",
-		Payload:        map[string]any{"idx": 0},
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		TxID:            txid,
+		Category:        "CHANGE",
+		WalletInputSat:  3000,
+		WalletOutputSat: 800,
+		NetSat:          -2200,
+		Payload:         map[string]any{"test": true},
+		UTXOFacts: []chainPaymentUTXOFact{
+			{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 3000, Note: "wallet input"},
+			{UTXOID: changeUTXO, IOSide: "output", UTXORole: "wallet_change", AmountSatoshi: 800, Note: "wallet change"},
+			{UTXOID: counterpartyUTXO, IOSide: "output", UTXORole: "counterparty_out", AmountSatoshi: 600, Note: "must skip"},
+			{UTXOID: "missing:0", IOSide: "output", UTXORole: "external_in", AmountSatoshi: 1, Note: "missing must skip"},
+		},
+		ProcessEvents: []finProcessEventEntry{
+			{
+				ProcessID:         "proc_wallet_chain_" + txid,
+				AccountingScene:   "wallet_transfer",
+				AccountingSubType: "change_probe",
+				EventType:         "accounting",
+				Status:            "applied",
+				IdempotencyKey:    "wallet_chain_event:" + txid,
+				Note:              "wallet chain event",
+				Payload:           map[string]any{"mark": "yes"},
+			},
+		},
 	}); err != nil {
-		t.Fatalf("append utxo link failed: %v", err)
+		t.Fatalf("record wallet chain accounting failed: %v", err)
 	}
 
-	// 验证 link 已创建
-	var count int
+	var paymentID int64
+	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&paymentID); err != nil {
+		t.Fatalf("query chain_payment failed: %v", err)
+	}
+	type wantLink struct {
+		utxoID   string
+		ioSide   string
+		utxoRole string
+		amount   int64
+	}
+	wants := []wantLink{
+		{utxoID: inputUTXO, ioSide: "input", utxoRole: "wallet_input", amount: 3000},
+		{utxoID: changeUTXO, ioSide: "output", utxoRole: "wallet_change", amount: 800},
+	}
+	for _, want := range wants {
+		var count int
+		var amount int64
+		if err := db.QueryRow(
+			`SELECT COUNT(1),COALESCE(SUM(amount_satoshi),0) FROM chain_payment_utxo_links
+			  WHERE chain_payment_id=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
+			paymentID, want.utxoID, want.ioSide, want.utxoRole,
+		).Scan(&count, &amount); err != nil {
+			t.Fatalf("query link %s failed: %v", want.utxoID, err)
+		}
+		if count != 1 {
+			t.Fatalf("expected 1 link for %s, got %d", want.utxoID, count)
+		}
+		if amount != want.amount {
+			t.Fatalf("unexpected amount for %s: got=%d want=%d", want.utxoID, amount, want.amount)
+		}
+	}
+
+	var skippedCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=?`,
-		paymentID, utxoID,
-	).Scan(&count); err != nil {
-		t.Fatalf("count check failed: %v", err)
+		`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_role IN ('counterparty_out','external_in')`,
+		paymentID,
+	).Scan(&skippedCount); err != nil {
+		t.Fatalf("query skipped links failed: %v", err)
+	}
+	if skippedCount != 0 {
+		t.Fatalf("expected skipped roles not to be written, got %d", skippedCount)
+	}
+
+	var eventCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_process_events WHERE process_id=?`, "proc_wallet_chain_"+txid).Scan(&eventCount); err != nil {
+		t.Fatalf("query process event failed: %v", err)
+	}
+	if eventCount != 1 {
+		t.Fatalf("expected 1 process event, got %d", eventCount)
+	}
+}
+
+func TestRecordWalletChainAccounting_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	txid := "tx_chain_idem_1"
+	inputUTXO := txid + ":0"
+	changeUTXO := txid + ":1"
+	seedWalletUTXO(t, db, inputUTXO, txid, 0, 3000)
+	seedWalletUTXO(t, db, changeUTXO, txid, 1, 800)
+
+	in := walletChainAccountingInput{
+		TxID:            txid,
+		Category:        "CHANGE",
+		WalletInputSat:  3000,
+		WalletOutputSat: 800,
+		NetSat:          -2200,
+		Payload:         map[string]any{"test": true},
+		UTXOFacts: []chainPaymentUTXOFact{
+			{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 3000},
+			{UTXOID: changeUTXO, IOSide: "output", UTXORole: "wallet_change", AmountSatoshi: 800},
+		},
+	}
+	if err := recordWalletChainAccounting(db, in); err != nil {
+		t.Fatalf("first record failed: %v", err)
+	}
+	if err := recordWalletChainAccounting(db, in); err != nil {
+		t.Fatalf("second record failed: %v", err)
+	}
+
+	var paymentCount, linkCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payments WHERE txid=?`, txid).Scan(&paymentCount); err != nil {
+		t.Fatalf("count chain_payments failed: %v", err)
+	}
+	if paymentCount != 1 {
+		t.Fatalf("expected 1 chain_payment, got %d", paymentCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
+		t.Fatalf("count chain_payment_utxo_links failed: %v", err)
+	}
+	if linkCount != 2 {
+		t.Fatalf("expected 2 chain_payment_utxo_links, got %d", linkCount)
+	}
+}
+
+func TestRecordWalletChainAccounting_FeePoolSettleLink(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	txid := "tx_fee_pool_settle_1"
+	settleUTXO := txid + ":0"
+	seedWalletUTXO(t, db, settleUTXO, txid, 0, 1234)
+
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		TxID:            txid,
+		Category:        "FEE_POOL",
+		WalletInputSat:  1234,
+		WalletOutputSat: 1234,
+		NetSat:          0,
+		Payload:         map[string]any{"test": true},
+		UTXOFacts: []chainPaymentUTXOFact{
+			{UTXOID: settleUTXO, IOSide: "output", UTXORole: "fee_pool_settle", AmountSatoshi: 1234, Note: "fee settle"},
+		},
+	}); err != nil {
+		t.Fatalf("record wallet chain accounting failed: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE utxo_role='fee_pool_settle' AND utxo_id=?`, settleUTXO).Scan(&count); err != nil {
+		t.Fatalf("query fee_pool_settle link failed: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("expected 1 utxo link, got %d", count)
+		t.Fatalf("expected 1 fee_pool_settle link, got %d", count)
+	}
+}
+
+func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("1", 64)
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress failed: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+	walletScriptHex, err := walletAddressLockScriptHex(address)
+	if err != nil {
+		t.Fatalf("walletAddressLockScriptHex failed: %v", err)
+	}
+
+	prevTxID := "tx_sync_prev_1"
+	txid := "tx_sync_chain_accounting_1"
+	seedWalletUTXO(t, db, prevTxID+":0", prevTxID, 0, 5000)
+
+	snapshot := liveWalletSnapshot{
+		Live: map[string]poolcore.UTXO{
+			txid + ":0": {TxID: txid, Vout: 0, Value: 1500},
+		},
+		ConfirmedLiveTxIDs: map[string]struct{}{txid: struct{}{}},
+		Balance:            1500,
+		Count:              1,
+	}
+	history := []walletHistoryTxRecord{
+		{
+			TxID:   txid,
+			Height: 123,
+			Tx: whatsonchain.TxDetail{
+				TxID: txid,
+				Vin: []whatsonchain.TxInput{
+					{TxID: prevTxID, Vout: 0},
+				},
+				Vout: []whatsonchain.TxOutput{
+					{N: 0, ValueSatoshi: 1500, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: walletScriptHex}},
+					{N: 1, ValueSatoshi: 3300, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: "76a914111111111111111111111111111111111111111188ac"}},
+				},
+			},
+		},
+	}
+	cursor := walletUTXOHistoryCursor{
+		WalletID:            walletID,
+		Address:             address,
+		NextConfirmedHeight: 1,
+	}
+
+	if err := reconcileWalletUTXOSet(context.Background(), store, address, snapshot, history, cursor, "round-sync-1", "", "sync-test", time.Now().Unix(), 1); err != nil {
+		t.Fatalf("reconcileWalletUTXOSet failed: %v", err)
+	}
+
+	var paymentCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payments WHERE txid=?`, txid).Scan(&paymentCount); err != nil {
+		t.Fatalf("count chain_payments failed: %v", err)
+	}
+	if paymentCount != 1 {
+		t.Fatalf("expected 1 chain_payment, got %d", paymentCount)
+	}
+
+	var linkCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
+		t.Fatalf("count chain_payment_utxo_links failed: %v", err)
+	}
+	if linkCount != 2 {
+		t.Fatalf("expected 2 chain_payment_utxo_links, got %d", linkCount)
+	}
+
+	var inputRole, outputRole string
+	if err := db.QueryRow(
+		`SELECT utxo_role FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?) AND io_side='input' LIMIT 1`,
+		txid,
+	).Scan(&inputRole); err != nil {
+		t.Fatalf("query input role failed: %v", err)
+	}
+	if inputRole != "wallet_input" {
+		t.Fatalf("unexpected input role: %s", inputRole)
+	}
+	if err := db.QueryRow(
+		`SELECT utxo_role FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?) AND io_side='output' LIMIT 1`,
+		txid,
+	).Scan(&outputRole); err != nil {
+		t.Fatalf("query output role failed: %v", err)
+	}
+	if outputRole != "wallet_change" {
+		t.Fatalf("unexpected output role: %s", outputRole)
 	}
 }
 

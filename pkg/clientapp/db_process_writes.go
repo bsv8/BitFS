@@ -472,7 +472,7 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 	}
 }
 
-func dbAppendFinBusiness(db *sql.DB, e finBusinessEntry) error {
+func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -515,7 +515,7 @@ func dbAppendFinBusiness(db *sql.DB, e finBusinessEntry) error {
 	return err
 }
 
-func dbAppendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
+func dbAppendFinTxBreakdownIfAbsent(db sqlConn, e finTxBreakdownEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -540,7 +540,7 @@ func dbAppendFinTxBreakdownIfAbsent(db *sql.DB, e finTxBreakdownEntry) error {
 	return dbAppendFinTxBreakdown(db, e)
 }
 
-func dbAppendFinTxUTXOLinkIfAbsent(db *sql.DB, e finTxUTXOLinkEntry) error {
+func dbAppendFinTxUTXOLinkIfAbsent(db sqlConn, e finTxUTXOLinkEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -561,7 +561,7 @@ func dbAppendFinTxUTXOLinkIfAbsent(db *sql.DB, e finTxUTXOLinkEntry) error {
 	return dbAppendFinTxUTXOLink(db, e)
 }
 
-func dbAppendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
+func dbAppendFinTxBreakdown(db sqlConn, e finTxBreakdownEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -589,7 +589,7 @@ func dbAppendFinTxBreakdown(db *sql.DB, e finTxBreakdownEntry) error {
 	return err
 }
 
-func dbAppendFinTxUTXOLink(db *sql.DB, e finTxUTXOLinkEntry) error {
+func dbAppendFinTxUTXOLink(db sqlConn, e finTxUTXOLinkEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -611,7 +611,7 @@ func dbAppendFinTxUTXOLink(db *sql.DB, e finTxUTXOLinkEntry) error {
 	return err
 }
 
-func dbAppendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLinkEntry) error {
+func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string, e finTxUTXOLinkEntry) error {
 	txRole = strings.TrimSpace(txRole)
 	if txRole == "" {
 		return fmt.Errorf("tx_role is required for business utxo fact")
@@ -635,7 +635,7 @@ func dbAppendBusinessUTXOFactIfAbsent(db *sql.DB, txRole string, e finTxUTXOLink
 	return dbAppendFinTxUTXOLinkIfAbsent(db, e)
 }
 
-func dbAppendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
+func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
