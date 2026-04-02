@@ -10,17 +10,21 @@ import (
 )
 
 type finBusinessEntry struct {
-	BusinessID     string
-	SceneType      string
-	SceneSubType   string
-	FromPartyID    string
-	ToPartyID      string
-	RefID          string
-	Status         string
-	OccurredAtUnix int64
-	IdempotencyKey string
-	Note           string
-	Payload        any
+	BusinessID        string
+	SceneType         string
+	SceneSubType      string
+	SourceType        string
+	SourceID          string
+	AccountingScene   string
+	AccountingSubType string
+	FromPartyID       string
+	ToPartyID         string
+	RefID             string
+	Status            string
+	OccurredAtUnix    int64
+	IdempotencyKey    string
+	Note              string
+	Payload           any
 }
 
 type finTxBreakdownEntry struct {
@@ -60,16 +64,20 @@ type finTxUTXOLinkEntry struct {
 }
 
 type finProcessEventEntry struct {
-	ProcessID      string
-	SceneType      string
-	SceneSubType   string
-	EventType      string
-	Status         string
-	RefID          string
-	OccurredAtUnix int64
-	IdempotencyKey string
-	Note           string
-	Payload        any
+	ProcessID         string
+	SceneType         string
+	SceneSubType      string
+	SourceType        string
+	SourceID          string
+	AccountingScene   string
+	AccountingSubType string
+	EventType         string
+	Status            string
+	RefID             string
+	OccurredAtUnix    int64
+	IdempotencyKey    string
+	Note              string
+	Payload           any
 }
 
 func mustJSONString(v any) string {

@@ -483,16 +483,24 @@ func dbAppendFinBusiness(db *sql.DB, e finBusinessEntry) error {
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := db.Exec(
-		`INSERT INTO fin_business(business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fin_business(business_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
-			payload_json=excluded.payload_json`,
+			payload_json=excluded.payload_json,
+			source_type=excluded.source_type,
+			source_id=excluded.source_id,
+			accounting_scene=excluded.accounting_scene,
+			accounting_subtype=excluded.accounting_subtype`,
 		e.BusinessID,
 		strings.TrimSpace(e.SceneType),
 		strings.TrimSpace(e.SceneSubType),
+		strings.TrimSpace(e.SourceType),
+		strings.TrimSpace(e.SourceID),
+		strings.TrimSpace(e.AccountingScene),
+		strings.TrimSpace(e.AccountingSubType),
 		strings.TrimSpace(e.FromPartyID),
 		strings.TrimSpace(e.ToPartyID),
 		strings.TrimSpace(e.RefID),
@@ -656,16 +664,24 @@ func dbAppendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
 		e.IdempotencyKey = e.ProcessID + ":" + strings.TrimSpace(e.EventType)
 	}
 	_, err := db.Exec(
-		`INSERT INTO fin_process_events(process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fin_process_events(process_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
-			payload_json=excluded.payload_json`,
+			payload_json=excluded.payload_json,
+			source_type=excluded.source_type,
+			source_id=excluded.source_id,
+			accounting_scene=excluded.accounting_scene,
+			accounting_subtype=excluded.accounting_subtype`,
 		e.ProcessID,
 		strings.TrimSpace(e.SceneType),
 		strings.TrimSpace(e.SceneSubType),
+		strings.TrimSpace(e.SourceType),
+		strings.TrimSpace(e.SourceID),
+		strings.TrimSpace(e.AccountingScene),
+		strings.TrimSpace(e.AccountingSubType),
 		strings.TrimSpace(e.EventType),
 		strings.TrimSpace(e.Status),
 		strings.TrimSpace(e.RefID),
@@ -675,6 +691,11 @@ func dbAppendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
 		mustJSONString(e.Payload),
 	)
 	return err
+}
+
+// 直连池财务解释统一挂到 allocation，别再用 session 漂着。
+func directTransferPoolAccountingSource(sessionID string, allocationKind string, sequenceNum uint32) (string, string) {
+	return "pool_allocation", directTransferPoolAllocationID(sessionID, allocationKind, sequenceNum)
 }
 
 func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
@@ -816,6 +837,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) {
 	dbRecordAccounting(ctx, store, func(db *sql.DB) {
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
+		sourceType, sourceID := directTransferPoolAccountingSource(strings.TrimSpace(in.SessionID), "open", 1)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
 		lockScript := strings.TrimSpace(in.ClientLockScript)
 		var grossInput, changeBack, lockAmount int64
@@ -875,24 +897,52 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			minerFee = 0
 		}
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
-			BusinessID:     businessID,
-			SceneType:      "c2c_transfer",
-			SceneSubType:   "open",
-			FromPartyID:    "client:self",
-			ToPartyID:      "seller:" + strings.TrimSpace(in.SellerPubHex),
-			RefID:          strings.TrimSpace(in.SessionID),
-			Status:         "posted",
-			OccurredAtUnix: time.Now().Unix(),
-			IdempotencyKey: "c2c_open:" + strings.TrimSpace(in.SessionID),
-			Note:           "direct transfer pool open lock",
+			BusinessID:        businessID,
+			SceneType:         "c2c_transfer",
+			SceneSubType:      "open",
+			SourceType:        sourceType,
+			SourceID:          sourceID,
+			AccountingScene:   "fee_pool",
+			AccountingSubType: "open",
+			FromPartyID:       "client:self",
+			ToPartyID:         "seller:" + strings.TrimSpace(in.SellerPubHex),
+			RefID:             strings.TrimSpace(in.SessionID),
+			Status:            "posted",
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "c2c_open:" + strings.TrimSpace(in.SessionID),
+			Note:              "direct transfer pool open lock",
 			Payload: map[string]any{
-				"session_id": strings.TrimSpace(in.SessionID),
-				"deal_id":    strings.TrimSpace(in.DealID),
-				"base_txid":  baseTxID,
+				"session_id":    strings.TrimSpace(in.SessionID),
+				"deal_id":       strings.TrimSpace(in.DealID),
+				"base_txid":     baseTxID,
+				"allocation_id": sourceID,
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return
+		}
+		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
+			SceneType:         "c2c_transfer",
+			SceneSubType:      "open",
+			SourceType:        sourceType,
+			SourceID:          sourceID,
+			AccountingScene:   "fee_pool",
+			AccountingSubType: "open",
+			EventType:         "accounting",
+			Status:            "applied",
+			RefID:             strings.TrimSpace(in.SessionID),
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "c2c_open_event:" + strings.TrimSpace(in.SessionID),
+			Note:              "direct transfer pool open accounting event",
+			Payload: map[string]any{
+				"session_id":    strings.TrimSpace(in.SessionID),
+				"deal_id":       strings.TrimSpace(in.DealID),
+				"base_txid":     baseTxID,
+				"allocation_id": sourceID,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 		}
 		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
@@ -913,21 +963,50 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) {
 	dbRecordAccounting(ctx, store, func(db *sql.DB) {
 		businessID := fmt.Sprintf("biz_c2c_pay_%s_%d", strings.TrimSpace(sessionID), sequence)
+		sourceType, sourceID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
-			BusinessID:     businessID,
-			SceneType:      "c2c_transfer",
-			SceneSubType:   "chunk_pay",
-			FromPartyID:    "client:self",
-			ToPartyID:      "seller:" + strings.TrimSpace(sellerPeerID),
-			RefID:          strings.TrimSpace(sessionID),
-			Status:         "posted",
-			OccurredAtUnix: time.Now().Unix(),
-			IdempotencyKey: "c2c_pay:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
-			Note:           "direct transfer chunk pay",
-			Payload:        map[string]any{"sequence": sequence},
+			BusinessID:        businessID,
+			SceneType:         "c2c_transfer",
+			SceneSubType:      "chunk_pay",
+			SourceType:        sourceType,
+			SourceID:          sourceID,
+			AccountingScene:   "c2c_transfer",
+			AccountingSubType: "chunk_pay",
+			FromPartyID:       "client:self",
+			ToPartyID:         "seller:" + strings.TrimSpace(sellerPeerID),
+			RefID:             strings.TrimSpace(sessionID),
+			Status:            "posted",
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "c2c_pay:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
+			Note:              "direct transfer chunk pay",
+			Payload: map[string]any{
+				"sequence":      sequence,
+				"allocation_id": sourceID,
+			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 			return
+		}
+		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
+			SceneType:         "c2c_transfer",
+			SceneSubType:      "chunk_pay",
+			SourceType:        sourceType,
+			SourceID:          sourceID,
+			AccountingScene:   "c2c_transfer",
+			AccountingSubType: "chunk_pay",
+			EventType:         "accounting",
+			Status:            "applied",
+			RefID:             strings.TrimSpace(sessionID),
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "c2c_pay_event:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
+			Note:              "direct transfer chunk pay accounting event",
+			Payload: map[string]any{
+				"sequence":      sequence,
+				"allocation_id": sourceID,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 		}
 		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
@@ -945,7 +1024,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 	})
 }
 
-func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) {
+func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) {
 	dbRecordAccounting(ctx, store, func(db *sql.DB) {
 		finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
 		txHex := strings.TrimSpace(finalTxHex)
@@ -962,24 +1041,86 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			}
 		}
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
+		sourceType := "pool_allocation"
+		sourceID := directTransferPoolAllocationID(strings.TrimSpace(sessionID), "close", sequence)
+		if sourceID == "" {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{
+				"error":      "allocation_id is required",
+				"scene":      "c2c_close",
+				"session_id": strings.TrimSpace(sessionID),
+				"sequence":   sequence,
+			})
+			return
+		}
+		var allocCount int
+		if err := db.QueryRow(
+			`SELECT COUNT(1) FROM pool_allocations WHERE allocation_id=?`,
+			sourceID,
+		).Scan(&allocCount); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{
+				"error":         err.Error(),
+				"scene":         "c2c_close",
+				"session_id":    strings.TrimSpace(sessionID),
+				"sequence":      sequence,
+				"allocation_id": sourceID,
+			})
+			return
+		}
+		if allocCount == 0 {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{
+				"error":         "allocation not found",
+				"scene":         "c2c_close",
+				"session_id":    strings.TrimSpace(sessionID),
+				"sequence":      sequence,
+				"allocation_id": sourceID,
+			})
+			return
+		}
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
-			BusinessID:     businessID,
-			SceneType:      "c2c_transfer",
-			SceneSubType:   "close",
-			FromPartyID:    "client:self",
-			ToPartyID:      "seller:" + strings.TrimSpace(sellerPeerID),
-			RefID:          strings.TrimSpace(sessionID),
-			Status:         "posted",
-			OccurredAtUnix: time.Now().Unix(),
-			IdempotencyKey: "c2c_close:" + strings.TrimSpace(sessionID),
-			Note:           "direct transfer settle close",
+			BusinessID:        businessID,
+			SceneType:         "c2c_transfer",
+			SceneSubType:      "close",
+			SourceType:        sourceType,
+			SourceID:          sourceID,
+			AccountingScene:   "c2c_transfer",
+			AccountingSubType: "close",
+			FromPartyID:       "client:self",
+			ToPartyID:         "seller:" + strings.TrimSpace(sellerPeerID),
+			RefID:             strings.TrimSpace(sessionID),
+			Status:            "posted",
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "c2c_close:" + strings.TrimSpace(sessionID),
+			Note:              "direct transfer settle close",
 			Payload: map[string]any{
 				"seller_amount_satoshi": sellerAmount,
 				"buyer_amount_satoshi":  buyerAmount,
+				"allocation_id":         sourceID,
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 			return
+		}
+		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
+			SceneType:         "c2c_transfer",
+			SceneSubType:      "close",
+			SourceType:        sourceType,
+			SourceID:          sourceID,
+			AccountingScene:   "c2c_transfer",
+			AccountingSubType: "close",
+			EventType:         "accounting",
+			Status:            "applied",
+			RefID:             strings.TrimSpace(sessionID),
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "c2c_close_event:" + strings.TrimSpace(sessionID),
+			Note:              "direct transfer settle close accounting event",
+			Payload: map[string]any{
+				"seller_amount_satoshi": sellerAmount,
+				"buyer_amount_satoshi":  buyerAmount,
+				"allocation_id":         sourceID,
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 		}
 		_ = dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,

@@ -8,6 +8,43 @@ import (
 	"testing"
 )
 
+func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
+	t.Helper()
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+	sessionID := "sess_third_iter_1"
+	dealID := "deal_third_iter_1"
+	buyerPubHex := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	arbiterPubHex := "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, directTransferPoolOpenReq{
+		SessionID:      sessionID,
+		DealID:         dealID,
+		BuyerPeerID:    buyerPubHex,
+		ArbiterPeerID:  arbiterPubHex,
+		ArbiterPubKey:  arbiterPubHex,
+		PoolAmount:     990,
+		SpendTxFee:     10,
+		Sequence:       1,
+		SellerAmount:   0,
+		BuyerAmount:    990,
+		BaseTxID:       "base_tx_third_iter_1",
+		FeeRateSatByte: 0.5,
+		LockBlocks:     6,
+	}, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, strings.ToLower(baseTxHex), baseTxHex); err != nil {
+		t.Fatalf("seed open facts failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 2, 300, 690, strings.ToLower(baseTxHex), 300); err != nil {
+		t.Fatalf("seed pay facts failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, 3, 700, 290, strings.ToLower(baseTxHex)); err != nil {
+		t.Fatalf("seed close facts failed: %v", err)
+	}
+}
+
 func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
@@ -28,10 +65,32 @@ func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
 
 	// 一个最小可解析交易：1 输入，2 输出（seller=700, buyer=290）。
 	finalTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
-	dbRecordDirectPoolCloseAccounting(nil, newClientDB(db, nil), "sess_1", "", finalTxHex, 700, 290, "seller_peer_1")
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, directTransferPoolOpenReq{
+		SessionID:      "sess_1",
+		DealID:         "deal_sess_1",
+		BuyerPeerID:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		ArbiterPeerID:  "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ArbiterPubKey:  "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		PoolAmount:     990,
+		SpendTxFee:     10,
+		Sequence:       1,
+		SellerAmount:   0,
+		BuyerAmount:    990,
+		BaseTxID:       "base_tx_sess_1",
+		FeeRateSatByte: 0.5,
+		LockBlocks:     6,
+	}, "sess_1", "deal_sess_1", "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", finalTxHex, finalTxHex); err != nil {
+		t.Fatalf("seed close facts open failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolClosing(ctx, store, "sess_1", 3, 700, 290, finalTxHex); err != nil {
+		t.Fatalf("seed close facts close failed: %v", err)
+	}
+	dbRecordDirectPoolCloseAccounting(ctx, store, "sess_1", 3, "", finalTxHex, 700, 290, "seller_peer_1")
 
 	var txid string
 	if err := db.QueryRow(`SELECT txid FROM fin_tx_breakdown WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&txid); err != nil {
@@ -175,5 +234,231 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	}
 	if got[2].Seq != 3 || got[2].Payee != 700 || got[2].Payer != 290 {
 		t.Fatalf("close allocation mismatch: %+v", got[2])
+	}
+}
+
+func TestDirectTransferAccounting_WritesNewSourceFields(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_third_iter_1",
+		BaseTxID:          "base_tx_third_iter_1",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
+
+	type wantRow struct {
+		businessID        string
+		sceneType         string
+		sceneSubType      string
+		sourceID          string
+		accountingScene   string
+		accountingSubType string
+		refID             string
+	}
+	checks := []wantRow{
+		{businessID: "biz_c2c_open_sess_third_iter_1", sceneType: "c2c_transfer", sceneSubType: "open", sourceID: directTransferPoolAllocationID(sessionID, "open", 1), accountingScene: "fee_pool", accountingSubType: "open", refID: sessionID},
+		{businessID: "biz_c2c_pay_sess_third_iter_1_2", sceneType: "c2c_transfer", sceneSubType: "chunk_pay", sourceID: directTransferPoolAllocationID(sessionID, "pay", 2), accountingScene: "c2c_transfer", accountingSubType: "chunk_pay", refID: sessionID},
+		{businessID: "biz_c2c_close_sess_third_iter_1", sceneType: "c2c_transfer", sceneSubType: "close", sourceID: directTransferPoolAllocationID(sessionID, "close", 3), accountingScene: "c2c_transfer", accountingSubType: "close", refID: sessionID},
+	}
+	for _, want := range checks {
+		var gotSourceType, gotSourceID, gotAccountingScene, gotAccountingSubtype, gotSceneType, gotSceneSubType, gotRefID string
+		if err := db.QueryRow(
+			`SELECT source_type,source_id,accounting_scene,accounting_subtype,scene_type,scene_subtype,ref_id
+			   FROM fin_business WHERE business_id=?`,
+			want.businessID,
+		).Scan(&gotSourceType, &gotSourceID, &gotAccountingScene, &gotAccountingSubtype, &gotSceneType, &gotSceneSubType, &gotRefID); err != nil {
+			t.Fatalf("query fin_business %s failed: %v", want.businessID, err)
+		}
+		if gotSourceType != "pool_allocation" || gotSourceID != want.sourceID || gotAccountingScene != want.accountingScene || gotAccountingSubtype != want.accountingSubType {
+			t.Fatalf("unexpected fin_business binding for %s: source_type=%s source_id=%s accounting_scene=%s accounting_subtype=%s", want.businessID, gotSourceType, gotSourceID, gotAccountingScene, gotAccountingSubtype)
+		}
+		if gotSceneType != want.sceneType || gotSceneSubType != want.sceneSubType || gotRefID != want.refID {
+			t.Fatalf("legacy business fields changed for %s: scene_type=%s scene_subtype=%s ref_id=%s", want.businessID, gotSceneType, gotSceneSubType, gotRefID)
+		}
+
+		var count int64
+		if err := db.QueryRow(`SELECT COUNT(1) FROM pool_allocations WHERE allocation_id=?`, want.sourceID).Scan(&count); err != nil {
+			t.Fatalf("query pool_allocations by allocation_id failed: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("allocation not found for %s: count=%d", want.businessID, count)
+		}
+	}
+}
+
+func TestDirectTransferAccounting_ProcessEventsTraceSameAllocation(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_third_iter_1",
+		BaseTxID:          "base_tx_third_iter_1",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
+
+	type wantRow struct {
+		subtype string
+		source  string
+	}
+	checks := []wantRow{
+		{subtype: "open", source: directTransferPoolAllocationID(sessionID, "open", 1)},
+		{subtype: "chunk_pay", source: directTransferPoolAllocationID(sessionID, "pay", 2)},
+		{subtype: "close", source: directTransferPoolAllocationID(sessionID, "close", 3)},
+	}
+	for _, want := range checks {
+		var gotSourceType, gotSourceID, gotAccountingScene, gotAccountingSubtype, gotSceneType, gotSceneSubType, gotRefID string
+		if err := db.QueryRow(
+			`SELECT source_type,source_id,accounting_scene,accounting_subtype,scene_type,scene_subtype,ref_id
+			   FROM fin_process_events WHERE process_id=? AND scene_subtype=? ORDER BY id DESC LIMIT 1`,
+			"proc_c2c_transfer_"+sessionID, want.subtype,
+		).Scan(&gotSourceType, &gotSourceID, &gotAccountingScene, &gotAccountingSubtype, &gotSceneType, &gotSceneSubType, &gotRefID); err != nil {
+			t.Fatalf("query fin_process_events %s failed: %v", want.subtype, err)
+		}
+		if gotSourceType != "pool_allocation" || gotSourceID != want.source {
+			t.Fatalf("unexpected process event binding for %s: source_type=%s source_id=%s", want.subtype, gotSourceType, gotSourceID)
+		}
+		if gotSceneType != "c2c_transfer" || gotSceneSubType != want.subtype || gotRefID != sessionID {
+			t.Fatalf("legacy process fields changed for %s: scene_type=%s scene_subtype=%s ref_id=%s", want.subtype, gotSceneType, gotSceneSubType, gotRefID)
+		}
+		if gotAccountingScene == "" || gotAccountingSubtype == "" {
+			t.Fatalf("missing accounting fields for %s", want.subtype)
+		}
+	}
+}
+
+func TestDirectTransferAccounting_StillReadableByOldQueries(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_third_iter_1",
+		BaseTxID:          "base_tx_third_iter_1",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
+
+	biz, err := dbGetFinanceBusiness(ctx, store, "biz_c2c_pay_sess_third_iter_1_2")
+	if err != nil {
+		t.Fatalf("old business read failed: %v", err)
+	}
+	if biz.SceneType != "c2c_transfer" || biz.SceneSubType != "chunk_pay" || biz.RefID != sessionID {
+		t.Fatalf("old business read changed: %+v", biz)
+	}
+
+	page, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
+		ProcessID:    "proc_c2c_transfer_" + sessionID,
+		SceneType:    "c2c_transfer",
+		SceneSubType: "close",
+		Limit:        10,
+	})
+	if err != nil {
+		t.Fatalf("old process read failed: %v", err)
+	}
+	if page.Total == 0 || len(page.Items) == 0 {
+		t.Fatalf("old process read returned no rows")
+	}
+	if page.Items[0].SceneType != "c2c_transfer" || page.Items[0].SceneSubType != "close" || page.Items[0].RefID != sessionID {
+		t.Fatalf("old process read changed: %+v", page.Items[0])
+	}
+}
+
+func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+	sessionID := "sess_close_seq_7"
+	dealID := "deal_close_seq_7"
+	buyerPubHex := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	arbiterPubHex := "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, directTransferPoolOpenReq{
+		SessionID:      sessionID,
+		DealID:         dealID,
+		BuyerPeerID:    buyerPubHex,
+		ArbiterPeerID:  arbiterPubHex,
+		ArbiterPubKey:  arbiterPubHex,
+		PoolAmount:     990,
+		SpendTxFee:     10,
+		Sequence:       1,
+		SellerAmount:   0,
+		BuyerAmount:    990,
+		BaseTxID:       "base_tx_close_seq_7",
+		FeeRateSatByte: 0.5,
+		LockBlocks:     6,
+	}, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
+		t.Fatalf("seed open facts failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, 7, 700, 290, baseTxHex); err != nil {
+		t.Fatalf("seed close facts failed: %v", err)
+	}
+
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 7, "close_tx_seq_7", baseTxHex, 700, 290, sellerPubHex)
+
+	wantID := directTransferPoolAllocationID(sessionID, "close", 7)
+	var businessSourceID, processSourceID string
+	if err := db.QueryRow(
+		`SELECT source_id FROM fin_business WHERE business_id=?`,
+		"biz_c2c_close_"+sessionID,
+	).Scan(&businessSourceID); err != nil {
+		t.Fatalf("query business source id failed: %v", err)
+	}
+	if err := db.QueryRow(
+		`SELECT source_id FROM fin_process_events WHERE process_id=? AND scene_subtype='close' ORDER BY id DESC LIMIT 1`,
+		"proc_c2c_transfer_"+sessionID,
+	).Scan(&processSourceID); err != nil {
+		t.Fatalf("query process source id failed: %v", err)
+	}
+	if businessSourceID != wantID {
+		t.Fatalf("unexpected business source_id: got=%s want=%s", businessSourceID, wantID)
+	}
+	if processSourceID != wantID {
+		t.Fatalf("unexpected process source_id: got=%s want=%s", processSourceID, wantID)
 	}
 }

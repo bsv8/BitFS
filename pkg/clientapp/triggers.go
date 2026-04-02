@@ -1340,6 +1340,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		ctx,
 		store,
 		session.SessionID,
+		session.Sequence,
 		finalTxID,
 		merged.Hex(),
 		session.SellerAmount,
