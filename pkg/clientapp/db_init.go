@@ -318,6 +318,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 命令日志
+		// trigger_key 设计说明：表示"这次命令执行是被哪一条上游触发链路推出来的"
+		// - orchestrator 发起时，trigger_key = orchestrator.idempotency_key
+		// - 非 orchestrator 发起时，trigger_key = ''
+		// 注意：这不是外键，不做 FK 约束；也不是 command_id，而是来源链路键
 		`CREATE TABLE IF NOT EXISTS command_journal(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
@@ -334,6 +338,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			state_before TEXT NOT NULL,
 			state_after TEXT NOT NULL,
 			duration_ms INTEGER NOT NULL,
+			trigger_key TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL,
 			result_json TEXT NOT NULL
 		)`,
@@ -741,6 +746,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_cmd_id ON command_journal(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
@@ -842,6 +848,10 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := migrateLegacyChainTables(db); err != nil {
 		return fmt.Errorf("legacy chain tables: %w", err)
 	}
+	// command_journal trigger_key 列迁移（第六次迭代新增）
+	if err := ensureCommandJournalTriggerKey(db); err != nil {
+		return fmt.Errorf("command_journal trigger_key: %w", err)
+	}
 
 	// 钱包 UTXO 相关迁移
 	// 设计说明：wallet_utxo 的老库可能还没有 allocation_class/allocation_reason，
@@ -862,6 +872,30 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
 	}
 
+	return nil
+}
+
+// ensureCommandJournalTriggerKey 确保 command_journal 的 trigger_key 列和索引都存在。
+// 设计说明：
+// - 第六次迭代新增字段，用于关联 orchestrator_logs.idempotency_key
+// - 旧库通过 ALTER TABLE 补齐，新库在基础 schema 中已包含
+// - 迁移必须幂等：列存在时也要补索引，避免老库只补了一半
+func ensureCommandJournalTriggerKey(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	cols, err := tableColumns(db, "command_journal")
+	if err != nil {
+		return fmt.Errorf("inspect command_journal: %w", err)
+	}
+	if _, ok := cols["trigger_key"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add trigger_key column: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`); err != nil {
+		return fmt.Errorf("create trigger_key index: %w", err)
+	}
 	return nil
 }
 

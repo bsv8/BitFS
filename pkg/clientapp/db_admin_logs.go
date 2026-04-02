@@ -16,6 +16,7 @@ type commandJournalFilter struct {
 	GatewayPeerID string
 	Status        string
 	CommandID     string
+	TriggerKey    string // 按来源链路键过滤，用于关联 orchestrator 日志
 	Query         string
 }
 
@@ -25,23 +26,25 @@ type commandJournalPage struct {
 }
 
 type commandJournalItem struct {
-	ID            int64           `json:"id"`
-	CreatedAtUnix int64           `json:"created_at_unix"`
-	CommandID     string          `json:"command_id"`
-	CommandType   string          `json:"command_type"`
-	GatewayPeerID string          `json:"gateway_pubkey_hex"`
-	AggregateID   string          `json:"aggregate_id"`
-	RequestedBy   string          `json:"requested_by"`
-	RequestedAt   int64           `json:"requested_at_unix"`
-	Accepted      bool            `json:"accepted"`
-	Status        string          `json:"status"`
-	ErrorCode     string          `json:"error_code"`
-	ErrorMessage  string          `json:"error_message"`
-	StateBefore   string          `json:"state_before"`
-	StateAfter    string          `json:"state_after"`
-	DurationMS    int64           `json:"duration_ms"`
-	Payload       json.RawMessage `json:"payload"`
-	Result        json.RawMessage `json:"result"`
+	ID            int64  `json:"id"`
+	CreatedAtUnix int64  `json:"created_at_unix"`
+	CommandID     string `json:"command_id"`
+	CommandType   string `json:"command_type"`
+	GatewayPeerID string `json:"gateway_pubkey_hex"`
+	AggregateID   string `json:"aggregate_id"`
+	RequestedBy   string `json:"requested_by"`
+	RequestedAt   int64  `json:"requested_at_unix"`
+	Accepted      bool   `json:"accepted"`
+	Status        string `json:"status"`
+	ErrorCode     string `json:"error_code"`
+	ErrorMessage  string `json:"error_message"`
+	StateBefore   string `json:"state_before"`
+	StateAfter    string `json:"state_after"`
+	DurationMS    int64  `json:"duration_ms"`
+	// TriggerKey 是来源链路键，不是命令主键；用于关联 orchestrator_logs.idempotency_key
+	TriggerKey string          `json:"trigger_key"`
+	Payload    json.RawMessage `json:"payload"`
+	Result     json.RawMessage `json:"result"`
 }
 
 type domainEventFilter struct {
@@ -150,6 +153,10 @@ func dbListCommandJournal(ctx context.Context, store *clientDB, f commandJournal
 			where += " AND command_id=?"
 			args = append(args, f.CommandID)
 		}
+		if f.TriggerKey != "" {
+			where += " AND trigger_key=?"
+			args = append(args, f.TriggerKey)
+		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
 			where += " AND (error_message LIKE ? OR command_id LIKE ? OR requested_by LIKE ? OR state_before LIKE ? OR state_after LIKE ?)"
@@ -160,7 +167,7 @@ func dbListCommandJournal(ctx context.Context, store *clientDB, f commandJournal
 			return commandJournalPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 			FROM command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -189,7 +196,7 @@ func dbGetCommandJournalItem(ctx context.Context, store *clientDB, id int64) (co
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (commandJournalItem, error) {
 		row := db.QueryRow(
-			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
+			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 			FROM command_journal WHERE id=?`, id,
 		)
 		return scanCommandJournalItem(row)
@@ -387,7 +394,7 @@ func scanCommandJournalItem(row scanCommandJournal) (commandJournalItem, error) 
 	var payload string
 	var result string
 	err := row.Scan(
-		&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.CommandType, &out.GatewayPeerID, &out.AggregateID, &out.RequestedBy, &out.RequestedAt, &accepted, &out.Status, &out.ErrorCode, &out.ErrorMessage, &out.StateBefore, &out.StateAfter, &out.DurationMS, &payload, &result,
+		&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.CommandType, &out.GatewayPeerID, &out.AggregateID, &out.RequestedBy, &out.RequestedAt, &accepted, &out.Status, &out.ErrorCode, &out.ErrorMessage, &out.StateBefore, &out.StateAfter, &out.DurationMS, &out.TriggerKey, &payload, &result,
 	)
 	if err != nil {
 		return commandJournalItem{}, err

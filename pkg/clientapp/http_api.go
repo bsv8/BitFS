@@ -1109,6 +1109,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	triggerKey := strings.TrimSpace(r.URL.Query().Get("trigger_key"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	page, err := dbListCommandJournal(r.Context(), httpStore(s), commandJournalFilter{
 		Limit:         limit,
@@ -1117,6 +1118,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 		GatewayPeerID: gatewayPeerID,
 		Status:        status,
 		CommandID:     commandID,
+		TriggerKey:    triggerKey,
 		Query:         q,
 	})
 	if err != nil {
@@ -1324,6 +1326,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	triggerKey := strings.TrimSpace(r.URL.Query().Get("trigger_key"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	if commandType != "" && !isAdminClientKernelCommandType(commandType) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported client kernel command_type"})
@@ -1337,6 +1340,7 @@ func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r
 		GatewayPeerID: gatewayPeerID,
 		Status:        status,
 		CommandID:     commandID,
+		TriggerKey:    triggerKey,
 		Query:         q,
 	})
 	if err != nil {

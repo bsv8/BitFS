@@ -120,7 +120,7 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 	if requestedBy == "" {
 		requestedBy = "trigger_fee_pool_ensure_active"
 	}
-	res := kernel.dispatch(ctx, clientKernelCommand{
+	res := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
 		CommandType:     clientKernelCommandFeePoolEnsureActive,
 		GatewayPeerID:   gw.ID.String(),
 		RequestedBy:     requestedBy,
@@ -130,7 +130,7 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 			"allow_when_paused":  p.AllowWhenPaused,
 			"gateway_pubkey_hex": gatewayID,
 		},
-	})
+	}))
 	return FeePoolEnsureActiveResult{
 		GatewayPeerID: gatewayID,
 		Accepted:      res.Accepted,

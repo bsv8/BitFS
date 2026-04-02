@@ -27,7 +27,11 @@ type clientKernelCommand struct {
 	RequestedBy     string
 	RequestedAt     int64
 	AllowWhenPaused bool
-	Payload         map[string]any
+	// TriggerKey 是来源链路键，不是命令自身主键
+	// - orchestrator 发起时，TriggerKey = orchestrator.idempotency_key
+	// - 非 orchestrator 发起时，TriggerKey = ''
+	TriggerKey string
+	Payload    map[string]any
 }
 
 type clientKernelResult struct {
@@ -55,7 +59,12 @@ func newClientKernel(rt *Runtime, store *clientDB) *clientKernel {
 	}
 }
 
-func normalizeClientKernelCommand(cmd clientKernelCommand) clientKernelCommand {
+// prepareClientKernelCommand 只在命令创建/入口组装时补齐默认值。
+// 设计说明：
+// - 这里负责把“一个空壳命令”变成可执行命令；
+// - 不放到 normalize 里，避免内核层悄悄兜底，掩盖调用方遗漏；
+// - 这类默认值属于入口语义，不属于状态清洗。
+func prepareClientKernelCommand(cmd clientKernelCommand) clientKernelCommand {
 	if strings.TrimSpace(cmd.CommandID) == "" {
 		cmd.CommandID = newKernelCommandID()
 	}
@@ -68,6 +77,17 @@ func normalizeClientKernelCommand(cmd clientKernelCommand) clientKernelCommand {
 	if cmd.Payload == nil {
 		cmd.Payload = map[string]any{}
 	}
+	return cmd
+}
+
+// normalizeClientKernelCommand 只做清洗，不补默认值。
+func normalizeClientKernelCommand(cmd clientKernelCommand) clientKernelCommand {
+	cmd.CommandID = strings.TrimSpace(cmd.CommandID)
+	cmd.CommandType = strings.TrimSpace(cmd.CommandType)
+	cmd.GatewayPeerID = strings.TrimSpace(cmd.GatewayPeerID)
+	cmd.RequestedBy = strings.TrimSpace(cmd.RequestedBy)
+	// TriggerKey 不做默认值生成，只做 trim，空就是空
+	cmd.TriggerKey = strings.TrimSpace(cmd.TriggerKey)
 	return cmd
 }
 
@@ -131,6 +151,7 @@ func (k *clientKernel) rejectWithAudit(cmd clientKernelCommand, gatewayPeerID, a
 			StateBefore:   strings.TrimSpace(stateBefore),
 			StateAfter:    strings.TrimSpace(stateAfter),
 			DurationMS:    0,
+			TriggerKey:    cmd.TriggerKey, // 传递链路键，reject 路径也要写
 			Payload:       cmd.Payload,
 			Result: map[string]any{
 				"accepted": false,
@@ -191,6 +212,7 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 			RequestedAt:     cmd.RequestedAt,
 			AllowWhenPaused: cmd.AllowWhenPaused,
 			Payload:         cmd.Payload,
+			TriggerKey:      cmd.TriggerKey, // 显式依赖传递：链路键从外层命令透传
 		}
 		if cmd.CommandType == clientKernelCommandFeePoolEnsureActive {
 			fpCmd.CommandType = feePoolCommandEnsureActive
@@ -252,6 +274,7 @@ func (k *clientKernel) dispatchWorkspaceSync(ctx context.Context, cmd clientKern
 		StateBefore:   "workspace_sync",
 		StateAfter:    "workspace_sync",
 		DurationMS:    time.Since(startAt).Milliseconds(),
+		TriggerKey:    cmd.TriggerKey, // 传递链路键
 		Payload:       cmd.Payload,
 		Result: map[string]any{
 			"status":     status,
@@ -308,6 +331,7 @@ func (k *clientKernel) runDirectDownloadCoreImpl(ctx context.Context, p directDo
 		StateBefore:   "direct_download",
 		StateAfter:    "direct_download",
 		DurationMS:    time.Since(startAt).Milliseconds(),
+		TriggerKey:    "", // 直接调用 kernel 的命令，非 orchestrator 发起，链路键为空
 		Payload: map[string]any{
 			"seed_hash":            strings.ToLower(strings.TrimSpace(p.SeedHash)),
 			"demand_chunk_count":   p.DemandChunkCount,
@@ -356,6 +380,7 @@ func (k *clientKernel) runTransferChunksByStrategy(ctx context.Context, p Transf
 		StateBefore:   "direct_transfer",
 		StateAfter:    "direct_transfer",
 		DurationMS:    time.Since(startAt).Milliseconds(),
+		TriggerKey:    "", // 直接调用 kernel 的命令，非 orchestrator 发起，链路键为空
 		Payload: map[string]any{
 			"demand_id":          strings.TrimSpace(p.DemandID),
 			"seed_hash":          strings.ToLower(strings.TrimSpace(p.SeedHash)),
@@ -411,6 +436,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			StateBefore:   "live_plan",
 			StateAfter:    "live_plan",
 			DurationMS:    0,
+			TriggerKey:    cmd.TriggerKey, // 传递链路键
 			Payload:       cmd.Payload,
 			Result:        map[string]any{"accepted": true, "status": "failed"},
 		})
@@ -518,6 +544,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 		StateBefore:   "live_plan",
 		StateAfter:    "live_plan",
 		DurationMS:    0,
+		TriggerKey:    cmd.TriggerKey, // 传递链路键
 		Payload:       cmd.Payload,
 		Result:        out,
 	})

@@ -42,6 +42,8 @@ type feePoolKernelCommand struct {
 	RequestedAt     int64
 	Payload         map[string]any
 	AllowWhenPaused bool
+	// TriggerKey 是来源链路键，从 clientKernelCommand.TriggerKey 透传
+	TriggerKey string
 }
 
 type feePoolKernelResult struct {
@@ -186,15 +188,6 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	if strings.TrimSpace(cmd.CommandType) == "" {
 		return feePoolKernelResult{Accepted: false, Status: "rejected", ErrorCode: "command_type_required", ErrorMessage: "command type required"}
 	}
-	if strings.TrimSpace(cmd.CommandID) == "" {
-		cmd.CommandID = newKernelCommandID()
-	}
-	if strings.TrimSpace(cmd.RequestedBy) == "" {
-		cmd.RequestedBy = "system"
-	}
-	if cmd.RequestedAt <= 0 {
-		cmd.RequestedAt = time.Now().Unix()
-	}
 	cmd.GatewayPeer = gwBusinessID
 	if strings.TrimSpace(cmd.AggregateID) == "" {
 		cmd.AggregateID = "gateway:" + gwBusinessID
@@ -270,6 +263,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			StateBefore:   result.StateBefore,
 			StateAfter:    result.StateAfter,
 			DurationMS:    time.Since(startAt).Milliseconds(),
+			TriggerKey:    cmd.TriggerKey, // 透传链路键
 			Payload:       cmd.Payload,
 			Result:        result,
 		})
@@ -640,8 +634,12 @@ type commandJournalEntry struct {
 	StateBefore   string
 	StateAfter    string
 	DurationMS    int64
-	Payload       any
-	Result        any
+	// TriggerKey 是来源链路键，不是命令自身主键
+	// - orchestrator 发起时，TriggerKey = orchestrator.idempotency_key
+	// - 非 orchestrator 发起时，TriggerKey = ''
+	TriggerKey string
+	Payload    any
+	Result     any
 }
 
 type domainEventEntry struct {

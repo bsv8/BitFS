@@ -113,14 +113,14 @@ func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePl
 		return LivePlanResult{}, fmt.Errorf("client kernel not initialized")
 	}
 	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
-	res := kernel.dispatch(ctx, clientKernelCommand{
+	res := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
 		CommandType: clientKernelCommandLivePlanPurchase,
 		RequestedBy: "trigger_live_plan",
 		Payload: map[string]any{
 			"stream_id":          streamID,
 			"have_segment_index": p.HaveSegmentIndex,
 		},
-	})
+	}))
 	if !res.Accepted || strings.TrimSpace(res.Status) != "applied" {
 		msg := strings.TrimSpace(res.ErrorMessage)
 		if msg == "" {

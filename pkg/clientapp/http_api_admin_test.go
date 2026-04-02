@@ -1072,3 +1072,213 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 		t.Fatalf("unexpected live segment output path: %s", loaded.LastOutputFilePath)
 	}
 }
+
+// TestHandleAdminCommandJournalTriggerKeyFilter 验证 trigger_key 过滤功能
+// - 列表接口按 trigger_key 过滤能查到正确记录
+// - 非匹配 trigger_key 返回空
+// - detail 返回体里要带 trigger_key
+// - 直接命令的 trigger_key 必须是空字符串
+func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
+	t.Parallel()
+
+	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer db.Close()
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("apply pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	// 插入一条 orchestrator 发起的命令（带 trigger_key）
+	dbAppendCommandJournal(nil, store, commandJournalEntry{
+		CommandID:     "orch_cmd_1",
+		CommandType:   clientKernelCommandFeePoolMaintain,
+		GatewayPeerID: "gw1",
+		AggregateID:   "gateway:gw1",
+		RequestedBy:   "orchestrator",
+		RequestedAt:   now,
+		Accepted:      true,
+		Status:        "applied",
+		TriggerKey:    "workspace_sync:12345", // 模拟 orchestrator 的 idempotency_key
+		StateBefore:   "active",
+		StateAfter:    "active",
+		Payload:       map[string]any{},
+		Result:        map[string]any{},
+	})
+
+	// 插入一条直接命令（trigger_key 为空）
+	dbAppendCommandJournal(nil, store, commandJournalEntry{
+		CommandID:     "direct_cmd_1",
+		CommandType:   clientKernelCommandDirectDownloadCore,
+		GatewayPeerID: "direct",
+		AggregateID:   "seed:abc123",
+		RequestedBy:   "client_kernel",
+		RequestedAt:   now,
+		Accepted:      true,
+		Status:        "applied",
+		TriggerKey:    "", // 直接命令，无 trigger_key
+		StateBefore:   "direct_download",
+		StateAfter:    "direct_download",
+		Payload:       map[string]any{},
+		Result:        map[string]any{},
+	})
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = t.TempDir()
+	cfg.Storage.DataDir = t.TempDir()
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = ":memory:"
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+
+	// 测试 1：按匹配的 trigger_key 过滤，应该查到 orchestrator 命令
+	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?trigger_key=workspace_sync:12345", nil)
+	rec1 := httptest.NewRecorder()
+	srv.handleAdminFeePoolCommands(rec1, req1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("list by trigger_key status mismatch: got=%d want=%d body=%s", rec1.Code, http.StatusOK, rec1.Body.String())
+	}
+	var out1 struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID         int64  `json:"id"`
+			CommandID  string `json:"command_id"`
+			TriggerKey string `json:"trigger_key"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec1.Body.Bytes(), &out1); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if out1.Total != 1 || len(out1.Items) != 1 {
+		t.Fatalf("expected 1 item with trigger_key, got total=%d items=%d", out1.Total, len(out1.Items))
+	}
+	if out1.Items[0].CommandID != "orch_cmd_1" {
+		t.Fatalf("expected command_id=orch_cmd_1, got=%s", out1.Items[0].CommandID)
+	}
+	if out1.Items[0].TriggerKey != "workspace_sync:12345" {
+		t.Fatalf("expected trigger_key=workspace_sync:12345, got=%s", out1.Items[0].TriggerKey)
+	}
+
+	// 测试 2：按不匹配的 trigger_key 过滤，应该返回空
+	req2 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?trigger_key=nonexistent_key", nil)
+	rec2 := httptest.NewRecorder()
+	srv.handleAdminFeePoolCommands(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("list by nonexistent trigger_key status mismatch: got=%d want=%d body=%s", rec2.Code, http.StatusOK, rec2.Body.String())
+	}
+	var out2 struct {
+		Total int   `json:"total"`
+		Items []any `json:"items"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &out2); err != nil {
+		t.Fatalf("decode list response: %v", err)
+	}
+	if out2.Total != 0 || len(out2.Items) != 0 {
+		t.Fatalf("expected 0 items for nonexistent trigger_key, got total=%d items=%d", out2.Total, len(out2.Items))
+	}
+
+	// 测试 3：detail 接口返回体里要带 trigger_key
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands/detail?id="+itoa64(out1.Items[0].ID), nil)
+	detailRec := httptest.NewRecorder()
+	srv.handleAdminFeePoolCommandDetail(detailRec, detailReq)
+	if detailRec.Code != http.StatusOK {
+		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
+	}
+	var detailOut struct {
+		ID         int64  `json:"id"`
+		CommandID  string `json:"command_id"`
+		TriggerKey string `json:"trigger_key"`
+	}
+	if err := json.Unmarshal(detailRec.Body.Bytes(), &detailOut); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	if detailOut.TriggerKey != "workspace_sync:12345" {
+		t.Fatalf("detail expected trigger_key=workspace_sync:12345, got=%s", detailOut.TriggerKey)
+	}
+
+	// 测试 4：client-kernel 命令列表中，直接命令的 trigger_key 必须是空字符串
+	// 先插入一条带 trigger_key 的 client-kernel 命令
+	dbAppendCommandJournal(nil, store, commandJournalEntry{
+		CommandID:     "ck_with_trigger",
+		CommandType:   clientKernelCommandWorkspaceSync,
+		GatewayPeerID: "workspace",
+		AggregateID:   "workspace:default",
+		RequestedBy:   "orchestrator",
+		RequestedAt:   now,
+		Accepted:      true,
+		Status:        "applied",
+		TriggerKey:    "orch:workspace:123",
+		StateBefore:   "workspace_sync",
+		StateAfter:    "workspace_sync",
+		Payload:       map[string]any{},
+		Result:        map[string]any{},
+	})
+
+	ckReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10", nil)
+	ckRec := httptest.NewRecorder()
+	srv.handleAdminClientKernelCommands(ckRec, ckReq)
+	if ckRec.Code != http.StatusOK {
+		t.Fatalf("client-kernel list status mismatch: got=%d want=%d body=%s", ckRec.Code, http.StatusOK, ckRec.Body.String())
+	}
+	var ckOut struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID         int64  `json:"id"`
+			CommandID  string `json:"command_id"`
+			TriggerKey string `json:"trigger_key"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(ckRec.Body.Bytes(), &ckOut); err != nil {
+		t.Fatalf("decode client-kernel list: %v", err)
+	}
+
+	// 验证 direct_cmd_1 的 trigger_key 是空字符串
+	foundDirect := false
+	for _, item := range ckOut.Items {
+		if item.CommandID == "direct_cmd_1" {
+			foundDirect = true
+			if item.TriggerKey != "" {
+				t.Fatalf("direct command trigger_key should be empty, got=%s", item.TriggerKey)
+			}
+		}
+	}
+	if !foundDirect {
+		t.Fatalf("direct_cmd_1 not found in client-kernel list")
+	}
+
+	// 测试 5：client-kernel 按 trigger_key 过滤
+	ckFilterReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?trigger_key=orch:workspace:123", nil)
+	ckFilterRec := httptest.NewRecorder()
+	srv.handleAdminClientKernelCommands(ckFilterRec, ckFilterReq)
+	if ckFilterRec.Code != http.StatusOK {
+		t.Fatalf("client-kernel filter by trigger_key status mismatch: got=%d want=%d body=%s", ckFilterRec.Code, http.StatusOK, ckFilterRec.Body.String())
+	}
+	var ckFilterOut struct {
+		Total int `json:"total"`
+		Items []struct {
+			ID         int64  `json:"id"`
+			CommandID  string `json:"command_id"`
+			TriggerKey string `json:"trigger_key"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(ckFilterRec.Body.Bytes(), &ckFilterOut); err != nil {
+		t.Fatalf("decode client-kernel filter response: %v", err)
+	}
+	if ckFilterOut.Total != 1 || len(ckFilterOut.Items) != 1 {
+		t.Fatalf("expected 1 item with trigger_key filter, got total=%d items=%d", ckFilterOut.Total, len(ckFilterOut.Items))
+	}
+	if ckFilterOut.Items[0].CommandID != "ck_with_trigger" {
+		t.Fatalf("expected command_id=ck_with_trigger, got=%s", ckFilterOut.Items[0].CommandID)
+	}
+}

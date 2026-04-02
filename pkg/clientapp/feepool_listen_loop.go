@@ -233,12 +233,12 @@ func runListenLoop(ctx context.Context, rt *Runtime, store *clientDB, gw peer.Ad
 	if kernel == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
-	openRes := kernel.dispatch(ctx, clientKernelCommand{
+	openRes := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
 		CommandType:   clientKernelCommandFeePoolEnsureActive,
 		GatewayPeerID: gw.ID.String(),
 		RequestedBy:   "listen_loop",
 		Payload:       map[string]any{"trigger": trigger},
-	})
+	}))
 	// 任务触发语义：
 	// - ensure_active 失败/暂停交给外层 reconcile 再调度；
 	// - 这里只做“一次计费 tick”，周期由统一任务框架负责。
@@ -264,14 +264,14 @@ func runListenLoop(ctx context.Context, rt *Runtime, store *clientDB, gw peer.Ad
 			"trigger":            "billing_tick",
 		}, nil
 	}
-	tickRes := kernel.dispatch(ctx, clientKernelCommand{
+	tickRes := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: gw.ID.String(),
 		RequestedBy:   "listen_loop",
 		Payload: map[string]any{
 			"trigger": "billing_tick",
 		},
-	})
+	}))
 	if tickRes.Status == "paused" {
 		return map[string]any{
 			"gateway_pubkey_hex": gw.ID.String(),

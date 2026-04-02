@@ -295,13 +295,13 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 	switch strings.TrimSpace(sig.Type) {
 	case orchestratorSignalWorkspaceTick:
 		out = append(out, &orchestratorTask{
-			Command: clientKernelCommand{
+			Command: prepareClientKernelCommand(clientKernelCommand{
 				CommandType: clientKernelCommandWorkspaceSync,
 				RequestedBy: "orchestrator",
 				Payload: map[string]any{
 					"trigger": strings.TrimSpace(anyToString(sig.Payload["trigger"])),
 				},
-			},
+			}),
 			AggregateID:    "workspace:default",
 			IdempotencyKey: fmt.Sprintf("workspace_sync:%d", now.Unix()/10),
 			NextRunAt:      now,
@@ -312,14 +312,14 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 			break
 		}
 		out = append(out, &orchestratorTask{
-			Command: clientKernelCommand{
+			Command: prepareClientKernelCommand(clientKernelCommand{
 				CommandType:   clientKernelCommandFeePoolMaintain,
 				GatewayPeerID: gwID,
 				RequestedBy:   "orchestrator",
 				Payload: map[string]any{
 					"trigger": "billing_tick",
 				},
-			},
+			}),
 			AggregateID:    "gateway:" + gwID,
 			IdempotencyKey: fmt.Sprintf("feepool_tick:%s:%d", gwID, now.Unix()/10),
 			NextRunAt:      now,
@@ -336,7 +336,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 				continue
 			}
 			out = append(out, &orchestratorTask{
-				Command: clientKernelCommand{
+				Command: prepareClientKernelCommand(clientKernelCommand{
 					CommandType:   clientKernelCommandFeePoolMaintain,
 					GatewayPeerID: gwID,
 					RequestedBy:   "orchestrator",
@@ -344,7 +344,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 						"trigger":      "chain_tip_advanced",
 						"observed_tip": anyToInt64(sig.Payload["tip_to"]),
 					},
-				},
+				}),
 				AggregateID:    "gateway:" + gwID,
 				IdempotencyKey: fmt.Sprintf("chain_tip_tick:%s:%v", gwID, sig.Payload["tip_to"]),
 				NextRunAt:      now,
@@ -451,6 +451,9 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 		GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
 		RetryCount:     task.RetryCount,
 	})
+	// 显式传递链路键：orchestrator 的 task.IdempotencyKey 就是这条触发链路的标识
+	// 重试时沿用同一个 TriggerKey，不会新造
+	task.Command.TriggerKey = strings.TrimSpace(task.IdempotencyKey)
 	res := kernel.dispatch(ctx, task.Command)
 	switch strings.TrimSpace(res.Status) {
 	case "applied":

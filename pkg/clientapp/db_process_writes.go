@@ -309,10 +309,13 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		if e.Accepted {
 			accepted = 1
 		}
+		// trigger_key 是来源链路键，不是命令主键
+		// - orchestrator 发起时，trigger_key = orchestrator.idempotency_key
+		// - 非 orchestrator 发起时，trigger_key = ''
 		_, err := db.Exec(
 			`INSERT INTO command_journal(
-				created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,payload_json,result_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
 			strings.TrimSpace(e.CommandID),
 			strings.TrimSpace(e.CommandType),
@@ -327,6 +330,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 			strings.TrimSpace(e.StateBefore),
 			strings.TrimSpace(e.StateAfter),
 			e.DurationMS,
+			strings.TrimSpace(e.TriggerKey),
 			mustJSON(e.Payload),
 			mustJSON(e.Result),
 		)
