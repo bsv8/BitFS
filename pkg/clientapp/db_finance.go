@@ -349,8 +349,10 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 	})
 }
 
-// dbListFinanceBusinessesByPoolAllocationID 按 allocation_id 查财务业务（兼容层）
-// 第二步整改：先查 pool_allocations.id，再映射到 source_type=pool_allocation + source_id=id
+// dbListFinanceBusinessesByPoolAllocationID 按 allocation_id 查财务业务
+// 设计说明：
+// - allocation_id 这里只做便利查询输入，不直接落到 source_id；
+// - 底层只按 pool_allocations.id 过滤新口径记录。
 func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeBusinessPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
 	if allocationID == "" {
@@ -371,8 +373,10 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 	})
 }
 
-// dbListFinanceProcessEventsByPoolAllocationID 按 allocation_id 查流程事件（兼容层）
-// 第二步整改：先查 pool_allocations.id，再映射到 source_type=pool_allocation + source_id=id
+// dbListFinanceProcessEventsByPoolAllocationID 按 allocation_id 查流程事件
+// 设计说明：
+// - allocation_id 这里只做便利查询输入，不直接落到 source_id；
+// - 底层只按 pool_allocations.id 过滤新口径记录。
 func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeProcessEventPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
 	if allocationID == "" {
@@ -393,9 +397,11 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 	})
 }
 
-// dbListFinanceBusinessesByTxID 按 txid 查财务业务（便利查询）
-// 第二步整改：txid -> chain_payments.id -> fin_business
-// 注意：查不到 chain_payment 时返回空结果，不模糊搜索
+// dbListFinanceBusinessesByTxID 按 txid 查财务业务
+// 设计说明：
+// - txid 这里只做便利查询输入，不直接作为 source_id；
+// - 底层只按 chain_payments.id 过滤新口径记录；
+// - 查不到 chain_payment 时返回空结果，不模糊搜索。
 func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeBusinessPage, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
@@ -415,9 +421,11 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 	})
 }
 
-// dbListFinanceProcessEventsByTxID 按 txid 查流程事件（便利查询）
-// 第二步整改：txid -> chain_payments.id -> fin_process_events
-// 注意：查不到 chain_payment 时返回空结果，不模糊搜索
+// dbListFinanceProcessEventsByTxID 按 txid 查流程事件
+// 设计说明：
+// - txid 这里只做便利查询输入，不直接作为 source_id；
+// - 底层只按 chain_payments.id 过滤新口径记录；
+// - 查不到 chain_payment 时返回空结果，不模糊搜索。
 func dbListFinanceProcessEventsByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeProcessEventPage, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {

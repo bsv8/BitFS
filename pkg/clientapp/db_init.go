@@ -1203,6 +1203,15 @@ func normalizeClientDBData(db *sql.DB) error {
 		return fmt.Errorf("finalize fin_tx_breakdown: %w", err)
 	}
 
+	// 5. 历史财务来源回填
+	// 设计说明：
+	// - 先把 pool_allocation / wallet_chain 的旧 source_id 收口到事实主键；
+	// - 这一步不补新模型，只清旧口径残留；
+	// - 出错必须立刻停，不保留半新半旧状态。
+	if err := backfillLegacyFinanceSources(db); err != nil {
+		return fmt.Errorf("legacy finance source backfill: %w", err)
+	}
+
 	return nil
 }
 

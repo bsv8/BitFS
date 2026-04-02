@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"testing"
 )
@@ -188,6 +189,225 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 	if sourceType != "pool_allocation" || sourceID != "alloc_1" || accountingScene != "c2c_transfer" || accountingSubtype != "open" {
 		t.Fatalf("unexpected fresh fin_business values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
+	}
+}
+
+func TestInitIndexDB_BackfillsLegacyPoolAllocationFinanceSources(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	sessionID := "sess_backfill_pool_1"
+	allocationID := "poolalloc_" + sessionID + "_open_1"
+	insertLegacyPoolSession(t, db, sessionID)
+	insertLegacyPoolAllocation(t, db, allocationID, sessionID, 1, "open", 1, 0, 1000, "tx_backfill_pool_1", "hex_backfill_pool_1", 1700000101)
+
+	if _, err := db.Exec(`INSERT INTO fin_business(
+		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_pool_backfill_1", "pool_allocation", allocationID, "fee_pool", "open", "client:self", "pool:peer", "posted", 1700000102, "idem_pool_backfill_1", "legacy pool allocation", "{}",
+	); err != nil {
+		t.Fatalf("seed legacy fin_business failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO fin_process_events(
+		process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"proc_pool_backfill_1", "pool_allocation", allocationID, "fee_pool", "open", "accounting", "applied", 1700000102, "idem_pool_evt_backfill_1", "legacy pool allocation event", "{}",
+	); err != nil {
+		t.Fatalf("seed legacy fin_process_events failed: %v", err)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("second initIndexDB failed: %v", err)
+	}
+
+	var expectedID int64
+	if err := db.QueryRow(`SELECT id FROM pool_allocations WHERE allocation_id=?`, allocationID).Scan(&expectedID); err != nil {
+		t.Fatalf("lookup pool allocation id failed: %v", err)
+	}
+	wantSourceID := fmt.Sprintf("%d", expectedID)
+
+	var businessSourceType, businessSourceID string
+	if err := db.QueryRow(`SELECT source_type,source_id FROM fin_business WHERE business_id=?`, "biz_pool_backfill_1").Scan(&businessSourceType, &businessSourceID); err != nil {
+		t.Fatalf("query backfilled fin_business failed: %v", err)
+	}
+	if businessSourceType != "pool_allocation" || businessSourceID != wantSourceID {
+		t.Fatalf("unexpected backfilled business source: %s %s", businessSourceType, businessSourceID)
+	}
+
+	var eventSourceType, eventSourceID string
+	if err := db.QueryRow(`SELECT source_type,source_id FROM fin_process_events WHERE process_id=?`, "proc_pool_backfill_1").Scan(&eventSourceType, &eventSourceID); err != nil {
+		t.Fatalf("query backfilled fin_process_events failed: %v", err)
+	}
+	if eventSourceType != "pool_allocation" || eventSourceID != wantSourceID {
+		t.Fatalf("unexpected backfilled process source: %s %s", eventSourceType, eventSourceID)
+	}
+}
+
+func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBreakdown(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	txid := "tx_backfill_wallet_chain_1"
+	if _, err := db.Exec(`INSERT INTO fin_business(
+		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "external:unknown", "wallet:self", "posted", 1700000201, "wallet_chain:"+txid, "legacy wallet chain business", `{"txid":"`+txid+`"}`,
+	); err != nil {
+		t.Fatalf("seed legacy wallet business failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO fin_process_events(
+		process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"proc_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "accounting", "applied", 1700000202, "wallet_chain_event:"+txid, "legacy wallet chain process", `{"txid":"`+txid+`"}`,
+	); err != nil {
+		t.Fatalf("seed legacy wallet process failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO fin_tx_breakdown(
+		business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_wallet_chain_"+txid, txid, "external_in", 0, 0, 5000, 0, 0, 0, 5000, 1700000201, "legacy wallet chain breakdown", `{"txid":"`+txid+`"}`,
+	); err != nil {
+		t.Fatalf("seed legacy wallet breakdown failed: %v", err)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("second initIndexDB failed: %v", err)
+	}
+
+	var chainPaymentID int64
+	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
+		t.Fatalf("query chain_payment failed: %v", err)
+	}
+	if chainPaymentID <= 0 {
+		t.Fatalf("unexpected chain_payment id: %d", chainPaymentID)
+	}
+
+	var paymentSubType, status string
+	var walletInput, walletOutput, netAmount int64
+	if err := db.QueryRow(
+		`SELECT payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi
+		   FROM chain_payments WHERE id=?`,
+		chainPaymentID,
+	).Scan(&paymentSubType, &status, &walletInput, &walletOutput, &netAmount); err != nil {
+		t.Fatalf("query chain_payment fields failed: %v", err)
+	}
+	if paymentSubType != "external_in" {
+		t.Fatalf("unexpected payment_subtype: %s", paymentSubType)
+	}
+	if status != "posted" {
+		t.Fatalf("unexpected status: %s", status)
+	}
+	if walletInput != 0 || walletOutput != 5000 || netAmount != 5000 {
+		t.Fatalf("unexpected chain_payment amounts: input=%d output=%d net=%d", walletInput, walletOutput, netAmount)
+	}
+
+	wantSourceID := fmt.Sprintf("%d", chainPaymentID)
+	var businessSourceType, businessSourceID string
+	if err := db.QueryRow(`SELECT source_type,source_id FROM fin_business WHERE business_id=?`, "biz_wallet_chain_"+txid).Scan(&businessSourceType, &businessSourceID); err != nil {
+		t.Fatalf("query backfilled wallet business failed: %v", err)
+	}
+	if businessSourceType != "chain_payment" || businessSourceID != wantSourceID {
+		t.Fatalf("unexpected backfilled wallet business source: %s %s", businessSourceType, businessSourceID)
+	}
+
+	var eventSourceType, eventSourceID string
+	if err := db.QueryRow(`SELECT source_type,source_id FROM fin_process_events WHERE process_id=?`, "proc_wallet_chain_"+txid).Scan(&eventSourceType, &eventSourceID); err != nil {
+		t.Fatalf("query backfilled wallet process failed: %v", err)
+	}
+	if eventSourceType != "chain_payment" || eventSourceID != wantSourceID {
+		t.Fatalf("unexpected backfilled wallet process source: %s %s", eventSourceType, eventSourceID)
+	}
+}
+
+func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBusinessPayload(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	txid := "tx_backfill_wallet_chain_payload_1"
+	if _, err := db.Exec(`INSERT INTO fin_business(
+		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_out", "wallet:self", "external:unknown", "posted", 1700000301, "wallet_chain:"+txid, "legacy wallet chain business payload", `{"wallet_input_satoshi":7200,"wallet_output_satoshi":0,"net_amount_satoshi":-7200,"payment_subtype":"external_out"}`,
+	); err != nil {
+		t.Fatalf("seed legacy wallet business failed: %v", err)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("second initIndexDB failed: %v", err)
+	}
+
+	var chainPaymentID int64
+	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
+		t.Fatalf("query chain_payment failed: %v", err)
+	}
+
+	var paymentSubType, status string
+	var walletInput, walletOutput, netAmount int64
+	if err := db.QueryRow(
+		`SELECT payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi
+		   FROM chain_payments WHERE id=?`,
+		chainPaymentID,
+	).Scan(&paymentSubType, &status, &walletInput, &walletOutput, &netAmount); err != nil {
+		t.Fatalf("query chain_payment fields failed: %v", err)
+	}
+	if paymentSubType != "external_out" {
+		t.Fatalf("unexpected payment_subtype: %s", paymentSubType)
+	}
+	if status != "posted" {
+		t.Fatalf("unexpected status: %s", status)
+	}
+	if walletInput != 7200 || walletOutput != 0 || netAmount != -7200 {
+		t.Fatalf("unexpected chain_payment amounts: input=%d output=%d net=%d", walletInput, walletOutput, netAmount)
+	}
+
+	wantSourceID := fmt.Sprintf("%d", chainPaymentID)
+	var sourceType, sourceID string
+	if err := db.QueryRow(`SELECT source_type,source_id FROM fin_business WHERE business_id=?`, "biz_wallet_chain_"+txid).Scan(&sourceType, &sourceID); err != nil {
+		t.Fatalf("query backfilled wallet business failed: %v", err)
+	}
+	if sourceType != "chain_payment" || sourceID != wantSourceID {
+		t.Fatalf("unexpected backfilled source: %s %s", sourceType, sourceID)
+	}
+}
+
+func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesConflictFails(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	txid := "tx_backfill_wallet_chain_conflict_1"
+	if _, err := db.Exec(`INSERT INTO fin_business(
+		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "external:unknown", "wallet:self", "posted", 1700000401, "wallet_chain:"+txid, "legacy wallet chain business conflict", `{"wallet_input_satoshi":0,"wallet_output_satoshi":5000,"net_amount_satoshi":5000,"payment_subtype":"external_in"}`,
+	); err != nil {
+		t.Fatalf("seed legacy wallet business failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO fin_tx_breakdown(
+		business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_wallet_chain_"+txid, txid, "external_out", 7200, 0, 0, 7200, 0, 7200, 0, 1700000401, "legacy wallet chain breakdown conflict", `{"txid":"`+txid+`"}`,
+	); err != nil {
+		t.Fatalf("seed legacy wallet breakdown failed: %v", err)
+	}
+
+	if err := initIndexDB(db); err == nil {
+		t.Fatal("expected initIndexDB to fail for conflicting wallet_chain facts")
 	}
 }
 
