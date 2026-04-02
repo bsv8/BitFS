@@ -348,21 +348,101 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 	})
 }
 
+// dbListFinanceBusinessesByPoolAllocationID 按 allocation_id 查财务业务（兼容层）
+// 第二步整改：先查 pool_allocations.id，再映射到 source_type=pool_allocation + source_id=id
 func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeBusinessPage, error) {
+	allocationID = strings.TrimSpace(allocationID)
+	if allocationID == "" {
+		return financeBusinessPage{}, fmt.Errorf("allocation_id is required")
+	}
+	// 先查 pool_allocations.id
+	poolAllocID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
+	if err != nil {
+		// 如果查不到，回退到旧逻辑（兼容历史数据）
+		return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+			Limit:      limit,
+			Offset:     offset,
+			SourceType: "pool_allocation",
+			SourceID:   allocationID,
+		})
+	}
+	// 新逻辑：使用自增 id 查询
 	return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
 		Limit:      limit,
 		Offset:     offset,
 		SourceType: "pool_allocation",
-		SourceID:   strings.TrimSpace(allocationID),
+		SourceID:   fmt.Sprintf("%d", poolAllocID),
 	})
 }
 
+// dbListFinanceProcessEventsByPoolAllocationID 按 allocation_id 查流程事件（兼容层）
+// 第二步整改：先查 pool_allocations.id，再映射到 source_type=pool_allocation + source_id=id
 func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeProcessEventPage, error) {
+	allocationID = strings.TrimSpace(allocationID)
+	if allocationID == "" {
+		return financeProcessEventPage{}, fmt.Errorf("allocation_id is required")
+	}
+	// 先查 pool_allocations.id
+	poolAllocID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
+	if err != nil {
+		// 如果查不到，回退到旧逻辑（兼容历史数据）
+		return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
+			Limit:      limit,
+			Offset:     offset,
+			SourceType: "pool_allocation",
+			SourceID:   allocationID,
+		})
+	}
+	// 新逻辑：使用自增 id 查询
 	return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:      limit,
 		Offset:     offset,
 		SourceType: "pool_allocation",
-		SourceID:   strings.TrimSpace(allocationID),
+		SourceID:   fmt.Sprintf("%d", poolAllocID),
+	})
+}
+
+// dbListFinanceBusinessesByTxID 按 txid 查财务业务（便利查询）
+// 第二步整改：txid -> chain_payments.id -> fin_business
+// 注意：查不到 chain_payment 时返回空结果，不模糊搜索
+func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeBusinessPage, error) {
+	txid = strings.ToLower(strings.TrimSpace(txid))
+	if txid == "" {
+		return financeBusinessPage{}, fmt.Errorf("txid is required")
+	}
+	// 先查 chain_payments.id，查不到返回空结果
+	chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txid)
+	if err != nil {
+		return financeBusinessPage{Items: []financeBusinessItem{}}, nil
+	}
+	// 使用 chain_payment id 查询
+	return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:      limit,
+		Offset:     offset,
+		SourceType: "chain_payment",
+		SourceID:   fmt.Sprintf("%d", chainPaymentID),
+	})
+}
+
+// dbListFinanceProcessEventsByTxID 按 txid 查流程事件（便利查询）
+// 第二步整改：txid -> chain_payments.id -> fin_process_events
+// 注意：查不到 chain_payment 时返回空结果，不模糊搜索
+func dbListFinanceProcessEventsByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeProcessEventPage, error) {
+	txid = strings.ToLower(strings.TrimSpace(txid))
+	if txid == "" {
+		return financeProcessEventPage{}, fmt.Errorf("txid is required")
+	}
+	// 先查 chain_payments.id，查不到返回空结果
+	chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txid)
+	if err != nil {
+		return financeProcessEventPage{Items: []financeProcessEventItem{}}, nil
+	}
+	// 使用 chain_payment id 查询
+	return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
+		Limit:      limit,
+		Offset:     offset,
+		SourceType: "chain_payment",
+		SourceID:   fmt.Sprintf("%d", chainPaymentID),
 	})
 }
 

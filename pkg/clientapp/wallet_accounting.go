@@ -3,6 +3,7 @@ package clientapp
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"time"
 
@@ -128,16 +129,19 @@ type directPoolOpenAccountingInput struct {
 	SellerPubHex      string
 }
 
-func recordWalletChainAccounting(db *sql.DB, txid string, category string, walletInSat int64, walletOutSat int64, netSat int64, payload map[string]any) {
+
+func recordWalletChainAccounting(db *sql.DB, txid string, category string, walletInSat int64, walletOutSat int64, netSat int64, payload map[string]any) error {
 	if db == nil {
-		return
+		return fmt.Errorf("db is nil")
 	}
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
-		return
+		return fmt.Errorf("txid is required")
 	}
-	businessID := "biz_wallet_chain_" + txid
-	sceneSubType := "internal"
+
+	// 第二步整改：先 upsert chain_payments，获取自增 id 作为财务来源，失败则阻断
+	paymentSubType := "unknown"
+	status := "confirmed"
 	fromParty := "wallet:self"
 	toParty := "wallet:self"
 	externalIn := int64(0)
@@ -148,10 +152,10 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 
 	switch strings.ToUpper(strings.TrimSpace(category)) {
 	case "CHANGE":
-		sceneSubType = "internal_change"
+		paymentSubType = "internal_change"
 		changeBack = walletOutSat
 	case "REPAYMENT":
-		sceneSubType = "external_in"
+		paymentSubType = "external_in"
 		externalIn = netSat
 		if externalIn < 0 {
 			externalIn = 0
@@ -159,7 +163,7 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		netIn = externalIn
 		fromParty = "external:unknown"
 	case "THIRD_PARTY":
-		sceneSubType = "external_out"
+		paymentSubType = "external_out"
 		counterpartyOut = walletInSat - walletOutSat
 		if counterpartyOut < 0 {
 			counterpartyOut = -netSat
@@ -170,31 +174,52 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		netOut = counterpartyOut
 		toParty = "external:unknown"
 	case "FEE_POOL":
-		sceneSubType = "fee_pool_settle"
+		paymentSubType = "fee_pool_settle"
 		changeBack = walletOutSat
 	default:
 		if netSat > 0 {
-			sceneSubType = "external_in"
+			paymentSubType = "external_in"
 			externalIn = netSat
 			netIn = netSat
 			fromParty = "external:unknown"
 		} else if netSat < 0 {
-			sceneSubType = "external_out"
+			paymentSubType = "external_out"
 			counterpartyOut = -netSat
 			netOut = -netSat
 			toParty = "external:unknown"
 		}
 	}
 
-	// 收口标记：wallet_chain 的 source_type 当前是抽象业务名
-	// 待办：当 wallet_chain 事实层设计完成后，应指向明确的事实实体
-	// source_type/source_id 原则：只允许表示"真实事实来源"，不兼任业务分类
+	// Upsert chain_payments 获取自增 id，失败则阻断
+	chainPaymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      paymentSubType,
+		Status:              status,
+		WalletInputSatoshi:  walletInSat,
+		WalletOutputSatoshi: walletOutSat,
+		NetAmountSatoshi:    netSat,
+		BlockHeight:         0,
+		OccurredAtUnix:      time.Now().Unix(),
+		FromPartyID:         fromParty,
+		ToPartyID:           toParty,
+		Payload:             payload,
+	})
+	if err != nil {
+		obs.Error("bitcast-client", "wallet_accounting_chain_payment_failed", map[string]any{"error": err.Error(), "txid": txid})
+		return fmt.Errorf("upsert chain_payment failed: %w", err)
+	}
+
+	// 第二步整改：source_type = "chain_payment", source_id = chain_payments.id
+	businessID := "biz_wallet_chain_" + txid
+	sourceType := "chain_payment"
+	sourceID := fmt.Sprintf("%d", chainPaymentID)
+
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
-		SourceType:        "wallet_chain",
-		SourceID:          txid,
+		SourceType:        sourceType,
+		SourceID:          sourceID,
 		AccountingScene:   "wallet_transfer",
-		AccountingSubType: sceneSubType,
+		AccountingSubType: paymentSubType,
 		FromPartyID:       fromParty,
 		ToPartyID:         toParty,
 		Status:            "posted",
@@ -204,12 +229,12 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		Payload:           payload,
 	}); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
-		return
+		return fmt.Errorf("append fin_business failed: %w", err)
 	}
 	if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 		BusinessID:         businessID,
 		TxID:               txid,
-		TxRole:             sceneSubType,
+		TxRole:             paymentSubType,
 		GrossInputSatoshi:  walletInSat,
 		ChangeBackSatoshi:  changeBack,
 		ExternalInSatoshi:  externalIn,
@@ -221,5 +246,7 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		Payload:            payload,
 	}); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
+		return fmt.Errorf("append fin_tx_breakdown failed: %w", err)
 	}
+	return nil
 }

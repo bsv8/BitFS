@@ -198,3 +198,39 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 	}
 	return strings.ToLower(strings.TrimSpace(parsed.TxID().String())), nil
 }
+
+// dbGetPoolAllocationIDByAllocationID 按 allocation_id 查自增 id
+// 第二步整改：财务来源从业务键切换到事实表自增主键
+func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, allocationID string) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+		var id int64
+		err := db.QueryRow(
+			`SELECT id FROM pool_allocations WHERE allocation_id=?`,
+			strings.TrimSpace(allocationID),
+		).Scan(&id)
+		if err != nil {
+			return 0, err
+		}
+		return id, nil
+	})
+}
+
+// dbGetPoolAllocationIDByAllocationIDTx 在事务内按 allocation_id 查自增 id
+// 用于财务写入时在同一事务内获取主键
+func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int64, error) {
+	if tx == nil {
+		return 0, fmt.Errorf("tx is nil")
+	}
+	var id int64
+	err := tx.QueryRow(
+		`SELECT id FROM pool_allocations WHERE allocation_id=?`,
+		strings.TrimSpace(allocationID),
+	).Scan(&id)
+	if err != nil {
+		return 0, err
+	}
+	return id, nil
+}

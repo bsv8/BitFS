@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -237,7 +238,9 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	}
 }
 
-func TestDirectTransferAccounting_WritesNewSourceFields(t *testing.T) {
+// TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证第二步整改
+// source_id 应该是 pool_allocations.id（整数），而不是 allocation_id（业务键）
+func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -261,45 +264,64 @@ func TestDirectTransferAccounting_WritesNewSourceFields(t *testing.T) {
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
+	// 获取各 allocation 的自增 id
+	openAllocID := directTransferPoolAllocationID(sessionID, "open", 1)
+	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
+	closeAllocID := directTransferPoolAllocationID(sessionID, "close", 3)
+
+	openID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, openAllocID)
+	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
+	closeID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocID)
+
 	type wantRow struct {
 		businessID        string
-		sceneType         string
-		sceneSubType      string
-		sourceID          string
+		expectedSourceID  int64 // 期望的整数主键
 		accountingScene   string
 		accountingSubType string
-		refID             string
 	}
 	checks := []wantRow{
-		{businessID: "biz_c2c_open_sess_third_iter_1", sceneType: "c2c_transfer", sceneSubType: "open", sourceID: directTransferPoolAllocationID(sessionID, "open", 1), accountingScene: "fee_pool", accountingSubType: "open", refID: sessionID},
-		{businessID: "biz_c2c_pay_sess_third_iter_1_2", sceneType: "c2c_transfer", sceneSubType: "chunk_pay", sourceID: directTransferPoolAllocationID(sessionID, "pay", 2), accountingScene: "c2c_transfer", accountingSubType: "chunk_pay", refID: sessionID},
-		{businessID: "biz_c2c_close_sess_third_iter_1", sceneType: "c2c_transfer", sceneSubType: "close", sourceID: directTransferPoolAllocationID(sessionID, "close", 3), accountingScene: "c2c_transfer", accountingSubType: "close", refID: sessionID},
+		{businessID: "biz_c2c_open_sess_third_iter_1", expectedSourceID: openID, accountingScene: "fee_pool", accountingSubType: "open"},
+		{businessID: "biz_c2c_pay_sess_third_iter_1_2", expectedSourceID: payID, accountingScene: "c2c_transfer", accountingSubType: "chunk_pay"},
+		{businessID: "biz_c2c_close_sess_third_iter_1", expectedSourceID: closeID, accountingScene: "c2c_transfer", accountingSubType: "close"},
 	}
 	for _, want := range checks {
-		var gotSourceType, gotSourceID, gotAccountingScene, gotAccountingSubtype string
-		// 第六次迭代：只查询主口径字段
+		var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
 		if err := db.QueryRow(
-			`SELECT source_type,source_id,accounting_scene,accounting_subtype
-			   FROM fin_business WHERE business_id=?`,
+			`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM fin_business WHERE business_id=?`,
 			want.businessID,
-		).Scan(&gotSourceType, &gotSourceID, &gotAccountingScene, &gotAccountingSubtype); err != nil {
+		).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
 			t.Fatalf("query fin_business %s failed: %v", want.businessID, err)
 		}
-		if gotSourceType != "pool_allocation" || gotSourceID != want.sourceID || gotAccountingScene != want.accountingScene || gotAccountingSubtype != want.accountingSubType {
-			t.Fatalf("unexpected fin_business binding for %s: source_type=%s source_id=%s accounting_scene=%s accounting_subtype=%s", want.businessID, gotSourceType, gotSourceID, gotAccountingScene, gotAccountingSubtype)
+		if gotSourceType != "pool_allocation" {
+			t.Fatalf("unexpected source_type for %s: got=%s want=pool_allocation", want.businessID, gotSourceType)
+		}
+		// 第二步整改验证：source_id 应该是整数主键的字符串形式
+		wantSourceIDStr := fmt.Sprintf("%d", want.expectedSourceID)
+		if gotSourceIDStr != wantSourceIDStr {
+			// 兜底检查：如果 lookup 失败，可能还是旧的 allocation_id
+			if gotSourceIDStr == openAllocID || gotSourceIDStr == payAllocID || gotSourceIDStr == closeAllocID {
+				t.Fatalf("source_id is still allocation_id for %s: got=%s (expected integer id)", want.businessID, gotSourceIDStr)
+			}
+			t.Fatalf("unexpected source_id for %s: got=%s want=%s", want.businessID, gotSourceIDStr, wantSourceIDStr)
+		}
+		if gotAccountingScene != want.accountingScene || gotAccountingSubtype != want.accountingSubType {
+			t.Fatalf("unexpected accounting fields for %s: scene=%s/%s subtype=%s/%s", want.businessID, gotAccountingScene, want.accountingScene, gotAccountingSubtype, want.accountingSubType)
 		}
 
-		var count int64
-		if err := db.QueryRow(`SELECT COUNT(1) FROM pool_allocations WHERE allocation_id=?`, want.sourceID).Scan(&count); err != nil {
-			t.Fatalf("query pool_allocations by allocation_id failed: %v", err)
+		// 验证 payload 中保留了 allocation_id
+		var payload string
+		if err := db.QueryRow(`SELECT payload_json FROM fin_business WHERE business_id=?`, want.businessID).Scan(&payload); err != nil {
+			t.Fatalf("query payload failed: %v", err)
 		}
-		if count != 1 {
-			t.Fatalf("allocation not found for %s: count=%d", want.businessID, count)
+		if !strings.Contains(payload, "allocation_id") {
+			t.Fatalf("payload missing allocation_id for %s: %s", want.businessID, payload)
 		}
 	}
 }
 
-func TestDirectTransferAccounting_ProcessEventsTraceSameAllocation(t *testing.T) {
+// TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID 验证第二步整改
+// process events 的 source_id 应该是 pool_allocations.id（整数）
+func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -323,27 +345,42 @@ func TestDirectTransferAccounting_ProcessEventsTraceSameAllocation(t *testing.T)
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
+	// 获取各 allocation 的自增 id
+	openAllocID := directTransferPoolAllocationID(sessionID, "open", 1)
+	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
+	closeAllocID := directTransferPoolAllocationID(sessionID, "close", 3)
+
+	openID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, openAllocID)
+	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
+	closeID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocID)
+
 	type wantRow struct {
-		subtype string
-		source  string
+		subtype        string
+		expectedSource int64
 	}
 	checks := []wantRow{
-		{subtype: "open", source: directTransferPoolAllocationID(sessionID, "open", 1)},
-		{subtype: "chunk_pay", source: directTransferPoolAllocationID(sessionID, "pay", 2)},
-		{subtype: "close", source: directTransferPoolAllocationID(sessionID, "close", 3)},
+		{subtype: "open", expectedSource: openID},
+		{subtype: "chunk_pay", expectedSource: payID},
+		{subtype: "close", expectedSource: closeID},
 	}
 	for _, want := range checks {
-		var gotSourceType, gotSourceID, gotAccountingScene, gotAccountingSubtype string
-		// 第六次迭代：只查询主口径字段
+		var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
 		if err := db.QueryRow(
-			`SELECT source_type,source_id,accounting_scene,accounting_subtype
-			   FROM fin_process_events WHERE process_id=? AND accounting_subtype=? ORDER BY id DESC LIMIT 1`,
+			`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM fin_process_events WHERE process_id=? AND accounting_subtype=? ORDER BY id DESC LIMIT 1`,
 			"proc_c2c_transfer_"+sessionID, want.subtype,
-		).Scan(&gotSourceType, &gotSourceID, &gotAccountingScene, &gotAccountingSubtype); err != nil {
+		).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
 			t.Fatalf("query fin_process_events %s failed: %v", want.subtype, err)
 		}
-		if gotSourceType != "pool_allocation" || gotSourceID != want.source {
-			t.Fatalf("unexpected process event binding for %s: source_type=%s source_id=%s", want.subtype, gotSourceType, gotSourceID)
+		if gotSourceType != "pool_allocation" {
+			t.Fatalf("unexpected source_type for %s: got=%s want=pool_allocation", want.subtype, gotSourceType)
+		}
+		// 第二步整改验证：source_id 应该是整数主键
+		wantSourceIDStr := fmt.Sprintf("%d", want.expectedSource)
+		if gotSourceIDStr != wantSourceIDStr {
+			if gotSourceIDStr == openAllocID || gotSourceIDStr == payAllocID || gotSourceIDStr == closeAllocID {
+				t.Fatalf("source_id is still allocation_id for %s: got=%s (expected integer id)", want.subtype, gotSourceIDStr)
+			}
+			t.Fatalf("unexpected source_id for %s: got=%s want=%s", want.subtype, gotSourceIDStr, wantSourceIDStr)
 		}
 		if gotAccountingScene == "" || gotAccountingSubtype == "" {
 			t.Fatalf("missing accounting fields for %s", want.subtype)
@@ -439,7 +476,11 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 7, "close_tx_seq_7", baseTxHex, 700, 290, sellerPubHex)
 
-	wantID := directTransferPoolAllocationID(sessionID, "close", 7)
+	// 第二步整改：验证 source_id 是 pool_allocations.id（整数主键的字符串形式）
+	wantAllocID := directTransferPoolAllocationID(sessionID, "close", 7)
+	wantID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, wantAllocID)
+	wantIDStr := fmt.Sprintf("%d", wantID)
+
 	var businessSourceID, processSourceID string
 	if err := db.QueryRow(
 		`SELECT source_id FROM fin_business WHERE business_id=?`,
@@ -453,11 +494,19 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 	).Scan(&processSourceID); err != nil {
 		t.Fatalf("query process source id failed: %v", err)
 	}
-	if businessSourceID != wantID {
-		t.Fatalf("unexpected business source_id: got=%s want=%s", businessSourceID, wantID)
+	// 第二步整改验证：source_id 应该是整数主键
+	if businessSourceID != wantIDStr {
+		// 如果还是 allocation_id，说明整改未生效
+		if businessSourceID == wantAllocID {
+			t.Fatalf("business source_id is still allocation_id (old logic): got=%s want=%s", businessSourceID, wantIDStr)
+		}
+		t.Fatalf("unexpected business source_id: got=%s want=%s", businessSourceID, wantIDStr)
 	}
-	if processSourceID != wantID {
-		t.Fatalf("unexpected process source_id: got=%s want=%s", processSourceID, wantID)
+	if processSourceID != wantIDStr {
+		if processSourceID == wantAllocID {
+			t.Fatalf("process source_id is still allocation_id (old logic): got=%s want=%s", processSourceID, wantIDStr)
+		}
+		t.Fatalf("unexpected process source_id: got=%s want=%s", processSourceID, wantIDStr)
 	}
 }
 
@@ -629,7 +678,8 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 
 	ctx := context.Background()
 	store := newClientDB(db, nil)
-	sessionID := "sess_idem_real"
+	// 复用 seedDirectTransferPoolFacts 创建的 sessionID，避免重复创建 pool_allocation
+	sessionID := "sess_third_iter_1"
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
@@ -703,5 +753,167 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 	}
 	if txRole != "internal_change" {
 		t.Fatalf("expected tx_role=internal_change, got=%s", txRole)
+	}
+}
+
+// TestDirectTransferAccounting_CompatibilityQueryByAllocationID 验证兼容层
+// 使用 allocation_id 查询能正确映射到新的 source_id
+func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_third_iter_1",
+		BaseTxID:          "base_tx_third_iter_1",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+
+	// 使用 allocation_id 查询（兼容层）
+	openAllocID := directTransferPoolAllocationID(sessionID, "open", 1)
+
+	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, openAllocID, 10, 0)
+	if err != nil {
+		t.Fatalf("compatibility query failed: %v", err)
+	}
+	if bizPage.Total == 0 {
+		t.Fatal("compatibility query returned no results")
+	}
+
+	// 验证返回的记录 source_type 和 source_id 正确
+	for _, item := range bizPage.Items {
+		if item.SourceType != "pool_allocation" {
+			t.Fatalf("unexpected source_type: got=%s want=pool_allocation", item.SourceType)
+		}
+		// source_id 应该是整数（字符串形式）
+		if item.SourceID == "" {
+			t.Fatal("source_id should not be empty")
+		}
+	}
+
+	// 同样测试 process events
+	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, openAllocID, 10, 0)
+	if err != nil {
+		t.Fatalf("compatibility query for process events failed: %v", err)
+	}
+	if procPage.Total == 0 {
+		t.Fatal("compatibility query for process events returned no results")
+	}
+}
+
+// TestRecordWalletChainAccounting_UsesChainPaymentID 验证第二步整改
+// wallet_chain 财务记录的 source_id 应该是 chain_payments.id
+func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
+	t.Parallel()
+	db := newWalletAccountingTestDB(t)
+	txid := "tx_chain_payment_id_test"
+	recordWalletChainAccounting(db, txid, "REPAYMENT", 0, 5000, 5000, map[string]any{"test": true})
+
+	// 验证 chain_payments 记录已创建
+	var chainPaymentID int64
+	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
+		t.Fatalf("chain_payment not found: %v", err)
+	}
+	if chainPaymentID <= 0 {
+		t.Fatalf("expected positive chain_payment id, got %d", chainPaymentID)
+	}
+
+	// 验证 fin_business 的 source_id 是 chain_payments.id
+	var sourceType, sourceID string
+	if err := db.QueryRow(
+		`SELECT source_type, source_id FROM fin_business WHERE business_id=?`,
+		"biz_wallet_chain_"+txid,
+	).Scan(&sourceType, &sourceID); err != nil {
+		t.Fatalf("fin_business not found: %v", err)
+	}
+
+	if sourceType != "chain_payment" {
+		t.Fatalf("unexpected source_type: got=%s want=chain_payment", sourceType)
+	}
+	expectedSourceID := fmt.Sprintf("%d", chainPaymentID)
+	if sourceID != expectedSourceID {
+		// 如果 source_id 是 txid，说明还是旧逻辑
+		if sourceID == txid {
+			t.Fatalf("source_id is still txid (old logic), expected chain_payment id: %s", expectedSourceID)
+		}
+		t.Fatalf("unexpected source_id: got=%s want=%s", sourceID, expectedSourceID)
+	}
+}
+
+// TestRecordWalletChainAccounting_ChainPaymentUTXOLinks 验证 wallet_chain 链路补 utxo links
+func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
+	t.Parallel()
+	db := newWalletAccountingTestDB(t)
+
+	// 需要先创建 wallet_utxo 记录（因为外键约束）
+	txid := "tx_chain_utxo_link_test"
+	utxoID := txid + ":0"
+	_, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, "wallet1", "addr1", txid, 0, 3000, "confirmed", "plain_bsv", "",
+		txid, "", 1700000001, 1700000001, 0,
+	)
+	if err != nil {
+		t.Fatalf("insert wallet_utxo failed: %v", err)
+	}
+
+	// 手动测试 chain_payment 和 utxo link 的创建
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	paymentID, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      "external_in",
+		Status:              "confirmed",
+		WalletInputSatoshi:  0,
+		WalletOutputSatoshi: 3000,
+		NetAmountSatoshi:    3000,
+		BlockHeight:         100,
+		OccurredAtUnix:      1700000001,
+		FromPartyID:         "external:unknown",
+		ToPartyID:           "wallet:self",
+		Payload:             map[string]any{"test": true},
+	})
+	if err != nil {
+		t.Fatalf("upsert chain_payment failed: %v", err)
+	}
+
+	// 追加 utxo link
+	if err := dbAppendChainPaymentUTXOLinkIfAbsent(ctx, store, chainPaymentUTXOLinkEntry{
+		ChainPaymentID: paymentID,
+		UTXOID:         utxoID,
+		IOSide:         "output",
+		UTXORole:       "external_in",
+		AmountSatoshi:  3000,
+		CreatedAtUnix:  1700000001,
+		Note:           "test link",
+		Payload:        map[string]any{"idx": 0},
+	}); err != nil {
+		t.Fatalf("append utxo link failed: %v", err)
+	}
+
+	// 验证 link 已创建
+	var count int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=?`,
+		paymentID, utxoID,
+	).Scan(&count); err != nil {
+		t.Fatalf("count check failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected 1 utxo link, got %d", count)
 	}
 }
