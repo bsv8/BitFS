@@ -9,22 +9,33 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 )
 
+// finBusinessEntry 业务记录写入条目
+// 设计说明：
+//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubType - 写入时必须填充
+//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 同时写入以保持兼容，但新查询优先使用主口径
+//   - 这是写入层兼容策略，第六次迭代后考虑移除兼容字段
+
 type finBusinessEntry struct {
-	BusinessID        string
-	SceneType         string
-	SceneSubType      string
+	BusinessID string
+
+	// 主口径 - 新模型字段，必须填充
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubType string
-	FromPartyID       string
-	ToPartyID         string
-	RefID             string
-	Status            string
-	OccurredAtUnix    int64
-	IdempotencyKey    string
-	Note              string
-	Payload           any
+
+	// 兼容口径 - 旧字段，同时写入保持兼容，但新代码查询优先用主口径
+	SceneType    string // Deprecated: 写入时同时填充，查询时用 AccountingScene
+	SceneSubType string // Deprecated: 写入时同时填充，查询时用 AccountingSubType
+	RefID        string // Deprecated: 写入时同时填充，查询时用 SourceID
+
+	FromPartyID    string
+	ToPartyID      string
+	Status         string
+	OccurredAtUnix int64
+	IdempotencyKey string
+	Note           string
+	Payload        any
 }
 
 type finTxBreakdownEntry struct {
@@ -63,21 +74,32 @@ type finTxUTXOLinkEntry struct {
 	Payload       any
 }
 
+// finProcessEventEntry 流程事件写入条目
+// 设计说明：
+//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubType - 写入时必须填充
+//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 同时写入以保持兼容
+//   - 这是写入层兼容策略，第六次迭代后考虑移除兼容字段
+
 type finProcessEventEntry struct {
-	ProcessID         string
-	SceneType         string
-	SceneSubType      string
+	ProcessID string
+
+	// 主口径 - 新模型字段，必须填充
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubType string
-	EventType         string
-	Status            string
-	RefID             string
-	OccurredAtUnix    int64
-	IdempotencyKey    string
-	Note              string
-	Payload           any
+
+	// 兼容口径 - 旧字段，同时写入保持兼容
+	SceneType    string // Deprecated: 写入时同时填充，查询时用 AccountingScene
+	SceneSubType string // Deprecated: 写入时同时填充，查询时用 AccountingSubType
+	RefID        string // Deprecated: 写入时同时填充，查询时用 SourceID
+
+	EventType      string
+	Status         string
+	OccurredAtUnix int64
+	IdempotencyKey string
+	Note           string
+	Payload        any
 }
 
 func mustJSONString(v any) string {

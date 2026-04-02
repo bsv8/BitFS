@@ -8,21 +8,31 @@ import (
 	"strings"
 )
 
+// financeBusinessFilter 业务查询过滤条件
+// 设计说明：
+//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
+//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 仅用于兼容旧数据，新代码不应依赖
+//   - 新功能开发请优先使用主口径字段
 type financeBusinessFilter struct {
-	Limit             int
-	Offset            int
+	Limit  int
+	Offset int
+
+	// 主口径 - 新模型优先使用
 	BusinessID        string
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubtype string
-	SceneType         string
-	SceneSubType      string
-	Status            string
-	FromPartyID       string
-	ToPartyID         string
-	RefID             string
-	Query             string
+
+	// 兼容口径 - 旧字段，仅兼容用，勿在新逻辑中继续使用
+	SceneType    string // Deprecated: 兼容旧数据，新代码用 AccountingScene
+	SceneSubType string // Deprecated: 兼容旧数据，新代码用 AccountingSubtype
+	RefID        string // Deprecated: 兼容旧数据，新代码用 SourceID
+
+	Status      string
+	FromPartyID string
+	ToPartyID   string
+	Query       string
 }
 
 type financeBusinessPage struct {
@@ -30,38 +40,56 @@ type financeBusinessPage struct {
 	Items []financeBusinessItem
 }
 
+// financeBusinessItem 业务记录项
+// 字段顺序：主口径字段在前，兼容口径字段在后
+// JSON 顺序保持兼容，但内部使用优先使用主口径
 type financeBusinessItem struct {
-	BusinessID        string          `json:"business_id"`
-	SceneType         string          `json:"scene_type"`
-	SceneSubType      string          `json:"scene_subtype"`
-	SourceType        string          `json:"source_type"`
-	SourceID          string          `json:"source_id"`
-	AccountingScene   string          `json:"accounting_scene"`
-	AccountingSubtype string          `json:"accounting_subtype"`
-	FromPartyID       string          `json:"from_party_id"`
-	ToPartyID         string          `json:"to_party_id"`
-	RefID             string          `json:"ref_id"`
-	Status            string          `json:"status"`
-	OccurredAtUnix    int64           `json:"occurred_at_unix"`
-	IdempotencyKey    string          `json:"idempotency_key"`
-	Note              string          `json:"note"`
-	Payload           json.RawMessage `json:"payload"`
+	BusinessID string `json:"business_id"`
+
+	// 主口径 - 新模型字段，优先使用
+	SourceType        string `json:"source_type"`
+	SourceID          string `json:"source_id"`
+	AccountingScene   string `json:"accounting_scene"`
+	AccountingSubtype string `json:"accounting_subtype"`
+
+	// 兼容口径 - 旧字段，仅兼容展示用
+	SceneType    string `json:"scene_type"`    // Deprecated: 兼容旧数据
+	SceneSubType string `json:"scene_subtype"` // Deprecated: 兼容旧数据
+	RefID        string `json:"ref_id"`        // Deprecated: 兼容旧数据
+
+	FromPartyID    string          `json:"from_party_id"`
+	ToPartyID      string          `json:"to_party_id"`
+	Status         string          `json:"status"`
+	OccurredAtUnix int64           `json:"occurred_at_unix"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Note           string          `json:"note"`
+	Payload        json.RawMessage `json:"payload"`
 }
 
+// financeProcessEventFilter 流程事件查询过滤条件
+// 设计说明：
+//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
+//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 仅用于兼容旧数据
+//   - 新功能开发请优先使用主口径字段
 type financeProcessEventFilter struct {
-	Limit             int
-	Offset            int
+	Limit  int
+	Offset int
+
+	// 主口径 - 新模型优先使用
 	ProcessID         string
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubtype string
-	SceneType         string
-	SceneSubType      string
-	EventType         string
-	Status            string
-	RefID             string
-	Query             string
+
+	// 兼容口径 - 旧字段，仅兼容用
+	SceneType    string // Deprecated: 兼容旧数据，新代码用 AccountingScene
+	SceneSubType string // Deprecated: 兼容旧数据，新代码用 AccountingSubtype
+	RefID        string // Deprecated: 兼容旧数据，新代码用 SourceID
+
+	EventType string
+	Status    string
+	Query     string
 }
 
 type financeProcessEventPage struct {
@@ -69,22 +97,29 @@ type financeProcessEventPage struct {
 	Items []financeProcessEventItem
 }
 
+// financeProcessEventItem 流程事件记录项
+// 字段顺序：主口径字段在前，兼容口径字段在后
 type financeProcessEventItem struct {
-	ID                int64           `json:"id"`
-	ProcessID         string          `json:"process_id"`
-	SceneType         string          `json:"scene_type"`
-	SceneSubType      string          `json:"scene_subtype"`
-	SourceType        string          `json:"source_type"`
-	SourceID          string          `json:"source_id"`
-	AccountingScene   string          `json:"accounting_scene"`
-	AccountingSubtype string          `json:"accounting_subtype"`
-	EventType         string          `json:"event_type"`
-	Status            string          `json:"status"`
-	RefID             string          `json:"ref_id"`
-	OccurredAtUnix    int64           `json:"occurred_at_unix"`
-	IdempotencyKey    string          `json:"idempotency_key"`
-	Note              string          `json:"note"`
-	Payload           json.RawMessage `json:"payload"`
+	ID        int64  `json:"id"`
+	ProcessID string `json:"process_id"`
+
+	// 主口径 - 新模型字段，优先使用
+	SourceType        string `json:"source_type"`
+	SourceID          string `json:"source_id"`
+	AccountingScene   string `json:"accounting_scene"`
+	AccountingSubtype string `json:"accounting_subtype"`
+
+	// 兼容口径 - 旧字段，仅兼容展示用
+	SceneType    string `json:"scene_type"`    // Deprecated: 兼容旧数据
+	SceneSubType string `json:"scene_subtype"` // Deprecated: 兼容旧数据
+	RefID        string `json:"ref_id"`        // Deprecated: 兼容旧数据
+
+	EventType      string          `json:"event_type"`
+	Status         string          `json:"status"`
+	OccurredAtUnix int64           `json:"occurred_at_unix"`
+	IdempotencyKey string          `json:"idempotency_key"`
+	Note           string          `json:"note"`
+	Payload        json.RawMessage `json:"payload"`
 }
 
 type financeBreakdownFilter struct {
