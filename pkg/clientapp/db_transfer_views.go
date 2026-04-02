@@ -145,6 +145,7 @@ type gatewayEventFilter struct {
 	Limit         int
 	Offset        int
 	GatewayPeerID string
+	CommandID     string
 	Action        string
 }
 
@@ -157,6 +158,7 @@ type gatewayEventItem struct {
 	ID            int64           `json:"id"`
 	CreatedAtUnix int64           `json:"created_at_unix"`
 	GatewayPeerID string          `json:"gateway_pubkey_hex"`
+	CommandID     string          `json:"command_id"`
 	Action        string          `json:"action"`
 	MsgID         string          `json:"msg_id,omitempty"`
 	SequenceNum   uint32          `json:"sequence_num,omitempty"`
@@ -493,6 +495,10 @@ func dbListGatewayEvents(ctx context.Context, store *clientDB, f gatewayEventFil
 			where += " AND gateway_pubkey_hex=?"
 			args = append(args, f.GatewayPeerID)
 		}
+		if f.CommandID != "" {
+			where += " AND command_id=?"
+			args = append(args, f.CommandID)
+		}
 		if f.Action != "" {
 			where += " AND action=?"
 			args = append(args, f.Action)
@@ -501,7 +507,7 @@ func dbListGatewayEvents(ctx context.Context, store *clientDB, f gatewayEventFil
 		if err := db.QueryRow("SELECT COUNT(1) FROM gateway_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return gatewayEventPage{}, err
 		}
-		rows, err := db.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return gatewayEventPage{}, err
 		}
@@ -526,7 +532,7 @@ func dbGetGatewayEventItem(ctx context.Context, store *clientDB, id int64) (gate
 		return gatewayEventItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (gatewayEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE id=?`, id)
 		return scanGatewayEventItem(row)
 	})
 }
@@ -582,7 +588,7 @@ type scanGatewayEvent interface {
 func scanGatewayEventItem(row scanGatewayEvent) (gatewayEventItem, error) {
 	var out gatewayEventItem
 	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.Action, &out.MsgID, &out.SequenceNum, &out.PoolID, &out.AmountSatoshi, &payload)
+	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.CommandID, &out.Action, &out.MsgID, &out.SequenceNum, &out.PoolID, &out.AmountSatoshi, &payload)
 	if err != nil {
 		return gatewayEventItem{}, err
 	}

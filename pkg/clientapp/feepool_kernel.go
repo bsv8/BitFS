@@ -353,7 +353,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			return persist(st)
 		}
 
-		sess, err := ensureActiveFeePool(ctx, k.rt, k.store, gw, k.rt.runIn.Listen.AutoRenewRounds, info)
+		sess, err := ensureActiveFeePool(ctx, k.rt, k.store, gw, k.rt.runIn.Listen.AutoRenewRounds, info, cmd.CommandID)
 		if err != nil {
 			if isWalletInsufficientForListen(err) {
 				need, have := parseNeedHave(err.Error())
@@ -419,7 +419,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			addEvent("fee_pool_cycle_skipped_missing_session", map[string]any{}, beforeState.State, st.State)
 			return persist(st)
 		}
-		payErr := payOneListenCycle(ctx, k.rt, k.store, gw.ID, sess)
+		payErr := payOneListenCycle(ctx, k.rt, k.store, gw.ID, sess, cmd.CommandID)
 		if payErr == nil {
 			st.State = feePoolKernelStateActive
 			st.LastError = ""
@@ -499,7 +499,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			addEvent("fee_pool_paused_insufficient", map[string]any{"need": need, "have": have, "stage": "rotate_precheck"}, beforeState.State, st.State)
 			return persist(st)
 		}
-		next, rotateErr := rotateListenFeePool(ctx, k.rt, k.store, gw, sess, k.rt.runIn.Listen.AutoRenewRounds, info)
+		next, rotateErr := rotateListenFeePool(ctx, k.rt, k.store, gw, sess, k.rt.runIn.Listen.AutoRenewRounds, info, cmd.CommandID)
 		if rotateErr != nil {
 			if strings.Contains(strings.ToLower(rotateErr.Error()), strings.ToLower(errListenFeePoolStop.Error())) {
 				need, have := parseNeedHave(rotateErr.Error())

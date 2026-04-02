@@ -238,11 +238,17 @@ func dbAppendWalletLedgerEntry(ctx context.Context, store *clientDB, e walletLed
 	})
 }
 
-func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEntry) {
+func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEntry) error {
 	if store == nil {
-		return
+		return fmt.Errorf("client db is nil")
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	commandID := strings.TrimSpace(e.CommandID)
+	if commandID == "" {
+		err := fmt.Errorf("command_id is required")
+		obs.Error("bitcast-client", "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
+		return err
+	}
+	err := store.Do(ctx, func(db *sql.DB) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -250,9 +256,10 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 			e.Action = "unknown"
 		}
 		_, err := db.Exec(
-			`INSERT INTO gateway_events(created_at_unix,gateway_pubkey_hex,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
+			`INSERT INTO gateway_events(created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
 			e.GatewayPeerID,
+			commandID,
 			e.Action,
 			e.MsgID,
 			e.SequenceNum,
@@ -261,10 +268,11 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 			mustJSONString(e.Payload),
 		)
 		if err != nil {
-			obs.Error("bitcast-client", "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action})
+			obs.Error("bitcast-client", "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action, "command_id": commandID})
 		}
 		return nil
 	})
+	return err
 }
 
 func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestratorLogEntry) {

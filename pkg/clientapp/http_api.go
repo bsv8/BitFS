@@ -42,6 +42,7 @@ type txHistoryEntry struct {
 
 type gatewayEventEntry struct {
 	GatewayPeerID string
+	CommandID     string
 	Action        string
 	MsgID         string
 	SequenceNum   uint32
@@ -1057,11 +1058,13 @@ func (s *httpAPIServer) handleGatewayEvents(w http.ResponseWriter, r *http.Reque
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	action := strings.TrimSpace(r.URL.Query().Get("action"))
 	page, err := dbListGatewayEvents(r.Context(), httpStore(s), gatewayEventFilter{
 		Limit:         limit,
 		Offset:        offset,
 		GatewayPeerID: gatewayPeerID,
+		CommandID:     commandID,
 		Action:        action,
 	})
 	if err != nil {

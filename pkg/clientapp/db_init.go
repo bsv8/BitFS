@@ -44,6 +44,9 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if err := migrateClientDBLegacySchema(db); err != nil {
 		return fmt.Errorf("legacy migration: %w", err)
 	}
+	if err := ensureGatewayEventsCommandID(db); err != nil {
+		return fmt.Errorf("gateway_events command_id: %w", err)
+	}
 
 	// 3. 数据规范化（历史脏数据口径纠偏）
 	if err := normalizeClientDBData(db); err != nil {
@@ -149,6 +152,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
+			command_id TEXT,
 			action TEXT NOT NULL,
 			msg_id TEXT NOT NULL,
 			sequence_num INTEGER NOT NULL,
@@ -741,6 +745,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_purchases_status_created ON purchases(status, created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_purchases_history_lookup ON purchases(demand_id, chunk_index, seller_pub_hex, arbiter_pub_hex, created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_gateway_events_cmd_id ON gateway_events(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_created_at ON wallet_fund_flows(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
@@ -895,6 +900,30 @@ func ensureCommandJournalTriggerKey(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`); err != nil {
 		return fmt.Errorf("create trigger_key index: %w", err)
+	}
+	return nil
+}
+
+// ensureGatewayEventsCommandID 确保 gateway_events 具备 command_id 归属字段和索引。
+// 设计说明：
+// - 第一阶段先平滑迁移，不在数据库层强加 NOT NULL；
+// - 新写入必须显式带 command_id，老数据允许暂空；
+// - 这一步只补结构，不清理历史内容。
+func ensureGatewayEventsCommandID(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	cols, err := tableColumns(db, "gateway_events")
+	if err != nil {
+		return fmt.Errorf("inspect gateway_events: %w", err)
+	}
+	if _, ok := cols["command_id"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE gateway_events ADD COLUMN command_id TEXT`); err != nil {
+			return fmt.Errorf("add command_id column: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_gateway_events_cmd_id ON gateway_events(command_id)`); err != nil {
+		return fmt.Errorf("create command_id index: %w", err)
 	}
 	return nil
 }

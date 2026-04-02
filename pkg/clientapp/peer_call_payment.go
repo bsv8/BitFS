@@ -459,7 +459,7 @@ func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, s
 			info.FeeRateSatPerByte = float64(option.FeeRateSatPerByteMilli) / 1000
 		}
 	}
-	_, err = createFeePoolSessionWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, gwSec(rt.rpcTrace))
+	_, err = createFeePoolSessionWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, gwSec(rt.rpcTrace), "")
 	if err != nil {
 		return info, gw, err
 	}
