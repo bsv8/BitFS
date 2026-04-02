@@ -483,8 +483,8 @@ func dbAppendFinBusiness(db *sql.DB, e finBusinessEntry) error {
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := db.Exec(
-		`INSERT INTO fin_business(business_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fin_business(business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
@@ -495,15 +495,12 @@ func dbAppendFinBusiness(db *sql.DB, e finBusinessEntry) error {
 			accounting_scene=excluded.accounting_scene,
 			accounting_subtype=excluded.accounting_subtype`,
 		e.BusinessID,
-		strings.TrimSpace(e.SceneType),
-		strings.TrimSpace(e.SceneSubType),
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
 		strings.TrimSpace(e.AccountingScene),
 		strings.TrimSpace(e.AccountingSubType),
 		strings.TrimSpace(e.FromPartyID),
 		strings.TrimSpace(e.ToPartyID),
-		strings.TrimSpace(e.RefID),
 		strings.TrimSpace(e.Status),
 		e.OccurredAtUnix,
 		e.IdempotencyKey,
@@ -664,8 +661,8 @@ func dbAppendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
 		e.IdempotencyKey = e.ProcessID + ":" + strings.TrimSpace(e.EventType)
 	}
 	_, err := db.Exec(
-		`INSERT INTO fin_process_events(process_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fin_process_events(process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
@@ -676,15 +673,12 @@ func dbAppendFinProcessEvent(db *sql.DB, e finProcessEventEntry) error {
 			accounting_scene=excluded.accounting_scene,
 			accounting_subtype=excluded.accounting_subtype`,
 		e.ProcessID,
-		strings.TrimSpace(e.SceneType),
-		strings.TrimSpace(e.SceneSubType),
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
 		strings.TrimSpace(e.AccountingScene),
 		strings.TrimSpace(e.AccountingSubType),
 		strings.TrimSpace(e.EventType),
 		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.RefID),
 		e.OccurredAtUnix,
 		e.IdempotencyKey,
 		strings.TrimSpace(e.Note),
@@ -770,17 +764,21 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		if minerFee < 0 {
 			minerFee = 0
 		}
+		// 过渡态标记：fee_pool 的 source_type 当前是抽象业务名，不是最终事实实体
+		// 说明：现在用 "fee_pool" 只是过渡写法，等 fee_pool 事实层明确后要改成指向真实事实记录
+		// 原则：accounting_* 负责业务分类，source_* 最终只负责事实来源
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
-			BusinessID:     businessID,
-			SceneType:      "fee_pool",
-			SceneSubType:   "open",
-			FromPartyID:    strings.TrimSpace(in.FromPartyID),
-			ToPartyID:      strings.TrimSpace(in.ToPartyID),
-			RefID:          strings.TrimSpace(in.SpendTxID),
-			Status:         "posted",
-			OccurredAtUnix: time.Now().Unix(),
-			IdempotencyKey: "fee_pool_open:" + strings.TrimSpace(in.SpendTxID),
-			Note:           "fee pool open lock",
+			BusinessID:        businessID,
+			SourceType:        "fee_pool",
+			SourceID:          strings.TrimSpace(in.SpendTxID),
+			AccountingScene:   "fee_pool",
+			AccountingSubType: "open",
+			FromPartyID:       strings.TrimSpace(in.FromPartyID),
+			ToPartyID:         strings.TrimSpace(in.ToPartyID),
+			Status:            "posted",
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "fee_pool_open:" + strings.TrimSpace(in.SpendTxID),
+			Note:              "fee pool open lock",
 			Payload: map[string]any{
 				"spend_txid": strings.TrimSpace(in.SpendTxID),
 				"base_txid":  baseTxID,
@@ -812,16 +810,20 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID string, sequence uint32, amount uint64, gatewayPeerID string) {
 	dbRecordAccounting(ctx, store, func(db *sql.DB) {
 		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
+		// 过渡态标记：fee_pool 的 source_type 当前是抽象业务名，不是最终事实实体
+		// 说明：现在用 "fee_pool" 只是过渡写法，等 fee_pool 事实层明确后要改成指向真实事实记录
+		// 原则：accounting_* 负责业务分类，source_* 最终只负责事实来源
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
-			ProcessID:      processID,
-			SceneType:      "fee_pool",
-			SceneSubType:   "cycle_pay",
-			EventType:      "update",
-			Status:         "applied",
-			RefID:          strings.TrimSpace(spendTxID),
-			OccurredAtUnix: time.Now().Unix(),
-			IdempotencyKey: "fee_pool_cycle_event:" + strings.TrimSpace(spendTxID) + ":" + fmt.Sprint(sequence),
-			Note:           "fee pool cycle event (offchain)",
+			ProcessID:         processID,
+			SourceType:        "fee_pool",
+			SourceID:          strings.TrimSpace(spendTxID),
+			AccountingScene:   "fee_pool",
+			AccountingSubType: "cycle_pay",
+			EventType:         "update",
+			Status:            "applied",
+			OccurredAtUnix:    time.Now().Unix(),
+			IdempotencyKey:    "fee_pool_cycle_event:" + strings.TrimSpace(spendTxID) + ":" + fmt.Sprint(sequence),
+			Note:              "fee pool cycle event (offchain)",
 			Payload: map[string]any{
 				"sequence":           sequence,
 				"charge_amount_sat":  amount,
@@ -898,15 +900,12 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
-			SceneType:         "c2c_transfer",
-			SceneSubType:      "open",
 			SourceType:        sourceType,
 			SourceID:          sourceID,
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			FromPartyID:       "client:self",
 			ToPartyID:         "seller:" + strings.TrimSpace(in.SellerPubHex),
-			RefID:             strings.TrimSpace(in.SessionID),
 			Status:            "posted",
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_open:" + strings.TrimSpace(in.SessionID),
@@ -923,15 +922,12 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
-			SceneType:         "c2c_transfer",
-			SceneSubType:      "open",
 			SourceType:        sourceType,
 			SourceID:          sourceID,
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			EventType:         "accounting",
 			Status:            "applied",
-			RefID:             strings.TrimSpace(in.SessionID),
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_open_event:" + strings.TrimSpace(in.SessionID),
 			Note:              "direct transfer pool open accounting event",
@@ -966,15 +962,12 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 		sourceType, sourceID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
-			SceneType:         "c2c_transfer",
-			SceneSubType:      "chunk_pay",
 			SourceType:        sourceType,
 			SourceID:          sourceID,
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
 			FromPartyID:       "client:self",
 			ToPartyID:         "seller:" + strings.TrimSpace(sellerPeerID),
-			RefID:             strings.TrimSpace(sessionID),
 			Status:            "posted",
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_pay:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
@@ -989,15 +982,12 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
-			SceneType:         "c2c_transfer",
-			SceneSubType:      "chunk_pay",
 			SourceType:        sourceType,
 			SourceID:          sourceID,
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
 			EventType:         "accounting",
 			Status:            "applied",
-			RefID:             strings.TrimSpace(sessionID),
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_pay_event:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
 			Note:              "direct transfer chunk pay accounting event",
@@ -1078,15 +1068,12 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		}
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
-			SceneType:         "c2c_transfer",
-			SceneSubType:      "close",
 			SourceType:        sourceType,
 			SourceID:          sourceID,
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
 			FromPartyID:       "client:self",
 			ToPartyID:         "seller:" + strings.TrimSpace(sellerPeerID),
-			RefID:             strings.TrimSpace(sessionID),
 			Status:            "posted",
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_close:" + strings.TrimSpace(sessionID),
@@ -1102,15 +1089,12 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
-			SceneType:         "c2c_transfer",
-			SceneSubType:      "close",
 			SourceType:        sourceType,
 			SourceID:          sourceID,
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
 			EventType:         "accounting",
 			Status:            "applied",
-			RefID:             strings.TrimSpace(sessionID),
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_close_event:" + strings.TrimSpace(sessionID),
 			Note:              "direct transfer settle close accounting event",

@@ -25,6 +25,8 @@ func openSchemaTestDB(t *testing.T) *sql.DB {
 func createLegacyFinanceTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
+	// 创建真实老库结构（第五轮迭代前），用于测试迁移逻辑
+	// 注意：不包含新口径字段（source_type/source_id/accounting_scene/accounting_subtype）
 	stmts := []string{
 		`CREATE TABLE fin_business(
 			business_id TEXT PRIMARY KEY,
@@ -168,10 +170,11 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 		}
 	}
 
+	// 第六次迭代：只测试主口径字段
 	if _, err := db.Exec(`INSERT INTO fin_business(
-		business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_fresh_1", "fee_pool", "open", "client:self", "pool:peer", "sess_2", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
+		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"biz_fresh_1", "pool_allocation", "alloc_1", "c2c_transfer", "open", "client:self", "pool:peer", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
 	); err != nil {
 		t.Fatalf("insert fresh fin_business failed: %v", err)
 	}
@@ -183,8 +186,8 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	).Scan(&sourceType, &sourceID, &accountingScene, &accountingSubtype); err != nil {
 		t.Fatalf("query fresh fin_business failed: %v", err)
 	}
-	if sourceType != "" || sourceID != "" || accountingScene != "" || accountingSubtype != "" {
-		t.Fatalf("unexpected fresh fin_business defaults: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
+	if sourceType != "pool_allocation" || sourceID != "alloc_1" || accountingScene != "c2c_transfer" || accountingSubtype != "open" {
+		t.Fatalf("unexpected fresh fin_business values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
 	}
 }
 
@@ -295,14 +298,13 @@ func TestInitIndexDB_CreatesFinanceReadIndexes(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
+	// 第六次迭代：只检查主口径索引
 	wantIndexes := map[string][]string{
 		"fin_business": {
-			"idx_fin_business_scene",
 			"idx_fin_business_source",
 			"idx_fin_business_accounting",
 		},
 		"fin_process_events": {
-			"idx_fin_process_events_scene",
 			"idx_fin_process_events_source",
 			"idx_fin_process_events_accounting",
 		},

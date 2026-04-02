@@ -1771,11 +1771,8 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 }
 
 // handleAdminFinanceBusinesses 查询财务业务记录
-// 参数优先级（真实执行逻辑）：
-//   1. 只要传了新口径参数（source_type/source_id/pool_allocation_id），旧口径（scene_*/ref_id）强制清空
-//   2. 只要传了 accounting_scene/accounting_subtype，scene_type/scene_subtype 强制清空
-//   3. 只有新口径完全没传时，旧口径才生效
-// 设计意图：避免新旧参数冲突时结果查空，确保新口径是真正的主入口
+// 第六次迭代起不再支持旧口径参数（scene_type/scene_subtype/ref_id）
+// 只支持主口径参数：source_type/source_id/accounting_scene/accounting_subtype/pool_allocation_id
 func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1790,41 +1787,21 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
 
-	// 新口径参数（主）
+	// 主口径参数
 	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
 	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
 	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
 	accountingSubType := strings.TrimSpace(r.URL.Query().Get("accounting_subtype"))
-
-	// 旧口径参数（兼容）- 先读取，后续可能清空
-	sceneType := strings.TrimSpace(r.URL.Query().Get("scene_type"))
-	sceneSubType := strings.TrimSpace(r.URL.Query().Get("scene_subtype"))
-	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
 
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
 	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	// pool_allocation_id 自动映射为新口径
+	// pool_allocation_id 自动映射为 source_type/source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
 		sourceType = "pool_allocation"
 		sourceID = poolAllocationID
-	}
-
-	// 新口径优先：只要有新口径，旧口径强制清空，避免冲突
-	hasNewSource := sourceType != "" || sourceID != ""
-	hasNewAccounting := accountingScene != "" || accountingSubType != ""
-	if hasNewSource {
-		// 新 source 口径存在时，旧口径完全禁用
-		sceneType = ""
-		sceneSubType = ""
-		refID = ""
-	}
-	if hasNewAccounting {
-		// 新 accounting 口径存在时，旧 scene 分类禁用
-		sceneType = ""
-		sceneSubType = ""
 	}
 
 	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
@@ -1835,12 +1812,9 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		SourceID:          sourceID,
 		AccountingScene:   accountingScene,
 		AccountingSubtype: accountingSubType,
-		SceneType:         sceneType,    // 可能已被清空
-		SceneSubType:      sceneSubType, // 可能已被清空
 		Status:            status,
 		FromPartyID:       fromPartyID,
 		ToPartyID:         toPartyID,
-		RefID:             refID, // 可能已被清空
 		Query:             q,
 	})
 	if err != nil {
@@ -1872,12 +1846,9 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, it)
 }
 
-// handleAdminFinanceProcessEvents 返回财务流程事件（如 fee_pool/cycle_pay）
-// 说明：该接口用于过程追踪，不代表真实资金变动
-// 参数优先级（真实执行逻辑）：
-//   1. 只要传了新口径参数（source_type/source_id/pool_allocation_id），旧口径（scene_*/ref_id）强制清空
-//   2. 只要传了 accounting_scene/accounting_subtype，scene_type/scene_subtype 强制清空
-//   3. 只有新口径完全没传时，旧口径才生效
+// handleAdminFinanceProcessEvents 查询财务流程事件记录
+// 第六次迭代起不再支持旧口径参数（scene_type/scene_subtype/ref_id）
+// 只支持主口径参数：source_type/source_id/accounting_scene/accounting_subtype/pool_allocation_id
 func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1892,40 +1863,19 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 	processID := strings.TrimSpace(r.URL.Query().Get("process_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
 
-	// 新口径参数（主）
+	// 主口径参数
 	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
 	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
 	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
 	accountingSubType := strings.TrimSpace(r.URL.Query().Get("accounting_subtype"))
-
-	// 旧口径参数（兼容）- 先读取，后续可能清空
-	sceneType := strings.TrimSpace(r.URL.Query().Get("scene_type"))
-	sceneSubType := strings.TrimSpace(r.URL.Query().Get("scene_subtype"))
-	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
-
 	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
-	// pool_allocation_id 自动映射为新口径
+	// pool_allocation_id 自动映射为 source_type/source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
 		sourceType = "pool_allocation"
 		sourceID = poolAllocationID
-	}
-
-	// 新口径优先：只要有新口径，旧口径强制清空，避免冲突
-	hasNewSource := sourceType != "" || sourceID != ""
-	hasNewAccounting := accountingScene != "" || accountingSubType != ""
-	if hasNewSource {
-		// 新 source 口径存在时，旧口径完全禁用
-		sceneType = ""
-		sceneSubType = ""
-		refID = ""
-	}
-	if hasNewAccounting {
-		// 新 accounting 口径存在时，旧 scene 分类禁用
-		sceneType = ""
-		sceneSubType = ""
 	}
 
 	page, err := dbListFinanceProcessEvents(r.Context(), httpStore(s), financeProcessEventFilter{
@@ -1936,11 +1886,8 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 		SourceID:          sourceID,
 		AccountingScene:   accountingScene,
 		AccountingSubtype: accountingSubType,
-		SceneType:         sceneType,    // 可能已被清空
-		SceneSubType:      sceneSubType, // 可能已被清空
 		EventType:         eventType,
 		Status:            status,
-		RefID:             refID, // 可能已被清空
 		Query:             q,
 	})
 	if err != nil {

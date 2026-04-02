@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestFinanceReadModel_ExposesNewFieldsAndCompatibility(t *testing.T) {
+func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -43,10 +43,6 @@ func TestFinanceReadModel_ExposesNewFieldsAndCompatibility(t *testing.T) {
 	if biz.AccountingScene != "c2c_transfer" || biz.AccountingSubtype != "chunk_pay" {
 		t.Fatalf("unexpected business accounting fields: %+v", biz)
 	}
-	if biz.SceneType != "c2c_transfer" || biz.SceneSubType != "chunk_pay" || biz.RefID != sessionID {
-		t.Fatalf("legacy business fields changed: %+v", biz)
-	}
-
 	bizPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
 		Limit:             10,
 		SourceType:        "pool_allocation",
@@ -64,22 +60,9 @@ func TestFinanceReadModel_ExposesNewFieldsAndCompatibility(t *testing.T) {
 		t.Fatalf("business page source mismatch: %+v", bizPage.Items[0])
 	}
 
-	oldBizPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
-		Limit:        10,
-		SceneType:    "c2c_transfer",
-		SceneSubType: "chunk_pay",
-		RefID:        sessionID,
-	})
-	if err != nil {
-		t.Fatalf("list finance businesses by old filters failed: %v", err)
-	}
-	if oldBizPage.Total != 1 || len(oldBizPage.Items) != 1 {
-		t.Fatalf("old business filter mismatch: total=%d items=%d", oldBizPage.Total, len(oldBizPage.Items))
-	}
-
 	var processID int64
 	if err := db.QueryRow(
-		`SELECT id FROM fin_process_events WHERE process_id=? AND scene_subtype='close' ORDER BY id DESC LIMIT 1`,
+		`SELECT id FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processID); err != nil {
 		t.Fatalf("query process event id failed: %v", err)
@@ -95,10 +78,6 @@ func TestFinanceReadModel_ExposesNewFieldsAndCompatibility(t *testing.T) {
 	if proc.AccountingScene != "c2c_transfer" || proc.AccountingSubtype != "close" {
 		t.Fatalf("unexpected process accounting fields: %+v", proc)
 	}
-	if proc.SceneType != "c2c_transfer" || proc.SceneSubType != "close" || proc.RefID != sessionID {
-		t.Fatalf("legacy process fields changed: %+v", proc)
-	}
-
 	procPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
 		SourceType:        "pool_allocation",
@@ -114,20 +93,6 @@ func TestFinanceReadModel_ExposesNewFieldsAndCompatibility(t *testing.T) {
 	}
 	if procPage.Items[0].SourceType != "pool_allocation" || procPage.Items[0].SourceID != wantCloseAllocationID {
 		t.Fatalf("process page source mismatch: %+v", procPage.Items[0])
-	}
-
-	oldProcPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
-		Limit:        10,
-		ProcessID:    "proc_c2c_transfer_" + sessionID,
-		SceneType:    "c2c_transfer",
-		SceneSubType: "close",
-		RefID:        sessionID,
-	})
-	if err != nil {
-		t.Fatalf("list finance process events by old filters failed: %v", err)
-	}
-	if oldProcPage.Total != 1 || len(oldProcPage.Items) != 1 {
-		t.Fatalf("old process filter mismatch: total=%d items=%d", oldProcPage.Total, len(oldProcPage.Items))
 	}
 }
 
@@ -242,7 +207,8 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 		t.Fatalf("business detail source mismatch: %+v", businessDetail)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?scene_type=c2c_transfer&scene_subtype=close&ref_id="+sessionID+"&limit=10", nil)
+	// 第六次迭代：使用主口径参数查询
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?accounting_scene=c2c_transfer&accounting_subtype=close&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
@@ -257,13 +223,9 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	if len(processResp.Items) != 1 {
 		t.Fatalf("process list item count mismatch: %d", len(processResp.Items))
 	}
-	if processResp.Items[0].SceneType != "c2c_transfer" || processResp.Items[0].SceneSubType != "close" || processResp.Items[0].RefID != sessionID {
-		t.Fatalf("process list legacy fields mismatch: %+v", processResp.Items[0])
-	}
-
 	var processID int64
 	if err := db.QueryRow(
-		`SELECT id FROM fin_process_events WHERE process_id=? AND scene_subtype='close' ORDER BY id DESC LIMIT 1`,
+		`SELECT id FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processID); err != nil {
 		t.Fatalf("query process id failed: %v", err)
@@ -296,17 +258,16 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	}
 }
 
-// ==================== 第五次迭代测试 ====================
-// 测试目标：验证新旧口径主次切换
-// 1. 新口径参数优先级测试 - 同时传新旧时新口径优先
-// 2. 默认展示/默认查询测试 - 返回主说明字段是 source_*/accounting_*
-// 3. 兼容测试 - 旧参数仍能查到数据
-// 4. 禁扩散测试 - 新增读取帮助函数不再依赖旧字段
-// 5. 回归测试 - 第四次迭代已有新口径读取能力不能被破坏
+// ==================== 主口径读取模型测试 ====================
+// 测试目标：验证主口径读取模型与回归稳定性
+// 1. 主口径查询
+// 2. 默认展示
+// 3. 禁扩散
+// 4. 回归验证
 
-// TestFinanceNewFilterPriority_NewTakesPrecedence 新口径参数优先级测试
-// 同时传新旧参数时，按新口径为准
-func TestFinanceNewFilterPriority_NewTakesPrecedence(t *testing.T) {
+// TestFinancePrimaryFilter_QueryByPrimaryModel 主口径查询测试
+// 使用主口径参数查询数据
+func TestFinancePrimaryFilter_QueryByPrimaryModel(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -407,15 +368,11 @@ func TestFinanceDefaultPresentation_PrimaryFieldsFirst(t *testing.T) {
 		t.Fatalf("AccountingSubtype should be 'open': got=%s", biz.AccountingSubtype)
 	}
 
-	// 验证：兼容字段也存在（保持兼容），但不应是主要判断依据
-	if biz.SceneType == "" || biz.SceneSubType == "" || biz.RefID == "" {
-		t.Fatalf("legacy fields should still exist for compatibility: %+v", biz)
-	}
 }
 
-// TestFinanceCompatibility_OldParamsStillWork 兼容测试
-// 旧参数仍能查到数据
-func TestFinanceCompatibility_OldParamsStillWork(t *testing.T) {
+// TestFinanceDefaultFilter_QueryDefaults 默认展示测试
+// 验证默认过滤条件能正确查询数据
+func TestFinanceDefaultFilter_QueryDefaults(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -439,48 +396,10 @@ func TestFinanceCompatibility_OldParamsStillWork(t *testing.T) {
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_compat_test")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_compat_test", baseTxHex, 700, 290, sellerPubHex)
 
-	// 测试：用旧口径参数查询仍然有效
-	oldFilterPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
-		Limit:        10,
-		SceneType:    "c2c_transfer",
-		SceneSubType: "close",
-		RefID:        sessionID,
-	})
-	if err != nil {
-		t.Fatalf("old filter query failed: %v", err)
-	}
-	if oldFilterPage.Total == 0 {
-		t.Fatalf("old filter should still return results")
-	}
-
-	// 验证返回的记录同时包含新旧字段
-	for _, item := range oldFilterPage.Items {
-		if item.SceneType != "c2c_transfer" || item.SceneSubType != "close" {
-			t.Fatalf("old filter returned wrong records: %+v", item)
-		}
-		// 同时新字段也必须有值
-		if item.SourceType == "" || item.SourceID == "" {
-			t.Fatalf("new fields should be populated even when queried by old filter: %+v", item)
-		}
-	}
-
-	// 测试：流程事件用旧参数查询
-	procOldPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
-		Limit:        10,
-		SceneType:    "c2c_transfer",
-		SceneSubType: "close",
-		RefID:        sessionID,
-	})
-	if err != nil {
-		t.Fatalf("old filter process query failed: %v", err)
-	}
-	if procOldPage.Total == 0 {
-		t.Fatalf("old filter should still return process events")
-	}
 }
 
 // TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields 禁扩散测试
-// 新增读取帮助函数或默认过滤不再依赖旧字段
+// 新增读取帮助函数不依赖旧口径字段
 func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	t.Parallel()
 
@@ -520,7 +439,7 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 		t.Fatalf("new helper returned wrong record: %+v", item)
 	}
 
-	// 验证：新函数不依赖旧字段进行过滤（通过检查它能正确工作来证明）
+	// 验证：新函数不使用旧口径字段进行过滤（通过检查它能正确工作来证明）
 	// 如果新函数内部用了 scene_type 等旧字段过滤，在新数据上就会失败
 	if item.AccountingScene == "" || item.AccountingSubtype == "" {
 		t.Fatalf("new helper should return records with populated accounting fields: %+v", item)
@@ -604,44 +523,37 @@ func TestFinanceRegression_FourthIterationCapabilities(t *testing.T) {
 		t.Fatalf("regression: http api returned wrong item: source_id=%s want=%s", resp.Items[0].SourceID, payAllocID)
 	}
 
-	// 回归3: fin_business 和 fin_process_events 表必须同时存在新旧字段
-	var sceneType, sceneSubType, sourceType, sourceID, accountingScene, accountingSubtype string
+	// 第六次迭代：回归3 - 只验证主口径字段存在且有效
+	var sourceType, sourceID, accountingScene, accountingSubtype string
 	err = db.QueryRow(`
-		SELECT scene_type, scene_subtype, source_type, source_id, accounting_scene, accounting_subtype
+		SELECT source_type, source_id, accounting_scene, accounting_subtype
 		FROM fin_business WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2",
-	).Scan(&sceneType, &sceneSubType, &sourceType, &sourceID, &accountingScene, &accountingSubtype)
+	).Scan(&sourceType, &sourceID, &accountingScene, &accountingSubtype)
 	if err != nil {
 		t.Fatalf("regression: query fin_business columns failed: %v", err)
-	}
-	if sceneType == "" || sceneSubType == "" {
-		t.Fatalf("regression: legacy fields should exist: scene_type=%s scene_subtype=%s", sceneType, sceneSubType)
 	}
 	if sourceType == "" || sourceID == "" || accountingScene == "" || accountingSubtype == "" {
 		t.Fatalf("regression: new fields should exist: source_type=%s source_id=%s accounting_scene=%s accounting_subtype=%s",
 			sourceType, sourceID, accountingScene, accountingSubtype)
 	}
 
-	// 回归4: 流程事件表也一样
-	var procSceneType, procSceneSubType, procSourceType, procSourceID, procAccountingScene, procAccountingSubtype string
+	// 第六次迭代：回归4 - 流程事件表只验证主口径字段
+	var procSourceType, procSourceID, procAccountingScene, procAccountingSubtype string
 	err = db.QueryRow(`
-		SELECT scene_type, scene_subtype, source_type, source_id, accounting_scene, accounting_subtype
-		FROM fin_process_events WHERE process_id=? AND scene_subtype='close' ORDER BY id DESC LIMIT 1`,
+		SELECT source_type, source_id, accounting_scene, accounting_subtype
+		FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
-	).Scan(&procSceneType, &procSceneSubType, &procSourceType, &procSourceID, &procAccountingScene, &procAccountingSubtype)
+	).Scan(&procSourceType, &procSourceID, &procAccountingScene, &procAccountingSubtype)
 	if err != nil {
 		t.Fatalf("regression: query fin_process_events columns failed: %v", err)
-	}
-	if procSceneType == "" || procSceneSubType == "" {
-		t.Fatalf("regression: process legacy fields should exist")
 	}
 	if procSourceType == "" || procSourceID == "" || procAccountingScene == "" || procAccountingSubtype == "" {
 		t.Fatalf("regression: process new fields should exist")
 	}
 }
 
-// TestFinanceHTTP_NewParamsPriority 验证 HTTP API 新口径参数优先级
-// 同时传 pool_allocation_id 和旧参数时，新口径优先
-func TestFinanceHTTP_NewParamsPriority(t *testing.T) {
+// TestFinanceHTTP_QueryByPrimaryParams 验证 HTTP API 主口径参数查询
+func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -689,10 +601,6 @@ func TestFinanceHTTP_NewParamsPriority(t *testing.T) {
 	item := resp.Items[0]
 	if item.AccountingScene != "c2c_transfer" || item.AccountingSubtype != "close" {
 		t.Fatalf("returned item should have correct accounting fields: %+v", item)
-	}
-	// 兼容字段也存在
-	if item.SceneType != "c2c_transfer" || item.SceneSubType != "close" {
-		t.Fatalf("returned item should still have legacy fields: %+v", item)
 	}
 }
 

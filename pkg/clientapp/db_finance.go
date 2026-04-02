@@ -10,24 +10,19 @@ import (
 
 // financeBusinessFilter 业务查询过滤条件
 // 设计说明：
-//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
-//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 仅用于兼容旧数据，新代码不应依赖
-//   - 新功能开发请优先使用主口径字段
+//   - 主口径（唯一模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
+//   - 第六次迭代起新代码只使用主口径字段（旧列在已升级数据库中仍存在但不再引用）
+//   - 所有查询统一使用主口径字段
 type financeBusinessFilter struct {
 	Limit  int
 	Offset int
 
-	// 主口径 - 新模型优先使用
+	// 主口径 - 唯一模型字段
 	BusinessID        string
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubtype string
-
-	// 兼容口径 - 旧字段，仅兼容用，勿在新逻辑中继续使用
-	SceneType    string // Deprecated: 兼容旧数据，新代码用 AccountingScene
-	SceneSubType string // Deprecated: 兼容旧数据，新代码用 AccountingSubtype
-	RefID        string // Deprecated: 兼容旧数据，新代码用 SourceID
 
 	Status      string
 	FromPartyID string
@@ -41,21 +36,16 @@ type financeBusinessPage struct {
 }
 
 // financeBusinessItem 业务记录项
-// 字段顺序：主口径字段在前，兼容口径字段在后
-// JSON 顺序保持兼容，但内部使用优先使用主口径
+// 第六次迭代起只使用主口径字段
+// 旧列在已升级数据库中仍存在，但新代码不再引用
 type financeBusinessItem struct {
 	BusinessID string `json:"business_id"`
 
-	// 主口径 - 新模型字段，优先使用
+	// 主口径 - 唯一模型字段
 	SourceType        string `json:"source_type"`
 	SourceID          string `json:"source_id"`
 	AccountingScene   string `json:"accounting_scene"`
 	AccountingSubtype string `json:"accounting_subtype"`
-
-	// 兼容口径 - 旧字段，仅兼容展示用
-	SceneType    string `json:"scene_type"`    // Deprecated: 兼容旧数据
-	SceneSubType string `json:"scene_subtype"` // Deprecated: 兼容旧数据
-	RefID        string `json:"ref_id"`        // Deprecated: 兼容旧数据
 
 	FromPartyID    string          `json:"from_party_id"`
 	ToPartyID      string          `json:"to_party_id"`
@@ -68,24 +58,19 @@ type financeBusinessItem struct {
 
 // financeProcessEventFilter 流程事件查询过滤条件
 // 设计说明：
-//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
-//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 仅用于兼容旧数据
-//   - 新功能开发请优先使用主口径字段
+//   - 主口径（唯一模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
+//   - 第六次迭代起新代码只使用主口径字段（旧列在已升级数据库中仍存在但不再引用）
+//   - 所有查询统一使用主口径字段
 type financeProcessEventFilter struct {
 	Limit  int
 	Offset int
 
-	// 主口径 - 新模型优先使用
+	// 主口径 - 唯一模型字段
 	ProcessID         string
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubtype string
-
-	// 兼容口径 - 旧字段，仅兼容用
-	SceneType    string // Deprecated: 兼容旧数据，新代码用 AccountingScene
-	SceneSubType string // Deprecated: 兼容旧数据，新代码用 AccountingSubtype
-	RefID        string // Deprecated: 兼容旧数据，新代码用 SourceID
 
 	EventType string
 	Status    string
@@ -98,21 +83,17 @@ type financeProcessEventPage struct {
 }
 
 // financeProcessEventItem 流程事件记录项
-// 字段顺序：主口径字段在前，兼容口径字段在后
+// 第六次迭代起只使用主口径字段
+// 旧列在已升级数据库中仍存在，但新代码不再引用
 type financeProcessEventItem struct {
 	ID        int64  `json:"id"`
 	ProcessID string `json:"process_id"`
 
-	// 主口径 - 新模型字段，优先使用
+	// 主口径 - 唯一模型字段
 	SourceType        string `json:"source_type"`
 	SourceID          string `json:"source_id"`
 	AccountingScene   string `json:"accounting_scene"`
 	AccountingSubtype string `json:"accounting_subtype"`
-
-	// 兼容口径 - 旧字段，仅兼容展示用
-	SceneType    string `json:"scene_type"`    // Deprecated: 兼容旧数据
-	SceneSubType string `json:"scene_subtype"` // Deprecated: 兼容旧数据
-	RefID        string `json:"ref_id"`        // Deprecated: 兼容旧数据
 
 	EventType      string          `json:"event_type"`
 	Status         string          `json:"status"`
@@ -209,14 +190,6 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			where += " AND accounting_subtype=?"
 			args = append(args, f.AccountingSubtype)
 		}
-		if f.SceneType != "" {
-			where += " AND scene_type=?"
-			args = append(args, f.SceneType)
-		}
-		if f.SceneSubType != "" {
-			where += " AND scene_subtype=?"
-			args = append(args, f.SceneSubType)
-		}
 		if f.Status != "" {
 			where += " AND status=?"
 			args = append(args, f.Status)
@@ -229,21 +202,17 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			where += " AND to_party_id=?"
 			args = append(args, f.ToPartyID)
 		}
-		if f.RefID != "" {
-			where += " AND ref_id=?"
-			args = append(args, f.RefID)
-		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (business_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
-			args = append(args, like, like, like, like, like, like, like, like)
+			where += " AND (business_id LIKE ? OR note LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
+			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeBusinessPage
 		if err := db.QueryRow("SELECT COUNT(1) FROM fin_business WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeBusinessPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT business_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_business WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,business_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -255,7 +224,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		for rows.Next() {
 			var it financeBusinessItem
 			var payload string
-			if err := rows.Scan(&it.BusinessID, &it.SceneType, &it.SceneSubType, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.RefID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			if err := rows.Scan(&it.BusinessID, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
 				return financeBusinessPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
@@ -276,10 +245,10 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		var out financeBusinessItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT business_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_business WHERE business_id=?`,
 			businessID,
-		).Scan(&out.BusinessID, &out.SceneType, &out.SceneSubType, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.RefID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+		).Scan(&out.BusinessID, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
 			return financeBusinessItem{}, err
 		}
@@ -315,14 +284,6 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			where += " AND accounting_subtype=?"
 			args = append(args, f.AccountingSubtype)
 		}
-		if f.SceneType != "" {
-			where += " AND scene_type=?"
-			args = append(args, f.SceneType)
-		}
-		if f.SceneSubType != "" {
-			where += " AND scene_subtype=?"
-			args = append(args, f.SceneSubType)
-		}
 		if f.EventType != "" {
 			where += " AND event_type=?"
 			args = append(args, f.EventType)
@@ -331,21 +292,17 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			where += " AND status=?"
 			args = append(args, f.Status)
 		}
-		if f.RefID != "" {
-			where += " AND ref_id=?"
-			args = append(args, f.RefID)
-		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (process_id LIKE ? OR note LIKE ? OR ref_id LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
-			args = append(args, like, like, like, like, like, like, like, like)
+			where += " AND (process_id LIKE ? OR note LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
+			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeProcessEventPage
 		if err := db.QueryRow("SELECT COUNT(1) FROM fin_process_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeProcessEventPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT id,process_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT id,process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_process_events WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -357,7 +314,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		for rows.Next() {
 			var it financeProcessEventItem
 			var payload string
-			if err := rows.Scan(&it.ID, &it.ProcessID, &it.SceneType, &it.SceneSubType, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.EventType, &it.Status, &it.RefID, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			if err := rows.Scan(&it.ID, &it.ProcessID, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.EventType, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
 				return financeProcessEventPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
@@ -378,10 +335,10 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 		var out financeProcessEventItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT id,process_id,scene_type,scene_subtype,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT id,process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_process_events WHERE id=?`,
 			id,
-		).Scan(&out.ID, &out.ProcessID, &out.SceneType, &out.SceneSubType, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.EventType, &out.Status, &out.RefID, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+		).Scan(&out.ID, &out.ProcessID, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.EventType, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
 			return financeProcessEventItem{}, err
 		}

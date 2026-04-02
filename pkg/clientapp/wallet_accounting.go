@@ -10,24 +10,17 @@ import (
 )
 
 // finBusinessEntry 业务记录写入条目
+// 第六次迭代起只使用主口径字段
 // 设计说明：
-//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubType - 写入时必须填充
-//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 同时写入以保持兼容，但新查询优先使用主口径
-//   - 这是写入层兼容策略，第六次迭代后考虑移除兼容字段
-
+//   - 唯一口径：SourceType/SourceID/AccountingScene/AccountingSubType
 type finBusinessEntry struct {
 	BusinessID string
 
-	// 主口径 - 新模型字段，必须填充
+	// 主口径 - 唯一模型字段
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubType string
-
-	// 兼容口径 - 旧字段，同时写入保持兼容，但新代码查询优先用主口径
-	SceneType    string // Deprecated: 写入时同时填充，查询时用 AccountingScene
-	SceneSubType string // Deprecated: 写入时同时填充，查询时用 AccountingSubType
-	RefID        string // Deprecated: 写入时同时填充，查询时用 SourceID
 
 	FromPartyID    string
 	ToPartyID      string
@@ -75,24 +68,17 @@ type finTxUTXOLinkEntry struct {
 }
 
 // finProcessEventEntry 流程事件写入条目
+// 第六次迭代起只使用主口径字段
 // 设计说明：
-//   - 主口径（新模型）：SourceType/SourceID/AccountingScene/AccountingSubType - 写入时必须填充
-//   - 兼容口径（旧模型）：SceneType/SceneSubType/RefID - 同时写入以保持兼容
-//   - 这是写入层兼容策略，第六次迭代后考虑移除兼容字段
-
+//   - 唯一口径：SourceType/SourceID/AccountingScene/AccountingSubType
 type finProcessEventEntry struct {
 	ProcessID string
 
-	// 主口径 - 新模型字段，必须填充
+	// 主口径 - 唯一模型字段
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubType string
-
-	// 兼容口径 - 旧字段，同时写入保持兼容
-	SceneType    string // Deprecated: 写入时同时填充，查询时用 AccountingScene
-	SceneSubType string // Deprecated: 写入时同时填充，查询时用 AccountingSubType
-	RefID        string // Deprecated: 写入时同时填充，查询时用 SourceID
 
 	EventType      string
 	Status         string
@@ -199,18 +185,22 @@ func recordWalletChainAccounting(db *sql.DB, txid string, category string, walle
 		}
 	}
 
+	// 收口标记：wallet_chain 的 source_type 当前是抽象业务名
+	// 待办：当 wallet_chain 事实层设计完成后，应指向明确的事实实体
+	// source_type/source_id 原则：只允许表示"真实事实来源"，不兼任业务分类
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
-		BusinessID:     businessID,
-		SceneType:      "wallet_transfer",
-		SceneSubType:   sceneSubType,
-		FromPartyID:    fromParty,
-		ToPartyID:      toParty,
-		RefID:          txid,
-		Status:         "posted",
-		OccurredAtUnix: time.Now().Unix(),
-		IdempotencyKey: "wallet_chain:" + txid,
-		Note:           "wallet chain sync accounting",
-		Payload:        payload,
+		BusinessID:        businessID,
+		SourceType:        "wallet_chain",
+		SourceID:          txid,
+		AccountingScene:   "wallet_transfer",
+		AccountingSubType: sceneSubType,
+		FromPartyID:       fromParty,
+		ToPartyID:         toParty,
+		Status:            "posted",
+		OccurredAtUnix:    time.Now().Unix(),
+		IdempotencyKey:    "wallet_chain:" + txid,
+		Note:              "wallet chain sync accounting",
+		Payload:           payload,
 	}); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
 		return

@@ -469,17 +469,16 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 财务业务
+		// 第六次迭代起新库 schema 不再定义旧字段（老库兼容迁移未做物理删列）
+		// 旧列迁移由 ensureFinAccountingSchema 处理
 		`CREATE TABLE IF NOT EXISTS fin_business(
 			business_id TEXT PRIMARY KEY,
-			scene_type TEXT NOT NULL,
-			scene_subtype TEXT NOT NULL,
 			source_type TEXT NOT NULL DEFAULT '',
 			source_id TEXT NOT NULL DEFAULT '',
 			accounting_scene TEXT NOT NULL DEFAULT '',
 			accounting_subtype TEXT NOT NULL DEFAULT '',
 			from_party_id TEXT NOT NULL,
 			to_party_id TEXT NOT NULL,
-			ref_id TEXT NOT NULL,
 			status TEXT NOT NULL,
 			occurred_at_unix INTEGER NOT NULL,
 			idempotency_key TEXT NOT NULL,
@@ -489,15 +488,12 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS fin_process_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			process_id TEXT NOT NULL,
-			scene_type TEXT NOT NULL,
-			scene_subtype TEXT NOT NULL,
 			source_type TEXT NOT NULL DEFAULT '',
 			source_id TEXT NOT NULL DEFAULT '',
 			accounting_scene TEXT NOT NULL DEFAULT '',
 			accounting_subtype TEXT NOT NULL DEFAULT '',
 			event_type TEXT NOT NULL,
 			status TEXT NOT NULL,
-			ref_id TEXT NOT NULL,
 			occurred_at_unix INTEGER NOT NULL,
 			idempotency_key TEXT NOT NULL,
 			note TEXT NOT NULL,
@@ -743,11 +739,9 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_state ON wallet_bsv21_create_status(status, next_auto_check_at_unix ASC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_business_scene ON fin_business(scene_type, scene_subtype, occurred_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_scene ON fin_process_events(scene_type, scene_subtype, occurred_at_unix DESC)`,
+		// 第六次迭代：finance 表索引移到 ensureFinAccountingIndexes 中创建
+		// 避免老库迁移时列不存在导致错误
 		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_process ON fin_process_events(process_id, id DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_process_events_idempotency ON fin_process_events(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_txs_business ON fin_business_txs(business_id, id DESC)`,
@@ -1009,8 +1003,10 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	stmts := []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_source ON fin_business(source_type, source_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_accounting ON fin_business(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_process_events_idempotency ON fin_process_events(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_source ON fin_process_events(source_type, source_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_accounting ON fin_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
 	}
@@ -2367,6 +2363,16 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
+	}
+
+	// 第六次迭代：检查旧字段是否存在，不存在则跳过（全新数据库无旧数据需要清理）
+	cols, err := tableColumns(db, "fin_business")
+	if err != nil {
+		return fmt.Errorf("inspect fin_business columns: %w", err)
+	}
+	if _, hasOldSceneType := cols["scene_type"]; !hasOldSceneType {
+		// 全新数据库，无旧字段，无需清理
+		return nil
 	}
 
 	// 设计说明：
