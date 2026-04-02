@@ -44,8 +44,8 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if err := migrateClientDBLegacySchema(db); err != nil {
 		return fmt.Errorf("legacy migration: %w", err)
 	}
-	if err := ensureGatewayEventsCommandID(db); err != nil {
-		return fmt.Errorf("gateway_events command_id: %w", err)
+	if err := ensureGatewayEventAndCommandJournalConstraints(db); err != nil {
+		return fmt.Errorf("gateway_events command constraints: %w", err)
 	}
 
 	// 3. 数据规范化（历史脏数据口径纠偏）
@@ -148,17 +148,19 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			finished_at_unix INTEGER NOT NULL,
 			FOREIGN KEY(demand_id) REFERENCES demands(demand_id) ON DELETE CASCADE
 		)`,
+		// 事件必须挂到真实命令上，历史脏行在迁移阶段先清掉。
 		`CREATE TABLE IF NOT EXISTS gateway_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
-			command_id TEXT,
+			command_id TEXT NOT NULL,
 			action TEXT NOT NULL,
 			msg_id TEXT NOT NULL,
 			sequence_num INTEGER NOT NULL,
 			pool_id TEXT NOT NULL,
 			amount_satoshi INTEGER NOT NULL,
-			payload_json TEXT NOT NULL
+			payload_json TEXT NOT NULL,
+			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
 		)`,
 
 		// 直接交易
@@ -325,11 +327,12 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// trigger_key 设计说明：表示"这次命令执行是被哪一条上游触发链路推出来的"
 		// - orchestrator 发起时，trigger_key = orchestrator.idempotency_key
 		// - 非 orchestrator 发起时，trigger_key = ''
-		// 注意：这不是外键，不做 FK 约束；也不是 command_id，而是来源链路键
+		// 注意：这不是外键，不做 FK 约束；也不是 command_id，而是来源链路键。
+		// command_id 是唯一命令号，gateway_events 会直接用它做物理外键。
 		`CREATE TABLE IF NOT EXISTS command_journal(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL,
+			command_id TEXT NOT NULL UNIQUE,
 			command_type TEXT NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
 			aggregate_id TEXT NOT NULL,
@@ -904,12 +907,56 @@ func ensureCommandJournalTriggerKey(db *sql.DB) error {
 	return nil
 }
 
-// ensureGatewayEventsCommandID 确保 gateway_events 具备 command_id 归属字段和索引。
+// ensureGatewayEventAndCommandJournalConstraints 先清历史脏数据，再收紧两个表的数据库约束。
 // 设计说明：
-// - 第一阶段先平滑迁移，不在数据库层强加 NOT NULL；
-// - 新写入必须显式带 command_id，老数据允许暂空；
-// - 这一步只补结构，不清理历史内容。
-func ensureGatewayEventsCommandID(db *sql.DB) error {
+// - 先清 command_journal / gateway_events 历史脏数据，再补硬约束；
+// - command_journal.command_id 本身语义唯一，所以用 UNIQUE 承接 gateway_events 的 FK；
+// - 对于不能确认归属的旧 gateway_events，直接删除，不伪造关系；
+// - 如果历史 command_journal 里已经出现重复 command_id，直接停下并返回清理信息。
+func ensureGatewayEventAndCommandJournalConstraints(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	dups, err := commandJournalDuplicateCommandIDs(db)
+	if err != nil {
+		return fmt.Errorf("audit command_journal duplicates: %w", err)
+	}
+	if len(dups) > 0 {
+		return fmt.Errorf("command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
+	}
+	if err := cleanupLegacyCommandJournalCommandIDRows(db); err != nil {
+		return fmt.Errorf("cleanup command_journal: %w", err)
+	}
+	if err := cleanupLegacyGatewayEventCommandIDRows(db); err != nil {
+		return fmt.Errorf("cleanup gateway_events: %w", err)
+	}
+	if err := ensureCommandJournalCommandIDUnique(db); err != nil {
+		return fmt.Errorf("command_journal unique: %w", err)
+	}
+	if err := ensureGatewayEventsCommandIDForeignKey(db); err != nil {
+		return fmt.Errorf("gateway_events fk: %w", err)
+	}
+	if err := ensureGatewayEventsIndexes(db); err != nil {
+		return fmt.Errorf("gateway_events index: %w", err)
+	}
+	return nil
+}
+
+// cleanupLegacyCommandJournalCommandIDRows 清掉历史上 command_journal 里不该留下的 command_id 空值。
+func cleanupLegacyCommandJournalCommandIDRows(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	_, err := db.Exec(`DELETE FROM command_journal WHERE trim(coalesce(command_id, '')) = ''`)
+	return err
+}
+
+// cleanupLegacyGatewayEventCommandIDRows 清掉 gateway_events 里无法进入硬约束阶段的历史脏数据。
+// 说明：
+// - command_id 为空的行直接删除；
+// - command_id 找不到父命令的行也直接删除；
+// - 这一步是收紧约束前的真实清理，不做伪造回填。
+func cleanupLegacyGatewayEventCommandIDRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -919,13 +966,300 @@ func ensureGatewayEventsCommandID(db *sql.DB) error {
 	}
 	if _, ok := cols["command_id"]; !ok {
 		if _, err := db.Exec(`ALTER TABLE gateway_events ADD COLUMN command_id TEXT`); err != nil {
-			return fmt.Errorf("add command_id column: %w", err)
+			return err
 		}
 	}
+	_, err = db.Exec(`
+		DELETE FROM gateway_events
+		WHERE trim(coalesce(command_id, '')) = ''
+		   OR NOT EXISTS(
+				SELECT 1
+				FROM command_journal
+				WHERE command_journal.command_id = gateway_events.command_id
+		   )
+	`)
+	return err
+}
+
+// commandJournalDuplicateCommandIDs 列出 command_journal 中重复的 command_id，供迁移前审计使用。
+func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	rows, err := db.Query(`
+		SELECT command_id, COUNT(1)
+		FROM command_journal
+		WHERE trim(coalesce(command_id, '')) <> ''
+		GROUP BY command_id
+		HAVING COUNT(1) > 1
+		ORDER BY command_id ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	dups := make([]string, 0)
+	for rows.Next() {
+		var commandID string
+		var count int64
+		if err := rows.Scan(&commandID, &count); err != nil {
+			return nil, err
+		}
+		dups = append(dups, fmt.Sprintf("%s(x%d)", strings.TrimSpace(commandID), count))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return dups, nil
+}
+
+// ensureCommandJournalCommandIDUnique 把 command_journal.command_id 收紧成唯一键。
+// 设计说明：
+// - 先做重复审计，发现重复就直接返回，不硬上约束；
+// - 如果当前库还没有 UNIQUE，只在清理完成后重建表；
+// - 重建后会保留原有行顺序和索引口径。
+func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "command_journal", []string{"command_id"})
+	if err != nil {
+		return fmt.Errorf("inspect command_journal unique index: %w", err)
+	}
+	if hasUnique {
+		return ensureCommandJournalIndexes(db)
+	}
+
+	dups, err := commandJournalDuplicateCommandIDs(db)
+	if err != nil {
+		return err
+	}
+	if len(dups) > 0 {
+		return fmt.Errorf("command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS command_journal_unique_rebuild`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE command_journal RENAME TO command_journal_unique_rebuild`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE command_journal(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at_unix INTEGER NOT NULL,
+		command_id TEXT NOT NULL UNIQUE,
+		command_type TEXT NOT NULL,
+		gateway_pubkey_hex TEXT NOT NULL,
+		aggregate_id TEXT NOT NULL,
+		requested_by TEXT NOT NULL,
+		requested_at_unix INTEGER NOT NULL,
+		accepted INTEGER NOT NULL,
+		status TEXT NOT NULL,
+		error_code TEXT NOT NULL,
+		error_message TEXT NOT NULL,
+		state_before TEXT NOT NULL,
+		state_after TEXT NOT NULL,
+		duration_ms INTEGER NOT NULL,
+		trigger_key TEXT NOT NULL DEFAULT '',
+		payload_json TEXT NOT NULL,
+		result_json TEXT NOT NULL
+	)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO command_journal(
+		id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) SELECT
+		id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	FROM command_journal_unique_rebuild ORDER BY id ASC`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE command_journal_unique_rebuild`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return ensureCommandJournalIndexes(db)
+}
+
+// ensureGatewayEventsCommandIDForeignKey 让 gateway_events.command_id 变成 NOT NULL + 物理外键。
+func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	notNull, err := tableColumnNotNull(db, "gateway_events", "command_id")
+	if err != nil {
+		return fmt.Errorf("inspect gateway_events command_id not null: %w", err)
+	}
+	hasFK, err := tableHasForeignKey(db, "gateway_events", "command_id", "command_journal", "command_id")
+	if err != nil {
+		return fmt.Errorf("inspect gateway_events foreign key: %w", err)
+	}
+	if notNull && hasFK {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS gateway_events_fk_rebuild`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE gateway_events RENAME TO gateway_events_fk_rebuild`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE gateway_events(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		created_at_unix INTEGER NOT NULL,
+		gateway_pubkey_hex TEXT NOT NULL,
+		command_id TEXT NOT NULL,
+		action TEXT NOT NULL,
+		msg_id TEXT NOT NULL,
+		sequence_num INTEGER NOT NULL,
+		pool_id TEXT NOT NULL,
+		amount_satoshi INTEGER NOT NULL,
+		payload_json TEXT NOT NULL,
+		FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+	)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO gateway_events(
+		id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
+	) SELECT
+		id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
+	FROM gateway_events_fk_rebuild
+	WHERE trim(coalesce(command_id, '')) <> ''
+	  AND EXISTS(
+			SELECT 1
+			FROM command_journal
+			WHERE command_journal.command_id = gateway_events_fk_rebuild.command_id
+	  )
+	ORDER BY id ASC`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE gateway_events_fk_rebuild`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return ensureGatewayEventsIndexes(db)
+}
+
+// ensureGatewayEventsIndexes 保证 gateway_events 的查询索引都还在。
+func ensureGatewayEventsIndexes(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`); err != nil {
+		return err
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_gateway_events_cmd_id ON gateway_events(command_id)`); err != nil {
-		return fmt.Errorf("create command_id index: %w", err)
+		return err
 	}
 	return nil
+}
+
+// ensureCommandJournalIndexes 保证 command_journal 的查询索引都还在。
+func ensureCommandJournalIndexes(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	stmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_cmd_id ON command_journal(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// tableHasForeignKey 检查表是否已经有指定外键。
+func tableHasForeignKey(db *sql.DB, table, fromColumn, parentTable, parentColumn string) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("db is nil")
+	}
+	rows, err := db.Query(fmt.Sprintf("PRAGMA foreign_key_list(%s)", strings.TrimSpace(table)))
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var id int
+		var seq int
+		var fkTable string
+		var fkFrom string
+		var fkTo string
+		var onUpdate string
+		var onDelete string
+		var match string
+		if err := rows.Scan(&id, &seq, &fkTable, &fkFrom, &fkTo, &onUpdate, &onDelete, &match); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(strings.TrimSpace(fkFrom), strings.TrimSpace(fromColumn)) &&
+			strings.EqualFold(strings.TrimSpace(fkTable), strings.TrimSpace(parentTable)) &&
+			strings.EqualFold(strings.TrimSpace(fkTo), strings.TrimSpace(parentColumn)) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	return false, nil
+}
+
+// ensureGatewayEventsCommandID 兼容旧名字，避免外层注释误导。
+func ensureGatewayEventsCommandID(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	return ensureGatewayEventAndCommandJournalConstraints(db)
 }
 
 // ensurePoolAllocationsSchema 只处理 pool_allocations 的结构升级。

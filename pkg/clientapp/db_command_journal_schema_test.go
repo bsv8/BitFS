@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
 
@@ -68,5 +69,42 @@ func TestInitIndexDB_EnsuresCommandJournalTriggerKeyIndexWhenColumnExists(t *tes
 	}
 	if !hasIndex {
 		t.Fatalf("missing idx_command_journal_trigger_key after second init")
+	}
+
+	unique, err := tableHasUniqueIndexOnColumns(db, "command_journal", []string{"command_id"})
+	if err != nil {
+		t.Fatalf("inspect command_journal unique failed: %v", err)
+	}
+	if !unique {
+		t.Fatalf("command_journal missing unique constraint on command_id")
+	}
+}
+
+func TestInitIndexDB_RejectsDuplicateCommandJournalCommandID(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	createLegacyCommandJournalSchemaWithTriggerKeyOnly(t, db)
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000001, "dup_cmd", "fee_pool.open", "gw1", "agg-1", "tester", 1700000001, 1, "applied", "", "", "before", "after", 10, "", "{}", "{}",
+	); err != nil {
+		t.Fatalf("insert first command_journal row failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000002, "dup_cmd", "fee_pool.open", "gw1", "agg-2", "tester", 1700000002, 1, "applied", "", "", "before", "after", 10, "", "{}", "{}",
+	); err != nil {
+		t.Fatalf("insert second command_journal row failed: %v", err)
+	}
+
+	err := initIndexDB(db)
+	if err == nil {
+		t.Fatalf("expected initIndexDB to fail on duplicate command_id")
+	}
+	if got := err.Error(); got == "" || !strings.Contains(got, "duplicate command_id") {
+		t.Fatalf("expected duplicate command_id error, got=%v", err)
 	}
 }
