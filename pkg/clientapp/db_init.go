@@ -223,6 +223,41 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
+		// 直连传输费用池事实层：只保留真实池会话与逐次动作，不承载运行时快照职责。
+		`CREATE TABLE IF NOT EXISTS pool_sessions(
+			pool_session_id TEXT PRIMARY KEY,
+			pool_scheme TEXT NOT NULL,
+			counterparty_pubkey_hex TEXT NOT NULL DEFAULT '',
+			seller_pubkey_hex TEXT NOT NULL DEFAULT '',
+			arbiter_pubkey_hex TEXT NOT NULL DEFAULT '',
+			gateway_pubkey_hex TEXT NOT NULL DEFAULT '',
+			pool_amount_satoshi INTEGER NOT NULL,
+			spend_tx_fee_satoshi INTEGER NOT NULL,
+			fee_rate_sat_byte REAL NOT NULL DEFAULT 0,
+			lock_blocks INTEGER NOT NULL DEFAULT 0,
+			open_base_txid TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS pool_allocations(
+			allocation_id TEXT PRIMARY KEY,
+			pool_session_id TEXT NOT NULL,
+			allocation_no INTEGER NOT NULL,
+			allocation_kind TEXT NOT NULL,
+			sequence_num INTEGER NOT NULL,
+			payee_amount_after INTEGER NOT NULL,
+			payer_amount_after INTEGER NOT NULL,
+			txid TEXT NOT NULL,
+			tx_hex TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(pool_session_id) REFERENCES pool_sessions(pool_session_id) ON DELETE CASCADE
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_allocations_session_kind_seq ON pool_allocations(pool_session_id,allocation_kind,sequence_num)`,
+		`CREATE INDEX IF NOT EXISTS idx_pool_sessions_scheme_status ON pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_pool_sessions_counterparty ON pool_sessions(counterparty_pubkey_hex,status)`,
+		`CREATE INDEX IF NOT EXISTS idx_pool_allocations_session_no ON pool_allocations(pool_session_id,allocation_no DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_pool_allocations_txid ON pool_allocations(txid)`,
 		// 钱包资金流水
 		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -772,6 +807,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureLiveFollowsSchema(db); err != nil {
 		return fmt.Errorf("live_follows: %w", err)
 	}
+	if err := migrateLegacyDirectTransferPoolFacts(db); err != nil {
+		return fmt.Errorf("legacy direct transfer pool facts: %w", err)
+	}
 	if err := migrateLegacyChainTables(db); err != nil {
 		return fmt.Errorf("legacy chain tables: %w", err)
 	}
@@ -795,6 +833,129 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
 	}
 
+	return nil
+}
+
+// migrateLegacyDirectTransferPoolFacts 只把旧直连池快照回填成最小可信事实。
+// 设计说明：
+// - 只认 direct_transfer_pools；
+// - 只补 pool_sessions 和 open allocation；
+// - 不猜 pay/close 历史，避免把不完整快照伪装成完整事实链。
+func migrateLegacyDirectTransferPoolFacts(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+
+	exists, err := hasTable(db, "direct_transfer_pools")
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	rows, err := tx.Query(`SELECT
+		session_id,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,
+		base_txid,base_tx_hex,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
+		FROM direct_transfer_pools`)
+	if err != nil {
+		rollback()
+		return err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var sessionID, sellerPubHex, arbiterPubHex, baseTxID, baseTxHex, status string
+		var poolAmount, spendTxFee, lockBlocks, createdAtUnix, updatedAtUnix int64
+		var feeRate float64
+		if err := rows.Scan(
+			&sessionID, &sellerPubHex, &arbiterPubHex, &poolAmount, &spendTxFee,
+			&baseTxID, &baseTxHex, &status, &feeRate, &lockBlocks, &createdAtUnix, &updatedAtUnix,
+		); err != nil {
+			rollback()
+			return err
+		}
+		sessionID = strings.TrimSpace(sessionID)
+		if sessionID == "" {
+			continue
+		}
+		sellerPubHex = strings.TrimSpace(sellerPubHex)
+		arbiterPubHex = strings.TrimSpace(arbiterPubHex)
+		baseTxID = strings.TrimSpace(baseTxID)
+		baseTxHex = strings.TrimSpace(baseTxHex)
+		if baseTxID == "" && baseTxHex != "" {
+			baseTxID, err = directTransferPoolTxIDFromHex(baseTxHex)
+			if err != nil {
+				rollback()
+				return err
+			}
+		}
+		if baseTxID == "" || baseTxHex == "" {
+			continue
+		}
+		if poolAmount < 0 {
+			poolAmount = 0
+		}
+		if spendTxFee < 0 {
+			spendTxFee = 0
+		}
+		if lockBlocks < 0 {
+			lockBlocks = 0
+		}
+		if createdAtUnix <= 0 {
+			createdAtUnix = time.Now().Unix()
+		}
+		if updatedAtUnix <= 0 {
+			updatedAtUnix = createdAtUnix
+		}
+		if err := dbUpsertDirectTransferPoolSessionTx(tx, directTransferPoolSessionFactInput{
+			SessionID:          sessionID,
+			PoolScheme:         "2of3",
+			CounterpartyPubHex: sellerPubHex,
+			SellerPubHex:       sellerPubHex,
+			ArbiterPubHex:      arbiterPubHex,
+			GatewayPubHex:      "",
+			PoolAmountSat:      uint64(poolAmount),
+			SpendTxFeeSat:      uint64(spendTxFee),
+			FeeRateSatByte:     feeRate,
+			LockBlocks:         uint32(lockBlocks),
+			OpenBaseTxID:       baseTxID,
+			Status:             status,
+			CreatedAtUnix:      createdAtUnix,
+			UpdatedAtUnix:      updatedAtUnix,
+		}); err != nil {
+			rollback()
+			return err
+		}
+		if err := dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
+			SessionID:        sessionID,
+			AllocationKind:   "open",
+			SequenceNum:      1,
+			PayeeAmountAfter: 0,
+			PayerAmountAfter: uint64(poolAmount),
+			TxID:             baseTxID,
+			TxHex:            baseTxHex,
+			CreatedAtUnix:    createdAtUnix,
+		}); err != nil {
+			rollback()
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
 	return nil
 }
 
@@ -2108,6 +2269,10 @@ func normalizeClientPubKeyColumns(db *sql.DB) error {
 		{table: "direct_deals", column: "seller_pubkey_hex"},
 		{table: "direct_transfer_pools", column: "buyer_pubkey_hex"},
 		{table: "direct_transfer_pools", column: "seller_pubkey_hex"},
+		{table: "pool_sessions", column: "counterparty_pubkey_hex", allowEmpty: true},
+		{table: "pool_sessions", column: "seller_pubkey_hex", allowEmpty: true},
+		{table: "pool_sessions", column: "arbiter_pubkey_hex", allowEmpty: true},
+		{table: "pool_sessions", column: "gateway_pubkey_hex", allowEmpty: true},
 		{table: "live_quotes", column: "seller_pubkey_hex"},
 		{table: "live_follows", column: "last_quote_seller_pubkey_hex", allowEmpty: true},
 		{table: "file_download_chunks", column: "seller_pubkey_hex", allowEmpty: true},

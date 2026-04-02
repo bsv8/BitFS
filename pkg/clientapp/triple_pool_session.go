@@ -63,6 +63,8 @@ type directTransferPoolRow struct {
 	Status           string
 	FeeRateSatByte   float64
 	LockBlocks       uint32
+	CreatedAtUnix    int64
+	UpdatedAtUnix    int64
 }
 
 func (r *Runtime) getTriplePool(sessionID string) (*triplePoolSession, bool) {
@@ -433,7 +435,9 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	if err != nil {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
-	dbUpdateDirectTransferPoolClosing(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex)
+	if err := dbUpdateDirectTransferPoolClosing(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex); err != nil {
+		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
 	obs.Business("bitcast-client", "direct_transfer_pool_close_sign_ok", map[string]any{
 		"session_id": sessionID,
 		"sequence":   req.Sequence,

@@ -60,6 +60,32 @@ func createLegacyFinanceTables(t *testing.T, db *sql.DB) {
 	}
 }
 
+func createLegacyDirectTransferPoolTable(t *testing.T, db *sql.DB) {
+	t.Helper()
+	if _, err := db.Exec(`CREATE TABLE direct_transfer_pools(
+		session_id TEXT PRIMARY KEY,
+		deal_id TEXT NOT NULL,
+		buyer_pubkey_hex TEXT NOT NULL,
+		seller_pubkey_hex TEXT NOT NULL,
+		arbiter_pubkey_hex TEXT NOT NULL,
+		pool_amount INTEGER NOT NULL,
+		spend_tx_fee INTEGER NOT NULL,
+		sequence_num INTEGER NOT NULL,
+		seller_amount INTEGER NOT NULL,
+		buyer_amount INTEGER NOT NULL,
+		current_tx_hex TEXT NOT NULL,
+		base_tx_hex TEXT NOT NULL,
+		base_txid TEXT NOT NULL,
+		status TEXT NOT NULL,
+		fee_rate_sat_byte REAL NOT NULL,
+		lock_blocks INTEGER NOT NULL,
+		created_at_unix INTEGER NOT NULL,
+		updated_at_unix INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy direct_transfer_pools failed: %v", err)
+	}
+}
+
 func TestInitIndexDB_MigratesFinanceColumns(t *testing.T) {
 	t.Parallel()
 
@@ -159,5 +185,104 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 	if sourceType != "" || sourceID != "" || accountingScene != "" || accountingSubtype != "" {
 		t.Fatalf("unexpected fresh fin_business defaults: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
+	}
+}
+
+func TestInitIndexDB_MigratesPoolFactTables(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	createLegacyDirectTransferPoolTable(t, db)
+
+	if _, err := db.Exec(`INSERT INTO direct_transfer_pools(
+		session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"sess_legacy", "deal_legacy", "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		990, 10, 1, 0, 990, "ctx", "btx", "base_tx", "active", 0.5, 6, 1700000001, 1700000002,
+	); err != nil {
+		t.Fatalf("insert legacy direct_transfer_pools failed: %v", err)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	for _, table := range []string{"pool_sessions", "pool_allocations"} {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("hasTable %s failed: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("missing %s table", table)
+		}
+	}
+
+	var status, openBaseTxID, txHex string
+	var poolAmount, spendTxFee, openCount, allocCount int64
+	var createdAtUnix, updatedAtUnix int64
+	if err := db.QueryRow(
+		`SELECT status,open_base_txid,pool_amount_satoshi,spend_tx_fee_satoshi,created_at_unix,updated_at_unix
+		   FROM pool_sessions WHERE pool_session_id=?`,
+		"sess_legacy",
+	).Scan(&status, &openBaseTxID, &poolAmount, &spendTxFee, &createdAtUnix, &updatedAtUnix); err != nil {
+		t.Fatalf("query migrated pool session failed: %v", err)
+	}
+	if status != "active" || openBaseTxID != "base_tx" || poolAmount != 990 || spendTxFee != 10 || createdAtUnix != 1700000001 || updatedAtUnix != 1700000002 {
+		t.Fatalf("unexpected migrated pool session: status=%s open_base_txid=%s pool_amount=%d spend_tx_fee=%d created_at_unix=%d updated_at_unix=%d", status, openBaseTxID, poolAmount, spendTxFee, createdAtUnix, updatedAtUnix)
+	}
+
+	var allocationKind string
+	var sequenceNum, payeeAmountAfter, payerAmountAfter, allocationCreatedAtUnix int64
+	if err := db.QueryRow(
+		`SELECT allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+		   FROM pool_allocations WHERE pool_session_id=? ORDER BY allocation_no ASC LIMIT 1`,
+		"sess_legacy",
+	).Scan(&allocationKind, &sequenceNum, &payeeAmountAfter, &payerAmountAfter, &openBaseTxID, &txHex, &allocationCreatedAtUnix); err != nil {
+		t.Fatalf("query migrated pool allocation failed: %v", err)
+	}
+	if allocationKind != "open" || sequenceNum != 1 || payeeAmountAfter != 0 || payerAmountAfter != 990 || openBaseTxID != "base_tx" || txHex != "btx" || allocationCreatedAtUnix != 1700000001 {
+		t.Fatalf("unexpected migrated pool allocation: kind=%s seq=%d payee=%d payer=%d txid=%s tx_hex=%s created_at_unix=%d", allocationKind, sequenceNum, payeeAmountAfter, payerAmountAfter, openBaseTxID, txHex, allocationCreatedAtUnix)
+	}
+
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pool_sessions WHERE pool_session_id=?`, "sess_legacy").Scan(&openCount); err != nil {
+		t.Fatalf("count pool_sessions failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pool_allocations WHERE pool_session_id=?`, "sess_legacy").Scan(&allocCount); err != nil {
+		t.Fatalf("count pool_allocations failed: %v", err)
+	}
+	if openCount != 1 || allocCount != 1 {
+		t.Fatalf("unexpected migrated row counts: pool_sessions=%d pool_allocations=%d", openCount, allocCount)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB second run failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pool_sessions WHERE pool_session_id=?`, "sess_legacy").Scan(&openCount); err != nil {
+		t.Fatalf("count pool_sessions after second run failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM pool_allocations WHERE pool_session_id=?`, "sess_legacy").Scan(&allocCount); err != nil {
+		t.Fatalf("count pool_allocations after second run failed: %v", err)
+	}
+	if openCount != 1 || allocCount != 1 {
+		t.Fatalf("duplicate rows after second initIndexDB: pool_sessions=%d pool_allocations=%d", openCount, allocCount)
+	}
+}
+
+func TestInitIndexDB_FreshSchemaKeepsPoolFactTables(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	for _, table := range []string{"pool_sessions", "pool_allocations"} {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("hasTable %s failed: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("missing %s table", table)
+		}
 	}
 }
