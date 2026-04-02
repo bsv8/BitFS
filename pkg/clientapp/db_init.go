@@ -243,7 +243,8 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS pool_allocations(
-			allocation_id TEXT PRIMARY KEY,
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			allocation_id TEXT NOT NULL,
 			pool_session_id TEXT NOT NULL,
 			allocation_no INTEGER NOT NULL,
 			allocation_kind TEXT NOT NULL,
@@ -253,13 +254,49 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			txid TEXT NOT NULL,
 			tx_hex TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(pool_session_id) REFERENCES pool_sessions(pool_session_id) ON DELETE CASCADE
+			FOREIGN KEY(pool_session_id) REFERENCES pool_sessions(pool_session_id) ON DELETE CASCADE,
+			UNIQUE(allocation_id)
+		)`,
+		`CREATE TABLE IF NOT EXISTS chain_payments(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			txid TEXT NOT NULL,
+			payment_subtype TEXT NOT NULL,
+			status TEXT NOT NULL,
+			wallet_input_satoshi INTEGER NOT NULL,
+			wallet_output_satoshi INTEGER NOT NULL,
+			net_amount_satoshi INTEGER NOT NULL,
+			block_height INTEGER NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			from_party_id TEXT NOT NULL,
+			to_party_id TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			UNIQUE(txid)
+		)`,
+		`CREATE TABLE IF NOT EXISTS chain_payment_utxo_links(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chain_payment_id INTEGER NOT NULL,
+			utxo_id TEXT NOT NULL,
+			io_side TEXT NOT NULL,
+			utxo_role TEXT NOT NULL,
+			amount_satoshi INTEGER NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			FOREIGN KEY(chain_payment_id) REFERENCES chain_payments(id) ON DELETE CASCADE,
+			FOREIGN KEY(utxo_id) REFERENCES wallet_utxo(utxo_id) ON DELETE CASCADE,
+			UNIQUE(chain_payment_id, utxo_id, io_side, utxo_role)
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_allocations_session_kind_seq ON pool_allocations(pool_session_id,allocation_kind,sequence_num)`,
 		`CREATE INDEX IF NOT EXISTS idx_pool_sessions_scheme_status ON pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_pool_sessions_counterparty ON pool_sessions(counterparty_pubkey_hex,status)`,
 		`CREATE INDEX IF NOT EXISTS idx_pool_allocations_session_no ON pool_allocations(pool_session_id,allocation_no DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_pool_allocations_txid ON pool_allocations(txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_payments_occurred ON chain_payments(occurred_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_payments_subtype ON chain_payments(payment_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_payments_status ON chain_payments(status, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_payment_utxo_links_payment ON chain_payment_utxo_links(chain_payment_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_chain_payment_utxo_links_utxo ON chain_payment_utxo_links(utxo_id, id DESC)`,
 		// 钱包资金流水
 		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -787,6 +824,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureFileDownloadsSchema(db); err != nil {
 		return fmt.Errorf("file_downloads: %w", err)
 	}
+	if err := ensurePoolAllocationsSchema(db); err != nil {
+		return fmt.Errorf("pool allocations schema: %w", err)
+	}
 	if err := ensureFinAccountingSchema(db); err != nil {
 		return fmt.Errorf("fin accounting schema: %w", err)
 	}
@@ -822,6 +862,98 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
 	}
 
+	return nil
+}
+
+// ensurePoolAllocationsSchema 只处理 pool_allocations 的结构升级。
+// 设计说明：
+// - 只补 id 和唯一业务键，不碰写入、读取和其他财务表；
+// - 老库走重建表迁移，新库直接跳过；
+// - 拷贝顺序固定，保证同库内新 id 的生成顺序可预期；
+// - 这个 id 只保证同库内稳定，不当作跨库可比的业务主键。
+func ensurePoolAllocationsSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+
+	cols, err := tableColumns(db, "pool_allocations")
+	if err != nil {
+		return fmt.Errorf("inspect pool_allocations: %w", err)
+	}
+	if _, ok := cols["id"]; ok {
+		return nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS pool_allocations_new`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE pool_allocations RENAME TO pool_allocations_legacy`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE TABLE pool_allocations_new(
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		allocation_id TEXT NOT NULL,
+		pool_session_id TEXT NOT NULL,
+		allocation_no INTEGER NOT NULL,
+		allocation_kind TEXT NOT NULL,
+		sequence_num INTEGER NOT NULL,
+		payee_amount_after INTEGER NOT NULL,
+		payer_amount_after INTEGER NOT NULL,
+		txid TEXT NOT NULL,
+		tx_hex TEXT NOT NULL,
+		created_at_unix INTEGER NOT NULL,
+		FOREIGN KEY(pool_session_id) REFERENCES pool_sessions(pool_session_id) ON DELETE CASCADE,
+		UNIQUE(allocation_id)
+	)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO pool_allocations_new(
+		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+	) SELECT
+		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+	FROM pool_allocations_legacy
+	ORDER BY pool_session_id ASC, allocation_no ASC, allocation_id ASC`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE pool_allocations_legacy`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`ALTER TABLE pool_allocations_new RENAME TO pool_allocations`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_allocations_session_kind_seq ON pool_allocations(pool_session_id,allocation_kind,sequence_num)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pool_allocations_session_no ON pool_allocations(pool_session_id,allocation_no DESC)`); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pool_allocations_txid ON pool_allocations(txid)`); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
 	return nil
 }
 
