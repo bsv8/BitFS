@@ -3,6 +3,7 @@ package clientapp
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 )
 
 func (s *httpAPIServer) handleDomainRegister(w http.ResponseWriter, r *http.Request) {
@@ -47,4 +48,25 @@ func (s *httpAPIServer) handleDomainSetTarget(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// handleDomainSettlementStatus 域名结算状态查询（第四步新主线）
+// 设计：统一走 GetFrontOrderSettlementSummary 聚合读模型，不再直接查旧过程表
+func (s *httpAPIServer) handleDomainSettlementStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	frontOrderID := strings.TrimSpace(r.URL.Query().Get("front_order_id"))
+	if frontOrderID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "front_order_id is required"})
+		return
+	}
+
+	summary, err := GetFrontOrderSettlementSummary(r.Context(), httpStore(s), frontOrderID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
 }

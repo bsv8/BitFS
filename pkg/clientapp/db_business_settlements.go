@@ -348,7 +348,8 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 		return nil, fmt.Errorf("list businesses by trigger: %w", err)
 	}
 	if len(businessIDs) == 0 {
-		return nil, fmt.Errorf("no business found for front_order_id=%s", frontOrderID)
+		// front_order 已存在但 business 尚未创建，是合法早期状态
+		return []financeBusinessItem{}, nil
 	}
 
 	// 第二步：按 business_id 查 fin_business
@@ -469,6 +470,10 @@ func GetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (ChainP
 // GetFullSettlementChainByFrontOrderID 按 front_order_id 查完整结算链
 // 返回：business -> settlement -> chain_payment（如果有）
 // 设计：临时取最近一条 business，后面可按 business_id 精确查询
+//
+// ⚠️ 第四步降级：此函数只取最近一条 business，不适用于多 seller 下载场景。
+// 新代码请统一使用 GetFrontOrderSettlementSummary（返回全部 business + 汇总状态）。
+// 本函数保留用于调试和兼容历史查询，不再作为业务状态判断的主入口。
 func GetFullSettlementChainByFrontOrderID(ctx context.Context, store *clientDB, frontOrderID string) (FullSettlementChain, error) {
 	var out FullSettlementChain
 	if store == nil {
@@ -672,6 +677,10 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 
 // GetFullPoolSettlementChainByFrontOrderID 按 front_order_id 查完整池结算链
 // 返回：business -> settlement -> pool_allocation -> pool_session
+//
+// ⚠️ 第四步降级：此函数只取最近一条 business，不适用于多 seller 下载场景。
+// 新代码请统一使用 GetFrontOrderSettlementSummary（返回全部 business + 汇总状态）。
+// 本函数保留用于调试和兼容历史查询，不再作为业务状态判断的主入口。
 func GetFullPoolSettlementChainByFrontOrderID(ctx context.Context, store *clientDB, frontOrderID string) (PoolSettlementChain, error) {
 	var out PoolSettlementChain
 	if store == nil {

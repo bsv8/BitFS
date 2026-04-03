@@ -252,6 +252,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/purchases", s.withAuth(s.handlePurchases))
 		mux.HandleFunc(prefix+"/v1/purchases/detail", s.withAuth(s.handlePurchaseDetail))
 		mux.HandleFunc(prefix+"/v1/purchases/summary", s.withAuth(s.handlePurchaseSummary))
+		mux.HandleFunc(prefix+"/v1/downloads/settlement-status", s.withAuth(s.handleDownloadSettlementStatus))
 		mux.HandleFunc(prefix+"/v1/gateways/events", s.withAuth(s.handleGatewayEvents))
 		mux.HandleFunc(prefix+"/v1/gateways/events/detail", s.withAuth(s.handleGatewayEventDetail))
 		mux.HandleFunc(prefix+"/v1/files/get-file", s.withAuth(s.handleGetFileStart))
@@ -267,6 +268,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
 		mux.HandleFunc(prefix+"/v1/domains/register", s.withAuth(s.handleDomainRegister))
 		mux.HandleFunc(prefix+"/v1/domains/set-target", s.withAuth(s.handleDomainSetTarget))
+		mux.HandleFunc(prefix+"/v1/domains/settlement-status", s.withAuth(s.handleDomainSettlementStatus))
 		mux.HandleFunc(prefix+"/v1/inbox/messages", s.withAuth(s.handleInboxMessages))
 		mux.HandleFunc(prefix+"/v1/inbox/messages/detail", s.withAuth(s.handleInboxMessageDetail))
 		mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
@@ -1050,6 +1052,28 @@ func (s *httpAPIServer) handlePurchaseSummary(w http.ResponseWriter, r *http.Req
 		return
 	}
 	summary, err := dbSummarizeDemandPurchases(r.Context(), httpStore(s), demandID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, summary)
+}
+
+// handleDownloadSettlementStatus 下载结算状态查询（第四步新主线）
+// 设计：统一走 GetFrontOrderSettlementSummary 聚合读模型，支持一 front_order 多 business 多 seller 汇总
+// 不再直接查 direct_transfer_pools / purchases 来判断支付状态
+func (s *httpAPIServer) handleDownloadSettlementStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	frontOrderID := strings.TrimSpace(r.URL.Query().Get("front_order_id"))
+	if frontOrderID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "front_order_id is required"})
+		return
+	}
+
+	summary, err := GetFrontOrderSettlementSummary(r.Context(), httpStore(s), frontOrderID)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
