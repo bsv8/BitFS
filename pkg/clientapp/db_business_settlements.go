@@ -302,6 +302,26 @@ func dbUpdateBusinessSettlementStatusByBusinessID(ctx context.Context, store *cl
 	})
 }
 
+// dbUpdateBusinessSettlementTarget 回写 settlement 的 target_type 和 target_id
+func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, settlementID string, targetID string) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	settlementID = strings.TrimSpace(settlementID)
+	if settlementID == "" {
+		return fmt.Errorf("settlement_id is required")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		_, err := db.Exec(
+			`UPDATE business_settlements SET target_id=?, error_message='', updated_at_unix=? WHERE settlement_id=?`,
+			strings.TrimSpace(targetID),
+			time.Now().Unix(),
+			settlementID,
+		)
+		return err
+	})
+}
+
 // ============================================================
 // 查询辅助函数：第二步补充，让真实接口和后台读取摆脱旧散查方式
 // 设计原则：
@@ -487,4 +507,235 @@ type FullSettlementChain struct {
 	Business     financeBusinessItem    `json:"business"`
 	Settlement   BusinessSettlementItem `json:"settlement"`
 	ChainPayment *ChainPaymentItem      `json:"chain_payment,omitempty"`
+}
+
+// ============================================================
+// 池支付查询辅助函数：第三步补充
+// ============================================================
+
+// PoolSettlementChain 池支付完整结算链
+type PoolSettlementChain struct {
+	Business       financeBusinessItem    `json:"business"`
+	Settlement     BusinessSettlementItem `json:"settlement"`
+	PoolAllocation *PoolAllocationItem    `json:"pool_allocation,omitempty"`
+	PoolSession    *PoolSessionItem       `json:"pool_session,omitempty"`
+}
+
+// PoolAllocationItem pool_allocations 查询返回项
+type PoolAllocationItem struct {
+	ID               int64  `json:"id"`
+	AllocationID     string `json:"allocation_id"`
+	PoolSessionID    string `json:"pool_session_id"`
+	AllocationNo     int64  `json:"allocation_no"`
+	AllocationKind   string `json:"allocation_kind"`
+	SequenceNum      uint32 `json:"sequence_num"`
+	PayeeAmountAfter uint64 `json:"payee_amount_after"`
+	PayerAmountAfter uint64 `json:"payer_amount_after"`
+	TxID             string `json:"txid"`
+	TxHex            string `json:"tx_hex"`
+	CreatedAtUnix    int64  `json:"created_at_unix"`
+}
+
+// PoolSessionItem pool_sessions 查询返回项
+type PoolSessionItem struct {
+	PoolSessionID      string  `json:"pool_session_id"`
+	PoolScheme         string  `json:"pool_scheme"`
+	CounterpartyPubHex string  `json:"counterparty_pubkey_hex"`
+	SellerPubHex       string  `json:"seller_pubkey_hex"`
+	ArbiterPubHex      string  `json:"arbiter_pubkey_hex"`
+	GatewayPubHex      string  `json:"gateway_pubkey_hex"`
+	PoolAmountSat      int64   `json:"pool_amount_satoshi"`
+	SpendTxFeeSat      int64   `json:"spend_tx_fee_satoshi"`
+	FeeRateSatByte     float64 `json:"fee_rate_sat_byte"`
+	LockBlocks         int64   `json:"lock_blocks"`
+	OpenBaseTxID       string  `json:"open_base_txid"`
+	Status             string  `json:"status"`
+	CreatedAtUnix      int64   `json:"created_at_unix"`
+	UpdatedAtUnix      int64   `json:"updated_at_unix"`
+}
+
+// GetPoolAllocationByBusinessID 按 business_id 查 pool_allocation
+// 设计：通过 business -> settlement -> pool_allocation 串查
+func GetPoolAllocationByBusinessID(ctx context.Context, store *clientDB, businessID string) (PoolAllocationItem, error) {
+	if store == nil {
+		return PoolAllocationItem{}, fmt.Errorf("client db is nil")
+	}
+	settlement, err := GetSettlementByBusinessID(ctx, store, businessID)
+	if err != nil {
+		return PoolAllocationItem{}, fmt.Errorf("find settlement: %w", err)
+	}
+	if settlement.SettlementMethod != string(SettlementMethodPool) {
+		return PoolAllocationItem{}, fmt.Errorf("settlement_method is not pool")
+	}
+	if settlement.TargetID == "" {
+		return PoolAllocationItem{}, fmt.Errorf("settlement target_id is empty")
+	}
+	poolAllocationID, err := strconv.ParseInt(strings.TrimSpace(settlement.TargetID), 10, 64)
+	if err != nil {
+		return PoolAllocationItem{}, fmt.Errorf("parse settlement target_id: %w", err)
+	}
+	return GetPoolAllocationByID(ctx, store, poolAllocationID)
+}
+
+// GetPoolAllocationByID 按 id 查 pool_allocations
+func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (PoolAllocationItem, error) {
+	if store == nil {
+		return PoolAllocationItem{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (PoolAllocationItem, error) {
+		var item PoolAllocationItem
+		err := db.QueryRow(
+			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
+					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+			 FROM pool_allocations WHERE id=?`,
+			id,
+		).Scan(
+			&item.ID, &item.AllocationID, &item.PoolSessionID, &item.AllocationNo, &item.AllocationKind,
+			&item.SequenceNum, &item.PayeeAmountAfter, &item.PayerAmountAfter,
+			&item.TxID, &item.TxHex, &item.CreatedAtUnix,
+		)
+		if err != nil {
+			return PoolAllocationItem{}, err
+		}
+		return item, nil
+	})
+}
+
+// GetPoolSessionByID 按 id 查 pool_sessions（通过 pool_session_id）
+func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID string) (PoolSessionItem, error) {
+	if store == nil {
+		return PoolSessionItem{}, fmt.Errorf("client db is nil")
+	}
+	poolSessionID = strings.TrimSpace(poolSessionID)
+	if poolSessionID == "" {
+		return PoolSessionItem{}, fmt.Errorf("pool_session_id is required")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (PoolSessionItem, error) {
+		var item PoolSessionItem
+		err := db.QueryRow(
+			`SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+					gateway_pubkey_hex,pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,
+					open_base_txid,status,created_at_unix,updated_at_unix
+			 FROM pool_sessions WHERE pool_session_id=?`,
+			poolSessionID,
+		).Scan(
+			&item.PoolSessionID, &item.PoolScheme, &item.CounterpartyPubHex, &item.SellerPubHex, &item.ArbiterPubHex,
+			&item.GatewayPubHex, &item.PoolAmountSat, &item.SpendTxFeeSat, &item.FeeRateSatByte, &item.LockBlocks,
+			&item.OpenBaseTxID, &item.Status, &item.CreatedAtUnix, &item.UpdatedAtUnix,
+		)
+		if err != nil {
+			return PoolSessionItem{}, err
+		}
+		return item, nil
+	})
+}
+
+// ListPoolAllocationsBySession 按 pool_session_id 列该池下 allocations
+func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSessionID string) ([]PoolAllocationItem, error) {
+	if store == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	poolSessionID = strings.TrimSpace(poolSessionID)
+	if poolSessionID == "" {
+		return nil, fmt.Errorf("pool_session_id is required")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) ([]PoolAllocationItem, error) {
+		rows, err := db.Query(
+			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
+					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+			 FROM pool_allocations WHERE pool_session_id=? ORDER BY allocation_no DESC`,
+			poolSessionID,
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		var out []PoolAllocationItem
+		for rows.Next() {
+			var item PoolAllocationItem
+			if err := rows.Scan(
+				&item.ID, &item.AllocationID, &item.PoolSessionID, &item.AllocationNo, &item.AllocationKind,
+				&item.SequenceNum, &item.PayeeAmountAfter, &item.PayerAmountAfter,
+				&item.TxID, &item.TxHex, &item.CreatedAtUnix,
+			); err != nil {
+				return nil, err
+			}
+			out = append(out, item)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		return out, nil
+	})
+}
+
+// GetFullPoolSettlementChainByFrontOrderID 按 front_order_id 查完整池结算链
+// 返回：business -> settlement -> pool_allocation -> pool_session
+func GetFullPoolSettlementChainByFrontOrderID(ctx context.Context, store *clientDB, frontOrderID string) (PoolSettlementChain, error) {
+	var out PoolSettlementChain
+	if store == nil {
+		return out, fmt.Errorf("client db is nil")
+	}
+	frontOrderID = strings.TrimSpace(frontOrderID)
+	if frontOrderID == "" {
+		return out, fmt.Errorf("front_order_id is required")
+	}
+
+	business, err := GetLatestBusinessByFrontOrderID(ctx, store, frontOrderID)
+	if err != nil {
+		return out, fmt.Errorf("find business: %w", err)
+	}
+	out.Business = business
+
+	settlement, err := GetSettlementByBusinessID(ctx, store, business.BusinessID)
+	if err != nil {
+		return out, fmt.Errorf("find settlement: %w", err)
+	}
+	out.Settlement = settlement
+
+	// 如果是池支付且已 settled，查 pool_allocation
+	if settlement.SettlementMethod == string(SettlementMethodPool) && settlement.Status == "settled" && settlement.TargetID != "" {
+		poolAllocationID, err := strconv.ParseInt(strings.TrimSpace(settlement.TargetID), 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("parse settlement target_id: %w", err)
+		}
+		poolAllocation, err := GetPoolAllocationByID(ctx, store, poolAllocationID)
+		if err != nil {
+			return out, fmt.Errorf("find pool_allocation: %w", err)
+		}
+		out.PoolAllocation = &poolAllocation
+
+		// 查 pool_session
+		poolSession, err := GetPoolSessionByID(ctx, store, poolAllocation.PoolSessionID)
+		if err == nil {
+			out.PoolSession = &poolSession
+		}
+	}
+
+	return out, nil
+}
+
+// GetSettlementByPoolAllocationID 按 pool_allocation_id 查对应 settlement
+func GetSettlementByPoolAllocationID(ctx context.Context, store *clientDB, poolAllocationID int64) (BusinessSettlementItem, error) {
+	if store == nil {
+		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
+		var item BusinessSettlementItem
+		var payload string
+		err := db.QueryRow(
+			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
+			 FROM business_settlements WHERE settlement_method='pool' AND target_id=?`,
+			fmt.Sprintf("%d", poolAllocationID),
+		).Scan(
+			&item.SettlementID, &item.BusinessID, &item.SettlementMethod, &item.Status,
+			&item.TargetType, &item.TargetID, &item.ErrorMessage,
+			&item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
+		)
+		if err != nil {
+			return BusinessSettlementItem{}, err
+		}
+		item.Payload = json.RawMessage(payload)
+		return item, nil
+	})
 }

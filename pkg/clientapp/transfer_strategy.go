@@ -63,11 +63,12 @@ type transferChunkResult struct {
 type transferSellerWorker struct {
 	buyer         *Runtime
 	store         *clientDB
+	frontOrderID  string // 本次下载发起唯一，显式参数
 	quote         DirectQuoteItem
 	arbiterPubHex string
 	seedHash      string
 	poolAmount    uint64
-	// availableChunks 为空表示“未声明限制（默认认为可提供全部块）”。
+	// availableChunks 为空表示"未声明限制（默认认为可提供全部块）"。
 	availableChunks map[uint32]struct{}
 
 	dealID    string
@@ -216,6 +217,7 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 	openRes, err := triggerDirectTransferPoolOpen(ctx, w.store, w.buyer, directTransferPoolOpenParams{
 		SellerPubHex:  w.quote.SellerPubHex,
 		ArbiterPubHex: w.arbiterPubHex,
+		FrontOrderID:  w.frontOrderID,
 		DemandID:      w.quote.DemandID,
 		SeedHash:      w.seedHash,
 		SeedPrice:     w.quote.SeedPrice,
@@ -452,9 +454,12 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 	// 设计说明：
 	// 1) 先做报价硬过滤（价格上限 + 可用仲裁）；
 	// 2) 再构造卖家 worker（每个 worker 维护独立 transfer-pool 会话）；
-	// 3) 用“中心调度 + worker 执行”模型按块并发下载；
+	// 3) 用"中心调度 + worker 执行"模型按块并发下载；
 	// 4) 失败块重排回队列，超过重试阈值则整体失败；
 	// 5) 全部完成后关闭各自会话并汇总卖家统计，保证链上状态闭环。
+	// 第三步改动：
+	//   - 生成 front_order_id（本次下载发起唯一），创建 front_order 记录
+	//   - front_order_id 作为显式参数向后传递
 	if buyer == nil || buyer.Host == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
 	}
@@ -465,6 +470,30 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 	if p.MaxChunkRetries <= 0 {
 		p.MaxChunkRetries = defaultChunkRetryMax
 	}
+
+	// 生成 front_order_id（本次下载发起唯一，不按 demand_id 固定）
+	uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
+	frontOrderID := "fo_download_" + uniqueSuffix
+	frontOrderPayload := map[string]any{
+		"demand_id":          strings.TrimSpace(p.DemandID),
+		"seed_hash":          seedHash,
+		"chunk_count":        p.ChunkCount,
+		"arbiter_pubkey_hex": strings.TrimSpace(p.ArbiterPubHex),
+	}
+	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
+		FrontOrderID:     frontOrderID,
+		FrontType:        "download",
+		FrontSubtype:     "direct_transfer",
+		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+		TargetObjectType: "demand",
+		TargetObjectID:   strings.TrimSpace(p.DemandID),
+		Status:           "pending",
+		Note:             "下载: " + strings.TrimSpace(p.DemandID),
+		Payload:          frontOrderPayload,
+	}); err != nil {
+		return TransferChunksByStrategyResult{}, fmt.Errorf("create front_order: %w", err)
+	}
+
 	logTransferStrategy("evt_transfer_strategy_begin", map[string]any{
 		"demand_id":          strings.TrimSpace(p.DemandID),
 		"seed_hash":          shortID(seedHash),
@@ -476,6 +505,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		"pool_amount":        p.PoolAmount,
 		"max_chunk_retries":  p.MaxChunkRetries,
 		"arbiter_pubkey_hex": shortID(p.ArbiterPubHex),
+		"front_order_id":     frontOrderID,
 	})
 
 	quotes, err := TriggerClientListDirectQuotes(ctx, store, strings.TrimSpace(p.DemandID))
@@ -516,6 +546,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		Ctx:           ctx,
 		Buyer:         buyer,
 		Store:         store,
+		FrontOrderID:  frontOrderID,
 		Quotes:        filtered,
 		SeedHash:      seedHash,
 		ArbiterPubHex: p.ArbiterPubHex,

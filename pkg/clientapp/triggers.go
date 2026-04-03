@@ -577,6 +577,7 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 type directTransferPoolOpenParams struct {
 	SellerPubHex  string
 	ArbiterPubHex string
+	FrontOrderID  string // 本次下载发起唯一，显式参数
 	DemandID      string
 	SeedHash      string
 	SeedPrice     uint64
@@ -645,6 +646,71 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	sessionID := strings.TrimSpace(p.SessionID)
 	if sessionID == "" {
 		sessionID = "tp_" + randHex(8)
+	}
+
+	// 第三步：挂新主线骨架
+	// 一个 seller 的这次下载收费对应一条 business 和一条 settlement
+	// Open 只是开池准备，settlement 保持 pending
+	frontOrderID := strings.TrimSpace(p.FrontOrderID)
+	settlementID := "" // 在 if 块里赋值，供后续 setTriplePool 使用
+	if frontOrderID != "" {
+		uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
+		businessID := "biz_download_pool_" + uniqueSuffix
+		settlementID = "set_download_pool_" + uniqueSuffix
+		if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+			// 前台订单（已存在，这里只关联）
+			FrontOrderID:     frontOrderID,
+			FrontType:        "download",
+			FrontSubtype:     "direct_transfer",
+			OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+			TargetObjectType: "demand",
+			TargetObjectID:   strings.TrimSpace(p.DemandID),
+			FrontOrderNote:   "下载: " + strings.TrimSpace(p.DemandID),
+			FrontOrderPayload: map[string]any{
+				"demand_id":         strings.TrimSpace(p.DemandID),
+				"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
+				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+			},
+
+			// 业务
+			BusinessID:        businessID,
+			SourceType:        "front_order",
+			SourceID:          frontOrderID,
+			AccountingScene:   "direct_transfer",
+			AccountingSubType: "pool_open",
+			FromPartyID:       "client:self",
+			ToPartyID:         "seller:" + strings.TrimSpace(p.SellerPubHex),
+			BusinessNote:      "下载池支付: " + strings.TrimSpace(p.DemandID),
+			BusinessPayload: map[string]any{
+				"demand_id":         strings.TrimSpace(p.DemandID),
+				"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
+				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+			},
+
+			// 触发器
+			TriggerType:    "front_order",
+			TriggerIDValue: frontOrderID,
+			TriggerRole:    "primary",
+			TriggerNote:    "前台订单触发池支付",
+			TriggerPayload: map[string]any{
+				"trigger_reason": "download_initiated",
+			},
+
+			// 结算
+			SettlementID:         settlementID,
+			SettlementMethod:     SettlementMethodPool,
+			SettlementTargetType: "pool_allocation",
+			SettlementTargetID:   "", // Open 只是开池准备，保持空
+			SettlementPayload: map[string]any{
+				"demand_id":         strings.TrimSpace(p.DemandID),
+				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+				"session_id":        sessionID,
+				"status":            "pending",
+			},
+		}); err != nil {
+			obs.Error("bitcast-client", "download_pool_chain_init_failed", map[string]any{"error": err.Error(), "demand_id": p.DemandID, "seller_pubkey_hex": p.SellerPubHex})
+			return directTransferPoolOpenResult{}, fmt.Errorf("create download pool business chain: %w", err)
+		}
 	}
 
 	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
@@ -842,6 +908,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			DemandID:         strings.TrimSpace(p.DemandID),
 			SessionID:        curSessionID,
 			DealID:           dealID,
+			SettlementID:     settlementID, // 第三步：保存 settlement_id 供 pay 回写
 			SellerPubHex:     strings.TrimSpace(p.SellerPubHex),
 			ArbiterPubHex:    req.ArbiterPeerID,
 			PoolAmountSat:    req.PoolAmount,
@@ -1208,6 +1275,29 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
 		return directTransferPoolPayResult{}, err
 	}
+
+	// 第三步：第一次成功的真实业务 pay allocation 时回写 settlement
+	// Open 只是开池准备，第一条真实 pay allocation 才代表收费事实
+	settlementID := strings.TrimSpace(session.SettlementID)
+	if settlementID != "" && req.Sequence == 1 {
+		// 通过 allocation_id 拿到 pool_allocation.id
+		_, allocID := directTransferPoolAccountingSource(session.SessionID, "pay", req.Sequence)
+		poolAllocationID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID)
+		if err != nil {
+			obs.Error("bitcast-client", "download_pool_settlement_pay_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
+			return directTransferPoolPayResult{}, fmt.Errorf("resolve pool_allocation id for settlement: %w", err)
+		}
+		if err := dbUpdateBusinessSettlementStatus(ctx, store, settlementID, "settled", ""); err != nil {
+			obs.Error("bitcast-client", "download_pool_settlement_update_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
+			return directTransferPoolPayResult{}, fmt.Errorf("update settlement status: %w", err)
+		}
+		// 回写 target_id = pool_allocation.id
+		if err := dbUpdateBusinessSettlementTarget(ctx, store, settlementID, fmt.Sprintf("%d", poolAllocationID)); err != nil {
+			obs.Error("bitcast-client", "download_pool_settlement_target_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
+			return directTransferPoolPayResult{}, fmt.Errorf("update settlement target: %w", err)
+		}
+	}
+
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
 		"session_id":    req.SessionID,
 		"sequence":      req.Sequence,

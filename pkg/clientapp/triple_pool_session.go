@@ -22,6 +22,7 @@ type triplePoolSession struct {
 	DemandID         string
 	SessionID        string
 	DealID           string
+	SettlementID     string // 第三步：关联的 settlement_id，用于 pay 时回写
 	SellerPubHex     string
 	ArbiterPubHex    string
 	PoolAmountSat    uint64
