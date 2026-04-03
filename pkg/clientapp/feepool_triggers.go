@@ -63,6 +63,10 @@ func TriggerGatewayFeePoolClose(ctx context.Context, store *clientDB, rt *Runtim
 	})
 }
 
+func TriggerGatewayFeePoolCloseRuntime(ctx context.Context, rt *Runtime) (FeePoolCloseResult, error) {
+	return TriggerGatewayFeePoolClose(ctx, nil, rt)
+}
+
 type FeePoolCloseBySpendTxIDParams struct {
 	SpendTxID     string `json:"spend_txid"`
 	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
@@ -76,6 +80,7 @@ type FeePoolEnsureActiveParams struct {
 
 type FeePoolEnsureActiveResult struct {
 	GatewayPeerID string `json:"gateway_pubkey_hex"`
+	CommandID     string `json:"command_id,omitempty"`
 	Accepted      bool   `json:"accepted"`
 	Status        string `json:"status"`
 	ErrorCode     string `json:"error_code,omitempty"`
@@ -120,7 +125,7 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 	if requestedBy == "" {
 		requestedBy = "trigger_fee_pool_ensure_active"
 	}
-	res := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
+	cmd := prepareClientKernelCommand(clientKernelCommand{
 		CommandType:     clientKernelCommandFeePoolEnsureActive,
 		GatewayPeerID:   gw.ID.String(),
 		RequestedBy:     requestedBy,
@@ -130,9 +135,11 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 			"allow_when_paused":  p.AllowWhenPaused,
 			"gateway_pubkey_hex": gatewayID,
 		},
-	}))
+	})
+	res := kernel.dispatch(ctx, cmd)
 	return FeePoolEnsureActiveResult{
 		GatewayPeerID: gatewayID,
+		CommandID:     cmd.CommandID,
 		Accepted:      res.Accepted,
 		Status:        res.Status,
 		ErrorCode:     res.ErrorCode,
@@ -140,6 +147,10 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 		StateBefore:   res.StateBefore,
 		StateAfter:    res.StateAfter,
 	}, nil
+}
+
+func TriggerGatewayFeePoolEnsureActiveRuntime(ctx context.Context, rt *Runtime, p FeePoolEnsureActiveParams) (FeePoolEnsureActiveResult, error) {
+	return TriggerGatewayFeePoolEnsureActive(ctx, nil, rt, p)
 }
 
 // TriggerGatewayFeePoolListenUnderpayProbe 仅用于 e2e：发送“低于单轮监听费”的 pay_confirm，验证网关拒绝策略。

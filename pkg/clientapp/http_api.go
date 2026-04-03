@@ -319,6 +319,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/feepool/observed-states/detail", s.withAuth(s.handleAdminFeePoolObservedStateDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects", s.withAuth(s.handleAdminFeePoolEffects))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects/detail", s.withAuth(s.handleAdminFeePoolEffectDetail))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/audit/gateway-timeline", s.withAuth(s.handleAdminFeePoolGatewayAuditTimeline))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/audit/command-timeline", s.withAuth(s.handleAdminFeePoolCommandAuditTimeline))
 		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands", s.withAuth(s.handleAdminClientKernelCommands))
 		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands/detail", s.withAuth(s.handleAdminClientKernelCommandDetail))
 		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
@@ -1343,6 +1345,58 @@ func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r 
 		return
 	}
 	writeJSON(w, http.StatusOK, it)
+}
+
+func (s *httpAPIServer) handleAdminFeePoolGatewayAuditTimeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 100, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	gatewayPubkeyHex := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
+	page, err := dbListGatewayAuditTimeline(r.Context(), httpStore(s), AuditTimelineFilter{
+		Limit:            limit,
+		Offset:           offset,
+		GatewayPubkeyHex: gatewayPubkeyHex,
+	})
+	if err != nil {
+		if strings.Contains(err.Error(), "required") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
+}
+
+func (s *httpAPIServer) handleAdminFeePoolCommandAuditTimeline(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 100, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
+	page, err := dbListCommandAuditTimeline(r.Context(), httpStore(s), AuditTimelineFilter{
+		Limit:     limit,
+		Offset:    offset,
+		CommandID: commandID,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		if strings.Contains(err.Error(), "required") {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
 var adminClientKernelCommandTypes = []string{
