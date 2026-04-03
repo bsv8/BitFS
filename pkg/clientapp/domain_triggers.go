@@ -169,6 +169,14 @@ type builtDomainRegisterTx struct {
 // - 这里返回时，要么注册已经成功写链并拿到服务端回执，要么明确失败且不会偷偷广播；
 // - 注册交易在客户端本地构造，但不自行广播，保持“确认资格后才上链”的语义。
 func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainRegisterNameParams) (TriggerDomainRegisterNameResult, error) {
+	// 第七次迭代：落地新主链骨架
+	frontOrderID := "fo_domain_reg_" + strings.ToLower(strings.TrimSpace(p.Name))
+	businessID := "biz_domain_reg_" + strings.ToLower(strings.TrimSpace(p.Name))
+	settlementID := "set_domain_reg_" + strings.ToLower(strings.TrimSpace(p.Name))
+	if err := createDomainRegisterBusinessChain(ctx, store, frontOrderID, businessID, settlementID, p); err != nil {
+		obs.Error("bitcast-client", "domain_register_chain_init_failed", map[string]any{"error": err.Error(), "name": p.Name})
+	}
+
 	prepared, err := TriggerDomainPrepareRegister(ctx, store, rt, TriggerDomainPrepareRegisterParams{
 		ResolverPubkeyHex: p.ResolverPubkeyHex,
 		ResolverAddr:      p.ResolverAddr,
@@ -192,8 +200,12 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 	}
 	out = applyDomainRegisterSubmitResult(out, submitResp)
 	if !submitResp.Ok {
+		// 提交失败，回写 settlement 状态为 failed
+		_ = finalizeDomainRegisterSettlement(ctx, store, settlementID, false, "", submitResp.Message)
 		return out, nil
 	}
+	// 提交成功，回写 settlement 状态为 settled
+	_ = finalizeDomainRegisterSettlement(ctx, store, settlementID, true, out.RegisterTxID, "")
 	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          "domain_register:" + out.RegisterTxID,
 		FlowType:        "domain_register",

@@ -489,6 +489,12 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// 财务业务
 		// 第六次迭代起新库 schema 不再定义旧字段（老库兼容迁移未做物理删列）
 		// 旧列迁移由 ensureFinAccountingSchema 处理
+		//
+		// fin_business 语义说明（第七次迭代收口）：
+		// - 一条 fin_business = 一条独立收费事实
+		// - 失败重试不新建 business，只更新原记录
+		// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
+		// - 本阶段表名保持 fin_business，逻辑上已收口为 businesses
 		`CREATE TABLE IF NOT EXISTS fin_business(
 			business_id TEXT PRIMARY KEY,
 			source_type TEXT NOT NULL DEFAULT '',
@@ -545,6 +551,57 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
 			UNIQUE(business_id,txid,utxo_id,io_side,utxo_role)
+		)`,
+
+		// 前台业务主身份层（第七次迭代新增）
+		// 职责：表达前台业务主身份，不直接承载支付实现
+		`CREATE TABLE IF NOT EXISTS front_orders(
+			front_order_id TEXT PRIMARY KEY,
+			front_type TEXT NOT NULL,
+			front_subtype TEXT NOT NULL,
+			owner_pubkey_hex TEXT NOT NULL,
+			target_object_type TEXT NOT NULL,
+			target_object_id TEXT NOT NULL,
+			status TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		// 前台到财务桥接层（第七次迭代新增）
+		// 职责：表达"哪个前台主对象触发了哪条财务事实"
+		// 设计说明：
+		//   - 本阶段不强绑 front_orders 外键，允许旧对象直接触发 business
+		//   - 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
+		//   - 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
+		`CREATE TABLE IF NOT EXISTS business_triggers(
+			trigger_id TEXT PRIMARY KEY,
+			business_id TEXT NOT NULL,
+			trigger_type TEXT NOT NULL,
+			trigger_id_value TEXT NOT NULL,
+			trigger_role TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY(business_id) REFERENCES fin_business(business_id) ON DELETE CASCADE,
+			UNIQUE(business_id, trigger_type, trigger_id_value, trigger_role)
+		)`,
+		// 统一结算出口（第七次迭代新增）
+		// 职责：表达一条 business 的统一结算出口
+		// 设计约束：本阶段强制一条 business 只对应一条主 settlement
+		`CREATE TABLE IF NOT EXISTS business_settlements(
+			settlement_id TEXT PRIMARY KEY,
+			business_id TEXT NOT NULL,
+			settlement_method TEXT NOT NULL,
+			status TEXT NOT NULL,
+			target_type TEXT NOT NULL,
+			target_id TEXT NOT NULL,
+			error_message TEXT NOT NULL DEFAULT '',
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY(business_id) REFERENCES fin_business(business_id) ON DELETE CASCADE,
+			UNIQUE(business_id)
 		)`,
 
 		// 链状态
@@ -750,6 +807,18 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
+		// 前台业务主身份层索引（第七次迭代新增）
+		`CREATE INDEX IF NOT EXISTS idx_front_orders_type_status ON front_orders(front_type, status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_front_orders_target ON front_orders(target_object_type, target_object_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_front_orders_owner ON front_orders(owner_pubkey_hex, created_at_unix DESC)`,
+		// 业务触发桥接层索引（第三次迭代新增）
+		`CREATE INDEX IF NOT EXISTS idx_business_triggers_business ON business_triggers(business_id, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_business_triggers_type_value ON business_triggers(trigger_type, trigger_id_value)`,
+		`CREATE INDEX IF NOT EXISTS idx_business_triggers_type_value_role ON business_triggers(trigger_type, trigger_id_value, trigger_role)`,
+		// 统一结算出口索引（第三次迭代新增）
+		`CREATE INDEX IF NOT EXISTS idx_business_settlements_status ON business_settlements(status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_business_settlements_method ON business_settlements(settlement_method, status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_business_settlements_target ON business_settlements(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`,

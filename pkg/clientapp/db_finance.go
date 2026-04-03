@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// fin_business 语义说明（第七次迭代收口）：
+// - 一条 fin_business = 一条独立收费事实
+// - 失败重试不新建 business，只更新原记录
+// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
+// - 本阶段表名保持 fin_business，逻辑上已收口为 businesses
+// - 默认一条 fin_business 对应一条主 business_settlement
+
 // financeBusinessFilter 业务查询过滤条件
 // 设计说明：
 //   - 主口径（唯一模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
