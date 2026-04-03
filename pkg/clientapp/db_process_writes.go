@@ -308,11 +308,17 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 	})
 }
 
-func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJournalEntry) {
+func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJournalEntry) error {
 	if store == nil {
-		return
+		return nil
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	commandID := strings.TrimSpace(e.CommandID)
+	if commandID == "" {
+		err := fmt.Errorf("command_id is required")
+		obs.Error("bitcast-client", "command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
+		return err
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
 		accepted := 0
 		if e.Accepted {
 			accepted = 1
@@ -325,7 +331,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 				created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
-			strings.TrimSpace(e.CommandID),
+			commandID,
 			strings.TrimSpace(e.CommandType),
 			strings.TrimSpace(e.GatewayPeerID),
 			strings.TrimSpace(e.AggregateID),
@@ -345,20 +351,33 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		if err != nil {
 			obs.Error("bitcast-client", "command_journal_append_failed", map[string]any{"error": err.Error(), "command_type": e.CommandType})
 		}
-		return nil
+		return err
 	})
 }
 
-func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntry) {
+func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntry) error {
 	if store == nil {
-		return
+		return nil
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	commandID := strings.TrimSpace(e.CommandID)
+	if commandID == "" {
+		err := fmt.Errorf("command_id is required")
+		obs.Error("bitcast-client", "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
+		return err
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		observedAtUnix := e.ObservedAtUnix
+		if observedAtUnix <= 0 {
+			observedAtUnix = time.Now().Unix()
+		}
 		_, err := db.Exec(
-			`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			strings.TrimSpace(e.CommandID),
+			`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			observedAtUnix,
+			commandID,
 			strings.TrimSpace(e.GatewayPeerID),
+			"command",
+			commandID,
+			observedAtUnix,
 			strings.TrimSpace(e.EventName),
 			strings.TrimSpace(e.StateBefore),
 			strings.TrimSpace(e.StateAfter),
@@ -367,22 +386,35 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 		if err != nil {
 			obs.Error("bitcast-client", "domain_event_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
 		}
-		return nil
+		return err
 	})
 }
 
-func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshotEntry) {
+func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshotEntry) error {
 	if store == nil {
-		return
+		return nil
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	commandID := strings.TrimSpace(e.CommandID)
+	if commandID == "" {
+		err := fmt.Errorf("command_id is required")
+		obs.Error("bitcast-client", "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
+		return err
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		observedAtUnix := e.ObservedAtUnix
+		if observedAtUnix <= 0 {
+			observedAtUnix = time.Now().Unix()
+		}
 		_, err := db.Exec(
 			`INSERT INTO state_snapshots(
-				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			strings.TrimSpace(e.CommandID),
+				created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			observedAtUnix,
+			commandID,
 			strings.TrimSpace(e.GatewayPeerID),
+			"command",
+			commandID,
+			observedAtUnix,
 			strings.TrimSpace(e.State),
 			strings.TrimSpace(e.PauseReason),
 			e.PauseNeedSat,
@@ -393,19 +425,72 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 		if err != nil {
 			obs.Error("bitcast-client", "state_snapshot_append_failed", map[string]any{"error": err.Error(), "state": e.State})
 		}
-		return nil
+		return err
 	})
 }
 
-func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) {
+type observedGatewayStateEntry struct {
+	GatewayPeerID  string
+	SourceRef      string
+	ObservedAtUnix int64
+	EventName      string
+	StateBefore    string
+	StateAfter     string
+	PauseReason    string
+	PauseNeedSat   uint64
+	PauseHaveSat   uint64
+	LastError      string
+	Payload        any
+}
+
+func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observedGatewayStateEntry) error {
 	if store == nil {
-		return
+		return nil
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db *sql.DB) error {
+		observedAtUnix := e.ObservedAtUnix
+		if observedAtUnix <= 0 {
+			observedAtUnix = time.Now().Unix()
+		}
+		_, err := db.Exec(
+			`INSERT INTO observed_gateway_states(
+				created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
+			strings.TrimSpace(e.GatewayPeerID),
+			strings.TrimSpace(e.SourceRef),
+			observedAtUnix,
+			strings.TrimSpace(e.EventName),
+			strings.TrimSpace(e.StateBefore),
+			strings.TrimSpace(e.StateAfter),
+			strings.TrimSpace(e.PauseReason),
+			e.PauseNeedSat,
+			e.PauseHaveSat,
+			strings.TrimSpace(e.LastError),
+			mustJSON(e.Payload),
+		)
+		if err != nil {
+			obs.Error("bitcast-client", "observed_gateway_state_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
+		}
+		return err
+	})
+}
+
+func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) error {
+	if store == nil {
+		return nil
+	}
+	commandID := strings.TrimSpace(e.CommandID)
+	if commandID == "" {
+		err := fmt.Errorf("command_id is required")
+		obs.Error("bitcast-client", "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
+		return err
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
 			`INSERT INTO effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
-			strings.TrimSpace(e.CommandID),
+			commandID,
 			strings.TrimSpace(e.GatewayPeerID),
 			strings.TrimSpace(e.EffectType),
 			strings.TrimSpace(e.Stage),
@@ -416,7 +501,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) {
 		if err != nil {
 			obs.Error("bitcast-client", "effect_log_append_failed", map[string]any{"error": err.Error(), "effect_type": e.EffectType, "stage": e.Stage})
 		}
-		return nil
+		return err
 	})
 }
 

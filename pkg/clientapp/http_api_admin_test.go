@@ -358,7 +358,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "ck_1",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",
@@ -372,7 +372,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		Payload:       map[string]any{"trigger": "manual"},
 		Result:        map[string]any{"seed_count": 1},
 	})
-	dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "fp_1",
 		CommandType:   "fee_pool_internal_only",
 		GatewayPeerID: "gw",
@@ -1098,7 +1098,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	now := time.Now().Unix()
 
 	// 插入一条 orchestrator 发起的命令（带 trigger_key）
-	dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
 		CommandID:     "orch_cmd_1",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw1",
@@ -1115,7 +1115,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	})
 
 	// 插入一条直接命令（trigger_key 为空）
-	dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
 		CommandID:     "direct_cmd_1",
 		CommandType:   clientKernelCommandDirectDownloadCore,
 		GatewayPeerID: "direct",
@@ -1209,7 +1209,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 
 	// 测试 4：client-kernel 命令列表中，直接命令的 trigger_key 必须是空字符串
 	// 先插入一条带 trigger_key 的 client-kernel 命令
-	dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
 		CommandID:     "ck_with_trigger",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",

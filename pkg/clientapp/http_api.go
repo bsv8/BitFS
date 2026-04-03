@@ -315,6 +315,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/feepool/events/detail", s.withAuth(s.handleAdminFeePoolEventDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/states", s.withAuth(s.handleAdminFeePoolStates))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/states/detail", s.withAuth(s.handleAdminFeePoolStateDetail))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/observed-states", s.withAuth(s.handleAdminFeePoolObservedStates))
+		mux.HandleFunc(prefix+"/v1/admin/feepool/observed-states/detail", s.withAuth(s.handleAdminFeePoolObservedStateDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects", s.withAuth(s.handleAdminFeePoolEffects))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects/detail", s.withAuth(s.handleAdminFeePoolEffectDetail))
 		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands", s.withAuth(s.handleAdminClientKernelCommands))
@@ -1162,12 +1164,16 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
+	sourceKind := strings.TrimSpace(r.URL.Query().Get("source_kind"))
+	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
 	eventName := strings.TrimSpace(r.URL.Query().Get("event_name"))
 	page, err := dbListDomainEvents(r.Context(), httpStore(s), domainEventFilter{
 		Limit:         limit,
 		Offset:        offset,
 		CommandID:     commandID,
 		GatewayPeerID: gatewayPeerID,
+		SourceKind:    sourceKind,
+		SourceRef:     sourceRef,
 		EventName:     eventName,
 	})
 	if err != nil {
@@ -1199,6 +1205,54 @@ func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, it)
 }
 
+func (s *httpAPIServer) handleAdminFeePoolObservedStates(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
+	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
+	eventName := strings.TrimSpace(r.URL.Query().Get("event_name"))
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	page, err := dbListObservedGatewayStates(r.Context(), httpStore(s), observedGatewayStateFilter{
+		Limit:         limit,
+		Offset:        offset,
+		GatewayPeerID: gatewayPeerID,
+		SourceRef:     sourceRef,
+		EventName:     eventName,
+		State:         state,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
+}
+
+func (s *httpAPIServer) handleAdminFeePoolObservedStateDetail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
+	if id <= 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+		return
+	}
+	it, err := dbGetObservedGatewayStateItem(r.Context(), httpStore(s), int64(id))
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, it)
+}
+
 func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1208,12 +1262,16 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
+	sourceKind := strings.TrimSpace(r.URL.Query().Get("source_kind"))
+	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	page, err := dbListStateSnapshots(r.Context(), httpStore(s), stateSnapshotFilter{
 		Limit:         limit,
 		Offset:        offset,
 		CommandID:     commandID,
 		GatewayPeerID: gatewayPeerID,
+		SourceKind:    sourceKind,
+		SourceRef:     sourceRef,
 		State:         state,
 	})
 	if err != nil {

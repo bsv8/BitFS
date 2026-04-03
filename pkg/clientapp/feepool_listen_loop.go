@@ -138,7 +138,10 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 			if kernel := rt.kernel; kernel != nil {
 				kernel.tryResumeFeePoolPausedGateway(ctx, gwID)
 				if kernel.isFeePoolPaused(gwID) {
+					st := kernel.feePool.getState(gwID)
 					if !waitRechargeState[gwID] {
+						gatewayID := gatewayBusinessID(rt, gw.ID)
+						appendObservedFeePoolState(ctx, store, gatewayID, st, st, gatewayID, time.Now().Unix(), "fee_pool_pause_observed")
 						obs.Info("bitcast-client", "fee_pool_wait_wallet_recharge", map[string]any{"gateway": gwID})
 						waitRechargeState[gwID] = true
 					}

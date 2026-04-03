@@ -44,6 +44,15 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if err := migrateClientDBLegacySchema(db); err != nil {
 		return fmt.Errorf("legacy migration: %w", err)
 	}
+	if err := ensureCommandFactSourceColumns(db); err != nil {
+		return fmt.Errorf("command fact source columns: %w", err)
+	}
+	if err := backfillCommandFactSourceColumns(db, "domain_events"); err != nil {
+		return fmt.Errorf("domain_events command fact source backfill: %w", err)
+	}
+	if err := backfillCommandFactSourceColumns(db, "state_snapshots"); err != nil {
+		return fmt.Errorf("state_snapshots command fact source backfill: %w", err)
+	}
 	if err := ensureGatewayEventAndCommandJournalConstraints(db); err != nil {
 		return fmt.Errorf("gateway_events command constraints: %w", err)
 	}
@@ -354,6 +363,9 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
+			source_kind TEXT NOT NULL DEFAULT 'command',
+			source_ref TEXT NOT NULL DEFAULT '',
+			observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			event_name TEXT NOT NULL,
 			state_before TEXT NOT NULL,
 			state_after TEXT NOT NULL,
@@ -364,7 +376,27 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
+			source_kind TEXT NOT NULL DEFAULT 'command',
+			source_ref TEXT NOT NULL DEFAULT '',
+			observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			state TEXT NOT NULL,
+			pause_reason TEXT NOT NULL,
+			pause_need_satoshi INTEGER NOT NULL,
+			pause_have_satoshi INTEGER NOT NULL,
+			last_error TEXT NOT NULL,
+			payload_json TEXT NOT NULL
+		)`,
+		// 观察事实表
+		// 设计说明：这里只承接被动观察到的网关状态，不挂 command_id，不混命令链。
+		`CREATE TABLE IF NOT EXISTS observed_gateway_states(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
+			source_ref TEXT NOT NULL,
+			observed_at_unix INTEGER NOT NULL,
+			event_name TEXT NOT NULL,
+			state_before TEXT NOT NULL,
+			state_after TEXT NOT NULL,
 			pause_reason TEXT NOT NULL,
 			pause_need_satoshi INTEGER NOT NULL,
 			pause_have_satoshi INTEGER NOT NULL,
@@ -760,6 +792,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_created_at ON observed_gateway_states(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_gateway ON observed_gateway_states(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_event ON observed_gateway_states(event_name, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_state ON observed_gateway_states(state_after, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_source_ref ON observed_gateway_states(source_ref, observed_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_pubkey_hex, id DESC)`,
@@ -880,6 +917,85 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
 	}
 
+	return nil
+}
+
+// ensureCommandFactSourceColumns 只给命令事实表补来源列，不改旧数据。
+// 设计说明：
+// - 只处理 domain_events / state_snapshots；
+// - 只补列，不重建表；
+// - 幂等，重复跑只会确认列都在。
+func ensureCommandFactSourceColumns(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	for _, table := range []string{"domain_events", "state_snapshots"} {
+		cols, err := tableColumns(db, table)
+		if err != nil {
+			return fmt.Errorf("inspect %s: %w", table, err)
+		}
+		if len(cols) == 0 {
+			continue
+		}
+		addColumns := []struct {
+			col  string
+			stmt string
+		}{
+			{"source_kind", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'command'`, table)},
+			{"source_ref", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN source_ref TEXT NOT NULL DEFAULT ''`, table)},
+			{"observed_at_unix", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN observed_at_unix INTEGER NOT NULL DEFAULT 0`, table)},
+		}
+		for _, m := range addColumns {
+			if _, ok := cols[m.col]; ok {
+				continue
+			}
+			if _, err := db.Exec(m.stmt); err != nil {
+				return fmt.Errorf("add %s.%s: %w", table, m.col, err)
+			}
+		}
+	}
+	return nil
+}
+
+// backfillCommandFactSourceColumns 只回填命令事实表里缺失的来源信息。
+// 设计说明：
+// - 只填空，不覆盖已有值；
+// - source_kind 为空才补 command；
+// - source_ref 为空才补 command_id；
+// - observed_at_unix <= 0 才补 created_at_unix；
+// - 只处理 domain_events / state_snapshots。
+func backfillCommandFactSourceColumns(db *sql.DB, table string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	table = strings.TrimSpace(table)
+	if table != "domain_events" && table != "state_snapshots" {
+		return fmt.Errorf("unsupported table: %s", table)
+	}
+	hasTable, err := hasTable(db, table)
+	if err != nil {
+		return fmt.Errorf("check %s table: %w", table, err)
+	}
+	if !hasTable {
+		return nil
+	}
+	cols, err := tableColumns(db, table)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", table, err)
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	stmts := []string{
+		fmt.Sprintf(`UPDATE %s SET source_kind='command' WHERE trim(coalesce(source_kind,''))=''`, table),
+		fmt.Sprintf(`UPDATE %s SET source_ref=command_id WHERE trim(coalesce(source_ref,''))=''`, table),
+		fmt.Sprintf(`UPDATE %s SET observed_at_unix=created_at_unix WHERE coalesce(observed_at_unix,0)<=0`, table),
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("backfill %s: %w", table, err)
+		}
+	}
 	return nil
 }
 

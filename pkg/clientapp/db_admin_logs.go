@@ -52,6 +52,8 @@ type domainEventFilter struct {
 	Offset        int
 	CommandID     string
 	GatewayPeerID string
+	SourceKind    string
+	SourceRef     string
 	EventName     string
 }
 
@@ -61,14 +63,17 @@ type domainEventPage struct {
 }
 
 type domainEventItem struct {
-	ID            int64           `json:"id"`
-	CreatedAtUnix int64           `json:"created_at_unix"`
-	CommandID     string          `json:"command_id"`
-	GatewayPeerID string          `json:"gateway_pubkey_hex"`
-	EventName     string          `json:"event_name"`
-	StateBefore   string          `json:"state_before"`
-	StateAfter    string          `json:"state_after"`
-	Payload       json.RawMessage `json:"payload"`
+	ID             int64           `json:"id"`
+	CreatedAtUnix  int64           `json:"created_at_unix"`
+	CommandID      string          `json:"command_id"`
+	GatewayPeerID  string          `json:"gateway_pubkey_hex"`
+	SourceKind     string          `json:"source_kind"`
+	SourceRef      string          `json:"source_ref"`
+	ObservedAtUnix int64           `json:"observed_at_unix"`
+	EventName      string          `json:"event_name"`
+	StateBefore    string          `json:"state_before"`
+	StateAfter     string          `json:"state_after"`
+	Payload        json.RawMessage `json:"payload"`
 }
 
 type stateSnapshotFilter struct {
@@ -76,6 +81,8 @@ type stateSnapshotFilter struct {
 	Offset        int
 	CommandID     string
 	GatewayPeerID string
+	SourceKind    string
+	SourceRef     string
 	State         string
 }
 
@@ -85,16 +92,49 @@ type stateSnapshotPage struct {
 }
 
 type stateSnapshotItem struct {
-	ID            int64           `json:"id"`
-	CreatedAtUnix int64           `json:"created_at_unix"`
-	CommandID     string          `json:"command_id"`
-	GatewayPeerID string          `json:"gateway_pubkey_hex"`
-	State         string          `json:"state"`
-	PauseReason   string          `json:"pause_reason"`
-	PauseNeedSat  uint64          `json:"pause_need_satoshi"`
-	PauseHaveSat  uint64          `json:"pause_have_satoshi"`
-	LastError     string          `json:"last_error"`
-	Payload       json.RawMessage `json:"payload"`
+	ID             int64           `json:"id"`
+	CreatedAtUnix  int64           `json:"created_at_unix"`
+	CommandID      string          `json:"command_id"`
+	GatewayPeerID  string          `json:"gateway_pubkey_hex"`
+	SourceKind     string          `json:"source_kind"`
+	SourceRef      string          `json:"source_ref"`
+	ObservedAtUnix int64           `json:"observed_at_unix"`
+	State          string          `json:"state"`
+	PauseReason    string          `json:"pause_reason"`
+	PauseNeedSat   uint64          `json:"pause_need_satoshi"`
+	PauseHaveSat   uint64          `json:"pause_have_satoshi"`
+	LastError      string          `json:"last_error"`
+	Payload        json.RawMessage `json:"payload"`
+}
+
+type observedGatewayStateFilter struct {
+	Limit         int
+	Offset        int
+	GatewayPeerID string
+	SourceRef     string
+	EventName     string
+	State         string
+}
+
+type observedGatewayStatePage struct {
+	Total int
+	Items []observedGatewayStateItem
+}
+
+type observedGatewayStateItem struct {
+	ID             int64           `json:"id"`
+	CreatedAtUnix  int64           `json:"created_at_unix"`
+	GatewayPeerID  string          `json:"gateway_pubkey_hex"`
+	SourceRef      string          `json:"source_ref"`
+	ObservedAtUnix int64           `json:"observed_at_unix"`
+	EventName      string          `json:"event_name"`
+	StateBefore    string          `json:"state_before"`
+	StateAfter     string          `json:"state_after"`
+	PauseReason    string          `json:"pause_reason"`
+	PauseNeedSat   uint64          `json:"pause_need_satoshi"`
+	PauseHaveSat   uint64          `json:"pause_have_satoshi"`
+	LastError      string          `json:"last_error"`
+	Payload        json.RawMessage `json:"payload"`
 }
 
 type effectLogFilter struct {
@@ -218,6 +258,16 @@ func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilte
 			where += " AND gateway_pubkey_hex=?"
 			args = append(args, f.GatewayPeerID)
 		}
+		if sourceKind := strings.TrimSpace(f.SourceKind); sourceKind != "" {
+			where += " AND source_kind=?"
+			args = append(args, sourceKind)
+		} else {
+			where += " AND source_kind='command'"
+		}
+		if f.SourceRef != "" {
+			where += " AND source_ref=?"
+			args = append(args, f.SourceRef)
+		}
 		if f.EventName != "" {
 			where += " AND event_name=?"
 			args = append(args, f.EventName)
@@ -226,7 +276,7 @@ func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilte
 		if err := db.QueryRow("SELECT COUNT(1) FROM domain_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return domainEventPage{}, err
 		}
-		rows, err := db.Query(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json FROM domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return domainEventPage{}, err
 		}
@@ -251,7 +301,7 @@ func dbGetDomainEventItem(ctx context.Context, store *clientDB, id int64) (domai
 		return domainEventItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (domainEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id)
 		return scanDomainEventItem(row)
 	})
 }
@@ -271,6 +321,16 @@ func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotF
 			where += " AND gateway_pubkey_hex=?"
 			args = append(args, f.GatewayPeerID)
 		}
+		if sourceKind := strings.TrimSpace(f.SourceKind); sourceKind != "" {
+			where += " AND source_kind=?"
+			args = append(args, sourceKind)
+		} else {
+			where += " AND source_kind='command'"
+		}
+		if f.SourceRef != "" {
+			where += " AND source_ref=?"
+			args = append(args, f.SourceRef)
+		}
 		if f.State != "" {
 			where += " AND state=?"
 			args = append(args, f.State)
@@ -280,7 +340,7 @@ func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotF
 			return stateSnapshotPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			FROM state_snapshots WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -309,10 +369,74 @@ func dbGetStateSnapshotItem(ctx context.Context, store *clientDB, id int64) (sta
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (stateSnapshotItem, error) {
 		row := db.QueryRow(
-			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			FROM state_snapshots WHERE id=?`, id,
 		)
 		return scanStateSnapshotItem(row)
+	})
+}
+
+func dbListObservedGatewayStates(ctx context.Context, store *clientDB, f observedGatewayStateFilter) (observedGatewayStatePage, error) {
+	if store == nil {
+		return observedGatewayStatePage{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (observedGatewayStatePage, error) {
+		where := ""
+		args := make([]any, 0, 4)
+		if f.GatewayPeerID != "" {
+			where += " AND gateway_pubkey_hex=?"
+			args = append(args, f.GatewayPeerID)
+		}
+		if f.SourceRef != "" {
+			where += " AND source_ref=?"
+			args = append(args, f.SourceRef)
+		}
+		if f.EventName != "" {
+			where += " AND event_name=?"
+			args = append(args, f.EventName)
+		}
+		if f.State != "" {
+			where += " AND state_after=?"
+			args = append(args, f.State)
+		}
+		var out observedGatewayStatePage
+		if err := db.QueryRow("SELECT COUNT(1) FROM observed_gateway_states WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+			return observedGatewayStatePage{}, err
+		}
+		rows, err := db.Query(
+			`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			FROM observed_gateway_states WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			append(args, f.Limit, f.Offset)...,
+		)
+		if err != nil {
+			return observedGatewayStatePage{}, err
+		}
+		defer rows.Close()
+		out.Items = make([]observedGatewayStateItem, 0, f.Limit)
+		for rows.Next() {
+			it, err := scanObservedGatewayStateItem(rows)
+			if err != nil {
+				return observedGatewayStatePage{}, err
+			}
+			out.Items = append(out.Items, it)
+		}
+		if err := rows.Err(); err != nil {
+			return observedGatewayStatePage{}, err
+		}
+		return out, nil
+	})
+}
+
+func dbGetObservedGatewayStateItem(ctx context.Context, store *clientDB, id int64) (observedGatewayStateItem, error) {
+	if store == nil {
+		return observedGatewayStateItem{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (observedGatewayStateItem, error) {
+		row := db.QueryRow(
+			`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			FROM observed_gateway_states WHERE id=?`, id,
+		)
+		return scanObservedGatewayStateItem(row)
 	})
 }
 
@@ -411,11 +535,21 @@ type scanDomainEvent interface {
 
 func scanDomainEventItem(row scanDomainEvent) (domainEventItem, error) {
 	var out domainEventItem
+	var commandID sql.NullString
 	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.GatewayPeerID, &out.EventName, &out.StateBefore, &out.StateAfter, &payload)
+	var sourceKind sql.NullString
+	var sourceRef sql.NullString
+	var observedAtUnix int64
+	err := row.Scan(&out.ID, &out.CreatedAtUnix, &commandID, &out.GatewayPeerID, &sourceKind, &sourceRef, &observedAtUnix, &out.EventName, &out.StateBefore, &out.StateAfter, &payload)
 	if err != nil {
 		return domainEventItem{}, err
 	}
+	if commandID.Valid {
+		out.CommandID = commandID.String
+	}
+	out.SourceKind = sourceKind.String
+	out.SourceRef = sourceRef.String
+	out.ObservedAtUnix = observedAtUnix
 	out.Payload = json.RawMessage(payload)
 	return out, nil
 }
@@ -426,10 +560,35 @@ type scanStateSnapshot interface {
 
 func scanStateSnapshotItem(row scanStateSnapshot) (stateSnapshotItem, error) {
 	var out stateSnapshotItem
+	var commandID sql.NullString
 	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.GatewayPeerID, &out.State, &out.PauseReason, &out.PauseNeedSat, &out.PauseHaveSat, &out.LastError, &payload)
+	var sourceKind sql.NullString
+	var sourceRef sql.NullString
+	var observedAtUnix int64
+	err := row.Scan(&out.ID, &out.CreatedAtUnix, &commandID, &out.GatewayPeerID, &sourceKind, &sourceRef, &observedAtUnix, &out.State, &out.PauseReason, &out.PauseNeedSat, &out.PauseHaveSat, &out.LastError, &payload)
 	if err != nil {
 		return stateSnapshotItem{}, err
+	}
+	if commandID.Valid {
+		out.CommandID = commandID.String
+	}
+	out.SourceKind = sourceKind.String
+	out.SourceRef = sourceRef.String
+	out.ObservedAtUnix = observedAtUnix
+	out.Payload = json.RawMessage(payload)
+	return out, nil
+}
+
+type scanObservedGatewayState interface {
+	Scan(dest ...any) error
+}
+
+func scanObservedGatewayStateItem(row scanObservedGatewayState) (observedGatewayStateItem, error) {
+	var out observedGatewayStateItem
+	var payload string
+	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.SourceRef, &out.ObservedAtUnix, &out.EventName, &out.StateBefore, &out.StateAfter, &out.PauseReason, &out.PauseNeedSat, &out.PauseHaveSat, &out.LastError, &payload)
+	if err != nil {
+		return observedGatewayStateItem{}, err
 	}
 	out.Payload = json.RawMessage(payload)
 	return out, nil

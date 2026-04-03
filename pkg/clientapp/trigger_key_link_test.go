@@ -100,7 +100,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 
 	// 写入 command_journal（模拟 kernel 执行后的写入）
 	// 真实链路中，kernel 会从 cmd.TriggerKey 取值写入
-	dbAppendCommandJournal(ctx, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "real_orch_cmd_1",
 		CommandType:   task.Command.CommandType,
 		GatewayPeerID: "workspace",
@@ -136,7 +136,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 
 	// 测试 3：验证重试时共用同一个 trigger_key
 	// 模拟第一次执行失败
-	dbAppendCommandJournal(ctx, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "retry_cmd_fail",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw1",
@@ -155,7 +155,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	})
 
 	// 模拟重试成功（同一个 trigger_key）
-	dbAppendCommandJournal(ctx, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "retry_cmd_success",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw1",
@@ -195,7 +195,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	}
 
 	// 测试 4：验证 reject 路径也带 trigger_key
-	dbAppendCommandJournal(ctx, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "rejected_cmd_real",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw2",
@@ -261,7 +261,7 @@ func TestDirectCommandTriggerKeyEmpty(t *testing.T) {
 
 	// 写入 command_journal（模拟 kernel 直接调用的写入）
 	ctx := context.Background()
-	dbAppendCommandJournal(ctx, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     cmd.CommandID,
 		CommandType:   cmd.CommandType,
 		GatewayPeerID: cmd.GatewayPeerID,
@@ -312,7 +312,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	now := time.Now().Unix()
 
 	// 插入一条带 trigger_key 的 orchestrator 命令
-	dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
 		CommandID:     "orch_cmd_http",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw1",
@@ -329,7 +329,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	})
 
 	// 插入一条不带 trigger_key 的直接命令
-	dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
 		CommandID:     "direct_cmd_http",
 		CommandType:   clientKernelCommandDirectDownloadCore,
 		GatewayPeerID: "direct",
@@ -426,7 +426,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 
 	// 测试 4：client-kernel 接口同样支持 trigger_key 过滤
 	// 先插入一条 client-kernel 类型的命令（带 trigger_key）
-	dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
 		CommandID:     "ck_with_trigger",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",

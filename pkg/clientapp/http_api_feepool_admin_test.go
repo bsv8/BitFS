@@ -12,7 +12,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
+	_ = dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "cmd-1",
 		CommandType:   "ensure_active",
 		GatewayPeerID: "gw1",
@@ -29,25 +29,41 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		Payload:       map[string]any{"x": 1},
 		Result:        map[string]any{"status": "paused"},
 	})
-	dbAppendDomainEvent(nil, newClientDB(db, nil), domainEventEntry{
-		CommandID:     "cmd-1",
-		GatewayPeerID: "gw1",
-		EventName:     "fee_pool_paused_insufficient",
-		StateBefore:   "idle",
-		StateAfter:    "paused_insufficient",
-		Payload:       map[string]any{"need": 100000, "have": 12345},
+	_ = dbAppendDomainEvent(nil, newClientDB(db, nil), domainEventEntry{
+		CommandID:      "cmd-1",
+		GatewayPeerID:  "gw1",
+		SourceKind:     "command",
+		SourceRef:      "cmd-1",
+		ObservedAtUnix: 1700000001,
+		EventName:      "fee_pool_paused_insufficient",
+		StateBefore:    "idle",
+		StateAfter:     "paused_insufficient",
+		Payload:        map[string]any{"need": 100000, "have": 12345},
 	})
-	dbAppendStateSnapshot(nil, newClientDB(db, nil), stateSnapshotEntry{
-		CommandID:     "cmd-1",
-		GatewayPeerID: "gw1",
-		State:         "paused_insufficient",
-		PauseReason:   "wallet_insufficient",
-		PauseNeedSat:  100000,
-		PauseHaveSat:  12345,
-		LastError:     "not enough balance",
-		Payload:       map[string]any{"source": "test"},
+	_ = dbAppendStateSnapshot(nil, newClientDB(db, nil), stateSnapshotEntry{
+		CommandID:      "cmd-1",
+		GatewayPeerID:  "gw1",
+		SourceKind:     "command",
+		SourceRef:      "cmd-1",
+		ObservedAtUnix: 1700000001,
+		State:          "paused_insufficient",
+		PauseReason:    "wallet_insufficient",
+		PauseNeedSat:   100000,
+		PauseHaveSat:   12345,
+		LastError:      "not enough balance",
+		Payload:        map[string]any{"source": "test"},
 	})
-	dbAppendEffectLog(nil, newClientDB(db, nil), effectLogEntry{
+	_ = dbAppendObservedGatewayState(nil, newClientDB(db, nil), observedGatewayStateEntry{
+		GatewayPeerID:  "gw1",
+		SourceRef:      "gw1",
+		ObservedAtUnix: 1700000002,
+		EventName:      "fee_pool_resumed_by_wallet_probe",
+		StateBefore:    "paused_insufficient",
+		StateAfter:     "idle",
+		PauseHaveSat:   999999,
+		Payload:        map[string]any{"wallet_balance_satoshi": 999999},
+	})
+	_ = dbAppendEffectLog(nil, newClientDB(db, nil), effectLogEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		EffectType:    "chain",
@@ -56,6 +72,13 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		ErrorMessage:  "not enough balance",
 		Payload:       map[string]any{"need": 100000, "have": 12345},
 	})
+	var observedCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM observed_gateway_states WHERE gateway_pubkey_hex='gw1'`).Scan(&observedCount); err != nil {
+		t.Fatalf("count observed gateway states failed: %v", err)
+	}
+	if observedCount != 1 {
+		t.Fatalf("expected exactly one observed gateway state, got=%d", observedCount)
+	}
 
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?gateway_pubkey_hex=gw1&limit=10&offset=0", nil)
@@ -101,10 +124,12 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		var out struct {
 			Total int `json:"total"`
 			Items []struct {
-				ID      int64           `json:"id"`
-				Event   string          `json:"event_name"`
-				State   string          `json:"state_after"`
-				Payload json.RawMessage `json:"payload"`
+				ID         int64           `json:"id"`
+				Event      string          `json:"event_name"`
+				State      string          `json:"state_after"`
+				SourceKind string          `json:"source_kind"`
+				SourceRef  string          `json:"source_ref"`
+				Payload    json.RawMessage `json:"payload"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -113,7 +138,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		if out.Total != 1 || len(out.Items) != 1 {
 			t.Fatalf("events total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
 		}
-		if out.Items[0].Event != "fee_pool_paused_insufficient" || out.Items[0].State != "paused_insufficient" || len(out.Items[0].Payload) == 0 {
+		if out.Items[0].Event != "fee_pool_paused_insufficient" || out.Items[0].State != "paused_insufficient" || out.Items[0].SourceKind != "command" || out.Items[0].SourceRef != "cmd-1" || len(out.Items[0].Payload) == 0 {
 			t.Fatalf("unexpected events row: %+v", out.Items[0])
 		}
 		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/events/detail?id="+itoa64(out.Items[0].ID), nil)
@@ -134,10 +159,12 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		var out struct {
 			Total int `json:"total"`
 			Items []struct {
-				ID      int64  `json:"id"`
-				State   string `json:"state"`
-				NeedSat uint64 `json:"pause_need_satoshi"`
-				HaveSat uint64 `json:"pause_have_satoshi"`
+				ID         int64  `json:"id"`
+				State      string `json:"state"`
+				SourceKind string `json:"source_kind"`
+				SourceRef  string `json:"source_ref"`
+				NeedSat    uint64 `json:"pause_need_satoshi"`
+				HaveSat    uint64 `json:"pause_have_satoshi"`
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -146,7 +173,7 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		if out.Total != 1 || len(out.Items) != 1 {
 			t.Fatalf("states total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
 		}
-		if out.Items[0].State != "paused_insufficient" || out.Items[0].NeedSat != 100000 || out.Items[0].HaveSat != 12345 {
+		if out.Items[0].State != "paused_insufficient" || out.Items[0].SourceKind != "command" || out.Items[0].SourceRef != "cmd-1" || out.Items[0].HaveSat != 12345 {
 			t.Fatalf("unexpected states row: %+v", out.Items[0])
 		}
 		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/states/detail?id="+itoa64(out.Items[0].ID), nil)
@@ -154,6 +181,40 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		srv.handleAdminFeePoolStateDetail(drec, dreq)
 		if drec.Code != http.StatusOK {
 			t.Fatalf("states detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
+		}
+	}
+
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/observed-states?event_name=fee_pool_resumed_by_wallet_probe&gateway_pubkey_hex=gw1&limit=10&offset=0", nil)
+		rec := httptest.NewRecorder()
+		srv.handleAdminFeePoolObservedStates(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("observed states status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var out struct {
+			Total int `json:"total"`
+			Items []struct {
+				ID         int64  `json:"id"`
+				Event      string `json:"event_name"`
+				StateAfter string `json:"state_after"`
+				SourceRef  string `json:"source_ref"`
+				HaveSat    uint64 `json:"pause_have_satoshi"`
+			} `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode observed states list: %v", err)
+		}
+		if out.Total != 1 || len(out.Items) != 1 {
+			t.Fatalf("observed states total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
+		}
+		if out.Items[0].Event != "fee_pool_resumed_by_wallet_probe" || out.Items[0].StateAfter != "idle" || out.Items[0].SourceRef != "gw1" || out.Items[0].HaveSat != 999999 {
+			t.Fatalf("unexpected observed states row: %+v", out.Items[0])
+		}
+		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/observed-states/detail?id="+itoa64(out.Items[0].ID), nil)
+		drec := httptest.NewRecorder()
+		srv.handleAdminFeePoolObservedStateDetail(drec, dreq)
+		if drec.Code != http.StatusOK {
+			t.Fatalf("observed states detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
 		}
 	}
 
