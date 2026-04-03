@@ -906,17 +906,19 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 	})
 }
 
-// dbRecordDirectPoolOpenAccounting 【第五步：过程财务写入边界】
+// dbRecordDirectPoolOpenAccounting 【第二阶段：过程财务写入边界】
 // 设计说明：
 // - 这是 direct_transfer_pool open 阶段的过程财务写入
-// - 记录资金准备动作（lock），不代表 seller 下载收费已完成
-// - 前台业务完成状态以 business_settlements 为准，不是本函数输出
-// - 本函数输出不能直接当成"前台下载收费主业务完成"依据
+// - 第二阶段整改：open 不再是正式下载收费 business，改为过程型财务对象
+// - 前台业务完成状态以 business_settlements（biz_download_pool_*）为准
+// - 本函数记录：fin_business(过程型) + fin_process_event + fin_tx_breakdown + utxo_fact
+// - ⚠️ 禁止用 process_id 充当 business_id，business_id 必须是稳定业务身份键
 func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
+		// 第二阶段整改：open 继续有自己的 fin_business，但定性为过程型财务对象
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		sourceType := "pool_allocation"
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
@@ -936,7 +938,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				if input.SourceTXID != nil {
 					utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
 					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-						BusinessID:    businessID,
+						BusinessID:    businessID, // 第二阶段：utxo 挂到过程型 business
 						TxID:          baseTxID,
 						UTXOID:        utxoID,
 						IOSide:        "input",
@@ -982,26 +984,29 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		if minerFee < 0 {
 			minerFee = 0
 		}
+		// 第二阶段整改：open 继续写 fin_business，但明确标记为过程型财务对象
+		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
 			SourceType:        sourceType,
 			SourceID:          fmt.Sprintf("%d", sourceID),
-			AccountingScene:   "fee_pool",
-			AccountingSubType: "open",
+			AccountingScene:   "direct_transfer_process", // 过程型财务场景
+			AccountingSubType: "pool_open_lock",          // 明确是过程动作，不是收费
 			FromPartyID:       "client:self",
 			ToPartyID:         "seller:" + strings.TrimSpace(in.SellerPubHex),
 			Status:            "posted",
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_open:" + strings.TrimSpace(in.SessionID),
-			Note:              "direct transfer pool open lock",
+			Note:              "direct transfer pool open lock (process fact)",
 			Payload: map[string]any{
 				"session_id":    strings.TrimSpace(in.SessionID),
 				"deal_id":       strings.TrimSpace(in.DealID),
 				"base_txid":     baseTxID,
-				"allocation_id": allocID, // 保留业务键在 payload 中
+				"allocation_id": allocID,
+				"process_type":  "pool_open", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
@@ -1025,6 +1030,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return err
 		}
+		// 第二阶段：tx_breakdown 挂正式的 business_id
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 			BusinessID:         businessID,
 			TxID:               baseTxID,
@@ -1046,12 +1052,14 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	})
 }
 
-// dbRecordDirectPoolPayAccounting 【第五步：过程财务写入边界】
+// dbRecordDirectPoolPayAccounting 【第二阶段：过程财务写入边界（过渡方案）】
 // 设计说明：
 // - 这是 direct_transfer_pool pay 阶段的过程财务写入
-// - 记录过程中的真实支付动作（chunk pay），但前台业务完成仍以 settlement 为准
+// - 第二阶段过渡方案：暂时保留 biz_c2c_pay_*，但明确标记为"过程支付记录"
+// - ⚠️ 正式下载收费主事实只认 biz_download_pool_*（由 triggerDirectTransferPoolOpen 创建）
+// - ⚠️ 禁止把 biz_c2c_pay_* 当正式业务读取入口；正式状态统一走 business_settlements
 // - 第一次成功的 pay 会触发 settlement 状态更新（见 triggerDirectTransferPoolPay）
-// - 本函数输出不能直接当成"前台下载收费主业务完成"依据
+// TODO(第二阶段后续)：完全停写 biz_c2c_pay_*，只保留 fin_process_event + fin_tx_breakdown
 func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -1125,12 +1133,13 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 	})
 }
 
-// dbRecordDirectPoolCloseAccounting 【第五步：过程财务写入边界】
+// dbRecordDirectPoolCloseAccounting 【第二阶段：过程财务写入边界】
 // 设计说明：
 // - 这是 direct_transfer_pool close 阶段的过程财务写入
-// - 记录结尾清算动作（settle return），不代表前台下载收费主事实本身
-// - 前台业务完成状态以 business_settlements 为准（在 pay 阶段已更新）
-// - 本函数输出不能直接当成"前台下载收费主业务完成"依据
+// - 第二阶段整改：close 不再是正式收费 business，改为过程型财务对象
+// - 前台业务完成状态以 business_settlements（biz_download_pool_*）为准（在 pay 阶段已更新）
+// - 本函数记录：fin_business(过程型) + fin_process_event + fin_tx_breakdown + utxo_fact
+// - ⚠️ 禁止用 process_id 充当 business_id，business_id 必须是稳定业务身份键
 func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -1150,6 +1159,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				}
 			}
 		}
+		// 第二阶段整改：close 继续有自己的 fin_business，但定性为过程型财务对象
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
 		sourceType := "pool_allocation"
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "close", sequence)
@@ -1157,27 +1167,31 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		if err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
+		// 第二阶段整改：close 继续写 fin_business，但明确标记为过程型财务对象
+		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
 			SourceType:        sourceType,
 			SourceID:          fmt.Sprintf("%d", sourceID),
-			AccountingScene:   "c2c_transfer",
-			AccountingSubType: "close",
+			AccountingScene:   "direct_transfer_process", // 过程型财务场景
+			AccountingSubType: "pool_close_settle",       // 明确是过程动作，不是收费
 			FromPartyID:       "client:self",
 			ToPartyID:         "seller:" + strings.TrimSpace(sellerPeerID),
 			Status:            "posted",
 			OccurredAtUnix:    time.Now().Unix(),
 			IdempotencyKey:    "c2c_close:" + strings.TrimSpace(sessionID),
-			Note:              "direct transfer settle close",
+			Note:              "direct transfer settle close (process fact)",
 			Payload: map[string]any{
 				"seller_amount_satoshi": sellerAmount,
 				"buyer_amount_satoshi":  buyerAmount,
-				"allocation_id":         allocID, // 保留业务键在 payload 中
+				"allocation_id":         allocID,
+				"process_type":          "pool_close", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
 			return err
 		}
+		// 过程事件继续使用统一的过程追踪 id
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			SourceType:        sourceType,
@@ -1199,6 +1213,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			return err
 		}
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
+			// 第二阶段：tx_breakdown 挂正式的 business_id
 			BusinessID:         businessID,
 			TxID:               finalTxID,
 			TxRole:             "close_final",
@@ -1228,6 +1243,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				value = inputValueHint
 			}
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
+			// 第二阶段：utxo 挂正式的 business_id
 			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
 				BusinessID:    businessID,
 				TxID:          finalTxID,
@@ -1259,6 +1275,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				buyerLeft = 0
 			}
 			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
+				// 第二阶段：utxo 挂正式的 business_id
 				BusinessID:    businessID,
 				TxID:          finalTxID,
 				UTXOID:        finalTxID + ":" + fmt.Sprint(idx),
