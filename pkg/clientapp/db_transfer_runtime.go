@@ -16,15 +16,17 @@ import (
 // - SQL 留在这里，协议处理只保留校验和签名逻辑；
 // - 文件读取虽然最终走文件系统，但 seed 路径解析也统一收在 db 层。
 //
-// ⚠️ 第五步降级说明（2026-04）：
-// - direct_transfer_pools / direct_deals 已降级为【运行态/过程对象】
-// - 这些表只保留协议运行期的上下文，不再作为业务状态主判断入口
-// - 业务完成状态统一以 business_settlements 为准
-// - 新代码禁止根据 direct_transfer_pools.status 判断业务是否完成
+// ⚠️ 第五步分层护栏（2026-04）：
+// - 本文件所有函数【仅允许协议运行层使用】，禁止在 handler/业务查询/财务查询中复用
+// - direct_transfer_pools / direct_deals 已降级为【协议运行态表】
+// - 这些表只保留协议运行期的上下文（deal/parties/session/seed_hash 等），用于协议流恢复/校验
+// - 业务完成状态统一以 business_settlements 为准，禁止根据 direct_transfer_pools.status 判断业务是否完成
+// - 如需查询业务状态，请使用 GetFrontOrderSettlementSummary
 
+// dbLoadDirectDealParties 【协议运行层专用】恢复 deal 参与方上下文
+// ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
 	// 运行期辅助查询：只给 direct transfer 串 buyer / seller / arbiter 上下文。
-	// ⚠️ 第五步：此函数仅用于运行期协议上下文恢复，不作为业务状态判断入口。
 	out, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
 		buyer   string
 		seller  string
@@ -42,6 +44,8 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 	return out.buyer, out.seller, out.arbiter, err
 }
 
+// dbLoadDirectSessionDealID 【协议运行层专用】按 session_id 查 deal_id
+// ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var dealID string
@@ -50,9 +54,10 @@ func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID s
 	})
 }
 
+// dbLoadDirectDealSeedHash 【协议运行层专用】恢复 deal 关联的 seed
+// ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
 	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
-	// ⚠️ 第五步：此函数仅用于运行期协议上下文恢复，不作为业务状态判断入口。
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedHash string
 		err := db.QueryRow(`SELECT seed_hash FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
@@ -60,6 +65,10 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 	})
 }
 
+// dbLoadDirectTransferPoolRow 【协议运行层专用】加载池运行时状态
+// ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
+// - 返回值中的 Status 是协议运行时状态，不代表业务结算状态
+// - 业务状态请查 business_settlements
 func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (directTransferPoolRow, error) {
 		return loadDirectTransferPoolRowDB(db, sessionID)

@@ -619,10 +619,22 @@ type directTransferPoolCloseResult struct {
 	FinalTxID string
 }
 
+// triggerDirectTransferPoolOpen 正式下载开池入口
+// 设计约束（第五步）：
+// - FrontOrderID 是正式下载主流程的必填字段，用于关联 front_order -> business -> settlement 主线
+// - 缺失 FrontOrderID 表示调用方试图绕过新主线，直接拒绝
+// - 如需兼容老路径，应使用专门的 debug/compat 包装函数，不能共用此正式入口
 func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
 	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")
 	}
+	
+	// 第五步硬约束：正式下载入口必须带 FrontOrderID
+	frontOrderID := strings.TrimSpace(p.FrontOrderID)
+	if frontOrderID == "" {
+		return directTransferPoolOpenResult{}, fmt.Errorf("front_order_id is required for mainflow download: cannot bypass front_order business chain")
+	}
+	
 	lock := buyer.transferPoolOpenMutex()
 	lock.Lock()
 	defer lock.Unlock()
@@ -651,66 +663,63 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	// 第三步：挂新主线骨架
 	// 一个 seller 的这次下载收费对应一条 business 和一条 settlement
 	// Open 只是开池准备，settlement 保持 pending
-	frontOrderID := strings.TrimSpace(p.FrontOrderID)
-	settlementID := "" // 在 if 块里赋值，供后续 setTriplePool 使用
-	if frontOrderID != "" {
-		uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
-		businessID := "biz_download_pool_" + uniqueSuffix
-		settlementID = "set_download_pool_" + uniqueSuffix
-		if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
-			// 前台订单（已存在，这里只关联）
-			FrontOrderID:     frontOrderID,
-			FrontType:        "download",
-			FrontSubtype:     "direct_transfer",
-			OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
-			TargetObjectType: "demand",
-			TargetObjectID:   strings.TrimSpace(p.DemandID),
-			FrontOrderNote:   "下载: " + strings.TrimSpace(p.DemandID),
-			FrontOrderPayload: map[string]any{
-				"demand_id":         strings.TrimSpace(p.DemandID),
-				"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
-				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
-			},
+	// 注：frontOrderID 已在顶部强制校验，此处必然有效
+	uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
+	businessID := "biz_download_pool_" + uniqueSuffix
+	settlementID := "set_download_pool_" + uniqueSuffix
+	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		// 前台订单（已存在，这里只关联）
+		FrontOrderID:     frontOrderID,
+		FrontType:        "download",
+		FrontSubtype:     "direct_transfer",
+		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+		TargetObjectType: "demand",
+		TargetObjectID:   strings.TrimSpace(p.DemandID),
+		FrontOrderNote:   "下载: " + strings.TrimSpace(p.DemandID),
+		FrontOrderPayload: map[string]any{
+			"demand_id":         strings.TrimSpace(p.DemandID),
+			"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+		},
 
-			// 业务
-			BusinessID:        businessID,
-			SourceType:        "front_order",
-			SourceID:          frontOrderID,
-			AccountingScene:   "direct_transfer",
-			AccountingSubType: "download_pool",
-			FromPartyID:       "client:self",
-			ToPartyID:         "seller:" + strings.TrimSpace(p.SellerPubHex),
-			BusinessNote:      "下载池支付: " + strings.TrimSpace(p.DemandID),
-			BusinessPayload: map[string]any{
-				"demand_id":         strings.TrimSpace(p.DemandID),
-				"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
-				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
-			},
+		// 业务
+		BusinessID:        businessID,
+		SourceType:        "front_order",
+		SourceID:          frontOrderID,
+		AccountingScene:   "direct_transfer",
+		AccountingSubType: "download_pool",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:" + strings.TrimSpace(p.SellerPubHex),
+		BusinessNote:      "下载池支付: " + strings.TrimSpace(p.DemandID),
+		BusinessPayload: map[string]any{
+			"demand_id":         strings.TrimSpace(p.DemandID),
+			"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+		},
 
-			// 触发器
-			TriggerType:    "front_order",
-			TriggerIDValue: frontOrderID,
-			TriggerRole:    "primary",
-			TriggerNote:    "前台订单触发池支付",
-			TriggerPayload: map[string]any{
-				"trigger_reason": "download_initiated",
-			},
+		// 触发器
+		TriggerType:    "front_order",
+		TriggerIDValue: frontOrderID,
+		TriggerRole:    "primary",
+		TriggerNote:    "前台订单触发池支付",
+		TriggerPayload: map[string]any{
+			"trigger_reason": "download_initiated",
+		},
 
-			// 结算
-			SettlementID:         settlementID,
-			SettlementMethod:     SettlementMethodPool,
-			SettlementTargetType: "", // Open 阶段未确定 allocation，保持空
-			SettlementTargetID:   "",
-			SettlementPayload: map[string]any{
-				"demand_id":         strings.TrimSpace(p.DemandID),
-				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
-				"session_id":        sessionID,
-				"status":            "pending",
-			},
-		}); err != nil {
-			obs.Error("bitcast-client", "download_pool_chain_init_failed", map[string]any{"error": err.Error(), "demand_id": p.DemandID, "seller_pubkey_hex": p.SellerPubHex})
-			return directTransferPoolOpenResult{}, fmt.Errorf("create download pool business chain: %w", err)
-		}
+		// 结算
+		SettlementID:         settlementID,
+		SettlementMethod:     SettlementMethodPool,
+		SettlementTargetType: "", // Open 阶段未确定 allocation，保持空
+		SettlementTargetID:   "",
+		SettlementPayload: map[string]any{
+			"demand_id":         strings.TrimSpace(p.DemandID),
+			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+			"session_id":        sessionID,
+			"status":            "pending",
+		},
+	}); err != nil {
+		obs.Error("bitcast-client", "download_pool_chain_init_failed", map[string]any{"error": err.Error(), "demand_id": p.DemandID, "seller_pubkey_hex": p.SellerPubHex})
+		return directTransferPoolOpenResult{}, fmt.Errorf("create download pool business chain: %w", err)
 	}
 
 	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))

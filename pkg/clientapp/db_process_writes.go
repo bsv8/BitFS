@@ -906,6 +906,12 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 	})
 }
 
+// dbRecordDirectPoolOpenAccounting 【第五步：过程财务写入边界】
+// 设计说明：
+// - 这是 direct_transfer_pool open 阶段的过程财务写入
+// - 记录资金准备动作（lock），不代表 seller 下载收费已完成
+// - 前台业务完成状态以 business_settlements 为准，不是本函数输出
+// - 本函数输出不能直接当成"前台下载收费主业务完成"依据
 func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -1040,6 +1046,12 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	})
 }
 
+// dbRecordDirectPoolPayAccounting 【第五步：过程财务写入边界】
+// 设计说明：
+// - 这是 direct_transfer_pool pay 阶段的过程财务写入
+// - 记录过程中的真实支付动作（chunk pay），但前台业务完成仍以 settlement 为准
+// - 第一次成功的 pay 会触发 settlement 状态更新（见 triggerDirectTransferPoolPay）
+// - 本函数输出不能直接当成"前台下载收费主业务完成"依据
 func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -1113,6 +1125,12 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 	})
 }
 
+// dbRecordDirectPoolCloseAccounting 【第五步：过程财务写入边界】
+// 设计说明：
+// - 这是 direct_transfer_pool close 阶段的过程财务写入
+// - 记录结尾清算动作（settle return），不代表前台下载收费主事实本身
+// - 前台业务完成状态以 business_settlements 为准（在 pay 阶段已更新）
+// - 本函数输出不能直接当成"前台下载收费主业务完成"依据
 func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")

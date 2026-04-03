@@ -392,7 +392,9 @@ func GetSettlementByBusinessID(ctx context.Context, store *clientDB, businessID 
 }
 
 // GetMainSettlementStatusByFrontOrderID 按 front_order_id 查当前主结算状态
-// 设计：从 business -> settlement 串查，临时取最近一条 business 的 settlement
+// ⚠️ 第五步：仅供调试或兼容使用，不适用于正式下载业务状态判断
+// 临时取最近一条 business 的 settlement，无法处理多 seller 场景
+// 正式下载状态统一走 GetFrontOrderSettlementSummary
 func GetMainSettlementStatusByFrontOrderID(ctx context.Context, store *clientDB, frontOrderID string) (BusinessSettlementItem, error) {
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")

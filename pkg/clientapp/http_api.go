@@ -245,8 +245,10 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
 		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
 		mux.HandleFunc(prefix+"/v1/direct/quotes/detail", s.withAuth(s.handleDirectQuoteDetail))
-		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPools))
-		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetail))
+		// 【第五步：调试/兼容接口】direct_transfer_pools 已降级为协议运行态表
+		// 业务状态查询请使用 /v1/downloads/settlement-status
+		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPoolsCompat))
+		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetailCompat))
 		mux.HandleFunc(prefix+"/v1/transactions", s.withAuth(s.handleTransactions))
 		mux.HandleFunc(prefix+"/v1/transactions/detail", s.withAuth(s.handleTransactionDetail))
 		mux.HandleFunc(prefix+"/v1/purchases", s.withAuth(s.handlePurchases))
@@ -878,7 +880,11 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, it)
 }
 
-func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http.Request) {
+// handleDirectTransferPoolsCompat 【第五步：调试/兼容接口】
+// - 此接口返回的是协议运行态数据，不是业务结算状态
+// - 业务状态查询请使用 /v1/downloads/settlement-status (GetFrontOrderSettlementSummary)
+// - direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
+func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -891,7 +897,7 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
 	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_pubkey_hex"))
 	arbiterPeerID := strings.TrimSpace(r.URL.Query().Get("arbiter_pubkey_hex"))
-	page, err := dbListDirectTransferPools(r.Context(), httpStore(s), directTransferPoolFilter{
+	page, err := dbListDirectTransferPoolsCompat(r.Context(), httpStore(s), directTransferPoolFilter{
 		Limit:         limit,
 		Offset:        offset,
 		SessionID:     sessionID,
@@ -906,14 +912,20 @@ func (s *httpAPIServer) handleDirectTransferPools(w http.ResponseWriter, r *http
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"total":  page.Total,
-		"limit":  limit,
-		"offset": offset,
-		"items":  page.Items,
+		"data_role":    "runtime_debug_only",
+		"status_note":  "direct_transfer_pools.status is protocol runtime status, not settlement status",
+		"total":        page.Total,
+		"limit":        limit,
+		"offset":       offset,
+		"items":        page.Items,
 	})
 }
 
-func (s *httpAPIServer) handleDirectTransferPoolDetail(w http.ResponseWriter, r *http.Request) {
+// handleDirectTransferPoolDetailCompat 【第五步：调试/兼容接口】
+// - 此接口返回的是协议运行态数据，不是业务结算状态
+// - 业务状态查询请使用 /v1/downloads/settlement-status (GetFrontOrderSettlementSummary)
+// - direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
+func (s *httpAPIServer) handleDirectTransferPoolDetailCompat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -923,7 +935,7 @@ func (s *httpAPIServer) handleDirectTransferPoolDetail(w http.ResponseWriter, r 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
 		return
 	}
-	it, err := dbGetDirectTransferPoolItem(r.Context(), httpStore(s), sessionID)
+	it, err := dbGetDirectTransferPoolItemCompat(r.Context(), httpStore(s), sessionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -932,7 +944,11 @@ func (s *httpAPIServer) handleDirectTransferPoolDetail(w http.ResponseWriter, r 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, it)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data_role":    "runtime_debug_only",
+		"status_note":  "direct_transfer_pools.status is protocol runtime status, not settlement status",
+		"item":         it,
+	})
 }
 
 func (s *httpAPIServer) handleTransactions(w http.ResponseWriter, r *http.Request) {

@@ -266,11 +266,12 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 	return rows.Err()
 }
 
-// Deprecated: 第五步降级
+// dbListDirectTransferPoolsCompat 【第五步：调试/兼容接口】
 // - 此函数只用于调试/兼容查询，不再作为业务状态主入口
 // - 业务状态统一走 GetFrontOrderSettlementSummary
-// - direct_transfer_pools 已降级为【运行态表】，status 字段不决定业务完成
-func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
+// - direct_transfer_pools 已降级为【协议运行态表】，status 字段是协议运行时状态，不代表业务结算状态
+// - 禁止用此函数判断"下载是否完成/是否已付费"等业务状态
+func dbListDirectTransferPoolsCompat(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
 	if store == nil {
 		return directTransferPoolPage{}, fmt.Errorf("client db is nil")
 	}
@@ -329,10 +330,12 @@ func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTra
 	})
 }
 
-// Deprecated: 第五步降级
+// dbGetDirectTransferPoolItemCompat 【第五步：调试/兼容接口】
 // - 此函数只用于调试/兼容查询，不再作为业务状态主入口
 // - 业务状态统一走 GetFrontOrderSettlementSummary
-func dbGetDirectTransferPoolItem(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
+// - direct_transfer_pools 已降级为【协议运行态表】
+// - 禁止用此函数判断"下载是否完成"等业务状态
+func dbGetDirectTransferPoolItemCompat(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
 	if store == nil {
 		return directTransferPoolItem{}, fmt.Errorf("client db is nil")
 	}

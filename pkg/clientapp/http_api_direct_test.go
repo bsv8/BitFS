@@ -116,13 +116,15 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/direct/transfer-pools?status=active", nil)
 		rec := httptest.NewRecorder()
-		srv.handleDirectTransferPools(rec, req)
+		srv.handleDirectTransferPoolsCompat(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("pools list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}
 		var body struct {
-			Total int `json:"total"`
-			Items []struct {
+			DataRole   string `json:"data_role"`
+			StatusNote string `json:"status_note"`
+			Total      int    `json:"total"`
+			Items      []struct {
 				SessionID string `json:"session_id"`
 				DealID    string `json:"deal_id"`
 				Status    string `json:"status"`
@@ -131,15 +133,43 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode pools list: %v", err)
 		}
+		// 【第五步】验证 compat 接口明确标注 runtime/debug 语义
+		if body.DataRole != "runtime_debug_only" {
+			t.Fatalf("expected data_role=runtime_debug_only, got=%s", body.DataRole)
+		}
+		if body.StatusNote != "direct_transfer_pools.status is protocol runtime status, not settlement status" {
+			t.Fatalf("expected status_note to indicate runtime-only, got=%s", body.StatusNote)
+		}
 		if body.Total != 1 || len(body.Items) != 1 || body.Items[0].SessionID != "sess_1" {
 			t.Fatalf("unexpected pools list body: %+v", body)
 		}
 
 		reqDetail := httptest.NewRequest(http.MethodGet, "/api/v1/direct/transfer-pools/detail?session_id=sess_1", nil)
 		recDetail := httptest.NewRecorder()
-		srv.handleDirectTransferPoolDetail(recDetail, reqDetail)
+		srv.handleDirectTransferPoolDetailCompat(recDetail, reqDetail)
 		if recDetail.Code != http.StatusOK {
 			t.Fatalf("pools detail status mismatch: got=%d want=%d body=%s", recDetail.Code, http.StatusOK, recDetail.Body.String())
+		}
+		var detailBody struct {
+			DataRole   string `json:"data_role"`
+			StatusNote string `json:"status_note"`
+			Item       struct {
+				SessionID string `json:"session_id"`
+				Status    string `json:"status"`
+			} `json:"item"`
+		}
+		if err := json.Unmarshal(recDetail.Body.Bytes(), &detailBody); err != nil {
+			t.Fatalf("decode pools detail: %v", err)
+		}
+		// 【第五步】验证 compat 详情接口也明确标注 runtime/debug 语义
+		if detailBody.DataRole != "runtime_debug_only" {
+			t.Fatalf("expected detail data_role=runtime_debug_only, got=%s", detailBody.DataRole)
+		}
+		if detailBody.StatusNote != "direct_transfer_pools.status is protocol runtime status, not settlement status" {
+			t.Fatalf("expected detail status_note to indicate runtime-only, got=%s", detailBody.StatusNote)
+		}
+		if detailBody.Item.SessionID != "sess_1" {
+			t.Fatalf("unexpected detail item: %+v", detailBody.Item)
 		}
 	}
 }
