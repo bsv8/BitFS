@@ -15,9 +15,16 @@ import (
 // - 直连池和 seed 读取是运行期高频路径；
 // - SQL 留在这里，协议处理只保留校验和签名逻辑；
 // - 文件读取虽然最终走文件系统，但 seed 路径解析也统一收在 db 层。
+//
+// ⚠️ 第五步降级说明（2026-04）：
+// - direct_transfer_pools / direct_deals 已降级为【运行态/过程对象】
+// - 这些表只保留协议运行期的上下文，不再作为业务状态主判断入口
+// - 业务完成状态统一以 business_settlements 为准
+// - 新代码禁止根据 direct_transfer_pools.status 判断业务是否完成
 
 func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
 	// 运行期辅助查询：只给 direct transfer 串 buyer / seller / arbiter 上下文。
+	// ⚠️ 第五步：此函数仅用于运行期协议上下文恢复，不作为业务状态判断入口。
 	out, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
 		buyer   string
 		seller  string
@@ -45,6 +52,7 @@ func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID s
 
 func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
 	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
+	// ⚠️ 第五步：此函数仅用于运行期协议上下文恢复，不作为业务状态判断入口。
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedHash string
 		err := db.QueryRow(`SELECT seed_hash FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)

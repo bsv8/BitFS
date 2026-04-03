@@ -134,7 +134,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			FOREIGN KEY(quote_id) REFERENCES demand_quotes(id) ON DELETE CASCADE,
 			UNIQUE(quote_id, arbiter_pub_hex)
 		)`,
-		// 运行期辅助表：只保存 direct transfer 的 deal 上下文，不承载对外事实语义。
+		// 第五步定性：direct_deals 是【协议过程对象】
+		// - 职责：保存协议协商/成交上下文（buyer/seller/seed_hash/price 等）
+		// - 非支付主事实，不决定业务是否完成
+		// - 业务完成状态以 business_settlements 为准
 		`CREATE TABLE IF NOT EXISTS direct_deals(
 			deal_id TEXT PRIMARY KEY,
 			demand_id TEXT NOT NULL,
@@ -158,6 +161,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id, seller_pubkey_hex)
 		)`,
+		// 第五步定性：direct_transfer_pools 是【运行态池状态表】
+		// - 职责：保存池协议运行期的动态状态（sequence_num、current_tx_hex、status 等）
+		// - 非业务主判断入口，只服务于协议运行期
+		// - 业务完成状态以 business_settlements 为准，不以此表的 status 为准
 		`CREATE TABLE IF NOT EXISTS direct_transfer_pools(
 			session_id TEXT PRIMARY KEY,
 			deal_id TEXT NOT NULL,
@@ -172,7 +179,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			current_tx_hex TEXT NOT NULL,
 			base_tx_hex TEXT NOT NULL,
 			base_txid TEXT NOT NULL,
-			status TEXT NOT NULL,
+			status TEXT NOT NULL, -- 运行态状态，非业务完成状态
 			fee_rate_sat_byte REAL NOT NULL,
 			lock_blocks INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,

@@ -95,7 +95,10 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	// 这里只写运行期上下文，给后续 transfer-pool 和 seed 读取串线，不是事实主表。
+	// 第五步定性：direct_deals 是【协议过程对象】
+	// - 只保存协议协商上下文（buyer/seller/seed_hash/price 等）
+	// - 不承载支付事实语义，不决定业务是否完成
+	// - 业务完成状态统一看 business_settlements
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
 			`INSERT INTO direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)

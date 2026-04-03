@@ -266,6 +266,10 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 	return rows.Err()
 }
 
+// Deprecated: 第五步降级
+// - 此函数只用于调试/兼容查询，不再作为业务状态主入口
+// - 业务状态统一走 GetFrontOrderSettlementSummary
+// - direct_transfer_pools 已降级为【运行态表】，status 字段不决定业务完成
 func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
 	if store == nil {
 		return directTransferPoolPage{}, fmt.Errorf("client db is nil")
@@ -325,6 +329,9 @@ func dbListDirectTransferPools(ctx context.Context, store *clientDB, f directTra
 	})
 }
 
+// Deprecated: 第五步降级
+// - 此函数只用于调试/兼容查询，不再作为业务状态主入口
+// - 业务状态统一走 GetFrontOrderSettlementSummary
 func dbGetDirectTransferPoolItem(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
 	if store == nil {
 		return directTransferPoolItem{}, fmt.Errorf("client db is nil")
@@ -339,6 +346,9 @@ func dbGetDirectTransferPoolItem(ctx context.Context, store *clientDB, sessionID
 	})
 }
 
+// Deprecated: 第五步降级
+// - purchases 是旧过程表，新代码应走 front_orders -> business_settlements
+// - 此函数保留用于兼容查询
 func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (purchasePage, error) {
 	if store == nil {
 		return purchasePage{}, fmt.Errorf("client db is nil")
@@ -401,6 +411,9 @@ func dbGetPurchaseItem(ctx context.Context, store *clientDB, id int64) (purchase
 	})
 }
 
+// Deprecated: 第五步降级
+// - 此函数基于旧 purchases 表统计，只用于兼容
+// - 新代码应使用 GetFrontOrderSettlementSummary 统计 settlement 状态
 func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID string) (purchaseDemandSummary, error) {
 	if store == nil {
 		return purchaseDemandSummary{}, fmt.Errorf("client db is nil")
