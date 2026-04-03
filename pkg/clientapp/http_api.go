@@ -1116,7 +1116,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	triggerKey := strings.TrimSpace(r.URL.Query().Get("trigger_key"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	page, err := dbListCommandJournal(r.Context(), httpStore(s), commandJournalFilter{
+	page, err := dbListCommandTimeline(r.Context(), httpStore(s), commandTimelineFilter{
 		Limit:         limit,
 		Offset:        offset,
 		CommandType:   commandType,
@@ -1143,7 +1143,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	it, err := dbGetCommandJournalItem(r.Context(), httpStore(s), int64(id))
+	it, err := dbGetCommandTimelineItem(r.Context(), httpStore(s), int64(id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -1214,7 +1214,7 @@ func (s *httpAPIServer) handleAdminFeePoolObservedStates(w http.ResponseWriter, 
 	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
 	eventName := strings.TrimSpace(r.URL.Query().Get("event_name"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
-	page, err := dbListObservedGatewayStates(r.Context(), httpStore(s), observedGatewayStateFilter{
+	page, err := dbListObservedGatewayTimeline(r.Context(), httpStore(s), observedGatewayTimelineFilter{
 		Limit:         limit,
 		Offset:        offset,
 		GatewayPeerID: gatewayPeerID,
@@ -1239,7 +1239,7 @@ func (s *httpAPIServer) handleAdminFeePoolObservedStateDetail(w http.ResponseWri
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	it, err := dbGetObservedGatewayStateItem(r.Context(), httpStore(s), int64(id))
+	it, err := dbGetObservedGatewayTimelineItem(r.Context(), httpStore(s), int64(id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
