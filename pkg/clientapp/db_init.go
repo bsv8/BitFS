@@ -60,6 +60,9 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if err := ensureGatewayEventAndCommandJournalConstraints(db); err != nil {
 		return fmt.Errorf("gateway_events command constraints: %w", err)
 	}
+	if err := ensureCommandLinkedTableConstraints(db); err != nil {
+		return fmt.Errorf("command linked table constraints: %w", err)
+	}
 
 	// 3. 数据规范化（历史脏数据口径纠偏）
 	if err := normalizeClientDBData(db); err != nil {
@@ -365,22 +368,23 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS domain_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL,
+			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 			gateway_pubkey_hex TEXT NOT NULL,
-			source_kind TEXT NOT NULL DEFAULT 'command',
+			source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
 			source_ref TEXT NOT NULL DEFAULT '',
 			observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			event_name TEXT NOT NULL,
 			state_before TEXT NOT NULL,
 			state_after TEXT NOT NULL,
-			payload_json TEXT NOT NULL
+			payload_json TEXT NOT NULL,
+			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS state_snapshots(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL,
+			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 			gateway_pubkey_hex TEXT NOT NULL,
-			source_kind TEXT NOT NULL DEFAULT 'command',
+			source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
 			source_ref TEXT NOT NULL DEFAULT '',
 			observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			state TEXT NOT NULL,
@@ -388,7 +392,8 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			pause_need_satoshi INTEGER NOT NULL,
 			pause_have_satoshi INTEGER NOT NULL,
 			last_error TEXT NOT NULL,
-			payload_json TEXT NOT NULL
+			payload_json TEXT NOT NULL,
+			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
 		)`,
 		// 观察事实表
 		// 设计说明：这里只承接被动观察到的网关状态，不挂 command_id，不混命令链。
@@ -410,13 +415,14 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS effect_logs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL,
+			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 			gateway_pubkey_hex TEXT NOT NULL,
 			effect_type TEXT NOT NULL,
 			stage TEXT NOT NULL,
 			status TEXT NOT NULL,
 			error_message TEXT NOT NULL,
-			payload_json TEXT NOT NULL
+			payload_json TEXT NOT NULL,
+			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
 		)`,
 
 		// 编排器日志
@@ -792,9 +798,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_cmd_id ON state_snapshots(command_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_created_at ON observed_gateway_states(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_gateway ON observed_gateway_states(gateway_pubkey_hex, id DESC)`,
@@ -802,7 +809,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_state ON observed_gateway_states(state_after, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_source_ref ON observed_gateway_states(source_ref, observed_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_created_at ON orchestrator_logs(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_event_type ON orchestrator_logs(event_type, id DESC)`,
@@ -992,7 +999,7 @@ func backfillCommandFactSourceColumns(db *sql.DB, table string) error {
 	}
 	stmts := []string{
 		fmt.Sprintf(`UPDATE %s SET source_kind='command' WHERE trim(coalesce(source_kind,''))=''`, table),
-		fmt.Sprintf(`UPDATE %s SET source_ref=command_id WHERE trim(coalesce(source_ref,''))=''`, table),
+		fmt.Sprintf(`UPDATE %s SET source_ref=command_id WHERE trim(coalesce(source_ref,''))='' AND trim(coalesce(command_id,''))<>''`, table),
 		fmt.Sprintf(`UPDATE %s SET observed_at_unix=created_at_unix WHERE coalesce(observed_at_unix,0)<=0`, table),
 	}
 	for _, stmt := range stmts {
@@ -1665,6 +1672,469 @@ func ensureGatewayEventsCommandID(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	return ensureGatewayEventAndCommandJournalConstraints(db)
+}
+
+type commandLinkedTableAuditReport struct {
+	Table                    string
+	NullCommandIDRows        int64
+	BlankCommandIDRows       int64
+	OrphanCommandIDRows      int64
+	NonCommandSourceKindRows int64
+}
+
+func (r commandLinkedTableAuditReport) DirtyRows() int64 {
+	return r.NullCommandIDRows + r.BlankCommandIDRows + r.OrphanCommandIDRows + r.NonCommandSourceKindRows
+}
+
+func (r commandLinkedTableAuditReport) String() string {
+	return fmt.Sprintf("%s null=%d blank=%d orphan=%d non_command_source_kind=%d", r.Table, r.NullCommandIDRows, r.BlankCommandIDRows, r.OrphanCommandIDRows, r.NonCommandSourceKindRows)
+}
+
+// ensureCommandLinkedTableConstraints 把 domain_events / state_snapshots / effect_logs 收紧到同一命令口径。
+// 设计说明：
+// - 先审计，再清理，再重建；
+// - 空值、空白值、孤儿行都直接删，不补假命令；
+// - 只在约束缺失时重建，避免新库重复折腾；
+// - 重建后统一补回查询索引，保持读取口径不变。
+func ensureCommandLinkedTableConstraints(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	for _, table := range []string{"domain_events", "state_snapshots", "effect_logs"} {
+		if isCommandFactSourceKindTable(table) {
+			report, err := auditCommandFactSourceKindRows(db, table)
+			if err != nil {
+				return fmt.Errorf("audit %s source kind: %w", table, err)
+			}
+			if report.DirtyRows() > 0 {
+				if err := cleanupLegacyNonCommandFactRows(db, table); err != nil {
+					return fmt.Errorf("cleanup %s source kind: %w", table, err)
+				}
+			}
+		}
+		report, err := auditCommandLinkedTableRows(db, table)
+		if err != nil {
+			return fmt.Errorf("audit %s: %w", table, err)
+		}
+		if report.DirtyRows() > 0 {
+			if err := cleanupLegacyCommandLinkedRows(db, table); err != nil {
+				return fmt.Errorf("cleanup %s: %w", table, err)
+			}
+		}
+		needsRebuild, err := commandLinkedTableNeedsRebuild(db, table)
+		if err != nil {
+			return fmt.Errorf("inspect %s constraints: %w", table, err)
+		}
+		if needsRebuild {
+			if err := rebuildCommandLinkedTable(db, table); err != nil {
+				return fmt.Errorf("rebuild %s: %w", table, err)
+			}
+		}
+		if err := ensureCommandLinkedTableIndexes(db, table); err != nil {
+			return fmt.Errorf("indexes %s: %w", table, err)
+		}
+	}
+	return nil
+}
+
+// auditCommandLinkedTableRows 先把命令链表里的脏数据看清楚，再决定清理和重建。
+func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAuditReport, error) {
+	report := commandLinkedTableAuditReport{Table: strings.TrimSpace(table)}
+	if db == nil {
+		return report, fmt.Errorf("db is nil")
+	}
+	if !isCommandLinkedTable(report.Table) {
+		return report, fmt.Errorf("unsupported table: %s", table)
+	}
+	hasTable, err := hasTable(db, report.Table)
+	if err != nil {
+		return report, fmt.Errorf("check %s table: %w", report.Table, err)
+	}
+	if !hasTable {
+		return report, nil
+	}
+	row := db.QueryRow(fmt.Sprintf(`
+		SELECT
+			COALESCE(SUM(CASE WHEN command_id IS NULL THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN command_id IS NOT NULL AND trim(command_id) = '' THEN 1 ELSE 0 END), 0),
+			COALESCE(SUM(CASE WHEN command_id IS NOT NULL AND trim(command_id) <> '' AND NOT EXISTS(
+				SELECT 1 FROM command_journal WHERE command_journal.command_id = %s.command_id
+			) THEN 1 ELSE 0 END), 0)
+		FROM %s`,
+		report.Table, report.Table,
+	))
+	if err := row.Scan(&report.NullCommandIDRows, &report.BlankCommandIDRows, &report.OrphanCommandIDRows); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+// auditCommandFactSourceKindRows 只看命令事实表的来源类型是否越界。
+// 设计说明：
+// - 只允许 command；
+// - observed_gateway_state 已经是另一条链路，不该再留在命令事实表里；
+// - 这里只做审计，不改数据。
+func auditCommandFactSourceKindRows(db *sql.DB, table string) (commandLinkedTableAuditReport, error) {
+	report := commandLinkedTableAuditReport{Table: strings.TrimSpace(table)}
+	if db == nil {
+		return report, fmt.Errorf("db is nil")
+	}
+	if !isCommandFactSourceKindTable(report.Table) {
+		return report, fmt.Errorf("unsupported table: %s", table)
+	}
+	hasTable, err := hasTable(db, report.Table)
+	if err != nil {
+		return report, fmt.Errorf("check %s table: %w", report.Table, err)
+	}
+	if !hasTable {
+		return report, nil
+	}
+	row := db.QueryRow(fmt.Sprintf(`
+		SELECT
+			COALESCE(SUM(CASE WHEN source_kind IS NULL OR source_kind <> 'command' THEN 1 ELSE 0 END), 0)
+		FROM %s`,
+		report.Table,
+	))
+	if err := row.Scan(&report.NonCommandSourceKindRows); err != nil {
+		return report, err
+	}
+	return report, nil
+}
+
+// cleanupLegacyDomainEventCommandRows 删除 domain_events 里不该进入硬约束的旧行。
+func cleanupLegacyDomainEventCommandRows(db *sql.DB) error {
+	return cleanupLegacyCommandLinkedRows(db, "domain_events")
+}
+
+// cleanupLegacyStateSnapshotCommandRows 删除 state_snapshots 里不该进入硬约束的旧行。
+func cleanupLegacyStateSnapshotCommandRows(db *sql.DB) error {
+	return cleanupLegacyCommandLinkedRows(db, "state_snapshots")
+}
+
+// cleanupLegacyEffectLogCommandRows 删除 effect_logs 里不该进入硬约束的旧行。
+func cleanupLegacyEffectLogCommandRows(db *sql.DB) error {
+	return cleanupLegacyCommandLinkedRows(db, "effect_logs")
+}
+
+// cleanupLegacyNonCommandFactRows 只清命令事实表里不该存在的 observed 旧行。
+// 设计说明：
+// - 这里只处理 source_kind != command 的行；
+// - 不回填，不迁移，只删除；
+// - 这个函数不碰 effect_logs。
+func cleanupLegacyNonCommandFactRows(db *sql.DB, table string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if !isCommandFactSourceKindTable(strings.TrimSpace(table)) {
+		return fmt.Errorf("unsupported table: %s", table)
+	}
+	_, err := db.Exec(fmt.Sprintf(`
+		DELETE FROM %s
+		WHERE source_kind IS NULL
+		   OR source_kind <> 'command'`, table))
+	return err
+}
+
+func cleanupLegacyCommandLinkedRows(db *sql.DB, table string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if !isCommandLinkedTable(strings.TrimSpace(table)) {
+		return fmt.Errorf("unsupported table: %s", table)
+	}
+	_, err := db.Exec(fmt.Sprintf(`
+		DELETE FROM %s
+		WHERE command_id IS NULL
+		   OR trim(command_id) = ''
+		   OR NOT EXISTS(
+				SELECT 1
+				FROM command_journal
+				WHERE command_journal.command_id = %s.command_id
+		   )`, table, table))
+	return err
+}
+
+func isCommandLinkedTable(table string) bool {
+	switch strings.TrimSpace(table) {
+	case "domain_events", "state_snapshots", "effect_logs":
+		return true
+	default:
+		return false
+	}
+}
+
+func isCommandFactSourceKindTable(table string) bool {
+	switch strings.TrimSpace(table) {
+	case "domain_events", "state_snapshots":
+		return true
+	default:
+		return false
+	}
+}
+
+func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("db is nil")
+	}
+	if !isCommandLinkedTable(table) {
+		return false, fmt.Errorf("unsupported table: %s", table)
+	}
+	notNull, err := tableColumnNotNull(db, table, "command_id")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s command_id not null: %w", table, err)
+	}
+	hasFK, err := tableHasForeignKey(db, table, "command_id", "command_journal", "command_id")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s foreign key: %w", table, err)
+	}
+	hasCheck, err := tableHasCreateSQLContains(db, table, "CHECK(trim(command_id) <> '')")
+	if err != nil {
+		return false, fmt.Errorf("inspect %s check constraint: %w", table, err)
+	}
+	if !notNull || !hasFK || !hasCheck {
+		return true, nil
+	}
+	if isCommandFactSourceKindTable(table) {
+		hasSourceKindCheck, err := tableHasCreateSQLContains(db, table, "CHECK(source_kind = 'command')")
+		if err != nil {
+			return false, fmt.Errorf("inspect %s source kind check constraint: %w", table, err)
+		}
+		if !hasSourceKindCheck {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func rebuildCommandLinkedTable(db *sql.DB, table string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if !isCommandLinkedTable(table) {
+		return fmt.Errorf("unsupported table: %s", table)
+	}
+	spec, ok := commandLinkedTableSpec(table)
+	if !ok {
+		return fmt.Errorf("unsupported table: %s", table)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		rollback()
+		return err
+	}
+	tempTable := table + "_command_fk_rebuild"
+	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tempTable)); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, table, tempTable)); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(spec.CreateSQL); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(spec.InsertSQL(tempTable)); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, tempTable)); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return nil
+}
+
+type commandLinkedTableRebuildSpec struct {
+	CreateSQL string
+	InsertSQL func(oldTable string) string
+}
+
+func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) {
+	switch strings.TrimSpace(table) {
+	case "domain_events":
+		return commandLinkedTableRebuildSpec{
+			CreateSQL: `CREATE TABLE domain_events(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				created_at_unix INTEGER NOT NULL,
+				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
+				gateway_pubkey_hex TEXT NOT NULL,
+				source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
+				source_ref TEXT NOT NULL DEFAULT '',
+				observed_at_unix INTEGER NOT NULL DEFAULT 0,
+				event_name TEXT NOT NULL,
+				state_before TEXT NOT NULL,
+				state_after TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			)`,
+			InsertSQL: func(oldTable string) string {
+				return fmt.Sprintf(`INSERT INTO domain_events(
+					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
+				) SELECT
+					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
+				FROM %s
+				WHERE command_id IS NOT NULL
+				  AND trim(command_id) <> ''
+				  AND source_kind = 'command'
+				  AND EXISTS(
+						SELECT 1
+						FROM command_journal
+						WHERE command_journal.command_id = %s.command_id
+				  )
+				ORDER BY id ASC`, oldTable, oldTable)
+			},
+		}, true
+	case "state_snapshots":
+		return commandLinkedTableRebuildSpec{
+			CreateSQL: `CREATE TABLE state_snapshots(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				created_at_unix INTEGER NOT NULL,
+				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
+				gateway_pubkey_hex TEXT NOT NULL,
+				source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
+				source_ref TEXT NOT NULL DEFAULT '',
+				observed_at_unix INTEGER NOT NULL DEFAULT 0,
+				state TEXT NOT NULL,
+				pause_reason TEXT NOT NULL,
+				pause_need_satoshi INTEGER NOT NULL,
+				pause_have_satoshi INTEGER NOT NULL,
+				last_error TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			)`,
+			InsertSQL: func(oldTable string) string {
+				return fmt.Sprintf(`INSERT INTO state_snapshots(
+					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+				) SELECT
+					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+				FROM %s
+				WHERE command_id IS NOT NULL
+				  AND trim(command_id) <> ''
+				  AND source_kind = 'command'
+				  AND EXISTS(
+						SELECT 1
+						FROM command_journal
+						WHERE command_journal.command_id = %s.command_id
+				  )
+				ORDER BY id ASC`, oldTable, oldTable)
+			},
+		}, true
+	case "effect_logs":
+		return commandLinkedTableRebuildSpec{
+			CreateSQL: `CREATE TABLE effect_logs(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				created_at_unix INTEGER NOT NULL,
+				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
+				gateway_pubkey_hex TEXT NOT NULL,
+				effect_type TEXT NOT NULL,
+				stage TEXT NOT NULL,
+				status TEXT NOT NULL,
+				error_message TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			)`,
+			InsertSQL: func(oldTable string) string {
+				return fmt.Sprintf(`INSERT INTO effect_logs(
+					id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
+				) SELECT
+					id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
+				FROM %s
+				WHERE command_id IS NOT NULL
+				  AND trim(command_id) <> ''
+				  AND EXISTS(
+						SELECT 1
+						FROM command_journal
+						WHERE command_journal.command_id = %s.command_id
+				  )
+				ORDER BY id ASC`, oldTable, oldTable)
+			},
+		}, true
+	default:
+		return commandLinkedTableRebuildSpec{}, false
+	}
+}
+
+func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	switch strings.TrimSpace(table) {
+	case "domain_events":
+		stmts := []string{
+			`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	case "state_snapshots":
+		stmts := []string{
+			`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_state_snapshots_cmd_id ON state_snapshots(command_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_pubkey_hex, id DESC)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	case "effect_logs":
+		stmts := []string{
+			`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_pubkey_hex, id DESC)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := db.Exec(stmt); err != nil {
+				return err
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported table: %s", table)
+	}
+	return nil
+}
+
+func tableHasCreateSQLContains(db *sql.DB, table, snippet string) (bool, error) {
+	if db == nil {
+		return false, fmt.Errorf("db is nil")
+	}
+	var sqlText sql.NullString
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&sqlText)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if !sqlText.Valid {
+		return false, nil
+	}
+	return strings.Contains(normalizeSQLWhitespace(strings.ToLower(sqlText.String)), normalizeSQLWhitespace(strings.ToLower(snippet))), nil
+}
+
+func normalizeSQLWhitespace(in string) string {
+	return strings.NewReplacer(" ", "", "\n", "", "\t", "", "\r", "").Replace(strings.TrimSpace(in))
 }
 
 // ensurePoolAllocationsSchema 只处理 pool_allocations 的结构升级。

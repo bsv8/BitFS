@@ -62,7 +62,7 @@ func TestObservedGatewayStatesSchemaAndIndexes(t *testing.T) {
 		}
 	}
 
-	for _, table := range []string{"domain_events", "state_snapshots"} {
+	for _, table := range []string{"domain_events", "state_snapshots", "effect_logs"} {
 		notNull, err := tableColumnNotNull(db, table, "command_id")
 		if err != nil {
 			t.Fatalf("inspect %s command_id notnull failed: %v", table, err)

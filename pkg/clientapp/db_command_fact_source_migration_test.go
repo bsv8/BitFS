@@ -26,6 +26,26 @@ func createLegacyCommandFactTablesWithoutSourceColumns(t *testing.T, db *sql.DB)
 	t.Helper()
 
 	stmts := []string{
+		`CREATE TABLE command_journal(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			command_id TEXT NOT NULL UNIQUE,
+			command_type TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
+			aggregate_id TEXT NOT NULL,
+			requested_by TEXT NOT NULL,
+			requested_at_unix INTEGER NOT NULL,
+			accepted INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			error_code TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			state_before TEXT NOT NULL,
+			state_after TEXT NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			trigger_key TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL,
+			result_json TEXT NOT NULL
+		)`,
 		`CREATE TABLE domain_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
@@ -60,6 +80,26 @@ func createLegacyCommandFactTablesWithSourceColumns(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	stmts := []string{
+		`CREATE TABLE command_journal(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			created_at_unix INTEGER NOT NULL,
+			command_id TEXT NOT NULL UNIQUE,
+			command_type TEXT NOT NULL,
+			gateway_pubkey_hex TEXT NOT NULL,
+			aggregate_id TEXT NOT NULL,
+			requested_by TEXT NOT NULL,
+			requested_at_unix INTEGER NOT NULL,
+			accepted INTEGER NOT NULL,
+			status TEXT NOT NULL,
+			error_code TEXT NOT NULL,
+			error_message TEXT NOT NULL,
+			state_before TEXT NOT NULL,
+			state_after TEXT NOT NULL,
+			duration_ms INTEGER NOT NULL,
+			trigger_key TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL,
+			result_json TEXT NOT NULL
+		)`,
 		`CREATE TABLE domain_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
@@ -101,6 +141,20 @@ func TestCommandFactSourceMigrationAddsMissingColumnsAndBackfillsValues(t *testi
 
 	db := newLegacyCommandFactMigrationTestDB(t)
 	createLegacyCommandFactTablesWithoutSourceColumns(t, db)
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000200, "cmd_domain_legacy", "feepool.open", "gw1", "agg-domain", "tester", 1700000200, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
+	); err != nil {
+		t.Fatalf("insert legacy command journal failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000200, "cmd_state_legacy", "feepool.open", "gw1", "agg-state", "tester", 1700000200, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
+	); err != nil {
+		t.Fatalf("insert legacy command journal failed: %v", err)
+	}
 
 	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json)
 		VALUES(?,?,?,?,?,?,?)`,
@@ -167,6 +221,20 @@ func TestCommandFactSourceMigrationPreservesExistingValues(t *testing.T) {
 
 	db := newLegacyCommandFactMigrationTestDB(t)
 	createLegacyCommandFactTablesWithSourceColumns(t, db)
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000300, "cmd_domain_keep", "feepool.open", "gw1", "agg-domain", "tester", 1700000300, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
+	); err != nil {
+		t.Fatalf("insert legacy command journal failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000300, "cmd_state_keep", "feepool.open", "gw1", "agg-state", "tester", 1700000300, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
+	); err != nil {
+		t.Fatalf("insert legacy command journal failed: %v", err)
+	}
 
 	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,
