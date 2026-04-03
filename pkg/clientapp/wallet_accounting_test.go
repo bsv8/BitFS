@@ -111,6 +111,28 @@ func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 	}
 	dbRecordDirectPoolCloseAccounting(ctx, store, "sess_1", 3, "", finalTxHex, 700, 290, "seller_peer_1")
 
+	// 第二阶段整改验证：close 生成过程型 fin_business，但不是正式收费对象
+	var businessCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&businessCount); err != nil {
+		t.Fatalf("query fin_business failed: %v", err)
+	}
+	if businessCount != 1 {
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 fin_business 记录，got %d", businessCount)
+	}
+
+	// 验证：accounting_scene 标记为过程型
+	var accountingScene, accountingSubtype string
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&accountingScene, &accountingSubtype); err != nil {
+		t.Fatalf("query fin_business fields failed: %v", err)
+	}
+	if accountingScene != "direct_transfer_process" {
+		t.Fatalf("第二阶段：close 的 accounting_scene 应为 direct_transfer_process，got %s", accountingScene)
+	}
+	if accountingSubtype != "pool_close_settle" {
+		t.Fatalf("第二阶段：close 的 accounting_subtype 应为 pool_close_settle，got %s", accountingSubtype)
+	}
+
+	// 第二阶段：tx_breakdown 和 utxo_links 挂正式的 business_id
 	var txid string
 	if err := db.QueryRow(`SELECT txid FROM fin_tx_breakdown WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&txid); err != nil {
 		t.Fatalf("query fin_tx_breakdown failed: %v", err)
@@ -256,8 +278,9 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	}
 }
 
-// TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证第二步整改
+// TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证第二步整改 + 第二阶段
 // source_id 应该是 pool_allocations.id（整数），而不是 allocation_id（业务键）
+// 第二阶段：open/close 为过程型财务对象，只验证 pay 的 source_id 格式
 func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
 
@@ -282,58 +305,72 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
-	// 获取各 allocation 的自增 id
-	openAllocID := directTransferPoolAllocationID(sessionID, "open", 1)
+	// 第二阶段整改验证：open/close 生成过程型 fin_business，不是正式收费对象
+	// 设计意图：open/close 保留为过程型财务对象，正式收费主线只认 biz_download_pool_*
+	var openBusinessCount, closeBusinessCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openBusinessCount); err != nil {
+		t.Fatalf("query fin_business open failed: %v", err)
+	}
+	if openBusinessCount != 1 {
+		t.Fatalf("第二阶段：open 应生成 1 条过程型 fin_business 记录，got %d", openBusinessCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&closeBusinessCount); err != nil {
+		t.Fatalf("query fin_business close failed: %v", err)
+	}
+	if closeBusinessCount != 1 {
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 fin_business 记录，got %d", closeBusinessCount)
+	}
+
+	// 验证：open/close 的 accounting_scene 标记为过程型
+	var openScene, openSubtype, closeScene, closeSubtype string
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openScene, &openSubtype); err != nil {
+		t.Fatalf("query open fin_business fields failed: %v", err)
+	}
+	if openScene != "direct_transfer_process" || openSubtype != "pool_open_lock" {
+		t.Fatalf("第二阶段：open 应标记为过程型: scene=%s subtype=%s", openScene, openSubtype)
+	}
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&closeScene, &closeSubtype); err != nil {
+		t.Fatalf("query close fin_business fields failed: %v", err)
+	}
+	if closeScene != "direct_transfer_process" || closeSubtype != "pool_close_settle" {
+		t.Fatalf("第二阶段：close 应标记为过程型: scene=%s subtype=%s", closeScene, closeSubtype)
+	}
+
+	// 获取 pay allocation 的自增 id
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	closeAllocID := directTransferPoolAllocationID(sessionID, "close", 3)
-
-	openID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, openAllocID)
 	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
-	closeID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocID)
 
-	type wantRow struct {
-		businessID        string
-		expectedSourceID  int64 // 期望的整数主键
-		accountingScene   string
-		accountingSubType string
+	// 只验证 pay（过渡方案中暂时仍保留）
+	var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
+	if err := db.QueryRow(
+		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM fin_business WHERE business_id=?`,
+		"biz_c2c_pay_sess_third_iter_1_2",
+	).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
+		t.Fatalf("query fin_business pay failed: %v", err)
 	}
-	checks := []wantRow{
-		{businessID: "biz_c2c_open_sess_third_iter_1", expectedSourceID: openID, accountingScene: "fee_pool", accountingSubType: "open"},
-		{businessID: "biz_c2c_pay_sess_third_iter_1_2", expectedSourceID: payID, accountingScene: "c2c_transfer", accountingSubType: "chunk_pay"},
-		{businessID: "biz_c2c_close_sess_third_iter_1", expectedSourceID: closeID, accountingScene: "c2c_transfer", accountingSubType: "close"},
+	if gotSourceType != "pool_allocation" {
+		t.Fatalf("unexpected source_type for pay: got=%s want=pool_allocation", gotSourceType)
 	}
-	for _, want := range checks {
-		var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
-		if err := db.QueryRow(
-			`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM fin_business WHERE business_id=?`,
-			want.businessID,
-		).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
-			t.Fatalf("query fin_business %s failed: %v", want.businessID, err)
+	// 第二步整改验证：source_id 应该是整数主键的字符串形式
+	wantSourceIDStr := fmt.Sprintf("%d", payID)
+	if gotSourceIDStr != wantSourceIDStr {
+		// 兜底检查：如果 lookup 失败，可能还是旧的 allocation_id
+		if gotSourceIDStr == payAllocID {
+			t.Fatalf("source_id is still allocation_id for pay: got=%s (expected integer id)", gotSourceIDStr)
 		}
-		if gotSourceType != "pool_allocation" {
-			t.Fatalf("unexpected source_type for %s: got=%s want=pool_allocation", want.businessID, gotSourceType)
-		}
-		// 第二步整改验证：source_id 应该是整数主键的字符串形式
-		wantSourceIDStr := fmt.Sprintf("%d", want.expectedSourceID)
-		if gotSourceIDStr != wantSourceIDStr {
-			// 兜底检查：如果 lookup 失败，可能还是旧的 allocation_id
-			if gotSourceIDStr == openAllocID || gotSourceIDStr == payAllocID || gotSourceIDStr == closeAllocID {
-				t.Fatalf("source_id is still allocation_id for %s: got=%s (expected integer id)", want.businessID, gotSourceIDStr)
-			}
-			t.Fatalf("unexpected source_id for %s: got=%s want=%s", want.businessID, gotSourceIDStr, wantSourceIDStr)
-		}
-		if gotAccountingScene != want.accountingScene || gotAccountingSubtype != want.accountingSubType {
-			t.Fatalf("unexpected accounting fields for %s: scene=%s/%s subtype=%s/%s", want.businessID, gotAccountingScene, want.accountingScene, gotAccountingSubtype, want.accountingSubType)
-		}
+		t.Fatalf("unexpected source_id for pay: got=%s want=%s", gotSourceIDStr, wantSourceIDStr)
+	}
+	if gotAccountingScene != "c2c_transfer" || gotAccountingSubtype != "chunk_pay" {
+		t.Fatalf("unexpected accounting fields for pay: scene=%s subtype=%s", gotAccountingScene, gotAccountingSubtype)
+	}
 
-		// 验证 payload 中保留了 allocation_id
-		var payload string
-		if err := db.QueryRow(`SELECT payload_json FROM fin_business WHERE business_id=?`, want.businessID).Scan(&payload); err != nil {
-			t.Fatalf("query payload failed: %v", err)
-		}
-		if !strings.Contains(payload, "allocation_id") {
-			t.Fatalf("payload missing allocation_id for %s: %s", want.businessID, payload)
-		}
+	// 验证 payload 中保留了 allocation_id
+	var payload string
+	if err := db.QueryRow(`SELECT payload_json FROM fin_business WHERE business_id=?`, "biz_c2c_pay_sess_third_iter_1_2").Scan(&payload); err != nil {
+		t.Fatalf("query payload failed: %v", err)
+	}
+	if !strings.Contains(payload, "allocation_id") {
+		t.Fatalf("payload missing allocation_id for pay: %s", payload)
 	}
 }
 
@@ -494,31 +531,45 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 7, "close_tx_seq_7", baseTxHex, 700, 290, sellerPubHex)
 
-	// 第二步整改：验证 source_id 是 pool_allocations.id（整数主键的字符串形式）
+	// 第二阶段整改：验证 close 生成过程型 fin_business，不是正式收费对象
 	wantAllocID := directTransferPoolAllocationID(sessionID, "close", 7)
 	wantID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, wantAllocID)
 	wantIDStr := fmt.Sprintf("%d", wantID)
 
-	var businessSourceID, processSourceID string
+	// 验证：fin_business 中存在 biz_c2c_close_*，但被标记为过程型
+	var businessCount int
 	if err := db.QueryRow(
-		`SELECT source_id FROM fin_business WHERE business_id=?`,
+		`SELECT COUNT(1) FROM fin_business WHERE business_id=?`,
 		"biz_c2c_close_"+sessionID,
-	).Scan(&businessSourceID); err != nil {
-		t.Fatalf("query business source id failed: %v", err)
+	).Scan(&businessCount); err != nil {
+		t.Fatalf("query fin_business failed: %v", err)
 	}
+	if businessCount != 1 {
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 fin_business 记录，got %d", businessCount)
+	}
+
+	// 验证：accounting_scene 和 accounting_subtype 标记为过程型
+	var closeScene, closeSubtype string
+	if err := db.QueryRow(
+		`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`,
+		"biz_c2c_close_"+sessionID,
+	).Scan(&closeScene, &closeSubtype); err != nil {
+		t.Fatalf("query close fin_business fields failed: %v", err)
+	}
+	if closeScene != "direct_transfer_process" {
+		t.Fatalf("第二阶段：close 的 accounting_scene 应为 direct_transfer_process，got %s", closeScene)
+	}
+	if closeSubtype != "pool_close_settle" {
+		t.Fatalf("第二阶段：close 的 accounting_subtype 应为 pool_close_settle，got %s", closeSubtype)
+	}
+
+	// 验证：fin_process_events 的 source_id 是 pool_allocations.id
+	var processSourceID string
 	if err := db.QueryRow(
 		`SELECT source_id FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processSourceID); err != nil {
 		t.Fatalf("query process source id failed: %v", err)
-	}
-	// 第二步整改验证：source_id 应该是整数主键
-	if businessSourceID != wantIDStr {
-		// 如果还是 allocation_id，说明整改未生效
-		if businessSourceID == wantAllocID {
-			t.Fatalf("business source_id is still allocation_id (old logic): got=%s want=%s", businessSourceID, wantIDStr)
-		}
-		t.Fatalf("unexpected business source_id: got=%s want=%s", businessSourceID, wantIDStr)
 	}
 	if processSourceID != wantIDStr {
 		if processSourceID == wantAllocID {
@@ -795,25 +846,18 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
-		SessionID:         sessionID,
-		DealID:            "deal_third_iter_1",
-		BaseTxID:          "base_tx_third_iter_1",
-		BaseTxHex:         baseTxHex,
-		ClientLockScript:  "",
-		PoolAmountSatoshi: 990,
-		SellerPubHex:      sellerPubHex,
-	})
+	// 第二阶段：改用 pay 测试（pay 暂保留完整 fin_business，open/close 为过程型）
+	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_compat_test")
 
-	// 使用 allocation_id 查询（兼容层）
-	openAllocID := directTransferPoolAllocationID(sessionID, "open", 1)
+	// 使用 pay allocation_id 查询（兼容层）
+	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 
-	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, openAllocID, 10, 0)
+	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocID, 10, 0)
 	if err != nil {
 		t.Fatalf("compatibility query failed: %v", err)
 	}
+	// 第二阶段：只有 pay 生成 fin_business
 	if bizPage.Total == 0 {
 		t.Fatal("compatibility query returned no results")
 	}
@@ -829,8 +873,8 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 		}
 	}
 
-	// 同样测试 process events
-	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, openAllocID, 10, 0)
+	// 同样测试 process events（pay 生成 process events）
+	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, payAllocID, 10, 0)
 	if err != nil {
 		t.Fatalf("compatibility query for process events failed: %v", err)
 	}

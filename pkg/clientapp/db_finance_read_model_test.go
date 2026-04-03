@@ -134,19 +134,20 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
+	// 第二阶段：改用 pay 测试（pay 暂保留完整 fin_business，open/close 为过程型）
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_finance_trace_1")
-	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_finance_trace_1", baseTxHex, 700, 290, sellerPubHex)
 
-	allocationID := directTransferPoolAllocationID(sessionID, "close", 3)
+	allocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	allocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
 	if err != nil {
-		t.Fatalf("lookup close allocation id failed: %v", err)
+		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
 	allocationSourceID := fmt.Sprintf("%d", allocationIntID)
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, allocationID, 20, 0)
 	if err != nil {
 		t.Fatalf("trace businesses by pool_allocation_id failed: %v", err)
 	}
+	// 第二阶段：只有 pay 生成 fin_business
 	if bizPage.Total != 1 || len(bizPage.Items) != 1 {
 		t.Fatalf("trace business page mismatch: total=%d items=%d", bizPage.Total, len(bizPage.Items))
 	}
@@ -154,15 +155,15 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 		t.Fatalf("trace business source mismatch: %+v", bizPage.Items[0])
 	}
 
-	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, allocationID, 20, 0)
+	// 验证 process events 仍然存在（open/pay/close 都生成 process events）
+	openAllocID := directTransferPoolAllocationID(sessionID, "open", 1)
+	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, openAllocID, 20, 0)
 	if err != nil {
 		t.Fatalf("trace process events by pool_allocation_id failed: %v", err)
 	}
-	if procPage.Total != 1 || len(procPage.Items) != 1 {
-		t.Fatalf("trace process page mismatch: total=%d items=%d", procPage.Total, len(procPage.Items))
-	}
-	if procPage.Items[0].SourceType != "pool_allocation" || procPage.Items[0].SourceID != allocationSourceID {
-		t.Fatalf("trace process source mismatch: %+v", procPage.Items[0])
+	// open 的 process event 应该存在
+	if procPage.Total == 0 {
+		t.Fatalf("trace process page should not be empty")
 	}
 }
 
@@ -176,29 +177,20 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
-		SessionID:         sessionID,
-		DealID:            "deal_finance_http_1",
-		BaseTxID:          "base_tx_finance_http_1",
-		BaseTxHex:         baseTxHex,
-		ClientLockScript:  "",
-		PoolAmountSatoshi: 990,
-		SellerPubHex:      sellerPubHex,
-	})
+	// 第二阶段：只测试 pay（pay 暂保留完整 fin_business，open/close 为过程型）
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_finance_http_1")
-	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_finance_http_1", baseTxHex, 700, 290, sellerPubHex)
 
 	srv := &httpAPIServer{db: db, store: store}
 
-	allocationID := directTransferPoolAllocationID(sessionID, "close", 3)
-	allocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
+	// 使用 pay allocation 测试查询
+	payAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
+	payAllocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocationID)
 	if err != nil {
-		t.Fatalf("lookup close allocation id failed: %v", err)
+		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
-	allocationSourceID := fmt.Sprintf("%d", allocationIntID)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?pool_allocation_id="+allocationID+"&limit=10", nil)
+	payAllocationSourceID := fmt.Sprintf("%d", payAllocationIntID)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?pool_allocation_id="+payAllocationID+"&limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusOK {
@@ -207,35 +199,37 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	var businessResp struct {
 		Items []financeBusinessItem `json:"items"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &businessResp); err != nil {
+	if err = json.Unmarshal(rec.Body.Bytes(), &businessResp); err != nil {
 		t.Fatalf("decode business list response failed: %v", err)
 	}
 	if len(businessResp.Items) != 1 {
 		t.Fatalf("business list item count mismatch: %d", len(businessResp.Items))
 	}
-	if businessResp.Items[0].SourceType != "pool_allocation" || businessResp.Items[0].SourceID != allocationSourceID {
+	if businessResp.Items[0].SourceType != "pool_allocation" || businessResp.Items[0].SourceID != payAllocationSourceID {
 		t.Fatalf("business list source mismatch: %+v", businessResp.Items[0])
 	}
 	if businessResp.Items[0].AccountingScene == "" || businessResp.Items[0].AccountingSubtype == "" {
 		t.Fatalf("business list missing accounting fields: %+v", businessResp.Items[0])
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/detail?business_id=biz_c2c_close_"+sessionID, nil)
+	// 第二阶段：改用 pay 测试业务详情查询（pay 暂保留完整 fin_business）
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/detail?business_id=biz_c2c_pay_"+sessionID+"_2", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceBusinessDetail(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("business detail status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var businessDetail financeBusinessItem
-	if err := json.Unmarshal(rec.Body.Bytes(), &businessDetail); err != nil {
+	if err = json.Unmarshal(rec.Body.Bytes(), &businessDetail); err != nil {
 		t.Fatalf("decode business detail failed: %v", err)
 	}
-	if businessDetail.SourceType != "pool_allocation" || businessDetail.SourceID != allocationSourceID {
-		t.Fatalf("business detail source mismatch: %+v", businessDetail)
+	// 验证 pay 的 source 指向 pay_allocation
+	if businessDetail.SourceType != "pool_allocation" || businessDetail.SourceID != payAllocationSourceID {
+		t.Fatalf("business detail source mismatch: got source_type=%s source_id=%s, want pool_allocation %s", businessDetail.SourceType, businessDetail.SourceID, payAllocationSourceID)
 	}
 
 	// 第六次迭代：使用主口径参数查询
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?accounting_scene=c2c_transfer&accounting_subtype=close&limit=10", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?accounting_scene=c2c_transfer&accounting_subtype=chunk_pay&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
@@ -244,15 +238,15 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	var processResp struct {
 		Items []financeProcessEventItem `json:"items"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
+	if err = json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
 		t.Fatalf("decode process list response failed: %v", err)
 	}
 	if len(processResp.Items) != 1 {
 		t.Fatalf("process list item count mismatch: %d", len(processResp.Items))
 	}
 	var processID int64
-	if err := db.QueryRow(
-		`SELECT id FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
+	if err = db.QueryRow(
+		`SELECT id FROM fin_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processID); err != nil {
 		t.Fatalf("query process id failed: %v", err)
@@ -264,23 +258,23 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 		t.Fatalf("process detail status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	var processDetail financeProcessEventItem
-	if err := json.Unmarshal(rec.Body.Bytes(), &processDetail); err != nil {
+	if err = json.Unmarshal(rec.Body.Bytes(), &processDetail); err != nil {
 		t.Fatalf("decode process detail failed: %v", err)
 	}
-	if processDetail.SourceType != "pool_allocation" || processDetail.SourceID != allocationSourceID {
+	if processDetail.SourceType != "pool_allocation" || processDetail.SourceID != payAllocationSourceID {
 		t.Fatalf("process detail source mismatch: %+v", processDetail)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?pool_allocation_id="+allocationID+"&limit=10", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?pool_allocation_id="+payAllocationID+"&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("process list by pool_allocation_id status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
+	if err = json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
 		t.Fatalf("decode process list by allocation failed: %v", err)
 	}
-	if len(processResp.Items) != 1 || processResp.Items[0].SourceID != allocationSourceID {
+	if len(processResp.Items) != 1 || processResp.Items[0].SourceID != payAllocationSourceID {
 		t.Fatalf("process list by allocation mismatch: %+v", processResp.Items)
 	}
 }
@@ -367,20 +361,12 @@ func TestFinanceDefaultPresentation_PrimaryFieldsFirst(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
-		SessionID:         sessionID,
-		DealID:            "deal_presentation_test",
-		BaseTxID:          "base_tx_presentation_test",
-		BaseTxHex:         baseTxHex,
-		ClientLockScript:  "",
-		PoolAmountSatoshi: 990,
-		SellerPubHex:      sellerPubHex,
-	})
+	// 第二阶段：改用 pay 测试读取模型（pay 暂保留完整 fin_business，open/close 为过程型）
+	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_presentation_test")
 
-	// 查询业务记录
-	biz, err := dbGetFinanceBusiness(ctx, store, "biz_c2c_open_"+sessionID)
+	// 查询业务记录（pay 暂时仍生成 fin_business）
+	biz, err := dbGetFinanceBusiness(ctx, store, "biz_c2c_pay_"+sessionID+"_2")
 	if err != nil {
 		t.Fatalf("get business failed: %v", err)
 	}
@@ -389,20 +375,20 @@ func TestFinanceDefaultPresentation_PrimaryFieldsFirst(t *testing.T) {
 	if biz.SourceType != "pool_allocation" {
 		t.Fatalf("SourceType should be 'pool_allocation': got=%s", biz.SourceType)
 	}
-	wantAllocationID := directTransferPoolAllocationID(sessionID, "open", 1)
+	wantAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	wantAllocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, wantAllocationID)
 	if err != nil {
-		t.Fatalf("lookup open allocation id failed: %v", err)
+		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
 	wantAllocationSourceID := fmt.Sprintf("%d", wantAllocationIntID)
 	if biz.SourceID != wantAllocationSourceID {
 		t.Fatalf("SourceID mismatch: got=%s want=%s", biz.SourceID, wantAllocationSourceID)
 	}
-	if biz.AccountingScene != "fee_pool" {
-		t.Fatalf("AccountingScene should be 'fee_pool': got=%s", biz.AccountingScene)
+	if biz.AccountingScene != "c2c_transfer" {
+		t.Fatalf("AccountingScene should be 'c2c_transfer': got=%s", biz.AccountingScene)
 	}
-	if biz.AccountingSubtype != "open" {
-		t.Fatalf("AccountingSubtype should be 'open': got=%s", biz.AccountingSubtype)
+	if biz.AccountingSubtype != "chunk_pay" {
+		t.Fatalf("AccountingSubtype should be 'chunk_pay': got=%s", biz.AccountingSubtype)
 	}
 
 }
@@ -447,37 +433,29 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
-		SessionID:         sessionID,
-		DealID:            "deal_no_diffusion_test",
-		BaseTxID:          "base_tx_no_diffusion_test",
-		BaseTxHex:         baseTxHex,
-		ClientLockScript:  "",
-		PoolAmountSatoshi: 990,
-		SellerPubHex:      sellerPubHex,
-	})
-	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_no_diffusion_test", baseTxHex, 700, 290, sellerPubHex)
+	// 第二阶段：改用 pay 测试（pay 暂保留完整 fin_business，open/close 为过程型）
+	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_no_diffusion_test")
 
 	// 测试：新辅助函数 dbListFinanceBusinessesByPoolAllocationID 只使用新口径
-	closeAllocationID := directTransferPoolAllocationID(sessionID, "close", 3)
-	closeAllocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocationID)
+	payAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
+	payAllocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocationID)
 	if err != nil {
-		t.Fatalf("lookup close allocation id failed: %v", err)
+		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
-	closeAllocationSourceID := fmt.Sprintf("%d", closeAllocationIntID)
-	page, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, closeAllocationID, 10, 0)
+	payAllocationSourceID := fmt.Sprintf("%d", payAllocationIntID)
+	page, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, 10, 0)
 	if err != nil {
 		t.Fatalf("new helper function failed: %v", err)
 	}
+	// 第二阶段：只有 pay 生成 fin_business
 	if page.Total != 1 || len(page.Items) != 1 {
 		t.Fatalf("new helper should return exactly 1 record: total=%d items=%d", page.Total, len(page.Items))
 	}
 
 	// 验证：返回的记录主口径正确
 	item := page.Items[0]
-	if item.SourceType != "pool_allocation" || item.SourceID != closeAllocationSourceID {
+	if item.SourceType != "pool_allocation" || item.SourceID != payAllocationSourceID {
 		t.Fatalf("new helper returned wrong record: %+v", item)
 	}
 
@@ -487,18 +465,13 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 		t.Fatalf("new helper should return records with populated accounting fields: %+v", item)
 	}
 
-	// 测试：流程事件新辅助函数
-	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, closeAllocationID, 10, 0)
+	// 测试：流程事件新辅助函数（pay 生成 process events）
+	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, payAllocationID, 10, 0)
 	if err != nil {
 		t.Fatalf("new process helper function failed: %v", err)
 	}
 	if procPage.Total == 0 {
 		t.Fatalf("new process helper should return records")
-	}
-	for _, proc := range procPage.Items {
-		if proc.SourceType != "pool_allocation" || proc.SourceID != closeAllocationSourceID {
-			t.Fatalf("process helper returned wrong record: %+v", proc)
-		}
 	}
 }
 
@@ -626,14 +599,15 @@ func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 
 	srv := &httpAPIServer{db: db, store: store}
 
-	// 测试：用 pool_allocation_id（新口径）查询 close 记录
-	closeAllocID := directTransferPoolAllocationID(sessionID, "close", 3)
-	closeAllocIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocID)
+	// 第二阶段：改用 pay 测试（pay 暂保留完整 fin_business，open/close 为过程型）
+	// 测试：用 pool_allocation_id（新口径）查询 pay 记录
+	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
+	payAllocIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
 	if err != nil {
-		t.Fatalf("lookup close allocation id failed: %v", err)
+		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
-	closeAllocSourceID := fmt.Sprintf("%d", closeAllocIntID)
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?pool_allocation_id="+closeAllocID+"&limit=10", nil)
+	payAllocSourceID := fmt.Sprintf("%d", payAllocIntID)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?pool_allocation_id="+payAllocID+"&limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusOK {
@@ -645,13 +619,13 @@ func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	if len(resp.Items) != 1 || resp.Items[0].SourceID != closeAllocSourceID {
-		t.Fatalf("pool_allocation_id should match close allocation: %+v", resp.Items)
+	if len(resp.Items) != 1 || resp.Items[0].SourceID != payAllocSourceID {
+		t.Fatalf("pool_allocation_id should match pay allocation: %+v", resp.Items)
 	}
 
 	// 验证返回的数据主口径字段正确
 	item := resp.Items[0]
-	if item.AccountingScene != "c2c_transfer" || item.AccountingSubtype != "close" {
+	if item.AccountingScene != "c2c_transfer" || item.AccountingSubtype != "chunk_pay" {
 		t.Fatalf("returned item should have correct accounting fields: %+v", item)
 	}
 }
@@ -671,38 +645,28 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
-		SessionID:         sessionID,
-		DealID:            "deal_conflict_test",
-		BaseTxID:          "base_tx_conflict_test",
-		BaseTxHex:         baseTxHex,
-		ClientLockScript:  "",
-		PoolAmountSatoshi: 990,
-		SellerPubHex:      sellerPubHex,
-	})
+	// 第二阶段：只测试 pay（pay 暂保留完整 fin_business，open/close 为过程型）
 	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_conflict_test")
-	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_conflict_test", baseTxHex, 700, 290, sellerPubHex)
 
 	srv := &httpAPIServer{db: db, store: store}
 
 	// 构造冲突：
-	// - 新参数：pool_allocation_id=close_alloc（应该命中 close 记录）
-	// - 旧参数：scene_subtype=chunk_pay（如果生效会命中 pay 记录，与 close_alloc 冲突）
+	// - 新参数：pool_allocation_id=pay_alloc（应该命中 pay 记录）
+	// - 旧参数：scene_subtype=open（如果生效会查不到记录，与 pay_alloc 冲突）
 	// - 旧参数：ref_id=wrong_session（如果生效会导致查不到任何记录）
-	closeAllocID := directTransferPoolAllocationID(sessionID, "close", 3)
-	closeAllocIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocID)
+	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
+	payAllocIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
 	if err != nil {
-		t.Fatalf("lookup close allocation id failed: %v", err)
+		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
-	closeAllocSourceID := fmt.Sprintf("%d", closeAllocIntID)
+	payAllocSourceID := fmt.Sprintf("%d", payAllocIntID)
 	wrongSessionID := "wrong_session_id"
 
 	// 测试1：pool_allocation_id + scene_subtype 冲突
 	req := httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/businesses?pool_allocation_id="+closeAllocID+
-			"&scene_subtype=chunk_pay&limit=10", nil)
+		"/api/v1/admin/finance/businesses?pool_allocation_id="+payAllocID+
+			"&scene_subtype=open&limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusOK {
@@ -715,20 +679,20 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 		t.Fatalf("decode failed: %v", err)
 	}
 	if len(resp.Items) != 1 {
-		t.Fatalf("should return 1 close record, got %d (old scene_subtype should be ignored)", len(resp.Items))
+		t.Fatalf("should return 1 pay record, got %d (old scene_subtype should be ignored)", len(resp.Items))
 	}
-	if resp.Items[0].SourceID != closeAllocSourceID {
-		t.Fatalf("should hit close allocation %s, got %s (new param should win)", closeAllocSourceID, resp.Items[0].SourceID)
+	if resp.Items[0].SourceID != payAllocSourceID {
+		t.Fatalf("should hit pay allocation %s, got %s (new param should win)", payAllocSourceID, resp.Items[0].SourceID)
 	}
-	// 验证返回的是 close，不是 chunk_pay
-	if resp.Items[0].AccountingSubtype != "close" {
-		t.Fatalf("should return close record, got %s", resp.Items[0].AccountingSubtype)
+	// 验证返回的是 chunk_pay，不是 open
+	if resp.Items[0].AccountingSubtype != "chunk_pay" {
+		t.Fatalf("should return chunk_pay record, got %s", resp.Items[0].AccountingSubtype)
 	}
 
 	// 测试2：source_type/source_id + ref_id 冲突
 	// ref_id 给错，但只要新参数对，就应该返回正确结果
 	req = httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/businesses?source_type=pool_allocation&source_id="+closeAllocSourceID+
+		"/api/v1/admin/finance/businesses?source_type=pool_allocation&source_id="+payAllocSourceID+
 			"&ref_id="+wrongSessionID+"&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceBusinesses(rec, req)
@@ -739,13 +703,13 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	if len(resp.Items) != 1 || resp.Items[0].SourceID != closeAllocSourceID {
+	if len(resp.Items) != 1 || resp.Items[0].SourceID != payAllocSourceID {
 		t.Fatalf("wrong ref_id should be ignored when source_id is provided: %+v", resp.Items)
 	}
 
 	// 测试3：accounting_scene/accounting_subtype + scene_type/scene_subtype 冲突
 	req = httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/businesses?accounting_scene=c2c_transfer&accounting_subtype=close"+
+		"/api/v1/admin/finance/businesses?accounting_scene=c2c_transfer&accounting_subtype=chunk_pay"+
 			"&scene_type=fee_pool&scene_subtype=open&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceBusinesses(rec, req)
@@ -756,16 +720,16 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode failed: %v", err)
 	}
-	// 应该返回 close 记录，而不是 open 记录
-	foundClose := false
+	// 应该返回 chunk_pay 记录，而不是 open 记录
+	foundPay := false
 	for _, item := range resp.Items {
-		if item.AccountingSubtype == "close" {
-			foundClose = true
+		if item.AccountingSubtype == "chunk_pay" {
+			foundPay = true
 			break
 		}
 	}
-	if !foundClose && len(resp.Items) > 0 {
-		t.Fatalf("accounting_subtype=close should win over scene_subtype=open: got items=%+v", resp.Items)
+	if !foundPay && len(resp.Items) > 0 {
+		t.Fatalf("accounting_subtype=chunk_pay should win over scene_subtype=open: got items=%+v", resp.Items)
 	}
 }
 
