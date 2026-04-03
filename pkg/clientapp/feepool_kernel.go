@@ -160,7 +160,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 	st.PauseHaveSat = sum
 	st.LastError = ""
 	k.setState(gwID, st)
-	appendObservedFeePoolState(ctx, k.store, gwBusinessID, before, st, gwBusinessID, time.Now().Unix(), "fee_pool_resumed_by_wallet_probe")
+	appendObservedFeePoolState(ctx, k.store, gwBusinessID, before, st, gwBusinessID, time.Now().Unix(), "wallet_probe", "fee_pool_resumed_by_wallet_probe", nil)
 	obs.Business("bitcast-client", "fee_pool_resume_ready", map[string]any{
 		"gateway":                gwBusinessID,
 		"wallet_balance_satoshi": sum,
@@ -204,15 +204,12 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		}
 		events = append(events, name)
 		_ = dbAppendDomainEvent(ctx, k.store, domainEventEntry{
-			CommandID:      cmd.CommandID,
-			GatewayPeerID:  gwBusinessID,
-			SourceKind:     "command",
-			SourceRef:      cmd.CommandID,
-			ObservedAtUnix: time.Now().Unix(),
-			EventName:      name,
-			StateBefore:    fromState,
-			StateAfter:     toState,
-			Payload:        payload,
+			CommandID:     cmd.CommandID,
+			GatewayPeerID: gwBusinessID,
+			EventName:     name,
+			StateBefore:   fromState,
+			StateAfter:    toState,
+			Payload:       payload,
 		})
 	}
 	logEffect := func(effectType string, stage string, status string, err error, payload map[string]any) {
@@ -234,17 +231,14 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 		result.EmittedEvents = append([]string(nil), events...)
 		result.StateAfter = state.State
 		_ = dbAppendStateSnapshot(ctx, k.store, stateSnapshotEntry{
-			CommandID:      cmd.CommandID,
-			GatewayPeerID:  gwBusinessID,
-			SourceKind:     "command",
-			SourceRef:      cmd.CommandID,
-			ObservedAtUnix: time.Now().Unix(),
-			State:          state.State,
-			PauseReason:    state.PauseReason,
-			PauseNeedSat:   state.PauseNeedSat,
-			PauseHaveSat:   state.PauseHaveSat,
-			LastError:      state.LastError,
-			Payload:        map[string]any{"command_type": cmd.CommandType},
+			CommandID:     cmd.CommandID,
+			GatewayPeerID: gwBusinessID,
+			State:         state.State,
+			PauseReason:   state.PauseReason,
+			PauseNeedSat:  state.PauseNeedSat,
+			PauseHaveSat:  state.PauseHaveSat,
+			LastError:     state.LastError,
+			Payload:       map[string]any{"command_type": cmd.CommandType},
 		})
 		_ = dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 			CommandID:     cmd.CommandID,
@@ -640,29 +634,23 @@ type commandJournalEntry struct {
 }
 
 type domainEventEntry struct {
-	CommandID      string
-	GatewayPeerID  string
-	SourceKind     string
-	SourceRef      string
-	ObservedAtUnix int64
-	EventName      string
-	StateBefore    string
-	StateAfter     string
-	Payload        any
+	CommandID     string
+	GatewayPeerID string
+	EventName     string
+	StateBefore   string
+	StateAfter    string
+	Payload       any
 }
 
 type stateSnapshotEntry struct {
-	CommandID      string
-	GatewayPeerID  string
-	SourceKind     string
-	SourceRef      string
-	ObservedAtUnix int64
-	State          string
-	PauseReason    string
-	PauseNeedSat   uint64
-	PauseHaveSat   uint64
-	LastError      string
-	Payload        any
+	CommandID     string
+	GatewayPeerID string
+	State         string
+	PauseReason   string
+	PauseNeedSat  uint64
+	PauseHaveSat  uint64
+	LastError     string
+	Payload       any
 }
 
 type effectLogEntry struct {
@@ -686,7 +674,7 @@ func mustJSON(v any) string {
 	return string(b)
 }
 
-func appendObservedFeePoolState(ctx context.Context, store *clientDB, gatewayPeerID string, beforeState, afterState feePoolKernelGatewayState, sourceRef string, observedAtUnix int64, eventName string) {
+func appendObservedFeePoolState(ctx context.Context, store *clientDB, gatewayPeerID string, beforeState, afterState feePoolKernelGatewayState, sourceRef string, observedAtUnix int64, observedReason string, eventName string, extra map[string]any) {
 	if store == nil {
 		return
 	}
@@ -696,9 +684,13 @@ func appendObservedFeePoolState(ctx context.Context, store *clientDB, gatewayPee
 	if strings.TrimSpace(sourceRef) == "" {
 		sourceRef = strings.TrimSpace(gatewayPeerID)
 	}
-	payload := map[string]any{
-		"source_ref":       strings.TrimSpace(sourceRef),
-		"observed_at_unix": observedAtUnix,
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	payload := observedGatewayStatePayload{
+		ObservedReason:       normalizeObservedReason(observedReason, eventName),
+		WalletBalanceSatoshi: afterState.PauseHaveSat,
+		Extra:                extra,
 	}
 	if eventName != "" {
 		_ = dbAppendObservedGatewayState(ctx, store, observedGatewayStateEntry{
@@ -728,4 +720,27 @@ func appendObservedFeePoolState(ctx context.Context, store *clientDB, gatewayPee
 		LastError:      afterState.LastError,
 		Payload:        payload,
 	})
+}
+
+type observedGatewayStatePayload struct {
+	ObservedReason       string         `json:"observed_reason"`
+	WalletBalanceSatoshi uint64         `json:"wallet_balance_satoshi"`
+	Extra                map[string]any `json:"extra"`
+}
+
+func normalizeObservedReason(observedReason, eventName string) string {
+	reason := strings.TrimSpace(observedReason)
+	if reason != "" {
+		return reason
+	}
+	switch {
+	case strings.Contains(eventName, "wallet_probe"):
+		return "wallet_probe"
+	case strings.Contains(eventName, "pause_observed"):
+		return "pause_watch"
+	case strings.Contains(eventName, "resume"):
+		return "runtime_resume_check"
+	default:
+		return "runtime_resume_check"
+	}
 }

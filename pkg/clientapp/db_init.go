@@ -301,9 +301,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 			gateway_pubkey_hex TEXT NOT NULL,
-			source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
-			source_ref TEXT NOT NULL DEFAULT '',
-			observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			event_name TEXT NOT NULL,
 			state_before TEXT NOT NULL,
 			state_after TEXT NOT NULL,
@@ -315,9 +312,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 			gateway_pubkey_hex TEXT NOT NULL,
-			source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
-			source_ref TEXT NOT NULL DEFAULT '',
-			observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			state TEXT NOT NULL,
 			pause_reason TEXT NOT NULL,
 			pause_need_satoshi INTEGER NOT NULL,
@@ -835,6 +829,12 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := migrateLegacyChainTables(db); err != nil {
 		return fmt.Errorf("legacy chain tables: %w", err)
 	}
+	if err := ensureFinalCommandLinkedFactsSchema(db); err != nil {
+		return fmt.Errorf("final command linked facts schema: %w", err)
+	}
+	if err := migrateObservedGatewayStatePayloads(db); err != nil {
+		return fmt.Errorf("observed gateway payload migration: %w", err)
+	}
 	// command_journal trigger_key 列迁移（第六次迭代新增）
 	if err := ensureCommandJournalTriggerKey(db); err != nil {
 		return fmt.Errorf("command_journal trigger_key: %w", err)
@@ -862,368 +862,331 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	return nil
 }
 
-// ensureCommandFactSourceColumns 只给命令事实表补来源列，不改旧数据。
-// 设计说明：
-// - 只处理 domain_events / state_snapshots；
-// - 只补列，不重建表；
-// - 幂等，重复跑只会确认列都在。
-func ensureCommandFactSourceColumns(db *sql.DB) error {
+func ensureFinalCommandLinkedFactsSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	for _, table := range []string{"domain_events", "state_snapshots"} {
-		cols, err := tableColumns(db, table)
+		needsRebuild, err := commandFactTableNeedsRebuild(db, table)
 		if err != nil {
-			return fmt.Errorf("inspect %s: %w", table, err)
+			return fmt.Errorf("inspect %s fact schema: %w", table, err)
 		}
-		if len(cols) == 0 {
+		if !needsRebuild {
 			continue
 		}
-		addColumns := []struct {
-			col  string
-			stmt string
-		}{
-			{"source_kind", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN source_kind TEXT NOT NULL DEFAULT 'command'`, table)},
-			{"source_ref", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN source_ref TEXT NOT NULL DEFAULT ''`, table)},
-			{"observed_at_unix", fmt.Sprintf(`ALTER TABLE %s ADD COLUMN observed_at_unix INTEGER NOT NULL DEFAULT 0`, table)},
-		}
-		for _, m := range addColumns {
-			if _, ok := cols[m.col]; ok {
-				continue
-			}
-			if _, err := db.Exec(m.stmt); err != nil {
-				return fmt.Errorf("add %s.%s: %w", table, m.col, err)
-			}
+		if err := rebuildFinalCommandFactTable(db, table); err != nil {
+			return fmt.Errorf("rebuild %s fact schema: %w", table, err)
 		}
 	}
 	return nil
 }
 
-// backfillCommandFactSourceColumns 只回填命令事实表里缺失的来源信息。
-// 设计说明：
-// - 只填空，不覆盖已有值；
-// - source_kind 为空才补 command；
-// - source_ref 为空才补 command_id；
-// - observed_at_unix <= 0 才补 created_at_unix；
-// - 只处理 domain_events / state_snapshots。
-func backfillCommandFactSourceColumns(db *sql.DB, table string) error {
+func commandFactTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 	if db == nil {
-		return fmt.Errorf("db is nil")
+		return false, fmt.Errorf("db is nil")
 	}
 	table = strings.TrimSpace(table)
 	if table != "domain_events" && table != "state_snapshots" {
-		return fmt.Errorf("unsupported table: %s", table)
+		return false, fmt.Errorf("unsupported table: %s", table)
 	}
 	hasTable, err := hasTable(db, table)
 	if err != nil {
-		return fmt.Errorf("check %s table: %w", table, err)
+		return false, fmt.Errorf("check %s table: %w", table, err)
 	}
 	if !hasTable {
-		return nil
+		return false, nil
 	}
 	cols, err := tableColumns(db, table)
 	if err != nil {
-		return fmt.Errorf("inspect %s: %w", table, err)
+		return false, fmt.Errorf("inspect %s columns: %w", table, err)
 	}
-	if len(cols) == 0 {
-		return nil
-	}
-	stmts := []string{
-		fmt.Sprintf(`UPDATE %s SET source_kind='command' WHERE trim(coalesce(source_kind,''))=''`, table),
-		fmt.Sprintf(`UPDATE %s SET source_ref=command_id WHERE trim(coalesce(source_ref,''))='' AND trim(coalesce(command_id,''))<>''`, table),
-		fmt.Sprintf(`UPDATE %s SET observed_at_unix=created_at_unix WHERE coalesce(observed_at_unix,0)<=0`, table),
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("backfill %s: %w", table, err)
+	for _, col := range []string{"source_kind", "source_ref", "observed_at_unix"} {
+		if _, ok := cols[col]; ok {
+			return true, nil
 		}
 	}
-	return nil
+	return false, nil
 }
 
-type observedGatewayStateMigrationReport struct {
-	SnapshotRowsRead         int
-	SnapshotRowsInserted     int
-	SnapshotRowsDeleted      int
-	DomainEventRowsRead      int
-	DomainEventRowsMerged    int
-	DomainEventRowsDeleted   int
-	DomainEventRowsUnmatched int
-}
-
-type observedGatewayStateMigrationKey struct {
-	GatewayPeerID  string
-	SourceRef      string
-	ObservedAtUnix int64
-}
-
-type observedGatewayStateSnapshotRow struct {
-	ID             int64
-	CreatedAtUnix  int64
-	GatewayPeerID  string
-	SourceRef      string
-	ObservedAtUnix int64
-	State          string
-	PauseReason    string
-	PauseNeedSat   uint64
-	PauseHaveSat   uint64
-	LastError      string
-	PayloadJSON    string
-}
-
-type observedGatewayStateDomainEventRow struct {
-	ID             int64
-	CreatedAtUnix  int64
-	GatewayPeerID  string
-	SourceRef      string
-	ObservedAtUnix int64
-	EventName      string
-	StateBefore    string
-	StateAfter     string
-	PayloadJSON    string
-}
-
-func migrateObservedGatewayStateFacts(db *sql.DB) error {
-	_, err := migrateObservedGatewayStateFactsWithReport(db)
-	return err
-}
-
-func migrateObservedGatewayStateFactsWithReport(db *sql.DB) (observedGatewayStateMigrationReport, error) {
-	var report observedGatewayStateMigrationReport
+func rebuildFinalCommandFactTable(db *sql.DB, table string) error {
 	if db == nil {
-		return report, fmt.Errorf("db is nil")
+		return fmt.Errorf("db is nil")
 	}
-	if !hasAnyTable(db, "state_snapshots", "domain_events") {
-		return report, nil
+	spec, ok := finalCommandFactTableSpec(table)
+	if !ok {
+		return fmt.Errorf("unsupported table: %s", table)
 	}
 
 	tx, err := db.Begin()
 	if err != nil {
-		return report, err
+		return err
 	}
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-
-	snapshotRows, err := queryObservedGatewayStateSnapshotRows(tx)
-	if err != nil {
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
 		rollback()
-		return report, err
+		return err
 	}
-
-	observedIDsByKey := make(map[observedGatewayStateMigrationKey][]int64, len(snapshotRows))
-	payloadByID := make(map[int64]string, len(snapshotRows))
-	for _, row := range snapshotRows {
-		report.SnapshotRowsRead++
-		payloadJSON, err := buildObservedGatewayStateSnapshotPayload(row.PayloadJSON)
-		if err != nil {
-			rollback()
-			return report, fmt.Errorf("build observed snapshot payload: %w", err)
-		}
-		res, err := tx.Exec(
-			`INSERT INTO observed_gateway_states(
-				created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			row.CreatedAtUnix,
-			row.GatewayPeerID,
-			row.SourceRef,
-			row.ObservedAtUnix,
-			"",
-			row.State,
-			row.State,
-			row.PauseReason,
-			row.PauseNeedSat,
-			row.PauseHaveSat,
-			row.LastError,
-			payloadJSON,
-		)
-		if err != nil {
-			rollback()
-			return report, fmt.Errorf("insert observed gateway state: %w", err)
-		}
-		observedID, err := res.LastInsertId()
-		if err != nil {
-			rollback()
-			return report, fmt.Errorf("observed gateway state insert id: %w", err)
-		}
-		key := observedGatewayStateMigrationKey{
-			GatewayPeerID:  strings.TrimSpace(row.GatewayPeerID),
-			SourceRef:      strings.TrimSpace(row.SourceRef),
-			ObservedAtUnix: row.ObservedAtUnix,
-		}
-		observedIDsByKey[key] = append(observedIDsByKey[key], observedID)
-		payloadByID[observedID] = payloadJSON
-		report.SnapshotRowsInserted++
-	}
-
-	domainRows, err := queryObservedGatewayStateDomainEventRows(tx)
-	if err != nil {
+	tempTable := table + "_final_rebuild"
+	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tempTable)); err != nil {
 		rollback()
-		return report, err
+		return err
 	}
-	for _, row := range domainRows {
-		report.DomainEventRowsRead++
-		key := observedGatewayStateMigrationKey{
-			GatewayPeerID:  strings.TrimSpace(row.GatewayPeerID),
-			SourceRef:      strings.TrimSpace(row.SourceRef),
-			ObservedAtUnix: row.ObservedAtUnix,
-		}
-		ids := observedIDsByKey[key]
-		if len(ids) == 1 {
-			observedID := ids[0]
-			mergedPayload, err := mergeObservedGatewayStatePayload(payloadByID[observedID], &row)
-			if err != nil {
-				rollback()
-				return report, fmt.Errorf("merge observed domain event payload: %w", err)
-			}
-			if _, err := tx.Exec(`UPDATE observed_gateway_states SET event_name=?,state_before=?,payload_json=? WHERE id=?`,
-				row.EventName, row.StateBefore, mergedPayload, observedID,
-			); err != nil {
-				rollback()
-				return report, fmt.Errorf("update observed gateway state payload: %w", err)
-			}
-			payloadByID[observedID] = mergedPayload
-			report.DomainEventRowsMerged++
-		} else {
-			report.DomainEventRowsUnmatched++
-		}
-	}
-
-	snapshotDeleteResult, err := tx.Exec(`DELETE FROM state_snapshots WHERE source_kind='observed_gateway_state'`)
-	if err != nil {
+	if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, table, tempTable)); err != nil {
 		rollback()
-		return report, fmt.Errorf("delete observed state_snapshots rows: %w", err)
+		return err
 	}
-	domainDeleteResult, err := tx.Exec(`DELETE FROM domain_events WHERE source_kind='observed_gateway_state'`)
-	if err != nil {
+	if _, err := tx.Exec(spec.CreateSQL); err != nil {
 		rollback()
-		return report, fmt.Errorf("delete observed domain_events rows: %w", err)
+		return err
 	}
-
+	if _, err := tx.Exec(spec.InsertSQL(tempTable)); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, tempTable)); err != nil {
+		rollback()
+		return err
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		rollback()
+		return err
+	}
 	if err := tx.Commit(); err != nil {
 		rollback()
-		return report, err
+		return err
 	}
-
-	if rows, err := snapshotDeleteResult.RowsAffected(); err == nil {
-		report.SnapshotRowsDeleted = int(rows)
-	} else {
-		report.SnapshotRowsDeleted = report.SnapshotRowsRead
-	}
-	if rows, err := domainDeleteResult.RowsAffected(); err == nil {
-		report.DomainEventRowsDeleted = int(rows)
-	} else {
-		report.DomainEventRowsDeleted = report.DomainEventRowsRead
-	}
-	return report, nil
+	return nil
 }
 
-func hasAnyTable(db *sql.DB, tables ...string) bool {
-	for _, table := range tables {
-		hasTable, err := hasTable(db, table)
-		if err == nil && hasTable {
-			return true
-		}
-	}
-	return false
+type finalCommandFactTableRebuildSpec struct {
+	CreateSQL string
+	InsertSQL func(oldTable string) string
 }
 
-func queryObservedGatewayStateSnapshotRows(q interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-}) ([]observedGatewayStateSnapshotRow, error) {
-	rows, err := q.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		FROM state_snapshots WHERE source_kind='observed_gateway_state' ORDER BY id ASC`)
+func finalCommandFactTableSpec(table string) (finalCommandFactTableRebuildSpec, bool) {
+	switch strings.TrimSpace(table) {
+	case "domain_events":
+		return finalCommandFactTableRebuildSpec{
+			CreateSQL: `CREATE TABLE domain_events(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				created_at_unix INTEGER NOT NULL,
+				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
+				gateway_pubkey_hex TEXT NOT NULL,
+				event_name TEXT NOT NULL,
+				state_before TEXT NOT NULL,
+				state_after TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			)`,
+			InsertSQL: func(oldTable string) string {
+				return fmt.Sprintf(`INSERT INTO domain_events(
+					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
+				) SELECT
+					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
+				FROM %s
+				WHERE command_id IS NOT NULL
+				  AND trim(command_id) <> ''
+				  AND source_kind = 'command'
+				  AND EXISTS(
+						SELECT 1
+						FROM command_journal
+						WHERE command_journal.command_id = %s.command_id
+				  )
+				ORDER BY id ASC`, oldTable, oldTable)
+			},
+		}, true
+	case "state_snapshots":
+		return finalCommandFactTableRebuildSpec{
+			CreateSQL: `CREATE TABLE state_snapshots(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				created_at_unix INTEGER NOT NULL,
+				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
+				gateway_pubkey_hex TEXT NOT NULL,
+				state TEXT NOT NULL,
+				pause_reason TEXT NOT NULL,
+				pause_need_satoshi INTEGER NOT NULL,
+				pause_have_satoshi INTEGER NOT NULL,
+				last_error TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			)`,
+			InsertSQL: func(oldTable string) string {
+				return fmt.Sprintf(`INSERT INTO state_snapshots(
+					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+				) SELECT
+					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+				FROM %s
+				WHERE command_id IS NOT NULL
+				  AND trim(command_id) <> ''
+				  AND source_kind = 'command'
+				  AND EXISTS(
+						SELECT 1
+						FROM command_journal
+						WHERE command_journal.command_id = %s.command_id
+				  )
+				ORDER BY id ASC`, oldTable, oldTable)
+			},
+		}, true
+	default:
+		return finalCommandFactTableRebuildSpec{}, false
+	}
+}
+
+type observedGatewayStatePayloadRow struct {
+	ID               int64
+	EventName        string
+	PauseHaveSatoshi uint64
+	PayloadJSON      string
+}
+
+func migrateObservedGatewayStatePayloads(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	hasTable, err := hasTable(db, "observed_gateway_states")
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("check observed_gateway_states table: %w", err)
+	}
+	if !hasTable {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	rows, err := tx.Query(`SELECT id,event_name,pause_have_satoshi,payload_json FROM observed_gateway_states ORDER BY id ASC`)
+	if err != nil {
+		rollback()
+		return err
 	}
 	defer rows.Close()
-
-	out := make([]observedGatewayStateSnapshotRow, 0)
 	for rows.Next() {
-		var row observedGatewayStateSnapshotRow
-		if err := rows.Scan(&row.ID, &row.CreatedAtUnix, &row.GatewayPeerID, &row.SourceRef, &row.ObservedAtUnix, &row.State, &row.PauseReason, &row.PauseNeedSat, &row.PauseHaveSat, &row.LastError, &row.PayloadJSON); err != nil {
-			return nil, err
+		var row observedGatewayStatePayloadRow
+		if err := rows.Scan(&row.ID, &row.EventName, &row.PauseHaveSatoshi, &row.PayloadJSON); err != nil {
+			rollback()
+			return err
 		}
-		out = append(out, row)
+		payloadJSON, err := buildObservedGatewayStateFinalPayloadJSON(row.EventName, row.PauseHaveSatoshi, row.PayloadJSON)
+		if err != nil {
+			rollback()
+			return fmt.Errorf("build observed payload: %w", err)
+		}
+		if _, err := tx.Exec(`UPDATE observed_gateway_states SET payload_json=? WHERE id=?`, payloadJSON, row.ID); err != nil {
+			rollback()
+			return err
+		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		rollback()
+		return err
 	}
-	return out, nil
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return nil
 }
 
-func queryObservedGatewayStateDomainEventRows(q interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-}) ([]observedGatewayStateDomainEventRow, error) {
-	rows, err := q.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
-		FROM domain_events WHERE source_kind='observed_gateway_state' ORDER BY id ASC`)
-	if err != nil {
-		return nil, err
+func buildObservedGatewayStateFinalPayloadJSON(eventName string, walletBalance uint64, raw string) (string, error) {
+	normalized := observedGatewayStatePayload{
+		ObservedReason:       normalizeObservedReasonFromPayload(eventName, raw),
+		WalletBalanceSatoshi: walletBalance,
+		Extra:                map[string]any{},
 	}
-	defer rows.Close()
-
-	out := make([]observedGatewayStateDomainEventRow, 0)
-	for rows.Next() {
-		var row observedGatewayStateDomainEventRow
-		if err := rows.Scan(&row.ID, &row.CreatedAtUnix, &row.GatewayPeerID, &row.SourceRef, &row.ObservedAtUnix, &row.EventName, &row.StateBefore, &row.StateAfter, &row.PayloadJSON); err != nil {
-			return nil, err
-		}
-		out = append(out, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func buildObservedGatewayStateSnapshotPayload(snapshotPayloadJSON string) (string, error) {
-	payload := map[string]any{
-		"source_table":     "state_snapshots",
-		"snapshot_payload": decodeObservedGatewayStatePayload(snapshotPayloadJSON),
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
-}
-
-func mergeObservedGatewayStatePayload(basePayloadJSON string, domainEvent *observedGatewayStateDomainEventRow) (string, error) {
-	var payload any
-	if err := json.Unmarshal([]byte(basePayloadJSON), &payload); err != nil {
-		payload = decodeObservedGatewayStatePayload(basePayloadJSON)
-	}
-	payloadMap, ok := payload.(map[string]any)
+	decoded, ok := decodeObservedGatewayStateObject(raw)
 	if !ok {
-		payloadMap = map[string]any{
-			"source_table":     "state_snapshots",
-			"snapshot_payload": payload,
+		if strings.TrimSpace(raw) != "" {
+			normalized.Extra = map[string]any{"raw": raw}
+		}
+		data, err := json.Marshal(normalized)
+		if err != nil {
+			return "", err
+		}
+		return string(data), nil
+	}
+	if reason, ok := decoded["observed_reason"].(string); ok && strings.TrimSpace(reason) != "" {
+		normalized.ObservedReason = strings.TrimSpace(reason)
+	}
+	if balance, ok := decoded["wallet_balance_satoshi"]; ok {
+		if v, ok := toUint64(balance); ok {
+			normalized.WalletBalanceSatoshi = v
 		}
 	}
-	payloadMap["observed_event"] = map[string]any{
-		"source_table":       "domain_events",
-		"created_at_unix":    domainEvent.CreatedAtUnix,
-		"gateway_pubkey_hex": strings.TrimSpace(domainEvent.GatewayPeerID),
-		"source_ref":         strings.TrimSpace(domainEvent.SourceRef),
-		"observed_at_unix":   domainEvent.ObservedAtUnix,
-		"event_name":         strings.TrimSpace(domainEvent.EventName),
-		"state_before":       strings.TrimSpace(domainEvent.StateBefore),
-		"state_after":        strings.TrimSpace(domainEvent.StateAfter),
-		"payload":            decodeObservedGatewayStatePayload(domainEvent.PayloadJSON),
+	if extra, ok := decoded["extra"]; ok {
+		if extraMap, ok := extra.(map[string]any); ok {
+			normalized.Extra = extraMap
+		} else {
+			normalized.Extra = map[string]any{"value": extra}
+		}
+	} else {
+		normalized.Extra = decoded
 	}
-	data, err := json.Marshal(payloadMap)
+	data, err := json.Marshal(normalized)
 	if err != nil {
 		return "", err
 	}
 	return string(data), nil
 }
 
-func decodeObservedGatewayStatePayload(raw string) any {
-	var out any
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return raw
+func normalizeObservedReasonFromPayload(eventName, raw string) string {
+	if payload, ok := decodeObservedGatewayStateObject(raw); ok {
+		if reason, ok := payload["observed_reason"].(string); ok && strings.TrimSpace(reason) != "" {
+			return strings.TrimSpace(reason)
+		}
 	}
-	return out
+	switch {
+	case strings.Contains(eventName, "wallet_probe"):
+		return "wallet_probe"
+	case strings.Contains(eventName, "pause_observed"):
+		return "pause_watch"
+	case strings.Contains(eventName, "resume"):
+		return "runtime_resume_check"
+	default:
+		return "runtime_resume_check"
+	}
+}
+
+func decodeObservedGatewayStateObject(raw string) (map[string]any, bool) {
+	var out map[string]any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, false
+	}
+	return out, true
+}
+
+func toUint64(v any) (uint64, bool) {
+	switch n := v.(type) {
+	case uint64:
+		return n, true
+	case int:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case int64:
+		if n < 0 {
+			return 0, false
+		}
+		return uint64(n), true
+	case float64:
+		if n < 0 || n != float64(uint64(n)) {
+			return 0, false
+		}
+		return uint64(n), true
+	case json.Number:
+		i, err := n.Int64()
+		if err != nil || i < 0 {
+			return 0, false
+		}
+		return uint64(i), true
+	default:
+		return 0, false
+	}
 }
 
 // ensureCommandJournalTriggerKey 确保 command_journal 的 trigger_key 列和索引都存在。
@@ -1606,19 +1569,18 @@ func ensureGatewayEventsCommandID(db *sql.DB) error {
 }
 
 type commandLinkedTableAuditReport struct {
-	Table                    string
-	NullCommandIDRows        int64
-	BlankCommandIDRows       int64
-	OrphanCommandIDRows      int64
-	NonCommandSourceKindRows int64
+	Table               string
+	NullCommandIDRows   int64
+	BlankCommandIDRows  int64
+	OrphanCommandIDRows int64
 }
 
 func (r commandLinkedTableAuditReport) DirtyRows() int64 {
-	return r.NullCommandIDRows + r.BlankCommandIDRows + r.OrphanCommandIDRows + r.NonCommandSourceKindRows
+	return r.NullCommandIDRows + r.BlankCommandIDRows + r.OrphanCommandIDRows
 }
 
 func (r commandLinkedTableAuditReport) String() string {
-	return fmt.Sprintf("%s null=%d blank=%d orphan=%d non_command_source_kind=%d", r.Table, r.NullCommandIDRows, r.BlankCommandIDRows, r.OrphanCommandIDRows, r.NonCommandSourceKindRows)
+	return fmt.Sprintf("%s null=%d blank=%d orphan=%d", r.Table, r.NullCommandIDRows, r.BlankCommandIDRows, r.OrphanCommandIDRows)
 }
 
 // ensureCommandLinkedTableConstraints 把 domain_events / state_snapshots / effect_logs 收紧到同一命令口径。
@@ -1632,17 +1594,6 @@ func ensureCommandLinkedTableConstraints(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	for _, table := range []string{"domain_events", "state_snapshots", "effect_logs"} {
-		if isCommandFactSourceKindTable(table) {
-			report, err := auditCommandFactSourceKindRows(db, table)
-			if err != nil {
-				return fmt.Errorf("audit %s source kind: %w", table, err)
-			}
-			if report.DirtyRows() > 0 {
-				if err := cleanupLegacyNonCommandFactRows(db, table); err != nil {
-					return fmt.Errorf("cleanup %s source kind: %w", table, err)
-				}
-			}
-		}
 		report, err := auditCommandLinkedTableRows(db, table)
 		if err != nil {
 			return fmt.Errorf("audit %s: %w", table, err)
@@ -1700,38 +1651,6 @@ func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAu
 	return report, nil
 }
 
-// auditCommandFactSourceKindRows 只看命令事实表的来源类型是否越界。
-// 设计说明：
-// - 只允许 command；
-// - observed_gateway_state 已经是另一条链路，不该再留在命令事实表里；
-// - 这里只做审计，不改数据。
-func auditCommandFactSourceKindRows(db *sql.DB, table string) (commandLinkedTableAuditReport, error) {
-	report := commandLinkedTableAuditReport{Table: strings.TrimSpace(table)}
-	if db == nil {
-		return report, fmt.Errorf("db is nil")
-	}
-	if !isCommandFactSourceKindTable(report.Table) {
-		return report, fmt.Errorf("unsupported table: %s", table)
-	}
-	hasTable, err := hasTable(db, report.Table)
-	if err != nil {
-		return report, fmt.Errorf("check %s table: %w", report.Table, err)
-	}
-	if !hasTable {
-		return report, nil
-	}
-	row := db.QueryRow(fmt.Sprintf(`
-		SELECT
-			COALESCE(SUM(CASE WHEN source_kind IS NULL OR source_kind <> 'command' THEN 1 ELSE 0 END), 0)
-		FROM %s`,
-		report.Table,
-	))
-	if err := row.Scan(&report.NonCommandSourceKindRows); err != nil {
-		return report, err
-	}
-	return report, nil
-}
-
 // cleanupLegacyDomainEventCommandRows 删除 domain_events 里不该进入硬约束的旧行。
 func cleanupLegacyDomainEventCommandRows(db *sql.DB) error {
 	return cleanupLegacyCommandLinkedRows(db, "domain_events")
@@ -1745,25 +1664,6 @@ func cleanupLegacyStateSnapshotCommandRows(db *sql.DB) error {
 // cleanupLegacyEffectLogCommandRows 删除 effect_logs 里不该进入硬约束的旧行。
 func cleanupLegacyEffectLogCommandRows(db *sql.DB) error {
 	return cleanupLegacyCommandLinkedRows(db, "effect_logs")
-}
-
-// cleanupLegacyNonCommandFactRows 只清命令事实表里不该存在的 observed 旧行。
-// 设计说明：
-// - 这里只处理 source_kind != command 的行；
-// - 不回填，不迁移，只删除；
-// - 这个函数不碰 effect_logs。
-func cleanupLegacyNonCommandFactRows(db *sql.DB, table string) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if !isCommandFactSourceKindTable(strings.TrimSpace(table)) {
-		return fmt.Errorf("unsupported table: %s", table)
-	}
-	_, err := db.Exec(fmt.Sprintf(`
-		DELETE FROM %s
-		WHERE source_kind IS NULL
-		   OR source_kind <> 'command'`, table))
-	return err
 }
 
 func cleanupLegacyCommandLinkedRows(db *sql.DB, table string) error {
@@ -1794,15 +1694,6 @@ func isCommandLinkedTable(table string) bool {
 	}
 }
 
-func isCommandFactSourceKindTable(table string) bool {
-	switch strings.TrimSpace(table) {
-	case "domain_events", "state_snapshots":
-		return true
-	default:
-		return false
-	}
-}
-
 func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
@@ -1824,15 +1715,6 @@ func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 	}
 	if !notNull || !hasFK || !hasCheck {
 		return true, nil
-	}
-	if isCommandFactSourceKindTable(table) {
-		hasSourceKindCheck, err := tableHasCreateSQLContains(db, table, "CHECK(source_kind = 'command')")
-		if err != nil {
-			return false, fmt.Errorf("inspect %s source kind check constraint: %w", table, err)
-		}
-		if !hasSourceKindCheck {
-			return true, nil
-		}
 	}
 	return false, nil
 }
@@ -1906,9 +1788,6 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 				gateway_pubkey_hex TEXT NOT NULL,
-				source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
-				source_ref TEXT NOT NULL DEFAULT '',
-				observed_at_unix INTEGER NOT NULL DEFAULT 0,
 				event_name TEXT NOT NULL,
 				state_before TEXT NOT NULL,
 				state_after TEXT NOT NULL,
@@ -1917,13 +1796,12 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 			)`,
 			InsertSQL: func(oldTable string) string {
 				return fmt.Sprintf(`INSERT INTO domain_events(
-					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
+					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 				) SELECT
-					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
+					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 				FROM %s
 				WHERE command_id IS NOT NULL
 				  AND trim(command_id) <> ''
-				  AND source_kind = 'command'
 				  AND EXISTS(
 						SELECT 1
 						FROM command_journal
@@ -1939,9 +1817,6 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
 				gateway_pubkey_hex TEXT NOT NULL,
-				source_kind TEXT NOT NULL DEFAULT 'command' CHECK(source_kind = 'command'),
-				source_ref TEXT NOT NULL DEFAULT '',
-				observed_at_unix INTEGER NOT NULL DEFAULT 0,
 				state TEXT NOT NULL,
 				pause_reason TEXT NOT NULL,
 				pause_need_satoshi INTEGER NOT NULL,
@@ -1952,13 +1827,12 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 			)`,
 			InsertSQL: func(oldTable string) string {
 				return fmt.Sprintf(`INSERT INTO state_snapshots(
-					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 				) SELECT
-					id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 				FROM %s
 				WHERE command_id IS NOT NULL
 				  AND trim(command_id) <> ''
-				  AND source_kind = 'command'
 				  AND EXISTS(
 						SELECT 1
 						FROM command_journal

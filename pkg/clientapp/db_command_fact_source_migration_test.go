@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"database/sql"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 )
@@ -22,61 +23,7 @@ func newLegacyCommandFactMigrationTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func createLegacyCommandFactTablesWithoutSourceColumns(t *testing.T, db *sql.DB) {
-	t.Helper()
-
-	stmts := []string{
-		`CREATE TABLE command_journal(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL UNIQUE,
-			command_type TEXT NOT NULL,
-			gateway_pubkey_hex TEXT NOT NULL,
-			aggregate_id TEXT NOT NULL,
-			requested_by TEXT NOT NULL,
-			requested_at_unix INTEGER NOT NULL,
-			accepted INTEGER NOT NULL,
-			status TEXT NOT NULL,
-			error_code TEXT NOT NULL,
-			error_message TEXT NOT NULL,
-			state_before TEXT NOT NULL,
-			state_after TEXT NOT NULL,
-			duration_ms INTEGER NOT NULL,
-			trigger_key TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL,
-			result_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE domain_events(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL,
-			gateway_pubkey_hex TEXT NOT NULL,
-			event_name TEXT NOT NULL,
-			state_before TEXT NOT NULL,
-			state_after TEXT NOT NULL,
-			payload_json TEXT NOT NULL
-		)`,
-		`CREATE TABLE state_snapshots(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			command_id TEXT NOT NULL,
-			gateway_pubkey_hex TEXT NOT NULL,
-			state TEXT NOT NULL,
-			pause_reason TEXT NOT NULL,
-			pause_need_satoshi INTEGER NOT NULL,
-			pause_have_satoshi INTEGER NOT NULL,
-			last_error TEXT NOT NULL,
-			payload_json TEXT NOT NULL
-		)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create legacy table failed: %v", err)
-		}
-	}
-}
-
-func createLegacyCommandFactTablesWithSourceColumns(t *testing.T, db *sql.DB) {
+func createLegacyCommandFactTablesWithTransitionColumns(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	stmts := []string{
@@ -136,37 +83,42 @@ func createLegacyCommandFactTablesWithSourceColumns(t *testing.T, db *sql.DB) {
 	}
 }
 
-func TestCommandFactSourceMigrationAddsMissingColumnsAndBackfillsValues(t *testing.T) {
+func TestCommandFactFinalMigrationRemovesTransitionColumnsAndDropsObservedRows(t *testing.T) {
 	t.Parallel()
 
 	db := newLegacyCommandFactMigrationTestDB(t)
-	createLegacyCommandFactTablesWithoutSourceColumns(t, db)
-	if _, err := db.Exec(`INSERT INTO command_journal(
-		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		1700000200, "cmd_domain_legacy", "feepool.open", "gw1", "agg-domain", "tester", 1700000200, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
-	); err != nil {
-		t.Fatalf("insert legacy command journal failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO command_journal(
-		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		1700000200, "cmd_state_legacy", "feepool.open", "gw1", "agg-state", "tester", 1700000200, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
-	); err != nil {
-		t.Fatalf("insert legacy command journal failed: %v", err)
-	}
+	createLegacyCommandFactTablesWithTransitionColumns(t, db)
 
-	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json)
-		VALUES(?,?,?,?,?,?,?)`,
-		1700000201, "cmd_domain_legacy", "gw1", "fee_pool_paused_insufficient", "idle", "paused_insufficient", `{"x":1}`,
+	if _, err := db.Exec(`INSERT INTO command_journal(
+		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000200, "cmd-command-1", "feepool.open", "gw1", "agg-1", "tester", 1700000200, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
 	); err != nil {
-		t.Fatalf("insert legacy domain event failed: %v", err)
+		t.Fatalf("insert legacy command journal failed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
-		VALUES(?,?,?,?,?,?,?,?,?)`,
-		1700000202, "cmd_state_legacy", "gw1", "paused_insufficient", "wallet_insufficient", 100000, 12345, "not enough balance", `{"x":2}`,
+	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		1700000201, "cmd-command-1", "gw1", "command", "cmd-command-1", 1700000201, "fee_pool_paused_insufficient", "idle", "paused_insufficient", `{"x":1}`,
 	); err != nil {
-		t.Fatalf("insert legacy state snapshot failed: %v", err)
+		t.Fatalf("insert command domain event failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		1700000202, "cmd-observed-1", "gw1", "observed_gateway_state", "gw1", 1700000202, "fee_pool_resumed_by_wallet_probe", "paused_insufficient", "idle", `{"x":2}`,
+	); err != nil {
+		t.Fatalf("insert observed domain event failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000203, "cmd-command-1", "gw1", "command", "cmd-command-1", 1700000203, "paused_insufficient", "wallet_insufficient", 100000, 12345, "not enough balance", `{"x":3}`,
+	); err != nil {
+		t.Fatalf("insert command state snapshot failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000204, "cmd-observed-state-1", "gw1", "observed_gateway_state", "gw1", 1700000204, "idle", "", 0, 999999, "", `{"x":4}`,
+	); err != nil {
+		t.Fatalf("insert observed state snapshot failed: %v", err)
 	}
 
 	if err := initIndexDB(db); err != nil {
@@ -179,105 +131,75 @@ func TestCommandFactSourceMigrationAddsMissingColumnsAndBackfillsValues(t *testi
 			t.Fatalf("inspect %s columns failed: %v", table, err)
 		}
 		for _, col := range []string{"source_kind", "source_ref", "observed_at_unix"} {
-			if _, ok := cols[col]; !ok {
-				t.Fatalf("%s missing %s", table, col)
+			if _, ok := cols[col]; ok {
+				t.Fatalf("%s should not keep %s", table, col)
 			}
 		}
 	}
 
-	var sourceKind, sourceRef string
-	var observedAt int64
-	if err := db.QueryRow(`SELECT source_kind,source_ref,observed_at_unix FROM domain_events WHERE command_id=?`, "cmd_domain_legacy").Scan(&sourceKind, &sourceRef, &observedAt); err != nil {
-		t.Fatalf("load domain event backfill failed: %v", err)
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM domain_events`).Scan(&count); err != nil {
+		t.Fatalf("count domain_events failed: %v", err)
 	}
-	if sourceKind != "command" || sourceRef != "cmd_domain_legacy" || observedAt != 1700000201 {
-		t.Fatalf("unexpected domain event backfill: kind=%s ref=%s observed=%d", sourceKind, sourceRef, observedAt)
+	if count != 1 {
+		t.Fatalf("unexpected domain_events count after migration: got=%d want=1", count)
 	}
-	if err := db.QueryRow(`SELECT source_kind,source_ref,observed_at_unix FROM state_snapshots WHERE command_id=?`, "cmd_state_legacy").Scan(&sourceKind, &sourceRef, &observedAt); err != nil {
-		t.Fatalf("load state snapshot backfill failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM state_snapshots`).Scan(&count); err != nil {
+		t.Fatalf("count state_snapshots failed: %v", err)
 	}
-	if sourceKind != "command" || sourceRef != "cmd_state_legacy" || observedAt != 1700000202 {
-		t.Fatalf("unexpected state snapshot backfill: kind=%s ref=%s observed=%d", sourceKind, sourceRef, observedAt)
+	if count != 1 {
+		t.Fatalf("unexpected state_snapshots count after migration: got=%d want=1", count)
 	}
 
-	cmdEvents, err := dbListDomainEvents(nil, newClientDB(db, nil), domainEventFilter{Limit: 10, Offset: 0})
-	if err != nil {
-		t.Fatalf("list domain events failed: %v", err)
+	var commandID string
+	if err := db.QueryRow(`SELECT command_id FROM domain_events ORDER BY id ASC LIMIT 1`).Scan(&commandID); err != nil {
+		t.Fatalf("load migrated domain event failed: %v", err)
 	}
-	if cmdEvents.Total != 1 || len(cmdEvents.Items) != 1 || cmdEvents.Items[0].CommandID != "cmd_domain_legacy" {
-		t.Fatalf("unexpected domain event list: %+v", cmdEvents)
+	if commandID != "cmd-command-1" {
+		t.Fatalf("unexpected migrated domain command_id: %s", commandID)
 	}
-	cmdStates, err := dbListStateSnapshots(nil, newClientDB(db, nil), stateSnapshotFilter{Limit: 10, Offset: 0})
-	if err != nil {
-		t.Fatalf("list state snapshots failed: %v", err)
+	if err := db.QueryRow(`SELECT command_id FROM state_snapshots ORDER BY id ASC LIMIT 1`).Scan(&commandID); err != nil {
+		t.Fatalf("load migrated state snapshot failed: %v", err)
 	}
-	if cmdStates.Total != 1 || len(cmdStates.Items) != 1 || cmdStates.Items[0].CommandID != "cmd_state_legacy" {
-		t.Fatalf("unexpected state snapshot list: %+v", cmdStates)
+	if commandID != "cmd-command-1" {
+		t.Fatalf("unexpected migrated state command_id: %s", commandID)
 	}
 }
 
-func TestCommandFactSourceMigrationPreservesExistingValues(t *testing.T) {
+func TestObservedGatewayStatePayloadMigrationUsesFinalEnvelope(t *testing.T) {
 	t.Parallel()
 
-	db := newLegacyCommandFactMigrationTestDB(t)
-	createLegacyCommandFactTablesWithSourceColumns(t, db)
-	if _, err := db.Exec(`INSERT INTO command_journal(
-		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		1700000300, "cmd_domain_keep", "feepool.open", "gw1", "agg-domain", "tester", 1700000300, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
-	); err != nil {
-		t.Fatalf("insert legacy command journal failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO command_journal(
-		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		1700000300, "cmd_state_keep", "feepool.open", "gw1", "agg-state", "tester", 1700000300, 1, "applied", "", "", "idle", "open", 1, "", `{"x":0}`, `{"ok":true}`,
-	); err != nil {
-		t.Fatalf("insert legacy command journal failed: %v", err)
-	}
-
-	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
-		VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		1700000301, "cmd_domain_keep", "gw1", "", "manual_ref", 0, "fee_pool_paused_insufficient", "idle", "paused_insufficient", `{"x":1}`,
-	); err != nil {
-		t.Fatalf("insert domain event failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		1700000302, "cmd_state_keep", "gw1", "command", "keep_ref", 0, "paused_insufficient", "wallet_insufficient", 100000, 12345, "not enough balance", `{"x":2}`,
-	); err != nil {
-		t.Fatalf("insert state snapshot failed: %v", err)
-	}
-
+	db := newWalletAPITestDB(t)
 	if err := initIndexDB(db); err != nil {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
-
-	var sourceKind, sourceRef string
-	var observedAt int64
-	if err := db.QueryRow(`SELECT source_kind,source_ref,observed_at_unix FROM domain_events WHERE command_id=?`, "cmd_domain_keep").Scan(&sourceKind, &sourceRef, &observedAt); err != nil {
-		t.Fatalf("load domain event failed: %v", err)
-	}
-	if sourceKind != "command" || sourceRef != "manual_ref" || observedAt != 1700000301 {
-		t.Fatalf("domain event was overwritten: kind=%s ref=%s observed=%d", sourceKind, sourceRef, observedAt)
-	}
-	if err := db.QueryRow(`SELECT source_kind,source_ref,observed_at_unix FROM state_snapshots WHERE command_id=?`, "cmd_state_keep").Scan(&sourceKind, &sourceRef, &observedAt); err != nil {
-		t.Fatalf("load state snapshot failed: %v", err)
-	}
-	if sourceKind != "command" || sourceRef != "keep_ref" || observedAt != 1700000302 {
-		t.Fatalf("state snapshot was overwritten: kind=%s ref=%s observed=%d", sourceKind, sourceRef, observedAt)
+	if _, err := db.Exec(`INSERT INTO observed_gateway_states(
+		created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		1700000301, "gw1", "gw1", 1700000301, "fee_pool_resumed_by_wallet_probe", "paused_insufficient", "idle", "", 0, 999999, "", `{"source_table":"state_snapshots","snapshot_payload":{"legacy":true}}`,
+	); err != nil {
+		t.Fatalf("insert legacy observed payload failed: %v", err)
 	}
 
-	if err := backfillCommandFactSourceColumns(db, "domain_events"); err != nil {
-		t.Fatalf("second backfill domain_events failed: %v", err)
+	if err := migrateObservedGatewayStatePayloads(db); err != nil {
+		t.Fatalf("migrate observed payloads failed: %v", err)
 	}
-	if err := backfillCommandFactSourceColumns(db, "state_snapshots"); err != nil {
-		t.Fatalf("second backfill state_snapshots failed: %v", err)
+	var payloadJSON string
+	if err := db.QueryRow(`SELECT payload_json FROM observed_gateway_states WHERE gateway_pubkey_hex=?`, "gw1").Scan(&payloadJSON); err != nil {
+		t.Fatalf("load migrated payload failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT source_kind,source_ref,observed_at_unix FROM domain_events WHERE command_id=?`, "cmd_domain_keep").Scan(&sourceKind, &sourceRef, &observedAt); err != nil {
-		t.Fatalf("reload domain event failed: %v", err)
+	var payload struct {
+		ObservedReason       string         `json:"observed_reason"`
+		WalletBalanceSatoshi uint64         `json:"wallet_balance_satoshi"`
+		Extra                map[string]any `json:"extra"`
 	}
-	if sourceKind != "command" || sourceRef != "manual_ref" || observedAt != 1700000301 {
-		t.Fatalf("domain event changed after second backfill: kind=%s ref=%s observed=%d", sourceKind, sourceRef, observedAt)
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		t.Fatalf("decode migrated payload failed: %v", err)
+	}
+	if payload.ObservedReason != "wallet_probe" || payload.WalletBalanceSatoshi != 999999 {
+		t.Fatalf("unexpected migrated payload top-level: %+v", payload)
+	}
+	if payload.Extra == nil || payload.Extra["source_table"] != "state_snapshots" {
+		t.Fatalf("unexpected migrated payload extra: %+v", payload.Extra)
 	}
 }

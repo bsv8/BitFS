@@ -37,20 +37,18 @@ func TestCommandTimelineDetailHydratesRelatedFacts(t *testing.T) {
 		Payload:       map[string]any{"scene": "gateway"},
 	})
 	_ = dbAppendDomainEvent(context.Background(), store, domainEventEntry{
-		CommandID:      "cmd-timeline-1",
-		GatewayPeerID:  "gw1",
-		ObservedAtUnix: 1700001001,
-		EventName:      "fee_pool_opened",
-		StateBefore:    "idle",
-		StateAfter:     "active",
-		Payload:        map[string]any{"scene": "domain"},
+		CommandID:     "cmd-timeline-1",
+		GatewayPeerID: "gw1",
+		EventName:     "fee_pool_opened",
+		StateBefore:   "idle",
+		StateAfter:    "active",
+		Payload:       map[string]any{"scene": "domain"},
 	})
 	_ = dbAppendStateSnapshot(context.Background(), store, stateSnapshotEntry{
-		CommandID:      "cmd-timeline-1",
-		GatewayPeerID:  "gw1",
-		ObservedAtUnix: 1700001001,
-		State:          "active",
-		Payload:        map[string]any{"scene": "snapshot"},
+		CommandID:     "cmd-timeline-1",
+		GatewayPeerID: "gw1",
+		State:         "active",
+		Payload:       map[string]any{"scene": "snapshot"},
 	})
 	_ = dbAppendEffectLog(context.Background(), store, effectLogEntry{
 		CommandID:     "cmd-timeline-1",

@@ -147,8 +147,8 @@ func loadGatewayEventsByCommandID(ctx context.Context, db *sql.DB, commandID str
 }
 
 func loadDomainEventsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]domainEventItem) error {
-	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
-		FROM domain_events WHERE command_id=? AND source_kind='command' ORDER BY id ASC`, commandID)
+	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
+		FROM domain_events WHERE command_id=? ORDER BY id ASC`, commandID)
 	if err != nil {
 		return err
 	}
@@ -169,8 +169,8 @@ func loadDomainEventsByCommandID(ctx context.Context, db *sql.DB, commandID stri
 }
 
 func loadStateSnapshotsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]stateSnapshotItem) error {
-	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		FROM state_snapshots WHERE command_id=? AND source_kind='command' ORDER BY id ASC`, commandID)
+	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+		FROM state_snapshots WHERE command_id=? ORDER BY id ASC`, commandID)
 	if err != nil {
 		return err
 	}

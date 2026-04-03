@@ -366,18 +366,11 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 		return err
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		observedAtUnix := e.ObservedAtUnix
-		if observedAtUnix <= 0 {
-			observedAtUnix = time.Now().Unix()
-		}
 		_, err := db.Exec(
-			`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			observedAtUnix,
+			`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
 			commandID,
 			strings.TrimSpace(e.GatewayPeerID),
-			"command",
-			commandID,
-			observedAtUnix,
 			strings.TrimSpace(e.EventName),
 			strings.TrimSpace(e.StateBefore),
 			strings.TrimSpace(e.StateAfter),
@@ -401,20 +394,13 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 		return err
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		observedAtUnix := e.ObservedAtUnix
-		if observedAtUnix <= 0 {
-			observedAtUnix = time.Now().Unix()
-		}
 		_, err := db.Exec(
 			`INSERT INTO state_snapshots(
-				created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			observedAtUnix,
+				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?)`,
+			time.Now().Unix(),
 			commandID,
 			strings.TrimSpace(e.GatewayPeerID),
-			"command",
-			commandID,
-			observedAtUnix,
 			strings.TrimSpace(e.State),
 			strings.TrimSpace(e.PauseReason),
 			e.PauseNeedSat,

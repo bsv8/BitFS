@@ -37,18 +37,6 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if err := migrateClientDBLegacySchema(db); err != nil {
 		return fmt.Errorf("legacy migration: %w", err)
 	}
-	if err := ensureCommandFactSourceColumns(db); err != nil {
-		return fmt.Errorf("command fact source columns: %w", err)
-	}
-	if err := migrateObservedGatewayStateFacts(db); err != nil {
-		return fmt.Errorf("observed gateway facts migration: %w", err)
-	}
-	if err := backfillCommandFactSourceColumns(db, "domain_events"); err != nil {
-		return fmt.Errorf("domain_events command fact source backfill: %w", err)
-	}
-	if err := backfillCommandFactSourceColumns(db, "state_snapshots"); err != nil {
-		return fmt.Errorf("state_snapshots command fact source backfill: %w", err)
-	}
 	if err := ensureGatewayEventAndCommandJournalConstraints(db); err != nil {
 		return fmt.Errorf("gateway_events command constraints: %w", err)
 	}
