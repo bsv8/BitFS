@@ -309,6 +309,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
 		mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
 		mux.HandleFunc(prefix+"/v1/admin/routes/indexes", s.withAuth(s.handleAdminRouteIndexes))
+		// 费用池审计旧接口（兼容口，非主入口，仅保留原始事实查询能力）
+		// 主排障入口请使用 /v1/admin/feepool/audit/gateway-timeline 和 command-timeline
 		mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/commands/detail", s.withAuth(s.handleAdminFeePoolCommandDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/events", s.withAuth(s.handleAdminFeePoolEvents))
@@ -319,6 +321,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/feepool/observed-states/detail", s.withAuth(s.handleAdminFeePoolObservedStateDetail))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects", s.withAuth(s.handleAdminFeePoolEffects))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/effects/detail", s.withAuth(s.handleAdminFeePoolEffectDetail))
+		// 费用池审计主入口（时间线统一视角）
 		mux.HandleFunc(prefix+"/v1/admin/feepool/audit/gateway-timeline", s.withAuth(s.handleAdminFeePoolGatewayAuditTimeline))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/audit/command-timeline", s.withAuth(s.handleAdminFeePoolCommandAuditTimeline))
 		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands", s.withAuth(s.handleAdminClientKernelCommands))
@@ -1105,6 +1108,7 @@ func (s *httpAPIServer) handleGatewayEventDetail(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, it)
 }
 
+// 兼容口：原始命令查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1135,6 +1139,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
+// 兼容口：单条命令详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1157,6 +1162,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r
 	writeJSON(w, http.StatusOK, it)
 }
 
+// 兼容口：原始领域事件查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1181,6 +1187,7 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
+// 兼容口：单条事件详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1203,6 +1210,7 @@ func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, it)
 }
 
+// 兼容口：原始观察事实查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolObservedStates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1229,6 +1237,7 @@ func (s *httpAPIServer) handleAdminFeePoolObservedStates(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
+// 兼容口：单条观察事实详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolObservedStateDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1251,6 +1260,7 @@ func (s *httpAPIServer) handleAdminFeePoolObservedStateDetail(w http.ResponseWri
 	writeJSON(w, http.StatusOK, it)
 }
 
+// 兼容口：原始状态快照查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1275,6 +1285,7 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
+// 兼容口：单条状态快照详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1297,6 +1308,7 @@ func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, it)
 }
 
+// 兼容口：原始效果日志查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1325,6 +1337,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
+// 兼容口：单条效果日志详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1347,6 +1360,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r 
 	writeJSON(w, http.StatusOK, it)
 }
 
+// 主入口：网关审计时间线。排障/复盘/状态演进观察请优先使用此接口。
 func (s *httpAPIServer) handleAdminFeePoolGatewayAuditTimeline(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1371,6 +1385,7 @@ func (s *httpAPIServer) handleAdminFeePoolGatewayAuditTimeline(w http.ResponseWr
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
+// 主入口：命令审计时间线。命令执行链追踪请优先使用此接口。
 func (s *httpAPIServer) handleAdminFeePoolCommandAuditTimeline(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

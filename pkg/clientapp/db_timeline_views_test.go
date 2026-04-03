@@ -7,7 +7,9 @@ import (
 	"testing"
 )
 
-func TestCommandTimelineDetailHydratesRelatedFacts(t *testing.T) {
+// TestCommandDetailHydratesRelatedFacts_LegacyCompat 验证旧 commands/detail 兼容口
+// 仍会填充关联事实（内部已使用 timeline 逻辑）。第七轮：detail 兼容口保留，主入口请用 command-timeline。
+func TestCommandDetailHydratesRelatedFacts_LegacyCompat(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)

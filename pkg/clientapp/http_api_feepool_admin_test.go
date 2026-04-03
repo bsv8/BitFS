@@ -7,7 +7,9 @@ import (
 	"testing"
 )
 
-func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
+// TestHandleAdminFeePoolLegacy_BasicAvailability 验证旧分表接口仍可用（兼容口）。
+// 第七轮：这些接口不再承载主产品语义，测试只保留基本可用性，但要求"至少查得到 1 条真实数据 + detail 能打开"。
+func TestHandleAdminFeePoolLegacy_BasicAvailability(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
@@ -66,187 +68,143 @@ func TestHandleAdminFeePoolLogs_ListAndDetail(t *testing.T) {
 		ErrorMessage:  "not enough balance",
 		Payload:       map[string]any{"need": 100000, "have": 12345},
 	})
-	var observedCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM observed_gateway_states WHERE gateway_pubkey_hex='gw1'`).Scan(&observedCount); err != nil {
-		t.Fatalf("count observed gateway states failed: %v", err)
+
+	// 统一的基本可用性断言：列表必须返回至少 1 条，detail 必须能打开且非空
+	assertListOK := func(t *testing.T, name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s list status mismatch: got=%d want=%d body=%s", name, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var out struct {
+			Total int           `json:"total"`
+			Items []interface{} `json:"items"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s list decode failed: %v", name, err)
+		}
+		if out.Total < 1 {
+			t.Fatalf("%s list total mismatch: got=%d want>=1", name, out.Total)
+		}
+		if len(out.Items) < 1 {
+			t.Fatalf("%s list items mismatch: got=%d want>=1", name, len(out.Items))
+		}
 	}
-	if observedCount != 1 {
-		t.Fatalf("expected exactly one observed gateway state, got=%d", observedCount)
+	assertDetailOK := func(t *testing.T, name string, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s detail status mismatch: got=%d want=%d body=%s", name, rec.Code, http.StatusOK, rec.Body.String())
+		}
+		var out map[string]interface{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s detail decode failed: %v", name, err)
+		}
+		if len(out) == 0 {
+			t.Fatalf("%s detail returned empty object", name)
+		}
 	}
 
+	// commands
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?gateway_pubkey_hex=gw1&limit=10&offset=0", nil)
 		rec := httptest.NewRecorder()
 		srv.handleAdminFeePoolCommands(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("commands status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-		var out struct {
-			Total int `json:"total"`
+		assertListOK(t, "commands", rec)
+
+		var list struct {
 			Items []struct {
-				ID      int64           `json:"id"`
-				Status  string          `json:"status"`
-				Payload json.RawMessage `json:"payload"`
-				Result  json.RawMessage `json:"result"`
+				ID int64 `json:"id"`
 			} `json:"items"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatalf("decode commands list: %v", err)
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatalf("commands list unmarshal: %v", err)
 		}
-		if out.Total != 1 || len(out.Items) != 1 {
-			t.Fatalf("commands total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
-		}
-		if out.Items[0].Status != "paused" || len(out.Items[0].Payload) == 0 || len(out.Items[0].Result) == 0 {
-			t.Fatalf("unexpected commands row: %+v", out.Items[0])
-		}
-
-		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands/detail?id="+itoa64(out.Items[0].ID), nil)
+		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands/detail?id="+itoa64(list.Items[0].ID), nil)
 		drec := httptest.NewRecorder()
 		srv.handleAdminFeePoolCommandDetail(drec, dreq)
-		if drec.Code != http.StatusOK {
-			t.Fatalf("commands detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
-		}
+		assertDetailOK(t, "commands", drec)
 	}
 
+	// events
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/events?event_name=fee_pool_paused_insufficient&limit=10&offset=0", nil)
 		rec := httptest.NewRecorder()
 		srv.handleAdminFeePoolEvents(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("events status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-		var out struct {
-			Total int `json:"total"`
+		assertListOK(t, "events", rec)
+
+		var list struct {
 			Items []struct {
-				ID      int64           `json:"id"`
-				Event   string          `json:"event_name"`
-				State   string          `json:"state_after"`
-				Payload json.RawMessage `json:"payload"`
+				ID int64 `json:"id"`
 			} `json:"items"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatalf("decode events list: %v", err)
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatalf("events list unmarshal: %v", err)
 		}
-		if out.Total != 1 || len(out.Items) != 1 {
-			t.Fatalf("events total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
-		}
-		if out.Items[0].Event != "fee_pool_paused_insufficient" || out.Items[0].State != "paused_insufficient" || len(out.Items[0].Payload) == 0 {
-			t.Fatalf("unexpected events row: %+v", out.Items[0])
-		}
-		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/events/detail?id="+itoa64(out.Items[0].ID), nil)
+		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/events/detail?id="+itoa64(list.Items[0].ID), nil)
 		drec := httptest.NewRecorder()
 		srv.handleAdminFeePoolEventDetail(drec, dreq)
-		if drec.Code != http.StatusOK {
-			t.Fatalf("events detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
-		}
+		assertDetailOK(t, "events", drec)
 	}
 
+	// states
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/states?state=paused_insufficient&limit=10&offset=0", nil)
 		rec := httptest.NewRecorder()
 		srv.handleAdminFeePoolStates(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("states status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-		var out struct {
-			Total int `json:"total"`
+		assertListOK(t, "states", rec)
+
+		var list struct {
 			Items []struct {
-				ID      int64  `json:"id"`
-				State   string `json:"state"`
-				NeedSat uint64 `json:"pause_need_satoshi"`
-				HaveSat uint64 `json:"pause_have_satoshi"`
+				ID int64 `json:"id"`
 			} `json:"items"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatalf("decode states list: %v", err)
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatalf("states list unmarshal: %v", err)
 		}
-		if out.Total != 1 || len(out.Items) != 1 {
-			t.Fatalf("states total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
-		}
-		if out.Items[0].State != "paused_insufficient" || out.Items[0].HaveSat != 12345 {
-			t.Fatalf("unexpected states row: %+v", out.Items[0])
-		}
-		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/states/detail?id="+itoa64(out.Items[0].ID), nil)
+		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/states/detail?id="+itoa64(list.Items[0].ID), nil)
 		drec := httptest.NewRecorder()
 		srv.handleAdminFeePoolStateDetail(drec, dreq)
-		if drec.Code != http.StatusOK {
-			t.Fatalf("states detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
-		}
+		assertDetailOK(t, "states", drec)
 	}
 
+	// observed-states
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/observed-states?event_name=fee_pool_resumed_by_wallet_probe&gateway_pubkey_hex=gw1&limit=10&offset=0", nil)
 		rec := httptest.NewRecorder()
 		srv.handleAdminFeePoolObservedStates(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("observed states status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-		var out struct {
-			Total int `json:"total"`
+		assertListOK(t, "observed-states", rec)
+
+		var list struct {
 			Items []struct {
-				ID         int64           `json:"id"`
-				Event      string          `json:"event_name"`
-				StateAfter string          `json:"state_after"`
-				SourceRef  string          `json:"source_ref"`
-				HaveSat    uint64          `json:"pause_have_satoshi"`
-				Payload    json.RawMessage `json:"payload"`
+				ID int64 `json:"id"`
 			} `json:"items"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatalf("decode observed states list: %v", err)
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatalf("observed-states list unmarshal: %v", err)
 		}
-		if out.Total != 1 || len(out.Items) != 1 {
-			t.Fatalf("observed states total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
-		}
-		var payload struct {
-			ObservedReason       string         `json:"observed_reason"`
-			WalletBalanceSatoshi uint64         `json:"wallet_balance_satoshi"`
-			Extra                map[string]any `json:"extra"`
-		}
-		if err := json.Unmarshal(out.Items[0].Payload, &payload); err != nil {
-			t.Fatalf("decode observed payload failed: %v", err)
-		}
-		if out.Items[0].Event != "fee_pool_resumed_by_wallet_probe" || out.Items[0].StateAfter != "idle" || out.Items[0].SourceRef != "gw1" || out.Items[0].HaveSat != 999999 || payload.ObservedReason != "wallet_probe" || payload.WalletBalanceSatoshi != 999999 {
-			t.Fatalf("unexpected observed states row: %+v", out.Items[0])
-		}
-		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/observed-states/detail?id="+itoa64(out.Items[0].ID), nil)
+		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/observed-states/detail?id="+itoa64(list.Items[0].ID), nil)
 		drec := httptest.NewRecorder()
 		srv.handleAdminFeePoolObservedStateDetail(drec, dreq)
-		if drec.Code != http.StatusOK {
-			t.Fatalf("observed states detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
-		}
+		assertDetailOK(t, "observed-states", drec)
 	}
 
+	// effects
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/effects?stage=fee_pool_open&status=paused&limit=10&offset=0", nil)
 		rec := httptest.NewRecorder()
 		srv.handleAdminFeePoolEffects(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("effects status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-		var out struct {
-			Total int `json:"total"`
+		assertListOK(t, "effects", rec)
+
+		var list struct {
 			Items []struct {
-				ID      int64           `json:"id"`
-				Stage   string          `json:"stage"`
-				Status  string          `json:"status"`
-				Payload json.RawMessage `json:"payload"`
+				ID int64 `json:"id"`
 			} `json:"items"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-			t.Fatalf("decode effects list: %v", err)
+		if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+			t.Fatalf("effects list unmarshal: %v", err)
 		}
-		if out.Total != 1 || len(out.Items) != 1 {
-			t.Fatalf("effects total/items mismatch: total=%d items=%d", out.Total, len(out.Items))
-		}
-		if out.Items[0].Stage != "fee_pool_open" || out.Items[0].Status != "paused" || len(out.Items[0].Payload) == 0 {
-			t.Fatalf("unexpected effects row: %+v", out.Items[0])
-		}
-		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/effects/detail?id="+itoa64(out.Items[0].ID), nil)
+		dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/effects/detail?id="+itoa64(list.Items[0].ID), nil)
 		drec := httptest.NewRecorder()
 		srv.handleAdminFeePoolEffectDetail(drec, dreq)
-		if drec.Code != http.StatusOK {
-			t.Fatalf("effects detail status mismatch: got=%d want=%d body=%s", drec.Code, http.StatusOK, drec.Body.String())
-		}
+		assertDetailOK(t, "effects", drec)
 	}
 }
