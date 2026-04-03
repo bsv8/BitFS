@@ -677,7 +677,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			SourceType:        "front_order",
 			SourceID:          frontOrderID,
 			AccountingScene:   "direct_transfer",
-			AccountingSubType: "pool_open",
+			AccountingSubType: "download_pool",
 			FromPartyID:       "client:self",
 			ToPartyID:         "seller:" + strings.TrimSpace(p.SellerPubHex),
 			BusinessNote:      "下载池支付: " + strings.TrimSpace(p.DemandID),
@@ -699,8 +699,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			// 结算
 			SettlementID:         settlementID,
 			SettlementMethod:     SettlementMethodPool,
-			SettlementTargetType: "pool_allocation",
-			SettlementTargetID:   "", // Open 只是开池准备，保持空
+			SettlementTargetType: "", // Open 阶段未确定 allocation，保持空
+			SettlementTargetID:   "",
 			SettlementPayload: map[string]any{
 				"demand_id":         strings.TrimSpace(p.DemandID),
 				"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
@@ -1278,8 +1278,9 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 
 	// 第三步：第一次成功的真实业务 pay allocation 时回写 settlement
 	// Open 只是开池准备，第一条真实 pay allocation 才代表收费事实
+	// 判定条件：这是第一次成功的 pay（PayCount 在 update session 之前还是 0，++后变成 1）
 	settlementID := strings.TrimSpace(session.SettlementID)
-	if settlementID != "" && req.Sequence == 1 {
+	if settlementID != "" && session.PayCount == 1 {
 		// 通过 allocation_id 拿到 pool_allocation.id
 		_, allocID := directTransferPoolAccountingSource(session.SessionID, "pay", req.Sequence)
 		poolAllocationID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID)
@@ -1291,8 +1292,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 			obs.Error("bitcast-client", "download_pool_settlement_update_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
 			return directTransferPoolPayResult{}, fmt.Errorf("update settlement status: %w", err)
 		}
-		// 回写 target_id = pool_allocation.id
-		if err := dbUpdateBusinessSettlementTarget(ctx, store, settlementID, fmt.Sprintf("%d", poolAllocationID)); err != nil {
+		// 回写 target_type='pool_allocation', target_id=<pool_allocation.id>
+		if err := dbUpdateBusinessSettlementTarget(ctx, store, settlementID, "pool_allocation", fmt.Sprintf("%d", poolAllocationID)); err != nil {
 			obs.Error("bitcast-client", "download_pool_settlement_target_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
 			return directTransferPoolPayResult{}, fmt.Errorf("update settlement target: %w", err)
 		}

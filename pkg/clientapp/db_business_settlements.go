@@ -303,7 +303,7 @@ func dbUpdateBusinessSettlementStatusByBusinessID(ctx context.Context, store *cl
 }
 
 // dbUpdateBusinessSettlementTarget 回写 settlement 的 target_type 和 target_id
-func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, settlementID string, targetID string) error {
+func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, settlementID string, targetType string, targetID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
@@ -313,7 +313,8 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`UPDATE business_settlements SET target_id=?, error_message='', updated_at_unix=? WHERE settlement_id=?`,
+			`UPDATE business_settlements SET target_type=?, target_id=?, error_message='', updated_at_unix=? WHERE settlement_id=?`,
+			strings.TrimSpace(targetType),
 			strings.TrimSpace(targetID),
 			time.Now().Unix(),
 			settlementID,
