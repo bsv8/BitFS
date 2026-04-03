@@ -1164,7 +1164,6 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
-	sourceKind := strings.TrimSpace(r.URL.Query().Get("source_kind"))
 	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
 	eventName := strings.TrimSpace(r.URL.Query().Get("event_name"))
 	page, err := dbListDomainEvents(r.Context(), httpStore(s), domainEventFilter{
@@ -1172,7 +1171,6 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 		Offset:        offset,
 		CommandID:     commandID,
 		GatewayPeerID: gatewayPeerID,
-		SourceKind:    sourceKind,
 		SourceRef:     sourceRef,
 		EventName:     eventName,
 	})
@@ -1262,7 +1260,6 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
 	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
-	sourceKind := strings.TrimSpace(r.URL.Query().Get("source_kind"))
 	sourceRef := strings.TrimSpace(r.URL.Query().Get("source_ref"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	page, err := dbListStateSnapshots(r.Context(), httpStore(s), stateSnapshotFilter{
@@ -1270,7 +1267,6 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 		Offset:        offset,
 		CommandID:     commandID,
 		GatewayPeerID: gatewayPeerID,
-		SourceKind:    sourceKind,
 		SourceRef:     sourceRef,
 		State:         state,
 	})

@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -46,6 +47,9 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	}
 	if err := ensureCommandFactSourceColumns(db); err != nil {
 		return fmt.Errorf("command fact source columns: %w", err)
+	}
+	if err := migrateObservedGatewayStateFacts(db); err != nil {
+		return fmt.Errorf("observed gateway facts migration: %w", err)
 	}
 	if err := backfillCommandFactSourceColumns(db, "domain_events"); err != nil {
 		return fmt.Errorf("domain_events command fact source backfill: %w", err)
@@ -997,6 +1001,291 @@ func backfillCommandFactSourceColumns(db *sql.DB, table string) error {
 		}
 	}
 	return nil
+}
+
+type observedGatewayStateMigrationReport struct {
+	SnapshotRowsRead         int
+	SnapshotRowsInserted     int
+	SnapshotRowsDeleted      int
+	DomainEventRowsRead      int
+	DomainEventRowsMerged    int
+	DomainEventRowsDeleted   int
+	DomainEventRowsUnmatched int
+}
+
+type observedGatewayStateMigrationKey struct {
+	GatewayPeerID  string
+	SourceRef      string
+	ObservedAtUnix int64
+}
+
+type observedGatewayStateSnapshotRow struct {
+	ID             int64
+	CreatedAtUnix  int64
+	GatewayPeerID  string
+	SourceRef      string
+	ObservedAtUnix int64
+	State          string
+	PauseReason    string
+	PauseNeedSat   uint64
+	PauseHaveSat   uint64
+	LastError      string
+	PayloadJSON    string
+}
+
+type observedGatewayStateDomainEventRow struct {
+	ID             int64
+	CreatedAtUnix  int64
+	GatewayPeerID  string
+	SourceRef      string
+	ObservedAtUnix int64
+	EventName      string
+	StateBefore    string
+	StateAfter     string
+	PayloadJSON    string
+}
+
+func migrateObservedGatewayStateFacts(db *sql.DB) error {
+	_, err := migrateObservedGatewayStateFactsWithReport(db)
+	return err
+}
+
+func migrateObservedGatewayStateFactsWithReport(db *sql.DB) (observedGatewayStateMigrationReport, error) {
+	var report observedGatewayStateMigrationReport
+	if db == nil {
+		return report, fmt.Errorf("db is nil")
+	}
+	if !hasAnyTable(db, "state_snapshots", "domain_events") {
+		return report, nil
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return report, err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+
+	snapshotRows, err := queryObservedGatewayStateSnapshotRows(tx)
+	if err != nil {
+		rollback()
+		return report, err
+	}
+
+	observedIDsByKey := make(map[observedGatewayStateMigrationKey][]int64, len(snapshotRows))
+	payloadByID := make(map[int64]string, len(snapshotRows))
+	for _, row := range snapshotRows {
+		report.SnapshotRowsRead++
+		payloadJSON, err := buildObservedGatewayStateSnapshotPayload(row.PayloadJSON)
+		if err != nil {
+			rollback()
+			return report, fmt.Errorf("build observed snapshot payload: %w", err)
+		}
+		res, err := tx.Exec(
+			`INSERT INTO observed_gateway_states(
+				created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			row.CreatedAtUnix,
+			row.GatewayPeerID,
+			row.SourceRef,
+			row.ObservedAtUnix,
+			"",
+			row.State,
+			row.State,
+			row.PauseReason,
+			row.PauseNeedSat,
+			row.PauseHaveSat,
+			row.LastError,
+			payloadJSON,
+		)
+		if err != nil {
+			rollback()
+			return report, fmt.Errorf("insert observed gateway state: %w", err)
+		}
+		observedID, err := res.LastInsertId()
+		if err != nil {
+			rollback()
+			return report, fmt.Errorf("observed gateway state insert id: %w", err)
+		}
+		key := observedGatewayStateMigrationKey{
+			GatewayPeerID:  strings.TrimSpace(row.GatewayPeerID),
+			SourceRef:      strings.TrimSpace(row.SourceRef),
+			ObservedAtUnix: row.ObservedAtUnix,
+		}
+		observedIDsByKey[key] = append(observedIDsByKey[key], observedID)
+		payloadByID[observedID] = payloadJSON
+		report.SnapshotRowsInserted++
+	}
+
+	domainRows, err := queryObservedGatewayStateDomainEventRows(tx)
+	if err != nil {
+		rollback()
+		return report, err
+	}
+	for _, row := range domainRows {
+		report.DomainEventRowsRead++
+		key := observedGatewayStateMigrationKey{
+			GatewayPeerID:  strings.TrimSpace(row.GatewayPeerID),
+			SourceRef:      strings.TrimSpace(row.SourceRef),
+			ObservedAtUnix: row.ObservedAtUnix,
+		}
+		ids := observedIDsByKey[key]
+		if len(ids) == 1 {
+			observedID := ids[0]
+			mergedPayload, err := mergeObservedGatewayStatePayload(payloadByID[observedID], &row)
+			if err != nil {
+				rollback()
+				return report, fmt.Errorf("merge observed domain event payload: %w", err)
+			}
+			if _, err := tx.Exec(`UPDATE observed_gateway_states SET event_name=?,state_before=?,payload_json=? WHERE id=?`,
+				row.EventName, row.StateBefore, mergedPayload, observedID,
+			); err != nil {
+				rollback()
+				return report, fmt.Errorf("update observed gateway state payload: %w", err)
+			}
+			payloadByID[observedID] = mergedPayload
+			report.DomainEventRowsMerged++
+		} else {
+			report.DomainEventRowsUnmatched++
+		}
+	}
+
+	snapshotDeleteResult, err := tx.Exec(`DELETE FROM state_snapshots WHERE source_kind='observed_gateway_state'`)
+	if err != nil {
+		rollback()
+		return report, fmt.Errorf("delete observed state_snapshots rows: %w", err)
+	}
+	domainDeleteResult, err := tx.Exec(`DELETE FROM domain_events WHERE source_kind='observed_gateway_state'`)
+	if err != nil {
+		rollback()
+		return report, fmt.Errorf("delete observed domain_events rows: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return report, err
+	}
+
+	if rows, err := snapshotDeleteResult.RowsAffected(); err == nil {
+		report.SnapshotRowsDeleted = int(rows)
+	} else {
+		report.SnapshotRowsDeleted = report.SnapshotRowsRead
+	}
+	if rows, err := domainDeleteResult.RowsAffected(); err == nil {
+		report.DomainEventRowsDeleted = int(rows)
+	} else {
+		report.DomainEventRowsDeleted = report.DomainEventRowsRead
+	}
+	return report, nil
+}
+
+func hasAnyTable(db *sql.DB, tables ...string) bool {
+	for _, table := range tables {
+		hasTable, err := hasTable(db, table)
+		if err == nil && hasTable {
+			return true
+		}
+	}
+	return false
+}
+
+func queryObservedGatewayStateSnapshotRows(q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}) ([]observedGatewayStateSnapshotRow, error) {
+	rows, err := q.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
+		FROM state_snapshots WHERE source_kind='observed_gateway_state' ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]observedGatewayStateSnapshotRow, 0)
+	for rows.Next() {
+		var row observedGatewayStateSnapshotRow
+		if err := rows.Scan(&row.ID, &row.CreatedAtUnix, &row.GatewayPeerID, &row.SourceRef, &row.ObservedAtUnix, &row.State, &row.PauseReason, &row.PauseNeedSat, &row.PauseHaveSat, &row.LastError, &row.PayloadJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func queryObservedGatewayStateDomainEventRows(q interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+}) ([]observedGatewayStateDomainEventRow, error) {
+	rows, err := q.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json
+		FROM domain_events WHERE source_kind='observed_gateway_state' ORDER BY id ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]observedGatewayStateDomainEventRow, 0)
+	for rows.Next() {
+		var row observedGatewayStateDomainEventRow
+		if err := rows.Scan(&row.ID, &row.CreatedAtUnix, &row.GatewayPeerID, &row.SourceRef, &row.ObservedAtUnix, &row.EventName, &row.StateBefore, &row.StateAfter, &row.PayloadJSON); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func buildObservedGatewayStateSnapshotPayload(snapshotPayloadJSON string) (string, error) {
+	payload := map[string]any{
+		"source_table":     "state_snapshots",
+		"snapshot_payload": decodeObservedGatewayStatePayload(snapshotPayloadJSON),
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func mergeObservedGatewayStatePayload(basePayloadJSON string, domainEvent *observedGatewayStateDomainEventRow) (string, error) {
+	var payload any
+	if err := json.Unmarshal([]byte(basePayloadJSON), &payload); err != nil {
+		payload = decodeObservedGatewayStatePayload(basePayloadJSON)
+	}
+	payloadMap, ok := payload.(map[string]any)
+	if !ok {
+		payloadMap = map[string]any{
+			"source_table":     "state_snapshots",
+			"snapshot_payload": payload,
+		}
+	}
+	payloadMap["observed_event"] = map[string]any{
+		"source_table":       "domain_events",
+		"created_at_unix":    domainEvent.CreatedAtUnix,
+		"gateway_pubkey_hex": strings.TrimSpace(domainEvent.GatewayPeerID),
+		"source_ref":         strings.TrimSpace(domainEvent.SourceRef),
+		"observed_at_unix":   domainEvent.ObservedAtUnix,
+		"event_name":         strings.TrimSpace(domainEvent.EventName),
+		"state_before":       strings.TrimSpace(domainEvent.StateBefore),
+		"state_after":        strings.TrimSpace(domainEvent.StateAfter),
+		"payload":            decodeObservedGatewayStatePayload(domainEvent.PayloadJSON),
+	}
+	data, err := json.Marshal(payloadMap)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func decodeObservedGatewayStatePayload(raw string) any {
+	var out any
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return raw
+	}
+	return out
 }
 
 // ensureCommandJournalTriggerKey 确保 command_journal 的 trigger_key 列和索引都存在。

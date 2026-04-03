@@ -52,7 +52,6 @@ type domainEventFilter struct {
 	Offset        int
 	CommandID     string
 	GatewayPeerID string
-	SourceKind    string
 	SourceRef     string
 	EventName     string
 }
@@ -81,7 +80,6 @@ type stateSnapshotFilter struct {
 	Offset        int
 	CommandID     string
 	GatewayPeerID string
-	SourceKind    string
 	SourceRef     string
 	State         string
 }
@@ -247,9 +245,11 @@ func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilte
 	if store == nil {
 		return domainEventPage{}, fmt.Errorf("client db is nil")
 	}
+	// 这里是命令口径，只查 command 事实；历史 observed 旧行会在迁移阶段搬走。
 	return clientDBValue(ctx, store, func(db *sql.DB) (domainEventPage, error) {
 		where := ""
 		args := make([]any, 0, 4)
+		where += " AND source_kind='command'"
 		if f.CommandID != "" {
 			where += " AND command_id=?"
 			args = append(args, f.CommandID)
@@ -257,12 +257,6 @@ func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilte
 		if f.GatewayPeerID != "" {
 			where += " AND gateway_pubkey_hex=?"
 			args = append(args, f.GatewayPeerID)
-		}
-		if sourceKind := strings.TrimSpace(f.SourceKind); sourceKind != "" {
-			where += " AND source_kind=?"
-			args = append(args, sourceKind)
-		} else {
-			where += " AND source_kind='command'"
 		}
 		if f.SourceRef != "" {
 			where += " AND source_ref=?"
@@ -301,7 +295,7 @@ func dbGetDomainEventItem(ctx context.Context, store *clientDB, id int64) (domai
 		return domainEventItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (domainEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=? AND source_kind='command'`, id)
 		return scanDomainEventItem(row)
 	})
 }
@@ -310,9 +304,11 @@ func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotF
 	if store == nil {
 		return stateSnapshotPage{}, fmt.Errorf("client db is nil")
 	}
+	// 这里是命令口径，只查 command 事实；历史 observed 旧行会在迁移阶段搬走。
 	return clientDBValue(ctx, store, func(db *sql.DB) (stateSnapshotPage, error) {
 		where := ""
 		args := make([]any, 0, 4)
+		where += " AND source_kind='command'"
 		if f.CommandID != "" {
 			where += " AND command_id=?"
 			args = append(args, f.CommandID)
@@ -320,12 +316,6 @@ func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotF
 		if f.GatewayPeerID != "" {
 			where += " AND gateway_pubkey_hex=?"
 			args = append(args, f.GatewayPeerID)
-		}
-		if sourceKind := strings.TrimSpace(f.SourceKind); sourceKind != "" {
-			where += " AND source_kind=?"
-			args = append(args, sourceKind)
-		} else {
-			where += " AND source_kind='command'"
 		}
 		if f.SourceRef != "" {
 			where += " AND source_ref=?"
@@ -370,7 +360,7 @@ func dbGetStateSnapshotItem(ctx context.Context, store *clientDB, id int64) (sta
 	return clientDBValue(ctx, store, func(db *sql.DB) (stateSnapshotItem, error) {
 		row := db.QueryRow(
 			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM state_snapshots WHERE id=?`, id,
+			FROM state_snapshots WHERE id=? AND source_kind='command'`, id,
 		)
 		return scanStateSnapshotItem(row)
 	})

@@ -2,7 +2,9 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -202,7 +204,7 @@ func TestObservedGatewayStateResumeChainWritesBeforeAndAfter(t *testing.T) {
 	}
 }
 
-func TestCommandQueriesDefaultToCommandFacts(t *testing.T) {
+func TestObservedGatewayStateMigrationMovesStateSnapshotsAndMergesDomainEvent(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
@@ -229,17 +231,41 @@ func TestCommandQueriesDefaultToCommandFacts(t *testing.T) {
 		LastError:      "not enough balance",
 		Payload:        map[string]any{"source": "command"},
 	})
+
 	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		now, "legacy_obs_domain", "gw1", "observed_gateway_state", "gw1", now, "fee_pool_resumed_by_wallet_probe", "paused_insufficient", "idle", `{"source":"observed"}`,
 	); err != nil {
 		t.Fatalf("insert observed domain event failed: %v", err)
 	}
+	if _, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		now+1, "legacy_obs_domain_2", "gw1", "observed_gateway_state", "gw1-missing", now+1, "fee_pool_resumed_by_wallet_probe", "paused_insufficient", "idle", `{"source":"observed-unmatched"}`,
+	); err != nil {
+		t.Fatalf("insert unmatched observed domain event failed: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		now, "legacy_obs_state", "gw1", "observed_gateway_state", "gw1", now, "idle", "", 0, 999999, "", `{"source":"observed"}`,
 	); err != nil {
 		t.Fatalf("insert observed state snapshot failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		now+1, "legacy_obs_state_2", "gw1", "observed_gateway_state", "gw1-other", now+1, "paused_insufficient", "wallet_insufficient", 100000, 12345, "not enough balance", `{"source":"observed-unmatched"}`,
+	); err != nil {
+		t.Fatalf("insert unmatched observed state snapshot failed: %v", err)
+	}
+
+	report, err := migrateObservedGatewayStateFactsWithReport(db)
+	if err != nil {
+		t.Fatalf("migrate observed gateway facts failed: %v", err)
+	}
+	if report.SnapshotRowsRead != 2 || report.SnapshotRowsInserted != 2 || report.SnapshotRowsDeleted != 2 {
+		t.Fatalf("unexpected snapshot migration report: %+v", report)
+	}
+	if report.DomainEventRowsRead != 2 || report.DomainEventRowsMerged != 1 || report.DomainEventRowsDeleted != 2 || report.DomainEventRowsUnmatched != 1 {
+		t.Fatalf("unexpected domain event migration report: %+v", report)
 	}
 
 	cmdEvents, err := dbListDomainEvents(nil, store, domainEventFilter{Limit: 10, Offset: 0})
@@ -249,14 +275,6 @@ func TestCommandQueriesDefaultToCommandFacts(t *testing.T) {
 	if cmdEvents.Total != 1 || len(cmdEvents.Items) != 1 || cmdEvents.Items[0].CommandID != "cmd-domain-1" {
 		t.Fatalf("default domain events should only return command facts: %+v", cmdEvents)
 	}
-	obsEvents, err := dbListDomainEvents(nil, store, domainEventFilter{Limit: 10, Offset: 0, SourceKind: "observed_gateway_state"})
-	if err != nil {
-		t.Fatalf("list observed domain events failed: %v", err)
-	}
-	if obsEvents.Total != 1 || len(obsEvents.Items) != 1 || obsEvents.Items[0].CommandID != "legacy_obs_domain" {
-		t.Fatalf("observed domain events should still be queryable: %+v", obsEvents)
-	}
-
 	cmdStates, err := dbListStateSnapshots(nil, store, stateSnapshotFilter{Limit: 10, Offset: 0})
 	if err != nil {
 		t.Fatalf("list command state snapshots failed: %v", err)
@@ -264,11 +282,122 @@ func TestCommandQueriesDefaultToCommandFacts(t *testing.T) {
 	if cmdStates.Total != 1 || len(cmdStates.Items) != 1 || cmdStates.Items[0].CommandID != "cmd-state-1" {
 		t.Fatalf("default state snapshots should only return command facts: %+v", cmdStates)
 	}
-	obsStates, err := dbListStateSnapshots(nil, store, stateSnapshotFilter{Limit: 10, Offset: 0, SourceKind: "observed_gateway_state"})
+
+	obsPage, err := dbListObservedGatewayStates(nil, store, observedGatewayStateFilter{
+		Limit:         10,
+		Offset:        0,
+		GatewayPeerID: "gw1",
+		EventName:     "fee_pool_resumed_by_wallet_probe",
+	})
 	if err != nil {
-		t.Fatalf("list observed state snapshots failed: %v", err)
+		t.Fatalf("list observed gateway states failed: %v", err)
 	}
-	if obsStates.Total != 1 || len(obsStates.Items) != 1 || obsStates.Items[0].CommandID != "legacy_obs_state" {
-		t.Fatalf("observed state snapshots should still be queryable: %+v", obsStates)
+	if obsPage.Total != 1 || len(obsPage.Items) != 1 {
+		t.Fatalf("unexpected observed gateway states page: %+v", obsPage)
+	}
+	obsItem := obsPage.Items[0]
+	if obsItem.StateBefore != "paused_insufficient" || obsItem.StateAfter != "idle" || obsItem.SourceRef != "gw1" {
+		t.Fatalf("unexpected observed gateway state row: %+v", obsItem)
+	}
+	var payload struct {
+		SourceTable     string         `json:"source_table"`
+		SnapshotPayload map[string]any `json:"snapshot_payload"`
+		ObservedEvent   map[string]any `json:"observed_event"`
+	}
+	if err := json.Unmarshal(obsItem.Payload, &payload); err != nil {
+		t.Fatalf("unmarshal observed payload failed: %v", err)
+	}
+	if payload.SourceTable != "state_snapshots" || payload.ObservedEvent == nil {
+		t.Fatalf("unexpected observed payload wrapper: %+v", payload)
+	}
+	if payload.ObservedEvent["event_name"] != "fee_pool_resumed_by_wallet_probe" {
+		t.Fatalf("unexpected merged observed event payload: %+v", payload.ObservedEvent)
+	}
+
+	obsDomainResult, err := db.Exec(`INSERT INTO domain_events(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,event_name,state_before,state_after,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		now+2, "manual_obs_domain", "gw1", "observed_gateway_state", "gw1-manual", now+2, "fee_pool_resumed_by_wallet_probe", "paused_insufficient", "idle", `{"source":"manual-observed"}`,
+	)
+	if err != nil {
+		t.Fatalf("insert manual observed domain event failed: %v", err)
+	}
+	obsDomainID, err := obsDomainResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("load manual observed domain id failed: %v", err)
+	}
+	obsStateResult, err := db.Exec(`INSERT INTO state_snapshots(created_at_unix,command_id,gateway_pubkey_hex,source_kind,source_ref,observed_at_unix,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		now+2, "manual_obs_state", "gw1", "observed_gateway_state", "gw1-manual", now+2, "idle", "", 0, 888888, "", `{"source":"manual-observed"}`,
+	)
+	if err != nil {
+		t.Fatalf("insert manual observed state snapshot failed: %v", err)
+	}
+	obsStateID, err := obsStateResult.LastInsertId()
+	if err != nil {
+		t.Fatalf("load manual observed state id failed: %v", err)
+	}
+
+	if page, err := dbListDomainEvents(nil, store, domainEventFilter{Limit: 10, Offset: 0}); err != nil {
+		t.Fatalf("list command domain events after manual observed insert failed: %v", err)
+	} else if page.Total != 1 || len(page.Items) != 1 || page.Items[0].CommandID != "cmd-domain-1" {
+		t.Fatalf("command domain events should ignore observed rows: %+v", page)
+	}
+	if page, err := dbListStateSnapshots(nil, store, stateSnapshotFilter{Limit: 10, Offset: 0}); err != nil {
+		t.Fatalf("list command state snapshots after manual observed insert failed: %v", err)
+	} else if page.Total != 1 || len(page.Items) != 1 || page.Items[0].CommandID != "cmd-state-1" {
+		t.Fatalf("command state snapshots should ignore observed rows: %+v", page)
+	}
+
+	if _, err := dbGetDomainEventItem(nil, store, obsDomainID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("observed domain detail should be hidden, got err=%v", err)
+	}
+	if _, err := dbGetStateSnapshotItem(nil, store, obsStateID); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("observed state detail should be hidden, got err=%v", err)
+	}
+
+	srv := &httpAPIServer{db: db}
+	dreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/events/detail?id="+itoa64(obsDomainID), nil)
+	drec := httptest.NewRecorder()
+	srv.handleAdminFeePoolEventDetail(drec, dreq)
+	if drec.Code != http.StatusNotFound {
+		t.Fatalf("observed domain http detail should be 404, got=%d body=%s", drec.Code, drec.Body.String())
+	}
+	sreq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/states/detail?id="+itoa64(obsStateID), nil)
+	srec := httptest.NewRecorder()
+	srv.handleAdminFeePoolStateDetail(srec, sreq)
+	if srec.Code != http.StatusNotFound {
+		t.Fatalf("observed state http detail should be 404, got=%d body=%s", srec.Code, srec.Body.String())
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("second initIndexDB failed: %v", err)
+	}
+	obsPage, err = dbListObservedGatewayStates(nil, store, observedGatewayStateFilter{
+		Limit:         10,
+		Offset:        0,
+		GatewayPeerID: "gw1",
+		EventName:     "fee_pool_resumed_by_wallet_probe",
+	})
+	if err != nil {
+		t.Fatalf("list observed gateway states after second init failed: %v", err)
+	}
+	if obsPage.Total != 2 || len(obsPage.Items) != 2 {
+		t.Fatalf("unexpected observed gateway states page after second init: %+v", obsPage)
+	}
+
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("third initIndexDB failed: %v", err)
+	}
+	obsPage, err = dbListObservedGatewayStates(nil, store, observedGatewayStateFilter{
+		Limit:         10,
+		Offset:        0,
+		GatewayPeerID: "gw1",
+		EventName:     "fee_pool_resumed_by_wallet_probe",
+	})
+	if err != nil {
+		t.Fatalf("list observed gateway states after third init failed: %v", err)
+	}
+	if obsPage.Total != 2 || len(obsPage.Items) != 2 {
+		t.Fatalf("observed gateway states should stay stable after third init: %+v", obsPage)
 	}
 }
