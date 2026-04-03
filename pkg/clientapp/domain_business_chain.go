@@ -80,6 +80,10 @@ func createDomainRegisterBusinessChain(
 
 // finalizeDomainRegisterSettlement 回写域名注册结算状态
 // 在提交阶段调用：根据提交结果设置 settlement 状态
+// 硬要求：settlement_method='chain' 时，target_id 必须写 chain_payments.id
+//   - 成功时：通过 txID 查 chain_payments.id，写入 target_id
+//   - 查不到 chain_payments.id 时报错，不静默降级为 txid
+//   - 失败时：写 status='failed' + error_message，target_id 留空
 func finalizeDomainRegisterSettlement(
 	ctx context.Context,
 	store *clientDB,
@@ -93,7 +97,20 @@ func finalizeDomainRegisterSettlement(
 	}
 
 	status := "settled"
-	if !success {
+	targetID := ""
+
+	if success {
+		txID = strings.ToLower(strings.TrimSpace(txID))
+		if txID == "" {
+			return fmt.Errorf("txid is required for successful settlement")
+		}
+		// 硬要求：必须拿到 chain_payments.id，不降级
+		chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txID)
+		if err != nil {
+			return fmt.Errorf("find chain_payments.id for txid=%s: %w", txID, err)
+		}
+		targetID = fmt.Sprintf("%d", chainPaymentID)
+	} else {
 		status = "failed"
 	}
 
@@ -101,7 +118,7 @@ func finalizeDomainRegisterSettlement(
 		_, err := db.Exec(
 			`UPDATE business_settlements SET status=?, target_id=?, error_message=?, updated_at_unix=strftime('%s','now') WHERE settlement_id=?`,
 			status,
-			txID,
+			targetID,
 			errMsg,
 			settlementID,
 		)

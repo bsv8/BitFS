@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 )
 
 // TestBusinessBridge_MultipleBusinessesFromOneFrontOrder 一前台单多条 business 测试
@@ -146,9 +148,10 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 
 	// 模拟域名注册业务入口
 	name := "testexample.bsv"
-	frontOrderID := "fo_domain_reg_" + name
-	businessID := "biz_domain_reg_" + name
-	settlementID := "set_domain_reg_" + name
+	uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
+	frontOrderID := "fo_domain_reg_" + uniqueSuffix
+	businessID := "biz_domain_reg_" + uniqueSuffix
+	settlementID := "set_domain_reg_" + uniqueSuffix
 
 	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:     frontOrderID,
@@ -211,7 +214,24 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 	}
 
 	// 模拟支付成功，回写 settled
+	// 硬要求：必须先创建 chain_payment 记录，这样 finalize 才能拿到 chain_payments.id
 	txID := "tx_success_12345"
+	chainPaymentID, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+		TxID:                txID,
+		PaymentSubType:      "domain_register",
+		Status:              "confirmed",
+		WalletInputSatoshi:  10000,
+		WalletOutputSatoshi: 9000,
+		NetAmountSatoshi:    -1000,
+		OccurredAtUnix:      time.Now().Unix(),
+		FromPartyID:         "client:self",
+		ToPartyID:           "resolver:03resolver",
+		Payload:             map[string]any{"name": name},
+	})
+	if err != nil {
+		t.Fatalf("create chain_payment failed: %v", err)
+	}
+
 	if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, true, txID, ""); err != nil {
 		t.Fatalf("finalize settlement failed: %v", err)
 	}
@@ -224,8 +244,10 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 	if settlement.Status != "settled" {
 		t.Fatalf("expected settlement status settled, got %s", settlement.Status)
 	}
-	if settlement.TargetID != txID {
-		t.Fatalf("expected settlement target_id %s, got %s", txID, settlement.TargetID)
+	// 硬要求验证：target_id 必须是 chain_payments.id，不能是 txid
+	expectedTargetID := fmt.Sprintf("%d", chainPaymentID)
+	if settlement.TargetID != expectedTargetID {
+		t.Fatalf("expected settlement target_id=%s (chain_payment.id), got %s", expectedTargetID, settlement.TargetID)
 	}
 
 	// 模拟另一个失败场景

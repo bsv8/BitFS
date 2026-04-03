@@ -630,7 +630,7 @@ type Runtime struct {
 	Host host.Host
 	// DB              *sql.DB
 	// DBActor         *sqliteactor.Actor
-	// store           *clientDB
+	store           *clientDB
 	runIn           RunInput
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
@@ -698,6 +698,15 @@ func (r *Runtime) ClientID() string {
 		return ""
 	}
 	return strings.TrimSpace(r.runIn.ClientID)
+}
+
+// DB 返回运行时底层 clientDB 指针，供 e2e 测试和内部桥接函数访问。
+// 设计约束：只读场景可直接用，写入场景优先走显式 store 参数传递。
+func (r *Runtime) DB() *clientDB {
+	if r == nil {
+		return nil
+	}
+	return r.store
 }
 
 func (r *Runtime) HTTPListenAddr() string {
@@ -997,7 +1006,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		Host: h,
 		// DB:                       db,
 		// DBActor:                  dbActor,
-		// store:                    store,
+		store:                    store,
 		runIn:                    in,
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,

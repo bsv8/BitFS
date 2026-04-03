@@ -14,7 +14,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/modules/domain"
+	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
@@ -37,6 +37,7 @@ type TriggerDomainRegisterNameResult struct {
 	Ok                         bool   `json:"ok"`
 	Code                       string `json:"code"`
 	Message                    string `json:"message,omitempty"`
+	FrontOrderID               string `json:"front_order_id,omitempty"`
 	Name                       string `json:"name,omitempty"`
 	OwnerPubkeyHex             string `json:"owner_pubkey_hex,omitempty"`
 	TargetPubkeyHex            string `json:"target_pubkey_hex,omitempty"`
@@ -170,11 +171,20 @@ type builtDomainRegisterTx struct {
 // - 注册交易在客户端本地构造，但不自行广播，保持“确认资格后才上链”的语义。
 func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime, p TriggerDomainRegisterNameParams) (TriggerDomainRegisterNameResult, error) {
 	// 第七次迭代：落地新主链骨架
-	frontOrderID := "fo_domain_reg_" + strings.ToLower(strings.TrimSpace(p.Name))
-	businessID := "biz_domain_reg_" + strings.ToLower(strings.TrimSpace(p.Name))
-	settlementID := "set_domain_reg_" + strings.ToLower(strings.TrimSpace(p.Name))
+	// 设计说明：
+	//   - front_order_id 表达本次前台发起（每次发起唯一）
+	//   - business_id 表达本次收费事实（每次发起唯一）
+	//   - settlement_id 表达本次结算事实（每次发起唯一）
+	//   - 三者都按"本次动作"生成，不再按域名名复用
+	uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
+	frontOrderID := "fo_domain_reg_" + uniqueSuffix
+	businessID := "biz_domain_reg_" + uniqueSuffix
+	settlementID := "set_domain_reg_" + uniqueSuffix
+	p.Name = strings.ToLower(strings.TrimSpace(p.Name))
 	if err := createDomainRegisterBusinessChain(ctx, store, frontOrderID, businessID, settlementID, p); err != nil {
 		obs.Error("bitcast-client", "domain_register_chain_init_failed", map[string]any{"error": err.Error(), "name": p.Name})
+		// 主链骨架创建失败，直接返回
+		return TriggerDomainRegisterNameResult{}, fmt.Errorf("create domain register business chain: %w", err)
 	}
 
 	prepared, err := TriggerDomainPrepareRegister(ctx, store, rt, TriggerDomainPrepareRegisterParams{
@@ -187,6 +197,7 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 		return TriggerDomainRegisterNameResult{}, err
 	}
 	out := domainRegisterNameResultFromPrepared(prepared)
+	out.FrontOrderID = frontOrderID
 	if !prepared.Ok {
 		return out, nil
 	}
@@ -201,11 +212,17 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 	out = applyDomainRegisterSubmitResult(out, submitResp)
 	if !submitResp.Ok {
 		// 提交失败，回写 settlement 状态为 failed
-		_ = finalizeDomainRegisterSettlement(ctx, store, settlementID, false, "", submitResp.Message)
+		if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, false, "", submitResp.Message); err != nil {
+			obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
+		}
 		return out, nil
 	}
 	// 提交成功，回写 settlement 状态为 settled
-	_ = finalizeDomainRegisterSettlement(ctx, store, settlementID, true, out.RegisterTxID, "")
+	// 硬要求：target_id 必须写 chain_payments.id，查不到则报错
+	if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, true, out.RegisterTxID, ""); err != nil {
+		obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
+		return out, fmt.Errorf("finalize domain register settlement: %w", err)
+	}
 	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
 		FlowID:          "domain_register:" + out.RegisterTxID,
 		FlowType:        "domain_register",
