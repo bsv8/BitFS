@@ -169,6 +169,19 @@ func reconcileWalletUTXOSet(ctx context.Context, store *clientDB, address string
 		}
 		stats := summarizeWalletUTXOState(existing)
 
+		// 资产事实写入：只对已确认的 plain_bsv unspent UTXO 写入 IN 事实
+		// 设计说明：
+		// - 只认 snapshot.Live（confirmed unspent），pending local broadcast 不入 fact
+		// - unknown 资产不入此表，保持口径纯净
+		// - 使用幂等写入，重复轮询不会重复写同一入项
+		confirmedUTXOSet := make(map[string]struct{}, len(snapshot.Live))
+		for utxoID := range snapshot.Live {
+			confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))] = struct{}{}
+		}
+		if err := appendWalletUTXOAssetFlowsTx(tx, walletID, address, existing, confirmedUTXOSet, updatedAt); err != nil {
+			return err
+		}
+
 		if _, err = tx.Exec(
 			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -523,4 +536,50 @@ func setWalletUTXOSpentTxWithNote(tx *sql.Tx, existing map[string]utxoStateRow, 
 		return nil
 	}
 	return appendWalletUTXOEventTx(tx, utxoID, strings.TrimSpace(eventType), spentTxID, "", strings.TrimSpace(eventNote), payload)
+}
+
+// appendWalletUTXOAssetFlowsTx 对符合条件的 UTXO 写入资产流入事实
+// 设计说明：
+// - 只对 confirmedUTXOSet 中的 UTXO 写入（snapshot.Live = confirmed unspent）
+// - 只对 state='unspent' 且 allocation_class='plain_bsv' 的 UTXO 写入
+// - unknown 资产不入此表，保持口径纯净
+// - 使用幂等写入，重复轮询不会重复写同一入项
+func appendWalletUTXOAssetFlowsTx(tx *sql.Tx, walletID string, address string, existing map[string]utxoStateRow, confirmedUTXOSet map[string]struct{}, updatedAt int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	for utxoID, row := range existing {
+		// 只处理 confirmed UTXO（来自 snapshot.Live）
+		if _, confirmed := confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))]; !confirmed {
+			continue
+		}
+		state := strings.ToLower(strings.TrimSpace(row.State))
+		allocationClass := normalizeWalletUTXOAllocationClass(row.AllocationClass)
+		// 只处理 unspent + plain_bsv
+		if state != "unspent" || allocationClass != walletUTXOAllocationPlainBSV {
+			continue
+		}
+		// 调用 dbAppendAssetFlowIfAbsentDB 写入事实
+		entry := chainAssetFlowEntry{
+			FlowID:         "flow_in_" + utxoID,
+			WalletID:       walletID,
+			Address:        address,
+			Direction:      "IN",
+			AssetKind:      "BSV",
+			TokenID:        "",
+			UTXOID:         utxoID,
+			TxID:           strings.ToLower(strings.TrimSpace(row.CreatedTxID)),
+			Vout:           row.Vout,
+			AmountSatoshi:  int64(row.Value),
+			QuantityText:   "",
+			OccurredAtUnix: updatedAt,
+			EvidenceSource: "WOC",
+			Note:           "plain_bsv utxo detected by chain sync",
+			Payload:        map[string]any{"allocation_class": allocationClass, "allocation_reason": row.AllocationReason},
+		}
+		if _, err := dbAppendAssetFlowIfAbsentDB(tx, entry, "IN"); err != nil {
+			return fmt.Errorf("append asset flow for utxo %s: %w", utxoID, err)
+		}
+	}
+	return nil
 }

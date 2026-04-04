@@ -324,6 +324,16 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		}
 	}
 
+	// Step 4 出项关联：对 input UTXO 写入 fact_asset_consumptions
+	// 设计说明：
+	// - 只处理 input 方向的 UTXO，按 utxo_id 查 source_flow_id
+	// - unknown UTXO 没有 source flow，跳过不产生消耗记录
+	// - 幂等：同一 source_flow_id + chain_payment_id 不会重复写
+	if err := dbAppendAssetConsumptionsForChainPayment(db, chainPaymentID, buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now), now); err != nil {
+		obs.Error("bitcast-client", "wallet_accounting_asset_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
+		return fmt.Errorf("append asset consumptions for chain payment failed: %w", err)
+	}
+
 	for _, e := range in.ProcessEvents {
 		event := e
 		if strings.TrimSpace(event.SourceType) == "" {
@@ -370,4 +380,22 @@ func recordWalletChainAccounting(db *sql.DB, in walletChainAccountingInput) erro
 	}
 	committed = true
 	return nil
+}
+
+// buildChainPaymentUTXOLinksFromFacts 把 UTXO facts 转换成 UTXO link entries
+// 用于出项关联写入时复用同一数据结构
+func buildChainPaymentUTXOLinksFromFacts(facts []chainPaymentUTXOFact, now int64) []chainPaymentUTXOLinkEntry {
+	out := make([]chainPaymentUTXOLinkEntry, 0, len(facts))
+	for _, f := range facts {
+		out = append(out, chainPaymentUTXOLinkEntry{
+			UTXOID:        strings.ToLower(strings.TrimSpace(f.UTXOID)),
+			IOSide:        strings.TrimSpace(f.IOSide),
+			UTXORole:      strings.TrimSpace(f.UTXORole),
+			AmountSatoshi: f.AmountSatoshi,
+			CreatedAtUnix: now,
+			Note:          f.Note,
+			Payload:       f.Payload,
+		})
+	}
+	return out
 }

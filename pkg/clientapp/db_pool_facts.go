@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bsv-blockchain/go-sdk/transaction"
+	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 type directTransferPoolSessionFactInput struct {
@@ -36,6 +36,7 @@ type directTransferPoolAllocationFactInput struct {
 	TxID             string
 	TxHex            string
 	CreatedAtUnix    int64
+	UTXOFacts        []chainPaymentUTXOLinkEntry // Step 4 出项关联：UTXO 消耗明细
 }
 
 func dbUpsertDirectTransferPoolSessionTx(tx *sql.Tx, in directTransferPoolSessionFactInput) error {
@@ -158,7 +159,25 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 		txHex,
 		createdAt,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Step 4 出项关联：对 input UTXO 写入 fact_asset_consumptions
+	// 设计说明：
+	// - 先查 allocation 的自增 id，再写消耗
+	// - unknown UTXO 没有 source flow，跳过不产生消耗记录
+	// - 幂等：同一 source_flow_id + pool_allocation_id 不会重复写
+	if len(in.UTXOFacts) > 0 {
+		poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
+		if err != nil {
+			return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
+		}
+		if err := dbAppendAssetConsumptionsForPoolAllocation(tx, poolAllocID, in.UTXOFacts, createdAt); err != nil {
+			return fmt.Errorf("append asset consumptions for pool allocation %s: %w", allocID, err)
+		}
+	}
+	return nil
 }
 
 func dbUpsertDirectTransferPoolSession(ctx context.Context, store *clientDB, in directTransferPoolSessionFactInput) error {
@@ -192,7 +211,7 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 	if strings.TrimSpace(txHex) == "" {
 		return "", fmt.Errorf("tx hex is required")
 	}
-	parsed, err := transaction.NewTransactionFromHex(strings.TrimSpace(txHex))
+	parsed, err := txsdk.NewTransactionFromHex(strings.TrimSpace(txHex))
 	if err != nil {
 		return "", err
 	}
@@ -252,4 +271,37 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 		return 0, err
 	}
 	return id, nil
+}
+
+// dbExtractUTXOFactsFromTxHex 从交易 hex 中提取 input UTXO facts
+// 设计说明：
+// - pool allocation 的 UTXO 明细从交易本身解析，不依赖外部传入
+// - 只提取 input 方向，用于后续 fact_asset_consumptions 关联
+func dbExtractUTXOFactsFromTxHex(txHex string, now int64) ([]chainPaymentUTXOLinkEntry, error) {
+	txHex = strings.TrimSpace(txHex)
+	if txHex == "" {
+		return nil, nil
+	}
+	parsed, err := txsdk.NewTransactionFromHex(txHex)
+	if err != nil {
+		return nil, err
+	}
+	inputs := parsed.Inputs
+	if len(inputs) == 0 {
+		return nil, nil
+	}
+	out := make([]chainPaymentUTXOLinkEntry, 0, len(inputs))
+	for i, inp := range inputs {
+		sourceTxID := strings.ToLower(inp.SourceTXID.String())
+		utxoID := sourceTxID + ":" + fmt.Sprint(inp.SourceTxOutIndex)
+		out = append(out, chainPaymentUTXOLinkEntry{
+			UTXOID:        utxoID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AmountSatoshi: 0, // pool tx 中 input 金额由后续 chain sync 确认
+			CreatedAtUnix: now,
+			Note:          fmt.Sprintf("pool tx input #%d", i),
+		})
+	}
+	return out, nil
 }

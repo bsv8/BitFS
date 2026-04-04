@@ -155,6 +155,11 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		}); err != nil {
 			return err
 		}
+		// Step 4 出项关联：从交易 hex 提取 input UTXO 明细
+		utxoFacts, err := dbExtractUTXOFactsFromTxHex(baseTxHex, now)
+		if err != nil {
+			return fmt.Errorf("extract utxo facts from open tx: %w", err)
+		}
 		return dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
 			SessionID:        sessionID,
 			AllocationKind:   "open",
@@ -164,6 +169,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 			TxID:             strings.TrimSpace(req.BaseTxID),
 			TxHex:            baseTxHex,
 			CreatedAtUnix:    now,
+			UTXOFacts:        utxoFacts,
 		})
 	})
 }
@@ -205,6 +211,11 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		}); err != nil {
 			return err
 		}
+		// Step 4 出项关联：从交易 hex 提取 input UTXO 明细
+		utxoFacts, err := dbExtractUTXOFactsFromTxHex(currentTxHex, now)
+		if err != nil {
+			return fmt.Errorf("extract utxo facts from pay tx: %w", err)
+		}
 		return dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
 			SessionID:        sessionID,
 			AllocationKind:   "pay",
@@ -214,6 +225,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 			TxID:             txid,
 			TxHex:            currentTxHex,
 			CreatedAtUnix:    now,
+			UTXOFacts:        utxoFacts,
 		})
 	})
 }
@@ -253,6 +265,11 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		}); err != nil {
 			return err
 		}
+		// Step 4 出项关联：从交易 hex 提取 input UTXO 明细
+		utxoFacts, err := dbExtractUTXOFactsFromTxHex(currentTxHex, now)
+		if err != nil {
+			return fmt.Errorf("extract utxo facts from closing tx: %w", err)
+		}
 		return dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
 			SessionID:        sessionID,
 			AllocationKind:   "close",
@@ -262,6 +279,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 			TxID:             txid,
 			TxHex:            currentTxHex,
 			CreatedAtUnix:    now,
+			UTXOFacts:        utxoFacts,
 		})
 	})
 }
