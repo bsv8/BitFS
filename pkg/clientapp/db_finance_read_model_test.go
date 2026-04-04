@@ -1187,6 +1187,33 @@ func TestFinanceLayer_HTTPBusinessRoleParam(t *testing.T) {
 	}
 }
 
+// TestFinanceFormalQuery_RejectsQ 第十一阶段：正式接口不支持 q 参数
+// 验证：正式接口传 q 返回 400，q 只属于 compat/debug 入口
+func TestFinanceFormalQuery_RejectsQ(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	store := newClientDB(db, nil)
+	srv := &httpAPIServer{db: db, store: store}
+
+	// 正式接口传 q 应该返回 400
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&q=test&limit=50", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminFinanceBusinesses(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("formal query with q should return 400: got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var errResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response failed: %v", err)
+	}
+	if errMsg, ok := errResp["error"].(string); !ok || !strings.Contains(errMsg, "q parameter is not supported") {
+		t.Fatalf("expected q parameter error, got: %v", errResp)
+	}
+}
+
 // TestFinanceCompat_AllBusinessesReturnsMixed 第十阶段：compat 入口可以查全量
 // 验证：兼容/调试入口不强制 business_role，允许返回全量混合结果
 func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
@@ -1286,6 +1313,14 @@ func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
 	srv.handleAdminFinanceBusinessesCompat(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("compat invalid role should return 400: got %d", rec.Code)
+	}
+
+	// 测试5：compat 接口支持 q 参数（正式接口不支持）
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?q=test&limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compat query with q should return 200: got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

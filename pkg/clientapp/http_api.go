@@ -1937,15 +1937,28 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, it)
 }
 
-// handleAdminFinanceBusinesses 查询财务业务记录
-// 第九阶段整改：正式入口强制要求 business_role 参数
-//   - 参数 business_role=formal：只返回正式收费对象（biz_download_pool_* 等）
-//   - 参数 business_role=process：只返回过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
-//   - 不传 business_role：返回 400（不再默认返回全部）
+// handleAdminFinanceBusinesses 正式业务查询入口
+// 第十一阶段收口：此接口只表达正式业务视角，不承担搜索或排查职责
 //
-// 如需全量查看，请使用专门的兼容/调试入口，不要挂在正式接口上。
-// 第六次迭代起不再支持旧口径参数（scene_type/scene_subtype/ref_id）
-// 只支持主口径参数：source_type/source_id/accounting_scene/accounting_subtype/pool_allocation_id
+// 正式业务查询：
+//   - 这是一条什么正式收费业务（formal）或过程财务业务（process）
+//   - 它的状态是什么
+//   - 它最终结到哪次真实支付
+//
+// 强制要求：
+//   - business_role 必填：formal 或 process
+//   - 不传返回 400
+//   - 不支持自由模糊搜索（q 参数），请使用 compat 入口
+//
+// 结构化条件（仅用于过滤）：
+//   - business_id：按业务 ID 精确查
+//   - pool_allocation_id：按池分配主键换算查
+//   - source_type/source_id：按来源查
+//   - status：按状态过滤
+//   - from_party_id/to_party_id：按参与方查
+//   - accounting_scene/accounting_subtype：补充过滤条件
+//
+// 如需全量排查或自由搜索，请使用 /api/v1/admin/finance/businesses/compat 兼容入口。
 func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1960,7 +1973,13 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
 
-	// 第九阶段整改：business_role 是正式入参，不传直接返回 400
+	// 正式口不支持自由模糊搜索，q 只属于 compat/debug 入口
+	if strings.TrimSpace(r.URL.Query().Get("q")) != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "q parameter is not supported in formal query, use /businesses/compat instead"})
+		return
+	}
+
+	// business_role 是正式入参，不传直接返回 400
 	businessRole := strings.TrimSpace(r.URL.Query().Get("business_role"))
 	if businessRole == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role is required: must be 'formal' or 'process'"})
@@ -1971,7 +1990,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		return
 	}
 
-	// 主口径参数
+	// 结构化参数（仅用于过滤）
 	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
 	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
 	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
@@ -1980,7 +1999,6 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
 	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
 
 	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
@@ -2009,7 +2027,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		Status:            status,
 		FromPartyID:       fromPartyID,
 		ToPartyID:         toPartyID,
-		Query:             q,
+		Query:             "", // 正式口不再使用自由搜索
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -2019,15 +2037,17 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 }
 
 // handleAdminFinanceBusinessesCompat 【兼容/调试入口】全量查询财务业务记录
-// 第十阶段新增：独立的全量兼容查询入口，不参与正式业务语义
+// 第十一阶段收口：此接口仅用于排查、迁移、对账辅助，不参与正式业务语义
+//
+// 兼容/调试查询：
 //   - 不强制要求 business_role，允许返回全量混合结果
 //   - 仅用于人工排查、历史数据核对、迁移验证、对账辅助
 //   - 不代表正式业务语义，正式查询请走 /api/v1/admin/finance/businesses
 //
 // 注意：
-// - 此接口返回的数据可能同时包含 formal 和 process 类型的业务记录
-// - 返回结果中的 business_role 字段明确标识每条记录的角色
-// - 不要在前台、正式页面、正式脚本中把它当主入口使用
+//   - 此接口返回的数据可能同时包含 formal 和 process 类型的业务记录
+//   - 返回结果中带有 data_role = "compat_debug_only" 标识
+//   - 不要在前台、正式页面、正式脚本中把它当主入口使用
 func (s *httpAPIServer) handleAdminFinanceBusinessesCompat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2093,7 +2113,13 @@ func (s *httpAPIServer) handleAdminFinanceBusinessesCompat(w http.ResponseWriter
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"total":     page.Total,
+		"limit":     limit,
+		"offset":    offset,
+		"items":     page.Items,
+		"data_role": "compat_debug_only", // 第十一阶段：明确标识这是兼容/调试数据
+	})
 }
 
 func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, r *http.Request) {
@@ -2118,9 +2144,24 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, it)
 }
 
-// handleAdminFinanceProcessEvents 查询财务流程事件记录
-// 第六次迭代起不再支持旧口径参数（scene_type/scene_subtype/ref_id）
-// 只支持主口径参数：source_type/source_id/accounting_scene/accounting_subtype/pool_allocation_id
+// handleAdminFinanceProcessEvents 过程事件查询入口
+// 第十一阶段收口：此接口只表达过程事实视角，不解释正式收费结果
+//
+// 过程事件查询：
+//   - 这次过程发生了什么
+//   - 是哪一个 process_id
+//   - 是哪次池支付、链支付、钱包动作
+//
+// 查询参数：
+//   - process_id：按过程 ID 查
+//   - pool_allocation_id：按池分配主键换算查
+//   - source_type/source_id：按来源查
+//   - accounting_scene/accounting_subtype：按财务分类查
+//   - event_type：按事件类型查
+//   - status：按状态过滤
+//   - q：辅助模糊搜索
+//
+// 注意：此接口只表达过程事实，不承担正式收费结果解释或业务状态判断。
 func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
