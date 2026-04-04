@@ -1937,11 +1937,12 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 }
 
 // handleAdminFinanceBusinesses 查询财务业务记录
-// 第四阶段起：明确区分正式收费和过程财务对象
+// 第九阶段整改：正式入口强制要求 business_role 参数
 //   - 参数 business_role=formal：只返回正式收费对象（biz_download_pool_* 等）
 //   - 参数 business_role=process：只返回过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
-//   - 不传 business_role：返回全部（保持向后兼容）
+//   - 不传 business_role：返回 400（不再默认返回全部）
 //
+// 如需全量查看，请使用专门的兼容/调试入口，不要挂在正式接口上。
 // 第六次迭代起不再支持旧口径参数（scene_type/scene_subtype/ref_id）
 // 只支持主口径参数：source_type/source_id/accounting_scene/accounting_subtype/pool_allocation_id
 func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
@@ -1958,9 +1959,13 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
 
-	// 第四阶段新增：业务角色筛选
+	// 第九阶段整改：business_role 是正式入参，不传直接返回 400
 	businessRole := strings.TrimSpace(r.URL.Query().Get("business_role"))
-	if businessRole != "" && businessRole != "formal" && businessRole != "process" {
+	if businessRole == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role is required: must be 'formal' or 'process'"})
+		return
+	}
+	if businessRole != "formal" && businessRole != "process" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role must be 'formal' or 'process'"})
 		return
 	}

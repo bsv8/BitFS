@@ -193,7 +193,8 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	}
 	payAllocationSourceID := fmt.Sprintf("%d", payAllocationIntID)
 	// 使用 pay allocation 测试查询 - pay 不再生成 fin_business，所以返回空
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?pool_allocation_id="+payAllocationID+"&limit=10", nil)
+	// 第九阶段整改：必须传 business_role 参数
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&pool_allocation_id="+payAllocationID+"&limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusOK {
@@ -1168,6 +1169,21 @@ func TestFinanceLayer_HTTPBusinessRoleParam(t *testing.T) {
 	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid role should return 400: got %d", rec.Code)
+	}
+
+	// 第九阶段新增：不传 business_role 应返回 400
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinesses(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing business_role should return 400: got %d", rec.Code)
+	}
+	var errResp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &errResp); err != nil {
+		t.Fatalf("decode error response failed: %v", err)
+	}
+	if errMsg, ok := errResp["error"].(string); !ok || !strings.Contains(errMsg, "business_role is required") {
+		t.Fatalf("expected business_role required error, got: %v", errResp)
 	}
 }
 
