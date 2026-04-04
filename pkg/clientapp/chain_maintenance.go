@@ -776,6 +776,23 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 	}
+	
+	// 触发 unknown 1-sat 资产确认流程
+	// 设计说明：
+	// - 在链同步成功后，异步确认 unknown 资产的类型
+	// - 受并发保护，不会与正在执行的确认任务冲突
+	// - 失败不影响主同步流程，仅记录日志
+	stepStart = time.Now()
+	if verifyErr := runUnknownAssetVerification(ctx, m.rt, m.store, addr, task.TriggerSource); verifyErr != nil {
+		logWalletSyncStepError(meta, "unknown_asset_verification", verifyErr, map[string]any{
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+	} else {
+		logWalletSyncStepInfo(meta, "unknown_asset_verification", map[string]any{
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+	}
+	
 	select {
 	case <-ctx.Done():
 		return map[string]any{
