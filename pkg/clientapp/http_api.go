@@ -2132,6 +2132,19 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_id is required"})
 		return
 	}
+
+	// 第十一阶段收口：正式 detail 和正式 list 保持同一套规则
+	// 必须传 business_role，不传返回 400
+	businessRole := strings.TrimSpace(r.URL.Query().Get("business_role"))
+	if businessRole == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role is required: must be 'formal' or 'process'"})
+		return
+	}
+	if businessRole != "formal" && businessRole != "process" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role must be 'formal' or 'process'"})
+		return
+	}
+
 	it, err := dbGetFinanceBusiness(r.Context(), httpStore(s), businessID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -2141,6 +2154,14 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+
+	// 角色一致性校验：请求的角色必须和记录的角色一致
+	if it.BusinessRole != businessRole {
+		// 返回 404，语义更像"这一层里没有这条记录"
+		writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in this business_role layer"})
+		return
+	}
+
 	writeJSON(w, http.StatusOK, it)
 }
 

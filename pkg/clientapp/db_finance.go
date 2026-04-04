@@ -380,13 +380,19 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 }
 
 // dbListFinanceBusinessesByPoolAllocationID 按 allocation_id 查财务业务
+// 第十一阶段收口：增加 businessRole 参数，不再默认全量
 // 设计说明：
 // - allocation_id 这里只做便利查询输入，不直接落到 source_id；
-// - 底层只按 pool_allocations.id 过滤新口径记录。
-func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeBusinessPage, error) {
+// - 底层只按 pool_allocations.id 过滤新口径记录；
+// - businessRole 必填：formal 或 process，不再允许空值。
+func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, businessRole string, limit, offset int) (financeBusinessPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
 	if allocationID == "" {
 		return financeBusinessPage{}, fmt.Errorf("allocation_id is required")
+	}
+	businessRole = strings.TrimSpace(businessRole)
+	if businessRole != "formal" && businessRole != "process" {
+		return financeBusinessPage{}, fmt.Errorf("businessRole must be 'formal' or 'process'")
 	}
 	poolAllocID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocationID)
 	if err != nil {
@@ -396,10 +402,11 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 		return financeBusinessPage{}, err
 	}
 	return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
-		Limit:      limit,
-		Offset:     offset,
-		SourceType: "pool_allocation",
-		SourceID:   fmt.Sprintf("%d", poolAllocID),
+		Limit:        limit,
+		Offset:       offset,
+		BusinessRole: businessRole,
+		SourceType:   "pool_allocation",
+		SourceID:     fmt.Sprintf("%d", poolAllocID),
 	})
 }
 
@@ -428,14 +435,20 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 }
 
 // dbListFinanceBusinessesByTxID 按 txid 查财务业务
+// 第十一阶段收口：增加 businessRole 参数，不再默认全量
 // 设计说明：
 // - txid 这里只做便利查询输入，不直接作为 source_id；
 // - 底层只按 chain_payments.id 过滤新口径记录；
-// - 查不到 chain_payment 时返回空结果，不模糊搜索。
-func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeBusinessPage, error) {
+// - 查不到 chain_payment 时返回空结果，不模糊搜索；
+// - businessRole 必填：formal 或 process，不再允许空值。
+func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid string, businessRole string, limit, offset int) (financeBusinessPage, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
 		return financeBusinessPage{}, fmt.Errorf("txid is required")
+	}
+	businessRole = strings.TrimSpace(businessRole)
+	if businessRole != "formal" && businessRole != "process" {
+		return financeBusinessPage{}, fmt.Errorf("businessRole must be 'formal' or 'process'")
 	}
 	// 先查 chain_payments.id，查不到返回空结果
 	chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txid)
@@ -444,10 +457,11 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 	}
 	// 使用 chain_payment id 查询
 	return dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
-		Limit:      limit,
-		Offset:     offset,
-		SourceType: "chain_payment",
-		SourceID:   fmt.Sprintf("%d", chainPaymentID),
+		Limit:        limit,
+		Offset:       offset,
+		BusinessRole: businessRole,
+		SourceType:   "chain_payment",
+		SourceID:     fmt.Sprintf("%d", chainPaymentID),
 	})
 }
 

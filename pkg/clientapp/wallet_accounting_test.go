@@ -880,8 +880,8 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 	// 使用 pay allocation_id 查询（兼容层）
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 
-	// 验证：pay 不再生成 fin_business
-	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocID, 10, 0)
+	// 验证：pay 不再生成 fin_business（正式查询应返回空）
+	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocID, "formal", 10, 0)
 	if err != nil {
 		t.Fatalf("compatibility query failed: %v", err)
 	}
@@ -974,7 +974,9 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T)
 	}
 	wantSourceID := fmt.Sprintf("%d", chainPaymentID)
 
-	bizPage, err := dbListFinanceBusinessesByTxID(ctx, store, txid, 10, 0)
+	// 第十一阶段：必须显式传 businessRole
+	// wallet_chain 记录是过程型财务对象，所以传 process
+	bizPage, err := dbListFinanceBusinessesByTxID(ctx, store, txid, "process", 10, 0)
 	if err != nil {
 		t.Fatalf("business lookup by txid failed: %v", err)
 	}

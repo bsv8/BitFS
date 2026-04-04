@@ -148,8 +148,8 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 	}
 	allocationSourceID := fmt.Sprintf("%d", allocationIntID)
 
-	// 验证：pay 不再生成 fin_business
-	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, allocationID, 20, 0)
+	// 验证：pay 不再生成 fin_business（正式查询应返回空）
+	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, allocationID, "formal", 20, 0)
 	if err != nil {
 		t.Fatalf("trace businesses by pool_allocation_id failed: %v", err)
 	}
@@ -473,13 +473,14 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_no_diffusion_test")
 
 	// 测试：新辅助函数 dbListFinanceBusinessesByPoolAllocationID 只使用新口径
+	// 第十一阶段：必须显式传 businessRole
 	payAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payAllocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocationID)
 	if err != nil {
 		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
 	payAllocationSourceID := fmt.Sprintf("%d", payAllocationIntID)
-	page, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, 10, 0)
+	page, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, "formal", 10, 0)
 	if err != nil {
 		t.Fatalf("new helper function failed: %v", err)
 	}
@@ -1321,6 +1322,111 @@ func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
 	srv.handleAdminFinanceBusinessesCompat(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("compat query with q should return 200: got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestFinanceDetail_BusinessRoleRequired 第十一阶段：正式 detail 必须传 business_role
+func TestFinanceDetail_BusinessRoleRequired(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	store := newClientDB(db, nil)
+	srv := &httpAPIServer{db: db, store: store}
+
+	// 测试1：不传 business_role 返回 400
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/detail?business_id=some_id", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessDetail(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("detail without business_role should return 400: got %d", rec.Code)
+	}
+
+	// 测试2：非法 business_role 返回 400
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/detail?business_id=some_id&business_role=invalid", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessDetail(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("detail with invalid business_role should return 400: got %d", rec.Code)
+	}
+}
+
+// TestFinanceDetail_RoleConsistency 第十一阶段：detail 角色一致性校验
+// 验证：formal 角色查 process 记录返回 404
+func TestFinanceDetail_RoleConsistency(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	// 写入过程 business
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_detail_role_test",
+		BaseTxID:          "base_tx_detail_role",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+
+	srv := &httpAPIServer{db: db, store: store}
+	processBusinessID := "biz_c2c_open_" + sessionID
+
+	// 测试3：formal 角色查 process 记录返回 404
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/detail?business_id="+processBusinessID+"&business_role=formal", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessDetail(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("detail with formal role querying process record should return 404: got %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	// 测试4：process 角色查 process 记录成功
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/detail?business_id="+processBusinessID+"&business_role=process", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessDetail(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("detail with process role querying process record should return 200: got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestFinanceHelperFunctions_RoleFiltering 第十一阶段：辅助函数按角色过滤
+// 验证：ByPoolAllocationID(formal) 不返回 process，ByPoolAllocationID(process) 不返回 formal
+func TestFinanceHelperFunctions_RoleFiltering(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	payAllocationID := directTransferPoolAllocationID("sess_third_iter_1", "pay", 2)
+
+	// 正式查询应返回空（pay 不生成 fin_business）
+	formalPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, "formal", 10, 0)
+	if err != nil {
+		t.Fatalf("formal query failed: %v", err)
+	}
+	if formalPage.Total != 0 {
+		t.Fatalf("formal query should return 0 for pay allocation, got %d", formalPage.Total)
+	}
+
+	// 过程查询应返回 process events（注意：这里查的是 business，pay 不生成 business，所以也应该是 0）
+	processPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, "process", 10, 0)
+	if err != nil {
+		t.Fatalf("process query failed: %v", err)
+	}
+	// pay 不生成 fin_business，所以 process 也应该是 0
+	if processPage.Total != 0 {
+		t.Fatalf("process query should return 0 for pay allocation, got %d", processPage.Total)
 	}
 }
 
