@@ -21,9 +21,17 @@ import (
 //   - 主口径（唯一模型）：SourceType/SourceID/AccountingScene/AccountingSubtype
 //   - 第六次迭代起新代码只使用主口径字段（旧列在已升级数据库中仍存在但不再引用）
 //   - 所有查询统一使用主口径字段
+//
+// 第四阶段新增：BusinessRole 用于区分正式收费和过程财务对象
+//   - formal：正式收费对象（如 biz_download_pool_*）
+//   - process：过程财务对象（如 biz_c2c_open_* / biz_c2c_close_*）
+//   - 空值：默认返回全部（保持向后兼容）
 type financeBusinessFilter struct {
 	Limit  int
 	Offset int
+
+	// 第四阶段新增：业务角色筛选
+	BusinessRole string // "formal" | "process"
 
 	// 主口径 - 唯一模型字段
 	BusinessID        string
@@ -46,8 +54,12 @@ type financeBusinessPage struct {
 // financeBusinessItem 业务记录项
 // 第六次迭代起只使用主口径字段
 // 旧列在已升级数据库中仍存在，但新代码不再引用
+// 第四阶段新增：BusinessRole 明确表达该记录是正式收费还是过程财务
 type financeBusinessItem struct {
 	BusinessID string `json:"business_id"`
+
+	// 第四阶段新增：业务角色（formal | process）
+	BusinessRole string `json:"business_role"`
 
 	// 主口径 - 唯一模型字段
 	SourceType        string `json:"source_type"`
@@ -179,6 +191,16 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessPage, error) {
 		where := ""
 		args := make([]any, 0, 16)
+
+		// 第四阶段：按业务角色过滤
+		// formal：只返回正式收费对象（biz_download_pool_* 等）
+		// process：只返回过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
+		if f.BusinessRole == "formal" {
+			where += " AND (business_id LIKE 'biz_download_pool_%')"
+		} else if f.BusinessRole == "process" {
+			where += " AND (business_id LIKE 'biz_c2c_open_%' OR business_id LIKE 'biz_c2c_close_%')"
+		}
+
 		if f.BusinessID != "" {
 			where += " AND business_id=?"
 			args = append(args, f.BusinessID)
@@ -237,6 +259,8 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 				return financeBusinessPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
+			// 第四阶段：自动推断 business_role，让调用方明确知道这是什么层
+			it.BusinessRole = inferBusinessRole(it.BusinessID)
 			out.Items = append(out.Items, it)
 		}
 		if err := rows.Err(); err != nil {
@@ -262,8 +286,26 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 			return financeBusinessItem{}, err
 		}
 		out.Payload = json.RawMessage(payload)
+		out.BusinessRole = inferBusinessRole(out.BusinessID)
 		return out, nil
 	})
+}
+
+// inferBusinessRole 从 business_id 推断业务角色
+// 第四阶段新增：用于明确区分正式收费和过程财务对象
+// - formal：正式收费对象（如 biz_download_pool_*）
+// - process：过程财务对象（如 biz_c2c_open_* / biz_c2c_close_*）
+// - unknown：其他/未分类
+func inferBusinessRole(businessID string) string {
+	businessID = strings.TrimSpace(businessID)
+	switch {
+	case strings.HasPrefix(businessID, "biz_download_pool_"):
+		return "formal"
+	case strings.HasPrefix(businessID, "biz_c2c_open_"), strings.HasPrefix(businessID, "biz_c2c_close_"):
+		return "process"
+	default:
+		return "unknown"
+	}
 }
 
 func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeProcessEventFilter) (financeProcessEventPage, error) {

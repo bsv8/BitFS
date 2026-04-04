@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -852,5 +853,317 @@ func TestFinanceProcessEvent_ConflictParams_NewWins(t *testing.T) {
 	}
 	if !foundClose && len(resp.Items) > 0 {
 		t.Fatalf("accounting_subtype=close should be respected: got items=%+v", resp.Items)
+	}
+}
+
+// ============================================================
+// 第四阶段新增：Finance 三层分离测试
+// ============================================================
+
+// TestFinanceLayer_FormalBusinessOnly 正式 business 查询测试
+// 验证：business_role=formal 只返回正式收费对象，不返回过程财务对象
+func TestFinanceLayer_FormalBusinessOnly(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_layer_formal_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	// 写入正式 business（通过 CreateBusinessWithFrontTriggerAndPendingSettlement）
+	businessID := "biz_download_pool_layer_formal_1"
+	frontOrderID := "front_order_layer_formal_1"
+	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
+		FrontOrderID:   frontOrderID,
+		FrontType:      "download",
+		FrontSubtype:   "direct_transfer",
+		OwnerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectID: "demand_layer_formal",
+		Status:         "pending",
+		Note:           "formal test",
+		Payload:        map[string]any{"test": "formal"},
+	}); err != nil {
+		t.Fatalf("upsert front_order: %v", err)
+	}
+	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		FrontOrderID:      frontOrderID,
+		FrontType:         "download",
+		FrontSubtype:      "direct_transfer",
+		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectType:  "demand",
+		TargetObjectID:    "demand_layer_formal",
+		BusinessID:        businessID,
+		SourceType:        "front_order",
+		SourceID:          frontOrderID,
+		AccountingScene:   "direct_transfer",
+		AccountingSubType: "download_pool",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:" + sellerPubHex,
+		TriggerType:       "front_order",
+		TriggerIDValue:    frontOrderID,
+		TriggerRole:       "primary",
+		SettlementID:      "set_download_pool_layer_formal_1",
+		SettlementMethod:  SettlementMethodPool,
+	}); err != nil {
+		t.Fatalf("create business chain: %v", err)
+	}
+
+	// 写入过程 business
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_layer_formal",
+		BaseTxID:          "base_tx_layer_formal",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_layer_formal", baseTxHex, 700, 290, sellerPubHex)
+
+	// 正式查询：只返回正式收费对象
+	formalPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:        50,
+		BusinessRole: "formal",
+	})
+	if err != nil {
+		t.Fatalf("formal business query failed: %v", err)
+	}
+	if formalPage.Total == 0 {
+		t.Fatal("formal business query should return at least one record")
+	}
+	for _, item := range formalPage.Items {
+		if item.BusinessRole != "formal" {
+			t.Fatalf("formal query returned non-formal record: business_id=%s role=%s", item.BusinessID, item.BusinessRole)
+		}
+		if !strings.HasPrefix(item.BusinessID, "biz_download_pool_") {
+			t.Fatalf("formal query returned non-download-pool record: %s", item.BusinessID)
+		}
+	}
+
+	// 验证：business_role 字段已正确填充
+	for _, item := range formalPage.Items {
+		if item.BusinessRole == "" || item.BusinessRole == "unknown" {
+			t.Fatalf("business_role should be populated: %+v", item)
+		}
+	}
+}
+
+// TestFinanceLayer_ProcessBusinessOnly 过程 business 查询测试
+// 验证：business_role=process 只返回过程财务对象，不返回正式收费对象
+func TestFinanceLayer_ProcessBusinessOnly(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	// 写入过程 business（seedDirectTransferPoolFacts 只写 pool session，不写 accounting）
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_layer_process",
+		BaseTxID:          "base_tx_layer_process",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_layer_process", baseTxHex, 700, 290, sellerPubHex)
+
+	// 过程查询：只返回过程财务对象
+	processPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:        50,
+		BusinessRole: "process",
+	})
+	if err != nil {
+		t.Fatalf("process business query failed: %v", err)
+	}
+	if processPage.Total == 0 {
+		t.Fatal("process business query should return at least one record")
+	}
+	for _, item := range processPage.Items {
+		if item.BusinessRole != "process" {
+			t.Fatalf("process query returned non-process record: business_id=%s role=%s", item.BusinessID, item.BusinessRole)
+		}
+		if !strings.HasPrefix(item.BusinessID, "biz_c2c_open_") && !strings.HasPrefix(item.BusinessID, "biz_c2c_close_") {
+			t.Fatalf("process query returned non-c2c record: %s", item.BusinessID)
+		}
+	}
+}
+
+// TestFinanceLayer_NoMixing 正式/过程分离验证
+// 验证：正式查询不会混入过程对象，过程查询不会混入正式对象
+func TestFinanceLayer_NoMixing(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_layer_no_mix_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	// 同时写入正式和过程 business
+	businessID := "biz_download_pool_layer_no_mix_1"
+	frontOrderID := "front_order_layer_no_mix_1"
+	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
+		FrontOrderID:   frontOrderID,
+		FrontType:      "download",
+		FrontSubtype:   "direct_transfer",
+		OwnerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectID: "demand_layer_no_mix",
+		Status:         "pending",
+		Note:           "no mix test",
+		Payload:        map[string]any{"test": "no_mix"},
+	}); err != nil {
+		t.Fatalf("upsert front_order: %v", err)
+	}
+	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		FrontOrderID:      frontOrderID,
+		FrontType:         "download",
+		FrontSubtype:      "direct_transfer",
+		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectType:  "demand",
+		TargetObjectID:    "demand_layer_no_mix",
+		BusinessID:        businessID,
+		SourceType:        "front_order",
+		SourceID:          frontOrderID,
+		AccountingScene:   "direct_transfer",
+		AccountingSubType: "download_pool",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:" + sellerPubHex,
+		TriggerType:       "front_order",
+		TriggerIDValue:    frontOrderID,
+		TriggerRole:       "primary",
+		SettlementID:      "set_download_pool_layer_no_mix_1",
+		SettlementMethod:  SettlementMethodPool,
+	}); err != nil {
+		t.Fatalf("create business chain: %v", err)
+	}
+
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_layer_no_mix",
+		BaseTxID:          "base_tx_layer_no_mix",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_layer_no_mix", baseTxHex, 700, 290, sellerPubHex)
+
+	// 正式查询：不应包含过程对象
+	formalPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:        50,
+		BusinessRole: "formal",
+	})
+	if err != nil {
+		t.Fatalf("formal query failed: %v", err)
+	}
+	for _, item := range formalPage.Items {
+		if strings.HasPrefix(item.BusinessID, "biz_c2c_") {
+			t.Fatalf("formal query should not contain c2c records: got %s", item.BusinessID)
+		}
+	}
+
+	// 过程查询：不应包含正式对象
+	processPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:        50,
+		BusinessRole: "process",
+	})
+	if err != nil {
+		t.Fatalf("process query failed: %v", err)
+	}
+	for _, item := range processPage.Items {
+		if strings.HasPrefix(item.BusinessID, "biz_download_pool_") {
+			t.Fatalf("process query should not contain download_pool records: got %s", item.BusinessID)
+		}
+	}
+}
+
+// TestFinanceLayer_HTTPBusinessRoleParam HTTP API business_role 参数测试
+// 验证：HTTP 接口正确支持 business_role 参数
+func TestFinanceLayer_HTTPBusinessRoleParam(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_layer_http",
+		BaseTxID:          "base_tx_layer_http",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_layer_http", baseTxHex, 700, 290, sellerPubHex)
+
+	srv := &httpAPIServer{db: db, store: store}
+
+	// 测试：business_role=formal 应返回空（没有正式 business）
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&limit=50", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminFinanceBusinesses(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("formal query failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var formalResp struct {
+		Items []financeBusinessItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &formalResp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	for _, item := range formalResp.Items {
+		if item.BusinessRole != "formal" {
+			t.Fatalf("formal query returned non-formal item: role=%s", item.BusinessRole)
+		}
+	}
+
+	// 测试：business_role=process 应返回过程对象
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=process&limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinesses(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("process query failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var processResp struct {
+		Items []financeBusinessItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
+		t.Fatalf("decode failed: %v", err)
+	}
+	if len(processResp.Items) == 0 {
+		t.Fatal("process query should return records")
+	}
+	for _, item := range processResp.Items {
+		if item.BusinessRole != "process" {
+			t.Fatalf("process query returned non-process item: role=%s", item.BusinessRole)
+		}
+	}
+
+	// 测试：无效 business_role 应返回 400
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=invalid&limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinesses(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid role should return 400: got %d", rec.Code)
 	}
 }

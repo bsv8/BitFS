@@ -912,12 +912,12 @@ func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data_role":    "runtime_debug_only",
-		"status_note":  "direct_transfer_pools.status is protocol runtime status, not settlement status",
-		"total":        page.Total,
-		"limit":        limit,
-		"offset":       offset,
-		"items":        page.Items,
+		"data_role":   "runtime_debug_only",
+		"status_note": "direct_transfer_pools.status is protocol runtime status, not settlement status",
+		"total":       page.Total,
+		"limit":       limit,
+		"offset":      offset,
+		"items":       page.Items,
 	})
 }
 
@@ -945,9 +945,9 @@ func (s *httpAPIServer) handleDirectTransferPoolDetailCompat(w http.ResponseWrit
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data_role":    "runtime_debug_only",
-		"status_note":  "direct_transfer_pools.status is protocol runtime status, not settlement status",
-		"item":         it,
+		"data_role":   "runtime_debug_only",
+		"status_note": "direct_transfer_pools.status is protocol runtime status, not settlement status",
+		"item":        it,
 	})
 }
 
@@ -1937,6 +1937,11 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 }
 
 // handleAdminFinanceBusinesses 查询财务业务记录
+// 第四阶段起：明确区分正式收费和过程财务对象
+//   - 参数 business_role=formal：只返回正式收费对象（biz_download_pool_* 等）
+//   - 参数 business_role=process：只返回过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
+//   - 不传 business_role：返回全部（保持向后兼容）
+//
 // 第六次迭代起不再支持旧口径参数（scene_type/scene_subtype/ref_id）
 // 只支持主口径参数：source_type/source_id/accounting_scene/accounting_subtype/pool_allocation_id
 func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
@@ -1952,6 +1957,13 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
+
+	// 第四阶段新增：业务角色筛选
+	businessRole := strings.TrimSpace(r.URL.Query().Get("business_role"))
+	if businessRole != "" && businessRole != "formal" && businessRole != "process" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role must be 'formal' or 'process'"})
+		return
+	}
 
 	// 主口径参数
 	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
@@ -1982,6 +1994,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
 		Limit:             limit,
 		Offset:            offset,
+		BusinessRole:      businessRole,
 		BusinessID:        businessID,
 		SourceType:        sourceType,
 		SourceID:          sourceID,
