@@ -4282,6 +4282,7 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 	case strings.HasPrefix(bid, "biz_feepool_open_") || strings.HasPrefix(bid, "biz_c2c_open_"):
 		return "open_base", nil
 	case strings.HasPrefix(bid, "biz_c2c_pay_"):
+		// 遗留兼容：旧数据可能仍有 biz_c2c_pay_*，新代码不再创建
 		return "pay", nil
 	case strings.HasPrefix(bid, "biz_c2c_close_"):
 		return "close_final", nil

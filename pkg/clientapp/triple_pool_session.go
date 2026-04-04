@@ -22,7 +22,8 @@ type triplePoolSession struct {
 	DemandID         string
 	SessionID        string
 	DealID           string
-	SettlementID     string // 第三步：关联的 settlement_id，用于 pay 时回写
+	BusinessID       string // 正式下载 business_id（biz_download_pool_*），用于 pay 时挂 tx_breakdown
+	SettlementID     string // 关联的 settlement_id，用于 pay 时回写 settlement 状态
 	SellerPubHex     string
 	ArbiterPubHex    string
 	PoolAmountSat    uint64

@@ -628,13 +628,13 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")
 	}
-	
+
 	// 第五步硬约束：正式下载入口必须带 FrontOrderID
 	frontOrderID := strings.TrimSpace(p.FrontOrderID)
 	if frontOrderID == "" {
 		return directTransferPoolOpenResult{}, fmt.Errorf("front_order_id is required for mainflow download: cannot bypass front_order business chain")
 	}
-	
+
 	lock := buyer.transferPoolOpenMutex()
 	lock.Lock()
 	defer lock.Unlock()
@@ -917,7 +917,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			DemandID:         strings.TrimSpace(p.DemandID),
 			SessionID:        curSessionID,
 			DealID:           dealID,
-			SettlementID:     settlementID, // 第三步：保存 settlement_id 供 pay 回写
+			BusinessID:       businessID, // 正式下载 business_id，供 pay 挂 tx_breakdown
+			SettlementID:     settlementID,
 			SellerPubHex:     strings.TrimSpace(p.SellerPubHex),
 			ArbiterPubHex:    req.ArbiterPeerID,
 			PoolAmountSat:    req.PoolAmount,
@@ -1275,10 +1276,10 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	if err := dbRecordDirectPoolPayAccounting(
 		ctx,
 		store,
+		session.BusinessID, // 正式下载 business_id
 		session.SessionID,
 		req.Sequence,
 		p.Amount,
-		strings.TrimSpace(session.SellerPubHex),
 		strings.TrimSpace(merged.TxID().String()),
 	); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})

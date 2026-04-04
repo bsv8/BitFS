@@ -1052,20 +1052,24 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	})
 }
 
-// dbRecordDirectPoolPayAccounting 【第二阶段：过程财务写入边界（过渡方案）】
+// dbRecordDirectPoolPayAccounting 【第二阶段：pay 停止写 biz_c2c_pay_*】
 // 设计说明：
 // - 这是 direct_transfer_pool pay 阶段的过程财务写入
-// - 第二阶段过渡方案：暂时保留 biz_c2c_pay_*，但明确标记为"过程支付记录"
-// - ⚠️ 正式下载收费主事实只认 biz_download_pool_*（由 triggerDirectTransferPoolOpen 创建）
-// - ⚠️ 禁止把 biz_c2c_pay_* 当正式业务读取入口；正式状态统一走 business_settlements
-// - 第一次成功的 pay 会触发 settlement 状态更新（见 triggerDirectTransferPoolPay）
-// TODO(第二阶段后续)：完全停写 biz_c2c_pay_*，只保留 fin_process_event + fin_tx_breakdown
-func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, amount uint64, sellerPeerID string, relatedTxID string) error {
+// - 第二阶段整改：pay 不再创建 biz_c2c_pay_*，彻底消除双主线问题
+// - 正式下载收费主事实只认 biz_download_pool_*（由 triggerDirectTransferPoolOpen 创建）
+// - pay 是正式收费的事实来源，但不再单独新建并列 business
+// - pay 只保留：
+//   - fin_process_event（过程审计追踪）
+//   - fin_tx_breakdown（交易拆解，挂到 biz_download_pool_*）
+//   - 必要的 utxo fact
+//
+// - settlement 回写由 triggerDirectTransferPoolPay 负责更新 biz_download_pool_* 的 settlement
+// - ⚠️ 任何代码不得将 biz_c2c_pay_* 作为正式业务读取入口
+func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downloadBusinessID string, sessionID string, sequence uint32, amount uint64, relatedTxID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		businessID := fmt.Sprintf("biz_c2c_pay_%s_%d", strings.TrimSpace(sessionID), sequence)
 		sourceType := "pool_allocation"
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
@@ -1073,26 +1077,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
 
-		if err := dbAppendFinBusiness(db, finBusinessEntry{
-			BusinessID:        businessID,
-			SourceType:        sourceType,
-			SourceID:          fmt.Sprintf("%d", sourceID),
-			AccountingScene:   "c2c_transfer",
-			AccountingSubType: "chunk_pay",
-			FromPartyID:       "client:self",
-			ToPartyID:         "seller:" + strings.TrimSpace(sellerPeerID),
-			Status:            "posted",
-			OccurredAtUnix:    time.Now().Unix(),
-			IdempotencyKey:    "c2c_pay:" + strings.TrimSpace(sessionID) + ":" + fmt.Sprint(sequence),
-			Note:              "direct transfer chunk pay",
-			Payload: map[string]any{
-				"sequence":      sequence,
-				"allocation_id": allocID, // 保留业务键在 payload 中
-			},
-		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
-			return err
-		}
+		// 过程事件：记录 pay 财务动作，供审计/对账/调试使用
 		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			SourceType:        sourceType,
@@ -1106,14 +1091,17 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, sessi
 			Note:              "direct transfer chunk pay accounting event",
 			Payload: map[string]any{
 				"sequence":      sequence,
-				"allocation_id": allocID, // 保留业务键在 payload 中
+				"allocation_id": allocID,            // 保留业务键在 payload 中
+				"business_id":   downloadBusinessID, // 指向正式下载 business
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 			return err
 		}
+
+		// 交易拆解：挂到正式下载 business，不再挂过程 business
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
-			BusinessID:         businessID,
+			BusinessID:         downloadBusinessID,
 			TxID:               strings.TrimSpace(relatedTxID),
 			TxRole:             "pay",
 			GrossInputSatoshi:  0,

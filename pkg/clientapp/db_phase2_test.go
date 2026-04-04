@@ -205,10 +205,9 @@ func TestPhase2_PayProcessEventUsesProcessID(t *testing.T) {
 
 	ctx := context.Background()
 	store := newClientDB(db, nil)
-	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	// 触发 pay accounting
-	err := dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_phase2_test")
+	err := dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_phase2_test")
 	if err != nil {
 		t.Fatalf("pay accounting failed: %v", err)
 	}
@@ -222,13 +221,22 @@ func TestPhase2_PayProcessEventUsesProcessID(t *testing.T) {
 		t.Fatal("第二阶段：pay 应生成 fin_process_event 过程记录")
 	}
 
-	// 验证：fin_tx_breakdown 存在
+	// 验证：pay 不生成 biz_c2c_pay_* 正式收费对象
+	var payBusinessCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBusinessCount); err != nil {
+		t.Fatalf("query fin_business pay failed: %v", err)
+	}
+	if payBusinessCount != 0 {
+		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBusinessCount)
+	}
+
+	// 验证：fin_tx_breakdown 存在，且 business_id 指向 download business
 	var breakdownCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_tx_breakdown WHERE txid=?`, "pay_tx_phase2_test").Scan(&breakdownCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, "biz_download_pool_test_"+sessionID, "pay_tx_phase2_test").Scan(&breakdownCount); err != nil {
 		t.Fatalf("query fin_tx_breakdown failed: %v", err)
 	}
 	if breakdownCount == 0 {
-		t.Fatal("第二阶段：pay 应生成 fin_tx_breakdown 记录")
+		t.Fatal("第二阶段：pay 应生成 fin_tx_breakdown 记录，挂到 download business")
 	}
 }
 
@@ -267,11 +275,11 @@ func TestPhase2_FormalBusinessOnlyViaFrontOrder(t *testing.T) {
 		BusinessPayload: map[string]any{
 			"test": "phase2_business",
 		},
-		TriggerType:    "front_order",
-		TriggerIDValue: frontOrderID,
-		TriggerRole:    "primary",
-		TriggerNote:    "测试触发器",
-		TriggerPayload: map[string]any{},
+		TriggerType:      "front_order",
+		TriggerIDValue:   frontOrderID,
+		TriggerRole:      "primary",
+		TriggerNote:      "测试触发器",
+		TriggerPayload:   map[string]any{},
 		SettlementID:     settlementID,
 		SettlementMethod: SettlementMethodPool,
 		SettlementPayload: map[string]any{
@@ -357,24 +365,24 @@ func TestPhase2_MainSettlementStatusReadsFromBusinessSettlements(t *testing.T) {
 
 	// 创建主线
 	err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
-		FrontOrderID:     frontOrderID,
-		FrontType:        "download",
-		FrontSubtype:     "direct_transfer",
-		OwnerPubkeyHex:   "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		TargetObjectType: "demand",
-		TargetObjectID:   "demand_settlement_test",
-		BusinessID:       businessID,
-		SourceType:       "front_order",
-		SourceID:         frontOrderID,
-		AccountingScene:  "direct_transfer",
+		FrontOrderID:      frontOrderID,
+		FrontType:         "download",
+		FrontSubtype:      "direct_transfer",
+		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectType:  "demand",
+		TargetObjectID:    "demand_settlement_test",
+		BusinessID:        businessID,
+		SourceType:        "front_order",
+		SourceID:          frontOrderID,
+		AccountingScene:   "direct_transfer",
 		AccountingSubType: "download_pool",
-		FromPartyID:      "client:self",
-		ToPartyID:        "seller:03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		TriggerType:      "front_order",
-		TriggerIDValue:   frontOrderID,
-		TriggerRole:      "primary",
-		SettlementID:     settlementID,
-		SettlementMethod: SettlementMethodPool,
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		TriggerType:       "front_order",
+		TriggerIDValue:    frontOrderID,
+		TriggerRole:       "primary",
+		SettlementID:      settlementID,
+		SettlementMethod:  SettlementMethodPool,
 	})
 	if err != nil {
 		t.Fatalf("create business chain failed: %v", err)

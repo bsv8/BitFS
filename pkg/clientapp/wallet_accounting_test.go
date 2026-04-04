@@ -302,7 +302,7 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
 	// 第二阶段整改验证：open/close 生成过程型 fin_business，不是正式收费对象
@@ -340,37 +340,50 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
 
-	// 只验证 pay（过渡方案中暂时仍保留）
-	var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
-	if err := db.QueryRow(
-		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM fin_business WHERE business_id=?`,
-		"biz_c2c_pay_sess_third_iter_1_2",
-	).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
+	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象，只保留 fin_process_event + fin_tx_breakdown
+	var payBusinessCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBusinessCount); err != nil {
 		t.Fatalf("query fin_business pay failed: %v", err)
 	}
-	if gotSourceType != "pool_allocation" {
-		t.Fatalf("unexpected source_type for pay: got=%s want=pool_allocation", gotSourceType)
-	}
-	// 第二步整改验证：source_id 应该是整数主键的字符串形式
-	wantSourceIDStr := fmt.Sprintf("%d", payID)
-	if gotSourceIDStr != wantSourceIDStr {
-		// 兜底检查：如果 lookup 失败，可能还是旧的 allocation_id
-		if gotSourceIDStr == payAllocID {
-			t.Fatalf("source_id is still allocation_id for pay: got=%s (expected integer id)", gotSourceIDStr)
-		}
-		t.Fatalf("unexpected source_id for pay: got=%s want=%s", gotSourceIDStr, wantSourceIDStr)
-	}
-	if gotAccountingScene != "c2c_transfer" || gotAccountingSubtype != "chunk_pay" {
-		t.Fatalf("unexpected accounting fields for pay: scene=%s subtype=%s", gotAccountingScene, gotAccountingSubtype)
+	if payBusinessCount != 0 {
+		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBusinessCount)
 	}
 
-	// 验证 payload 中保留了 allocation_id
-	var payload string
-	if err := db.QueryRow(`SELECT payload_json FROM fin_business WHERE business_id=?`, "biz_c2c_pay_sess_third_iter_1_2").Scan(&payload); err != nil {
-		t.Fatalf("query payload failed: %v", err)
+	// 验证：fin_process_event 存在，process_id = proc_c2c_transfer_<sessionID>
+	var procCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_process_events WHERE process_id=? AND accounting_subtype='chunk_pay'`, "proc_c2c_transfer_"+sessionID).Scan(&procCount); err != nil {
+		t.Fatalf("query fin_process_events pay failed: %v", err)
 	}
-	if !strings.Contains(payload, "allocation_id") {
-		t.Fatalf("payload missing allocation_id for pay: %s", payload)
+	if procCount == 0 {
+		t.Fatal("pay 应生成 fin_process_event 过程记录")
+	}
+
+	// 验证：fin_process_events 的 source_id 是 pool_allocations.id
+	var procSourceType, procSourceIDStr string
+	if err := db.QueryRow(
+		`SELECT source_type, source_id FROM fin_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
+		"proc_c2c_transfer_"+sessionID,
+	).Scan(&procSourceType, &procSourceIDStr); err != nil {
+		t.Fatalf("query fin_process_events pay source failed: %v", err)
+	}
+	if procSourceType != "pool_allocation" {
+		t.Fatalf("unexpected source_type for pay process: got=%s want=pool_allocation", procSourceType)
+	}
+	wantSourceIDStr := fmt.Sprintf("%d", payID)
+	if procSourceIDStr != wantSourceIDStr {
+		if procSourceIDStr == payAllocID {
+			t.Fatalf("source_id is still allocation_id for pay: got=%s (expected integer id)", procSourceIDStr)
+		}
+		t.Fatalf("unexpected source_id for pay: got=%s want=%s", procSourceIDStr, wantSourceIDStr)
+	}
+
+	// 验证：fin_tx_breakdown 存在，且 business_id 指向 download business
+	var breakdownCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, "biz_download_pool_test_"+sessionID, "pay_tx_third_iter_1").Scan(&breakdownCount); err != nil {
+		t.Fatalf("query fin_tx_breakdown pay failed: %v", err)
+	}
+	if breakdownCount == 0 {
+		t.Fatal("pay 应生成 fin_tx_breakdown 记录，挂到 download business")
 	}
 }
 
@@ -397,7 +410,7 @@ func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *te
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
 	// 获取各 allocation 的自增 id
@@ -464,18 +477,19 @@ func TestDirectTransferAccounting_ReadableByPrimaryQueries(t *testing.T) {
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_third_iter_1")
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
-	biz, err := dbGetFinanceBusiness(ctx, store, "biz_c2c_pay_sess_third_iter_1_2")
-	if err != nil {
-		t.Fatalf("old business read failed: %v", err)
+	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象
+	var payBusinessCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_sess_third_iter_1_2").Scan(&payBusinessCount); err != nil {
+		t.Fatalf("query fin_business pay failed: %v", err)
 	}
-	// 第六次迭代：验证主口径字段
-	if biz.SourceType != "pool_allocation" || biz.SourceID == "" {
-		t.Fatalf("business new fields incorrect: %+v", biz)
+	if payBusinessCount != 0 {
+		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBusinessCount)
 	}
 
+	// 验证：process events 可读取
 	page, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		ProcessID:         "proc_c2c_transfer_" + sessionID,
 		AccountingScene:   "c2c_transfer",
@@ -764,9 +778,9 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 	})
 
 	// 第一次 pay 记录
-	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_idem_real_1")
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_idem_real_1")
 
-	// 获取第一次写入后的状态
+	// 获取第一次写入后的状态 - 验证 pay 不生成 fin_business
 	var firstCount int
 	if err := db.QueryRow(
 		`SELECT COUNT(1) FROM fin_business WHERE business_id=?`,
@@ -774,14 +788,26 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 	).Scan(&firstCount); err != nil {
 		t.Fatalf("first count failed: %v", err)
 	}
-	if firstCount != 1 {
-		t.Fatalf("expected 1 business record after first write, got %d", firstCount)
+	if firstCount != 0 {
+		t.Fatalf("expected 0 fin_business for pay after first write, got %d (pay no longer creates business)", firstCount)
+	}
+
+	// 验证 fin_process_event 存在
+	var firstProcCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM fin_process_events WHERE idempotency_key=?`,
+		"c2c_pay_event:"+sessionID+":2",
+	).Scan(&firstProcCount); err != nil {
+		t.Fatalf("first process count failed: %v", err)
+	}
+	if firstProcCount != 1 {
+		t.Fatalf("expected 1 process event after first write, got %d", firstProcCount)
 	}
 
 	// 第二次 pay 记录（相同 idempotency_key）- 应该更新而不是报错
-	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_idem_real_2")
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_idem_real_2")
 
-	// 验证仍然只有一条记录
+	// 验证 fin_business 仍然没有
 	var secondCount int
 	if err := db.QueryRow(
 		`SELECT COUNT(1) FROM fin_business WHERE business_id=?`,
@@ -789,11 +815,11 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 	).Scan(&secondCount); err != nil {
 		t.Fatalf("second count failed: %v", err)
 	}
-	if secondCount != 1 {
-		t.Fatalf("expected 1 business record after idempotent update, got %d", secondCount)
+	if secondCount != 0 {
+		t.Fatalf("expected 0 fin_business for pay after idempotent update, got %d", secondCount)
 	}
 
-	// 验证 process event 也只有一条
+	// 验证 process event 也只有一条（幂等更新）
 	var procCount int
 	if err := db.QueryRow(
 		`SELECT COUNT(1) FROM fin_process_events WHERE idempotency_key=?`,
@@ -845,35 +871,23 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
-	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
-	// 第二阶段：改用 pay 测试（pay 暂保留完整 fin_business，open/close 为过程型）
-	dbRecordDirectPoolPayAccounting(ctx, store, sessionID, 2, 300, sellerPubHex, "pay_tx_compat_test")
+	// 第二阶段：改用 pay 测试（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_compat_test")
 
 	// 使用 pay allocation_id 查询（兼容层）
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 
+	// 验证：pay 不再生成 fin_business
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocID, 10, 0)
 	if err != nil {
 		t.Fatalf("compatibility query failed: %v", err)
 	}
-	// 第二阶段：只有 pay 生成 fin_business
-	if bizPage.Total == 0 {
-		t.Fatal("compatibility query returned no results")
+	if bizPage.Total != 0 {
+		t.Fatalf("pay 不应生成 fin_business，got %d", bizPage.Total)
 	}
 
-	// 验证返回的记录 source_type 和 source_id 正确
-	for _, item := range bizPage.Items {
-		if item.SourceType != "pool_allocation" {
-			t.Fatalf("unexpected source_type: got=%s want=pool_allocation", item.SourceType)
-		}
-		// source_id 应该是整数（字符串形式）
-		if item.SourceID == "" {
-			t.Fatal("source_id should not be empty")
-		}
-	}
-
-	// 同样测试 process events（pay 生成 process events）
+	// 验证：process events 存在（pay 生成 process events）
 	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, payAllocID, 10, 0)
 	if err != nil {
 		t.Fatalf("compatibility query for process events failed: %v", err)
@@ -1282,7 +1296,7 @@ func TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts(t *testing.T
 		t.Fatal("expected open accounting to fail without pool allocation fact")
 	}
 
-	payErr := dbRecordDirectPoolPayAccounting(ctx, store, "sess_missing_fact_1", 2, 300, "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "pay_tx_missing_fact_1")
+	payErr := dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_sess_missing_fact_1", "sess_missing_fact_1", 2, 300, "pay_tx_missing_fact_1")
 	if payErr == nil {
 		t.Fatal("expected pay accounting to fail without pool allocation fact")
 	}
