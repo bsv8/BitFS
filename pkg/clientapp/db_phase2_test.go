@@ -265,6 +265,7 @@ func TestPhase2_FormalBusinessOnlyViaFrontOrder(t *testing.T) {
 			"test": "phase2",
 		},
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 测试用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",
@@ -372,6 +373,7 @@ func TestPhase2_MainSettlementStatusReadsFromBusinessSettlements(t *testing.T) {
 		TargetObjectType:  "demand",
 		TargetObjectID:    "demand_settlement_test",
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 测试用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",

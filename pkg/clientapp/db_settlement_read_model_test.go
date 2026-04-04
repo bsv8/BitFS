@@ -711,6 +711,7 @@ func TestCompat_MainSettlementStatusByFrontOrderID_StillWorks(t *testing.T) {
 		TargetObjectID:    "demand_compat_1",
 		FrontOrderNote:    "compat 测试",
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 兼容测试用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",
@@ -773,6 +774,7 @@ func TestCompat_FullPoolSettlementChain_StillWorks(t *testing.T) {
 		TargetObjectID:    "demand_compat_chain",
 		FrontOrderNote:    "compat chain 测试",
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 兼容链测试用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",

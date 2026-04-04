@@ -27,6 +27,7 @@ func TestBusinessBridge_ValidationFailure_NoWrite(t *testing.T) {
 		TargetObjectID:   "test1",
 
 		BusinessID:        "biz_validation_fail",
+		BusinessRole:      "formal", // 测试场景用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          "fo_validation_fail",
 		AccountingScene:   "test",
@@ -86,6 +87,7 @@ func TestBusinessBridge_TransactionRollback_MidTxFailure(t *testing.T) {
 		TargetObjectID:   "testdomain.bsv",
 
 		BusinessID:        "biz_shared",
+		BusinessRole:      "formal", // 域名注册是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          "fo_first_attempt",
 		AccountingScene:   "domain",
@@ -132,6 +134,7 @@ func TestBusinessBridge_TransactionRollback_MidTxFailure(t *testing.T) {
 		TargetObjectID:   "testdomain2.bsv",
 
 		BusinessID:        "biz_shared", // 复用已有的 business_id
+		BusinessRole:      "formal",     // 域名注册是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          "fo_second_attempt",
 		AccountingScene:   "domain",

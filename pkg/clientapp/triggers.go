@@ -682,8 +682,9 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
 		},
 
-		// 业务
+		// 业务（第七阶段整改：调用方显式传 business_role）
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 下载池支付是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",

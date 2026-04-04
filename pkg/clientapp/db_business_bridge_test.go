@@ -34,6 +34,7 @@ func TestBusinessBridge_MultipleBusinessesFromOneFrontOrder(t *testing.T) {
 		TargetObjectID:   "test1.bsv",
 
 		BusinessID:        "biz_multi_1",
+		BusinessRole:      "formal", // 域名注册是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",
@@ -65,6 +66,7 @@ func TestBusinessBridge_MultipleBusinessesFromOneFrontOrder(t *testing.T) {
 		TargetObjectID:   "test1.bsv",
 
 		BusinessID:        "biz_multi_2", // 不同的 business_id
+		BusinessRole:      "formal",      // 域名续费是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",
@@ -168,6 +170,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 		},
 
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 域名注册是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",
@@ -307,6 +310,7 @@ func TestBusinessBridge_TransactionAtomicity(t *testing.T) {
 		TargetObjectID:   "test1",
 
 		BusinessID:        "biz_atomic_test",
+		BusinessRole:      "formal", // 测试场景用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          "fo_atomic_test",
 		AccountingScene:   "test",

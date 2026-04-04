@@ -33,6 +33,7 @@ func (m SettlementMethod) Valid() error {
 // CreateBusinessWithFrontTriggerAndPendingSettlementInput 创建业务主链桥接输入参数
 // 职责：第一阶段桥接器，负责落 front_order、business、business_trigger、business_settlement(pending)
 // 说明：不负责真正支付、不负责池创建、不负责 chain_payment
+// 第七阶段整改：BusinessRole 由调用方显式传入，桥接器不猜业务分类
 type CreateBusinessWithFrontTriggerAndPendingSettlementInput struct {
 	// 前台订单字段
 	FrontOrderID      string
@@ -46,6 +47,7 @@ type CreateBusinessWithFrontTriggerAndPendingSettlementInput struct {
 
 	// 业务字段
 	BusinessID        string
+	BusinessRole      string // 第七阶段新增：调用方显式传入 "formal" 或 "process"
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
@@ -134,22 +136,12 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		}
 
 		// 2. 创建或更新 business
-		// 第七阶段：根据 accounting_scene 显式推断 business_role
-		// 正式收费场景：direct_transfer（下载池支付）、domain（域名注册）
-		// 过程财务场景：direct_transfer_process（池开闭）、fee_pool（费用池）、wallet_transfer（钱包链）
-		var businessRole string
-		switch in.AccountingScene {
-		case "direct_transfer", "domain":
-			businessRole = "formal"
-		case "direct_transfer_process", "fee_pool", "wallet_transfer":
-			businessRole = "process"
-		default:
-			return fmt.Errorf("unknown accounting_scene '%s': cannot determine business_role", in.AccountingScene)
-		}
+		// 第七阶段整改：BusinessRole 由调用方显式传入，桥接器不猜业务分类
+		// 桥接器只负责落链，不负责做业务类型裁判
 		idempotencyKey := "bridge:" + in.BusinessID
 		if err := dbAppendFinBusinessTx(tx, finBusinessEntry{
 			BusinessID:        in.BusinessID,
-			BusinessRole:      businessRole,
+			BusinessRole:      in.BusinessRole, // 调用方显式传入
 			SourceType:        in.SourceType,
 			SourceID:          in.SourceID,
 			AccountingScene:   in.AccountingScene,

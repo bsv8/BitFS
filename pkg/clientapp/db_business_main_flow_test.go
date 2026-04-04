@@ -193,6 +193,7 @@ func TestBusinessBridgeFlow_CreateBusinessWithFrontTriggerAndPendingSettlement(t
 
 		// 业务
 		BusinessID:        "biz_bridge_test_001",
+		BusinessRole:      "formal", // 域名注册是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          "fo_bridge_test_001",
 		AccountingScene:   "domain",
@@ -289,6 +290,7 @@ func TestBusinessBridgeFlow_IdempotentOnRetry(t *testing.T) {
 		TargetObjectID:   "test1",
 
 		BusinessID:        "biz_idempotent_001",
+		BusinessRole:      "formal", // 测试场景用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          "fo_idempotent_001",
 		AccountingScene:   "test",

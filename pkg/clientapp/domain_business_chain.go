@@ -41,8 +41,9 @@ func createDomainRegisterBusinessChain(
 			"target_pubkey_hex":   targetPubkeyHex,
 		},
 
-		// 业务
+		// 业务（第七阶段整改：调用方显式传 business_role）
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 域名注册是正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",
