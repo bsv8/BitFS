@@ -504,7 +504,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// - 本阶段表名保持 fin_business，逻辑上已收口为 businesses
 		`CREATE TABLE IF NOT EXISTS fin_business(
 			business_id TEXT PRIMARY KEY,
-			business_role TEXT NOT NULL DEFAULT '',
+			business_role TEXT NOT NULL CHECK(business_role IN ('formal', 'process')),
 			source_type TEXT NOT NULL DEFAULT '',
 			source_id TEXT NOT NULL DEFAULT '',
 			accounting_scene TEXT NOT NULL DEFAULT '',
@@ -2303,6 +2303,34 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 func normalizeClientDBData(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
+	}
+
+	// 0. 第九阶段：为老库添加 business_role CHECK 触发器
+	// SQLite 不支持 ALTER TABLE ADD CONSTRAINT，用触发器模拟 CHECK 约束
+	// 确保新插入/更新的 business_role 只能是 'formal' 或 'process'
+	if _, err := db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS chk_fin_business_role_insert
+		BEFORE INSERT ON fin_business
+		BEGIN
+			SELECT CASE
+				WHEN NEW.business_role NOT IN ('formal', 'process')
+				THEN RAISE(ABORT, 'business_role must be formal or process')
+			END;
+		END;
+	`); err != nil {
+		return fmt.Errorf("create business_role insert check trigger: %w", err)
+	}
+	if _, err := db.Exec(`
+		CREATE TRIGGER IF NOT EXISTS chk_fin_business_role_update
+		BEFORE UPDATE ON fin_business
+		BEGIN
+			SELECT CASE
+				WHEN NEW.business_role NOT IN ('formal', 'process')
+				THEN RAISE(ABORT, 'business_role must be formal or process')
+			END;
+		END;
+	`); err != nil {
+		return fmt.Errorf("create business_role update check trigger: %w", err)
 	}
 
 	// 1. 公钥格式统一化为压缩公钥 hex

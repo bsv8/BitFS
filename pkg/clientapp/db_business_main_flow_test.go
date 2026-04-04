@@ -354,11 +354,11 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 	// 插入测试数据
 	for i := 0; i < 3; i++ {
 		businessID := fmt.Sprintf("biz_target_test_%d", i)
-		// 先插入 fin_business
+		// 先插入 fin_business（第九阶段：必须带 business_role）
 		if _, err := db.Exec(`INSERT INTO fin_business(
-			business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			businessID, "test", "test", "test", "test", "client:self", "test:peer", "pending", 1700000000+int64(i), fmt.Sprintf("idem_%d", i), "test", `{}`,
+			business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			businessID, "formal", "test", "test", "test", "test", "client:self", "test:peer", "pending", 1700000000+int64(i), fmt.Sprintf("idem_%d", i), "test", `{}`,
 		); err != nil {
 			t.Fatalf("insert fin_business failed: %v", err)
 		}
