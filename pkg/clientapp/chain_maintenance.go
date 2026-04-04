@@ -1599,13 +1599,13 @@ func getWalletBalanceFromDB(ctx context.Context, store *clientDB, rt *Runtime) (
 	}
 	walletID := walletIDByAddress(addr)
 
-	// Step 5：fact 优先读余额
+	// Step 5：fact 优先读余额（严格口径：查询成功就返回，含 0 值）
 	bal, err := dbLoadWalletAssetBalanceFact(ctx, store, walletID, "BSV", "")
-	if err == nil && bal.Remaining > 0 {
+	if err == nil {
 		return addr, uint64(bal.Remaining), nil
 	}
 
-	// fact 兜底（无数据或余额为 0）：回退 wallet_utxo_sync_state
+	// fact 查询失败时回退 wallet_utxo_sync_state
 	s, err := dbLoadWalletUTXOSyncState(ctx, store, addr)
 	if err != nil {
 		return "", 0, err

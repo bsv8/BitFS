@@ -536,7 +536,7 @@ func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind strin
 
 	var totalIn, totalUsed int64
 	err := db.QueryRow(
-		`SELECT COALESCE(SUM(amount_satoshi),0) FROM fact_chain_asset_flows WHERE wallet_id=? AND asset_kind=? AND token_id=?`,
+		`SELECT COALESCE(SUM(amount_satoshi),0) FROM fact_chain_asset_flows WHERE wallet_id=? AND asset_kind=? AND token_id=? AND direction='IN'`,
 		walletID, assetKind, tokenID,
 	).Scan(&totalIn)
 	if err != nil {
@@ -547,7 +547,7 @@ func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind strin
 		`SELECT COALESCE(SUM(c.used_satoshi),0)
 		 FROM fact_asset_consumptions c
 		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
-		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=?`,
+		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'`,
 		walletID, assetKind, tokenID,
 	).Scan(&totalUsed)
 	if err != nil {
@@ -583,7 +583,7 @@ func dbLoadAllWalletAssetBalancesFactDB(db *sql.DB, walletID string) ([]walletAs
 	// 先汇总每个 (asset_kind, token_id) 的 IN 总额
 	rows, err := db.Query(
 		`SELECT asset_kind, token_id, COALESCE(SUM(amount_satoshi),0)
-		 FROM fact_chain_asset_flows WHERE wallet_id=?
+		 FROM fact_chain_asset_flows WHERE wallet_id=? AND direction='IN'
 		 GROUP BY asset_kind, token_id`,
 		walletID,
 	)
@@ -611,7 +611,7 @@ func dbLoadAllWalletAssetBalancesFactDB(db *sql.DB, walletID string) ([]walletAs
 		`SELECT f.asset_kind, f.token_id, COALESCE(SUM(c.used_satoshi),0)
 		 FROM fact_asset_consumptions c
 		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
-		 WHERE f.wallet_id=?
+		 WHERE f.wallet_id=? AND f.direction='IN'
 		 GROUP BY f.asset_kind, f.token_id`,
 		walletID,
 	)
