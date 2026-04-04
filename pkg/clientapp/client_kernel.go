@@ -191,7 +191,7 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 	if k == nil || k.rt == nil {
 		return clientKernelResult{Accepted: false, Status: "rejected", ErrorCode: "runtime_not_initialized", ErrorMessage: "runtime not initialized"}
 	}
-	cmd = normalizeClientKernelCommand(cmd)
+	cmd = normalizeClientKernelCommand(prepareClientKernelCommand(cmd))
 	if strings.TrimSpace(cmd.CommandType) == "" {
 		return k.rejectWithAudit(cmd, "kernel", "kernel", "kernel", "kernel", "command_type_required", "command type required")
 	}

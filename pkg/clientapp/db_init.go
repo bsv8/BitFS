@@ -503,7 +503,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
 		`CREATE TABLE IF NOT EXISTS settle_businesses(
 			business_id TEXT PRIMARY KEY,
-			business_role TEXT NOT NULL CHECK(business_role IN ('formal', 'process')),
+			business_role TEXT NOT NULL DEFAULT '' CHECK(business_role IN ('', 'formal', 'process')),
 			source_type TEXT NOT NULL DEFAULT '',
 			source_id TEXT NOT NULL DEFAULT '',
 			accounting_scene TEXT NOT NULL DEFAULT '',
@@ -544,7 +544,8 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			net_in_satoshi INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
+			payload_json TEXT NOT NULL,
+			UNIQUE(business_id, txid)
 		)`,
 		`CREATE TABLE IF NOT EXISTS settle_tx_utxo_links(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -905,15 +906,18 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := migrateLegacyChainTables(db); err != nil {
 		return fmt.Errorf("legacy chain tables: %w", err)
 	}
+	// proc_command_journal trigger_key 列迁移（第六次迭代新增）
+	if err := ensureCommandJournalTriggerKey(db); err != nil {
+		return fmt.Errorf("proc_command_journal trigger_key: %w", err)
+	}
+	if err := ensureGatewayEventsCommandID(db); err != nil {
+		return fmt.Errorf("proc_gateway_events command_id: %w", err)
+	}
 	if err := ensureFinalCommandLinkedFactsSchema(db); err != nil {
 		return fmt.Errorf("final command linked facts schema: %w", err)
 	}
 	if err := migrateObservedGatewayStatePayloads(db); err != nil {
 		return fmt.Errorf("observed gateway payload migration: %w", err)
-	}
-	// proc_command_journal trigger_key 列迁移（第六次迭代新增）
-	if err := ensureCommandJournalTriggerKey(db); err != nil {
-		return fmt.Errorf("proc_command_journal trigger_key: %w", err)
 	}
 
 	// 钱包 UTXO 相关迁移
@@ -933,6 +937,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	}
 	if err := ensureWalletUTXOSyncStateSchema(db); err != nil {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
+	}
+	if err := normalizeClientDBData(db); err != nil {
+		return fmt.Errorf("normalize client db data: %w", err)
 	}
 
 	return nil
@@ -1399,20 +1406,11 @@ func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
 // ensureCommandJournalCommandIDUnique 把 proc_command_journal.command_id 收紧成唯一键。
 // 设计说明：
 // - 先做重复审计，发现重复就直接返回，不硬上约束；
-// - 如果当前库还没有 UNIQUE，只在清理完成后重建表；
-// - 重建后会保留原有行顺序和索引口径。
+// - 不再重建整张表，直接补唯一索引；这样更稳，也不会在单连接测试里自锁。
 func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "proc_command_journal", []string{"command_id"})
-	if err != nil {
-		return fmt.Errorf("inspect proc_command_journal unique index: %w", err)
-	}
-	if hasUnique {
-		return ensureCommandJournalIndexes(db)
-	}
-
 	dups, err := commandJournalDuplicateCommandIDs(db)
 	if err != nil {
 		return err
@@ -1420,67 +1418,7 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 	if len(dups) > 0 {
 		return fmt.Errorf("proc_command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
 	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func() {
-		_ = tx.Rollback()
-	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS proc_command_journal_unique_rebuild`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`ALTER TABLE proc_command_journal RENAME TO proc_command_journal_unique_rebuild`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`CREATE TABLE proc_command_journal(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		created_at_unix INTEGER NOT NULL,
-		command_id TEXT NOT NULL UNIQUE,
-		command_type TEXT NOT NULL,
-		gateway_pubkey_hex TEXT NOT NULL,
-		aggregate_id TEXT NOT NULL,
-		requested_by TEXT NOT NULL,
-		requested_at_unix INTEGER NOT NULL,
-		accepted INTEGER NOT NULL,
-		status TEXT NOT NULL,
-		error_code TEXT NOT NULL,
-		error_message TEXT NOT NULL,
-		state_before TEXT NOT NULL,
-		state_after TEXT NOT NULL,
-		duration_ms INTEGER NOT NULL,
-		trigger_key TEXT NOT NULL DEFAULT '',
-		payload_json TEXT NOT NULL,
-		result_json TEXT NOT NULL
-	)`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`INSERT INTO proc_command_journal(
-		id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	) SELECT
-		id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	FROM proc_command_journal_unique_rebuild ORDER BY id ASC`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`DROP TABLE proc_command_journal_unique_rebuild`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
-		rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		rollback()
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
 		return err
 	}
 	return ensureCommandJournalIndexes(db)
@@ -1594,9 +1532,12 @@ func ensureCommandJournalIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+	if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
+		return err
 	}
 	return nil
 }
@@ -2289,6 +2230,7 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_process_events_idempotency ON settle_process_events(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_source ON settle_process_events(source_type, source_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_accounting ON settle_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -2312,7 +2254,7 @@ func normalizeClientDBData(db *sql.DB) error {
 		BEFORE INSERT ON settle_businesses
 		BEGIN
 			SELECT CASE
-				WHEN NEW.business_role NOT IN ('formal', 'process')
+				WHEN NEW.business_role NOT IN ('', 'formal', 'process')
 				THEN RAISE(ABORT, 'business_role must be formal or process')
 			END;
 		END;
@@ -2324,7 +2266,7 @@ func normalizeClientDBData(db *sql.DB) error {
 		BEFORE UPDATE ON settle_businesses
 		BEGIN
 			SELECT CASE
-				WHEN NEW.business_role NOT IN ('formal', 'process')
+				WHEN NEW.business_role NOT IN ('', 'formal', 'process')
 				THEN RAISE(ABORT, 'business_role must be formal or process')
 			END;
 		END;
@@ -3530,6 +3472,7 @@ func rebuildFinTxBreakdownWithConstraints(db *sql.DB) error {
 
 	// 4. 立即补回读写所需的索引，保证这里本身就是闭环
 	indexStmts := []string{
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business ON settle_tx_breakdown(business_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_txid ON settle_tx_breakdown(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
@@ -4235,13 +4178,13 @@ func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (b
 	if err != nil {
 		return false, err
 	}
-	defer rows.Close()
 
 	want := make([]string, 0, len(columns))
 	for _, col := range columns {
 		want = append(want, strings.ToLower(strings.TrimSpace(col)))
 	}
 
+	uniqueIndexes := make([]string, 0, 8)
 	for rows.Next() {
 		var seq int
 		var name string
@@ -4249,11 +4192,23 @@ func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (b
 		var origin string
 		var partial int
 		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			rows.Close()
 			return false, err
 		}
 		if unique == 0 {
 			continue
 		}
+		uniqueIndexes = append(uniqueIndexes, name)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return false, err
+	}
+	if err := rows.Close(); err != nil {
+		return false, err
+	}
+
+	for _, name := range uniqueIndexes {
 		idxCols, err := tableIndexColumns(db, name)
 		if err != nil {
 			return false, err
@@ -4271,9 +4226,6 @@ func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (b
 		if match {
 			return true, nil
 		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, err
 	}
 	return false, nil
 }

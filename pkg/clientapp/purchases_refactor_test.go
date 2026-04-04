@@ -48,11 +48,11 @@ func TestPurchaseSchemaExists(t *testing.T) {
 	}
 
 	wantIndexes := []string{
-		"idx_purchases_created_at",
-		"idx_purchases_demand_created",
-		"idx_purchases_seller_created",
-		"idx_purchases_status_created",
-		"idx_purchases_history_lookup",
+		"idx_biz_purchases_created_at",
+		"idx_biz_purchases_demand_created",
+		"idx_biz_purchases_seller_created",
+		"idx_biz_purchases_status_created",
+		"idx_biz_purchases_history_lookup",
 	}
 	gotIndexes, err := tableIndexNames(db, "biz_purchases")
 	if err != nil {
@@ -393,6 +393,24 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	}
 	registerSellerHandlers(sellerHost, store, nil, nil, sellerCfg)
 
+	frontOrderID := "fo_purchase_flow"
+	if err := dbUpsertFrontOrder(context.Background(), store, frontOrderEntry{
+		FrontOrderID:     frontOrderID,
+		FrontType:        "download",
+		FrontSubtype:     "direct_transfer",
+		OwnerPubkeyHex:   buyerPubHex,
+		TargetObjectType: "demand",
+		TargetObjectID:   demandID,
+		Status:           "pending",
+		Note:             "direct purchase flow test",
+		Payload: map[string]any{
+			"demand_id": demandID,
+			"seed_hash": seedHash,
+		},
+	}); err != nil {
+		t.Fatalf("upsert front order: %v", err)
+	}
+
 	buyer := &Runtime{
 		Host: buyerHost,
 		ActionChain: &directPurchaseMockChain{
@@ -418,6 +436,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		Ctx:           context.Background(),
 		Buyer:         buyer,
 		Store:         store,
+		FrontOrderID:  frontOrderID,
 		Quotes:        quotes,
 		SeedHash:      seedHash,
 		ArbiterPubHex: arbPubHex,
