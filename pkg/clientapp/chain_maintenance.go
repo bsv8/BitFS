@@ -776,7 +776,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 	}
-	
+
 	// 触发 unknown 1-sat 资产确认流程
 	// 设计说明：
 	// - 在链同步成功后，异步确认 unknown 资产的类型
@@ -792,7 +792,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 	}
-	
+
 	select {
 	case <-ctx.Done():
 		return map[string]any{
@@ -1597,6 +1597,15 @@ func getWalletBalanceFromDB(ctx context.Context, store *clientDB, rt *Runtime) (
 	if err != nil {
 		return "", 0, err
 	}
+	walletID := walletIDByAddress(addr)
+
+	// Step 5：fact 优先读余额
+	bal, err := dbLoadWalletAssetBalanceFact(ctx, store, walletID, "BSV", "")
+	if err == nil && bal.Remaining > 0 {
+		return addr, uint64(bal.Remaining), nil
+	}
+
+	// fact 兜底（无数据或余额为 0）：回退 wallet_utxo_sync_state
 	s, err := dbLoadWalletUTXOSyncState(ctx, store, addr)
 	if err != nil {
 		return "", 0, err

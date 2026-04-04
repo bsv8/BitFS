@@ -483,3 +483,223 @@ func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int
 	}
 	return nil
 }
+
+// walletAssetBalance fact 口径资产余额
+type walletAssetBalance struct {
+	WalletID       string `json:"wallet_id"`
+	AssetKind      string `json:"asset_kind"`
+	TokenID        string `json:"token_id"`
+	TotalInSatoshi int64  `json:"total_in_satoshi"`
+	TotalUsed      int64  `json:"total_used"`
+	Remaining      int64  `json:"remaining"`
+}
+
+// spendableSourceFlow 可花费源流（剩余额度 > 0 的 IN flow）
+type spendableSourceFlow struct {
+	FlowID         int64  `json:"flow_id"`
+	WalletID       string `json:"wallet_id"`
+	Address        string `json:"address"`
+	AssetKind      string `json:"asset_kind"`
+	TokenID        string `json:"token_id"`
+	UTXOID         string `json:"utxo_id"`
+	TxID           string `json:"txid"`
+	Vout           uint32 `json:"vout"`
+	TotalInSatoshi int64  `json:"total_in_satoshi"`
+	TotalUsed      int64  `json:"total_used"`
+	Remaining      int64  `json:"remaining"`
+	OccurredAtUnix int64  `json:"occurred_at_unix"`
+}
+
+// dbLoadWalletAssetBalanceFact 按 wallet_id + asset_kind + token_id 聚合 fact 余额
+// 设计说明：
+// - 余额 = fact_chain_asset_flows(IN) - fact_asset_consumptions(used)
+// - BSV 用 amount_satoshi/used_satoshi，BSV20/BSV21 当前只返回总和
+func dbLoadWalletAssetBalanceFact(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
+	if store == nil {
+		return walletAssetBalance{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (walletAssetBalance, error) {
+		return dbLoadWalletAssetBalanceFactDB(db, walletID, assetKind, tokenID)
+	})
+}
+
+func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
+	walletID = strings.TrimSpace(walletID)
+	if walletID == "" {
+		return walletAssetBalance{}, fmt.Errorf("wallet_id is required")
+	}
+	assetKind = strings.ToUpper(strings.TrimSpace(assetKind))
+	if assetKind == "" {
+		assetKind = "BSV"
+	}
+	tokenID = strings.TrimSpace(tokenID)
+
+	var totalIn, totalUsed int64
+	err := db.QueryRow(
+		`SELECT COALESCE(SUM(amount_satoshi),0) FROM fact_chain_asset_flows WHERE wallet_id=? AND asset_kind=? AND token_id=?`,
+		walletID, assetKind, tokenID,
+	).Scan(&totalIn)
+	if err != nil {
+		return walletAssetBalance{}, err
+	}
+
+	err = db.QueryRow(
+		`SELECT COALESCE(SUM(c.used_satoshi),0)
+		 FROM fact_asset_consumptions c
+		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
+		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=?`,
+		walletID, assetKind, tokenID,
+	).Scan(&totalUsed)
+	if err != nil {
+		return walletAssetBalance{}, err
+	}
+
+	return walletAssetBalance{
+		WalletID:       walletID,
+		AssetKind:      assetKind,
+		TokenID:        tokenID,
+		TotalInSatoshi: totalIn,
+		TotalUsed:      totalUsed,
+		Remaining:      totalIn - totalUsed,
+	}, nil
+}
+
+// dbLoadAllWalletAssetBalancesFact 按 wallet_id 聚合所有 asset_kind+token_id 的余额
+func dbLoadAllWalletAssetBalancesFact(ctx context.Context, store *clientDB, walletID string) ([]walletAssetBalance, error) {
+	if store == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletAssetBalance, error) {
+		return dbLoadAllWalletAssetBalancesFactDB(db, walletID)
+	})
+}
+
+func dbLoadAllWalletAssetBalancesFactDB(db *sql.DB, walletID string) ([]walletAssetBalance, error) {
+	walletID = strings.TrimSpace(walletID)
+	if walletID == "" {
+		return nil, fmt.Errorf("wallet_id is required")
+	}
+
+	// 先汇总每个 (asset_kind, token_id) 的 IN 总额
+	rows, err := db.Query(
+		`SELECT asset_kind, token_id, COALESCE(SUM(amount_satoshi),0)
+		 FROM fact_chain_asset_flows WHERE wallet_id=?
+		 GROUP BY asset_kind, token_id`,
+		walletID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	type groupKey struct {
+		AssetKind string
+		TokenID   string
+	}
+	inMap := map[groupKey]int64{}
+	for rows.Next() {
+		var k groupKey
+		var totalIn int64
+		if err := rows.Scan(&k.AssetKind, &k.TokenID, &totalIn); err != nil {
+			return nil, err
+		}
+		inMap[k] = totalIn
+	}
+
+	// 再汇总每个 (asset_kind, token_id) 的 used 总额
+	rows2, err := db.Query(
+		`SELECT f.asset_kind, f.token_id, COALESCE(SUM(c.used_satoshi),0)
+		 FROM fact_asset_consumptions c
+		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
+		 WHERE f.wallet_id=?
+		 GROUP BY f.asset_kind, f.token_id`,
+		walletID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows2.Close()
+
+	usedMap := map[groupKey]int64{}
+	for rows2.Next() {
+		var k groupKey
+		var totalUsed int64
+		if err := rows2.Scan(&k.AssetKind, &k.TokenID, &totalUsed); err != nil {
+			return nil, err
+		}
+		usedMap[k] = totalUsed
+	}
+
+	out := make([]walletAssetBalance, 0, len(inMap))
+	for k, totalIn := range inMap {
+		totalUsed := usedMap[k]
+		out = append(out, walletAssetBalance{
+			WalletID:       walletID,
+			AssetKind:      k.AssetKind,
+			TokenID:        k.TokenID,
+			TotalInSatoshi: totalIn,
+			TotalUsed:      totalUsed,
+			Remaining:      totalIn - totalUsed,
+		})
+	}
+	return out, nil
+}
+
+// dbListSpendableSourceFlows 返回仍有剩余额度的 source flow（用于选币/选 token）
+// 设计说明：
+// - 剩余 <= 0 的不再返回
+// - 同一 source flow 被多个 payment/allocation 消耗时，累计扣减
+func dbListSpendableSourceFlows(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
+	if store == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) ([]spendableSourceFlow, error) {
+		return dbListSpendableSourceFlowsDB(db, walletID, assetKind, tokenID)
+	})
+}
+
+func dbListSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
+	walletID = strings.TrimSpace(walletID)
+	if walletID == "" {
+		return nil, fmt.Errorf("wallet_id is required")
+	}
+	assetKind = strings.ToUpper(strings.TrimSpace(assetKind))
+	if assetKind == "" {
+		assetKind = "BSV"
+	}
+	tokenID = strings.TrimSpace(tokenID)
+
+	// 查询每个 source flow 的 IN 总额 - 累计 used 总额
+	rows, err := db.Query(
+		`SELECT f.id,f.wallet_id,f.address,f.asset_kind,f.token_id,f.utxo_id,f.txid,f.vout,
+				f.amount_satoshi,
+				COALESCE(used_agg.total_used,0),
+				f.amount_satoshi - COALESCE(used_agg.total_used,0),
+				f.occurred_at_unix
+		 FROM fact_chain_asset_flows f
+		 LEFT JOIN (
+			SELECT c.source_flow_id, SUM(c.used_satoshi) AS total_used
+			FROM fact_asset_consumptions c
+			GROUP BY c.source_flow_id
+		 ) used_agg ON f.id=used_agg.source_flow_id
+		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'
+		   AND f.amount_satoshi > COALESCE(used_agg.total_used,0)
+		 ORDER BY f.occurred_at_unix ASC, f.id ASC`,
+		walletID, assetKind, tokenID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]spendableSourceFlow, 0, 16)
+	for rows.Next() {
+		var s spendableSourceFlow
+		if err := rows.Scan(&s.FlowID, &s.WalletID, &s.Address, &s.AssetKind, &s.TokenID,
+			&s.UTXOID, &s.TxID, &s.Vout, &s.TotalInSatoshi, &s.TotalUsed, &s.Remaining, &s.OccurredAtUnix); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}

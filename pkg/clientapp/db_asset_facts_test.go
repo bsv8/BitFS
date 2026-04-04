@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -1147,5 +1148,373 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 	}
 	if payConsCount2 != payConsCount {
 		t.Fatalf("expected idempotent pay consumptions %d, got %d", payConsCount, payConsCount2)
+	}
+}
+
+// TestFactBalance_BasicAggregation 验证 fact 余额聚合
+func TestFactBalance_BasicAggregation(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_bal_basic"
+	address := "test_addr_bal"
+	utxoID := "utxo_bal_1:0"
+
+	// 种 UTXO 并写入 IN flow
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_bal_1", 0, int64(5000), "unspent", "plain_bsv", "",
+		"tx_bal_1", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_bal_1",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_bal_1",
+		Vout:           0,
+		AmountSatoshi:  5000,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 验证余额
+	bal, err := dbLoadWalletAssetBalanceFactDB(db, walletID, "BSV", "")
+	if err != nil {
+		t.Fatalf("load balance: %v", err)
+	}
+	if bal.Remaining != 5000 {
+		t.Fatalf("expected remaining 5000, got %d", bal.Remaining)
+	}
+	if bal.TotalInSatoshi != 5000 {
+		t.Fatalf("expected total_in 5000, got %d", bal.TotalInSatoshi)
+	}
+}
+
+// TestFactBalance_AfterConsumption 验证多消耗后余额递减
+func TestFactBalance_AfterConsumption(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_bal_cons"
+	address := "test_addr_bal_cons"
+	utxoID := "utxo_bal_cons:0"
+
+	// 种 UTXO 并写入 IN flow
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_cons", 0, int64(10000), "unspent", "plain_bsv", "",
+		"tx_cons", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_cons",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_cons",
+		Vout:           0,
+		AmountSatoshi:  10000,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 写入 chain payment
+	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_pay_cons",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  10000,
+		WalletOutputSatoshi: 2000,
+		NetAmountSatoshi:    -8000,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert chain payment: %v", err)
+	}
+
+	// 写入消耗
+	utxoLinks := []chainPaymentUTXOLinkEntry{
+		{ChainPaymentID: paymentID, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 10000, CreatedAtUnix: now},
+	}
+	if err := dbAppendAssetConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+		t.Fatalf("append consumption: %v", err)
+	}
+
+	// 验证余额
+	bal, err := dbLoadWalletAssetBalanceFactDB(db, walletID, "BSV", "")
+	if err != nil {
+		t.Fatalf("load balance: %v", err)
+	}
+	if bal.TotalInSatoshi != 10000 {
+		t.Fatalf("expected total_in 10000, got %d", bal.TotalInSatoshi)
+	}
+	if bal.TotalUsed != 10000 {
+		t.Fatalf("expected total_used 10000, got %d", bal.TotalUsed)
+	}
+	if bal.Remaining != 0 {
+		t.Fatalf("expected remaining 0, got %d", bal.Remaining)
+	}
+}
+
+// TestFactBalance_UnknownUTXONotAffected 验证 unknown UTXO 不影响余额
+func TestFactBalance_UnknownUTXONotAffected(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_bal_unk"
+	address := "test_addr_bal_unk"
+
+	// 种一个 normal UTXO 并写入 IN flow
+	normalUTXO := "utxo_bal_norm:0"
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		normalUTXO, walletID, address, "tx_norm", 0, int64(3000), "unspent", "plain_bsv", "",
+		"tx_norm", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed normal utxo: %v", err)
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_norm",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         normalUTXO,
+		TxID:           "tx_norm",
+		Vout:           0,
+		AmountSatoshi:  3000,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow for normal: %v", err)
+	}
+
+	// 种一个 unknown UTXO（不写入 IN flow）
+	unknownUTXO := "utxo_bal_unk:0"
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		unknownUTXO, walletID, address, "tx_unk", 0, int64(1), "unspent", "unknown", "awaiting evidence",
+		"tx_unk", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed unknown utxo: %v", err)
+	}
+
+	// 验证余额只包含 normal UTXO
+	bal, err := dbLoadWalletAssetBalanceFactDB(db, walletID, "BSV", "")
+	if err != nil {
+		t.Fatalf("load balance: %v", err)
+	}
+	if bal.Remaining != 3000 {
+		t.Fatalf("expected remaining 3000 (unknown not counted), got %d", bal.Remaining)
+	}
+}
+
+// TestSpendableSourceFlows_Basic 验证可花费 source flow 列表
+func TestSpendableSourceFlows_Basic(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_spendable"
+	address := "test_addr_spend"
+
+	// 种两个 UTXO 并写入 IN flow
+	utxoIDs := []string{"utxo_spend_1:0", "utxo_spend_2:0"}
+	amounts := []int64{5000, 3000}
+	for i, utxoID := range utxoIDs {
+		if _, err := db.Exec(`INSERT INTO wallet_utxo(
+			utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+			created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			utxoID, walletID, address, "tx_spend_"+fmt.Sprint(i), 0, amounts[i], "unspent", "plain_bsv", "",
+			"tx_spend_"+fmt.Sprint(i), "", now, now, 0,
+		); err != nil {
+			t.Fatalf("seed utxo %s: %v", utxoID, err)
+		}
+		_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+			FlowID:         "flow_in_spend_" + fmt.Sprint(i),
+			WalletID:       walletID,
+			Address:        address,
+			Direction:      "IN",
+			AssetKind:      "BSV",
+			UTXOID:         utxoID,
+			TxID:           "tx_spend_" + fmt.Sprint(i),
+			Vout:           0,
+			AmountSatoshi:  amounts[i],
+			OccurredAtUnix: now,
+		})
+		if err != nil {
+			t.Fatalf("append flow for %s: %v", utxoID, err)
+		}
+	}
+
+	// 写入消耗（只消耗第一个 UTXO 的部分）
+	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_pay_spend",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  5000,
+		WalletOutputSatoshi: 2000,
+		NetAmountSatoshi:    -3000,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert chain payment: %v", err)
+	}
+
+	utxoLinks := []chainPaymentUTXOLinkEntry{
+		{ChainPaymentID: paymentID, UTXOID: utxoIDs[0], IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 5000, CreatedAtUnix: now},
+	}
+	if err := dbAppendAssetConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+		t.Fatalf("append consumption: %v", err)
+	}
+
+	// 查询可花费 source flow
+	flows, err := dbListSpendableSourceFlowsDB(db, walletID, "BSV", "")
+	if err != nil {
+		t.Fatalf("list spendable: %v", err)
+	}
+
+	// 第一个 UTXO 已全花，第二个还在
+	if len(flows) != 1 {
+		t.Fatalf("expected 1 spendable flow, got %d", len(flows))
+	}
+	if flows[0].UTXOID != utxoIDs[1] {
+		t.Fatalf("expected spendable utxo %s, got %s", utxoIDs[1], flows[0].UTXOID)
+	}
+	if flows[0].Remaining != 3000 {
+		t.Fatalf("expected remaining 3000, got %d", flows[0].Remaining)
+	}
+}
+
+// TestFactBalance_MultiConsumption 验证同一 source flow 被多个 payment 消耗时累计扣减
+func TestFactBalance_MultiConsumption(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_multi_cons"
+	address := "test_addr_multi_cons"
+	utxoID := "utxo_multi_cons:0"
+
+	// 种 UTXO 并写入 IN flow（总额 10000）
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_multi_cons", 0, int64(10000), "unspent", "plain_bsv", "",
+		"tx_multi_cons", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_multi_cons",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_multi_cons",
+		Vout:           0,
+		AmountSatoshi:  10000,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 第一次消耗 3000
+	pay1, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_pay_multi_1",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  3000,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -3000,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert pay1: %v", err)
+	}
+	if err := dbAppendAssetConsumptionsForChainPayment(db, pay1, []chainPaymentUTXOLinkEntry{
+		{ChainPaymentID: pay1, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 3000, CreatedAtUnix: now},
+	}, now); err != nil {
+		t.Fatalf("append cons 1: %v", err)
+	}
+
+	// 第二次消耗 4000
+	pay2, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_pay_multi_2",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  4000,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -4000,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert pay2: %v", err)
+	}
+	if err := dbAppendAssetConsumptionsForChainPayment(db, pay2, []chainPaymentUTXOLinkEntry{
+		{ChainPaymentID: pay2, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 4000, CreatedAtUnix: now},
+	}, now); err != nil {
+		t.Fatalf("append cons 2: %v", err)
+	}
+
+	// 验证余额 = 10000 - 3000 - 4000 = 3000
+	bal, err := dbLoadWalletAssetBalanceFactDB(db, walletID, "BSV", "")
+	if err != nil {
+		t.Fatalf("load balance: %v", err)
+	}
+	if bal.TotalInSatoshi != 10000 {
+		t.Fatalf("expected total_in 10000, got %d", bal.TotalInSatoshi)
+	}
+	if bal.TotalUsed != 7000 {
+		t.Fatalf("expected total_used 7000, got %d", bal.TotalUsed)
+	}
+	if bal.Remaining != 3000 {
+		t.Fatalf("expected remaining 3000, got %d", bal.Remaining)
 	}
 }
