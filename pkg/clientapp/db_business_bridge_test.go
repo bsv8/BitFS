@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -345,4 +346,109 @@ func TestBusinessBridge_TransactionAtomicity(t *testing.T) {
 	}
 
 	t.Logf("✓ 事务原子性测试通过: 所有数据一致性写入")
+}
+
+// TestBusinessBridge_MissingBusinessRole_Fails 第八阶段：漏传 BusinessRole 必须失败
+func TestBusinessBridge_MissingBusinessRole_Fails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+	store := &clientDB{db: db}
+
+	// 不传 BusinessRole，应该在校验阶段失败
+	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		FrontOrderID:     "fo_missing_role",
+		FrontType:        "test",
+		FrontSubtype:     "missing_role",
+		OwnerPubkeyHex:   "03aabbccdd",
+		TargetObjectType: "test",
+		TargetObjectID:   "test1",
+
+		BusinessID:        "biz_missing_role",
+		BusinessRole:      "", // 空值应被拒绝
+		SourceType:        "front_order",
+		SourceID:          "fo_missing_role",
+		AccountingScene:   "test",
+		AccountingSubType: "missing_role",
+		FromPartyID:       "client:self",
+		ToPartyID:         "test:peer",
+
+		TriggerType:    "front_order",
+		TriggerIDValue: "fo_missing_role",
+		TriggerRole:    "primary",
+
+		SettlementID:         "set_missing_role",
+		SettlementMethod:     SettlementMethodPool,
+		SettlementTargetType: "test_target",
+		SettlementTargetID:   "target_1",
+	}
+
+	err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, input)
+	if err == nil {
+		t.Fatal("expected error for missing business_role, got nil")
+	}
+	if !strings.Contains(err.Error(), "business_role is required") {
+		t.Fatalf("expected business_role validation error, got: %v", err)
+	}
+
+	// 验证没有写入任何数据
+	foPage, _ := dbListFrontOrders(ctx, store, frontOrderFilter{FrontOrderID: "fo_missing_role"})
+	if foPage.Total != 0 {
+		t.Fatalf("expected 0 front_order after validation failure, got %d", foPage.Total)
+	}
+}
+
+// TestBusinessBridge_InvalidBusinessRole_Fails 第八阶段：非法 BusinessRole 必须失败
+func TestBusinessBridge_InvalidBusinessRole_Fails(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+	store := &clientDB{db: db}
+
+	invalidRoles := []string{"unknown", "invalid", "FORMAL", "PROCESS", "test_role"}
+
+	for _, role := range invalidRoles {
+		input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+			FrontOrderID:     fmt.Sprintf("fo_invalid_role_%s", role),
+			FrontType:        "test",
+			FrontSubtype:     "invalid_role",
+			OwnerPubkeyHex:   "03aabbccdd",
+			TargetObjectType: "test",
+			TargetObjectID:   "test1",
+
+			BusinessID:        fmt.Sprintf("biz_invalid_role_%s", role),
+			BusinessRole:      role, // 非法值应被拒绝
+			SourceType:        "front_order",
+			SourceID:          fmt.Sprintf("fo_invalid_role_%s", role),
+			AccountingScene:   "test",
+			AccountingSubType: "invalid_role",
+			FromPartyID:       "client:self",
+			ToPartyID:         "test:peer",
+
+			TriggerType:    "front_order",
+			TriggerIDValue: fmt.Sprintf("fo_invalid_role_%s", role),
+			TriggerRole:    "primary",
+
+			SettlementID:         fmt.Sprintf("set_invalid_role_%s", role),
+			SettlementMethod:     SettlementMethodPool,
+			SettlementTargetType: "test_target",
+			SettlementTargetID:   "target_1",
+		}
+
+		err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, input)
+		if err == nil {
+			t.Fatalf("expected error for invalid business_role '%s', got nil", role)
+		}
+		if !strings.Contains(err.Error(), "invalid business_role") {
+			t.Fatalf("expected business_role validation error for '%s', got: %v", role, err)
+		}
+	}
 }

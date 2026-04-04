@@ -100,6 +100,15 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		return fmt.Errorf("settlement_id is required")
 	}
 
+	// 第八阶段：BusinessRole 是必填入参，桥接器不再猜角色
+	in.BusinessRole = strings.TrimSpace(in.BusinessRole)
+	if in.BusinessRole == "" {
+		return fmt.Errorf("business_role is required: must be 'formal' or 'process'")
+	}
+	if in.BusinessRole != "formal" && in.BusinessRole != "process" {
+		return fmt.Errorf("invalid business_role '%s': must be 'formal' or 'process'", in.BusinessRole)
+	}
+
 	// 验证 settlement_method 枚举
 	if err := in.SettlementMethod.Valid(); err != nil {
 		return err
