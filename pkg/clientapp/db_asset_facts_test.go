@@ -1713,3 +1713,149 @@ func TestSelectSourceFlows_PartialConsumed(t *testing.T) {
 		t.Fatalf("expected use 3000, got %d", selected[0].UseAmount)
 	}
 }
+
+// TestListEligiblePlainBSVWalletUTXOsFact_UsesFactSource 验证 listEligiblePlainBSVWalletUTXOsFact 走 fact 口径
+func TestListEligiblePlainBSVWalletUTXOsFact_UsesFactSource(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "5555555555555555555555555555555555555555555555555555555555555555"
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+
+	// 种 UTXO 并写入 IN flow
+	utxoID := "utxo_fromdb:0"
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_fromdb", 0, int64(5000), "unspent", "plain_bsv", "",
+		"tx_fromdb", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err = dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_fromdb",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_fromdb",
+		Vout:           0,
+		AmountSatoshi:  5000,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 调用 listEligiblePlainBSVWalletUTXOsFact（应走 fact 口径）
+	utxos, err := listEligiblePlainBSVWalletUTXOsFact(ctx, store, rt)
+	if err != nil {
+		t.Fatalf("getWalletUTXOsFromDB: %v", err)
+	}
+	if len(utxos) != 1 {
+		t.Fatalf("expected 1 utxo, got %d", len(utxos))
+	}
+	if utxos[0].Value != 5000 {
+		t.Fatalf("expected value 5000, got %d", utxos[0].Value)
+	}
+
+	// 写入消耗 3000，验证 getWalletUTXOsFromDB 返回剩余金额
+	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_fromdb_pay",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  3000,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -3000,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert chain payment: %v", err)
+	}
+	if err := dbAppendAssetConsumptionsForChainPayment(db, payID, []chainPaymentUTXOLinkEntry{
+		{ChainPaymentID: payID, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 3000, CreatedAtUnix: now},
+	}, now); err != nil {
+		t.Fatalf("append consumption: %v", err)
+	}
+
+	utxos2, err := listEligiblePlainBSVWalletUTXOsFact(ctx, store, rt)
+	if err != nil {
+		t.Fatalf("listEligiblePlainBSVWalletUTXOsFact after cons: %v", err)
+	}
+	if len(utxos2) != 1 {
+		t.Fatalf("expected 1 utxo after cons, got %d", len(utxos2))
+	}
+	if utxos2[0].Value != 2000 {
+		t.Fatalf("expected value 2000 after cons, got %d", utxos2[0].Value)
+	}
+}
+
+// TestAllocatePlainBSVWalletUTXOs_InsufficientError 验证 allocate 路径余额不足返回稳定错误
+func TestAllocatePlainBSVWalletUTXOs_InsufficientError(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "6666666666666666666666666666666666666666666666666666666666666666"
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+
+	// 种一个小额 UTXO（只有 500）
+	utxoID := "utxo_allocate_insufficient:0"
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_allocate_insufficient", 0, int64(500), "unspent", "plain_bsv", "",
+		"tx_allocate_insufficient", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err = dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_allocate_insufficient",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_allocate_insufficient",
+		Vout:           0,
+		AmountSatoshi:  500,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 请求 1000，应该报错
+	_, err = allocatePlainBSVWalletUTXOs(ctx, store, rt, "test_allocate", 1000)
+	if err == nil {
+		t.Fatalf("expected insufficient error, got nil")
+	}
+	if !strings.Contains(err.Error(), "insufficient balance") {
+		t.Fatalf("expected 'insufficient balance' error, got: %v", err)
+	}
+}

@@ -1589,6 +1589,39 @@ func getWalletUTXOsFromDB(ctx context.Context, store *clientDB, rt *Runtime) ([]
 	return listEligiblePlainBSVWalletUTXOs(ctx, store, rt)
 }
 
+// listEligiblePlainBSVWalletUTXOsFact 从 fact 口径获取可花费的 plain_bsv UTXO
+// 设计说明：
+// - 按 spendable source flow 返回，剩余 > 0 的才返回
+// - 返回的是原始金额，实际使用由上层决定
+func listEligiblePlainBSVWalletUTXOsFact(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
+	if rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	addr, err := clientWalletAddress(rt)
+	if err != nil {
+		return nil, err
+	}
+	walletID := walletIDByAddress(addr)
+	if store == nil {
+		return nil, fmt.Errorf("store not initialized")
+	}
+
+	flows, err := dbListSpendableSourceFlows(ctx, store, walletID, "BSV", "")
+	if err != nil {
+		return nil, err
+	}
+
+	out := make([]poolcore.UTXO, 0, len(flows))
+	for _, f := range flows {
+		out = append(out, poolcore.UTXO{
+			TxID:  strings.ToLower(strings.TrimSpace(f.TxID)),
+			Vout:  f.Vout,
+			Value: uint64(f.Remaining),
+		})
+	}
+	return out, nil
+}
+
 func getWalletBalanceFromDB(ctx context.Context, store *clientDB, rt *Runtime) (string, uint64, error) {
 	if store == nil {
 		return "", 0, fmt.Errorf("store not initialized")
