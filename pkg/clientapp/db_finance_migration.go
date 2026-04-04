@@ -811,8 +811,10 @@ func firstNonEmptyRawJSON(raw string) (string, bool) {
 // - biz_download_pool_* -> formal（正式收费对象）
 // - biz_c2c_open_* / biz_c2c_close_* -> process（过程财务对象）
 // - biz_wallet_chain_* -> process（钱包过程财务对象）
-// - biz_feepool_open_* -> process（费用池过程对象）
+// - biz_feepool_* -> process（费用池过程对象）
 // - biz_domain_* -> formal（域名正式收费对象）
+// - biz_backfill_domain_* -> formal（回填域名正式收费对象）
+// - biz_backfill_pool_* -> formal（回填池支付正式收费对象）
 // - 其他类型保持空值（由写入路径显式指定）
 // - 这是过渡逻辑，新写入路径应显式写 business_role
 func backfillFinBusinessRole(db *sql.DB) error {
@@ -834,6 +836,22 @@ func backfillFinBusinessRole(db *sql.DB) error {
 		 WHERE business_id LIKE 'biz_domain_%' AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill formal role for biz_domain_*: %w", err)
+	}
+
+	// 回填正式收费对象 - 回填域名
+	if _, err := db.Exec(
+		`UPDATE fin_business SET business_role='formal'
+		 WHERE business_id LIKE 'biz_backfill_domain_%' AND (business_role='' OR business_role IS NULL)`,
+	); err != nil {
+		return fmt.Errorf("backfill formal role for biz_backfill_domain_*: %w", err)
+	}
+
+	// 回填正式收费对象 - 回填池支付
+	if _, err := db.Exec(
+		`UPDATE fin_business SET business_role='formal'
+		 WHERE business_id LIKE 'biz_backfill_pool_%' AND (business_role='' OR business_role IS NULL)`,
+	); err != nil {
+		return fmt.Errorf("backfill formal role for biz_backfill_pool_*: %w", err)
 	}
 
 	// 回填过程财务对象 - 直连池开闭

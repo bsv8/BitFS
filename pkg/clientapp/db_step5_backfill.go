@@ -103,11 +103,11 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				continue
 			}
 
-			// 2. 创建 business
+			// 2. 创建 business（第七阶段整改：显式写 business_role='formal'）
 			if _, err := db.Exec(`
-				INSERT INTO fin_business(business_id, source_type, source_id, accounting_scene, accounting_subtype,
+				INSERT INTO fin_business(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
-				VALUES(?, 'front_order', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?)
+				VALUES(?, 'formal', 'front_order', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
 				businessID, frontOrderID, cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
 				"backfill:"+businessID, "历史回填：域名注册",
@@ -167,16 +167,18 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 }
 
 // BackfillPoolAllocationHistory 回填池支付历史到新主线
-// 
+//
 // 整改要点（第五步）：
 // 1. 粒度对齐：不按每条 allocation 一条 business，而是按 seller 级收费事实回填
-//    - 一个 seller 一次下载收费 = 一条 business = 一条 settlement
-//    - 只用第一次成功的 pay allocation 代表这条 seller 收费
+//   - 一个 seller 一次下载收费 = 一条 business = 一条 settlement
+//   - 只用第一次成功的 pay allocation 代表这条 seller 收费
+//
 // 2. 补齐前台主链：必须创建 front_order + business_trigger
-//    - 回填后的历史必须能通过 GetFrontOrderSettlementSummary 查到
+//   - 回填后的历史必须能通过 GetFrontOrderSettlementSummary 查到
+//
 // 3. 幂等判断：以 settlement 存在为主要完成标志，逐对象补齐，支持半残修复
-//    - 不是 "front_order 存在就整条跳过"
-//    - 而是 "settlement 存在才算完成，否则逐层补齐"
+//   - 不是 "front_order 存在就整条跳过"
+//   - 而是 "settlement 存在才算完成，否则逐层补齐"
 //
 // 策略：
 //   - 按 pool_session_id 分组，找到每个 session 的第一次 pay allocation
@@ -276,11 +278,11 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				completed = false
 			}
 
-			// 3. 逐对象补齐：business（幂等）
+			// 3. 逐对象补齐：business（第七阶段整改：显式写 business_role='formal'）
 			if _, err := db.Exec(`
-				INSERT INTO fin_business(business_id, source_type, source_id, accounting_scene, accounting_subtype,
+				INSERT INTO fin_business(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
-				VALUES(?, 'front_order', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?)
+				VALUES(?, 'formal', 'front_order', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
 				businessID, frontOrderID, payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
 				"backfill:"+businessID,

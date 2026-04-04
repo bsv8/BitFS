@@ -1277,3 +1277,49 @@ func TestBusinessRole_Backfill_ReducesEmptyCount(t *testing.T) {
 		t.Fatalf("backfill should not increase empty role count: before=%d after=%d", emptyCountBefore, emptyCountAfter)
 	}
 }
+
+// TestBusinessRole_BackfillRecordsHaveFormalRole 验证回填记录有正确角色
+// 第七阶段整改：确保 biz_backfill_* 不会留下空 business_role
+func TestBusinessRole_BackfillRecordsHaveFormalRole(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+
+	// 模拟回填写入：直接插入带 business_role 的回填记录
+	businessID := "biz_backfill_pool_test_1"
+	if _, err := db.Exec(`
+		INSERT INTO fin_business(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
+			from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
+		VALUES(?, 'formal', 'front_order', 'fo_test', 'direct_transfer', 'pay', 'client:self', 'seller:test',
+			'posted', 1700000000, 'backfill_test', 'test', '{}')`,
+		businessID,
+	); err != nil {
+		t.Fatalf("insert backfill business failed: %v", err)
+	}
+
+	// 验证：回填记录有 formal 角色
+	var role string
+	if err := db.QueryRow(`SELECT business_role FROM fin_business WHERE business_id=?`, businessID).Scan(&role); err != nil {
+		t.Fatalf("query business_role failed: %v", err)
+	}
+	if role != "formal" {
+		t.Fatalf("backfill record should have formal role, got '%s'", role)
+	}
+
+	// 验证：business_role=formal 查询能查到回填记录
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_role='formal' AND business_id=?`, businessID).Scan(&count); err != nil {
+		t.Fatalf("query formal business failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("formal query should find backfill record, got count=%d", count)
+	}
+
+	// 验证：business_role=process 查询不应查到回填记录
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_role='process' AND business_id=?`, businessID).Scan(&count); err != nil {
+		t.Fatalf("query process business failed: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("process query should not find backfill record, got count=%d", count)
+	}
+}
