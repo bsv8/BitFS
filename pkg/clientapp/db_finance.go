@@ -192,15 +192,13 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		where := ""
 		args := make([]any, 0, 16)
 
-		// 第五阶段：优先使用 business_role 字段过滤，历史数据兜底使用前缀推断
-		// formal：正式收费对象（biz_download_pool_* 等）
-		// process：过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
+		// 第六阶段：business_role 成为唯一可信来源，不再使用前缀兜底
+		// formal：正式收费对象
+		// process：过程财务对象
 		if f.BusinessRole == "formal" {
-			// 优先按字段过滤，历史数据兜底使用前缀
-			where += " AND (business_role='formal' OR (business_role='' AND business_id LIKE 'biz_download_pool_%'))"
+			where += " AND business_role='formal'"
 		} else if f.BusinessRole == "process" {
-			// 优先按字段过滤，历史数据兜底使用前缀
-			where += " AND (business_role='process' OR (business_role='' AND (business_id LIKE 'biz_c2c_open_%' OR business_id LIKE 'biz_c2c_close_%')))"
+			where += " AND business_role='process'"
 		}
 
 		if f.BusinessID != "" {
@@ -261,10 +259,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 				return financeBusinessPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
-			// 第五阶段：优先使用数据库字段，历史数据兜底使用前缀推断
-			if it.BusinessRole == "" {
-				it.BusinessRole = inferBusinessRole(it.BusinessID)
-			}
+			// 第六阶段：business_role 直接来自数据库字段，不再运行时推断
 			out.Items = append(out.Items, it)
 		}
 		if err := rows.Err(); err != nil {
@@ -290,18 +285,15 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 			return financeBusinessItem{}, err
 		}
 		out.Payload = json.RawMessage(payload)
-		// 第五阶段：优先使用数据库字段，历史数据兜底使用前缀推断
-		if out.BusinessRole == "" {
-			out.BusinessRole = inferBusinessRole(out.BusinessID)
-		}
+		// 第六阶段：business_role 直接来自数据库字段，不再运行时推断
 		return out, nil
 	})
 }
 
-// inferBusinessRole 从 business_id 推断业务角色
-// 第五阶段降级：这是历史兼容兜底逻辑，不再是主设计
+// inferBusinessRole 【已降级：仅历史兼容工具】
+// 第六阶段降级：此函数不再是主设计，仅用于历史数据未回填时的临时推断
 // - 新数据应优先使用数据库 business_role 字段
-// - 此函数仅用于历史数据未回填时的临时推断
+// - 此函数可能在未来版本中删除
 // - formal：正式收费对象（如 biz_download_pool_*）
 // - process：过程财务对象（如 biz_c2c_open_* / biz_c2c_close_*）
 // - unknown：其他/未分类
