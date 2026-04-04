@@ -365,7 +365,8 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 	allocMu.Lock()
 	defer allocMu.Unlock()
 
-	utxos, err := listEligiblePlainBSVWalletUTXOs(ctx, store, rt)
+	// Step 6：改为从 fact 口径选源
+	utxos, err := listEligiblePlainBSVWalletUTXOsFact(ctx, store, rt)
 	if err != nil {
 		return nil, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}

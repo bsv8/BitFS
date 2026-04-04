@@ -62,39 +62,6 @@ func listWalletFundingCandidates(ctx context.Context, store *clientDB, rt *Runti
 	return out, nil
 }
 
-// listEligiblePlainBSVWalletUTXOs 走显式 store 读取钱包快照，再按同一套规则筛出可花的普通 BSV 输出。
-// 设计说明：
-// - 这里只换数据入口，不改普通 BSV 的筛选规则；
-// - 这样费用池和其他流程可以逐步脱离 Runtime 上的旧 DB 入口。
-func listEligiblePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
-	candidates, err := listWalletFundingCandidates(ctx, store, rt)
-	if err != nil {
-		return nil, err
-	}
-	input := make([]fundalloc.Candidate, 0, len(candidates))
-	for _, item := range candidates {
-		input = append(input, fundalloc.Candidate{
-			ID:               item.UTXOID,
-			TxID:             item.UTXO.TxID,
-			Vout:             item.UTXO.Vout,
-			ValueSatoshi:     item.UTXO.Value,
-			CreatedAtUnix:    item.CreatedAtUnix,
-			ProtectionClass:  fundalloc.ProtectionClass(item.AllocationClass),
-			ProtectionReason: item.AllocationReason,
-		})
-	}
-	filtered := fundalloc.FilterEligiblePlainBSV(input)
-	out := make([]poolcore.UTXO, 0, len(filtered.Selected))
-	for _, item := range filtered.Selected {
-		out = append(out, poolcore.UTXO{
-			TxID:  strings.ToLower(strings.TrimSpace(item.TxID)),
-			Vout:  item.Vout,
-			Value: item.ValueSatoshi,
-		})
-	}
-	return out, nil
-}
-
 // allocatePlainBSVWalletUTXOs 为普通 BSV 支出选择一组输入。
 // Step 6：改为从 fact 口径选源，不再扫 wallet_utxo
 func allocatePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runtime, purpose string, target uint64) ([]poolcore.UTXO, error) {

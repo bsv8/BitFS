@@ -1586,7 +1586,7 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 }
 
 func getWalletUTXOsFromDB(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
-	return listEligiblePlainBSVWalletUTXOs(ctx, store, rt)
+	return listEligiblePlainBSVWalletUTXOsFact(ctx, store, rt)
 }
 
 // listEligiblePlainBSVWalletUTXOsFact 从 fact 口径获取可花费的 plain_bsv UTXO

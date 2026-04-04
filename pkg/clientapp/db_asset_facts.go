@@ -670,22 +670,27 @@ func dbListSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string,
 	tokenID = strings.TrimSpace(tokenID)
 
 	// 查询每个 source flow 的 IN 总额 - 累计 used 总额
+	// 设计说明：
+	// - JOIN wallet_utxo 确保 UTXO 仍处于 unspent 状态
+	// - 过滤 allocation_class='plain_bsv' 排除 protected/unknown
+	// - 包含有 fact 记录的（已确认）和无 fact 记录的（pending local broadcast）
 	rows, err := db.Query(
-		`SELECT f.id,f.wallet_id,f.address,f.asset_kind,f.token_id,f.utxo_id,f.txid,f.vout,
-				f.amount_satoshi,
+		`SELECT COALESCE(f.id,0),w.wallet_id,w.address,'BSV','',w.utxo_id,w.txid,w.vout,
+				w.value_satoshi,
 				COALESCE(used_agg.total_used,0),
-				f.amount_satoshi - COALESCE(used_agg.total_used,0),
-				f.occurred_at_unix
-		 FROM fact_chain_asset_flows f
+				w.value_satoshi - COALESCE(used_agg.total_used,0),
+				w.created_at_unix
+		 FROM wallet_utxo w
+		 LEFT JOIN fact_chain_asset_flows f ON w.utxo_id=f.utxo_id AND f.direction='IN'
 		 LEFT JOIN (
 			SELECT c.source_flow_id, SUM(c.used_satoshi) AS total_used
 			FROM fact_asset_consumptions c
 			GROUP BY c.source_flow_id
 		 ) used_agg ON f.id=used_agg.source_flow_id
-		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'
-		   AND f.amount_satoshi > COALESCE(used_agg.total_used,0)
-		 ORDER BY f.occurred_at_unix ASC, f.id ASC`,
-		walletID, assetKind, tokenID,
+		 WHERE w.wallet_id=? AND w.state='unspent' AND w.allocation_class='plain_bsv'
+		   AND w.value_satoshi > COALESCE(used_agg.total_used,0)
+		 ORDER BY w.created_at_unix ASC, w.utxo_id ASC`,
+		walletID,
 	)
 	if err != nil {
 		return nil, err

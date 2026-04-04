@@ -66,6 +66,17 @@ func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T)
 	); err != nil {
 		t.Fatalf("seed wallet_utxo: %v", err)
 	}
+	// Step 6：getWalletUTXOsFromDB 现在走 fact 口径，需要种 fact 记录
+	if _, err := db.Exec(
+		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"flow_in_seed_utxo", walletID, addr, "IN", "BSV", "",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		0, 100, "", now, now, "WOC", "seed utxo for test", "{}",
+	); err != nil {
+		t.Fatalf("seed fact_chain_asset_flows: %v", err)
+	}
 
 	prevHash, err := chainhash.NewHashFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
 	if err != nil {
@@ -203,6 +214,17 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		0,
 	); err != nil {
 		t.Fatalf("seed wallet_utxo: %v", err)
+	}
+	// Step 6：getWalletUTXOsFromDB 现在走 fact 口径，需要种 fact 记录
+	if _, err := db.Exec(
+		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"flow_in_seed_utxo2", walletID, addr, "IN", "BSV", "",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:0",
+		"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		0, 100, "", now, now, "WOC", "seed utxo for test", "{}",
+	); err != nil {
+		t.Fatalf("seed fact_chain_asset_flows: %v", err)
 	}
 
 	prevHash, err := chainhash.NewHashFromHex("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
@@ -342,6 +364,17 @@ func TestGetWalletUTXOsFromDB_ExcludesProtectedAssetOutputs(t *testing.T) {
 		0,
 	); err != nil {
 		t.Fatalf("seed plain wallet_utxo: %v", err)
+	}
+	// Step 6：getWalletUTXOsFromDB 现在走 fact 口径，需要种 fact 记录
+	if _, err := db.Exec(
+		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"flow_in_plain_bsv_test", walletID, addr, "IN", "BSV", "",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb:1",
+		"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		1, 7, "", now, now, "WOC", "plain_bsv utxo for test", "{}",
+	); err != nil {
+		t.Fatalf("seed fact_chain_asset_flows: %v", err)
 	}
 
 	utxos, err := getWalletUTXOsFromDB(context.Background(), newClientDB(db, nil), rt)
