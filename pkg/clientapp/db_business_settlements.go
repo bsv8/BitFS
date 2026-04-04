@@ -391,11 +391,12 @@ func GetSettlementByBusinessID(ctx context.Context, store *clientDB, businessID 
 	return dbGetBusinessSettlementByBusinessID(ctx, store, businessID)
 }
 
-// GetMainSettlementStatusByFrontOrderID 按 front_order_id 查当前主结算状态
-// ⚠️ 第五步：仅供调试或兼容使用，不适用于正式下载业务状态判断
-// 临时取最近一条 business 的 settlement，无法处理多 seller 场景
-// 正式下载状态统一走 GetFrontOrderSettlementSummary
-func GetMainSettlementStatusByFrontOrderID(ctx context.Context, store *clientDB, frontOrderID string) (BusinessSettlementItem, error) {
+// GetMainSettlementStatusByFrontOrderIDCompat 【兼容函数·已降级】
+// ⚠️ 这是兼容函数，不支持一 front_order 多 business 的正式语义
+// ⚠️ 新代码禁止接入，正式读取统一走 GetFrontOrderSettlementSummary
+// 定位：仅供历史代码、调试脚本、临时兼容使用
+// 限制：只取最近一条 business 的 settlement，无法处理多 seller 场景
+func GetMainSettlementStatusByFrontOrderIDCompat(ctx context.Context, store *clientDB, frontOrderID string) (BusinessSettlementItem, error) {
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
@@ -677,13 +678,14 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 	})
 }
 
-// GetFullPoolSettlementChainByFrontOrderID 按 front_order_id 查完整池结算链
-// 返回：business -> settlement -> pool_allocation -> pool_session
+// GetFullPoolSettlementChainByFrontOrderIDCompat 【兼容函数·已降级】
+// 返回：business -> settlement -> pool_allocation -> pool_session（仅最近一条 business）
 //
-// ⚠️ 第四步降级：此函数只取最近一条 business，不适用于多 seller 下载场景。
-// 新代码请统一使用 GetFrontOrderSettlementSummary（返回全部 business + 汇总状态）。
-// 本函数保留用于调试和兼容历史查询，不再作为业务状态判断的主入口。
-func GetFullPoolSettlementChainByFrontOrderID(ctx context.Context, store *clientDB, frontOrderID string) (PoolSettlementChain, error) {
+// ⚠️ 这是兼容函数，不支持一 front_order 多 business 的正式语义
+// ⚠️ 新代码禁止接入，正式读取统一走 GetFrontOrderSettlementSummary
+// 定位：仅供历史代码、调试脚本、临时兼容使用
+// 限制：只取最近一条 business，无法处理多 seller 场景
+func GetFullPoolSettlementChainByFrontOrderIDCompat(ctx context.Context, store *clientDB, frontOrderID string) (PoolSettlementChain, error) {
 	var out PoolSettlementChain
 	if store == nil {
 		return out, fmt.Errorf("client db is nil")

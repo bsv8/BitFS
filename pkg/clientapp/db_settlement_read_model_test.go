@@ -562,10 +562,11 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 		t.Fatalf("expected settled_count 1, got %d", summary.Summary.SettledCount)
 	}
 
-	// 4. 再验证旧函数（GetFullPoolSettlementChainByFrontOrderID）也返回 settled
-	poolChain, err := GetFullPoolSettlementChainByFrontOrderID(ctx, store, frontOrderID)
+	// 4. 再验证兼容函数（GetFullPoolSettlementChainByFrontOrderIDCompat）也返回 settled
+	// 注：这是 compat 函数，只取最近一条 business，不代表正式聚合口径
+	poolChain, err := GetFullPoolSettlementChainByFrontOrderIDCompat(ctx, store, frontOrderID)
 	if err != nil {
-		t.Fatalf("GetFullPoolSettlementChainByFrontOrderID: %v", err)
+		t.Fatalf("GetFullPoolSettlementChainByFrontOrderIDCompat: %v", err)
 	}
 	if poolChain.Settlement.Status != "settled" {
 		t.Fatalf("expected pool chain settlement status settled, got %s", poolChain.Settlement.Status)
@@ -665,5 +666,133 @@ func TestStep4_FrontOrderNoBusinessYet(t *testing.T) {
 	}
 	if summary.Summary.OverallStatus != "pending" {
 		t.Fatalf("expected overall_status pending, got %s", summary.Summary.OverallStatus)
+	}
+}
+
+// ============================================================
+// 兼容函数测试（Compat）
+// ============================================================
+
+// TestCompat_MainSettlementStatusByFrontOrderID_StillWorks
+// 验证：compat 函数仍返回单条视图，但不代表正式聚合口径
+func TestCompat_MainSettlementStatusByFrontOrderID_StillWorks(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	frontOrderID := "front_order_compat_test_1"
+	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
+		FrontOrderID:   frontOrderID,
+		FrontType:      "download",
+		FrontSubtype:   "direct_transfer",
+		OwnerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectID: "demand_compat_1",
+		Status:         "pending",
+		Note:           "compat 测试",
+		Payload:        map[string]any{"test": "compat"},
+	}); err != nil {
+		t.Fatalf("upsert front_order: %v", err)
+	}
+
+	businessID := "biz_download_pool_compat_test_1"
+	settlementID := "set_download_pool_compat_test_1"
+	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		FrontOrderID:      frontOrderID,
+		FrontType:         "download",
+		FrontSubtype:      "direct_transfer",
+		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectType:  "demand",
+		TargetObjectID:    "demand_compat_1",
+		FrontOrderNote:    "compat 测试",
+		BusinessID:        businessID,
+		SourceType:        "front_order",
+		SourceID:          frontOrderID,
+		AccountingScene:   "direct_transfer",
+		AccountingSubType: "download_pool",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		TriggerType:       "front_order",
+		TriggerIDValue:    frontOrderID,
+		TriggerRole:       "primary",
+		SettlementID:      settlementID,
+		SettlementMethod:  SettlementMethodPool,
+	}); err != nil {
+		t.Fatalf("create business chain: %v", err)
+	}
+
+	// compat 函数应返回最近一条 business 的 settlement
+	compatSettlement, err := GetMainSettlementStatusByFrontOrderIDCompat(ctx, store, frontOrderID)
+	if err != nil {
+		t.Fatalf("GetMainSettlementStatusByFrontOrderIDCompat: %v", err)
+	}
+	if compatSettlement.SettlementID != settlementID {
+		t.Fatalf("expected settlementID %s, got %s", settlementID, compatSettlement.SettlementID)
+	}
+	if compatSettlement.Status != "pending" {
+		t.Fatalf("expected status pending, got %s", compatSettlement.Status)
+	}
+}
+
+// TestCompat_FullPoolSettlementChain_StillWorks
+// 验证：compat 函数仍可读，但不代表正式聚合口径
+func TestCompat_FullPoolSettlementChain_StillWorks(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	frontOrderID := "front_order_compat_chain_test"
+	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
+		FrontOrderID:   frontOrderID,
+		FrontType:      "download",
+		FrontSubtype:   "direct_transfer",
+		OwnerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectID: "demand_compat_chain",
+		Status:         "pending",
+		Note:           "compat chain 测试",
+		Payload:        map[string]any{"test": "compat_chain"},
+	}); err != nil {
+		t.Fatalf("upsert front_order: %v", err)
+	}
+
+	businessID := "biz_download_pool_compat_chain"
+	settlementID := "set_download_pool_compat_chain"
+	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		FrontOrderID:      frontOrderID,
+		FrontType:         "download",
+		FrontSubtype:      "direct_transfer",
+		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		TargetObjectType:  "demand",
+		TargetObjectID:    "demand_compat_chain",
+		FrontOrderNote:    "compat chain 测试",
+		BusinessID:        businessID,
+		SourceType:        "front_order",
+		SourceID:          frontOrderID,
+		AccountingScene:   "direct_transfer",
+		AccountingSubType: "download_pool",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		TriggerType:       "front_order",
+		TriggerIDValue:    frontOrderID,
+		TriggerRole:       "primary",
+		SettlementID:      settlementID,
+		SettlementMethod:  SettlementMethodPool,
+	}); err != nil {
+		t.Fatalf("create business chain: %v", err)
+	}
+
+	// compat 函数应返回单条视图
+	poolChain, err := GetFullPoolSettlementChainByFrontOrderIDCompat(ctx, store, frontOrderID)
+	if err != nil {
+		t.Fatalf("GetFullPoolSettlementChainByFrontOrderIDCompat: %v", err)
+	}
+	if poolChain.Business.BusinessID != businessID {
+		t.Fatalf("expected business_id %s, got %s", businessID, poolChain.Business.BusinessID)
+	}
+	if poolChain.Settlement.SettlementID != settlementID {
+		t.Fatalf("expected settlement_id %s, got %s", settlementID, poolChain.Settlement.SettlementID)
 	}
 }
