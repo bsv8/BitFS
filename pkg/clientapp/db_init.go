@@ -859,6 +859,74 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quotes_demand_created ON biz_demand_quotes(demand_id, created_at_unix DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quote_arbiters_quote_arbiter ON biz_demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quote_arbiters_arbiter ON biz_demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
+
+		// fact_chain_asset_flows: 资产事实主表（支持 IN/OUT 事实）
+		// 设计说明：
+		// - 记录链上资产流入流出的事实，作为余额计算的可信来源
+		// - evidence_source 目前只认 'WOC'（BSV20/BSV21 证据来源）
+		// - unknown 资产不入此表，保持口径纯净
+		// - 找零不单独建逻辑，由后续 UTXO 流转再次入表
+		`CREATE TABLE IF NOT EXISTS fact_chain_asset_flows(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			flow_id TEXT NOT NULL UNIQUE,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
+			asset_kind TEXT NOT NULL CHECK(asset_kind IN ('BSV','BSV20','BSV21')),
+			token_id TEXT NOT NULL DEFAULT '',
+			utxo_id TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			vout INTEGER NOT NULL,
+			amount_satoshi INTEGER NOT NULL,
+			quantity_text TEXT NOT NULL DEFAULT '',
+			occurred_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			evidence_source TEXT NOT NULL DEFAULT 'WOC',
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			UNIQUE(wallet_id, utxo_id, direction),
+			FOREIGN KEY(utxo_id) REFERENCES wallet_utxo(utxo_id)
+		)`,
+
+		// fact_asset_consumptions: 统一中间表
+		// 设计说明：
+		// - 把资产消耗关联到 chain_payment 或 pool_allocation
+		// - 二选一约束：chain_payment_id 与 pool_allocation_id 必须且只能有一个非空
+		// - 使用 SQLite 的 CHECK 约束实现二选一
+		// - 去重使用部分唯一索引（partial unique index），因为 SQLite 的 UNIQUE 对 NULL 不可靠
+		`CREATE TABLE IF NOT EXISTS fact_asset_consumptions(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			source_flow_id INTEGER NOT NULL,
+			chain_payment_id INTEGER,
+			pool_allocation_id INTEGER,
+			used_satoshi INTEGER NOT NULL DEFAULT 0,
+			used_quantity_text TEXT NOT NULL DEFAULT '',
+			occurred_at_unix INTEGER NOT NULL,
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
+			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
+			FOREIGN KEY(pool_allocation_id) REFERENCES fact_pool_allocations(id),
+			CHECK(
+				(chain_payment_id IS NOT NULL AND pool_allocation_id IS NULL) OR
+				(chain_payment_id IS NULL AND pool_allocation_id IS NOT NULL)
+			)
+		)`,
+
+		// fact_chain_asset_flows 索引
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_wallet_asset ON fact_chain_asset_flows(wallet_id, asset_kind, token_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_wallet_direction ON fact_chain_asset_flows(wallet_id, direction, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_txid_vout ON fact_chain_asset_flows(txid, vout, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_occurred ON fact_chain_asset_flows(occurred_at_unix DESC, id DESC)`,
+
+		// fact_asset_consumptions 索引
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_source ON fact_asset_consumptions(source_flow_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_payment ON fact_asset_consumptions(chain_payment_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_allocation ON fact_asset_consumptions(pool_allocation_id, id DESC)`,
+		// 部分唯一索引：解决 SQLite UNIQUE 对 NULL 不可靠的问题
+		// 确保同一 source_flow_id 不能重复关联到同一个 payment 或 allocation
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_payment ON fact_asset_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_allocation ON fact_asset_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL`,
 	}
 
 	for _, s := range stmts {
