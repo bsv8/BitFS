@@ -562,6 +562,14 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	if e.BusinessID == "" {
 		return fmt.Errorf("business_id is required")
 	}
+	// 第七阶段：business_role 必须是正式约束，不允许空值
+	e.BusinessRole = strings.TrimSpace(e.BusinessRole)
+	if e.BusinessRole == "" {
+		return fmt.Errorf("business_role is required: must be 'formal' or 'process'")
+	}
+	if e.BusinessRole != "formal" && e.BusinessRole != "process" {
+		return fmt.Errorf("business_role must be 'formal' or 'process', got '%s'", e.BusinessRole)
+	}
 	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.BusinessID

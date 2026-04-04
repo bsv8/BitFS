@@ -285,28 +285,8 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 			return financeBusinessItem{}, err
 		}
 		out.Payload = json.RawMessage(payload)
-		// 第六阶段：business_role 直接来自数据库字段，不再运行时推断
 		return out, nil
 	})
-}
-
-// inferBusinessRole 【已降级：仅历史兼容工具】
-// 第六阶段降级：此函数不再是主设计，仅用于历史数据未回填时的临时推断
-// - 新数据应优先使用数据库 business_role 字段
-// - 此函数可能在未来版本中删除
-// - formal：正式收费对象（如 biz_download_pool_*）
-// - process：过程财务对象（如 biz_c2c_open_* / biz_c2c_close_*）
-// - unknown：其他/未分类
-func inferBusinessRole(businessID string) string {
-	businessID = strings.TrimSpace(businessID)
-	switch {
-	case strings.HasPrefix(businessID, "biz_download_pool_"):
-		return "formal"
-	case strings.HasPrefix(businessID, "biz_c2c_open_"), strings.HasPrefix(businessID, "biz_c2c_close_"):
-		return "process"
-	default:
-		return "unknown"
-	}
 }
 
 func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeProcessEventFilter) (financeProcessEventPage, error) {

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
@@ -1165,5 +1166,114 @@ func TestFinanceLayer_HTTPBusinessRoleParam(t *testing.T) {
 	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid role should return 400: got %d", rec.Code)
+	}
+}
+
+// ============================================================
+// 第七阶段新增：business_role 强约束测试
+// ============================================================
+
+// TestBusinessRole_StrongConstraint_RejectsEmpty 验证空角色被拒绝
+func TestBusinessRole_StrongConstraint_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+
+	// 验证：写入空 business_role 应失败
+	err := dbAppendFinBusiness(db, finBusinessEntry{
+		BusinessID:        "biz_test_empty_role",
+		BusinessRole:      "", // 空值应被拒绝
+		SourceType:        "test",
+		SourceID:          "test_1",
+		AccountingScene:   "test",
+		AccountingSubType: "test",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:test",
+		Status:            "pending",
+		OccurredAtUnix:    time.Now().Unix(),
+		IdempotencyKey:    "test_empty_role",
+		Note:              "test empty role",
+	})
+	if err == nil {
+		t.Fatal("expected error for empty business_role, got nil")
+	}
+	if !strings.Contains(err.Error(), "business_role is required") {
+		t.Fatalf("expected business_role validation error, got: %v", err)
+	}
+}
+
+// TestBusinessRole_StrongConstraint_RejectsInvalid 验证非法角色被拒绝
+func TestBusinessRole_StrongConstraint_RejectsInvalid(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+
+	// 验证：写入非法 business_role 应失败
+	err := dbAppendFinBusiness(db, finBusinessEntry{
+		BusinessID:        "biz_test_invalid_role",
+		BusinessRole:      "unknown", // 非法值应被拒绝
+		SourceType:        "test",
+		SourceID:          "test_1",
+		AccountingScene:   "test",
+		AccountingSubType: "test",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:test",
+		Status:            "pending",
+		OccurredAtUnix:    time.Now().Unix(),
+		IdempotencyKey:    "test_invalid_role",
+		Note:              "test invalid role",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid business_role, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be 'formal' or 'process'") {
+		t.Fatalf("expected business_role validation error, got: %v", err)
+	}
+}
+
+// TestBusinessRole_Backfill_ReducesEmptyCount 验证回填减少空值数量
+func TestBusinessRole_Backfill_ReducesEmptyCount(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	// 写入过程 business（带正确 business_role）
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_backfill_test",
+		BaseTxID:          "base_tx_backfill_test",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_backfill_test", baseTxHex, 700, 290, sellerPubHex)
+
+	// 验证：写入的记录都有 business_role
+	var emptyRoleCount int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM fin_business WHERE business_id LIKE 'biz_c2c_%' AND (business_role='' OR business_role IS NULL)`,
+	).Scan(&emptyRoleCount); err != nil {
+		t.Fatalf("query empty role count failed: %v", err)
+	}
+	if emptyRoleCount != 0 {
+		t.Fatalf("new writes should have business_role set, got %d empty records", emptyRoleCount)
+	}
+
+	// 验证：回填后空值记录不增加
+	emptyCountBefore, _ := CountEmptyBusinessRole(db)
+	if err := backfillFinBusinessRole(db); err != nil {
+		t.Fatalf("backfill failed: %v", err)
+	}
+	emptyCountAfter, _ := CountEmptyBusinessRole(db)
+	if emptyCountAfter > emptyCountBefore {
+		t.Fatalf("backfill should not increase empty role count: before=%d after=%d", emptyCountBefore, emptyCountAfter)
 	}
 }

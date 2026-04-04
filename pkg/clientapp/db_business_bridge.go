@@ -134,11 +134,17 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		}
 
 		// 2. 创建或更新 business
-		// 第五阶段：根据 accounting_scene 推断 business_role
-		// direct_transfer 是正式收费场景，其他为过程财务场景
-		businessRole := "formal"
-		if in.AccountingScene == "direct_transfer_process" || in.AccountingScene == "fee_pool" {
+		// 第七阶段：根据 accounting_scene 显式推断 business_role
+		// 正式收费场景：direct_transfer（下载池支付）、domain（域名注册）
+		// 过程财务场景：direct_transfer_process（池开闭）、fee_pool（费用池）、wallet_transfer（钱包链）
+		var businessRole string
+		switch in.AccountingScene {
+		case "direct_transfer", "domain":
+			businessRole = "formal"
+		case "direct_transfer_process", "fee_pool", "wallet_transfer":
 			businessRole = "process"
+		default:
+			return fmt.Errorf("unknown accounting_scene '%s': cannot determine business_role", in.AccountingScene)
 		}
 		idempotencyKey := "bridge:" + in.BusinessID
 		if err := dbAppendFinBusinessTx(tx, finBusinessEntry{
@@ -269,6 +275,14 @@ func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
 	e.BusinessID = strings.TrimSpace(e.BusinessID)
 	if e.BusinessID == "" {
 		return fmt.Errorf("business_id is required")
+	}
+	// 第七阶段：business_role 必须是正式约束，不允许空值
+	e.BusinessRole = strings.TrimSpace(e.BusinessRole)
+	if e.BusinessRole == "" {
+		return fmt.Errorf("business_role is required: must be 'formal' or 'process'")
+	}
+	if e.BusinessRole != "formal" && e.BusinessRole != "process" {
+		return fmt.Errorf("business_role must be 'formal' or 'process', got '%s'", e.BusinessRole)
 	}
 	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
 	if e.IdempotencyKey == "" {

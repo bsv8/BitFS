@@ -805,13 +805,14 @@ func firstNonEmptyRawJSON(raw string) (string, bool) {
 	return raw, true
 }
 
-// backfillFinBusinessRole 【第五阶段：历史数据回填】
+// backfillFinBusinessRole 【第七阶段：历史数据回填收口】
 // 设计说明：
 // - 把 fin_business 历史数据按 business_id 前缀补上 business_role
 // - biz_download_pool_* -> formal（正式收费对象）
 // - biz_c2c_open_* / biz_c2c_close_* -> process（过程财务对象）
 // - biz_wallet_chain_* -> process（钱包过程财务对象）
 // - biz_feepool_open_* -> process（费用池过程对象）
+// - biz_domain_* -> formal（域名正式收费对象）
 // - 其他类型保持空值（由写入路径显式指定）
 // - 这是过渡逻辑，新写入路径应显式写 business_role
 func backfillFinBusinessRole(db *sql.DB) error {
@@ -819,12 +820,20 @@ func backfillFinBusinessRole(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 
-	// 回填正式收费对象
+	// 回填正式收费对象 - 下载池
 	if _, err := db.Exec(
 		`UPDATE fin_business SET business_role='formal'
 		 WHERE business_id LIKE 'biz_download_pool_%' AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill formal role for biz_download_pool_*: %w", err)
+	}
+
+	// 回填正式收费对象 - 域名
+	if _, err := db.Exec(
+		`UPDATE fin_business SET business_role='formal'
+		 WHERE business_id LIKE 'biz_domain_%' AND (business_role='' OR business_role IS NULL)`,
+	); err != nil {
+		return fmt.Errorf("backfill formal role for biz_domain_*: %w", err)
 	}
 
 	// 回填过程财务对象 - 直连池开闭
@@ -848,11 +857,48 @@ func backfillFinBusinessRole(db *sql.DB) error {
 	// 回填过程财务对象 - 费用池
 	if _, err := db.Exec(
 		`UPDATE fin_business SET business_role='process'
-		 WHERE business_id LIKE 'biz_feepool_open_%'
+		 WHERE business_id LIKE 'biz_feepool_%'
 		   AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill process role for biz_feepool_*: %w", err)
 	}
 
 	return nil
+}
+
+// CountEmptyBusinessRole 统计还剩多少空 business_role 记录
+// 第七阶段新增：用于监控历史回填进度
+func CountEmptyBusinessRole(db *sql.DB) (int, error) {
+	if db == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
+	var count int
+	err := db.QueryRow(
+		`SELECT COUNT(1) FROM fin_business WHERE business_role='' OR business_role IS NULL`,
+	).Scan(&count)
+	return count, err
+}
+
+// ListEmptyBusinessRoleIDs 列出空 business_role 的记录 ID
+// 第七阶段新增：用于识别哪些记录还需要手动处理
+func ListEmptyBusinessRoleIDs(db *sql.DB) ([]string, error) {
+	if db == nil {
+		return nil, fmt.Errorf("db is nil")
+	}
+	rows, err := db.Query(
+		`SELECT business_id FROM fin_business WHERE business_role='' OR business_role IS NULL ORDER BY business_id`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
