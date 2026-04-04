@@ -815,12 +815,12 @@ func dbListTokenSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind st
 	rows, err := db.Query(
 		`SELECT f.id,f.wallet_id,f.address,f.asset_kind,f.token_id,f.utxo_id,f.txid,f.vout,
 				f.quantity_text,
-				COALESCE(used_agg.total_used_text,'0'),
+				COALESCE(used_agg.total_used_text,''),
 				f.occurred_at_unix
 		 FROM fact_chain_asset_flows f
 		 JOIN wallet_utxo w ON f.utxo_id=w.utxo_id
 		 LEFT JOIN (
-			SELECT c.source_flow_id, COALESCE(SUM(CAST(c.used_quantity_text AS REAL)),0) AS total_used_text
+			SELECT c.source_flow_id, COALESCE(GROUP_CONCAT(c.used_quantity_text,','),'') AS total_used_text
 			FROM fact_asset_consumptions c
 			WHERE c.used_quantity_text != ''
 			GROUP BY c.source_flow_id
@@ -890,7 +890,7 @@ func dbLoadTokenBalanceFactDB(db *sql.DB, walletID string, assetKind string, tok
 		`SELECT COALESCE(GROUP_CONCAT(c.used_quantity_text,','),'')
 		 FROM fact_asset_consumptions c
 		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
-		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=?`,
+		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'`,
 		walletID, assetKind, tokenID,
 	).Scan(&totalUsedText)
 	if err != nil {
