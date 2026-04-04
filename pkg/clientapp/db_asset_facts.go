@@ -768,3 +768,207 @@ func dbSelectSourceFlowsForTargetDB(db *sql.DB, walletID string, assetKind strin
 
 	return out, nil
 }
+
+// tokenSourceFlow token 方向的 source flow
+type tokenSourceFlow struct {
+	FlowID         int64  `json:"flow_id"`
+	WalletID       string `json:"wallet_id"`
+	Address        string `json:"address"`
+	AssetKind      string `json:"asset_kind"`
+	TokenID        string `json:"token_id"`
+	UTXOID         string `json:"utxo_id"`
+	TxID           string `json:"txid"`
+	Vout           uint32 `json:"vout"`
+	QuantityText   string `json:"quantity_text"`
+	TotalUsedText  string `json:"total_used_text"`
+	OccurredAtUnix int64  `json:"occurred_at_unix"`
+}
+
+// dbListTokenSpendableSourceFlows 按 token_id 返回仍有剩余额度的 source flow
+// 设计说明：
+// - 只返回 asset_kind='BSV20' 或 'BSV21' 的记录
+// - remaining 由 quantity_text - used_quantity_text 计算
+// - 因为 quantity_text 是字符串，返回原始值由调用方做小数运算
+func dbListTokenSpendableSourceFlows(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) ([]tokenSourceFlow, error) {
+	if store == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) ([]tokenSourceFlow, error) {
+		return dbListTokenSpendableSourceFlowsDB(db, walletID, assetKind, tokenID)
+	})
+}
+
+func dbListTokenSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string, tokenID string) ([]tokenSourceFlow, error) {
+	walletID = strings.TrimSpace(walletID)
+	if walletID == "" {
+		return nil, fmt.Errorf("wallet_id is required")
+	}
+	assetKind = strings.ToUpper(strings.TrimSpace(assetKind))
+	if assetKind != "BSV20" && assetKind != "BSV21" {
+		return nil, fmt.Errorf("asset_kind must be BSV20 or BSV21")
+	}
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return nil, fmt.Errorf("token_id is required")
+	}
+
+	rows, err := db.Query(
+		`SELECT f.id,f.wallet_id,f.address,f.asset_kind,f.token_id,f.utxo_id,f.txid,f.vout,
+				f.quantity_text,
+				COALESCE(used_agg.total_used_text,'0'),
+				f.occurred_at_unix
+		 FROM fact_chain_asset_flows f
+		 JOIN wallet_utxo w ON f.utxo_id=w.utxo_id
+		 LEFT JOIN (
+			SELECT c.source_flow_id, COALESCE(SUM(CAST(c.used_quantity_text AS REAL)),0) AS total_used_text
+			FROM fact_asset_consumptions c
+			WHERE c.used_quantity_text != ''
+			GROUP BY c.source_flow_id
+		 ) used_agg ON f.id=used_agg.source_flow_id
+		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'
+		   AND w.state='unspent'
+		 ORDER BY f.occurred_at_unix ASC, f.id ASC`,
+		walletID, assetKind, tokenID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]tokenSourceFlow, 0, 16)
+	for rows.Next() {
+		var s tokenSourceFlow
+		if err := rows.Scan(&s.FlowID, &s.WalletID, &s.Address, &s.AssetKind, &s.TokenID,
+			&s.UTXOID, &s.TxID, &s.Vout, &s.QuantityText, &s.TotalUsedText, &s.OccurredAtUnix); err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, rows.Err()
+}
+
+// tokenBalanceResult token 余额结果
+type tokenBalanceResult struct {
+	WalletID      string `json:"wallet_id"`
+	AssetKind     string `json:"asset_kind"`
+	TokenID       string `json:"token_id"`
+	TotalInText   string `json:"total_in_text"`
+	TotalUsedText string `json:"total_used_text"`
+}
+
+// dbLoadTokenBalanceFact 按 wallet_id + asset_kind + token_id 聚合 token 余额
+// 设计说明：
+// - 返回 quantity_text 的累加和（逗号分隔字符串），由调用方做小数运算
+// - 如果无 fact 数据，返回空字符串，调用方应优雅降级
+func dbLoadTokenBalanceFact(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) (tokenBalanceResult, error) {
+	if store == nil {
+		return tokenBalanceResult{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (tokenBalanceResult, error) {
+		return dbLoadTokenBalanceFactDB(db, walletID, assetKind, tokenID)
+	})
+}
+
+func dbLoadTokenBalanceFactDB(db *sql.DB, walletID string, assetKind string, tokenID string) (tokenBalanceResult, error) {
+	walletID = strings.TrimSpace(walletID)
+	if walletID == "" {
+		return tokenBalanceResult{}, fmt.Errorf("wallet_id is required")
+	}
+	assetKind = strings.ToUpper(strings.TrimSpace(assetKind))
+	tokenID = strings.TrimSpace(tokenID)
+
+	var totalInText, totalUsedText string
+	err := db.QueryRow(
+		`SELECT COALESCE(GROUP_CONCAT(quantity_text,','),'') FROM fact_chain_asset_flows WHERE wallet_id=? AND asset_kind=? AND token_id=? AND direction='IN'`,
+		walletID, assetKind, tokenID,
+	).Scan(&totalInText)
+	if err != nil {
+		return tokenBalanceResult{}, err
+	}
+
+	err = db.QueryRow(
+		`SELECT COALESCE(GROUP_CONCAT(c.used_quantity_text,','),'')
+		 FROM fact_asset_consumptions c
+		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
+		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=?`,
+		walletID, assetKind, tokenID,
+	).Scan(&totalUsedText)
+	if err != nil {
+		return tokenBalanceResult{}, err
+	}
+
+	return tokenBalanceResult{
+		WalletID:      walletID,
+		AssetKind:     assetKind,
+		TokenID:       tokenID,
+		TotalInText:   totalInText,
+		TotalUsedText: totalUsedText,
+	}, nil
+}
+
+// dbAppendTokenConsumptionForChainPayment 写入 token 消耗（含 used_quantity_text）
+func dbAppendTokenConsumptionForChainPayment(ctx context.Context, store *clientDB, chainPaymentID int64, utxoID string, usedQuantityText string, occurredAtUnix int64) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		return dbAppendTokenConsumptionForChainPaymentDB(db, chainPaymentID, utxoID, usedQuantityText, occurredAtUnix)
+	})
+}
+
+func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64, utxoID string, usedQuantityText string, occurredAtUnix int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if chainPaymentID <= 0 {
+		return fmt.Errorf("chain_payment_id is required")
+	}
+	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+	if utxoID == "" {
+		return fmt.Errorf("utxo_id is required")
+	}
+
+	// 查找源流入记录
+	sourceFlowID, err := dbGetAssetFlowInByUTXO(db, utxoID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// 没有 source flow，跳过
+			return nil
+		}
+		return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
+	}
+
+	// 幂等检查
+	var n int
+	if err := db.QueryRow(
+		`SELECT COUNT(1) FROM fact_asset_consumptions WHERE source_flow_id=? AND chain_payment_id=?`,
+		sourceFlowID, chainPaymentID,
+	).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+
+	now := time.Now().Unix()
+	occurredAt := occurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+
+	_, err = db.Exec(
+		`INSERT INTO fact_asset_consumptions(
+			source_flow_id,chain_payment_id,pool_allocation_id,used_satoshi,used_quantity_text,
+			occurred_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?)`,
+		sourceFlowID,
+		chainPaymentID,
+		nil,
+		0,
+		strings.TrimSpace(usedQuantityText),
+		occurredAt,
+		"token consumed by chain payment",
+		"{}",
+	)
+	return err
+}
