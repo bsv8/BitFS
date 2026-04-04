@@ -48,7 +48,7 @@ func dbLoadSeedPricingPolicyQuery(queryer interface {
 	QueryRow(string, ...any) *sql.Row
 }, seedHash string) (seedPricingPolicyRow, error) {
 	var out seedPricingPolicyRow
-	err := queryer.QueryRow(`SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM seed_pricing_policy WHERE seed_hash=?`, normalizeSeedHashHex(seedHash)).
+	err := queryer.QueryRow(`SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM biz_seed_pricing_policy WHERE seed_hash=?`, normalizeSeedHashHex(seedHash)).
 		Scan(&out.SeedHash, &out.FloorPriceSatPer64K, &out.ResaleDiscountBPS, &out.PricingSource, &out.UpdatedAtUnix)
 	if err != nil {
 		return seedPricingPolicyRow{}, err
@@ -68,23 +68,23 @@ func dbUpsertSeedPricingPolicyExec(execer interface {
 		source = "system"
 	}
 	_, err := execer.Exec(
-		`INSERT INTO seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix)
+		`INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix)
 		 VALUES(?,?,?,?,?)
 		 ON CONFLICT(seed_hash) DO UPDATE SET
 		 floor_unit_price_sat_per_64k=CASE
-		   WHEN seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN seed_pricing_policy.floor_unit_price_sat_per_64k
+		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.floor_unit_price_sat_per_64k
 		   ELSE excluded.floor_unit_price_sat_per_64k
 		 END,
 		 resale_discount_bps=CASE
-		   WHEN seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN seed_pricing_policy.resale_discount_bps
+		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.resale_discount_bps
 		   ELSE excluded.resale_discount_bps
 		 END,
 		 pricing_source=CASE
-		   WHEN seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN seed_pricing_policy.pricing_source
+		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.pricing_source
 		   ELSE excluded.pricing_source
 		 END,
 		 updated_at_unix=CASE
-		   WHEN seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN seed_pricing_policy.updated_at_unix
+		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.updated_at_unix
 		   ELSE excluded.updated_at_unix
 		 END`,
 		seedHash, floorUnit, discountBPS, source, updatedAtUnix,
@@ -96,7 +96,7 @@ func dbSyncSystemSeedPricingPolicies(db *sql.DB, floorUnit, discountBPS uint64) 
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	rows, err := db.Query(`SELECT seed_hash FROM seeds`)
+	rows, err := db.Query(`SELECT seed_hash FROM biz_seeds`)
 	if err != nil {
 		return err
 	}

@@ -98,7 +98,7 @@ func backfillLegacyPoolAllocationFinanceSources(db *sql.DB) error {
 		if looksLikeIntegerID(sourceID) {
 			if !legacyPoolAllocationIDExistsTx(tx, sourceID) {
 				rollback()
-				return fmt.Errorf("pool_allocation source id %s already looks migrated but pool_allocations row is missing", sourceID)
+				return fmt.Errorf("pool_allocation source id %s already looks migrated but fact_pool_allocations row is missing", sourceID)
 			}
 			continue
 		}
@@ -108,7 +108,7 @@ func backfillLegacyPoolAllocationFinanceSources(db *sql.DB) error {
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				rollback()
-				return fmt.Errorf("pool_allocation source id %s has no pool_allocations mapping", allocationID)
+				return fmt.Errorf("pool_allocation source id %s has no fact_pool_allocations mapping", allocationID)
 			}
 			rollback()
 			return fmt.Errorf("resolve pool_allocation mapping for %s: %w", allocationID, err)
@@ -183,12 +183,12 @@ func backfillLegacyWalletChainFinanceSources(db *sql.DB) error {
 func legacyFinanceDistinctSourceIDs(tx *sql.Tx, sourceType string) ([]string, error) {
 	rows, err := tx.Query(`
 		SELECT DISTINCT lower(trim(source_id))
-		  FROM fin_business
+		  FROM settle_businesses
 		 WHERE source_type=?
 		   AND trim(source_id)!=''
 		UNION
 		SELECT DISTINCT lower(trim(source_id))
-		  FROM fin_process_events
+		  FROM settle_process_events
 		 WHERE source_type=?
 		   AND trim(source_id)!=''
 		ORDER BY 1 ASC`,
@@ -236,13 +236,13 @@ func legacyRewriteFinanceSourceTx(tx *sql.Tx, oldSourceType, oldSourceID, newSou
 	}
 
 	if _, err := tx.Exec(
-		`UPDATE fin_business SET source_type=?, source_id=? WHERE source_type=? AND lower(trim(source_id))=?`,
+		`UPDATE settle_businesses SET source_type=?, source_id=? WHERE source_type=? AND lower(trim(source_id))=?`,
 		newSourceType, newSourceID, oldSourceType, strings.ToLower(oldSourceID),
 	); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(
-		`UPDATE fin_process_events SET source_type=?, source_id=? WHERE source_type=? AND lower(trim(source_id))=?`,
+		`UPDATE settle_process_events SET source_type=?, source_id=? WHERE source_type=? AND lower(trim(source_id))=?`,
 		newSourceType, newSourceID, oldSourceType, strings.ToLower(oldSourceID),
 	); err != nil {
 		return err
@@ -256,7 +256,7 @@ func legacyPoolAllocationIDExistsTx(tx *sql.Tx, sourceID string) bool {
 		return false
 	}
 	var exists int
-	err := tx.QueryRow(`SELECT 1 FROM pool_allocations WHERE id=?`, sourceID).Scan(&exists)
+	err := tx.QueryRow(`SELECT 1 FROM fact_pool_allocations WHERE id=?`, sourceID).Scan(&exists)
 	return err == nil
 }
 
@@ -440,7 +440,7 @@ func resolveLegacyWalletChainFactsTx(tx *sql.Tx, txid string) (legacyWalletChain
 func legacyWalletChainBusinessRowsTx(tx *sql.Tx, txid string) ([]legacyWalletChainBusinessRow, error) {
 	rows, err := tx.Query(`
 		SELECT business_id,source_id,accounting_subtype,status,occurred_at_unix,from_party_id,to_party_id,note,payload_json
-		  FROM fin_business
+		  FROM settle_businesses
 		 WHERE source_type='wallet_chain'
 		   AND lower(trim(source_id))=?
 		 ORDER BY occurred_at_unix ASC,business_id ASC`,
@@ -465,7 +465,7 @@ func legacyWalletChainBusinessRowsTx(tx *sql.Tx, txid string) ([]legacyWalletCha
 func legacyWalletChainBreakdownRowsTx(tx *sql.Tx, txid string) ([]legacyWalletChainBreakdownRow, error) {
 	rows, err := tx.Query(`
 		SELECT b.business_id,b.txid,b.tx_role,b.gross_input_satoshi,b.change_back_satoshi,b.external_in_satoshi,b.counterparty_out_satoshi,b.miner_fee_satoshi,b.net_out_satoshi,b.net_in_satoshi,b.created_at_unix,b.note,b.payload_json
-		  FROM fin_tx_breakdown b
+		  FROM settle_tx_breakdown b
 		 WHERE lower(trim(b.txid))=?
 		   AND b.business_id LIKE 'biz_wallet_chain_%'
 		 ORDER BY b.id ASC`,
@@ -490,7 +490,7 @@ func legacyWalletChainBreakdownRowsTx(tx *sql.Tx, txid string) ([]legacyWalletCh
 func legacyWalletChainProcessRowsTx(tx *sql.Tx, txid string) ([]legacyWalletChainProcessRow, error) {
 	rows, err := tx.Query(`
 		SELECT process_id,source_id,accounting_subtype,status,occurred_at_unix,note,payload_json
-		  FROM fin_process_events
+		  FROM settle_process_events
 		 WHERE source_type='wallet_chain'
 		   AND lower(trim(source_id))=?
 		 ORDER BY occurred_at_unix ASC,process_id ASC`,
@@ -807,7 +807,7 @@ func firstNonEmptyRawJSON(raw string) (string, bool) {
 
 // backfillFinBusinessRole 【第七阶段：历史数据回填收口】
 // 设计说明：
-// - 把 fin_business 历史数据按 business_id 前缀补上 business_role
+// - 把 settle_businesses 历史数据按 business_id 前缀补上 business_role
 // - biz_download_pool_* -> formal（正式收费对象）
 // - biz_c2c_open_* / biz_c2c_close_* -> process（过程财务对象）
 // - biz_wallet_chain_* -> process（钱包过程财务对象）
@@ -824,7 +824,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填正式收费对象 - 下载池
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='formal'
+		`UPDATE settle_businesses SET business_role='formal'
 		 WHERE business_id LIKE 'biz_download_pool_%' AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill formal role for biz_download_pool_*: %w", err)
@@ -832,7 +832,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填正式收费对象 - 域名
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='formal'
+		`UPDATE settle_businesses SET business_role='formal'
 		 WHERE business_id LIKE 'biz_domain_%' AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill formal role for biz_domain_*: %w", err)
@@ -840,7 +840,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填正式收费对象 - 回填域名
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='formal'
+		`UPDATE settle_businesses SET business_role='formal'
 		 WHERE business_id LIKE 'biz_backfill_domain_%' AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill formal role for biz_backfill_domain_*: %w", err)
@@ -848,7 +848,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填正式收费对象 - 回填池支付
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='formal'
+		`UPDATE settle_businesses SET business_role='formal'
 		 WHERE business_id LIKE 'biz_backfill_pool_%' AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
 		return fmt.Errorf("backfill formal role for biz_backfill_pool_*: %w", err)
@@ -856,7 +856,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填过程财务对象 - 直连池开闭
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='process'
+		`UPDATE settle_businesses SET business_role='process'
 		 WHERE (business_id LIKE 'biz_c2c_open_%' OR business_id LIKE 'biz_c2c_close_%')
 		   AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
@@ -865,7 +865,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填过程财务对象 - 钱包链
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='process'
+		`UPDATE settle_businesses SET business_role='process'
 		 WHERE business_id LIKE 'biz_wallet_chain_%'
 		   AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
@@ -874,7 +874,7 @@ func backfillFinBusinessRole(db *sql.DB) error {
 
 	// 回填过程财务对象 - 费用池
 	if _, err := db.Exec(
-		`UPDATE fin_business SET business_role='process'
+		`UPDATE settle_businesses SET business_role='process'
 		 WHERE business_id LIKE 'biz_feepool_%'
 		   AND (business_role='' OR business_role IS NULL)`,
 	); err != nil {
@@ -892,7 +892,7 @@ func CountEmptyBusinessRole(db *sql.DB) (int, error) {
 	}
 	var count int
 	err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_business WHERE business_role='' OR business_role IS NULL`,
+		`SELECT COUNT(1) FROM settle_businesses WHERE business_role='' OR business_role IS NULL`,
 	).Scan(&count)
 	return count, err
 }
@@ -904,7 +904,7 @@ func ListEmptyBusinessRoleIDs(db *sql.DB) ([]string, error) {
 		return nil, fmt.Errorf("db is nil")
 	}
 	rows, err := db.Query(
-		`SELECT business_id FROM fin_business WHERE business_role='' OR business_role IS NULL ORDER BY business_id`,
+		`SELECT business_id FROM settle_businesses WHERE business_role='' OR business_role IS NULL ORDER BY business_id`,
 	)
 	if err != nil {
 		return nil, err

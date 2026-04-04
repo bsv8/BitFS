@@ -20,8 +20,8 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		t.Fatalf("mkdir data: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir seeds dir: %v", err)
+	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir biz_seeds dir: %v", err)
 	}
 	if err := os.MkdirAll(ws1, 0o755); err != nil {
 		t.Fatalf("mkdir ws1: %v", err)
@@ -60,7 +60,7 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 	mgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
-		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
 	}
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
@@ -80,8 +80,8 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 		}
 	}
 
-	assertCount(`SELECT COUNT(1) FROM workspace_files`, 1)
-	assertCount(`SELECT COUNT(1) FROM seeds`, 1)
+	assertCount(`SELECT COUNT(1) FROM biz_workspace_files`, 1)
+	assertCount(`SELECT COUNT(1) FROM biz_seeds`, 1)
 
 	ws2Item, err := mgr.Add(ws2, 0)
 	if err != nil {
@@ -90,8 +90,8 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 	if _, err := mgr.SyncOnce(context.Background()); err != nil {
 		t.Fatalf("sync once (ws1+ws2): %v", err)
 	}
-	assertCount(`SELECT COUNT(1) FROM workspace_files`, 2)
-	assertCount(`SELECT COUNT(1) FROM seeds`, 2)
+	assertCount(`SELECT COUNT(1) FROM biz_workspace_files`, 2)
+	assertCount(`SELECT COUNT(1) FROM biz_seeds`, 2)
 
 	// 删除 ws2 后，相关索引数据应被清理；再扫描会清理孤儿 seed 文件。
 	if err := mgr.DeleteByPath(ws2Item.WorkspacePath); err != nil {
@@ -102,13 +102,13 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 	}
 
 	var ws2Files int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE workspace_path=?`, ws2).Scan(&ws2Files); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_workspace_files WHERE workspace_path=?`, ws2).Scan(&ws2Files); err != nil {
 		t.Fatalf("query ws2 files: %v", err)
 	}
 	if ws2Files != 0 {
 		t.Fatalf("ws2 files should be cleaned, got=%d", ws2Files)
 	}
-	assertCount(`SELECT COUNT(1) FROM seeds`, 1)
+	assertCount(`SELECT COUNT(1) FROM biz_seeds`, 1)
 }
 
 func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
@@ -117,8 +117,8 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 	base := t.TempDir()
 	dataDir := filepath.Join(base, "data")
 	ws := filepath.Join(base, "ws")
-	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir seeds dir: %v", err)
+	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir biz_seeds dir: %v", err)
 	}
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -168,7 +168,7 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 	mgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
-		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
 	}
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
@@ -187,7 +187,7 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 
 	var gotSeedHash string
 	var gotLocked int64
-	err = db.QueryRow(`SELECT seed_hash,seed_locked FROM workspace_files WHERE workspace_path=? AND file_path=?`, ws, filepath.Base(partialPath)).Scan(&gotSeedHash, &gotLocked)
+	err = db.QueryRow(`SELECT seed_hash,seed_locked FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, ws, filepath.Base(partialPath)).Scan(&gotSeedHash, &gotLocked)
 	if err != nil {
 		t.Fatalf("query workspace file: %v", err)
 	}
@@ -200,8 +200,8 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 
 	var gotSeedPath string
 	var gotChunkCount uint32
-	if err := db.QueryRow(`SELECT seed_file_path,chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&gotSeedPath, &gotChunkCount); err != nil {
-		t.Fatalf("query seeds: %v", err)
+	if err := db.QueryRow(`SELECT seed_file_path,chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&gotSeedPath, &gotChunkCount); err != nil {
+		t.Fatalf("query biz_seeds: %v", err)
 	}
 	if gotChunkCount != chunkCount {
 		t.Fatalf("seed chunk count mismatch: got=%d want=%d", gotChunkCount, chunkCount)
@@ -215,14 +215,14 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 	}
 
 	var availCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM seed_chunk_supply WHERE seed_hash=?`, seedHash).Scan(&availCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash).Scan(&availCount); err != nil {
 		t.Fatalf("count available chunks: %v", err)
 	}
 	if availCount != 1 {
 		t.Fatalf("available chunk count mismatch: got=%d want=1", availCount)
 	}
 	var idx uint32
-	if err := db.QueryRow(`SELECT chunk_index FROM seed_chunk_supply WHERE seed_hash=?`, seedHash).Scan(&idx); err != nil {
+	if err := db.QueryRow(`SELECT chunk_index FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash).Scan(&idx); err != nil {
 		t.Fatalf("query available chunk index: %v", err)
 	}
 	if idx != 0 {
@@ -236,8 +236,8 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 	base := t.TempDir()
 	dataDir := filepath.Join(base, "data")
 	ws := filepath.Join(base, "ws")
-	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir seeds dir: %v", err)
+	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir biz_seeds dir: %v", err)
 	}
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir workspace: %v", err)
@@ -266,7 +266,7 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 	mgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
-		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
 	}
 	wsItem, err := mgr.Add(ws, 100)
 	if err != nil {
@@ -298,16 +298,16 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 	if err := os.WriteFile(newPath, []byte(strings.Repeat("n", 30)), 0o644); err != nil {
 		t.Fatalf("write new seg: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamOld, "000000.seg"), strings.Repeat("c", 64), 0); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamOld, "000000.seg"), strings.Repeat("c", 64), 0); err != nil {
 		t.Fatalf("insert old workspace file: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamNew, "000000.seg"), strings.Repeat("d", 64), 0); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamNew, "000000.seg"), strings.Repeat("d", 64), 0); err != nil {
 		t.Fatalf("insert new workspace file: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("c", 64), 1, 60, filepath.Join(dataDir, "seeds", "c.bse"), "", ""); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("c", 64), 1, 60, filepath.Join(dataDir, "biz_seeds", "c.bse"), "", ""); err != nil {
 		t.Fatalf("insert old seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("d", 64), 1, 30, filepath.Join(dataDir, "seeds", "d.bse"), "", ""); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("d", 64), 1, 30, filepath.Join(dataDir, "biz_seeds", "d.bse"), "", ""); err != nil {
 		t.Fatalf("insert new seed: %v", err)
 	}
 
@@ -321,13 +321,13 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 		t.Fatalf("new stream file should remain: %v", err)
 	}
 	var remain int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM workspace_files WHERE file_path LIKE ?`, "%"+streamOld+"%").Scan(&remain); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_workspace_files WHERE file_path LIKE ?`, "%"+streamOld+"%").Scan(&remain); err != nil {
 		t.Fatalf("count old stream files: %v", err)
 	}
 	if remain != 0 {
 		t.Fatalf("old stream rows should be removed, got=%d", remain)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM seeds WHERE seed_hash=?`, strings.Repeat("c", 64)).Scan(&remain); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_seeds WHERE seed_hash=?`, strings.Repeat("c", 64)).Scan(&remain); err != nil {
 		t.Fatalf("count old seed: %v", err)
 	}
 	if remain != 0 {

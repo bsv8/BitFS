@@ -78,7 +78,7 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO front_orders(
+			`INSERT INTO biz_front_orders(
 				front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(front_order_id) DO UPDATE SET
@@ -121,7 +121,7 @@ func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) 
 		var payload string
 		err := db.QueryRow(
 			`SELECT front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			 FROM front_orders WHERE front_order_id=?`,
+			 FROM biz_front_orders WHERE front_order_id=?`,
 			frontOrderID,
 		).Scan(
 			&item.FrontOrderID, &item.FrontType, &item.FrontSubtype, &item.OwnerPubkeyHex,
@@ -173,7 +173,7 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 			args = append(args, f.Status)
 		}
 		var out frontOrderPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM front_orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM biz_front_orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return frontOrderPage{}, err
 		}
 		if f.Limit <= 0 {
@@ -181,7 +181,7 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 		}
 		rows, err := db.Query(
 			`SELECT front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			 FROM front_orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,front_order_id DESC LIMIT ? OFFSET ?`,
+			 FROM biz_front_orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,front_order_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -220,7 +220,7 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`UPDATE front_orders SET status=?, updated_at_unix=? WHERE front_order_id=?`,
+			`UPDATE biz_front_orders SET status=?, updated_at_unix=? WHERE front_order_id=?`,
 			strings.TrimSpace(status),
 			time.Now().Unix(),
 			frontOrderID,

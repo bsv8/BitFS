@@ -361,7 +361,7 @@ type sellerSeed struct {
 
 type sellerCatalog struct {
 	mu    sync.RWMutex
-	seeds map[string]sellerSeed
+	biz_seeds map[string]sellerSeed
 }
 
 type RunInput struct {
@@ -823,7 +823,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		return nil, err
 	}
 
-	catalog := &sellerCatalog{seeds: map[string]sellerSeed{}}
+	catalog := &sellerCatalog{biz_seeds: map[string]sellerSeed{}}
 	workspaceMgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
@@ -1487,7 +1487,7 @@ func initDataDirs(cfg *Config) error {
 		cfg.Storage.WorkspaceDir,
 		cfg.Storage.DataDir,
 		filepath.Join(cfg.Storage.DataDir, "config"),
-		filepath.Join(cfg.Storage.DataDir, "seeds"),
+		filepath.Join(cfg.Storage.DataDir, "biz_seeds"),
 		filepath.Join(cfg.Storage.DataDir, "db"),
 		filepath.Join(cfg.Storage.DataDir, "keys"),
 		filepath.Join(cfg.Storage.DataDir, "logs"),
@@ -1580,7 +1580,7 @@ func cfgBool(v *bool, def bool) bool {
 // registerDirectQuoteSubmitHandler 注册买方接收报价入口。
 // 设计说明：
 // - direct quote 是“卖方 -> 买方”回推路径，买方即便不是 seller 模式也必须可接收；
-// - 该入口只负责落库 demand_quotes 和 demand_quote_arbiters，不涉及卖方资源读取，因此可全端默认启用。
+// - 该入口只负责落库 biz_demand_quotes 和 biz_demand_quote_arbiters，不涉及卖方资源读取，因此可全端默认启用。
 func registerDirectQuoteSubmitHandler(h host.Host, store *clientDB, trace pproto.TraceSink) {
 	pproto.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(ctx context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
 		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
@@ -2302,10 +2302,10 @@ func contiguousChunkIndexes(chunkCount uint32) []uint32 {
 	return out
 }
 
-func (c *sellerCatalog) Replace(seeds map[string]sellerSeed) {
+func (c *sellerCatalog) Replace(biz_seeds map[string]sellerSeed) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.seeds = seeds
+	c.biz_seeds = biz_seeds
 }
 
 func (c *sellerCatalog) Upsert(seed sellerSeed) {
@@ -2314,20 +2314,20 @@ func (c *sellerCatalog) Upsert(seed sellerSeed) {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.seeds == nil {
-		c.seeds = map[string]sellerSeed{}
+	if c.biz_seeds == nil {
+		c.biz_seeds = map[string]sellerSeed{}
 	}
 	key := strings.ToLower(strings.TrimSpace(seed.SeedHash))
 	if key == "" {
 		return
 	}
-	c.seeds[key] = seed
+	c.biz_seeds[key] = seed
 }
 
 func (c *sellerCatalog) Get(seedHash string) (sellerSeed, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	s, ok := c.seeds[seedHash]
+	s, ok := c.biz_seeds[seedHash]
 	return s, ok
 }
 

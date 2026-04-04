@@ -362,7 +362,7 @@ func upsertWorkspaceFileForSeedAt(t *testing.T, store *clientDB, seedHash, path 
 	if err != nil {
 		return err
 	}
-	_, err = store.db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)
+	_, err = store.db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)
 		ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
 		workspacePath, filepath.ToSlash(filePath), seedHash, 0)
 	return err

@@ -43,12 +43,12 @@ func TestInitIndexDB_MigratesLegacyChainTables(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	exists, err := hasTable(db, "chain_tip_state")
+	exists, err := hasTable(db, "proc_chain_tip_state")
 	if err != nil {
-		t.Fatalf("hasTable chain_tip_state: %v", err)
+		t.Fatalf("hasTable proc_chain_tip_state: %v", err)
 	}
 	if !exists {
-		t.Fatalf("expected chain_tip_state exists")
+		t.Fatalf("expected proc_chain_tip_state exists")
 	}
 	for _, table := range []string{"chain_tip_snapshot", "wallet_utxo_snapshot", "wallet_utxo_items", "wallet_chain_tx_raw"} {
 		exists, err := hasTable(db, table)

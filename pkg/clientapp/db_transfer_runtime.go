@@ -18,9 +18,9 @@ import (
 //
 // ⚠️ 第五步分层护栏（2026-04）：
 // - 本文件所有函数【仅允许协议运行层使用】，禁止在 handler/业务查询/财务查询中复用
-// - direct_transfer_pools / direct_deals 已降级为【协议运行态表】
+// - proc_direct_transfer_pools / proc_direct_deals 已降级为【协议运行态表】
 // - 这些表只保留协议运行期的上下文（deal/parties/session/seed_hash 等），用于协议流恢复/校验
-// - 业务完成状态统一以 business_settlements 为准，禁止根据 direct_transfer_pools.status 判断业务是否完成
+// - 业务完成状态统一以 settle_business_settlements 为准，禁止根据 proc_direct_transfer_pools.status 判断业务是否完成
 // - 如需查询业务状态，请使用 GetFrontOrderSettlementSummary
 
 // dbLoadDirectDealParties 【协议运行层专用】恢复 deal 参与方上下文
@@ -37,7 +37,7 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 			seller  string
 			arbiter string
 		}
-		err := db.QueryRow(`SELECT buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).
+		err := db.QueryRow(`SELECT buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex FROM proc_direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).
 			Scan(&out.buyer, &out.seller, &out.arbiter)
 		return out, err
 	})
@@ -49,7 +49,7 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var dealID string
-		err := db.QueryRow(`SELECT deal_id FROM direct_transfer_pools WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
+		err := db.QueryRow(`SELECT deal_id FROM proc_direct_transfer_pools WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
 		return strings.TrimSpace(dealID), err
 	})
 }
@@ -60,7 +60,7 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedHash string
-		err := db.QueryRow(`SELECT seed_hash FROM direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
+		err := db.QueryRow(`SELECT seed_hash FROM proc_direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
 		return strings.ToLower(strings.TrimSpace(seedHash)), err
 	})
 }
@@ -68,7 +68,7 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 // dbLoadDirectTransferPoolRow 【协议运行层专用】加载池运行时状态
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 // - 返回值中的 Status 是协议运行时状态，不代表业务结算状态
-// - 业务状态请查 business_settlements
+// - 业务状态请查 settle_business_settlements
 func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (directTransferPoolRow, error) {
 		return loadDirectTransferPoolRowDB(db, sessionID)
@@ -94,7 +94,7 @@ func loadDirectTransferPoolRowDB(queryer interface {
 			seller_pubkey_hex AS seller_pubkey_hex_alias,
 			arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-		 FROM direct_transfer_pools WHERE session_id=?`,
+		 FROM proc_direct_transfer_pools WHERE session_id=?`,
 		strings.TrimSpace(sessionID),
 	).Scan(
 		&row.SessionID, &row.DealID, &row.BuyerPubHex, &row.SellerPubHex, &row.ArbiterPubHex,
@@ -112,7 +112,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 	now := time.Now().Unix()
 	return store.Tx(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.Exec(
-			`INSERT INTO direct_transfer_pools(
+			`INSERT INTO proc_direct_transfer_pools(
 				session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 				pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -179,7 +179,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 			return err
 		}
 		if _, err := tx.Exec(
-			`UPDATE direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
+			`UPDATE proc_direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
 			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID,
 		); err != nil {
 			return err
@@ -228,7 +228,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE direct_transfer_pools SET status='closing',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
+		if _, err := tx.Exec(`UPDATE proc_direct_transfer_pools SET status='closing',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
 			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID); err != nil {
 			return err
 		}
@@ -269,7 +269,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string) ([]byte, error) {
 	seedPath, err := clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedPath string
-		err := db.QueryRow(`SELECT seed_file_path FROM seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedPath)
+		err := db.QueryRow(`SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedPath)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", fmt.Errorf("seed not found")
 		}
@@ -293,7 +293,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			chunkCount    uint32
 		}
 		if err := db.QueryRow(
-			`SELECT s.chunk_count FROM seeds s WHERE s.seed_hash=?`,
+			`SELECT s.chunk_count FROM biz_seeds s WHERE s.seed_hash=?`,
 			strings.ToLower(strings.TrimSpace(seedHash)),
 		).Scan(&out.chunkCount); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
@@ -301,7 +301,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			}
 			return out, err
 		}
-		_ = db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&out.workspacePath, &out.filePath)
+		_ = db.QueryRow(`SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&out.workspacePath, &out.filePath)
 		return out, nil
 	})
 	if err != nil {

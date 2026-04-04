@@ -245,15 +245,15 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
 		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
 		mux.HandleFunc(prefix+"/v1/direct/quotes/detail", s.withAuth(s.handleDirectQuoteDetail))
-		// 【第五步：调试/兼容接口】direct_transfer_pools 已降级为协议运行态表
+		// 【第五步：调试/兼容接口】proc_direct_transfer_pools 已降级为协议运行态表
 		// 业务状态查询请使用 /v1/downloads/settlement-status
 		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPoolsCompat))
 		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetailCompat))
 		mux.HandleFunc(prefix+"/v1/transactions", s.withAuth(s.handleTransactions))
 		mux.HandleFunc(prefix+"/v1/transactions/detail", s.withAuth(s.handleTransactionDetail))
-		mux.HandleFunc(prefix+"/v1/purchases", s.withAuth(s.handlePurchases))
-		mux.HandleFunc(prefix+"/v1/purchases/detail", s.withAuth(s.handlePurchaseDetail))
-		mux.HandleFunc(prefix+"/v1/purchases/summary", s.withAuth(s.handlePurchaseSummary))
+		mux.HandleFunc(prefix+"/v1/biz_purchases", s.withAuth(s.handlePurchases))
+		mux.HandleFunc(prefix+"/v1/biz_purchases/detail", s.withAuth(s.handlePurchaseDetail))
+		mux.HandleFunc(prefix+"/v1/biz_purchases/summary", s.withAuth(s.handlePurchaseSummary))
 		mux.HandleFunc(prefix+"/v1/downloads/settlement-status", s.withAuth(s.handleDownloadSettlementStatus))
 		mux.HandleFunc(prefix+"/v1/gateways/events", s.withAuth(s.handleGatewayEvents))
 		mux.HandleFunc(prefix+"/v1/gateways/events/detail", s.withAuth(s.handleGatewayEventDetail))
@@ -276,8 +276,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
 		mux.HandleFunc(prefix+"/v1/workspace/sync-once", s.withAuth(s.handleWorkspaceSyncOnce))
 		mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
-		mux.HandleFunc(prefix+"/v1/workspace/seeds", s.withAuth(s.handleWorkspaceSeeds))
-		mux.HandleFunc(prefix+"/v1/workspace/seeds/price", s.withAuth(s.handleSeedPriceUpdate))
+		mux.HandleFunc(prefix+"/v1/workspace/biz_seeds", s.withAuth(s.handleWorkspaceSeeds))
+		mux.HandleFunc(prefix+"/v1/workspace/biz_seeds/price", s.withAuth(s.handleSeedPriceUpdate))
 		mux.HandleFunc(prefix+"/v1/live/subscribe-uri", s.withAuth(s.handleLiveSubscribeURI))
 		mux.HandleFunc(prefix+"/v1/live/subscribe", s.withAuth(s.handleLiveSubscribe))
 		mux.HandleFunc(prefix+"/v1/live/demand/publish", s.withAuth(s.handleLiveDemandPublish))
@@ -299,7 +299,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/arbiters", s.withAuth(s.handleArbiters))
 		mux.HandleFunc(prefix+"/v1/arbiters/health", s.withAuth(s.handleArbiterHealth))
 		// 文件系统管理 API
-		mux.HandleFunc(prefix+"/v1/admin/workspaces", s.withAuth(s.handleAdminWorkspaces))
+		mux.HandleFunc(prefix+"/v1/admin/biz_workspaces", s.withAuth(s.handleAdminWorkspaces))
 		mux.HandleFunc(prefix+"/v1/admin/downloads/resume", s.withAuth(s.handleAdminResumeDownload))
 		mux.HandleFunc(prefix+"/v1/admin/fs-http/strategy-debug-log", s.withAuth(s.handleAdminStrategyDebugLog))
 		mux.HandleFunc(prefix+"/v1/admin/live/streams", s.withAuth(s.handleAdminLiveStreams))
@@ -688,7 +688,7 @@ func loadSchedulerTaskSnapshot(db *sql.DB, taskName string) (schedulerTaskSnapsh
 	var inFlightInt int
 	err := db.QueryRow(
 		`SELECT task_name,status,last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight
-		 FROM scheduler_tasks WHERE task_name=?`,
+		 FROM proc_scheduler_tasks WHERE task_name=?`,
 		taskName,
 	).Scan(&out.Name, &out.Status, &out.LastTrigger, &out.LastStartedAtUnix, &out.LastEndedAtUnix, &out.LastDurationMS, &out.LastError, &inFlightInt)
 	if err != nil {
@@ -884,7 +884,7 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 // handleDirectTransferPoolsCompat 【第五步：调试/兼容接口】
 // - 此接口返回的是协议运行态数据，不是业务结算状态
 // - 业务状态查询请使用 /v1/downloads/settlement-status (GetFrontOrderSettlementSummary)
-// - direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
+// - proc_direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
 func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -914,7 +914,7 @@ func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data_role":   "runtime_debug_only",
-		"status_note": "direct_transfer_pools.status is protocol runtime status, not settlement status",
+		"status_note": "proc_direct_transfer_pools.status is protocol runtime status, not settlement status",
 		"total":       page.Total,
 		"limit":       limit,
 		"offset":      offset,
@@ -925,7 +925,7 @@ func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r
 // handleDirectTransferPoolDetailCompat 【第五步：调试/兼容接口】
 // - 此接口返回的是协议运行态数据，不是业务结算状态
 // - 业务状态查询请使用 /v1/downloads/settlement-status (GetFrontOrderSettlementSummary)
-// - direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
+// - proc_direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
 func (s *httpAPIServer) handleDirectTransferPoolDetailCompat(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -947,7 +947,7 @@ func (s *httpAPIServer) handleDirectTransferPoolDetailCompat(w http.ResponseWrit
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data_role":   "runtime_debug_only",
-		"status_note": "direct_transfer_pools.status is protocol runtime status, not settlement status",
+		"status_note": "proc_direct_transfer_pools.status is protocol runtime status, not settlement status",
 		"item":        it,
 	})
 }
@@ -1078,7 +1078,7 @@ func (s *httpAPIServer) handlePurchaseSummary(w http.ResponseWriter, r *http.Req
 
 // handleDownloadSettlementStatus 下载结算状态查询（第四步新主线）
 // 设计：统一走 GetFrontOrderSettlementSummary 聚合读模型，支持一 front_order 多 business 多 seller 汇总
-// 不再直接查 direct_transfer_pools / purchases 来判断支付状态
+// 不再直接查 proc_direct_transfer_pools / biz_purchases 来判断支付状态
 func (s *httpAPIServer) handleDownloadSettlementStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2698,17 +2698,17 @@ func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	seeds, err := s.workspace.SyncOnce(r.Context())
+	biz_seeds, err := s.workspace.SyncOnce(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":              true,
-		"seed_count":      len(seeds),
+		"seed_count":      len(biz_seeds),
 		"synced_at_unix":  time.Now().Unix(),
 		"workspace_dir":   s.cfg.Storage.WorkspaceDir,
-		"workspace_files": len(seeds),
+		"biz_workspace_files": len(biz_seeds),
 	})
 }
 
@@ -2800,7 +2800,7 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 			return 0, 0, err
 		}
 		var chunkCount uint32
-		if err := store.db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+		if err := store.db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 			return 0, 0, err
 		}
 		return req.FloorPriceSatPer64K, req.FloorPriceSatPer64K * uint64(chunkCount), nil

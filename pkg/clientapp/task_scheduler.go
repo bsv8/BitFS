@@ -403,7 +403,7 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO scheduler_tasks(
+			`INSERT INTO proc_scheduler_tasks(
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
 				run_count,success_count,failure_count,last_summary_json,meta_json
@@ -447,7 +447,7 @@ func (s *taskScheduler) markTaskStopped(name string) error {
 	now := time.Now().Unix()
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
 		_, err := db.Exec(
-			`UPDATE scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
+			`UPDATE proc_scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
 			now, now, strings.TrimSpace(name),
 		)
 		return err
@@ -460,7 +460,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
 		_, err := db.Exec(
-			`UPDATE scheduler_tasks SET
+			`UPDATE proc_scheduler_tasks SET
 				last_trigger=?,
 				last_started_at_unix=?,
 				in_flight=1,
@@ -489,7 +489,7 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
 		_, err := db.Exec(
-			`UPDATE scheduler_tasks SET
+			`UPDATE proc_scheduler_tasks SET
 				last_ended_at_unix=?,
 				last_duration_ms=?,
 				last_error=?,
@@ -519,7 +519,7 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO scheduler_task_runs(
+			`INSERT INTO proc_scheduler_task_runs(
 				task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 			strings.TrimSpace(spec.Name),
@@ -585,7 +585,7 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	args = append([]any{startupUnix, startupUnix}, args...)
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
 		_, err := db.Exec(
-			`UPDATE scheduler_tasks SET
+			`UPDATE proc_scheduler_tasks SET
 				status='stopped',
 				updated_at_unix=?,
 				closed_at_unix=?,

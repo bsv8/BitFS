@@ -43,8 +43,8 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 
 	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象
 	var payBizCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBizCount); err != nil {
-		t.Fatalf("query fin_business pay failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBizCount); err != nil {
+		t.Fatalf("query settle_businesses pay failed: %v", err)
 	}
 	if payBizCount != 0 {
 		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBizCount)
@@ -78,7 +78,7 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 
 	var processID int64
 	if err := db.QueryRow(
-		`SELECT id FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
+		`SELECT id FROM settle_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processID); err != nil {
 		t.Fatalf("query process event id failed: %v", err)
@@ -138,7 +138,7 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	// 第二阶段：改用 pay 测试（pay 暂保留完整 fin_business，open/close 为过程型）
+	// 第二阶段：改用 pay 测试（pay 暂保留完整 settle_businesses，open/close 为过程型）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_finance_trace_1")
 
 	allocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
@@ -148,13 +148,13 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 	}
 	allocationSourceID := fmt.Sprintf("%d", allocationIntID)
 
-	// 验证：pay 不再生成 fin_business（正式查询应返回空）
+	// 验证：pay 不再生成 settle_businesses（正式查询应返回空）
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, allocationID, "formal", 20, 0)
 	if err != nil {
 		t.Fatalf("trace businesses by pool_allocation_id failed: %v", err)
 	}
 	if bizPage.Total != 0 {
-		t.Fatalf("pay 不应生成 fin_business，got %d", bizPage.Total)
+		t.Fatalf("pay 不应生成 settle_businesses，got %d", bizPage.Total)
 	}
 
 	// 验证 process events 存在（pay 生成 process events）
@@ -180,7 +180,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 
-	// 第二阶段：只测试 pay（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	// 第二阶段：只测试 pay（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_finance_http_1")
 
 	srv := &httpAPIServer{db: db, store: store}
@@ -192,7 +192,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 		t.Fatalf("lookup pay allocation id failed: %v", err)
 	}
 	payAllocationSourceID := fmt.Sprintf("%d", payAllocationIntID)
-	// 使用 pay allocation 测试查询 - pay 不再生成 fin_business，所以返回空
+	// 使用 pay allocation 测试查询 - pay 不再生成 settle_businesses，所以返回空
 	// 第九阶段整改：必须传 business_role 参数
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&pool_allocation_id="+payAllocationID+"&limit=10", nil)
 	rec := httptest.NewRecorder()
@@ -207,7 +207,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 		t.Fatalf("decode business list response failed: %v", err)
 	}
 	if len(businessResp.Items) != 0 {
-		t.Fatalf("pay 不生成 fin_business，应返回 0 条，got %d", len(businessResp.Items))
+		t.Fatalf("pay 不生成 settle_businesses，应返回 0 条，got %d", len(businessResp.Items))
 	}
 
 	// 改用 process event 验证
@@ -233,7 +233,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 		t.Fatalf("process list missing accounting fields: %+v", processResp.Items[0])
 	}
 
-	// 第二阶段：验证 pay 不生成 fin_business，改用 process event 测试
+	// 第二阶段：验证 pay 不生成 settle_businesses，改用 process event 测试
 	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?accounting_scene=c2c_transfer&accounting_subtype=chunk_pay&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
@@ -271,7 +271,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	}
 	var processID int64
 	if err = db.QueryRow(
-		`SELECT id FROM fin_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
+		`SELECT id FROM settle_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processID); err != nil {
 		t.Fatalf("query process id failed: %v", err)
@@ -346,7 +346,7 @@ func TestFinancePrimaryFilter_QueryByPrimaryModel(t *testing.T) {
 	}
 	payAllocationSourceID := fmt.Sprintf("%d", payAllocationIntID)
 
-	// 用新口径精确查询（pay 不再生成 fin_business，改用 process events）
+	// 用新口径精确查询（pay 不再生成 settle_businesses，改用 process events）
 	newFilterPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
 		SourceType:        "pool_allocation",
@@ -386,10 +386,10 @@ func TestFinanceDefaultPresentation_PrimaryFieldsFirst(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 
-	// 第二阶段：改用 pay 测试读取模型（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	// 第二阶段：改用 pay 测试读取模型（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_presentation_test")
 
-	// 第二阶段：验证 pay 不生成 fin_business
+	// 第二阶段：验证 pay 不生成 settle_businesses
 	// 查询 process event 验证主口径字段
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payAllocationIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
@@ -469,7 +469,7 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 
-	// 第二阶段：改用 pay 测试（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	// 第二阶段：改用 pay 测试（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_no_diffusion_test")
 
 	// 测试：新辅助函数 dbListFinanceBusinessesByPoolAllocationID 只使用新口径
@@ -484,9 +484,9 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new helper function failed: %v", err)
 	}
-	// 第二阶段：pay 不再生成 fin_business
+	// 第二阶段：pay 不再生成 settle_businesses
 	if page.Total != 0 {
-		t.Fatalf("pay 不应生成 fin_business，got %d", page.Total)
+		t.Fatalf("pay 不应生成 settle_businesses，got %d", page.Total)
 	}
 
 	// 测试：流程事件新辅助函数（pay 生成 process events）
@@ -570,27 +570,27 @@ func TestFinanceRegression_FourthIterationCapabilities(t *testing.T) {
 		t.Fatalf("regression: http api returned wrong item: source_id=%s want=%s", resp.Items[0].SourceID, payAllocSourceID)
 	}
 
-	// 第六次迭代：回归3 - 验证 pay 不再生成 fin_business
+	// 第六次迭代：回归3 - 验证 pay 不再生成 settle_businesses
 	var payBusinessCount int
 	err = db.QueryRow(`
-		SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2",
+		SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2",
 	).Scan(&payBusinessCount)
 	if err != nil {
-		t.Fatalf("regression: query fin_business count failed: %v", err)
+		t.Fatalf("regression: query settle_businesses count failed: %v", err)
 	}
 	if payBusinessCount != 0 {
-		t.Fatalf("regression: pay 不应生成 fin_business，got %d", payBusinessCount)
+		t.Fatalf("regression: pay 不应生成 settle_businesses，got %d", payBusinessCount)
 	}
 
 	// 第六次迭代：回归4 - 流程事件表只验证主口径字段
 	var procSourceType, procSourceID, procAccountingScene, procAccountingSubtype string
 	err = db.QueryRow(`
 		SELECT source_type, source_id, accounting_scene, accounting_subtype
-		FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
+		FROM settle_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&procSourceType, &procSourceID, &procAccountingScene, &procAccountingSubtype)
 	if err != nil {
-		t.Fatalf("regression: query fin_process_events columns failed: %v", err)
+		t.Fatalf("regression: query settle_process_events columns failed: %v", err)
 	}
 	if procSourceType == "" || procSourceID == "" || procAccountingScene == "" || procAccountingSubtype == "" {
 		t.Fatalf("regression: process new fields should exist")
@@ -624,7 +624,7 @@ func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 
 	srv := &httpAPIServer{db: db, store: store}
 
-	// 第二阶段：改用 pay 测试（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	// 第二阶段：改用 pay 测试（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
 	// 测试：用 pool_allocation_id（新口径）查询 pay 的 process event
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payAllocIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
@@ -670,7 +670,7 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 
-	// 第二阶段：只测试 pay（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	// 第二阶段：只测试 pay（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_conflict_test")
 
 	srv := &httpAPIServer{db: db, store: store}
@@ -1410,7 +1410,7 @@ func TestFinanceHelperFunctions_RoleFiltering(t *testing.T) {
 
 	payAllocationID := directTransferPoolAllocationID("sess_third_iter_1", "pay", 2)
 
-	// 正式查询应返回空（pay 不生成 fin_business）
+	// 正式查询应返回空（pay 不生成 settle_businesses）
 	formalPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, "formal", 10, 0)
 	if err != nil {
 		t.Fatalf("formal query failed: %v", err)
@@ -1424,7 +1424,7 @@ func TestFinanceHelperFunctions_RoleFiltering(t *testing.T) {
 	if err != nil {
 		t.Fatalf("process query failed: %v", err)
 	}
-	// pay 不生成 fin_business，所以 process 也应该是 0
+	// pay 不生成 settle_businesses，所以 process 也应该是 0
 	if processPage.Total != 0 {
 		t.Fatalf("process query should return 0 for pay allocation, got %d", processPage.Total)
 	}
@@ -1520,7 +1520,7 @@ func TestBusinessRole_Backfill_ReducesEmptyCount(t *testing.T) {
 	// 验证：写入的记录都有 business_role
 	var emptyRoleCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_business WHERE business_id LIKE 'biz_c2c_%' AND (business_role='' OR business_role IS NULL)`,
+		`SELECT COUNT(1) FROM settle_businesses WHERE business_id LIKE 'biz_c2c_%' AND (business_role='' OR business_role IS NULL)`,
 	).Scan(&emptyRoleCount); err != nil {
 		t.Fatalf("query empty role count failed: %v", err)
 	}
@@ -1549,7 +1549,7 @@ func TestBusinessRole_BackfillRecordsHaveFormalRole(t *testing.T) {
 	// 模拟回填写入：直接插入带 business_role 的回填记录
 	businessID := "biz_backfill_pool_test_1"
 	if _, err := db.Exec(`
-		INSERT INTO fin_business(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
+		INSERT INTO settle_businesses(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 			from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
 		VALUES(?, 'formal', 'front_order', 'fo_test', 'direct_transfer', 'pay', 'client:self', 'seller:test',
 			'posted', 1700000000, 'backfill_test', 'test', '{}')`,
@@ -1560,7 +1560,7 @@ func TestBusinessRole_BackfillRecordsHaveFormalRole(t *testing.T) {
 
 	// 验证：回填记录有 formal 角色
 	var role string
-	if err := db.QueryRow(`SELECT business_role FROM fin_business WHERE business_id=?`, businessID).Scan(&role); err != nil {
+	if err := db.QueryRow(`SELECT business_role FROM settle_businesses WHERE business_id=?`, businessID).Scan(&role); err != nil {
 		t.Fatalf("query business_role failed: %v", err)
 	}
 	if role != "formal" {
@@ -1569,7 +1569,7 @@ func TestBusinessRole_BackfillRecordsHaveFormalRole(t *testing.T) {
 
 	// 验证：business_role=formal 查询能查到回填记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_role='formal' AND business_id=?`, businessID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_role='formal' AND business_id=?`, businessID).Scan(&count); err != nil {
 		t.Fatalf("query formal business failed: %v", err)
 	}
 	if count != 1 {
@@ -1577,7 +1577,7 @@ func TestBusinessRole_BackfillRecordsHaveFormalRole(t *testing.T) {
 	}
 
 	// 验证：business_role=process 查询不应查到回填记录
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_role='process' AND business_id=?`, businessID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_role='process' AND business_id=?`, businessID).Scan(&count); err != nil {
 		t.Fatalf("query process business failed: %v", err)
 	}
 	if count != 0 {

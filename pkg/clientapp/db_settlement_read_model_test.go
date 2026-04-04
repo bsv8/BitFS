@@ -537,9 +537,9 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 		t.Fatalf("upsert settlement: %v", err)
 	}
 
-	// 2. 直接写一个 direct_transfer_pools 状态为 active（和 settlement 不一致）
+	// 2. 直接写一个 proc_direct_transfer_pools 状态为 active（和 settlement 不一致）
 	_, err := db.Exec(`
-		INSERT INTO direct_transfer_pools(session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+		INSERT INTO proc_direct_transfer_pools(session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,status,current_tx_hex,base_tx_hex,base_txid,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(session_id) DO UPDATE SET status=excluded.status`,
@@ -548,17 +548,17 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 		2.0, 6, 1700000000, 1700000000,
 	)
 	if err != nil {
-		t.Fatalf("insert direct_transfer_pools: %v", err)
+		t.Fatalf("insert proc_direct_transfer_pools: %v", err)
 	}
 
-	// 3. 验证聚合读模型仍然以 settlement 为准，不看 direct_transfer_pools
+	// 3. 验证聚合读模型仍然以 settlement 为准，不看 proc_direct_transfer_pools
 	summary, err := GetFrontOrderSettlementSummary(ctx, store, frontOrderID)
 	if err != nil {
 		t.Fatalf("GetFrontOrderSettlementSummary: %v", err)
 	}
 
-	// 关键断言：即使 direct_transfer_pools.status='active'，
-	// 聚合读模型仍然根据 business_settlements 判断为 settled
+	// 关键断言：即使 proc_direct_transfer_pools.status='active'，
+	// 聚合读模型仍然根据 settle_business_settlements 判断为 settled
 	if summary.Summary.OverallStatus != "settled" {
 		t.Fatalf("expected overall_status settled (settlement should dominate), got %s", summary.Summary.OverallStatus)
 	}
@@ -595,7 +595,7 @@ func dbTestInsertPoolAllocation(t *testing.T, store *clientDB, input directTrans
 	ctx := context.Background()
 	allocationID := directTransferPoolAllocationID(input.SessionID, input.AllocationKind, input.SequenceNum)
 
-	_, err := store.db.Exec(`INSERT INTO pool_allocations(
+	_, err := store.db.Exec(`INSERT INTO fact_pool_allocations(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,

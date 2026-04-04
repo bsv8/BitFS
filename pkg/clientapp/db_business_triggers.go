@@ -73,7 +73,7 @@ func dbAppendBusinessTrigger(ctx context.Context, store *clientDB, e businessTri
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO business_triggers(
+			`INSERT INTO biz_business_triggers(
 				trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
 			) VALUES(?,?,?,?,?,?,?,?)
 			ON CONFLICT(business_id, trigger_type, trigger_id_value, trigger_role) DO UPDATE SET
@@ -107,7 +107,7 @@ func dbGetBusinessTrigger(ctx context.Context, store *clientDB, triggerID string
 		var payload string
 		err := db.QueryRow(
 			`SELECT trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
-			 FROM business_triggers WHERE trigger_id=?`,
+			 FROM biz_business_triggers WHERE trigger_id=?`,
 			triggerID,
 		).Scan(
 			&item.TriggerID, &item.BusinessID, &item.TriggerType, &item.TriggerIDValue,
@@ -166,7 +166,7 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, f businessTrig
 			args = append(args, f.TriggerRole)
 		}
 		var out businessTriggerPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM business_triggers WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM biz_business_triggers WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return businessTriggerPage{}, err
 		}
 		if f.Limit <= 0 {
@@ -174,7 +174,7 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, f businessTrig
 		}
 		rows, err := db.Query(
 			`SELECT trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
-			 FROM business_triggers WHERE 1=1`+where+` ORDER BY created_at_unix DESC,trigger_id DESC LIMIT ? OFFSET ?`,
+			 FROM biz_business_triggers WHERE 1=1`+where+` ORDER BY created_at_unix DESC,trigger_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -213,7 +213,7 @@ func dbListBusinessesByTrigger(ctx context.Context, store *clientDB, triggerType
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]string, error) {
 		rows, err := db.Query(
-			`SELECT DISTINCT business_id FROM business_triggers 
+			`SELECT DISTINCT business_id FROM biz_business_triggers 
 			 WHERE trigger_type=? AND trigger_id_value=? 
 			 ORDER BY created_at_unix DESC`,
 			triggerType, triggerIDValue,

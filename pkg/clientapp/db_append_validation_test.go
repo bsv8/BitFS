@@ -41,7 +41,7 @@ func TestDbAppendCommandChainRejectsBlankCommandID(t *testing.T) {
 		t.Fatalf("expected blank command_id effect log write to be rejected")
 	}
 
-	for _, table := range []string{"command_journal", "domain_events", "state_snapshots", "effect_logs"} {
+	for _, table := range []string{"proc_command_journal", "proc_domain_events", "proc_state_snapshots", "proc_effect_logs"} {
 		var count int
 		if err := db.QueryRow("SELECT COUNT(1) FROM " + table).Scan(&count); err != nil {
 			t.Fatalf("count %s failed: %v", table, err)

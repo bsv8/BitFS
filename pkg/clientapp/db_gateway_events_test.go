@@ -18,44 +18,44 @@ func TestGatewayEventsSchemaHasCommandIDAndIndex(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	cols, err := tableColumns(db, "gateway_events")
+	cols, err := tableColumns(db, "proc_gateway_events")
 	if err != nil {
-		t.Fatalf("inspect gateway_events columns failed: %v", err)
+		t.Fatalf("inspect proc_gateway_events columns failed: %v", err)
 	}
 	if _, ok := cols["command_id"]; !ok {
-		t.Fatalf("gateway_events missing command_id")
+		t.Fatalf("proc_gateway_events missing command_id")
 	}
 
-	hasIndex, err := tableHasIndex(db, "gateway_events", "idx_gateway_events_cmd_id")
+	hasIndex, err := tableHasIndex(db, "proc_gateway_events", "idx_proc_gateway_events_cmd_id")
 	if err != nil {
-		t.Fatalf("inspect gateway_events index failed: %v", err)
+		t.Fatalf("inspect proc_gateway_events index failed: %v", err)
 	}
 	if !hasIndex {
-		t.Fatalf("gateway_events missing idx_gateway_events_cmd_id")
+		t.Fatalf("proc_gateway_events missing idx_proc_gateway_events_cmd_id")
 	}
 
-	notNull, err := tableColumnNotNull(db, "gateway_events", "command_id")
+	notNull, err := tableColumnNotNull(db, "proc_gateway_events", "command_id")
 	if err != nil {
-		t.Fatalf("inspect gateway_events command_id notnull failed: %v", err)
+		t.Fatalf("inspect proc_gateway_events command_id notnull failed: %v", err)
 	}
 	if !notNull {
-		t.Fatalf("gateway_events.command_id should be NOT NULL")
+		t.Fatalf("proc_gateway_events.command_id should be NOT NULL")
 	}
 
-	hasFK, err := tableHasForeignKey(db, "gateway_events", "command_id", "command_journal", "command_id")
+	hasFK, err := tableHasForeignKey(db, "proc_gateway_events", "command_id", "proc_command_journal", "command_id")
 	if err != nil {
-		t.Fatalf("inspect gateway_events foreign key failed: %v", err)
+		t.Fatalf("inspect proc_gateway_events foreign key failed: %v", err)
 	}
 	if !hasFK {
-		t.Fatalf("gateway_events missing foreign key to command_journal.command_id")
+		t.Fatalf("proc_gateway_events missing foreign key to proc_command_journal.command_id")
 	}
 
-	unique, err := tableHasUniqueIndexOnColumns(db, "command_journal", []string{"command_id"})
+	unique, err := tableHasUniqueIndexOnColumns(db, "proc_command_journal", []string{"command_id"})
 	if err != nil {
-		t.Fatalf("inspect command_journal unique failed: %v", err)
+		t.Fatalf("inspect proc_command_journal unique failed: %v", err)
 	}
 	if !unique {
-		t.Fatalf("command_journal missing unique constraint on command_id")
+		t.Fatalf("proc_command_journal missing unique constraint on command_id")
 	}
 }
 
@@ -116,7 +116,7 @@ func TestGatewayEventWriteRequiresCommandIDAndQueryReturnsIt(t *testing.T) {
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events WHERE command_id IS NULL OR command_id=''`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events WHERE command_id IS NULL OR command_id=''`).Scan(&count); err != nil {
 		t.Fatalf("count empty command_id rows failed: %v", err)
 	}
 	if count != 0 {
@@ -181,11 +181,11 @@ func TestListenErrorWritesOrchestratorLog(t *testing.T) {
 	var eventType, source, aggregateKey, gatewayPubkeyHex, errorMessage, payloadJSON string
 	if err := db.QueryRow(`
 		SELECT event_type,source,aggregate_key,gateway_pubkey_hex,error_message,payload_json
-		FROM orchestrator_logs
+		FROM proc_orchestrator_logs
 		WHERE event_type='listen_error'
 		ORDER BY id DESC LIMIT 1`,
 	).Scan(&eventType, &source, &aggregateKey, &gatewayPubkeyHex, &errorMessage, &payloadJSON); err != nil {
-		t.Fatalf("query orchestrator_logs failed: %v", err)
+		t.Fatalf("query proc_orchestrator_logs failed: %v", err)
 	}
 	if eventType != "listen_error" {
 		t.Fatalf("event_type mismatch: got=%s want=listen_error", eventType)
@@ -207,11 +207,11 @@ func TestListenErrorWritesOrchestratorLog(t *testing.T) {
 	}
 
 	var listenErrorCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events WHERE action='listen_error'`).Scan(&listenErrorCount); err != nil {
-		t.Fatalf("count gateway_events listen_error failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events WHERE action='listen_error'`).Scan(&listenErrorCount); err != nil {
+		t.Fatalf("count proc_gateway_events listen_error failed: %v", err)
 	}
 	if listenErrorCount != 0 {
-		t.Fatalf("listen_error should not be written to gateway_events, got=%d", listenErrorCount)
+		t.Fatalf("listen_error should not be written to proc_gateway_events, got=%d", listenErrorCount)
 	}
 }
 
@@ -239,78 +239,78 @@ func TestGatewayEventsLegacyMigrationCleansDirtyRowsAndAddsFK(t *testing.T) {
 	}
 
 	var cmdCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM command_journal`).Scan(&cmdCount); err != nil {
-		t.Fatalf("count command_journal failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM proc_command_journal`).Scan(&cmdCount); err != nil {
+		t.Fatalf("count proc_command_journal failed: %v", err)
 	}
 	if cmdCount != 2 {
-		t.Fatalf("unexpected command_journal count: got=%d want=2", cmdCount)
+		t.Fatalf("unexpected proc_command_journal count: got=%d want=2", cmdCount)
 	}
 
 	var eventCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events`).Scan(&eventCount); err != nil {
-		t.Fatalf("count gateway_events failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events`).Scan(&eventCount); err != nil {
+		t.Fatalf("count proc_gateway_events failed: %v", err)
 	}
 	if eventCount != 2 {
-		t.Fatalf("unexpected gateway_events count: got=%d want=2", eventCount)
+		t.Fatalf("unexpected proc_gateway_events count: got=%d want=2", eventCount)
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events WHERE command_id IS NULL OR command_id=''`).Scan(&count); err != nil {
-		t.Fatalf("count empty gateway_events command_id failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events WHERE command_id IS NULL OR command_id=''`).Scan(&count); err != nil {
+		t.Fatalf("count empty proc_gateway_events command_id failed: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("unexpected empty gateway_events command_id rows: %d", count)
+		t.Fatalf("unexpected empty proc_gateway_events command_id rows: %d", count)
 	}
 
-	if err := db.QueryRow(`SELECT COUNT(1) FROM gateway_events WHERE action='legacy_blank' OR action='legacy_orphan'`).Scan(&count); err != nil {
-		t.Fatalf("count removed gateway_events failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events WHERE action='legacy_blank' OR action='legacy_orphan'`).Scan(&count); err != nil {
+		t.Fatalf("count removed proc_gateway_events failed: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("dirty gateway_events should be deleted, got=%d", count)
+		t.Fatalf("dirty proc_gateway_events should be deleted, got=%d", count)
 	}
 
-	notNull, err := tableColumnNotNull(db, "gateway_events", "command_id")
+	notNull, err := tableColumnNotNull(db, "proc_gateway_events", "command_id")
 	if err != nil {
-		t.Fatalf("inspect gateway_events notnull failed: %v", err)
+		t.Fatalf("inspect proc_gateway_events notnull failed: %v", err)
 	}
 	if !notNull {
-		t.Fatalf("gateway_events.command_id should be NOT NULL after migration")
+		t.Fatalf("proc_gateway_events.command_id should be NOT NULL after migration")
 	}
 
-	hasFK, err := tableHasForeignKey(db, "gateway_events", "command_id", "command_journal", "command_id")
+	hasFK, err := tableHasForeignKey(db, "proc_gateway_events", "command_id", "proc_command_journal", "command_id")
 	if err != nil {
-		t.Fatalf("inspect gateway_events foreign key failed: %v", err)
+		t.Fatalf("inspect proc_gateway_events foreign key failed: %v", err)
 	}
 	if !hasFK {
-		t.Fatalf("gateway_events should have foreign key after migration")
+		t.Fatalf("proc_gateway_events should have foreign key after migration")
 	}
 
-	unique, err := tableHasUniqueIndexOnColumns(db, "command_journal", []string{"command_id"})
+	unique, err := tableHasUniqueIndexOnColumns(db, "proc_command_journal", []string{"command_id"})
 	if err != nil {
-		t.Fatalf("inspect command_journal unique failed: %v", err)
+		t.Fatalf("inspect proc_command_journal unique failed: %v", err)
 	}
 	if !unique {
-		t.Fatalf("command_journal should have unique command_id after migration")
+		t.Fatalf("proc_command_journal should have unique command_id after migration")
 	}
 
 	var actions []string
-	rows, err := db.Query(`SELECT action FROM gateway_events ORDER BY id ASC`)
+	rows, err := db.Query(`SELECT action FROM proc_gateway_events ORDER BY id ASC`)
 	if err != nil {
-		t.Fatalf("query gateway_events actions failed: %v", err)
+		t.Fatalf("query proc_gateway_events actions failed: %v", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var action string
 		if err := rows.Scan(&action); err != nil {
-			t.Fatalf("scan gateway_events action failed: %v", err)
+			t.Fatalf("scan proc_gateway_events action failed: %v", err)
 		}
 		actions = append(actions, action)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate gateway_events actions failed: %v", err)
+		t.Fatalf("iterate proc_gateway_events actions failed: %v", err)
 	}
 	if strings.Join(actions, ",") != "fee_pool_open,listen_cycle_fee" {
-		t.Fatalf("unexpected gateway_events actions after migration: %v", actions)
+		t.Fatalf("unexpected proc_gateway_events actions after migration: %v", actions)
 	}
 
 	if err := dbAppendGatewayEvent(context.Background(), newClientDB(db, nil), gatewayEventEntry{
@@ -347,7 +347,7 @@ func TestCommandJournalDuplicateCommandIDBlocksUniqueMigration(t *testing.T) {
 func createLegacyCommandJournalSchemaForGatewayTest(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	_, err := db.Exec(`CREATE TABLE command_journal(
+	_, err := db.Exec(`CREATE TABLE proc_command_journal(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		created_at_unix INTEGER NOT NULL,
 		command_id TEXT NOT NULL,
@@ -368,14 +368,14 @@ func createLegacyCommandJournalSchemaForGatewayTest(t *testing.T, db *sql.DB) {
 		result_json TEXT NOT NULL
 	)`)
 	if err != nil {
-		t.Fatalf("create legacy command_journal failed: %v", err)
+		t.Fatalf("create legacy proc_command_journal failed: %v", err)
 	}
 }
 
 func createLegacyGatewayEventsSchemaForGatewayTest(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	_, err := db.Exec(`CREATE TABLE gateway_events(
+	_, err := db.Exec(`CREATE TABLE proc_gateway_events(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		created_at_unix INTEGER NOT NULL,
 		gateway_pubkey_hex TEXT NOT NULL,
@@ -388,14 +388,14 @@ func createLegacyGatewayEventsSchemaForGatewayTest(t *testing.T, db *sql.DB) {
 		payload_json TEXT NOT NULL
 	)`)
 	if err != nil {
-		t.Fatalf("create legacy gateway_events failed: %v", err)
+		t.Fatalf("create legacy proc_gateway_events failed: %v", err)
 	}
 }
 
 func insertGatewayEventTestCommandJournal(t *testing.T, db *sql.DB, commandID, gatewayPeerID string) {
 	t.Helper()
 
-	_, err := db.Exec(`INSERT INTO command_journal(
+	_, err := db.Exec(`INSERT INTO proc_command_journal(
 		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1700000001,
@@ -417,14 +417,14 @@ func insertGatewayEventTestCommandJournal(t *testing.T, db *sql.DB, commandID, g
 		"{}",
 	)
 	if err != nil {
-		t.Fatalf("insert command_journal failed: %v", err)
+		t.Fatalf("insert proc_command_journal failed: %v", err)
 	}
 }
 
 func insertGatewayEventTestGatewayEvent(t *testing.T, db *sql.DB, commandID, action string, seq int64) {
 	t.Helper()
 
-	_, err := db.Exec(`INSERT INTO gateway_events(
+	_, err := db.Exec(`INSERT INTO proc_gateway_events(
 		created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?)`,
 		1700000001,
@@ -438,6 +438,6 @@ func insertGatewayEventTestGatewayEvent(t *testing.T, db *sql.DB, commandID, act
 		`{"scene":"legacy"}`,
 	)
 	if err != nil {
-		t.Fatalf("insert gateway_events failed: %v", err)
+		t.Fatalf("insert proc_gateway_events failed: %v", err)
 	}
 }

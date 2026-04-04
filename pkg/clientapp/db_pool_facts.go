@@ -64,7 +64,7 @@ func dbUpsertDirectTransferPoolSessionTx(tx *sql.Tx, in directTransferPoolSessio
 		status = "active"
 	}
 	_, err := tx.Exec(
-		`INSERT INTO pool_sessions(
+		`INSERT INTO fact_pool_sessions(
 			pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 			pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -130,13 +130,13 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	}
 	var allocationNo int64
 	if err := tx.QueryRow(
-		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM pool_allocations WHERE pool_session_id=?`,
+		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM fact_pool_allocations WHERE pool_session_id=?`,
 		sessionID,
 	).Scan(&allocationNo); err != nil {
 		return err
 	}
 	_, err := tx.Exec(
-		`INSERT INTO pool_allocations(
+		`INSERT INTO fact_pool_allocations(
 			allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(allocation_id) DO UPDATE SET
@@ -199,7 +199,7 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 	return strings.ToLower(strings.TrimSpace(parsed.TxID().String())), nil
 }
 
-// dbGetPoolAllocationIDByAllocationIDDB 按 allocation_id 查 pool_allocations.id
+// dbGetPoolAllocationIDByAllocationIDDB 按 allocation_id 查 fact_pool_allocations.id
 // 设计说明：
 // - 写入层和读层都只认事实表自增主键；
 // - allocation_id 只作为旧入口和 payload 保留，不再直接承担 source_id 语义。
@@ -213,7 +213,7 @@ func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int
 	}
 	var id int64
 	err := db.QueryRow(
-		`SELECT id FROM pool_allocations WHERE allocation_id=?`,
+		`SELECT id FROM fact_pool_allocations WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
 	if err != nil {
@@ -245,7 +245,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 	}
 	var id int64
 	err := tx.QueryRow(
-		`SELECT id FROM pool_allocations WHERE allocation_id=?`,
+		`SELECT id FROM fact_pool_allocations WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
 	if err != nil {

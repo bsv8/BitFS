@@ -264,7 +264,7 @@ func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestrator
 			args = append(args, f.TaskStatus)
 		}
 		eventIDExpr := "CASE WHEN TRIM(idempotency_key)<>'' THEN idempotency_key ELSE '" + singleStepOrchestratorEventPrefix + "' || CAST(id AS TEXT) END"
-		countSQL := "SELECT COUNT(1) FROM (SELECT " + eventIDExpr + " AS event_id FROM orchestrator_logs WHERE 1=1" + where + " GROUP BY 1)"
+		countSQL := "SELECT COUNT(1) FROM (SELECT " + eventIDExpr + " AS event_id FROM proc_orchestrator_logs WHERE 1=1" + where + " GROUP BY 1)"
 		var out orchestratorLogPage
 		if err := db.QueryRow(countSQL, args...).Scan(&out.Total); err != nil {
 			return orchestratorLogPage{}, err
@@ -276,7 +276,7 @@ func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestrator
 				MAX(created_at_unix) AS ended_at_unix,
 				COUNT(1) AS steps_count,
 				MAX(id) AS latest_log_id
-			FROM orchestrator_logs
+			FROM proc_orchestrator_logs
 			WHERE 1=1`+where+`
 			GROUP BY 1
 		)
@@ -284,7 +284,7 @@ func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestrator
 			g.event_id,g.started_at_unix,g.ended_at_unix,g.steps_count,g.latest_log_id,
 			l.idempotency_key,l.aggregate_key,l.command_type,l.gateway_pubkey_hex,l.source,l.signal_type,l.event_type,l.task_status,l.retry_count,l.queue_length,l.error_message
 		FROM grouped g
-		JOIN orchestrator_logs l ON l.id=g.latest_log_id
+		JOIN proc_orchestrator_logs l ON l.id=g.latest_log_id
 		ORDER BY g.latest_log_id DESC
 		LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
@@ -327,12 +327,12 @@ func dbGetOrchestratorLogDetail(ctx context.Context, store *clientDB, eventID st
 			}
 			rows, err = db.Query(
 				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
-				FROM orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
+				FROM proc_orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
 			)
 		} else {
 			rows, err = db.Query(
 				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
-				FROM orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
+				FROM proc_orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
 			)
 		}
 		if err != nil {
@@ -430,7 +430,7 @@ func dbListSchedulerTasks(ctx context.Context, store *clientDB, f schedulerTaskF
 			return schedulerTaskPage{}, fmt.Errorf("invalid order_by")
 		}
 		var out schedulerTaskPage
-		if err := db.QueryRow(`SELECT COUNT(1) FROM scheduler_tasks`).Scan(&out.EnabledTaskCount); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(1) FROM proc_scheduler_tasks`).Scan(&out.EnabledTaskCount); err != nil {
 			return schedulerTaskPage{}, err
 		}
 		rows, err := db.Query(
@@ -438,7 +438,7 @@ func dbListSchedulerTasks(ctx context.Context, store *clientDB, f schedulerTaskF
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
 				run_count,success_count,failure_count,last_summary_json
-			FROM scheduler_tasks`+whereSQL+` ORDER BY `+orderClause,
+			FROM proc_scheduler_tasks`+whereSQL+` ORDER BY `+orderClause,
 			args...,
 		)
 		if err != nil {
@@ -532,12 +532,12 @@ func dbListSchedulerRuns(ctx context.Context, store *clientDB, f schedulerRunFil
 			whereSQL = " WHERE " + strings.Join(where, " AND ")
 		}
 		var out schedulerRunPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM scheduler_task_runs"+whereSQL, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_scheduler_task_runs"+whereSQL, args...).Scan(&out.Total); err != nil {
 			return schedulerRunPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
-			 FROM scheduler_task_runs`+whereSQL+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			 FROM proc_scheduler_task_runs`+whereSQL+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -574,11 +574,11 @@ func dbListSchedulerRuns(ctx context.Context, store *clientDB, f schedulerRunFil
 }
 
 func dbListChainTipWorkerLogs(ctx context.Context, store *clientDB, f chainWorkerLogFilter) (chainWorkerLogPage, error) {
-	return dbListChainWorkerLogsByTable(ctx, store, "chain_tip_worker_logs", f)
+	return dbListChainWorkerLogsByTable(ctx, store, "proc_chain_tip_worker_logs", f)
 }
 
 func dbListChainUTXOWorkerLogs(ctx context.Context, store *clientDB, f chainWorkerLogFilter) (chainWorkerLogPage, error) {
-	return dbListChainWorkerLogsByTable(ctx, store, "chain_utxo_worker_logs", f)
+	return dbListChainWorkerLogsByTable(ctx, store, "proc_chain_utxo_worker_logs", f)
 }
 
 func dbListChainWorkerLogsByTable(ctx context.Context, store *clientDB, table string, f chainWorkerLogFilter) (chainWorkerLogPage, error) {

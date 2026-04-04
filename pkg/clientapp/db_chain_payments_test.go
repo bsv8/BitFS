@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-// TestDbUpsertChainPayment_Idempotent 验证 chain_payments upsert 幂等性
+// TestDbUpsertChainPayment_Idempotent 验证 fact_chain_payments upsert 幂等性
 // 第二步整改：同一个 txid 重复 upsert 不会产生多条记录
 func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	t.Parallel()
@@ -60,7 +60,7 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 
 	// 验证只有一条记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payments WHERE txid=?`, txid).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, txid).Scan(&count); err != nil {
 		t.Fatalf("count check failed: %v", err)
 	}
 	if count != 1 {
@@ -69,7 +69,7 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 
 	// 验证记录已被更新
 	var walletOut int64
-	if err := db.QueryRow(`SELECT wallet_output_satoshi FROM chain_payments WHERE id=?`, id1).Scan(&walletOut); err != nil {
+	if err := db.QueryRow(`SELECT wallet_output_satoshi FROM fact_chain_payments WHERE id=?`, id1).Scan(&walletOut); err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
 	if walletOut != 2000 {
@@ -190,7 +190,7 @@ func TestDbAppendChainPaymentUTXOLinkIfAbsent_Idempotent(t *testing.T) {
 	// 验证只有一条 link 记录
 	var count int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=?`,
+		`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=?`,
 		paymentID, "utxo_test_1:0",
 	).Scan(&count); err != nil {
 		t.Fatalf("count check failed: %v", err)
@@ -210,7 +210,7 @@ func TestDbGetPoolAllocationIDByAllocationID(t *testing.T) {
 
 	// 先创建 pool_session
 	sessionID := "sess_alloc_lookup_1"
-	_, err := db.Exec(`INSERT INTO pool_sessions(
+	_, err := db.Exec(`INSERT INTO fact_pool_sessions(
 		pool_session_id, pool_scheme, counterparty_pubkey_hex, seller_pubkey_hex, arbiter_pubkey_hex, gateway_pubkey_hex,
 		pool_amount_satoshi, spend_tx_fee_satoshi, fee_rate_sat_byte, lock_blocks, open_base_txid, status, created_at_unix, updated_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -222,7 +222,7 @@ func TestDbGetPoolAllocationIDByAllocationID(t *testing.T) {
 
 	// 创建 pool_allocation
 	allocationID := "poolalloc_" + sessionID + "_open_1"
-	_, err = db.Exec(`INSERT INTO pool_allocations(
+	_, err = db.Exec(`INSERT INTO fact_pool_allocations(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,

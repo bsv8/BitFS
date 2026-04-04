@@ -20,9 +20,9 @@ func TestObservedGatewayStatesSchemaAndIndexes(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	cols, err := tableColumns(db, "observed_gateway_states")
+	cols, err := tableColumns(db, "proc_observed_gateway_states")
 	if err != nil {
-		t.Fatalf("inspect observed_gateway_states columns failed: %v", err)
+		t.Fatalf("inspect proc_observed_gateway_states columns failed: %v", err)
 	}
 	for _, col := range []string{
 		"id",
@@ -40,16 +40,16 @@ func TestObservedGatewayStatesSchemaAndIndexes(t *testing.T) {
 		"payload_json",
 	} {
 		if _, ok := cols[col]; !ok {
-			t.Fatalf("observed_gateway_states missing %s", col)
+			t.Fatalf("proc_observed_gateway_states missing %s", col)
 		}
 	}
 	for _, indexName := range []string{
-		"idx_observed_gateway_states_created_at",
-		"idx_observed_gateway_states_gateway",
-		"idx_observed_gateway_states_event",
-		"idx_observed_gateway_states_state",
+		"idx_proc_observed_gateway_states_created_at",
+		"idx_proc_observed_gateway_states_gateway",
+		"idx_proc_observed_gateway_states_event",
+		"idx_proc_observed_gateway_states_state",
 	} {
-		hasIndex, err := tableHasIndex(db, "observed_gateway_states", indexName)
+		hasIndex, err := tableHasIndex(db, "proc_observed_gateway_states", indexName)
 		if err != nil {
 			t.Fatalf("inspect %s failed: %v", indexName, err)
 		}

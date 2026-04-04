@@ -67,7 +67,7 @@ func TestTriggerGatewayPublishDemandRecordsDemand(t *testing.T) {
 	}
 
 	var gotSeedHash string
-	if err := db.QueryRow(`SELECT seed_hash FROM demands WHERE demand_id=?`, resp.DemandID).Scan(&gotSeedHash); err != nil {
+	if err := db.QueryRow(`SELECT seed_hash FROM biz_demands WHERE demand_id=?`, resp.DemandID).Scan(&gotSeedHash); err != nil {
 		t.Fatalf("load demand: %v", err)
 	}
 	if gotSeedHash != "seed_publish_records" {
@@ -106,7 +106,7 @@ func TestDefaultArbiterPubHexUsesPubHexFallback(t *testing.T) {
 func TestDemandQuoteForeignKeysRejectOrphanRows(t *testing.T) {
 	db := newDemandQuoteFKTestDB(t)
 
-	if _, err := db.Exec(`INSERT INTO demand_quotes(
+	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
 			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		"missing_demand", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100, 10, 1, 1024, "x.bin", "text/plain", "ff", 1893427200, 1700000001,
@@ -114,17 +114,17 @@ func TestDemandQuoteForeignKeysRejectOrphanRows(t *testing.T) {
 		t.Fatalf("expected demand quote foreign key failure")
 	}
 
-	if _, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_fk", "seed_fk", 1700000002); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_fk", "seed_fk", 1700000002); err != nil {
 		t.Fatalf("insert demand: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quotes(
+	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
 			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		"dmd_fk", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100, 10, 1, 1024, "x.bin", "text/plain", "ff", 1893427200, 1700000001,
 	); err != nil {
 		t.Fatalf("insert valid quote: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)`, 999, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err == nil {
+	if _, err := db.Exec(`INSERT INTO biz_demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)`, 999, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err == nil {
 		t.Fatalf("expected arbiter foreign key failure")
 	}
 }
@@ -132,17 +132,17 @@ func TestDemandQuoteForeignKeysRejectOrphanRows(t *testing.T) {
 func TestDemandQuoteSchemaRebuildAddsForeignKeys(t *testing.T) {
 	db := newDemandQuoteNoFKSchemaDB(t)
 
-	if _, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_fk_rebuild", "seed_fk_rebuild", 1700000001); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_fk_rebuild", "seed_fk_rebuild", 1700000001); err != nil {
 		t.Fatalf("insert demand: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quotes(
+	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
 			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1, "dmd_fk_rebuild", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100, 10, 1, 1024, "keep.bin", "text/plain", "ff", 1893427200, 1700000002,
 	); err != nil {
 		t.Fatalf("insert quote: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quote_arbiters(id,quote_id,arbiter_pub_hex) VALUES(?,?,?)`, 1, 1, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demand_quote_arbiters(id,quote_id,arbiter_pub_hex) VALUES(?,?,?)`, 1, 1, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err != nil {
 		t.Fatalf("insert arbiter: %v", err)
 	}
 
@@ -153,37 +153,37 @@ func TestDemandQuoteSchemaRebuildAddsForeignKeys(t *testing.T) {
 		t.Fatalf("enable foreign keys: %v", err)
 	}
 
-	hasFK, err := demandQuoteTableMissingFK(db, "demand_quotes", "demand_id", "demands", "demand_id")
+	hasFK, err := demandQuoteTableMissingFK(db, "biz_demand_quotes", "demand_id", "biz_demands", "demand_id")
 	if err != nil {
-		t.Fatalf("check demand_quotes fk: %v", err)
+		t.Fatalf("check biz_demand_quotes fk: %v", err)
 	}
 	if hasFK {
-		t.Fatalf("demand_quotes should have foreign key after rebuild")
+		t.Fatalf("biz_demand_quotes should have foreign key after rebuild")
 	}
-	hasFK, err = demandQuoteTableMissingFK(db, "demand_quote_arbiters", "quote_id", "demand_quotes", "id")
+	hasFK, err = demandQuoteTableMissingFK(db, "biz_demand_quote_arbiters", "quote_id", "biz_demand_quotes", "id")
 	if err != nil {
-		t.Fatalf("check demand_quote_arbiters fk: %v", err)
+		t.Fatalf("check biz_demand_quote_arbiters fk: %v", err)
 	}
 	if hasFK {
-		t.Fatalf("demand_quote_arbiters should have foreign key after rebuild")
+		t.Fatalf("biz_demand_quote_arbiters should have foreign key after rebuild")
 	}
 
 	var seedHash string
-	if err := db.QueryRow(`SELECT seed_hash FROM demands WHERE demand_id=?`, "dmd_fk_rebuild").Scan(&seedHash); err != nil {
+	if err := db.QueryRow(`SELECT seed_hash FROM biz_demands WHERE demand_id=?`, "dmd_fk_rebuild").Scan(&seedHash); err != nil {
 		t.Fatalf("load demand: %v", err)
 	}
 	if seedHash != "seed_fk_rebuild" {
 		t.Fatalf("seed hash mismatch: %s", seedHash)
 	}
 
-	if _, err := db.Exec(`INSERT INTO demand_quotes(
+	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
 			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		"missing_demand", "02dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", 100, 10, 1, 1024, "x.bin", "text/plain", "ff", 1893427200, 1700000003,
 	); err == nil {
 		t.Fatalf("expected demand quote foreign key failure after rebuild")
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)`, 999, "02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err == nil {
+	if _, err := db.Exec(`INSERT INTO biz_demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)`, 999, "02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"); err == nil {
 		t.Fatalf("expected arbiter foreign key failure after rebuild")
 	}
 }
@@ -191,14 +191,14 @@ func TestDemandQuoteSchemaRebuildAddsForeignKeys(t *testing.T) {
 func TestDemandQuoteSchemaRebuildRejectsOrphans(t *testing.T) {
 	db := newDemandQuoteNoFKSchemaDB(t)
 
-	if _, err := db.Exec(`INSERT INTO demand_quotes(
+	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
 			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1, "missing_demand", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100, 10, 1, 1024, "keep.bin", "text/plain", "ff", 1893427200, 1700000002,
 	); err != nil {
 		t.Fatalf("insert orphan quote: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quote_arbiters(id,quote_id,arbiter_pub_hex) VALUES(?,?,?)`, 1, 1, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demand_quote_arbiters(id,quote_id,arbiter_pub_hex) VALUES(?,?,?)`, 1, 1, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err != nil {
 		t.Fatalf("insert orphan arbiter: %v", err)
 	}
 
@@ -249,14 +249,14 @@ func newDemandQuoteNoFKSchemaDB(t *testing.T) *sql.DB {
 		t.Fatalf("apply pragmas: %v", err)
 	}
 	stmts := []string{
-		`CREATE TABLE demands(
+		`CREATE TABLE biz_demands(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id)
 		)`,
-		`CREATE TABLE demand_quotes(
+		`CREATE TABLE biz_demand_quotes(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
 			seller_pub_hex TEXT NOT NULL,
@@ -271,7 +271,7 @@ func newDemandQuoteNoFKSchemaDB(t *testing.T) *sql.DB {
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id, seller_pub_hex)
 		)`,
-		`CREATE TABLE demand_quote_arbiters(
+		`CREATE TABLE biz_demand_quote_arbiters(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			quote_id INTEGER NOT NULL,
 			arbiter_pub_hex TEXT NOT NULL,

@@ -12,8 +12,8 @@ import (
 )
 
 // TestOrchestratorTriggerKeyRealLink 验证 orchestrator 真实链路中的 trigger_key
-// - orchestrator 发起命令后，command_journal.trigger_key = orchestrator_logs.idempotency_key
-// - 同一条 orchestrator 链路重试后，多条 command_journal 共用同一个 trigger_key
+// - orchestrator 发起命令后，proc_command_journal.trigger_key = proc_orchestrator_logs.idempotency_key
+// - 同一条 orchestrator 链路重试后，多条 proc_command_journal 共用同一个 trigger_key
 // - reject 路径有 trigger_key
 func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	t.Parallel()
@@ -98,7 +98,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 		TaskStatus:     "dispatching",
 	})
 
-	// 写入 command_journal（模拟 kernel 执行后的写入）
+	// 写入 proc_command_journal（模拟 kernel 执行后的写入）
 	// 真实链路中，kernel 会从 cmd.TriggerKey 取值写入
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "real_orch_cmd_1",
@@ -117,17 +117,17 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 		Result:        map[string]any{},
 	})
 
-	// 验证 orchestrator_logs.idempotency_key = command_journal.trigger_key
+	// 验证 proc_orchestrator_logs.idempotency_key = proc_command_journal.trigger_key
 	var orchIdempotencyKey string
-	err = db.QueryRow(`SELECT idempotency_key FROM orchestrator_logs WHERE event_type=?`, orchestratorEventTaskDispatchBeg).Scan(&orchIdempotencyKey)
+	err = db.QueryRow(`SELECT idempotency_key FROM proc_orchestrator_logs WHERE event_type=?`, orchestratorEventTaskDispatchBeg).Scan(&orchIdempotencyKey)
 	if err != nil {
-		t.Fatalf("query orchestrator_logs failed: %v", err)
+		t.Fatalf("query proc_orchestrator_logs failed: %v", err)
 	}
 
 	var cmdTriggerKey string
-	err = db.QueryRow(`SELECT trigger_key FROM command_journal WHERE command_id='real_orch_cmd_1'`).Scan(&cmdTriggerKey)
+	err = db.QueryRow(`SELECT trigger_key FROM proc_command_journal WHERE command_id='real_orch_cmd_1'`).Scan(&cmdTriggerKey)
 	if err != nil {
-		t.Fatalf("query command_journal failed: %v", err)
+		t.Fatalf("query proc_command_journal failed: %v", err)
 	}
 
 	if orchIdempotencyKey != cmdTriggerKey {
@@ -173,7 +173,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	})
 
 	// 验证两条记录都有相同的 trigger_key
-	rows, err := db.Query(`SELECT command_id, status FROM command_journal WHERE trigger_key=? ORDER BY id`, "feepool_tick:gw1:shared_key")
+	rows, err := db.Query(`SELECT command_id, status FROM proc_command_journal WHERE trigger_key=? ORDER BY id`, "feepool_tick:gw1:shared_key")
 	if err != nil {
 		t.Fatalf("query by trigger_key failed: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	})
 
 	var rejectTriggerKey string
-	err = db.QueryRow(`SELECT trigger_key FROM command_journal WHERE command_id='rejected_cmd_real'`).Scan(&rejectTriggerKey)
+	err = db.QueryRow(`SELECT trigger_key FROM proc_command_journal WHERE command_id='rejected_cmd_real'`).Scan(&rejectTriggerKey)
 	if err != nil {
 		t.Fatalf("query rejected command failed: %v", err)
 	}
@@ -259,7 +259,7 @@ func TestDirectCommandTriggerKeyEmpty(t *testing.T) {
 		t.Fatalf("direct command TriggerKey should be empty after normalize, got=%s", cmd.TriggerKey)
 	}
 
-	// 写入 command_journal（模拟 kernel 直接调用的写入）
+	// 写入 proc_command_journal（模拟 kernel 直接调用的写入）
 	ctx := context.Background()
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     cmd.CommandID,
@@ -280,9 +280,9 @@ func TestDirectCommandTriggerKeyEmpty(t *testing.T) {
 
 	// 查询验证 trigger_key 为空
 	var triggerKey string
-	err = db.QueryRow(`SELECT trigger_key FROM command_journal WHERE command_id='direct_test_cmd'`).Scan(&triggerKey)
+	err = db.QueryRow(`SELECT trigger_key FROM proc_command_journal WHERE command_id='direct_test_cmd'`).Scan(&triggerKey)
 	if err != nil {
-		t.Fatalf("query command_journal failed: %v", err)
+		t.Fatalf("query proc_command_journal failed: %v", err)
 	}
 	if triggerKey != "" {
 		t.Fatalf("direct command trigger_key should be empty in DB, got=%s", triggerKey)

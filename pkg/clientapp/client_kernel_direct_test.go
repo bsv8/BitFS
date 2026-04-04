@@ -21,11 +21,11 @@ func TestKernelDirectDownloadCoreWritesJournal(t *testing.T) {
 
 	var status, errorCode, aggregateID string
 	if qerr := db.QueryRow(
-		`SELECT status,error_code,aggregate_id FROM command_journal
+		`SELECT status,error_code,aggregate_id FROM proc_command_journal
 		 WHERE command_type=? ORDER BY id DESC LIMIT 1`,
 		clientKernelCommandDirectDownloadCore,
 	).Scan(&status, &errorCode, &aggregateID); qerr != nil {
-		t.Fatalf("query command_journal failed: %v", qerr)
+		t.Fatalf("query proc_command_journal failed: %v", qerr)
 	}
 	if strings.TrimSpace(status) != "failed" {
 		t.Fatalf("journal status mismatch: got=%s want=failed", status)
@@ -54,11 +54,11 @@ func TestKernelTransferByStrategyWritesJournal(t *testing.T) {
 
 	var status, errorCode, aggregateID string
 	if qerr := db.QueryRow(
-		`SELECT status,error_code,aggregate_id FROM command_journal
+		`SELECT status,error_code,aggregate_id FROM proc_command_journal
 		 WHERE command_type=? ORDER BY id DESC LIMIT 1`,
 		clientKernelCommandTransferByStrategy,
 	).Scan(&status, &errorCode, &aggregateID); qerr != nil {
-		t.Fatalf("query command_journal failed: %v", qerr)
+		t.Fatalf("query proc_command_journal failed: %v", qerr)
 	}
 	if strings.TrimSpace(status) != "failed" {
 		t.Fatalf("journal status mismatch: got=%s want=failed", status)
@@ -139,11 +139,11 @@ func TestKernelDispatchRejectedWritesJournal(t *testing.T) {
 			var accepted int
 			var status, gotCode string
 			if err := db.QueryRow(
-				`SELECT accepted,status,error_code FROM command_journal
+				`SELECT accepted,status,error_code FROM proc_command_journal
 				 WHERE error_code=? ORDER BY id DESC LIMIT 1`,
 				c.errorCode,
 			).Scan(&accepted, &status, &gotCode); err != nil {
-				t.Fatalf("query command_journal failed: %v", err)
+				t.Fatalf("query proc_command_journal failed: %v", err)
 			}
 			if accepted != 0 {
 				t.Fatalf("journal accepted mismatch: got=%d want=0", accepted)

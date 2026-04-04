@@ -96,10 +96,10 @@ func TestHandleGetFileContent_LocalResourceUsesStoredMIMEHint(t *testing.T) {
 	if err := os.Rename(filePath, hashPath); err != nil {
 		t.Fatalf("rename local file: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE workspace_files SET file_path=? WHERE workspace_path=? AND seed_hash=?`, filepath.Base(hashPath), filepath.Dir(hashPath), seedHash); err != nil {
+	if _, err := db.Exec(`UPDATE biz_workspace_files SET file_path=? WHERE workspace_path=? AND seed_hash=?`, filepath.Base(hashPath), filepath.Dir(hashPath), seedHash); err != nil {
 		t.Fatalf("update workspace path: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE seeds SET recommended_file_name=?,mime_hint=? WHERE seed_hash=?`, "index.js", "application/javascript", seedHash); err != nil {
+	if _, err := db.Exec(`UPDATE biz_seeds SET recommended_file_name=?,mime_hint=? WHERE seed_hash=?`, "index.js", "application/javascript", seedHash); err != nil {
 		t.Fatalf("update seed meta: %v", err)
 	}
 
@@ -262,14 +262,14 @@ func prepareLocalSeedFixture(t *testing.T, db *sql.DB, body string) (string, str
 		t.Fatalf("write seed file: %v", err)
 	}
 	now := time.Now().Unix()
-	if _, err := db.Exec(`INSERT INTO workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, base, 1, 0, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, base, 1, 0, now); err != nil {
 		t.Fatalf("insert workspace: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		seedHash, 1, len(body), seedPath, filepath.Base(filePath), "text/html"); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
 		base, filepath.Base(filePath), seedHash, 0); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}

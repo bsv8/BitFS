@@ -237,7 +237,7 @@ func dbUpsertFrontOrderTx(tx *sql.Tx, e frontOrderEntry) error {
 		e.UpdatedAtUnix = e.CreatedAtUnix
 	}
 	_, err := tx.Exec(
-		`INSERT INTO front_orders(
+		`INSERT INTO biz_front_orders(
 			front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(front_order_id) DO UPDATE SET
@@ -290,7 +290,7 @@ func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := tx.Exec(
-		`INSERT INTO fin_business(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
+		`INSERT INTO settle_businesses(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
@@ -338,7 +338,7 @@ func dbAppendBusinessTriggerTx(tx *sql.Tx, e businessTriggerEntry) error {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
 	_, err := tx.Exec(
-		`INSERT INTO business_triggers(
+		`INSERT INTO biz_business_triggers(
 			trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?)
 		ON CONFLICT(business_id, trigger_type, trigger_id_value, trigger_role) DO UPDATE SET
@@ -381,7 +381,7 @@ func dbUpsertBusinessSettlementTx(tx *sql.Tx, e businessSettlementEntry) error {
 		e.UpdatedAtUnix = e.CreatedAtUnix
 	}
 	_, err := tx.Exec(
-		`INSERT INTO business_settlements(
+		`INSERT INTO settle_business_settlements(
 			settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(settlement_id) DO UPDATE SET

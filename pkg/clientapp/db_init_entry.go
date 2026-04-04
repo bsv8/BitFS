@@ -23,30 +23,18 @@ func ensureClientDBSchema(store *clientDB) error {
 // 设计说明：
 // - 用于测试场景，测试代码直接持有 *sql.DB 而无 actor；
 // - 生产代码应使用 ensureClientDBSchema(store *clientDB)。
+// - 第十一阶段后：不再做旧库迁移，只建新表。
 func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 
-	// 1. 基础表和索引（不依赖迁移前置条件）
+	// 1. 基础表和索引（新库直接建，旧库跳过已存在的表）
 	if err := ensureClientDBBaseSchema(db); err != nil {
 		return fmt.Errorf("base schema: %w", err)
 	}
-
-	// 2. 兼容迁移（历史列补齐、老表迁移、老数据搬运）
-	if err := migrateClientDBLegacySchema(db); err != nil {
-		return fmt.Errorf("legacy migration: %w", err)
-	}
-	if err := ensureGatewayEventAndCommandJournalConstraints(db); err != nil {
-		return fmt.Errorf("gateway_events command constraints: %w", err)
-	}
-	if err := ensureCommandLinkedTableConstraints(db); err != nil {
-		return fmt.Errorf("command linked table constraints: %w", err)
-	}
-
-	// 3. 数据规范化（历史脏数据口径纠偏）
-	if err := normalizeClientDBData(db); err != nil {
-		return fmt.Errorf("data normalization: %w", err)
+	if err := ensureFinAccountingIndexes(db); err != nil {
+		return fmt.Errorf("finance accounting indexes: %w", err)
 	}
 
 	return nil

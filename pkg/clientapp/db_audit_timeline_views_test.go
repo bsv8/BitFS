@@ -20,37 +20,37 @@ func TestAuditTimelineGatewayAndCommandOrdering(t *testing.T) {
 		}
 	}
 
-	mustInsert(`INSERT INTO command_journal(
+	mustInsert(`INSERT INTO proc_command_journal(
 		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1700000000, "cmd-1", "feepool.ensure_active", "gw1", "gateway:gw1", "e2e", 1700000000, 1, "applied", "", "", "idle", "active", 9, "", `{"scene":"cmd"}`, `{"ok":true}`,
 	)
-	mustInsert(`INSERT INTO gateway_events(
+	mustInsert(`INSERT INTO proc_gateway_events(
 		created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?)`,
 		1700000000, "gw1", "cmd-1", "fee_pool_open", "msg-1", 1, "pool-1", 100, `{"scene":"gateway"}`,
 	)
-	mustInsert(`INSERT INTO domain_events(
+	mustInsert(`INSERT INTO proc_domain_events(
 		created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 	) VALUES(?,?,?,?,?,?,?)`,
 		1700000000, "cmd-1", "gw1", "fee_pool_opened", "idle", "active", `{"scene":"domain"}`,
 	)
-	mustInsert(`INSERT INTO state_snapshots(
+	mustInsert(`INSERT INTO proc_state_snapshots(
 		created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?)`,
 		1700000000, "cmd-1", "gw1", "active", "", 0, 0, "", `{"scene":"snapshot"}`,
 	)
-	mustInsert(`INSERT INTO effect_logs(
+	mustInsert(`INSERT INTO proc_effect_logs(
 		created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 	) VALUES(?,?,?,?,?,?,?,?)`,
 		1700000000, "cmd-1", "gw1", "chain", "open", "done", "", `{"scene":"effect"}`,
 	)
-	mustInsert(`INSERT INTO observed_gateway_states(
+	mustInsert(`INSERT INTO proc_observed_gateway_states(
 		created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1700000000, "gw1", "gw1", 1700000000, "fee_pool_resumed_by_wallet_probe", "active", "idle", "", 0, 0, "", `{"scene":"observed_gateway"}`,
 	)
-	mustInsert(`INSERT INTO observed_gateway_states(
+	mustInsert(`INSERT INTO proc_observed_gateway_states(
 		created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1700000000, "gw1", "cmd-1", 1700000000, "fee_pool_reconciled", "active", "active", "", 0, 0, "", `{"source_command_id":"cmd-1"}`,
@@ -68,7 +68,7 @@ func TestAuditTimelineGatewayAndCommandOrdering(t *testing.T) {
 		t.Fatalf("unexpected gateway total: got=%d want=7", gatewayPage.Total)
 	}
 	wantKinds := []string{
-		"command_journal",
+		"proc_command_journal",
 		"gateway_event",
 		"domain_event",
 		"state_snapshot",

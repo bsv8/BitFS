@@ -66,7 +66,7 @@ func dbEnsureDefaultWorkspace(ctx context.Context, store *clientDB, workspaceDir
 	now := time.Now().Unix()
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO workspaces(workspace_path,enabled,max_bytes,created_at_unix)
+			`INSERT INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix)
 			 VALUES(?,1,?,?)
 			 ON CONFLICT(workspace_path) DO UPDATE SET enabled=1`,
 			abs, int64(0), now,
@@ -80,7 +80,7 @@ func dbListWorkspaces(ctx context.Context, store *clientDB) ([]workspaceItem, er
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]workspaceItem, error) {
-		rows, err := db.Query(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM workspaces ORDER BY workspace_path ASC`)
+		rows, err := db.Query(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM biz_workspaces ORDER BY workspace_path ASC`)
 		if err != nil {
 			return nil, err
 		}
@@ -113,7 +113,7 @@ func dbAddWorkspace(ctx context.Context, store *clientDB, absPath string, maxByt
 	now := time.Now().Unix()
 	return clientDBValue(ctx, store, func(db *sql.DB) (workspaceItem, error) {
 		if _, err := db.Exec(
-			`INSERT INTO workspaces(workspace_path,max_bytes,enabled,created_at_unix)
+			`INSERT INTO biz_workspaces(workspace_path,max_bytes,enabled,created_at_unix)
 			 VALUES(?, ?, 1, ?)
 			 ON CONFLICT(workspace_path) DO UPDATE SET max_bytes=excluded.max_bytes,enabled=1`,
 			absPath, maxBytes, now,
@@ -134,18 +134,18 @@ func dbDeleteWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 	}
 	return store.Tx(ctx, func(tx *sql.Tx) error {
 		var path string
-		if err := tx.QueryRow(`SELECT workspace_path FROM workspaces WHERE workspace_path=?`, workspacePath).Scan(&path); err != nil {
+		if err := tx.QueryRow(`SELECT workspace_path FROM biz_workspaces WHERE workspace_path=?`, workspacePath).Scan(&path); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("workspace not found")
 			}
 			return err
 		}
-		if _, err := tx.Exec(`DELETE FROM workspaces WHERE workspace_path=?`, workspacePath); err != nil {
+		if _, err := tx.Exec(`DELETE FROM biz_workspaces WHERE workspace_path=?`, workspacePath); err != nil {
 			return err
 		}
 		path = filepath.Clean(strings.TrimSpace(path))
 		if path != "" {
-			if _, err := tx.Exec(`DELETE FROM workspace_files WHERE workspace_path=?`, path); err != nil {
+			if _, err := tx.Exec(`DELETE FROM biz_workspace_files WHERE workspace_path=?`, path); err != nil {
 				return err
 			}
 		}
@@ -181,7 +181,7 @@ func dbUpdateWorkspaceByPath(ctx context.Context, store *clientDB, workspacePath
 		if nextEnabled {
 			enabledValue = 1
 		}
-		if _, err := db.Exec(`UPDATE workspaces SET max_bytes=?,enabled=? WHERE workspace_path=?`, nextMaxBytes, enabledValue, workspacePath); err != nil {
+		if _, err := db.Exec(`UPDATE biz_workspaces SET max_bytes=?,enabled=? WHERE workspace_path=?`, nextMaxBytes, enabledValue, workspacePath); err != nil {
 			return workspaceItem{}, err
 		}
 		return dbLoadWorkspaceByPath(db, workspacePath)
@@ -219,7 +219,7 @@ func dbListLiveCacheFiles(ctx context.Context, store *clientDB) ([]workspaceFile
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]workspaceFileRow, error) {
-		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM workspace_files`)
+		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM biz_workspace_files`)
 		if err != nil {
 			return nil, err
 		}
@@ -246,7 +246,7 @@ func dbDeleteLiveStreamCacheRows(ctx context.Context, store *clientDB, streamID 
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(`DELETE FROM workspace_files WHERE file_path LIKE ?`, "live/"+strings.ToLower(strings.TrimSpace(streamID))+"/%")
+		_, err := db.Exec(`DELETE FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+strings.ToLower(strings.TrimSpace(streamID))+"/%")
 		return err
 	})
 }
@@ -259,19 +259,19 @@ func dbCleanupOrphanSeedState(ctx context.Context, store *clientDB) error {
 }
 
 func dbCleanupOrphanSeedStateTx(tx *sql.Tx) error {
-	if _, err := tx.Exec(`DELETE FROM seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM workspace_files)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM biz_workspace_files)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM seed_pricing_policy WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_pricing_policy WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM seed_chunk_supply WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_chunk_supply WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM proc_file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DELETE FROM file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM proc_file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
 	return nil
@@ -292,10 +292,10 @@ func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string
 		}
 		resolved, ok := resolveWorkspaceRelativePath(absPath, roots)
 		if !ok {
-			return fmt.Errorf("output path is outside registered workspaces")
+			return fmt.Errorf("output path is outside registered biz_workspaces")
 		}
 		if _, err := db.Exec(
-			`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked)
+			`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
 			 VALUES(?,?,?,?)
 			 ON CONFLICT(workspace_path,file_path) DO UPDATE SET
 			 seed_hash=excluded.seed_hash,
@@ -305,7 +305,7 @@ func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string
 			return err
 		}
 		_, err = db.Exec(
-			`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
+			`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
 			 VALUES(?,?,?,?,?,?)
 			 ON CONFLICT(seed_hash) DO UPDATE SET
 			 chunk_count=excluded.chunk_count,
@@ -323,7 +323,7 @@ func dbListWorkspaceRoots(db *sql.DB) ([]string, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
-	rows, err := db.Query(`SELECT workspace_path FROM workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
+	rows, err := db.Query(`SELECT workspace_path FROM biz_workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -354,10 +354,10 @@ func dbListWorkspaceFiles(ctx context.Context, store *clientDB, limit int, offse
 			args = append(args, "%"+pathLike+"%")
 		}
 		var out workspaceFilesPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM workspace_files"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM biz_workspace_files"+where, args...).Scan(&out.Total); err != nil {
 			return workspaceFilesPage{}, err
 		}
-		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM workspace_files`+where+` ORDER BY workspace_path ASC,file_path ASC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
+		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM biz_workspace_files`+where+` ORDER BY workspace_path ASC,file_path ASC LIMIT ? OFFSET ?`, append(args, limit, offset)...)
 		if err != nil {
 			return workspaceFilesPage{}, err
 		}
@@ -394,7 +394,7 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 			args = append(args, "%"+seedHashLike+"%")
 		}
 		var out workspaceSeedsPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM seeds s"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM biz_seeds s"+where, args...).Scan(&out.Total); err != nil {
 			return workspaceSeedsPage{}, err
 		}
 		rows, err := db.Query(`
@@ -403,8 +403,8 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 			       COALESCE(p.resale_discount_bps,0),
 			       COALESCE(p.pricing_source,'system'),
 			       COALESCE(p.updated_at_unix,0)
-			FROM seeds s
-			LEFT JOIN seed_pricing_policy p ON p.seed_hash=s.seed_hash
+			FROM biz_seeds s
+			LEFT JOIN biz_seed_pricing_policy p ON p.seed_hash=s.seed_hash
 			`+where+`
 			ORDER BY s.seed_hash ASC
 			LIMIT ? OFFSET ?`, append(args, limit, offset)...)
@@ -439,7 +439,7 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 func dbLoadWorkspaceByPath(db *sql.DB, absPath string) (workspaceItem, error) {
 	var out workspaceItem
 	var enabled int64
-	err := db.QueryRow(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM workspaces WHERE workspace_path=?`, absPath).
+	err := db.QueryRow(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM biz_workspaces WHERE workspace_path=?`, absPath).
 		Scan(&out.WorkspacePath, &out.MaxBytes, &enabled, &out.CreatedAtUnix)
 	if err != nil {
 		return workspaceItem{}, err

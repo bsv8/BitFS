@@ -7,7 +7,7 @@ import (
 	"fmt"
 )
 
-// seed_chunk_supply 只走这一条 DB 线。
+// biz_seed_chunk_supply 只走这一条 DB 线。
 // 设计说明：
 // - 这里专门放块供给的读写 helper，避免供给逻辑散进 run.go；
 // - 所有入口先统一 seed_hash 规范化，再进 SQL；
@@ -60,13 +60,13 @@ func dbReplaceSeedChunkSupplyTx(tx *sql.Tx, seedHash string, indexes []uint32) e
 		return fmt.Errorf("seed_hash required")
 	}
 	indexes = normalizeChunkIndexes(indexes, 0)
-	if _, err := tx.Exec(`DELETE FROM seed_chunk_supply WHERE seed_hash=?`, seedHash); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash); err != nil {
 		return err
 	}
 	if len(indexes) == 0 {
 		return nil
 	}
-	stmt, err := tx.Prepare(`INSERT INTO seed_chunk_supply(seed_hash,chunk_index) VALUES(?,?)`)
+	stmt, err := tx.Prepare(`INSERT INTO biz_seed_chunk_supply(seed_hash,chunk_index) VALUES(?,?)`)
 	if err != nil {
 		return err
 	}
@@ -93,7 +93,7 @@ func dbListSeedChunkSupplyTx(tx *sql.Tx, seedHash string) ([]uint32, error) {
 func dbListSeedChunkSupplyQuery(queryer interface {
 	Query(string, ...any) (*sql.Rows, error)
 }, seedHash string) ([]uint32, error) {
-	rows, err := queryer.Query(`SELECT chunk_index FROM seed_chunk_supply WHERE seed_hash=? ORDER BY chunk_index ASC`, normalizeSeedHashHex(seedHash))
+	rows, err := queryer.Query(`SELECT chunk_index FROM biz_seed_chunk_supply WHERE seed_hash=? ORDER BY chunk_index ASC`, normalizeSeedHashHex(seedHash))
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func dbIsSeedChunkAvailableQuery(queryer interface {
 		return false, fmt.Errorf("seed_hash required")
 	}
 	var one int
-	err := queryer.QueryRow(`SELECT 1 FROM seed_chunk_supply WHERE seed_hash=? AND chunk_index=? LIMIT 1`, seedHash, chunkIndex).Scan(&one)
+	err := queryer.QueryRow(`SELECT 1 FROM biz_seed_chunk_supply WHERE seed_hash=? AND chunk_index=? LIMIT 1`, seedHash, chunkIndex).Scan(&one)
 	if err == nil {
 		return true, nil
 	}

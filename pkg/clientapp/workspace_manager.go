@@ -169,11 +169,11 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 	if store == nil {
 		return nil, fmt.Errorf("workspace manager not initialized")
 	}
-	seeds, err := dbScanAndSyncWorkspace(ctx, store, *m.cfg)
+	biz_seeds, err := dbScanAndSyncWorkspace(ctx, store, *m.cfg)
 	if err != nil {
 		return nil, err
 	}
-	return seeds, nil
+	return biz_seeds, nil
 }
 
 func (m *workspaceManager) ValidateLiveCacheCapacity(maxBytes uint64) error {
@@ -340,7 +340,7 @@ func containsString(items []string, want string) bool {
 // RegisterDownloadedFile 直接把“已下载文件 + 对应 seed”写入索引与种子目录，不走全盘扫描。
 // 设计说明：
 // - 下载流程产出的 seed 是独立事实来源，不能再从当前文件反推 seed；
-// - 支持 partial 文件：workspace_files 记录当前文件大小，seeds 记录完整种子元信息。
+// - 支持 partial 文件：biz_workspace_files 记录当前文件大小，biz_seeds 记录完整种子元信息。
 func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams) (sellerSeed, error) {
 	if m == nil || m.db == nil || m.cfg == nil {
 		return sellerSeed{}, fmt.Errorf("workspace manager not initialized")
@@ -373,7 +373,7 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	seedsDir := filepath.Join(m.cfg.Storage.DataDir, "seeds")
+	seedsDir := filepath.Join(m.cfg.Storage.DataDir, "biz_seeds")
 	if err := os.MkdirAll(seedsDir, 0o755); err != nil {
 		return sellerSeed{}, err
 	}

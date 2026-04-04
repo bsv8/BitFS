@@ -69,14 +69,14 @@ func TestDemandQuoteCurrentSchema(t *testing.T) {
 	}
 
 	var got demandQuoteItem
-	if err := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM demand_quotes WHERE demand_id=? AND seller_pub_hex=?`, "dmd_overwrite", seller).
+	if err := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE demand_id=? AND seller_pub_hex=?`, "dmd_overwrite", seller).
 		Scan(&got.ID, &got.DemandID, &got.SellerPubHex, &got.SeedPriceSatoshi, &got.ChunkPriceSatoshi, &got.ChunkCount, &got.FileSizeBytes, &got.RecommendedFileName, &got.MimeType, &got.AvailableChunkBitmapHex, &got.ExpiresAtUnix, &got.CreatedAtUnix); err != nil {
 		t.Fatalf("load quote: %v", err)
 	}
 	if got.SeedPriceSatoshi != 200 || got.ChunkPriceSatoshi != 12 || got.FileSizeBytes != 4321 {
 		t.Fatalf("quote not overwritten: %+v", got)
 	}
-	rows, err := db.Query(`SELECT arbiter_pub_hex FROM demand_quote_arbiters WHERE quote_id=? ORDER BY arbiter_pub_hex`, got.ID)
+	rows, err := db.Query(`SELECT arbiter_pub_hex FROM biz_demand_quote_arbiters WHERE quote_id=? ORDER BY arbiter_pub_hex`, got.ID)
 	if err != nil {
 		t.Fatalf("load arbiters: %v", err)
 	}
@@ -109,17 +109,17 @@ func TestDemandQuoteReadPathsAndArbiterSelection(t *testing.T) {
 	seller := "02ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	arb1 := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	arb2 := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-	if _, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_read", "seed_read", 1700000001); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_read", "seed_read", 1700000001); err != nil {
 		t.Fatalf("insert demand: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quotes(
+	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
 			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		"dmd_read", seller, 123, 11, 5, 8192, "read.bin", "application/json", "ff", 1893427200, 1700000002,
 	); err != nil {
 		t.Fatalf("insert quote: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?),(?,?)`, 1, arb1, 1, arb2); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?),(?,?)`, 1, arb1, 1, arb2); err != nil {
 		t.Fatalf("insert arbiters: %v", err)
 	}
 

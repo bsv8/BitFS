@@ -29,10 +29,10 @@ type commandTimelinePage struct {
 
 type commandTimelineItem struct {
 	commandJournalItem
-	GatewayEvents  []gatewayEventItem  `json:"gateway_events,omitempty"`
-	DomainEvents   []domainEventItem   `json:"domain_events,omitempty"`
-	StateSnapshots []stateSnapshotItem `json:"state_snapshots,omitempty"`
-	EffectLogs     []effectLogItem     `json:"effect_logs,omitempty"`
+	GatewayEvents  []gatewayEventItem  `json:"proc_gateway_events,omitempty"`
+	DomainEvents   []domainEventItem   `json:"proc_domain_events,omitempty"`
+	StateSnapshots []stateSnapshotItem `json:"proc_state_snapshots,omitempty"`
+	EffectLogs     []effectLogItem     `json:"proc_effect_logs,omitempty"`
 }
 
 type observedGatewayTimelineFilter struct {
@@ -85,7 +85,7 @@ func dbGetCommandTimelineItem(ctx context.Context, store *clientDB, id int64) (c
 	return clientDBValue(ctx, store, func(db *sql.DB) (commandTimelineItem, error) {
 		journalRow := db.QueryRow(
 			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			FROM command_journal WHERE id=?`, id,
+			FROM proc_command_journal WHERE id=?`, id,
 		)
 		journal, err := scanCommandJournalItem(journalRow)
 		if err != nil {
@@ -126,7 +126,7 @@ func hydrateCommandTimelineRelations(ctx context.Context, db *sql.DB, out *comma
 
 func loadGatewayEventsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]gatewayEventItem) error {
 	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
-		FROM gateway_events WHERE command_id=? ORDER BY id ASC`, commandID)
+		FROM proc_gateway_events WHERE command_id=? ORDER BY id ASC`, commandID)
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func loadGatewayEventsByCommandID(ctx context.Context, db *sql.DB, commandID str
 
 func loadDomainEventsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]domainEventItem) error {
 	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
-		FROM domain_events WHERE command_id=? ORDER BY id ASC`, commandID)
+		FROM proc_domain_events WHERE command_id=? ORDER BY id ASC`, commandID)
 	if err != nil {
 		return err
 	}
@@ -170,7 +170,7 @@ func loadDomainEventsByCommandID(ctx context.Context, db *sql.DB, commandID stri
 
 func loadStateSnapshotsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]stateSnapshotItem) error {
 	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		FROM state_snapshots WHERE command_id=? ORDER BY id ASC`, commandID)
+		FROM proc_state_snapshots WHERE command_id=? ORDER BY id ASC`, commandID)
 	if err != nil {
 		return err
 	}
@@ -192,7 +192,7 @@ func loadStateSnapshotsByCommandID(ctx context.Context, db *sql.DB, commandID st
 
 func loadEffectLogsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]effectLogItem) error {
 	rows, err := db.QueryContext(ctx, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-		FROM effect_logs WHERE command_id=? ORDER BY id ASC`, commandID)
+		FROM proc_effect_logs WHERE command_id=? ORDER BY id ASC`, commandID)
 	if err != nil {
 		return err
 	}

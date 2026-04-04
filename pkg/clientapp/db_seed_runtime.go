@@ -9,7 +9,7 @@ import (
 )
 
 // 设计说明：
-// - 卖方报价读取需要同时看 seeds 和 seed_pricing_policy；
+// - 卖方报价读取需要同时看 biz_seeds 和 biz_seed_pricing_policy；
 // - 这里把“从库里拼成 sellerSeed”收成一个入口，run.go 只拿结果，不拼 SQL。
 func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash string) (sellerSeed, bool, error) {
 	if store == nil {
@@ -29,7 +29,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		var policyFound bool
 		if err := db.QueryRow(
 			`SELECT floor_unit_price_sat_per_64k
-			   FROM seed_pricing_policy
+			   FROM biz_seed_pricing_policy
 			  WHERE seed_hash=?`,
 			seedHash,
 		).Scan(&unitPrice); err == nil {
@@ -41,7 +41,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		var seed sellerSeed
 		if err := db.QueryRow(
 			`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
-			   FROM seeds
+			   FROM biz_seeds
 			  WHERE seed_hash=?`,
 			seedHash,
 		).Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {

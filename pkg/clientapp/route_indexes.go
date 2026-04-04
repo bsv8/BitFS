@@ -20,7 +20,7 @@ func upsertPublishedRouteIndex(db *sql.DB, route string, seedHash string) (int64
 	}
 	now := time.Now().Unix()
 	if _, err := db.Exec(
-		`INSERT INTO published_route_indexes(route,seed_hash,updated_at_unix)
+		`INSERT INTO proc_published_route_indexes(route,seed_hash,updated_at_unix)
 		 VALUES(?,?,?)
 		 ON CONFLICT(route) DO UPDATE SET seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
 		normalizedRoute,
@@ -40,8 +40,8 @@ func buildRouteIndexManifest(db *sql.DB, route string) ([]byte, error) {
 	var manifest routeIndexManifest
 	if err := db.QueryRow(
 		`SELECT p.route,p.seed_hash,COALESCE(s.recommended_file_name,''),COALESCE(s.mime_hint,''),COALESCE(s.file_size,0),p.updated_at_unix
-		   FROM published_route_indexes p
-		   JOIN seeds s ON s.seed_hash=p.seed_hash
+		   FROM proc_published_route_indexes p
+		   JOIN biz_seeds s ON s.seed_hash=p.seed_hash
 		  WHERE p.route=?`,
 		normalizedRoute,
 	).Scan(

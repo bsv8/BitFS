@@ -41,7 +41,7 @@ type commandJournalItem struct {
 	StateBefore   string `json:"state_before"`
 	StateAfter    string `json:"state_after"`
 	DurationMS    int64  `json:"duration_ms"`
-	// TriggerKey 是来源链路键，不是命令主键；用于关联 orchestrator_logs.idempotency_key
+	// TriggerKey 是来源链路键，不是命令主键；用于关联 proc_orchestrator_logs.idempotency_key
 	TriggerKey string          `json:"trigger_key"`
 	Payload    json.RawMessage `json:"payload"`
 	Result     json.RawMessage `json:"result"`
@@ -193,12 +193,12 @@ func dbListCommandJournal(ctx context.Context, store *clientDB, f commandJournal
 			args = append(args, like, like, like, like, like)
 		}
 		var out commandJournalPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM command_journal WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_command_journal WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return commandJournalPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			FROM command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			FROM proc_command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -227,7 +227,7 @@ func dbGetCommandJournalItem(ctx context.Context, store *clientDB, id int64) (co
 	return clientDBValue(ctx, store, func(db *sql.DB) (commandJournalItem, error) {
 		row := db.QueryRow(
 			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			FROM command_journal WHERE id=?`, id,
+			FROM proc_command_journal WHERE id=?`, id,
 		)
 		return scanCommandJournalItem(row)
 	})
@@ -254,10 +254,10 @@ func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilte
 			args = append(args, f.EventName)
 		}
 		var out domainEventPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM domain_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_domain_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return domainEventPage{}, err
 		}
-		rows, err := db.Query(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM proc_domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return domainEventPage{}, err
 		}
@@ -282,7 +282,7 @@ func dbGetDomainEventItem(ctx context.Context, store *clientDB, id int64) (domai
 		return domainEventItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (domainEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM domain_events WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM proc_domain_events WHERE id=?`, id)
 		return scanDomainEventItem(row)
 	})
 }
@@ -308,12 +308,12 @@ func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotF
 			args = append(args, f.State)
 		}
 		var out stateSnapshotPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM state_snapshots WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_state_snapshots WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return stateSnapshotPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM state_snapshots WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			FROM proc_state_snapshots WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -342,7 +342,7 @@ func dbGetStateSnapshotItem(ctx context.Context, store *clientDB, id int64) (sta
 	return clientDBValue(ctx, store, func(db *sql.DB) (stateSnapshotItem, error) {
 		row := db.QueryRow(
 			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM state_snapshots WHERE id=?`, id,
+			FROM proc_state_snapshots WHERE id=?`, id,
 		)
 		return scanStateSnapshotItem(row)
 	})
@@ -372,12 +372,12 @@ func dbListObservedGatewayStates(ctx context.Context, store *clientDB, f observe
 			args = append(args, f.State)
 		}
 		var out observedGatewayStatePage
-		if err := db.QueryRow("SELECT COUNT(1) FROM observed_gateway_states WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_observed_gateway_states WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return observedGatewayStatePage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM observed_gateway_states WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			FROM proc_observed_gateway_states WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -406,7 +406,7 @@ func dbGetObservedGatewayStateItem(ctx context.Context, store *clientDB, id int6
 	return clientDBValue(ctx, store, func(db *sql.DB) (observedGatewayStateItem, error) {
 		row := db.QueryRow(
 			`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM observed_gateway_states WHERE id=?`, id,
+			FROM proc_observed_gateway_states WHERE id=?`, id,
 		)
 		return scanObservedGatewayStateItem(row)
 	})
@@ -440,12 +440,12 @@ func dbListEffectLogs(ctx context.Context, store *clientDB, f effectLogFilter) (
 			args = append(args, f.Status)
 		}
 		var out effectLogPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM effect_logs WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_effect_logs WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return effectLogPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-			FROM effect_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			FROM proc_effect_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -474,7 +474,7 @@ func dbGetEffectLogItem(ctx context.Context, store *clientDB, id int64) (effectL
 	return clientDBValue(ctx, store, func(db *sql.DB) (effectLogItem, error) {
 		row := db.QueryRow(
 			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-			FROM effect_logs WHERE id=?`, id,
+			FROM proc_effect_logs WHERE id=?`, id,
 		)
 		return scanEffectLogItem(row)
 	})

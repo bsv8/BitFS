@@ -111,19 +111,19 @@ func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 	}
 	dbRecordDirectPoolCloseAccounting(ctx, store, "sess_1", 3, "", finalTxHex, 700, 290, "seller_peer_1")
 
-	// 第二阶段整改验证：close 生成过程型 fin_business，但不是正式收费对象
+	// 第二阶段整改验证：close 生成过程型 settle_businesses，但不是正式收费对象
 	var businessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&businessCount); err != nil {
-		t.Fatalf("query fin_business failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&businessCount); err != nil {
+		t.Fatalf("query settle_businesses failed: %v", err)
 	}
 	if businessCount != 1 {
-		t.Fatalf("第二阶段：close 应生成 1 条过程型 fin_business 记录，got %d", businessCount)
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 settle_businesses 记录，got %d", businessCount)
 	}
 
 	// 验证：accounting_scene 标记为过程型
 	var accountingScene, accountingSubtype string
-	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&accountingScene, &accountingSubtype); err != nil {
-		t.Fatalf("query fin_business fields failed: %v", err)
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_businesses WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&accountingScene, &accountingSubtype); err != nil {
+		t.Fatalf("query settle_businesses fields failed: %v", err)
 	}
 	if accountingScene != "direct_transfer_process" {
 		t.Fatalf("第二阶段：close 的 accounting_scene 应为 direct_transfer_process，got %s", accountingScene)
@@ -134,11 +134,11 @@ func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 
 	// 第二阶段：tx_breakdown 和 utxo_links 挂正式的 business_id
 	var txid string
-	if err := db.QueryRow(`SELECT txid FROM fin_tx_breakdown WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&txid); err != nil {
-		t.Fatalf("query fin_tx_breakdown failed: %v", err)
+	if err := db.QueryRow(`SELECT txid FROM settle_tx_breakdown WHERE business_id=?`, "biz_c2c_close_sess_1").Scan(&txid); err != nil {
+		t.Fatalf("query settle_tx_breakdown failed: %v", err)
 	}
 	if txid == "" {
-		t.Fatalf("fin_tx_breakdown txid should not be empty")
+		t.Fatalf("settle_tx_breakdown txid should not be empty")
 	}
 
 	type linkCheck struct {
@@ -158,12 +158,12 @@ func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 		var gotAmount int64
 		if err := db.QueryRow(
 			`SELECT COUNT(1),COALESCE(SUM(l.amount_satoshi),0)
-			   FROM fin_tx_utxo_links l
-			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
+			   FROM settle_tx_utxo_links l
+			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE l.business_id=? AND l.txid=? AND b.tx_role=? AND l.io_side=? AND l.utxo_role=?`,
 			"biz_c2c_close_sess_1", txid, c.txRole, c.ioSide, c.utxoRole,
 		).Scan(&gotCount, &gotAmount); err != nil {
-			t.Fatalf("query fin_tx_utxo_links tx_role=%s io_side=%s utxo_role=%s failed: %v", c.txRole, c.ioSide, c.utxoRole, err)
+			t.Fatalf("query settle_tx_utxo_links tx_role=%s io_side=%s utxo_role=%s failed: %v", c.txRole, c.ioSide, c.utxoRole, err)
 		}
 		if gotCount != c.count {
 			t.Fatalf("tx_role=%s io_side=%s utxo_role=%s count mismatch: got=%d want=%d", c.txRole, c.ioSide, c.utxoRole, gotCount, c.count)
@@ -218,7 +218,7 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	var amountSat, feeSat int64
 	if err := db.QueryRow(
 		`SELECT status,pool_scheme,counterparty_pubkey_hex,open_base_txid,pool_amount_satoshi,spend_tx_fee_satoshi
-		   FROM pool_sessions WHERE pool_session_id=?`,
+		   FROM fact_pool_sessions WHERE pool_session_id=?`,
 		sessionID,
 	).Scan(&status, &scheme, &counterparty, &openBaseTxID, &amountSat, &feeSat); err != nil {
 		t.Fatalf("query pool session failed: %v", err)
@@ -240,7 +240,7 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	}
 	rows, err := db.Query(
 		`SELECT allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex
-		   FROM pool_allocations WHERE pool_session_id=? ORDER BY allocation_no ASC`,
+		   FROM fact_pool_allocations WHERE pool_session_id=? ORDER BY allocation_no ASC`,
 		sessionID,
 	)
 	if err != nil {
@@ -279,7 +279,7 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 }
 
 // TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证第二步整改 + 第二阶段
-// source_id 应该是 pool_allocations.id（整数），而不是 allocation_id（业务键）
+// source_id 应该是 fact_pool_allocations.id（整数），而不是 allocation_id（业务键）
 // 第二阶段：open/close 为过程型财务对象，只验证 pay 的 source_id 格式
 func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
@@ -305,32 +305,32 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
-	// 第二阶段整改验证：open/close 生成过程型 fin_business，不是正式收费对象
+	// 第二阶段整改验证：open/close 生成过程型 settle_businesses，不是正式收费对象
 	// 设计意图：open/close 保留为过程型财务对象，正式收费主线只认 biz_download_pool_*
 	var openBusinessCount, closeBusinessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openBusinessCount); err != nil {
-		t.Fatalf("query fin_business open failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openBusinessCount); err != nil {
+		t.Fatalf("query settle_businesses open failed: %v", err)
 	}
 	if openBusinessCount != 1 {
-		t.Fatalf("第二阶段：open 应生成 1 条过程型 fin_business 记录，got %d", openBusinessCount)
+		t.Fatalf("第二阶段：open 应生成 1 条过程型 settle_businesses 记录，got %d", openBusinessCount)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&closeBusinessCount); err != nil {
-		t.Fatalf("query fin_business close failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&closeBusinessCount); err != nil {
+		t.Fatalf("query settle_businesses close failed: %v", err)
 	}
 	if closeBusinessCount != 1 {
-		t.Fatalf("第二阶段：close 应生成 1 条过程型 fin_business 记录，got %d", closeBusinessCount)
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 settle_businesses 记录，got %d", closeBusinessCount)
 	}
 
 	// 验证：open/close 的 accounting_scene 标记为过程型
 	var openScene, openSubtype, closeScene, closeSubtype string
-	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openScene, &openSubtype); err != nil {
-		t.Fatalf("query open fin_business fields failed: %v", err)
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_businesses WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openScene, &openSubtype); err != nil {
+		t.Fatalf("query open settle_businesses fields failed: %v", err)
 	}
 	if openScene != "direct_transfer_process" || openSubtype != "pool_open_lock" {
 		t.Fatalf("第二阶段：open 应标记为过程型: scene=%s subtype=%s", openScene, openSubtype)
 	}
-	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&closeScene, &closeSubtype); err != nil {
-		t.Fatalf("query close fin_business fields failed: %v", err)
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_businesses WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&closeScene, &closeSubtype); err != nil {
+		t.Fatalf("query close settle_businesses fields failed: %v", err)
 	}
 	if closeScene != "direct_transfer_process" || closeSubtype != "pool_close_settle" {
 		t.Fatalf("第二阶段：close 应标记为过程型: scene=%s subtype=%s", closeScene, closeSubtype)
@@ -340,10 +340,10 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
 
-	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象，只保留 fin_process_event + fin_tx_breakdown
+	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象，只保留 fin_process_event + settle_tx_breakdown
 	var payBusinessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBusinessCount); err != nil {
-		t.Fatalf("query fin_business pay failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBusinessCount); err != nil {
+		t.Fatalf("query settle_businesses pay failed: %v", err)
 	}
 	if payBusinessCount != 0 {
 		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBusinessCount)
@@ -351,20 +351,20 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 
 	// 验证：fin_process_event 存在，process_id = proc_c2c_transfer_<sessionID>
 	var procCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_process_events WHERE process_id=? AND accounting_subtype='chunk_pay'`, "proc_c2c_transfer_"+sessionID).Scan(&procCount); err != nil {
-		t.Fatalf("query fin_process_events pay failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_process_events WHERE process_id=? AND accounting_subtype='chunk_pay'`, "proc_c2c_transfer_"+sessionID).Scan(&procCount); err != nil {
+		t.Fatalf("query settle_process_events pay failed: %v", err)
 	}
 	if procCount == 0 {
 		t.Fatal("pay 应生成 fin_process_event 过程记录")
 	}
 
-	// 验证：fin_process_events 的 source_id 是 pool_allocations.id
+	// 验证：settle_process_events 的 source_id 是 fact_pool_allocations.id
 	var procSourceType, procSourceIDStr string
 	if err := db.QueryRow(
-		`SELECT source_type, source_id FROM fin_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
+		`SELECT source_type, source_id FROM settle_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&procSourceType, &procSourceIDStr); err != nil {
-		t.Fatalf("query fin_process_events pay source failed: %v", err)
+		t.Fatalf("query settle_process_events pay source failed: %v", err)
 	}
 	if procSourceType != "pool_allocation" {
 		t.Fatalf("unexpected source_type for pay process: got=%s want=pool_allocation", procSourceType)
@@ -377,18 +377,18 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 		t.Fatalf("unexpected source_id for pay: got=%s want=%s", procSourceIDStr, wantSourceIDStr)
 	}
 
-	// 验证：fin_tx_breakdown 存在，且 business_id 指向 download business
+	// 验证：settle_tx_breakdown 存在，且 business_id 指向 download business
 	var breakdownCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_tx_breakdown WHERE business_id=? AND txid=?`, "biz_download_pool_test_"+sessionID, "pay_tx_third_iter_1").Scan(&breakdownCount); err != nil {
-		t.Fatalf("query fin_tx_breakdown pay failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, "biz_download_pool_test_"+sessionID, "pay_tx_third_iter_1").Scan(&breakdownCount); err != nil {
+		t.Fatalf("query settle_tx_breakdown pay failed: %v", err)
 	}
 	if breakdownCount == 0 {
-		t.Fatal("pay 应生成 fin_tx_breakdown 记录，挂到 download business")
+		t.Fatal("pay 应生成 settle_tx_breakdown 记录，挂到 download business")
 	}
 }
 
 // TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID 验证第二步整改
-// process events 的 source_id 应该是 pool_allocations.id（整数）
+// process events 的 source_id 应该是 fact_pool_allocations.id（整数）
 func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
 
@@ -434,10 +434,10 @@ func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *te
 	for _, want := range checks {
 		var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
 		if err := db.QueryRow(
-			`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM fin_process_events WHERE process_id=? AND accounting_subtype=? ORDER BY id DESC LIMIT 1`,
+			`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM settle_process_events WHERE process_id=? AND accounting_subtype=? ORDER BY id DESC LIMIT 1`,
 			"proc_c2c_transfer_"+sessionID, want.subtype,
 		).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
-			t.Fatalf("query fin_process_events %s failed: %v", want.subtype, err)
+			t.Fatalf("query settle_process_events %s failed: %v", want.subtype, err)
 		}
 		if gotSourceType != "pool_allocation" {
 			t.Fatalf("unexpected source_type for %s: got=%s want=pool_allocation", want.subtype, gotSourceType)
@@ -482,8 +482,8 @@ func TestDirectTransferAccounting_ReadableByPrimaryQueries(t *testing.T) {
 
 	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象
 	var payBusinessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id=?`, "biz_c2c_pay_sess_third_iter_1_2").Scan(&payBusinessCount); err != nil {
-		t.Fatalf("query fin_business pay failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_pay_sess_third_iter_1_2").Scan(&payBusinessCount); err != nil {
+		t.Fatalf("query settle_businesses pay failed: %v", err)
 	}
 	if payBusinessCount != 0 {
 		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBusinessCount)
@@ -545,30 +545,30 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 7, "close_tx_seq_7", baseTxHex, 700, 290, sellerPubHex)
 
-	// 第二阶段整改：验证 close 生成过程型 fin_business，不是正式收费对象
+	// 第二阶段整改：验证 close 生成过程型 settle_businesses，不是正式收费对象
 	wantAllocID := directTransferPoolAllocationID(sessionID, "close", 7)
 	wantID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, wantAllocID)
 	wantIDStr := fmt.Sprintf("%d", wantID)
 
-	// 验证：fin_business 中存在 biz_c2c_close_*，但被标记为过程型
+	// 验证：settle_businesses 中存在 biz_c2c_close_*，但被标记为过程型
 	var businessCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_business WHERE business_id=?`,
+		`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`,
 		"biz_c2c_close_"+sessionID,
 	).Scan(&businessCount); err != nil {
-		t.Fatalf("query fin_business failed: %v", err)
+		t.Fatalf("query settle_businesses failed: %v", err)
 	}
 	if businessCount != 1 {
-		t.Fatalf("第二阶段：close 应生成 1 条过程型 fin_business 记录，got %d", businessCount)
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 settle_businesses 记录，got %d", businessCount)
 	}
 
 	// 验证：accounting_scene 和 accounting_subtype 标记为过程型
 	var closeScene, closeSubtype string
 	if err := db.QueryRow(
-		`SELECT accounting_scene, accounting_subtype FROM fin_business WHERE business_id=?`,
+		`SELECT accounting_scene, accounting_subtype FROM settle_businesses WHERE business_id=?`,
 		"biz_c2c_close_"+sessionID,
 	).Scan(&closeScene, &closeSubtype); err != nil {
-		t.Fatalf("query close fin_business fields failed: %v", err)
+		t.Fatalf("query close settle_businesses fields failed: %v", err)
 	}
 	if closeScene != "direct_transfer_process" {
 		t.Fatalf("第二阶段：close 的 accounting_scene 应为 direct_transfer_process，got %s", closeScene)
@@ -577,10 +577,10 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 		t.Fatalf("第二阶段：close 的 accounting_subtype 应为 pool_close_settle，got %s", closeSubtype)
 	}
 
-	// 验证：fin_process_events 的 source_id 是 pool_allocations.id
+	// 验证：settle_process_events 的 source_id 是 fact_pool_allocations.id
 	var processSourceID string
 	if err := db.QueryRow(
-		`SELECT source_id FROM fin_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
+		`SELECT source_id FROM settle_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
 		"proc_c2c_transfer_"+sessionID,
 	).Scan(&processSourceID); err != nil {
 		t.Fatalf("query process source id failed: %v", err)
@@ -593,7 +593,7 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 	}
 }
 
-// TestFinBusinessIdempotency 验证 fin_business 幂等写入
+// TestFinBusinessIdempotency 验证 settle_businesses 幂等写入
 // 第六次迭代整改：验证 ON CONFLICT(idempotency_key) DO UPDATE 幂等性
 func TestFinBusinessIdempotency(t *testing.T) {
 	t.Parallel()
@@ -645,7 +645,7 @@ func TestFinBusinessIdempotency(t *testing.T) {
 
 	// 验证只有一条记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE idempotency_key=?`, idempotencyKey).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE idempotency_key=?`, idempotencyKey).Scan(&count); err != nil {
 		t.Fatalf("count check failed: %v", err)
 	}
 	if count != 1 {
@@ -656,7 +656,7 @@ func TestFinBusinessIdempotency(t *testing.T) {
 	var status, note string
 	var payload string
 	if err := db.QueryRow(
-		`SELECT status, note, payload_json FROM fin_business WHERE idempotency_key=?`,
+		`SELECT status, note, payload_json FROM settle_businesses WHERE idempotency_key=?`,
 		idempotencyKey,
 	).Scan(&status, &note, &payload); err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -675,7 +675,7 @@ func TestFinBusinessIdempotency(t *testing.T) {
 	_ = store
 }
 
-// TestFinProcessEventIdempotency 验证 fin_process_events 幂等写入
+// TestFinProcessEventIdempotency 验证 settle_process_events 幂等写入
 // 第六次迭代整改：验证 ON CONFLICT(idempotency_key) DO UPDATE 幂等性
 func TestFinProcessEventIdempotency(t *testing.T) {
 	t.Parallel()
@@ -723,7 +723,7 @@ func TestFinProcessEventIdempotency(t *testing.T) {
 
 	// 验证只有一条记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_process_events WHERE idempotency_key=?`, idempotencyKey).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_process_events WHERE idempotency_key=?`, idempotencyKey).Scan(&count); err != nil {
 		t.Fatalf("count check failed: %v", err)
 	}
 	if count != 1 {
@@ -734,7 +734,7 @@ func TestFinProcessEventIdempotency(t *testing.T) {
 	var status, note string
 	var payload string
 	if err := db.QueryRow(
-		`SELECT status, note, payload_json FROM fin_process_events WHERE idempotency_key=?`,
+		`SELECT status, note, payload_json FROM settle_process_events WHERE idempotency_key=?`,
 		idempotencyKey,
 	).Scan(&status, &note, &payload); err != nil {
 		t.Fatalf("query failed: %v", err)
@@ -782,22 +782,22 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 	// 第一次 pay 记录
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_idem_real_1")
 
-	// 获取第一次写入后的状态 - 验证 pay 不生成 fin_business
+	// 获取第一次写入后的状态 - 验证 pay 不生成 settle_businesses
 	var firstCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_business WHERE business_id=?`,
+		`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`,
 		"biz_c2c_pay_"+sessionID+"_2",
 	).Scan(&firstCount); err != nil {
 		t.Fatalf("first count failed: %v", err)
 	}
 	if firstCount != 0 {
-		t.Fatalf("expected 0 fin_business for pay after first write, got %d (pay no longer creates business)", firstCount)
+		t.Fatalf("expected 0 settle_businesses for pay after first write, got %d (pay no longer creates business)", firstCount)
 	}
 
 	// 验证 fin_process_event 存在
 	var firstProcCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_process_events WHERE idempotency_key=?`,
+		`SELECT COUNT(1) FROM settle_process_events WHERE idempotency_key=?`,
 		"c2c_pay_event:"+sessionID+":2",
 	).Scan(&firstProcCount); err != nil {
 		t.Fatalf("first process count failed: %v", err)
@@ -809,22 +809,22 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 	// 第二次 pay 记录（相同 idempotency_key）- 应该更新而不是报错
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_idem_real_2")
 
-	// 验证 fin_business 仍然没有
+	// 验证 settle_businesses 仍然没有
 	var secondCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_business WHERE business_id=?`,
+		`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`,
 		"biz_c2c_pay_"+sessionID+"_2",
 	).Scan(&secondCount); err != nil {
 		t.Fatalf("second count failed: %v", err)
 	}
 	if secondCount != 0 {
-		t.Fatalf("expected 0 fin_business for pay after idempotent update, got %d", secondCount)
+		t.Fatalf("expected 0 settle_businesses for pay after idempotent update, got %d", secondCount)
 	}
 
 	// 验证 process event 也只有一条（幂等更新）
 	var procCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fin_process_events WHERE idempotency_key=?`,
+		`SELECT COUNT(1) FROM settle_process_events WHERE idempotency_key=?`,
 		"c2c_pay_event:"+sessionID+":2",
 	).Scan(&procCount); err != nil {
 		t.Fatalf("process event count failed: %v", err)
@@ -852,7 +852,7 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 
 	var txRole string
 	if err := db.QueryRow(
-		`SELECT tx_role FROM fin_tx_breakdown WHERE business_id=? AND txid=?`,
+		`SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`,
 		"biz_wallet_chain_"+txid, txid,
 	).Scan(&txRole); err != nil {
 		t.Fatalf("query breakdown failed: %v", err)
@@ -874,19 +874,19 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 	store := newClientDB(db, nil)
 	sessionID := "sess_third_iter_1"
 
-	// 第二阶段：改用 pay 测试（pay 不再生成 fin_business，只生成 process event + tx_breakdown）
+	// 第二阶段：改用 pay 测试（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_compat_test")
 
 	// 使用 pay allocation_id 查询（兼容层）
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 
-	// 验证：pay 不再生成 fin_business（正式查询应返回空）
+	// 验证：pay 不再生成 settle_businesses（正式查询应返回空）
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocID, "formal", 10, 0)
 	if err != nil {
 		t.Fatalf("compatibility query failed: %v", err)
 	}
 	if bizPage.Total != 0 {
-		t.Fatalf("pay 不应生成 fin_business，got %d", bizPage.Total)
+		t.Fatalf("pay 不应生成 settle_businesses，got %d", bizPage.Total)
 	}
 
 	// 验证：process events 存在（pay 生成 process events）
@@ -900,7 +900,7 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 }
 
 // TestRecordWalletChainAccounting_UsesChainPaymentID 验证第二步整改
-// wallet_chain 财务记录的 source_id 应该是 chain_payments.id
+// wallet_chain 财务记录的 source_id 应该是 fact_chain_payments.id
 func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
@@ -916,22 +916,22 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 		t.Fatalf("record wallet chain accounting failed: %v", err)
 	}
 
-	// 验证 chain_payments 记录已创建
+	// 验证 fact_chain_payments 记录已创建
 	var chainPaymentID int64
-	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
 		t.Fatalf("chain_payment not found: %v", err)
 	}
 	if chainPaymentID <= 0 {
 		t.Fatalf("expected positive chain_payment id, got %d", chainPaymentID)
 	}
 
-	// 验证 fin_business 的 source_id 是 chain_payments.id
+	// 验证 settle_businesses 的 source_id 是 fact_chain_payments.id
 	var sourceType, sourceID string
 	if err := db.QueryRow(
-		`SELECT source_type, source_id FROM fin_business WHERE business_id=?`,
+		`SELECT source_type, source_id FROM settle_businesses WHERE business_id=?`,
 		"biz_wallet_chain_"+txid,
 	).Scan(&sourceType, &sourceID); err != nil {
-		t.Fatalf("fin_business not found: %v", err)
+		t.Fatalf("settle_businesses not found: %v", err)
 	}
 
 	if sourceType != "chain_payment" {
@@ -948,7 +948,7 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 }
 
 // TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID
-// 第二阶段兼容层：查询可以继续用 txid，但底层必须换算成 chain_payments.id
+// 第二阶段兼容层：查询可以继续用 txid，但底层必须换算成 fact_chain_payments.id
 func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T) {
 	t.Parallel()
 
@@ -969,7 +969,7 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T)
 	}
 
 	var chainPaymentID int64
-	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&chainPaymentID); err != nil {
 		t.Fatalf("chain_payment lookup failed: %v", err)
 	}
 	wantSourceID := fmt.Sprintf("%d", chainPaymentID)
@@ -1057,7 +1057,7 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	}
 
 	var paymentID int64
-	if err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&paymentID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&paymentID); err != nil {
 		t.Fatalf("query chain_payment failed: %v", err)
 	}
 	type wantLink struct {
@@ -1074,7 +1074,7 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 		var count int
 		var amount int64
 		if err := db.QueryRow(
-			`SELECT COUNT(1),COALESCE(SUM(amount_satoshi),0) FROM chain_payment_utxo_links
+			`SELECT COUNT(1),COALESCE(SUM(amount_satoshi),0) FROM fact_chain_payment_utxo_links
 			  WHERE chain_payment_id=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
 			paymentID, want.utxoID, want.ioSide, want.utxoRole,
 		).Scan(&count, &amount); err != nil {
@@ -1090,7 +1090,7 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 
 	var skippedCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_role IN ('counterparty_out','external_in')`,
+		`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_role IN ('counterparty_out','external_in')`,
 		paymentID,
 	).Scan(&skippedCount); err != nil {
 		t.Fatalf("query skipped links failed: %v", err)
@@ -1100,7 +1100,7 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	}
 
 	var eventCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_process_events WHERE process_id=?`, "proc_wallet_chain_"+txid).Scan(&eventCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_process_events WHERE process_id=?`, "proc_wallet_chain_"+txid).Scan(&eventCount); err != nil {
 		t.Fatalf("query process event failed: %v", err)
 	}
 	if eventCount != 1 {
@@ -1138,17 +1138,17 @@ func TestRecordWalletChainAccounting_Idempotent(t *testing.T) {
 	}
 
 	var paymentCount, linkCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payments WHERE txid=?`, txid).Scan(&paymentCount); err != nil {
-		t.Fatalf("count chain_payments failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, txid).Scan(&paymentCount); err != nil {
+		t.Fatalf("count fact_chain_payments failed: %v", err)
 	}
 	if paymentCount != 1 {
 		t.Fatalf("expected 1 chain_payment, got %d", paymentCount)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
-		t.Fatalf("count chain_payment_utxo_links failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
+		t.Fatalf("count fact_chain_payment_utxo_links failed: %v", err)
 	}
 	if linkCount != 2 {
-		t.Fatalf("expected 2 chain_payment_utxo_links, got %d", linkCount)
+		t.Fatalf("expected 2 fact_chain_payment_utxo_links, got %d", linkCount)
 	}
 }
 
@@ -1175,7 +1175,7 @@ func TestRecordWalletChainAccounting_FeePoolSettleLink(t *testing.T) {
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE utxo_role='fee_pool_settle' AND utxo_id=?`, settleUTXO).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE utxo_role='fee_pool_settle' AND utxo_id=?`, settleUTXO).Scan(&count); err != nil {
 		t.Fatalf("query fee_pool_settle link failed: %v", err)
 	}
 	if count != 1 {
@@ -1241,24 +1241,24 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 	}
 
 	var paymentCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payments WHERE txid=?`, txid).Scan(&paymentCount); err != nil {
-		t.Fatalf("count chain_payments failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, txid).Scan(&paymentCount); err != nil {
+		t.Fatalf("count fact_chain_payments failed: %v", err)
 	}
 	if paymentCount != 1 {
 		t.Fatalf("expected 1 chain_payment, got %d", paymentCount)
 	}
 
 	var linkCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
-		t.Fatalf("count chain_payment_utxo_links failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
+		t.Fatalf("count fact_chain_payment_utxo_links failed: %v", err)
 	}
 	if linkCount != 2 {
-		t.Fatalf("expected 2 chain_payment_utxo_links, got %d", linkCount)
+		t.Fatalf("expected 2 fact_chain_payment_utxo_links, got %d", linkCount)
 	}
 
 	var inputRole, outputRole string
 	if err := db.QueryRow(
-		`SELECT utxo_role FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?) AND io_side='input' LIMIT 1`,
+		`SELECT utxo_role FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?) AND io_side='input' LIMIT 1`,
 		txid,
 	).Scan(&inputRole); err != nil {
 		t.Fatalf("query input role failed: %v", err)
@@ -1267,7 +1267,7 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 		t.Fatalf("unexpected input role: %s", inputRole)
 	}
 	if err := db.QueryRow(
-		`SELECT utxo_role FROM chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM chain_payments WHERE txid=?) AND io_side='output' LIMIT 1`,
+		`SELECT utxo_role FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?) AND io_side='output' LIMIT 1`,
 		txid,
 	).Scan(&outputRole); err != nil {
 		t.Fatalf("query output role failed: %v", err)
@@ -1278,7 +1278,7 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 }
 
 // TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts
-// 第二阶段硬约束：查不到 pool_allocations.id 时，直连池财务写入必须直接失败
+// 第二阶段硬约束：查不到 fact_pool_allocations.id 时，直连池财务写入必须直接失败
 func TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts(t *testing.T) {
 	t.Parallel()
 
@@ -1311,12 +1311,12 @@ func TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts(t *testing.T
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fin_business WHERE business_id IN (?,?,?)`,
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id IN (?,?,?)`,
 		"biz_c2c_open_sess_missing_fact_1",
 		"biz_c2c_pay_sess_missing_fact_1_2",
 		"biz_c2c_close_sess_missing_fact_1",
 	).Scan(&count); err != nil {
-		t.Fatalf("count fin_business failed: %v", err)
+		t.Fatalf("count settle_businesses failed: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("expected no finance rows to be written, got %d", count)

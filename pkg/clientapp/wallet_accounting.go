@@ -88,7 +88,7 @@ type chainPaymentUTXOFact struct {
 
 // walletChainAccountingInput 是钱包链事实写入的显式输入。
 // 设计说明：
-//   - 交易汇总字段继续保留，用于 chain_payments / fin_tx_breakdown
+//   - 交易汇总字段继续保留，用于 fact_chain_payments / settle_tx_breakdown
 //   - UTXO 明细必须由上游显式传入，不能从 payload 临时猜
 //   - ProcessEvents 允许在同一笔事务里一并落库
 type walletChainAccountingInput struct {
@@ -249,7 +249,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		return fmt.Errorf("upsert chain_payment failed: %w", err)
 	}
 
-	// 第二步整改：source_type = "chain_payment", source_id = chain_payments.id
+	// 第二步整改：source_type = "chain_payment", source_id = fact_chain_payments.id
 	businessID := "biz_wallet_chain_" + txid
 	sourceType := "chain_payment"
 	sourceID := fmt.Sprintf("%d", chainPaymentID)
@@ -269,8 +269,8 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		Note:              "wallet chain sync accounting",
 		Payload:           in.Payload,
 	}); err != nil {
-		obs.Error("bitcast-client", "wallet_accounting_fin_business_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
-		return fmt.Errorf("append fin_business failed: %w", err)
+		obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
+		return fmt.Errorf("append settle_businesses failed: %w", err)
 	}
 	if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
 		BusinessID:         businessID,
@@ -287,7 +287,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		Payload:            in.Payload,
 	}); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
-		return fmt.Errorf("append fin_tx_breakdown failed: %w", err)
+		return fmt.Errorf("append settle_tx_breakdown failed: %w", err)
 	}
 
 	for _, fact := range in.UTXOFacts {
@@ -337,7 +337,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		}
 		if err := dbAppendFinProcessEvent(db, event); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
-			return fmt.Errorf("append fin_process_events failed: %w", err)
+			return fmt.Errorf("append settle_process_events failed: %w", err)
 		}
 	}
 	return nil

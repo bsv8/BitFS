@@ -183,10 +183,10 @@ func dbListDemandQuotes(ctx context.Context, store *clientDB, f demandQuoteFilte
 			args = append(args, f.SellerPubHex)
 		}
 		var out demandQuotePage
-		if err := db.QueryRow("SELECT COUNT(1) FROM demand_quotes WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM biz_demand_quotes WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return demandQuotePage{}, err
 		}
-		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM demand_quotes WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return demandQuotePage{}, err
 		}
@@ -214,7 +214,7 @@ func dbGetDemandQuoteItem(ctx context.Context, store *clientDB, id int64) (deman
 		return demandQuoteItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (demandQuoteItem, error) {
-		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM demand_quotes WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE id=?`, id)
 		it, err := scanDemandQuoteItem(row)
 		if err != nil {
 			return demandQuoteItem{}, err
@@ -247,7 +247,7 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 		placeholders = append(placeholders, "?")
 		args = append(args, id)
 	}
-	query := `SELECT quote_id,arbiter_pub_hex FROM demand_quote_arbiters WHERE quote_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY quote_id ASC, id ASC`
+	query := `SELECT quote_id,arbiter_pub_hex FROM biz_demand_quote_arbiters WHERE quote_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY quote_id ASC, id ASC`
 	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
@@ -269,7 +269,7 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 // dbListDirectTransferPoolsCompat 【第五步：调试/兼容接口】
 // - 此函数只用于调试/兼容查询，不再作为业务状态主入口
 // - 业务状态统一走 GetFrontOrderSettlementSummary
-// - direct_transfer_pools 已降级为【协议运行态表】，status 字段是协议运行时状态，不代表业务结算状态
+// - proc_direct_transfer_pools 已降级为【协议运行态表】，status 字段是协议运行时状态，不代表业务结算状态
 // - 禁止用此函数判断"下载是否完成/是否已付费"等业务状态
 func dbListDirectTransferPoolsCompat(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
 	if store == nil {
@@ -303,14 +303,14 @@ func dbListDirectTransferPoolsCompat(ctx context.Context, store *clientDB, f dir
 			args = append(args, f.ArbiterPubHex)
 		}
 		var out directTransferPoolPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM direct_transfer_pools WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_direct_transfer_pools WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return directTransferPoolPage{}, err
 		}
 		rows, err := db.Query(`SELECT
 			session_id,deal_id,
 			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-			FROM direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+			FROM proc_direct_transfer_pools WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,session_id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return directTransferPoolPage{}, err
 		}
@@ -333,7 +333,7 @@ func dbListDirectTransferPoolsCompat(ctx context.Context, store *clientDB, f dir
 // dbGetDirectTransferPoolItemCompat 【第五步：调试/兼容接口】
 // - 此函数只用于调试/兼容查询，不再作为业务状态主入口
 // - 业务状态统一走 GetFrontOrderSettlementSummary
-// - direct_transfer_pools 已降级为【协议运行态表】
+// - proc_direct_transfer_pools 已降级为【协议运行态表】
 // - 禁止用此函数判断"下载是否完成"等业务状态
 func dbGetDirectTransferPoolItemCompat(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
 	if store == nil {
@@ -344,13 +344,13 @@ func dbGetDirectTransferPoolItemCompat(ctx context.Context, store *clientDB, ses
 			session_id,deal_id,
 			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-			FROM direct_transfer_pools WHERE session_id=?`, sessionID)
+			FROM proc_direct_transfer_pools WHERE session_id=?`, sessionID)
 		return scanDirectTransferPoolItem(row)
 	})
 }
 
 // Deprecated: 第五步降级
-// - purchases 是旧过程表，新代码应走 front_orders -> business_settlements
+// - biz_purchases 是旧过程表，新代码应走 biz_front_orders -> settle_business_settlements
 // - 此函数保留用于兼容查询
 func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (purchasePage, error) {
 	if store == nil {
@@ -376,11 +376,11 @@ func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (pu
 			args = append(args, strings.ToLower(strings.TrimSpace(f.Status)))
 		}
 		var out purchasePage
-		if err := db.QueryRow("SELECT COUNT(1) FROM purchases WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM biz_purchases WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return purchasePage{}, err
 		}
 		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
-			FROM purchases WHERE 1=1`+where+` ORDER BY created_at_unix DESC,id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+			FROM biz_purchases WHERE 1=1`+where+` ORDER BY created_at_unix DESC,id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return purchasePage{}, err
 		}
@@ -405,7 +405,7 @@ func dbGetPurchaseItem(ctx context.Context, store *clientDB, id int64) (purchase
 		return purchaseItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (purchaseItem, error) {
-		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix FROM purchases WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix FROM biz_purchases WHERE id=?`, id)
 		var it purchaseItem
 		if err := row.Scan(&it.ID, &it.DemandID, &it.SellerPubHex, &it.ArbiterPubHex, &it.ChunkIndex, &it.ObjectHash, &it.AmountSatoshi, &it.Status, &it.ErrorMessage, &it.CreatedAtUnix, &it.FinishedAtUnix); err != nil {
 			return purchaseItem{}, err
@@ -415,7 +415,7 @@ func dbGetPurchaseItem(ctx context.Context, store *clientDB, id int64) (purchase
 }
 
 // Deprecated: 第五步降级
-// - 此函数基于旧 purchases 表统计，只用于兼容
+// - 此函数基于旧 biz_purchases 表统计，只用于兼容
 // - 新代码应使用 GetFrontOrderSettlementSummary 统计 settlement 状态
 func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID string) (purchaseDemandSummary, error) {
 	if store == nil {
@@ -435,7 +435,7 @@ func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID s
 				COUNT(1),
 				COALESCE(SUM(CASE WHEN status='done' AND chunk_index>=1 THEN amount_satoshi ELSE 0 END),0),
 				COALESCE(SUM(CASE WHEN status='done' THEN amount_satoshi ELSE 0 END),0)
-			FROM purchases
+			FROM biz_purchases
 			WHERE demand_id=?
 		`, demandID).Scan(&out.SeedPurchaseCount, &out.ChunkPurchaseCount, &out.TotalPurchaseCount, &out.ChunkPurchaseAmountSat, &out.TotalPurchaseAmountSat)
 		return out, err
@@ -467,10 +467,10 @@ func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (t
 			args = append(args, like, like, like)
 		}
 		var out txHistoryPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM tx_history WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM fact_tx_history WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return txHistoryPage{}, err
 		}
-		rows, err := db.Query("SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE 1=1"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query("SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM fact_tx_history WHERE 1=1"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return txHistoryPage{}, err
 		}
@@ -495,7 +495,7 @@ func dbGetTxHistoryItem(ctx context.Context, store *clientDB, id int64) (txHisto
 		return txHistoryItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (txHistoryItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM tx_history WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM fact_tx_history WHERE id=?`, id)
 		return scanTxHistoryItem(row)
 	})
 }
@@ -520,10 +520,10 @@ func dbListGatewayEvents(ctx context.Context, store *clientDB, f gatewayEventFil
 			args = append(args, f.Action)
 		}
 		var out gatewayEventPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM gateway_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM proc_gateway_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return gatewayEventPage{}, err
 		}
-		rows, err := db.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM proc_gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return gatewayEventPage{}, err
 		}
@@ -548,7 +548,7 @@ func dbGetGatewayEventItem(ctx context.Context, store *clientDB, id int64) (gate
 		return gatewayEventItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (gatewayEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM gateway_events WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM proc_gateway_events WHERE id=?`, id)
 		return scanGatewayEventItem(row)
 	})
 }

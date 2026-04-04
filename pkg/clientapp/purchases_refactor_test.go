@@ -25,17 +25,17 @@ func TestPurchaseSchemaExists(t *testing.T) {
 
 	db := newWalletAPITestDB(t)
 
-	exists, err := hasTable(db, "purchases")
+	exists, err := hasTable(db, "biz_purchases")
 	if err != nil {
-		t.Fatalf("hasTable purchases: %v", err)
+		t.Fatalf("hasTable biz_purchases: %v", err)
 	}
 	if !exists {
-		t.Fatalf("expected purchases table")
+		t.Fatalf("expected biz_purchases table")
 	}
 
-	cols, err := tableColumns(db, "purchases")
+	cols, err := tableColumns(db, "biz_purchases")
 	if err != nil {
-		t.Fatalf("read purchases columns: %v", err)
+		t.Fatalf("read biz_purchases columns: %v", err)
 	}
 	wantCols := []string{
 		"id", "demand_id", "seller_pub_hex", "arbiter_pub_hex", "chunk_index", "object_hash",
@@ -43,7 +43,7 @@ func TestPurchaseSchemaExists(t *testing.T) {
 	}
 	for _, col := range wantCols {
 		if _, ok := cols[col]; !ok {
-			t.Fatalf("purchases missing column %s", col)
+			t.Fatalf("biz_purchases missing column %s", col)
 		}
 	}
 
@@ -54,18 +54,18 @@ func TestPurchaseSchemaExists(t *testing.T) {
 		"idx_purchases_status_created",
 		"idx_purchases_history_lookup",
 	}
-	gotIndexes, err := tableIndexNames(db, "purchases")
+	gotIndexes, err := tableIndexNames(db, "biz_purchases")
 	if err != nil {
-		t.Fatalf("read purchases indexes: %v", err)
+		t.Fatalf("read biz_purchases indexes: %v", err)
 	}
 	for _, want := range wantIndexes {
 		if !containsString(gotIndexes, want) {
-			t.Fatalf("purchases missing index %s", want)
+			t.Fatalf("biz_purchases missing index %s", want)
 		}
 	}
 
-	if !tableHasFK(db, "purchases", "demand_id", "demands", "demand_id") {
-		t.Fatalf("purchases foreign key mismatch")
+	if !tableHasFK(db, "biz_purchases", "demand_id", "biz_demands", "demand_id") {
+		t.Fatalf("biz_purchases foreign key mismatch")
 	}
 }
 
@@ -102,7 +102,7 @@ func TestPurchaseWritesAndSummary(t *testing.T) {
 
 	page, err := dbListPurchases(ctx, store, purchaseFilter{Limit: 20, DemandID: seedDone.DemandID})
 	if err != nil {
-		t.Fatalf("list purchases: %v", err)
+		t.Fatalf("list biz_purchases: %v", err)
 	}
 	if page.Total != 2 || len(page.Items) != 2 {
 		t.Fatalf("purchase list mismatch: total=%d len=%d", page.Total, len(page.Items))
@@ -110,7 +110,7 @@ func TestPurchaseWritesAndSummary(t *testing.T) {
 
 	byStatus, err := dbListPurchases(ctx, store, purchaseFilter{Limit: 20, DemandID: seedDone.DemandID, Status: "failed"})
 	if err != nil {
-		t.Fatalf("list failed purchases: %v", err)
+		t.Fatalf("list failed biz_purchases: %v", err)
 	}
 	if byStatus.Total != 0 || len(byStatus.Items) != 0 {
 		t.Fatalf("failed purchase filter mismatch: %+v", byStatus)
@@ -118,7 +118,7 @@ func TestPurchaseWritesAndSummary(t *testing.T) {
 
 	summary, err := dbSummarizeDemandPurchases(ctx, store, seedDone.DemandID)
 	if err != nil {
-		t.Fatalf("summary purchases: %v", err)
+		t.Fatalf("summary biz_purchases: %v", err)
 	}
 	if summary.SeedPurchaseCount != 1 || summary.ChunkPurchaseCount != 1 || summary.TotalPurchaseCount != 2 {
 		t.Fatalf("summary count mismatch: %+v", summary)
@@ -157,8 +157,8 @@ func TestPurchaseHelperRejectsInvalidAmount(t *testing.T) {
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM purchases WHERE demand_id=?`, "dmd_invalid").Scan(&count); err != nil {
-		t.Fatalf("count purchases: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_purchases WHERE demand_id=?`, "dmd_invalid").Scan(&count); err != nil {
+		t.Fatalf("count biz_purchases: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("invalid amount should not write rows: %d", count)
@@ -171,7 +171,7 @@ func TestDirectPurchaseFlowWritesSeedPurchase(t *testing.T) {
 
 	var got purchaseItem
 	if err := env.db.QueryRow(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
-		FROM purchases WHERE demand_id=? AND chunk_index=0 ORDER BY id DESC LIMIT 1`, env.demandID).
+		FROM biz_purchases WHERE demand_id=? AND chunk_index=0 ORDER BY id DESC LIMIT 1`, env.demandID).
 		Scan(&got.ID, &got.DemandID, &got.SellerPubHex, &got.ArbiterPubHex, &got.ChunkIndex, &got.ObjectHash, &got.AmountSatoshi, &got.Status, &got.ErrorMessage, &got.CreatedAtUnix, &got.FinishedAtUnix); err != nil {
 		t.Fatalf("query seed purchase: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestDirectPurchaseFlowWritesChunkPurchase(t *testing.T) {
 
 	var got purchaseItem
 	if err := env.db.QueryRow(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
-		FROM purchases WHERE demand_id=? AND chunk_index=1 ORDER BY id DESC LIMIT 1`, env.demandID).
+		FROM biz_purchases WHERE demand_id=? AND chunk_index=1 ORDER BY id DESC LIMIT 1`, env.demandID).
 		Scan(&got.ID, &got.DemandID, &got.SellerPubHex, &got.ArbiterPubHex, &got.ChunkIndex, &got.ObjectHash, &got.AmountSatoshi, &got.Status, &got.ErrorMessage, &got.CreatedAtUnix, &got.FinishedAtUnix); err != nil {
 		t.Fatalf("query chunk purchase: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestDirectPurchaseFlowWritesChunkPurchase(t *testing.T) {
 
 	summary, err := dbSummarizeDemandPurchases(context.Background(), newClientDB(env.db, nil), env.demandID)
 	if err != nil {
-		t.Fatalf("summary purchases: %v", err)
+		t.Fatalf("summary biz_purchases: %v", err)
 	}
 	if summary.ChunkPurchaseCount != 1 {
 		t.Fatalf("chunk summary mismatch: %+v", summary)
@@ -237,7 +237,7 @@ func TestPrePaymentFailureDoesNotWritePurchase(t *testing.T) {
 	store := newClientDB(db, nil)
 	ctx := context.Background()
 	demandID := "dmd_no_write"
-	if _, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, demandID, "seed_no_write", 1700000010); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, demandID, "seed_no_write", 1700000010); err != nil {
 		t.Fatalf("insert demand: %v", err)
 	}
 
@@ -258,8 +258,8 @@ func TestPrePaymentFailureDoesNotWritePurchase(t *testing.T) {
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM purchases WHERE demand_id=?`, demandID).Scan(&count); err != nil {
-		t.Fatalf("count purchases: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_purchases WHERE demand_id=?`, demandID).Scan(&count); err != nil {
+		t.Fatalf("count biz_purchases: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("unexpected purchase rows written on pre-payment failure: %d", count)
@@ -324,7 +324,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	mgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
-		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
 	}
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure workspace: %v", err)
@@ -376,7 +376,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		t.Fatalf("upsert quote: %v", err)
 	}
 
-	if _, err := db.Exec(`INSERT OR REPLACE INTO chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms) VALUES(1,100,?, '', 'chain_utxo_worker', 'test', 1)`, time.Now().Unix()); err != nil {
+	if _, err := db.Exec(`INSERT OR REPLACE INTO proc_chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms) VALUES(1,100,?, '', 'chain_utxo_worker', 'test', 1)`, time.Now().Unix()); err != nil {
 		t.Fatalf("seed chain tip state: %v", err)
 	}
 	buyUTXOID := strings.Repeat("11", 32)

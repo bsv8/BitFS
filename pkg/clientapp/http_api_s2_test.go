@@ -23,8 +23,8 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 	if err := os.MkdirAll(ws1, 0o755); err != nil {
 		t.Fatalf("mkdir ws1: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir seeds: %v", err)
+	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir biz_seeds: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(ws1, "a.txt"), []byte("abc"), 0o644); err != nil {
 		t.Fatalf("write ws file: %v", err)
@@ -42,7 +42,7 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 	mgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
-		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
 	}
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
@@ -52,12 +52,12 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 	}
 	items, err := mgr.List()
 	if err != nil || len(items) == 0 {
-		t.Fatalf("list workspaces failed: err=%v len=%d", err, len(items))
+		t.Fatalf("list biz_workspaces failed: err=%v len=%d", err, len(items))
 	}
 	workspacePath := items[0].WorkspacePath
 
 	srv := &httpAPIServer{workspace: mgr}
-	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/workspaces?workspace_path="+url.QueryEscape(workspacePath), strings.NewReader(`{"max_bytes":2048,"enabled":false}`))
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/biz_workspaces?workspace_path="+url.QueryEscape(workspacePath), strings.NewReader(`{"max_bytes":2048,"enabled":false}`))
 	rec := httptest.NewRecorder()
 	srv.handleAdminWorkspaces(rec, req)
 	if rec.Code != http.StatusOK {
@@ -66,7 +66,7 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 
 	var maxBytes uint64
 	var enabled int64
-	if err := db.QueryRow(`SELECT max_bytes,enabled FROM workspaces WHERE workspace_path=?`, workspacePath).Scan(&maxBytes, &enabled); err != nil {
+	if err := db.QueryRow(`SELECT max_bytes,enabled FROM biz_workspaces WHERE workspace_path=?`, workspacePath).Scan(&maxBytes, &enabled); err != nil {
 		t.Fatalf("query workspace after put: %v", err)
 	}
 	if maxBytes != 2048 {
@@ -133,7 +133,7 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	}
 
 	db := newWalletAPITestDB(t)
-	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
 		ws, filepath.Join("live", streamID, "000001.seg"), strings.Repeat("cd", 32), 0); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}
@@ -180,11 +180,11 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 	if err := os.MkdirAll(ws, 0o755); err != nil {
 		t.Fatalf("mkdir ws: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir seeds: %v", err)
+	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir biz_seeds: %v", err)
 	}
-	if err := os.MkdirAll(filepath.Join(dataDir, "seeds"), 0o755); err != nil {
-		t.Fatalf("mkdir seeds: %v", err)
+	if err := os.MkdirAll(filepath.Join(dataDir, "biz_seeds"), 0o755); err != nil {
+		t.Fatalf("mkdir biz_seeds: %v", err)
 	}
 	filePath := filepath.Join(ws, "docs", "a.txt")
 	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
@@ -195,19 +195,19 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 	}
 
 	db := newWalletAPITestDB(t)
-	if _, err := db.Exec(`INSERT INTO workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, ws, 1, 0, time.Now().Unix()); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, ws, 1, 0, time.Now().Unix()); err != nil {
 		t.Fatalf("insert workspace: %v", err)
 	}
 	seedHash := strings.Repeat("ef", 32)
-	seedPath := filepath.Join(dataDir, "seeds", seedHash+".seed")
+	seedPath := filepath.Join(dataDir, "biz_seeds", seedHash+".seed")
 	if err := os.WriteFile(seedPath, make([]byte, 64), 0o644); err != nil {
 		t.Fatalf("write seed file: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		seedHash, 1, 64, seedPath, "", ""); err != nil {
-		t.Fatalf("insert seeds: %v", err)
+		t.Fatalf("insert biz_seeds: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
 		ws, filepath.Join("docs", "a.txt"), seedHash, 0); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	mgr := &workspaceManager{
 		cfg:     &cfg,
 		db:      db,
-		catalog: &sellerCatalog{seeds: map[string]sellerSeed{}},
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
 	}
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)

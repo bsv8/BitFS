@@ -13,39 +13,39 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix)
+	_, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix)
 		VALUES(?,?,?), (?,?,?)`,
 		"dmd_1", "seed_1", 1700000000,
 		"dmd_2", "seed_2", 1700000001,
 	)
 	if err != nil {
-		t.Fatalf("insert demands: %v", err)
+		t.Fatalf("insert biz_demands: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO demand_quotes(
+	_, err = db.Exec(`INSERT INTO biz_demand_quotes(
 			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?), (?,?,?,?,?,?,?,?,?,?,?)`,
 		"dmd_1", "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", 1000, 10, 3, 1234, "f1.bin", "application/javascript", "ff", 1893427200, 1700000001,
 		"dmd_2", "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 2000, 20, 4, 2234, "f2.bin", "text/css", "0f", 1893427200, 1700000002,
 	)
 	if err != nil {
-		t.Fatalf("insert demand_quotes: %v", err)
+		t.Fatalf("insert biz_demand_quotes: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO demand_quote_arbiters(quote_id,arbiter_pub_hex)
+	_, err = db.Exec(`INSERT INTO biz_demand_quote_arbiters(quote_id,arbiter_pub_hex)
 		VALUES(?,?),(?,?),(?,?)`,
 		1, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		1, "03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		2, "02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 	)
 	if err != nil {
-		t.Fatalf("insert demand_quote_arbiters: %v", err)
+		t.Fatalf("insert biz_demand_quote_arbiters: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO direct_transfer_pools(
+	_, err = db.Exec(`INSERT INTO proc_direct_transfer_pools(
 		session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		"sess_1", "deal_1", "buyer_1", "seller_1", "arb_1", 1000, 2, 3, 30, 968, "ctx", "btx", "btxid_1", "active", 0.5, 6, 1700000004, 1700000005,
 	)
 	if err != nil {
-		t.Fatalf("insert direct_transfer_pools: %v", err)
+		t.Fatalf("insert proc_direct_transfer_pools: %v", err)
 	}
 
 	{
@@ -137,7 +137,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		if body.DataRole != "runtime_debug_only" {
 			t.Fatalf("expected data_role=runtime_debug_only, got=%s", body.DataRole)
 		}
-		if body.StatusNote != "direct_transfer_pools.status is protocol runtime status, not settlement status" {
+		if body.StatusNote != "proc_direct_transfer_pools.status is protocol runtime status, not settlement status" {
 			t.Fatalf("expected status_note to indicate runtime-only, got=%s", body.StatusNote)
 		}
 		if body.Total != 1 || len(body.Items) != 1 || body.Items[0].SessionID != "sess_1" {
@@ -165,7 +165,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		if detailBody.DataRole != "runtime_debug_only" {
 			t.Fatalf("expected detail data_role=runtime_debug_only, got=%s", detailBody.DataRole)
 		}
-		if detailBody.StatusNote != "direct_transfer_pools.status is protocol runtime status, not settlement status" {
+		if detailBody.StatusNote != "proc_direct_transfer_pools.status is protocol runtime status, not settlement status" {
 			t.Fatalf("expected detail status_note to indicate runtime-only, got=%s", detailBody.StatusNote)
 		}
 		if detailBody.Item.SessionID != "sess_1" {
@@ -181,7 +181,7 @@ func TestHandlePurchaseAPIs_UsePurchasesAndDeprecateSales(t *testing.T) {
 	store := newClientDB(db, nil)
 	srv := &httpAPIServer{db: db, store: store}
 
-	if _, err := db.Exec(`INSERT INTO demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_p1", "seed_p1", 1700000010); err != nil {
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_p1", "seed_p1", 1700000010); err != nil {
 		t.Fatalf("insert demand: %v", err)
 	}
 	seedPurchase := purchaseDoneEntry{
@@ -208,11 +208,11 @@ func TestHandlePurchaseAPIs_UsePurchasesAndDeprecateSales(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/purchases?demand_id=dmd_p1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/biz_purchases?demand_id=dmd_p1", nil)
 		rec := httptest.NewRecorder()
 		srv.handlePurchases(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("purchases list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+			t.Fatalf("biz_purchases list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}
 		var body struct {
 			Total int `json:"total"`
@@ -228,15 +228,15 @@ func TestHandlePurchaseAPIs_UsePurchasesAndDeprecateSales(t *testing.T) {
 			} `json:"items"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode purchases list: %v", err)
+			t.Fatalf("decode biz_purchases list: %v", err)
 		}
 		if body.Total != 2 || len(body.Items) != 2 {
-			t.Fatalf("unexpected purchases list: %+v", body)
+			t.Fatalf("unexpected biz_purchases list: %+v", body)
 		}
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/purchases/detail?id=1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/biz_purchases/detail?id=1", nil)
 		rec := httptest.NewRecorder()
 		srv.handlePurchaseDetail(rec, req)
 		if rec.Code != http.StatusOK {
@@ -256,7 +256,7 @@ func TestHandlePurchaseAPIs_UsePurchasesAndDeprecateSales(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/purchases/summary?demand_id=dmd_p1", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/biz_purchases/summary?demand_id=dmd_p1", nil)
 		rec := httptest.NewRecorder()
 		srv.handlePurchaseSummary(rec, req)
 		if rec.Code != http.StatusOK {

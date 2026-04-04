@@ -13,7 +13,7 @@ type sqlConn interface {
 	QueryRow(query string, args ...any) *sql.Row
 }
 
-// chainPaymentEntry chain_payments 写入条目
+// chainPaymentEntry fact_chain_payments 写入条目
 // 第二步整改：为 wallet_chain 财务来源切换提供事实层支持
 type chainPaymentEntry struct {
 	TxID                string
@@ -29,7 +29,7 @@ type chainPaymentEntry struct {
 	Payload             any
 }
 
-// chainPaymentUTXOLinkEntry chain_payment_utxo_links 写入条目
+// chainPaymentUTXOLinkEntry fact_chain_payment_utxo_links 写入条目
 type chainPaymentUTXOLinkEntry struct {
 	ChainPaymentID int64
 	UTXOID         string
@@ -41,7 +41,7 @@ type chainPaymentUTXOLinkEntry struct {
 	Payload        any
 }
 
-// dbUpsertChainPayment 按 txid  upsert chain_payments
+// dbUpsertChainPayment 按 txid  upsert fact_chain_payments
 // 同一个 txid 重复写入不会生成多条记录
 func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
 	if store == nil {
@@ -69,11 +69,11 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 
 	// 先尝试查询已存在的记录
 	var existingID int64
-	err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&existingID)
+	err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&existingID)
 	if err == nil {
 		// 存在则更新
 		_, err = db.Exec(
-			`UPDATE chain_payments SET
+			`UPDATE fact_chain_payments SET
 				payment_subtype=?,
 				status=?,
 				wallet_input_satoshi=?,
@@ -108,7 +108,7 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 
 	// 不存在则插入
 	res, err := db.Exec(
-		`INSERT INTO chain_payments(
+		`INSERT INTO fact_chain_payments(
 			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
 			block_height,occurred_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -131,7 +131,7 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 	return res.LastInsertId()
 }
 
-// dbGetChainPaymentByTxID 按 txid 查 chain_payments
+// dbGetChainPaymentByTxID 按 txid 查 fact_chain_payments
 func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) (int64, error) {
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
@@ -142,7 +142,7 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 			return 0, fmt.Errorf("txid is required")
 		}
 		var id int64
-		err := db.QueryRow(`SELECT id FROM chain_payments WHERE txid=?`, txid).Scan(&id)
+		err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&id)
 		if err != nil {
 			return 0, err
 		}
@@ -150,14 +150,14 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 	})
 }
 
-// dbGetChainPaymentByID 按 id 查 chain_payments（验证存在性）
+// dbGetChainPaymentByID 按 id 查 fact_chain_payments（验证存在性）
 func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool, error) {
 	if store == nil {
 		return false, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
 		var exists int
-		err := db.QueryRow(`SELECT 1 FROM chain_payments WHERE id=?`, id).Scan(&exists)
+		err := db.QueryRow(`SELECT 1 FROM fact_chain_payments WHERE id=?`, id).Scan(&exists)
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
@@ -168,7 +168,7 @@ func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool
 	})
 }
 
-// dbAppendChainPaymentUTXOLinkIfAbsent 幂等追加 chain_payment_utxo_links
+// dbAppendChainPaymentUTXOLinkIfAbsent 幂等追加 fact_chain_payment_utxo_links
 // 同一 payment-utxo link 重复写入不会生成多条记录
 func dbAppendChainPaymentUTXOLinkIfAbsent(ctx context.Context, store *clientDB, e chainPaymentUTXOLinkEntry) error {
 	if store == nil {
@@ -203,7 +203,7 @@ func dbAppendChainPaymentUTXOLinkIfAbsentDB(db sqlConn, e chainPaymentUTXOLinkEn
 	// 检查是否已存在
 	var n int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
+		`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
 		e.ChainPaymentID, utxoID, ioSide, utxoRole,
 	).Scan(&n); err != nil {
 		return err
@@ -218,7 +218,7 @@ func dbAppendChainPaymentUTXOLinkIfAbsentDB(db sqlConn, e chainPaymentUTXOLinkEn
 	}
 
 	_, err := db.Exec(
-		`INSERT INTO chain_payment_utxo_links(
+		`INSERT INTO fact_chain_payment_utxo_links(
 			chain_payment_id,utxo_id,io_side,utxo_role,amount_satoshi,created_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?)`,
 		e.ChainPaymentID,

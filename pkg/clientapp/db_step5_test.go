@@ -64,9 +64,9 @@ func TestStep5_OldPoolQueryMarkedAsRuntimeDebug(t *testing.T) {
 	}
 	store := &clientDB{db: db}
 
-	// 插入一条 direct_transfer_pools 记录
+	// 插入一条 proc_direct_transfer_pools 记录
 	_, err := db.Exec(`
-		INSERT INTO direct_transfer_pools(session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+		INSERT INTO proc_direct_transfer_pools(session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,status,current_tx_hex,base_tx_hex,base_txid,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		"session_step5_test", "deal_step5_test", "03buyer", "04seller", "03arbiter",
@@ -74,7 +74,7 @@ func TestStep5_OldPoolQueryMarkedAsRuntimeDebug(t *testing.T) {
 		0.5, 6, 1700000000, 1700000000,
 	)
 	if err != nil {
-		t.Fatalf("insert direct_transfer_pools: %v", err)
+		t.Fatalf("insert proc_direct_transfer_pools: %v", err)
 	}
 
 	// 使用降级接口查询
@@ -95,7 +95,7 @@ func TestStep5_OldPoolQueryMarkedAsRuntimeDebug(t *testing.T) {
 	// 在实际 HTTP 响应中，应该包含 data_role 和 status_note 字段
 	t.Log("Step5: Old pool query returns runtime_debug_only data")
 	t.Log("  - data_role: runtime_debug_only")
-	t.Log("  - status_note: direct_transfer_pools.status is protocol runtime status, not settlement status")
+	t.Log("  - status_note: proc_direct_transfer_pools.status is protocol runtime status, not settlement status")
 
 	// 验证：单条查询也使用降级接口
 	item, err := dbGetDirectTransferPoolItemCompat(ctx, store, "session_step5_test")
@@ -188,9 +188,9 @@ func TestStep5_SettlementDominatesOverPoolStatus(t *testing.T) {
 		t.Fatalf("upsert settlement: %v", err)
 	}
 
-	// 同时 direct_transfer_pools 状态为 active（与 settlement 不一致）
+	// 同时 proc_direct_transfer_pools 状态为 active（与 settlement 不一致）
 	_, err := db.Exec(`
-		INSERT INTO direct_transfer_pools(session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
+		INSERT INTO proc_direct_transfer_pools(session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,status,current_tx_hex,base_tx_hex,base_txid,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		"session_dominates", "deal_dominates", "03aaaabb", "04seller", "03arbiter",
@@ -198,17 +198,17 @@ func TestStep5_SettlementDominatesOverPoolStatus(t *testing.T) {
 		0.5, 6, 1700000000, 1700000000,
 	)
 	if err != nil {
-		t.Fatalf("insert direct_transfer_pools: %v", err)
+		t.Fatalf("insert proc_direct_transfer_pools: %v", err)
 	}
 
-	// 验证：聚合读模型以 settlement 为准，不看 direct_transfer_pools.status
+	// 验证：聚合读模型以 settlement 为准，不看 proc_direct_transfer_pools.status
 	summary, err := GetFrontOrderSettlementSummary(ctx, store, frontOrderID)
 	if err != nil {
 		t.Fatalf("GetFrontOrderSettlementSummary: %v", err)
 	}
 
-	// 关键断言：即使 direct_transfer_pools.status='active'，
-	// 聚合读模型仍然根据 business_settlements 判断为 settled
+	// 关键断言：即使 proc_direct_transfer_pools.status='active'，
+	// 聚合读模型仍然根据 settle_business_settlements 判断为 settled
 	if summary.Summary.OverallStatus != "settled" {
 		t.Fatalf("expected overall_status settled (settlement should dominate), got %s", summary.Summary.OverallStatus)
 	}
@@ -228,13 +228,13 @@ func TestStep5_ProtocolRuntimeFunctionsIsolation(t *testing.T) {
 
 	// 插入测试数据
 	_, err := db.Exec(`
-		INSERT INTO direct_deals(deal_id,demand_id,seed_hash,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,seed_price,chunk_price,status,created_at_unix)
+		INSERT INTO proc_direct_deals(deal_id,demand_id,seed_hash,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,seed_price,chunk_price,status,created_at_unix)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		"deal_step5_protocol", "demand_protocol", "seedhash123", "03buyer", "04seller", "03arbiter",
 		1000, 100, "accepted", 1700000000,
 	)
 	if err != nil {
-		t.Fatalf("insert direct_deals: %v", err)
+		t.Fatalf("insert proc_direct_deals: %v", err)
 	}
 
 	// 验证：协议运行态函数可用

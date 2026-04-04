@@ -21,13 +21,13 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 
 	stmts := []string{
 		// 核心表
-		`CREATE TABLE IF NOT EXISTS workspaces(
+		`CREATE TABLE IF NOT EXISTS biz_workspaces(
 			workspace_path TEXT PRIMARY KEY,
 			enabled INTEGER NOT NULL,
 			max_bytes INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS seeds(
+		`CREATE TABLE IF NOT EXISTS biz_seeds(
 			seed_hash TEXT PRIMARY KEY,
 			chunk_count INTEGER NOT NULL,
 			file_size INTEGER NOT NULL,
@@ -35,30 +35,30 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			recommended_file_name TEXT NOT NULL DEFAULT '',
 			mime_hint TEXT NOT NULL DEFAULT ''
 		)`,
-		`CREATE TABLE IF NOT EXISTS workspace_files(
+		`CREATE TABLE IF NOT EXISTS biz_workspace_files(
 			workspace_path TEXT NOT NULL,
 			file_path TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
 			seed_locked INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(workspace_path,file_path),
-			FOREIGN KEY(workspace_path) REFERENCES workspaces(workspace_path) ON DELETE CASCADE,
-			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+			FOREIGN KEY(workspace_path) REFERENCES biz_workspaces(workspace_path) ON DELETE CASCADE,
+			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
 		)`,
-		`CREATE TABLE IF NOT EXISTS seed_chunk_supply(
+		`CREATE TABLE IF NOT EXISTS biz_seed_chunk_supply(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			PRIMARY KEY(seed_hash,chunk_index),
-			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
 		)`,
-		`CREATE TABLE IF NOT EXISTS seed_pricing_policy(
+		`CREATE TABLE IF NOT EXISTS biz_seed_pricing_policy(
 			seed_hash TEXT PRIMARY KEY,
 			floor_unit_price_sat_per_64k INTEGER NOT NULL,
 			resale_discount_bps INTEGER NOT NULL,
 			pricing_source TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
 		)`,
-		`CREATE TABLE IF NOT EXISTS demands(
+		`CREATE TABLE IF NOT EXISTS biz_demands(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
@@ -67,7 +67,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 交易历史
-		`CREATE TABLE IF NOT EXISTS tx_history(
+		`CREATE TABLE IF NOT EXISTS fact_tx_history(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
@@ -81,7 +81,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			sequence_num INTEGER NOT NULL,
 			cycle_index INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS purchases(
+		`CREATE TABLE IF NOT EXISTS biz_purchases(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
 			seller_pub_hex TEXT NOT NULL,
@@ -93,10 +93,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			error_message TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			finished_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(demand_id) REFERENCES demands(demand_id) ON DELETE CASCADE
+			FOREIGN KEY(demand_id) REFERENCES biz_demands(demand_id) ON DELETE CASCADE
 		)`,
 		// 事件必须挂到真实命令上，历史脏行在迁移阶段先清掉。
-		`CREATE TABLE IF NOT EXISTS gateway_events(
+		`CREATE TABLE IF NOT EXISTS proc_gateway_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
@@ -107,11 +107,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			pool_id TEXT NOT NULL,
 			amount_satoshi INTEGER NOT NULL,
 			payload_json TEXT NOT NULL,
-			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 		)`,
 
 		// 直接交易
-		`CREATE TABLE IF NOT EXISTS demand_quotes(
+		`CREATE TABLE IF NOT EXISTS biz_demand_quotes(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
 			seller_pub_hex TEXT NOT NULL,
@@ -124,21 +124,21 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			available_chunk_bitmap_hex TEXT NOT NULL,
 			expires_at_unix INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(demand_id) REFERENCES demands(demand_id) ON DELETE CASCADE,
+			FOREIGN KEY(demand_id) REFERENCES biz_demands(demand_id) ON DELETE CASCADE,
 			UNIQUE(demand_id, seller_pub_hex)
 		)`,
-		`CREATE TABLE IF NOT EXISTS demand_quote_arbiters(
+		`CREATE TABLE IF NOT EXISTS biz_demand_quote_arbiters(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			quote_id INTEGER NOT NULL,
 			arbiter_pub_hex TEXT NOT NULL,
-			FOREIGN KEY(quote_id) REFERENCES demand_quotes(id) ON DELETE CASCADE,
+			FOREIGN KEY(quote_id) REFERENCES biz_demand_quotes(id) ON DELETE CASCADE,
 			UNIQUE(quote_id, arbiter_pub_hex)
 		)`,
-		// 第五步定性：direct_deals 是【协议过程对象】
+		// 第五步定性：proc_direct_deals 是【协议过程对象】
 		// - 职责：保存协议协商/成交上下文（buyer/seller/seed_hash/price 等）
 		// - 非支付主事实，不决定业务是否完成
-		// - 业务完成状态以 business_settlements 为准
-		`CREATE TABLE IF NOT EXISTS direct_deals(
+		// - 业务完成状态以 settle_business_settlements 为准
+		`CREATE TABLE IF NOT EXISTS proc_direct_deals(
 			deal_id TEXT PRIMARY KEY,
 			demand_id TEXT NOT NULL,
 			buyer_pubkey_hex TEXT NOT NULL,
@@ -150,7 +150,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			status TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS live_quotes(
+		`CREATE TABLE IF NOT EXISTS biz_live_quotes(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
 			seller_pubkey_hex TEXT NOT NULL,
@@ -161,11 +161,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id, seller_pubkey_hex)
 		)`,
-		// 第五步定性：direct_transfer_pools 是【运行态池状态表】
+		// 第五步定性：proc_direct_transfer_pools 是【运行态池状态表】
 		// - 职责：保存池协议运行期的动态状态（sequence_num、current_tx_hex、status 等）
 		// - 非业务主判断入口，只服务于协议运行期
-		// - 业务完成状态以 business_settlements 为准，不以此表的 status 为准
-		`CREATE TABLE IF NOT EXISTS direct_transfer_pools(
+		// - 业务完成状态以 settle_business_settlements 为准，不以此表的 status 为准
+		`CREATE TABLE IF NOT EXISTS proc_direct_transfer_pools(
 			session_id TEXT PRIMARY KEY,
 			deal_id TEXT NOT NULL,
 			buyer_pubkey_hex TEXT NOT NULL,
@@ -186,7 +186,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL
 		)`,
 		// 直连传输费用池事实层：只保留真实池会话与逐次动作，不承载运行时快照职责。
-		`CREATE TABLE IF NOT EXISTS pool_sessions(
+		`CREATE TABLE IF NOT EXISTS fact_pool_sessions(
 			pool_session_id TEXT PRIMARY KEY,
 			pool_scheme TEXT NOT NULL,
 			counterparty_pubkey_hex TEXT NOT NULL DEFAULT '',
@@ -202,7 +202,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS pool_allocations(
+		`CREATE TABLE IF NOT EXISTS fact_pool_allocations(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			allocation_id TEXT NOT NULL,
 			pool_session_id TEXT NOT NULL,
@@ -214,10 +214,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			txid TEXT NOT NULL,
 			tx_hex TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(pool_session_id) REFERENCES pool_sessions(pool_session_id) ON DELETE CASCADE,
+			FOREIGN KEY(pool_session_id) REFERENCES fact_pool_sessions(pool_session_id) ON DELETE CASCADE,
 			UNIQUE(allocation_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS chain_payments(
+		`CREATE TABLE IF NOT EXISTS fact_chain_payments(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			txid TEXT NOT NULL,
 			payment_subtype TEXT NOT NULL,
@@ -233,7 +233,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			UNIQUE(txid)
 		)`,
-		`CREATE TABLE IF NOT EXISTS chain_payment_utxo_links(
+		`CREATE TABLE IF NOT EXISTS fact_chain_payment_utxo_links(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			chain_payment_id INTEGER NOT NULL,
 			utxo_id TEXT NOT NULL,
@@ -243,20 +243,20 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
-			FOREIGN KEY(chain_payment_id) REFERENCES chain_payments(id) ON DELETE CASCADE,
+			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id) ON DELETE CASCADE,
 			FOREIGN KEY(utxo_id) REFERENCES wallet_utxo(utxo_id) ON DELETE CASCADE,
 			UNIQUE(chain_payment_id, utxo_id, io_side, utxo_role)
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_allocations_session_kind_seq ON pool_allocations(pool_session_id,allocation_kind,sequence_num)`,
-		`CREATE INDEX IF NOT EXISTS idx_pool_sessions_scheme_status ON pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_pool_sessions_counterparty ON pool_sessions(counterparty_pubkey_hex,status)`,
-		`CREATE INDEX IF NOT EXISTS idx_pool_allocations_session_no ON pool_allocations(pool_session_id,allocation_no DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_pool_allocations_txid ON pool_allocations(txid)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_payments_occurred ON chain_payments(occurred_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_payments_subtype ON chain_payments(payment_subtype, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_payments_status ON chain_payments(status, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_payment_utxo_links_payment ON chain_payment_utxo_links(chain_payment_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_payment_utxo_links_utxo ON chain_payment_utxo_links(utxo_id, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_allocations_session_kind_seq ON fact_pool_allocations(pool_session_id,allocation_kind,sequence_num)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_scheme_status ON fact_pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_counterparty ON fact_pool_sessions(counterparty_pubkey_hex,status)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_session_no ON fact_pool_allocations(pool_session_id,allocation_no DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_txid ON fact_pool_allocations(txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_occurred ON fact_chain_payments(occurred_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_subtype ON fact_chain_payments(payment_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_status ON fact_chain_payments(status, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payment_utxo_links_payment ON fact_chain_payment_utxo_links(chain_payment_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payment_utxo_links_utxo ON fact_chain_payment_utxo_links(utxo_id, id DESC)`,
 		// 钱包资金流水
 		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -282,8 +282,8 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// - orchestrator 发起时，trigger_key = orchestrator.idempotency_key
 		// - 非 orchestrator 发起时，trigger_key = ''
 		// 注意：这不是外键，不做 FK 约束；也不是 command_id，而是来源链路键。
-		// command_id 是唯一命令号，gateway_events 会直接用它做物理外键。
-		`CREATE TABLE IF NOT EXISTS command_journal(
+		// command_id 是唯一命令号，proc_gateway_events 会直接用它做物理外键。
+		`CREATE TABLE IF NOT EXISTS proc_command_journal(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL UNIQUE,
@@ -303,7 +303,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			payload_json TEXT NOT NULL,
 			result_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS domain_events(
+		`CREATE TABLE IF NOT EXISTS proc_domain_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -312,9 +312,9 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			state_before TEXT NOT NULL,
 			state_after TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
-			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS state_snapshots(
+		`CREATE TABLE IF NOT EXISTS proc_state_snapshots(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -325,11 +325,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			pause_have_satoshi INTEGER NOT NULL,
 			last_error TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
-			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 		)`,
 		// 观察事实表
 		// 设计说明：这里只承接被动观察到的网关状态，不挂 command_id，不混命令链。
-		`CREATE TABLE IF NOT EXISTS observed_gateway_states(
+		`CREATE TABLE IF NOT EXISTS proc_observed_gateway_states(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			gateway_pubkey_hex TEXT NOT NULL,
@@ -344,7 +344,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			last_error TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS effect_logs(
+		`CREATE TABLE IF NOT EXISTS proc_effect_logs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -354,11 +354,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			status TEXT NOT NULL,
 			error_message TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
-			FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+			FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 		)`,
 
 		// 编排器日志
-		`CREATE TABLE IF NOT EXISTS orchestrator_logs(
+		`CREATE TABLE IF NOT EXISTS proc_orchestrator_logs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			created_at_unix INTEGER NOT NULL,
 			event_type TEXT NOT NULL,
@@ -497,12 +497,11 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// 第六次迭代起新库 schema 不再定义旧字段（老库兼容迁移未做物理删列）
 		// 旧列迁移由 ensureFinAccountingSchema 处理
 		//
-		// fin_business 语义说明（第七次迭代收口）：
-		// - 一条 fin_business = 一条独立收费事实
+		// settle_businesses 语义说明（第七次迭代收口）：
+		// - 一条 settle_businesses = 一条独立收费事实
 		// - 失败重试不新建 business，只更新原记录
 		// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
-		// - 本阶段表名保持 fin_business，逻辑上已收口为 businesses
-		`CREATE TABLE IF NOT EXISTS fin_business(
+		`CREATE TABLE IF NOT EXISTS settle_businesses(
 			business_id TEXT PRIMARY KEY,
 			business_role TEXT NOT NULL CHECK(business_role IN ('formal', 'process')),
 			source_type TEXT NOT NULL DEFAULT '',
@@ -517,7 +516,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS fin_process_events(
+		`CREATE TABLE IF NOT EXISTS settle_process_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			process_id TEXT NOT NULL,
 			source_type TEXT NOT NULL DEFAULT '',
@@ -531,7 +530,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS fin_tx_breakdown(
+		`CREATE TABLE IF NOT EXISTS settle_tx_breakdown(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			business_id TEXT NOT NULL,
 			txid TEXT NOT NULL,
@@ -547,7 +546,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS fin_tx_utxo_links(
+		`CREATE TABLE IF NOT EXISTS settle_tx_utxo_links(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			business_id TEXT NOT NULL,
 			txid TEXT NOT NULL,
@@ -563,7 +562,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 
 		// 前台业务主身份层（第七次迭代新增）
 		// 职责：表达前台业务主身份，不直接承载支付实现
-		`CREATE TABLE IF NOT EXISTS front_orders(
+		`CREATE TABLE IF NOT EXISTS biz_front_orders(
 			front_order_id TEXT PRIMARY KEY,
 			front_type TEXT NOT NULL,
 			front_subtype TEXT NOT NULL,
@@ -579,10 +578,10 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// 前台到财务桥接层（第七次迭代新增）
 		// 职责：表达"哪个前台主对象触发了哪条财务事实"
 		// 设计说明：
-		//   - 本阶段不强绑 front_orders 外键，允许旧对象直接触发 business
+		//   - 本阶段不强绑 biz_front_orders 外键，允许旧对象直接触发 business
 		//   - 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
 		//   - 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
-		`CREATE TABLE IF NOT EXISTS business_triggers(
+		`CREATE TABLE IF NOT EXISTS biz_business_triggers(
 			trigger_id TEXT PRIMARY KEY,
 			business_id TEXT NOT NULL,
 			trigger_type TEXT NOT NULL,
@@ -591,13 +590,13 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(business_id) REFERENCES fin_business(business_id) ON DELETE CASCADE,
+			FOREIGN KEY(business_id) REFERENCES settle_businesses(business_id) ON DELETE CASCADE,
 			UNIQUE(business_id, trigger_type, trigger_id_value, trigger_role)
 		)`,
 		// 统一结算出口（第七次迭代新增）
 		// 职责：表达一条 business 的统一结算出口
 		// 设计约束：本阶段强制一条 business 只对应一条主 settlement
-		`CREATE TABLE IF NOT EXISTS business_settlements(
+		`CREATE TABLE IF NOT EXISTS settle_business_settlements(
 			settlement_id TEXT PRIMARY KEY,
 			business_id TEXT NOT NULL,
 			settlement_method TEXT NOT NULL,
@@ -608,12 +607,12 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(business_id) REFERENCES fin_business(business_id) ON DELETE CASCADE,
+			FOREIGN KEY(business_id) REFERENCES settle_businesses(business_id) ON DELETE CASCADE,
 			UNIQUE(business_id)
 		)`,
 
 		// 链状态
-		`CREATE TABLE IF NOT EXISTS chain_tip_state(
+		`CREATE TABLE IF NOT EXISTS proc_chain_tip_state(
 			id INTEGER PRIMARY KEY CHECK(id=1),
 			tip_height INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
@@ -622,7 +621,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			last_trigger TEXT NOT NULL,
 			last_duration_ms INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS chain_tip_worker_logs(
+		`CREATE TABLE IF NOT EXISTS proc_chain_tip_worker_logs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			triggered_at_unix INTEGER NOT NULL,
 			started_at_unix INTEGER NOT NULL,
@@ -633,7 +632,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			error_message TEXT NOT NULL,
 			result_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS chain_utxo_worker_logs(
+		`CREATE TABLE IF NOT EXISTS proc_chain_utxo_worker_logs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			triggered_at_unix INTEGER NOT NULL,
 			started_at_unix INTEGER NOT NULL,
@@ -646,7 +645,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 调度器
-		`CREATE TABLE IF NOT EXISTS scheduler_tasks(
+		`CREATE TABLE IF NOT EXISTS proc_scheduler_tasks(
 			task_name TEXT PRIMARY KEY,
 			owner TEXT NOT NULL,
 			mode TEXT NOT NULL,
@@ -667,7 +666,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			last_summary_json TEXT NOT NULL,
 			meta_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS scheduler_task_runs(
+		`CREATE TABLE IF NOT EXISTS proc_scheduler_task_runs(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_name TEXT NOT NULL,
 			owner TEXT NOT NULL,
@@ -683,7 +682,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 直播相关
-		`CREATE TABLE IF NOT EXISTS live_follows(
+		`CREATE TABLE IF NOT EXISTS proc_live_follows(
 			stream_id TEXT PRIMARY KEY,
 			stream_uri TEXT NOT NULL,
 			publisher_pubkey TEXT NOT NULL,
@@ -699,7 +698,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 文件下载
-		`CREATE TABLE IF NOT EXISTS file_downloads(
+		`CREATE TABLE IF NOT EXISTS proc_file_downloads(
 			seed_hash TEXT PRIMARY KEY,
 			file_path TEXT NOT NULL,
 			file_size INTEGER NOT NULL,
@@ -713,7 +712,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS file_download_chunks(
+		`CREATE TABLE IF NOT EXISTS proc_file_download_chunks(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			status TEXT NOT NULL,
@@ -724,7 +723,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 消息收件箱
-		`CREATE TABLE IF NOT EXISTS inbox_messages(
+		`CREATE TABLE IF NOT EXISTS proc_inbox_messages(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			message_id TEXT NOT NULL,
 			sender_pubkey_hex TEXT NOT NULL,
@@ -738,14 +737,14 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 路由索引
-		`CREATE TABLE IF NOT EXISTS published_route_indexes(
+		`CREATE TABLE IF NOT EXISTS proc_published_route_indexes(
 			route TEXT PRIMARY KEY,
 			seed_hash TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
 
 		// 节点可达性
-		`CREATE TABLE IF NOT EXISTS node_reachability_cache(
+		`CREATE TABLE IF NOT EXISTS proc_node_reachability_cache(
 			target_node_pubkey_hex TEXT PRIMARY KEY,
 			source_gateway_pubkey_hex TEXT NOT NULL,
 			head_height INTEGER NOT NULL,
@@ -756,7 +755,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			signature BLOB NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS self_node_reachability_state(
+		`CREATE TABLE IF NOT EXISTS proc_self_node_reachability_state(
 			node_pubkey_hex TEXT PRIMARY KEY,
 			head_height INTEGER NOT NULL,
 			seq INTEGER NOT NULL,
@@ -764,48 +763,48 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 
 		// 基础索引（不依赖迁移的）
-		`CREATE INDEX IF NOT EXISTS idx_workspace_files_seed_hash ON workspace_files(seed_hash, workspace_path, file_path)`,
-		`CREATE INDEX IF NOT EXISTS idx_workspace_files_workspace ON workspace_files(workspace_path, file_path)`,
-		`CREATE INDEX IF NOT EXISTS idx_seed_chunk_supply_seed ON seed_chunk_supply(seed_hash,chunk_index)`,
-		`CREATE INDEX IF NOT EXISTS idx_workspaces_enabled ON workspaces(enabled, workspace_path)`,
-		`CREATE INDEX IF NOT EXISTS idx_seed_pricing_policy_updated ON seed_pricing_policy(updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_file_downloads_updated ON file_downloads(updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_file_download_chunks_seed ON file_download_chunks(seed_hash,chunk_index)`,
-		`CREATE INDEX IF NOT EXISTS idx_live_quotes_demand ON live_quotes(demand_id, created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_node_reachability_cache_expires ON node_reachability_cache(expires_at_unix DESC, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_tx_history_created_at ON tx_history(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_purchases_created_at ON purchases(created_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_purchases_demand_created ON purchases(demand_id, created_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_purchases_seller_created ON purchases(seller_pub_hex, created_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_purchases_status_created ON purchases(status, created_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_purchases_history_lookup ON purchases(demand_id, chunk_index, seller_pub_hex, arbiter_pub_hex, created_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_gateway_events_cmd_id ON gateway_events(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_workspace_files_seed_hash ON biz_workspace_files(seed_hash, workspace_path, file_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_workspace_files_workspace ON biz_workspace_files(workspace_path, file_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_seed_chunk_supply_seed ON biz_seed_chunk_supply(seed_hash,chunk_index)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_workspaces_enabled ON biz_workspaces(enabled, workspace_path)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_seed_pricing_policy_updated ON biz_seed_pricing_policy(updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_file_downloads_updated ON proc_file_downloads(updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_file_download_chunks_seed ON proc_file_download_chunks(seed_hash,chunk_index)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_live_quotes_demand ON biz_live_quotes(demand_id, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_node_reachability_cache_expires ON proc_node_reachability_cache(expires_at_unix DESC, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_tx_history_created_at ON fact_tx_history(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_created_at ON biz_purchases(created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_demand_created ON biz_purchases(demand_id, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_seller_created ON biz_purchases(seller_pub_hex, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_status_created ON biz_purchases(status, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_history_lookup ON biz_purchases(demand_id, chunk_index, seller_pub_hex, arbiter_pub_hex, created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_created_at ON proc_gateway_events(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_cmd_id ON proc_gateway_events(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_created_at ON wallet_fund_flows(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_cmd_id ON command_journal(command_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_cmd_id ON state_snapshots(command_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_created_at ON observed_gateway_states(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_gateway ON observed_gateway_states(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_event ON observed_gateway_states(event_name, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_state ON observed_gateway_states(state_after, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_observed_gateway_states_source_ref ON observed_gateway_states(source_ref, observed_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_created_at ON orchestrator_logs(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_event_type ON orchestrator_logs(event_type, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_signal_type ON orchestrator_logs(signal_type, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_gateway ON orchestrator_logs(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_orchestrator_logs_idempotency ON orchestrator_logs(idempotency_key, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_created_at ON proc_command_journal(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_cmd_id ON proc_command_journal(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_gateway ON proc_command_journal(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_created_at ON proc_domain_events(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_cmd_id ON proc_domain_events(command_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_gateway ON proc_domain_events(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_created_at ON proc_state_snapshots(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_cmd_id ON proc_state_snapshots(command_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_gateway ON proc_state_snapshots(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_observed_gateway_states_created_at ON proc_observed_gateway_states(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_observed_gateway_states_gateway ON proc_observed_gateway_states(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_observed_gateway_states_event ON proc_observed_gateway_states(event_name, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_observed_gateway_states_state ON proc_observed_gateway_states(state_after, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_observed_gateway_states_source_ref ON proc_observed_gateway_states(source_ref, observed_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_created_at ON proc_effect_logs(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_cmd_id ON proc_effect_logs(command_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_gateway ON proc_effect_logs(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_created_at ON proc_orchestrator_logs(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_event_type ON proc_orchestrator_logs(event_type, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_signal_type ON proc_orchestrator_logs(signal_type, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_gateway ON proc_orchestrator_logs(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_idempotency ON proc_orchestrator_logs(idempotency_key, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_created_at ON wallet_ledger_entries(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_occurred_at ON wallet_ledger_entries(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_txid ON wallet_ledger_entries(txid, id DESC)`,
@@ -816,17 +815,17 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
 		// 前台业务主身份层索引（第七次迭代新增）
-		`CREATE INDEX IF NOT EXISTS idx_front_orders_type_status ON front_orders(front_type, status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_front_orders_target ON front_orders(target_object_type, target_object_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_front_orders_owner ON front_orders(owner_pubkey_hex, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_type_status ON biz_front_orders(front_type, status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_target ON biz_front_orders(target_object_type, target_object_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_owner ON biz_front_orders(owner_pubkey_hex, created_at_unix DESC)`,
 		// 业务触发桥接层索引（第三次迭代新增）
-		`CREATE INDEX IF NOT EXISTS idx_business_triggers_business ON business_triggers(business_id, created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_business_triggers_type_value ON business_triggers(trigger_type, trigger_id_value)`,
-		`CREATE INDEX IF NOT EXISTS idx_business_triggers_type_value_role ON business_triggers(trigger_type, trigger_id_value, trigger_role)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_business ON biz_business_triggers(business_id, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_type_value ON biz_business_triggers(trigger_type, trigger_id_value)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_type_value_role ON biz_business_triggers(trigger_type, trigger_id_value, trigger_role)`,
 		// 统一结算出口索引（第三次迭代新增）
-		`CREATE INDEX IF NOT EXISTS idx_business_settlements_status ON business_settlements(status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_business_settlements_method ON business_settlements(settlement_method, status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_business_settlements_target ON business_settlements(target_type, target_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_status ON settle_business_settlements(status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_method ON settle_business_settlements(settlement_method, status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_target ON settle_business_settlements(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`,
@@ -835,30 +834,30 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		// 第六次迭代：finance 表索引移到 ensureFinAccountingIndexes 中创建
 		// 避免老库迁移时列不存在导致错误
-		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_process ON fin_process_events(process_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business_txid ON fin_tx_breakdown(business_id, txid)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_business ON fin_tx_utxo_links(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_utxo ON fin_tx_utxo_links(utxo_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_utxo_links_txid ON fin_tx_utxo_links(txid, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_started ON chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_tip_worker_logs_status ON chain_tip_worker_logs(status, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_started ON chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_chain_utxo_worker_logs_status ON chain_utxo_worker_logs(status, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_status ON scheduler_tasks(status, updated_at_unix DESC, task_name ASC)`,
-		`CREATE INDEX IF NOT EXISTS idx_scheduler_tasks_owner_mode ON scheduler_tasks(owner, mode, task_name ASC)`,
-		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_task ON scheduler_task_runs(task_name, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_status ON scheduler_task_runs(status, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_scheduler_task_runs_started ON scheduler_task_runs(started_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_inbox_messages_received_at ON inbox_messages(received_at_unix DESC,id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_published_route_indexes_updated ON published_route_indexes(updated_at_unix DESC,route ASC)`,
-		`CREATE INDEX IF NOT EXISTS idx_demands_demand_id ON demands(demand_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_demands_created ON demands(created_at_unix DESC, id DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_demand_quotes_demand_seller ON demand_quotes(demand_id, seller_pub_hex)`,
-		`CREATE INDEX IF NOT EXISTS idx_demand_quotes_demand_created ON demand_quotes(demand_id, created_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_demand_quote_arbiters_quote_arbiter ON demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
-		`CREATE INDEX IF NOT EXISTS idx_demand_quote_arbiters_arbiter ON demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_process ON settle_process_events(process_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business ON settle_tx_breakdown(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_txid ON settle_tx_breakdown(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_utxo_links_business ON settle_tx_utxo_links(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_utxo_links_utxo ON settle_tx_utxo_links(utxo_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_utxo_links_txid ON settle_tx_utxo_links(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_chain_tip_worker_logs_started ON proc_chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_chain_tip_worker_logs_status ON proc_chain_tip_worker_logs(status, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_chain_utxo_worker_logs_started ON proc_chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_chain_utxo_worker_logs_status ON proc_chain_utxo_worker_logs(status, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_scheduler_tasks_status ON proc_scheduler_tasks(status, updated_at_unix DESC, task_name ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_scheduler_tasks_owner_mode ON proc_scheduler_tasks(owner, mode, task_name ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_scheduler_task_runs_task ON proc_scheduler_task_runs(task_name, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_scheduler_task_runs_status ON proc_scheduler_task_runs(status, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_scheduler_task_runs_started ON proc_scheduler_task_runs(started_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_inbox_messages_received_at ON proc_inbox_messages(received_at_unix DESC,id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_published_route_indexes_updated ON proc_published_route_indexes(updated_at_unix DESC,route ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_demands_demand_id ON biz_demands(demand_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_demands_created ON biz_demands(created_at_unix DESC, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quotes_demand_seller ON biz_demand_quotes(demand_id, seller_pub_hex)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quotes_demand_created ON biz_demand_quotes(demand_id, created_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quote_arbiters_quote_arbiter ON biz_demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quote_arbiters_arbiter ON biz_demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
 	}
 
 	for _, s := range stmts {
@@ -886,7 +885,7 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("workspace storage: %w", err)
 	}
 	if err := ensureFileDownloadsSchema(db); err != nil {
-		return fmt.Errorf("file_downloads: %w", err)
+		return fmt.Errorf("proc_file_downloads: %w", err)
 	}
 	if err := ensurePoolAllocationsSchema(db); err != nil {
 		return fmt.Errorf("pool allocations schema: %w", err)
@@ -898,7 +897,7 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 		return fmt.Errorf("fin accounting indexes: %w", err)
 	}
 	if err := ensureLiveFollowsSchema(db); err != nil {
-		return fmt.Errorf("live_follows: %w", err)
+		return fmt.Errorf("proc_live_follows: %w", err)
 	}
 	if err := migrateLegacyDirectTransferPoolFacts(db); err != nil {
 		return fmt.Errorf("legacy direct transfer pool facts: %w", err)
@@ -912,9 +911,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := migrateObservedGatewayStatePayloads(db); err != nil {
 		return fmt.Errorf("observed gateway payload migration: %w", err)
 	}
-	// command_journal trigger_key 列迁移（第六次迭代新增）
+	// proc_command_journal trigger_key 列迁移（第六次迭代新增）
 	if err := ensureCommandJournalTriggerKey(db); err != nil {
-		return fmt.Errorf("command_journal trigger_key: %w", err)
+		return fmt.Errorf("proc_command_journal trigger_key: %w", err)
 	}
 
 	// 钱包 UTXO 相关迁移
@@ -943,7 +942,7 @@ func ensureFinalCommandLinkedFactsSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	for _, table := range []string{"domain_events", "state_snapshots"} {
+	for _, table := range []string{"proc_domain_events", "proc_state_snapshots"} {
 		needsRebuild, err := commandFactTableNeedsRebuild(db, table)
 		if err != nil {
 			return fmt.Errorf("inspect %s fact schema: %w", table, err)
@@ -963,7 +962,7 @@ func commandFactTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 		return false, fmt.Errorf("db is nil")
 	}
 	table = strings.TrimSpace(table)
-	if table != "domain_events" && table != "state_snapshots" {
+	if table != "proc_domain_events" && table != "proc_state_snapshots" {
 		return false, fmt.Errorf("unsupported table: %s", table)
 	}
 	hasTable, err := hasTable(db, table)
@@ -1044,9 +1043,9 @@ type finalCommandFactTableRebuildSpec struct {
 
 func finalCommandFactTableSpec(table string) (finalCommandFactTableRebuildSpec, bool) {
 	switch strings.TrimSpace(table) {
-	case "domain_events":
+	case "proc_domain_events":
 		return finalCommandFactTableRebuildSpec{
-			CreateSQL: `CREATE TABLE domain_events(
+			CreateSQL: `CREATE TABLE proc_domain_events(
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -1055,10 +1054,10 @@ func finalCommandFactTableSpec(table string) (finalCommandFactTableRebuildSpec, 
 				state_before TEXT NOT NULL,
 				state_after TEXT NOT NULL,
 				payload_json TEXT NOT NULL,
-				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+				FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 			)`,
 			InsertSQL: func(oldTable string) string {
-				return fmt.Sprintf(`INSERT INTO domain_events(
+				return fmt.Sprintf(`INSERT INTO proc_domain_events(
 					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 				) SELECT
 					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
@@ -1068,15 +1067,15 @@ func finalCommandFactTableSpec(table string) (finalCommandFactTableRebuildSpec, 
 				  AND source_kind = 'command'
 				  AND EXISTS(
 						SELECT 1
-						FROM command_journal
-						WHERE command_journal.command_id = %s.command_id
+						FROM proc_command_journal
+						WHERE proc_command_journal.command_id = %s.command_id
 				  )
 				ORDER BY id ASC`, oldTable, oldTable)
 			},
 		}, true
-	case "state_snapshots":
+	case "proc_state_snapshots":
 		return finalCommandFactTableRebuildSpec{
-			CreateSQL: `CREATE TABLE state_snapshots(
+			CreateSQL: `CREATE TABLE proc_state_snapshots(
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -1087,10 +1086,10 @@ func finalCommandFactTableSpec(table string) (finalCommandFactTableRebuildSpec, 
 				pause_have_satoshi INTEGER NOT NULL,
 				last_error TEXT NOT NULL,
 				payload_json TEXT NOT NULL,
-				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+				FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 			)`,
 			InsertSQL: func(oldTable string) string {
-				return fmt.Sprintf(`INSERT INTO state_snapshots(
+				return fmt.Sprintf(`INSERT INTO proc_state_snapshots(
 					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 				) SELECT
 					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
@@ -1100,8 +1099,8 @@ func finalCommandFactTableSpec(table string) (finalCommandFactTableRebuildSpec, 
 				  AND source_kind = 'command'
 				  AND EXISTS(
 						SELECT 1
-						FROM command_journal
-						WHERE command_journal.command_id = %s.command_id
+						FROM proc_command_journal
+						WHERE proc_command_journal.command_id = %s.command_id
 				  )
 				ORDER BY id ASC`, oldTable, oldTable)
 			},
@@ -1122,9 +1121,9 @@ func migrateObservedGatewayStatePayloads(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	hasTable, err := hasTable(db, "observed_gateway_states")
+	hasTable, err := hasTable(db, "proc_observed_gateway_states")
 	if err != nil {
-		return fmt.Errorf("check observed_gateway_states table: %w", err)
+		return fmt.Errorf("check proc_observed_gateway_states table: %w", err)
 	}
 	if !hasTable {
 		return nil
@@ -1136,7 +1135,7 @@ func migrateObservedGatewayStatePayloads(db *sql.DB) error {
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-	rows, err := tx.Query(`SELECT id,event_name,pause_have_satoshi,payload_json FROM observed_gateway_states ORDER BY id ASC`)
+	rows, err := tx.Query(`SELECT id,event_name,pause_have_satoshi,payload_json FROM proc_observed_gateway_states ORDER BY id ASC`)
 	if err != nil {
 		rollback()
 		return err
@@ -1153,7 +1152,7 @@ func migrateObservedGatewayStatePayloads(db *sql.DB) error {
 			rollback()
 			return fmt.Errorf("build observed payload: %w", err)
 		}
-		if _, err := tx.Exec(`UPDATE observed_gateway_states SET payload_json=? WHERE id=?`, payloadJSON, row.ID); err != nil {
+		if _, err := tx.Exec(`UPDATE proc_observed_gateway_states SET payload_json=? WHERE id=?`, payloadJSON, row.ID); err != nil {
 			rollback()
 			return err
 		}
@@ -1266,25 +1265,25 @@ func toUint64(v any) (uint64, bool) {
 	}
 }
 
-// ensureCommandJournalTriggerKey 确保 command_journal 的 trigger_key 列和索引都存在。
+// ensureCommandJournalTriggerKey 确保 proc_command_journal 的 trigger_key 列和索引都存在。
 // 设计说明：
-// - 第六次迭代新增字段，用于关联 orchestrator_logs.idempotency_key
+// - 第六次迭代新增字段，用于关联 proc_orchestrator_logs.idempotency_key
 // - 旧库通过 ALTER TABLE 补齐，新库在基础 schema 中已包含
 // - 迁移必须幂等：列存在时也要补索引，避免老库只补了一半
 func ensureCommandJournalTriggerKey(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	cols, err := tableColumns(db, "command_journal")
+	cols, err := tableColumns(db, "proc_command_journal")
 	if err != nil {
-		return fmt.Errorf("inspect command_journal: %w", err)
+		return fmt.Errorf("inspect proc_command_journal: %w", err)
 	}
 	if _, ok := cols["trigger_key"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := db.Exec(`ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add trigger_key column: %w", err)
 		}
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`); err != nil {
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`); err != nil {
 		return fmt.Errorf("create trigger_key index: %w", err)
 	}
 	return nil
@@ -1292,49 +1291,49 @@ func ensureCommandJournalTriggerKey(db *sql.DB) error {
 
 // ensureGatewayEventAndCommandJournalConstraints 先清历史脏数据，再收紧两个表的数据库约束。
 // 设计说明：
-// - 先清 command_journal / gateway_events 历史脏数据，再补硬约束；
-// - command_journal.command_id 本身语义唯一，所以用 UNIQUE 承接 gateway_events 的 FK；
-// - 对于不能确认归属的旧 gateway_events，直接删除，不伪造关系；
-// - 如果历史 command_journal 里已经出现重复 command_id，直接停下并返回清理信息。
+// - 先清 proc_command_journal / proc_gateway_events 历史脏数据，再补硬约束；
+// - proc_command_journal.command_id 本身语义唯一，所以用 UNIQUE 承接 proc_gateway_events 的 FK；
+// - 对于不能确认归属的旧 proc_gateway_events，直接删除，不伪造关系；
+// - 如果历史 proc_command_journal 里已经出现重复 command_id，直接停下并返回清理信息。
 func ensureGatewayEventAndCommandJournalConstraints(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	dups, err := commandJournalDuplicateCommandIDs(db)
 	if err != nil {
-		return fmt.Errorf("audit command_journal duplicates: %w", err)
+		return fmt.Errorf("audit proc_command_journal duplicates: %w", err)
 	}
 	if len(dups) > 0 {
-		return fmt.Errorf("command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
+		return fmt.Errorf("proc_command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
 	}
 	if err := cleanupLegacyCommandJournalCommandIDRows(db); err != nil {
-		return fmt.Errorf("cleanup command_journal: %w", err)
+		return fmt.Errorf("cleanup proc_command_journal: %w", err)
 	}
 	if err := cleanupLegacyGatewayEventCommandIDRows(db); err != nil {
-		return fmt.Errorf("cleanup gateway_events: %w", err)
+		return fmt.Errorf("cleanup proc_gateway_events: %w", err)
 	}
 	if err := ensureCommandJournalCommandIDUnique(db); err != nil {
-		return fmt.Errorf("command_journal unique: %w", err)
+		return fmt.Errorf("proc_command_journal unique: %w", err)
 	}
 	if err := ensureGatewayEventsCommandIDForeignKey(db); err != nil {
-		return fmt.Errorf("gateway_events fk: %w", err)
+		return fmt.Errorf("proc_gateway_events fk: %w", err)
 	}
 	if err := ensureGatewayEventsIndexes(db); err != nil {
-		return fmt.Errorf("gateway_events index: %w", err)
+		return fmt.Errorf("proc_gateway_events index: %w", err)
 	}
 	return nil
 }
 
-// cleanupLegacyCommandJournalCommandIDRows 清掉历史上 command_journal 里不该留下的 command_id 空值。
+// cleanupLegacyCommandJournalCommandIDRows 清掉历史上 proc_command_journal 里不该留下的 command_id 空值。
 func cleanupLegacyCommandJournalCommandIDRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	_, err := db.Exec(`DELETE FROM command_journal WHERE trim(coalesce(command_id, '')) = ''`)
+	_, err := db.Exec(`DELETE FROM proc_command_journal WHERE trim(coalesce(command_id, '')) = ''`)
 	return err
 }
 
-// cleanupLegacyGatewayEventCommandIDRows 清掉 gateway_events 里无法进入硬约束阶段的历史脏数据。
+// cleanupLegacyGatewayEventCommandIDRows 清掉 proc_gateway_events 里无法进入硬约束阶段的历史脏数据。
 // 说明：
 // - command_id 为空的行直接删除；
 // - command_id 找不到父命令的行也直接删除；
@@ -1343,35 +1342,35 @@ func cleanupLegacyGatewayEventCommandIDRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	cols, err := tableColumns(db, "gateway_events")
+	cols, err := tableColumns(db, "proc_gateway_events")
 	if err != nil {
-		return fmt.Errorf("inspect gateway_events: %w", err)
+		return fmt.Errorf("inspect proc_gateway_events: %w", err)
 	}
 	if _, ok := cols["command_id"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE gateway_events ADD COLUMN command_id TEXT`); err != nil {
+		if _, err := db.Exec(`ALTER TABLE proc_gateway_events ADD COLUMN command_id TEXT`); err != nil {
 			return err
 		}
 	}
 	_, err = db.Exec(`
-		DELETE FROM gateway_events
+		DELETE FROM proc_gateway_events
 		WHERE trim(coalesce(command_id, '')) = ''
 		   OR NOT EXISTS(
 				SELECT 1
-				FROM command_journal
-				WHERE command_journal.command_id = gateway_events.command_id
+				FROM proc_command_journal
+				WHERE proc_command_journal.command_id = proc_gateway_events.command_id
 		   )
 	`)
 	return err
 }
 
-// commandJournalDuplicateCommandIDs 列出 command_journal 中重复的 command_id，供迁移前审计使用。
+// commandJournalDuplicateCommandIDs 列出 proc_command_journal 中重复的 command_id，供迁移前审计使用。
 func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
 	rows, err := db.Query(`
 		SELECT command_id, COUNT(1)
-		FROM command_journal
+		FROM proc_command_journal
 		WHERE trim(coalesce(command_id, '')) <> ''
 		GROUP BY command_id
 		HAVING COUNT(1) > 1
@@ -1397,7 +1396,7 @@ func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
 	return dups, nil
 }
 
-// ensureCommandJournalCommandIDUnique 把 command_journal.command_id 收紧成唯一键。
+// ensureCommandJournalCommandIDUnique 把 proc_command_journal.command_id 收紧成唯一键。
 // 设计说明：
 // - 先做重复审计，发现重复就直接返回，不硬上约束；
 // - 如果当前库还没有 UNIQUE，只在清理完成后重建表；
@@ -1406,9 +1405,9 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "command_journal", []string{"command_id"})
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "proc_command_journal", []string{"command_id"})
 	if err != nil {
-		return fmt.Errorf("inspect command_journal unique index: %w", err)
+		return fmt.Errorf("inspect proc_command_journal unique index: %w", err)
 	}
 	if hasUnique {
 		return ensureCommandJournalIndexes(db)
@@ -1419,7 +1418,7 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 		return err
 	}
 	if len(dups) > 0 {
-		return fmt.Errorf("command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
+		return fmt.Errorf("proc_command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
 	}
 
 	tx, err := db.Begin()
@@ -1433,15 +1432,15 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS command_journal_unique_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS proc_command_journal_unique_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE command_journal RENAME TO command_journal_unique_rebuild`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE proc_command_journal RENAME TO proc_command_journal_unique_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE command_journal(
+	if _, err := tx.Exec(`CREATE TABLE proc_command_journal(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		created_at_unix INTEGER NOT NULL,
 		command_id TEXT NOT NULL UNIQUE,
@@ -1464,15 +1463,15 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO command_journal(
+	if _, err := tx.Exec(`INSERT INTO proc_command_journal(
 		id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 	) SELECT
 		id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-	FROM command_journal_unique_rebuild ORDER BY id ASC`); err != nil {
+	FROM proc_command_journal_unique_rebuild ORDER BY id ASC`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE command_journal_unique_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE proc_command_journal_unique_rebuild`); err != nil {
 		rollback()
 		return err
 	}
@@ -1487,18 +1486,18 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 	return ensureCommandJournalIndexes(db)
 }
 
-// ensureGatewayEventsCommandIDForeignKey 让 gateway_events.command_id 变成 NOT NULL + 物理外键。
+// ensureGatewayEventsCommandIDForeignKey 让 proc_gateway_events.command_id 变成 NOT NULL + 物理外键。
 func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	notNull, err := tableColumnNotNull(db, "gateway_events", "command_id")
+	notNull, err := tableColumnNotNull(db, "proc_gateway_events", "command_id")
 	if err != nil {
-		return fmt.Errorf("inspect gateway_events command_id not null: %w", err)
+		return fmt.Errorf("inspect proc_gateway_events command_id not null: %w", err)
 	}
-	hasFK, err := tableHasForeignKey(db, "gateway_events", "command_id", "command_journal", "command_id")
+	hasFK, err := tableHasForeignKey(db, "proc_gateway_events", "command_id", "proc_command_journal", "command_id")
 	if err != nil {
-		return fmt.Errorf("inspect gateway_events foreign key: %w", err)
+		return fmt.Errorf("inspect proc_gateway_events foreign key: %w", err)
 	}
 	if notNull && hasFK {
 		return nil
@@ -1515,15 +1514,15 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS gateway_events_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS proc_gateway_events_fk_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE gateway_events RENAME TO gateway_events_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE proc_gateway_events RENAME TO proc_gateway_events_fk_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE gateway_events(
+	if _, err := tx.Exec(`CREATE TABLE proc_gateway_events(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		created_at_unix INTEGER NOT NULL,
 		gateway_pubkey_hex TEXT NOT NULL,
@@ -1534,27 +1533,27 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 		pool_id TEXT NOT NULL,
 		amount_satoshi INTEGER NOT NULL,
 		payload_json TEXT NOT NULL,
-		FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+		FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 	)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO gateway_events(
+	if _, err := tx.Exec(`INSERT INTO proc_gateway_events(
 		id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
 	) SELECT
 		id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
-	FROM gateway_events_fk_rebuild
+	FROM proc_gateway_events_fk_rebuild
 	WHERE trim(coalesce(command_id, '')) <> ''
 	  AND EXISTS(
 			SELECT 1
-			FROM command_journal
-			WHERE command_journal.command_id = gateway_events_fk_rebuild.command_id
+			FROM proc_command_journal
+			WHERE proc_command_journal.command_id = proc_gateway_events_fk_rebuild.command_id
 	  )
 	ORDER BY id ASC`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE gateway_events_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE proc_gateway_events_fk_rebuild`); err != nil {
 		rollback()
 		return err
 	}
@@ -1569,30 +1568,30 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 	return ensureGatewayEventsIndexes(db)
 }
 
-// ensureGatewayEventsIndexes 保证 gateway_events 的查询索引都还在。
+// ensureGatewayEventsIndexes 保证 proc_gateway_events 的查询索引都还在。
 func ensureGatewayEventsIndexes(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_gateway_events_created_at ON gateway_events(created_at_unix DESC)`); err != nil {
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_created_at ON proc_gateway_events(created_at_unix DESC)`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_gateway_events_cmd_id ON gateway_events(command_id)`); err != nil {
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_cmd_id ON proc_gateway_events(command_id)`); err != nil {
 		return err
 	}
 	return nil
 }
 
-// ensureCommandJournalIndexes 保证 command_journal 的查询索引都还在。
+// ensureCommandJournalIndexes 保证 proc_command_journal 的查询索引都还在。
 func ensureCommandJournalIndexes(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	stmts := []string{
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_created_at ON command_journal(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_cmd_id ON command_journal(command_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_gateway ON command_journal(gateway_pubkey_hex, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_command_journal_trigger_key ON command_journal(trigger_key, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_created_at ON proc_command_journal(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_cmd_id ON proc_command_journal(command_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_gateway ON proc_command_journal(gateway_pubkey_hex, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -1660,7 +1659,7 @@ func (r commandLinkedTableAuditReport) String() string {
 	return fmt.Sprintf("%s null=%d blank=%d orphan=%d", r.Table, r.NullCommandIDRows, r.BlankCommandIDRows, r.OrphanCommandIDRows)
 }
 
-// ensureCommandLinkedTableConstraints 把 domain_events / state_snapshots / effect_logs 收紧到同一命令口径。
+// ensureCommandLinkedTableConstraints 把 proc_domain_events / proc_state_snapshots / proc_effect_logs 收紧到同一命令口径。
 // 设计说明：
 // - 先审计，再清理，再重建；
 // - 空值、空白值、孤儿行都直接删，不补假命令；
@@ -1670,7 +1669,7 @@ func ensureCommandLinkedTableConstraints(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	for _, table := range []string{"domain_events", "state_snapshots", "effect_logs"} {
+	for _, table := range []string{"proc_domain_events", "proc_state_snapshots", "proc_effect_logs"} {
 		report, err := auditCommandLinkedTableRows(db, table)
 		if err != nil {
 			return fmt.Errorf("audit %s: %w", table, err)
@@ -1717,7 +1716,7 @@ func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAu
 			COALESCE(SUM(CASE WHEN command_id IS NULL THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN command_id IS NOT NULL AND trim(command_id) = '' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN command_id IS NOT NULL AND trim(command_id) <> '' AND NOT EXISTS(
-				SELECT 1 FROM command_journal WHERE command_journal.command_id = %s.command_id
+				SELECT 1 FROM proc_command_journal WHERE proc_command_journal.command_id = %s.command_id
 			) THEN 1 ELSE 0 END), 0)
 		FROM %s`,
 		report.Table, report.Table,
@@ -1728,19 +1727,19 @@ func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAu
 	return report, nil
 }
 
-// cleanupLegacyDomainEventCommandRows 删除 domain_events 里不该进入硬约束的旧行。
+// cleanupLegacyDomainEventCommandRows 删除 proc_domain_events 里不该进入硬约束的旧行。
 func cleanupLegacyDomainEventCommandRows(db *sql.DB) error {
-	return cleanupLegacyCommandLinkedRows(db, "domain_events")
+	return cleanupLegacyCommandLinkedRows(db, "proc_domain_events")
 }
 
-// cleanupLegacyStateSnapshotCommandRows 删除 state_snapshots 里不该进入硬约束的旧行。
+// cleanupLegacyStateSnapshotCommandRows 删除 proc_state_snapshots 里不该进入硬约束的旧行。
 func cleanupLegacyStateSnapshotCommandRows(db *sql.DB) error {
-	return cleanupLegacyCommandLinkedRows(db, "state_snapshots")
+	return cleanupLegacyCommandLinkedRows(db, "proc_state_snapshots")
 }
 
-// cleanupLegacyEffectLogCommandRows 删除 effect_logs 里不该进入硬约束的旧行。
+// cleanupLegacyEffectLogCommandRows 删除 proc_effect_logs 里不该进入硬约束的旧行。
 func cleanupLegacyEffectLogCommandRows(db *sql.DB) error {
-	return cleanupLegacyCommandLinkedRows(db, "effect_logs")
+	return cleanupLegacyCommandLinkedRows(db, "proc_effect_logs")
 }
 
 func cleanupLegacyCommandLinkedRows(db *sql.DB, table string) error {
@@ -1756,15 +1755,15 @@ func cleanupLegacyCommandLinkedRows(db *sql.DB, table string) error {
 		   OR trim(command_id) = ''
 		   OR NOT EXISTS(
 				SELECT 1
-				FROM command_journal
-				WHERE command_journal.command_id = %s.command_id
+				FROM proc_command_journal
+				WHERE proc_command_journal.command_id = %s.command_id
 		   )`, table, table))
 	return err
 }
 
 func isCommandLinkedTable(table string) bool {
 	switch strings.TrimSpace(table) {
-	case "domain_events", "state_snapshots", "effect_logs":
+	case "proc_domain_events", "proc_state_snapshots", "proc_effect_logs":
 		return true
 	default:
 		return false
@@ -1782,7 +1781,7 @@ func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect %s command_id not null: %w", table, err)
 	}
-	hasFK, err := tableHasForeignKey(db, table, "command_id", "command_journal", "command_id")
+	hasFK, err := tableHasForeignKey(db, table, "command_id", "proc_command_journal", "command_id")
 	if err != nil {
 		return false, fmt.Errorf("inspect %s foreign key: %w", table, err)
 	}
@@ -1858,9 +1857,9 @@ type commandLinkedTableRebuildSpec struct {
 
 func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) {
 	switch strings.TrimSpace(table) {
-	case "domain_events":
+	case "proc_domain_events":
 		return commandLinkedTableRebuildSpec{
-			CreateSQL: `CREATE TABLE domain_events(
+			CreateSQL: `CREATE TABLE proc_domain_events(
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -1869,10 +1868,10 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				state_before TEXT NOT NULL,
 				state_after TEXT NOT NULL,
 				payload_json TEXT NOT NULL,
-				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+				FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 			)`,
 			InsertSQL: func(oldTable string) string {
-				return fmt.Sprintf(`INSERT INTO domain_events(
+				return fmt.Sprintf(`INSERT INTO proc_domain_events(
 					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 				) SELECT
 					id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
@@ -1881,15 +1880,15 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				  AND trim(command_id) <> ''
 				  AND EXISTS(
 						SELECT 1
-						FROM command_journal
-						WHERE command_journal.command_id = %s.command_id
+						FROM proc_command_journal
+						WHERE proc_command_journal.command_id = %s.command_id
 				  )
 				ORDER BY id ASC`, oldTable, oldTable)
 			},
 		}, true
-	case "state_snapshots":
+	case "proc_state_snapshots":
 		return commandLinkedTableRebuildSpec{
-			CreateSQL: `CREATE TABLE state_snapshots(
+			CreateSQL: `CREATE TABLE proc_state_snapshots(
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -1900,10 +1899,10 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				pause_have_satoshi INTEGER NOT NULL,
 				last_error TEXT NOT NULL,
 				payload_json TEXT NOT NULL,
-				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+				FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 			)`,
 			InsertSQL: func(oldTable string) string {
-				return fmt.Sprintf(`INSERT INTO state_snapshots(
+				return fmt.Sprintf(`INSERT INTO proc_state_snapshots(
 					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 				) SELECT
 					id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
@@ -1912,15 +1911,15 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				  AND trim(command_id) <> ''
 				  AND EXISTS(
 						SELECT 1
-						FROM command_journal
-						WHERE command_journal.command_id = %s.command_id
+						FROM proc_command_journal
+						WHERE proc_command_journal.command_id = %s.command_id
 				  )
 				ORDER BY id ASC`, oldTable, oldTable)
 			},
 		}, true
-	case "effect_logs":
+	case "proc_effect_logs":
 		return commandLinkedTableRebuildSpec{
-			CreateSQL: `CREATE TABLE effect_logs(
+			CreateSQL: `CREATE TABLE proc_effect_logs(
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				created_at_unix INTEGER NOT NULL,
 				command_id TEXT NOT NULL CHECK(trim(command_id) <> ''),
@@ -1930,10 +1929,10 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				status TEXT NOT NULL,
 				error_message TEXT NOT NULL,
 				payload_json TEXT NOT NULL,
-				FOREIGN KEY(command_id) REFERENCES command_journal(command_id)
+				FOREIGN KEY(command_id) REFERENCES proc_command_journal(command_id)
 			)`,
 			InsertSQL: func(oldTable string) string {
-				return fmt.Sprintf(`INSERT INTO effect_logs(
+				return fmt.Sprintf(`INSERT INTO proc_effect_logs(
 					id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 				) SELECT
 					id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
@@ -1942,8 +1941,8 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 				  AND trim(command_id) <> ''
 				  AND EXISTS(
 						SELECT 1
-						FROM command_journal
-						WHERE command_journal.command_id = %s.command_id
+						FROM proc_command_journal
+						WHERE proc_command_journal.command_id = %s.command_id
 				  )
 				ORDER BY id ASC`, oldTable, oldTable)
 			},
@@ -1958,33 +1957,33 @@ func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
 		return fmt.Errorf("db is nil")
 	}
 	switch strings.TrimSpace(table) {
-	case "domain_events":
+	case "proc_domain_events":
 		stmts := []string{
-			`CREATE INDEX IF NOT EXISTS idx_domain_events_created_at ON domain_events(created_at_unix DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_domain_events_cmd_id ON domain_events(command_id, id DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_domain_events_gateway ON domain_events(gateway_pubkey_hex, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_created_at ON proc_domain_events(created_at_unix DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_cmd_id ON proc_domain_events(command_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_gateway ON proc_domain_events(gateway_pubkey_hex, id DESC)`,
 		}
 		for _, stmt := range stmts {
 			if _, err := db.Exec(stmt); err != nil {
 				return err
 			}
 		}
-	case "state_snapshots":
+	case "proc_state_snapshots":
 		stmts := []string{
-			`CREATE INDEX IF NOT EXISTS idx_state_snapshots_created_at ON state_snapshots(created_at_unix DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_state_snapshots_cmd_id ON state_snapshots(command_id, id DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_state_snapshots_gateway ON state_snapshots(gateway_pubkey_hex, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_created_at ON proc_state_snapshots(created_at_unix DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_cmd_id ON proc_state_snapshots(command_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_gateway ON proc_state_snapshots(gateway_pubkey_hex, id DESC)`,
 		}
 		for _, stmt := range stmts {
 			if _, err := db.Exec(stmt); err != nil {
 				return err
 			}
 		}
-	case "effect_logs":
+	case "proc_effect_logs":
 		stmts := []string{
-			`CREATE INDEX IF NOT EXISTS idx_effect_logs_created_at ON effect_logs(created_at_unix DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_effect_logs_cmd_id ON effect_logs(command_id, id DESC)`,
-			`CREATE INDEX IF NOT EXISTS idx_effect_logs_gateway ON effect_logs(gateway_pubkey_hex, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_created_at ON proc_effect_logs(created_at_unix DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_cmd_id ON proc_effect_logs(command_id, id DESC)`,
+			`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_gateway ON proc_effect_logs(gateway_pubkey_hex, id DESC)`,
 		}
 		for _, stmt := range stmts {
 			if _, err := db.Exec(stmt); err != nil {
@@ -2019,7 +2018,7 @@ func normalizeSQLWhitespace(in string) string {
 	return strings.NewReplacer(" ", "", "\n", "", "\t", "", "\r", "").Replace(strings.TrimSpace(in))
 }
 
-// ensurePoolAllocationsSchema 只处理 pool_allocations 的结构升级。
+// ensurePoolAllocationsSchema 只处理 fact_pool_allocations 的结构升级。
 // 设计说明：
 // - 只补 id 和唯一业务键，不碰写入、读取和其他财务表；
 // - 老库走重建表迁移，新库直接跳过；
@@ -2030,9 +2029,9 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 
-	cols, err := tableColumns(db, "pool_allocations")
+	cols, err := tableColumns(db, "fact_pool_allocations")
 	if err != nil {
-		return fmt.Errorf("inspect pool_allocations: %w", err)
+		return fmt.Errorf("inspect fact_pool_allocations: %w", err)
 	}
 	if _, ok := cols["id"]; ok {
 		return nil
@@ -2049,15 +2048,15 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS pool_allocations_new`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS fact_pool_allocations_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE pool_allocations RENAME TO pool_allocations_legacy`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE fact_pool_allocations RENAME TO fact_pool_allocations_legacy`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE pool_allocations_new(
+	if _, err := tx.Exec(`CREATE TABLE fact_pool_allocations_new(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		allocation_id TEXT NOT NULL,
 		pool_session_id TEXT NOT NULL,
@@ -2069,38 +2068,38 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		txid TEXT NOT NULL,
 		tx_hex TEXT NOT NULL,
 		created_at_unix INTEGER NOT NULL,
-		FOREIGN KEY(pool_session_id) REFERENCES pool_sessions(pool_session_id) ON DELETE CASCADE,
+		FOREIGN KEY(pool_session_id) REFERENCES fact_pool_sessions(pool_session_id) ON DELETE CASCADE,
 		UNIQUE(allocation_id)
 	)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO pool_allocations_new(
+	if _, err := tx.Exec(`INSERT INTO fact_pool_allocations_new(
 		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 	) SELECT
 		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-	FROM pool_allocations_legacy
+	FROM fact_pool_allocations_legacy
 	ORDER BY pool_session_id ASC, allocation_no ASC, allocation_id ASC`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE pool_allocations_legacy`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE fact_pool_allocations_legacy`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE pool_allocations_new RENAME TO pool_allocations`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE fact_pool_allocations_new RENAME TO fact_pool_allocations`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_pool_allocations_session_kind_seq ON pool_allocations(pool_session_id,allocation_kind,sequence_num)`); err != nil {
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_allocations_session_kind_seq ON fact_pool_allocations(pool_session_id,allocation_kind,sequence_num)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pool_allocations_session_no ON pool_allocations(pool_session_id,allocation_no DESC)`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_session_no ON fact_pool_allocations(pool_session_id,allocation_no DESC)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_pool_allocations_txid ON pool_allocations(txid)`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_txid ON fact_pool_allocations(txid)`); err != nil {
 		rollback()
 		return err
 	}
@@ -2113,15 +2112,15 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 
 // migrateLegacyDirectTransferPoolFacts 只把旧直连池快照回填成最小可信事实。
 // 设计说明：
-// - 只认 direct_transfer_pools；
-// - 只补 pool_sessions 和 open allocation；
+// - 只认 proc_direct_transfer_pools；
+// - 只补 fact_pool_sessions 和 open allocation；
 // - 不猜 pay/close 历史，避免把不完整快照伪装成完整事实链。
 func migrateLegacyDirectTransferPoolFacts(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 
-	exists, err := hasTable(db, "direct_transfer_pools")
+	exists, err := hasTable(db, "proc_direct_transfer_pools")
 	if err != nil {
 		return err
 	}
@@ -2139,7 +2138,7 @@ func migrateLegacyDirectTransferPoolFacts(db *sql.DB) error {
 	rows, err := tx.Query(`SELECT
 		session_id,seller_pubkey_hex,arbiter_pubkey_hex,pool_amount,spend_tx_fee,
 		base_txid,base_tx_hex,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-		FROM direct_transfer_pools`)
+		FROM proc_direct_transfer_pools`)
 	if err != nil {
 		rollback()
 		return err
@@ -2249,16 +2248,16 @@ func ensureFinAccountingSchema(db *sql.DB) error {
 		col   string
 		stmt  string
 	}{
-		{table: "fin_business", col: "business_role", stmt: `ALTER TABLE fin_business ADD COLUMN business_role TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_business", col: "source_type", stmt: `ALTER TABLE fin_business ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_business", col: "source_id", stmt: `ALTER TABLE fin_business ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_business", col: "accounting_scene", stmt: `ALTER TABLE fin_business ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_business", col: "accounting_subtype", stmt: `ALTER TABLE fin_business ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_process_events", col: "source_type", stmt: `ALTER TABLE fin_process_events ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_process_events", col: "source_id", stmt: `ALTER TABLE fin_process_events ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_process_events", col: "accounting_scene", stmt: `ALTER TABLE fin_process_events ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_process_events", col: "accounting_subtype", stmt: `ALTER TABLE fin_process_events ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
-		{table: "fin_tx_breakdown", col: "tx_role", stmt: `ALTER TABLE fin_tx_breakdown ADD COLUMN tx_role TEXT`},
+		{table: "settle_businesses", col: "business_role", stmt: `ALTER TABLE settle_businesses ADD COLUMN business_role TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_businesses", col: "source_type", stmt: `ALTER TABLE settle_businesses ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_businesses", col: "source_id", stmt: `ALTER TABLE settle_businesses ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_businesses", col: "accounting_scene", stmt: `ALTER TABLE settle_businesses ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_businesses", col: "accounting_subtype", stmt: `ALTER TABLE settle_businesses ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_process_events", col: "source_type", stmt: `ALTER TABLE settle_process_events ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_process_events", col: "source_id", stmt: `ALTER TABLE settle_process_events ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_process_events", col: "accounting_scene", stmt: `ALTER TABLE settle_process_events ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_process_events", col: "accounting_subtype", stmt: `ALTER TABLE settle_process_events ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_tx_breakdown", col: "tx_role", stmt: `ALTER TABLE settle_tx_breakdown ADD COLUMN tx_role TEXT`},
 	}
 
 	for _, m := range migrations {
@@ -2283,13 +2282,13 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	stmts := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_business_role ON fin_business(business_role, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_business_source ON fin_business(source_type, source_id, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_business_accounting ON fin_business(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_process_events_idempotency ON fin_process_events(idempotency_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_source ON fin_process_events(source_type, source_id, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_process_events_accounting ON fin_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_businesses_idempotency ON settle_businesses(idempotency_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_businesses_role ON settle_businesses(business_role, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_businesses_source ON settle_businesses(source_type, source_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_businesses_accounting ON settle_businesses(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_process_events_idempotency ON settle_process_events(idempotency_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_source ON settle_process_events(source_type, source_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_accounting ON settle_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -2309,8 +2308,8 @@ func normalizeClientDBData(db *sql.DB) error {
 	// SQLite 不支持 ALTER TABLE ADD CONSTRAINT，用触发器模拟 CHECK 约束
 	// 确保新插入/更新的 business_role 只能是 'formal' 或 'process'
 	if _, err := db.Exec(`
-		CREATE TRIGGER IF NOT EXISTS chk_fin_business_role_insert
-		BEFORE INSERT ON fin_business
+		CREATE TRIGGER IF NOT EXISTS chk_settle_businesses_role_insert
+		BEFORE INSERT ON settle_businesses
 		BEGIN
 			SELECT CASE
 				WHEN NEW.business_role NOT IN ('formal', 'process')
@@ -2321,8 +2320,8 @@ func normalizeClientDBData(db *sql.DB) error {
 		return fmt.Errorf("create business_role insert check trigger: %w", err)
 	}
 	if _, err := db.Exec(`
-		CREATE TRIGGER IF NOT EXISTS chk_fin_business_role_update
-		BEFORE UPDATE ON fin_business
+		CREATE TRIGGER IF NOT EXISTS chk_settle_businesses_role_update
+		BEFORE UPDATE ON settle_businesses
 		BEGIN
 			SELECT CASE
 				WHEN NEW.business_role NOT IN ('formal', 'process')
@@ -2348,9 +2347,9 @@ func normalizeClientDBData(db *sql.DB) error {
 		return fmt.Errorf("biz_utxo_links migration: %w", err)
 	}
 
-	// 4. fin_tx_breakdown 第二轮收口迁移
+	// 4. settle_tx_breakdown 第二轮收口迁移
 	if err := finalizeFinTxBreakdownAsPrimaryFact(db); err != nil {
-		return fmt.Errorf("finalize fin_tx_breakdown: %w", err)
+		return fmt.Errorf("finalize settle_tx_breakdown: %w", err)
 	}
 
 	// 5. 历史财务来源回填
@@ -2364,13 +2363,13 @@ func normalizeClientDBData(db *sql.DB) error {
 
 	// 6. 第五阶段：history business_role 回填
 	// 设计说明：
-	// - 把 fin_business 历史数据按 business_id 前缀补上 business_role
+	// - 把 settle_businesses 历史数据按 business_id 前缀补上 business_role
 	// - biz_download_pool_* -> formal
 	// - biz_c2c_open_* / biz_c2c_close_* -> process
 	// - 其他暂时保持空值
 	// - 这是过渡逻辑，新写入路径应显式写 business_role
 	if err := backfillFinBusinessRole(db); err != nil {
-		return fmt.Errorf("fin_business role backfill: %w", err)
+		return fmt.Errorf("settle_businesses role backfill: %w", err)
 	}
 
 	return nil
@@ -2382,25 +2381,25 @@ func ensureDemandQuoteCurrentSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	hasQuotes, err := hasTable(db, "demand_quotes")
+	hasQuotes, err := hasTable(db, "biz_demand_quotes")
 	if err != nil {
-		return fmt.Errorf("check demand_quotes table: %w", err)
+		return fmt.Errorf("check biz_demand_quotes table: %w", err)
 	}
-	hasArbiters, err := hasTable(db, "demand_quote_arbiters")
+	hasArbiters, err := hasTable(db, "biz_demand_quote_arbiters")
 	if err != nil {
-		return fmt.Errorf("check demand_quote_arbiters table: %w", err)
+		return fmt.Errorf("check biz_demand_quote_arbiters table: %w", err)
 	}
 	if !hasQuotes || !hasArbiters {
 		return nil
 	}
 
-	quotesNeedFK, err := demandQuoteTableMissingFK(db, "demand_quotes", "demand_id", "demands", "demand_id")
+	quotesNeedFK, err := demandQuoteTableMissingFK(db, "biz_demand_quotes", "demand_id", "biz_demands", "demand_id")
 	if err != nil {
-		return fmt.Errorf("inspect demand_quotes foreign keys: %w", err)
+		return fmt.Errorf("inspect biz_demand_quotes foreign keys: %w", err)
 	}
-	arbitersNeedFK, err := demandQuoteTableMissingFK(db, "demand_quote_arbiters", "quote_id", "demand_quotes", "id")
+	arbitersNeedFK, err := demandQuoteTableMissingFK(db, "biz_demand_quote_arbiters", "quote_id", "biz_demand_quotes", "id")
 	if err != nil {
-		return fmt.Errorf("inspect demand_quote_arbiters foreign keys: %w", err)
+		return fmt.Errorf("inspect biz_demand_quote_arbiters foreign keys: %w", err)
 	}
 	if !quotesNeedFK && !arbitersNeedFK {
 		return nil
@@ -2413,10 +2412,10 @@ func ensureDemandQuoteIndexes(db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	stmts := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_demand_quotes_demand_seller ON demand_quotes(demand_id, seller_pub_hex)`,
-		`CREATE INDEX IF NOT EXISTS idx_demand_quotes_demand_created ON demand_quotes(demand_id, created_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_demand_quote_arbiters_quote_arbiter ON demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
-		`CREATE INDEX IF NOT EXISTS idx_demand_quote_arbiters_arbiter ON demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quotes_demand_seller ON biz_demand_quotes(demand_id, seller_pub_hex)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quotes_demand_created ON biz_demand_quotes(demand_id, created_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quote_arbiters_quote_arbiter ON biz_demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quote_arbiters_arbiter ON biz_demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -2472,35 +2471,35 @@ func demandQuoteRejectOrphanRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if has, err := hasTable(db, "demand_quotes"); err != nil {
+	if has, err := hasTable(db, "biz_demand_quotes"); err != nil {
 		return err
 	} else if has {
 		var quoteID int64
 		var demandID string
-		err := db.QueryRow(`SELECT id,demand_id FROM demand_quotes
-			WHERE NOT EXISTS(SELECT 1 FROM demands WHERE demands.demand_id = demand_quotes.demand_id)
+		err := db.QueryRow(`SELECT id,demand_id FROM biz_demand_quotes
+			WHERE NOT EXISTS(SELECT 1 FROM biz_demands WHERE biz_demands.demand_id = biz_demand_quotes.demand_id)
 			ORDER BY id ASC LIMIT 1`).Scan(&quoteID, &demandID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if err == nil {
-			return fmt.Errorf("demand_quotes contains orphan row id=%d demand_id=%s", quoteID, strings.TrimSpace(demandID))
+			return fmt.Errorf("biz_demand_quotes contains orphan row id=%d demand_id=%s", quoteID, strings.TrimSpace(demandID))
 		}
 	}
-	if has, err := hasTable(db, "demand_quote_arbiters"); err != nil {
+	if has, err := hasTable(db, "biz_demand_quote_arbiters"); err != nil {
 		return err
 	} else if has {
 		var id int64
 		var quoteID int64
 		var arbiterPubHex string
-		err := db.QueryRow(`SELECT id,quote_id,arbiter_pub_hex FROM demand_quote_arbiters
-			WHERE NOT EXISTS(SELECT 1 FROM demand_quotes WHERE demand_quotes.id = demand_quote_arbiters.quote_id)
+		err := db.QueryRow(`SELECT id,quote_id,arbiter_pub_hex FROM biz_demand_quote_arbiters
+			WHERE NOT EXISTS(SELECT 1 FROM biz_demand_quotes WHERE biz_demand_quotes.id = biz_demand_quote_arbiters.quote_id)
 			ORDER BY id ASC LIMIT 1`).Scan(&id, &quoteID, &arbiterPubHex)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
 		if err == nil {
-			return fmt.Errorf("demand_quote_arbiters contains orphan row id=%d quote_id=%d arbiter_pub_hex=%s", id, quoteID, strings.TrimSpace(arbiterPubHex))
+			return fmt.Errorf("biz_demand_quote_arbiters contains orphan row id=%d quote_id=%d arbiter_pub_hex=%s", id, quoteID, strings.TrimSpace(arbiterPubHex))
 		}
 	}
 	return nil
@@ -2510,13 +2509,13 @@ func rebuildDemandQuotesTableTx(tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS demand_quotes_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_demand_quotes_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE demand_quotes RENAME TO demand_quotes_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_demand_quotes RENAME TO biz_demand_quotes_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE demand_quotes(
+	if _, err := tx.Exec(`CREATE TABLE biz_demand_quotes(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		demand_id TEXT NOT NULL,
 		seller_pub_hex TEXT NOT NULL,
@@ -2529,19 +2528,19 @@ func rebuildDemandQuotesTableTx(tx *sql.Tx) error {
 		available_chunk_bitmap_hex TEXT NOT NULL,
 		expires_at_unix INTEGER NOT NULL,
 		created_at_unix INTEGER NOT NULL,
-		FOREIGN KEY(demand_id) REFERENCES demands(demand_id) ON DELETE CASCADE,
+		FOREIGN KEY(demand_id) REFERENCES biz_demands(demand_id) ON DELETE CASCADE,
 		UNIQUE(demand_id, seller_pub_hex)
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO demand_quotes(
+	if _, err := tx.Exec(`INSERT INTO biz_demand_quotes(
 			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) SELECT
 			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-		FROM demand_quotes_fk_rebuild ORDER BY id ASC`); err != nil {
+		FROM biz_demand_quotes_fk_rebuild ORDER BY id ASC`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE demand_quotes_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE biz_demand_quotes_fk_rebuild`); err != nil {
 		return err
 	}
 	return nil
@@ -2551,29 +2550,29 @@ func rebuildDemandQuoteArbitersTableTx(tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS demand_quote_arbiters_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_demand_quote_arbiters_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE demand_quote_arbiters RENAME TO demand_quote_arbiters_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_demand_quote_arbiters RENAME TO biz_demand_quote_arbiters_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE demand_quote_arbiters(
+	if _, err := tx.Exec(`CREATE TABLE biz_demand_quote_arbiters(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		quote_id INTEGER NOT NULL,
 		arbiter_pub_hex TEXT NOT NULL,
-		FOREIGN KEY(quote_id) REFERENCES demand_quotes(id) ON DELETE CASCADE,
+		FOREIGN KEY(quote_id) REFERENCES biz_demand_quotes(id) ON DELETE CASCADE,
 		UNIQUE(quote_id, arbiter_pub_hex)
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO demand_quote_arbiters(
+	if _, err := tx.Exec(`INSERT INTO biz_demand_quote_arbiters(
 			id,quote_id,arbiter_pub_hex
 		) SELECT
 			id,quote_id,arbiter_pub_hex
-		FROM demand_quote_arbiters_fk_rebuild ORDER BY id ASC`); err != nil {
+		FROM biz_demand_quote_arbiters_fk_rebuild ORDER BY id ASC`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE demand_quote_arbiters_fk_rebuild`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE biz_demand_quote_arbiters_fk_rebuild`); err != nil {
 		return err
 	}
 	return nil
@@ -2677,13 +2676,13 @@ func ensureWorkspaceStorageSchema(db *sql.DB) error {
 
 func ensureWorkspaceStorageBaseTables(db *sql.DB) error {
 	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS workspaces(
+		`CREATE TABLE IF NOT EXISTS biz_workspaces(
 			workspace_path TEXT PRIMARY KEY,
 			enabled INTEGER NOT NULL,
 			max_bytes INTEGER NOT NULL,
 			created_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS seeds(
+		`CREATE TABLE IF NOT EXISTS biz_seeds(
 			seed_hash TEXT PRIMARY KEY,
 			chunk_count INTEGER NOT NULL,
 			file_size INTEGER NOT NULL,
@@ -2691,28 +2690,28 @@ func ensureWorkspaceStorageBaseTables(db *sql.DB) error {
 			recommended_file_name TEXT NOT NULL DEFAULT '',
 			mime_hint TEXT NOT NULL DEFAULT ''
 		)`,
-		`CREATE TABLE IF NOT EXISTS workspace_files(
+		`CREATE TABLE IF NOT EXISTS biz_workspace_files(
 			workspace_path TEXT NOT NULL,
 			file_path TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
 			seed_locked INTEGER NOT NULL DEFAULT 0,
 			PRIMARY KEY(workspace_path,file_path),
-			FOREIGN KEY(workspace_path) REFERENCES workspaces(workspace_path) ON DELETE CASCADE,
-			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+			FOREIGN KEY(workspace_path) REFERENCES biz_workspaces(workspace_path) ON DELETE CASCADE,
+			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
 		)`,
-		`CREATE TABLE IF NOT EXISTS seed_chunk_supply(
+		`CREATE TABLE IF NOT EXISTS biz_seed_chunk_supply(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			PRIMARY KEY(seed_hash,chunk_index),
-			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
 		)`,
-		`CREATE TABLE IF NOT EXISTS seed_pricing_policy(
+		`CREATE TABLE IF NOT EXISTS biz_seed_pricing_policy(
 			seed_hash TEXT PRIMARY KEY,
 			floor_unit_price_sat_per_64k INTEGER NOT NULL,
 			resale_discount_bps INTEGER NOT NULL,
 			pricing_source TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(seed_hash) REFERENCES seeds(seed_hash) ON DELETE CASCADE
+			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
 		)`,
 	}
 	for _, stmt := range stmts {
@@ -2730,7 +2729,7 @@ func legacyWorkspaceStoragePresent(db *sql.DB) (bool, bool, bool, bool, bool, er
 	legacySupply := false
 	legacyPolicy := false
 
-	if cols, err := tableColumns(db, "workspaces"); err != nil {
+	if cols, err := tableColumns(db, "biz_workspaces"); err != nil {
 		return false, false, false, false, false, err
 	} else if len(cols) > 0 {
 		if _, ok := cols["id"]; ok {
@@ -2743,7 +2742,7 @@ func legacyWorkspaceStoragePresent(db *sql.DB) (bool, bool, bool, bool, bool, er
 			legacyWorkspaces = true
 		}
 	}
-	if cols, err := tableColumns(db, "workspace_files"); err != nil {
+	if cols, err := tableColumns(db, "biz_workspace_files"); err != nil {
 		return false, false, false, false, false, err
 	} else if len(cols) > 0 {
 		if _, ok := cols["path"]; ok {
@@ -2759,7 +2758,7 @@ func legacyWorkspaceStoragePresent(db *sql.DB) (bool, bool, bool, bool, bool, er
 			legacyFiles = true
 		}
 	}
-	if cols, err := tableColumns(db, "seeds"); err != nil {
+	if cols, err := tableColumns(db, "biz_seeds"); err != nil {
 		return false, false, false, false, false, err
 	} else if len(cols) > 0 {
 		if _, ok := cols["created_at_unix"]; ok {
@@ -2796,27 +2795,27 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspaces_new`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspaces_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspace_files_new`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspace_files_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seeds_new`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seeds_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_chunk_supply_new`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_chunk_supply_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_pricing_policy_new`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_pricing_policy_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE workspaces_new(
+	if _, err := tx.Exec(`CREATE TABLE biz_workspaces_new(
 			workspace_path TEXT PRIMARY KEY,
 			enabled INTEGER NOT NULL,
 			max_bytes INTEGER NOT NULL,
@@ -2825,7 +2824,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE workspace_files_new(
+	if _, err := tx.Exec(`CREATE TABLE biz_workspace_files_new(
 			workspace_path TEXT NOT NULL,
 			file_path TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
@@ -2835,7 +2834,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE seeds_new(
+	if _, err := tx.Exec(`CREATE TABLE biz_seeds_new(
 			seed_hash TEXT PRIMARY KEY,
 			chunk_count INTEGER NOT NULL,
 			file_size INTEGER NOT NULL,
@@ -2846,7 +2845,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE seed_chunk_supply_new(
+	if _, err := tx.Exec(`CREATE TABLE biz_seed_chunk_supply_new(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			PRIMARY KEY(seed_hash,chunk_index)
@@ -2854,7 +2853,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE seed_pricing_policy_new(
+	if _, err := tx.Exec(`CREATE TABLE biz_seed_pricing_policy_new(
 			seed_hash TEXT PRIMARY KEY,
 			floor_unit_price_sat_per_64k INTEGER NOT NULL,
 			resale_discount_bps INTEGER NOT NULL,
@@ -2884,23 +2883,23 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspace_files`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspace_files`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS workspaces`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspaces`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seeds`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seeds`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_chunk_supply`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_chunk_supply`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_pricing_policy`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_pricing_policy`); err != nil {
 		rollback()
 		return err
 	}
@@ -2916,23 +2915,23 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE workspaces_new RENAME TO workspaces`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_workspaces_new RENAME TO biz_workspaces`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE workspace_files_new RENAME TO workspace_files`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_workspace_files_new RENAME TO biz_workspace_files`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE seeds_new RENAME TO seeds`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_seeds_new RENAME TO biz_seeds`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE seed_chunk_supply_new RENAME TO seed_chunk_supply`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_seed_chunk_supply_new RENAME TO biz_seed_chunk_supply`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE seed_pricing_policy_new RENAME TO seed_pricing_policy`); err != nil {
+	if _, err := tx.Exec(`ALTER TABLE biz_seed_pricing_policy_new RENAME TO biz_seed_pricing_policy`); err != nil {
 		rollback()
 		return err
 	}
@@ -2948,7 +2947,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 }
 
 func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "workspaces")
+	cols, err := tableColumnsTx(tx, "biz_workspaces")
 	if err != nil {
 		return err
 	}
@@ -2956,10 +2955,10 @@ func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
 		return nil
 	}
 	if _, ok := cols["workspace_path"]; ok && !containsAny(cols, "id", "path", "updated_at_unix") {
-		_, err = tx.Exec(`INSERT OR IGNORE INTO workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) SELECT workspace_path,enabled,max_bytes,created_at_unix FROM workspaces`)
+		_, err = tx.Exec(`INSERT OR IGNORE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) SELECT workspace_path,enabled,max_bytes,created_at_unix FROM biz_workspaces`)
 		return err
 	}
-	rows, err := tx.Query(`SELECT path,max_bytes,enabled,created_at_unix FROM workspaces`)
+	rows, err := tx.Query(`SELECT path,max_bytes,enabled,created_at_unix FROM biz_workspaces`)
 	if err != nil {
 		return err
 	}
@@ -2979,7 +2978,7 @@ func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
 		if created <= 0 {
 			created = 1
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, abs, enabled, maxBytes, created); err != nil {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, abs, enabled, maxBytes, created); err != nil {
 			return err
 		}
 	}
@@ -2987,7 +2986,7 @@ func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
 }
 
 func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "workspace_files")
+	cols, err := tableColumnsTx(tx, "biz_workspace_files")
 	if err != nil {
 		return err
 	}
@@ -2996,11 +2995,11 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 	}
 	if _, ok := cols["workspace_path"]; ok {
 		if _, ok2 := cols["file_path"]; ok2 && !containsAny(cols, "path", "file_size", "mtime_unix", "updated_at_unix") {
-			_, err = tx.Exec(`INSERT OR IGNORE INTO workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) SELECT workspace_path,file_path,lower(trim(seed_hash)),COALESCE(seed_locked,0) FROM workspace_files`)
+			_, err = tx.Exec(`INSERT OR IGNORE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) SELECT workspace_path,file_path,lower(trim(seed_hash)),COALESCE(seed_locked,0) FROM biz_workspace_files`)
 			return err
 		}
 	}
-	rows, err := tx.Query(`SELECT path,seed_hash,COALESCE(seed_locked,0) FROM workspace_files`)
+	rows, err := tx.Query(`SELECT path,seed_hash,COALESCE(seed_locked,0) FROM biz_workspace_files`)
 	if err != nil {
 		return err
 	}
@@ -3019,7 +3018,7 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 		if !ok {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, resolved.WorkspacePath, resolved.FilePath, normalizeSeedHashHex(seedHash), locked); err != nil {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, resolved.WorkspacePath, resolved.FilePath, normalizeSeedHashHex(seedHash), locked); err != nil {
 			return err
 		}
 	}
@@ -3027,14 +3026,14 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 }
 
 func migrateSeedRowsLegacy(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "seeds")
+	cols, err := tableColumnsTx(tx, "biz_seeds")
 	if err != nil {
 		return err
 	}
 	if len(cols) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(`SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint FROM seeds`)
+	rows, err := tx.Query(`SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint FROM biz_seeds`)
 	if err != nil {
 		return err
 	}
@@ -3057,7 +3056,7 @@ func migrateSeedRowsLegacy(tx *sql.Tx) error {
 		if fileSize < 0 {
 			fileSize = 0
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO seeds_new(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, chunkCount, fileSize, strings.TrimSpace(seedPath), sanitizeRecommendedFileName(recommendedName), sanitizeMIMEHint(mimeHint)); err != nil {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seeds_new(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, chunkCount, fileSize, strings.TrimSpace(seedPath), sanitizeRecommendedFileName(recommendedName), sanitizeMIMEHint(mimeHint)); err != nil {
 			return err
 		}
 	}
@@ -3069,11 +3068,11 @@ func migrateSeedRowsLegacy(tx *sql.Tx) error {
 // - 某个 seed 在旧表里没有记录，就迁空；
 // - 只有旧库没有 seed_available_chunks 时，才按 chunk_count 补全。
 func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
-	if _, err := tx.Exec(`DELETE FROM seed_chunk_supply_new`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_chunk_supply_new`); err != nil {
 		return err
 	}
 	haveLegacySupply := hasTableValue(tx, "seed_available_chunks")
-	rows, err := tx.Query(`SELECT seed_hash,chunk_count FROM seeds_new`)
+	rows, err := tx.Query(`SELECT seed_hash,chunk_count FROM biz_seeds_new`)
 	if err != nil {
 		return err
 	}
@@ -3102,7 +3101,7 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 				if idx < 0 {
 					continue
 				}
-				if _, err := tx.Exec(`INSERT OR REPLACE INTO seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, uint32(idx)); err != nil {
+				if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, uint32(idx)); err != nil {
 					_ = supplyRows.Close()
 					return err
 				}
@@ -3118,7 +3117,7 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 			chunkCount = 0
 		}
 		for _, idx := range contiguousChunkIndexes(uint32(chunkCount)) {
-			if _, err := tx.Exec(`INSERT OR REPLACE INTO seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
+			if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
 				return err
 			}
 		}
@@ -3127,14 +3126,14 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 }
 
 func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
-	if _, err := tx.Exec(`DELETE FROM seed_pricing_policy_new`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_pricing_policy_new`); err != nil {
 		return err
 	}
 	if !hasTableValue(tx, "seed_price_state") {
 		return nil
 	}
 	now := time.Now().Unix()
-	seedRows, err := tx.Query(`SELECT seed_hash FROM seeds_new`)
+	seedRows, err := tx.Query(`SELECT seed_hash FROM biz_seeds_new`)
 	if err != nil {
 		return err
 	}
@@ -3175,7 +3174,7 @@ func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
 		if resale > 10000 {
 			resale = 10000
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO seed_pricing_policy_new(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, seedHash, floor, resale, source, now); err != nil {
+		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seed_pricing_policy_new(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, seedHash, floor, resale, source, now); err != nil {
 			return err
 		}
 	}
@@ -3183,7 +3182,7 @@ func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
 }
 
 func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
-	rows, err := tx.Query(`SELECT workspace_path FROM workspaces`)
+	rows, err := tx.Query(`SELECT workspace_path FROM biz_workspaces`)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -3202,7 +3201,7 @@ func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
 		}
 	}
 	if len(out) == 0 {
-		rows, err = tx.Query(`SELECT path FROM workspaces`)
+		rows, err = tx.Query(`SELECT path FROM biz_workspaces`)
 		if err != nil {
 			return nil, err
 		}
@@ -3257,9 +3256,9 @@ func hasTableValue(tx *sql.Tx, table string) bool {
 	return err == nil
 }
 
-// ensureFileDownloadsSchema 处理 file_downloads 表的历史列迁移
+// ensureFileDownloadsSchema 处理 proc_file_downloads 表的历史列迁移
 func ensureFileDownloadsSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(file_downloads)`)
+	rows, err := db.Query(`PRAGMA table_info(proc_file_downloads)`)
 	if err != nil {
 		return err
 	}
@@ -3285,13 +3284,13 @@ func ensureFileDownloadsSchema(db *sql.DB) error {
 	if hasStatusJSON {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
+	_, err = db.Exec(`ALTER TABLE proc_file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
 	return err
 }
 
-// ensureLiveFollowsSchema 处理 live_follows 表的历史列迁移
+// ensureLiveFollowsSchema 处理 proc_live_follows 表的历史列迁移
 func ensureLiveFollowsSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(live_follows)`)
+	rows, err := db.Query(`PRAGMA table_info(proc_live_follows)`)
 	if err != nil {
 		return err
 	}
@@ -3317,7 +3316,7 @@ func ensureLiveFollowsSchema(db *sql.DB) error {
 	if hasLastQuoteSellerPubKey {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE live_follows ADD COLUMN last_quote_seller_pubkey_hex TEXT NOT NULL DEFAULT ''`)
+	_, err = db.Exec(`ALTER TABLE proc_live_follows ADD COLUMN last_quote_seller_pubkey_hex TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -3333,7 +3332,7 @@ func migrateLegacyChainTables(db *sql.DB) error {
 	}
 	if exists {
 		if _, err := db.Exec(
-			`INSERT OR REPLACE INTO chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
+			`INSERT OR REPLACE INTO proc_chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
 			 SELECT id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms
 			 FROM chain_tip_snapshot`,
 		); err != nil {
@@ -3367,19 +3366,19 @@ func finalizeFinTxBreakdownAsPrimaryFact(db *sql.DB) error {
 
 	finalized, err := isFinTxBreakdownFinalized(db)
 	if err != nil {
-		return fmt.Errorf("inspect fin_tx_breakdown final state: %w", err)
+		return fmt.Errorf("inspect settle_tx_breakdown final state: %w", err)
 	}
 	if finalized {
-		obs.Important("bitcast-client", "fin_tx_breakdown_finalized", map[string]any{
+		obs.Important("bitcast-client", "settle_tx_breakdown_finalized", map[string]any{
 			"skipped": true,
 			"reason":  "already finalized",
 		})
 		return nil
 	}
 
-	hasOldTable, err := hasTable(db, "fin_business_txs")
+	hasOldTable, err := hasTable(db, "settle_business_txs")
 	if err != nil {
-		return fmt.Errorf("check fin_business_txs table: %w", err)
+		return fmt.Errorf("check settle_business_txs table: %w", err)
 	}
 
 	// 1. 若旧表存在则回填 tx_role
@@ -3401,12 +3400,12 @@ func finalizeFinTxBreakdownAsPrimaryFact(db *sql.DB) error {
 
 	// 4. 删除旧表
 	if hasOldTable {
-		if _, err := db.Exec(`DROP TABLE IF EXISTS fin_business_txs`); err != nil {
-			return fmt.Errorf("drop fin_business_txs: %w", err)
+		if _, err := db.Exec(`DROP TABLE IF EXISTS settle_business_txs`); err != nil {
+			return fmt.Errorf("drop settle_business_txs: %w", err)
 		}
 	}
 
-	obs.Important("bitcast-client", "fin_tx_breakdown_finalized", map[string]any{
+	obs.Important("bitcast-client", "settle_tx_breakdown_finalized", map[string]any{
 		"skipped": false,
 		"reason":  "rebuild completed",
 	})
@@ -3416,19 +3415,19 @@ func finalizeFinTxBreakdownAsPrimaryFact(db *sql.DB) error {
 // backfillFinTxBreakdownTxRoleFromOldTable 从旧表回填 tx_role
 func backfillFinTxBreakdownTxRoleFromOldTable(db *sql.DB) error {
 	if _, err := db.Exec(`
-		UPDATE fin_tx_breakdown
+		UPDATE settle_tx_breakdown
 		   SET tx_role = (
 			   SELECT bt.tx_role
-			     FROM fin_business_txs bt
-			    WHERE bt.business_id = fin_tx_breakdown.business_id
-			      AND bt.txid = fin_tx_breakdown.txid
+			     FROM settle_business_txs bt
+			    WHERE bt.business_id = settle_tx_breakdown.business_id
+			      AND bt.txid = settle_tx_breakdown.txid
 			    LIMIT 1
 		   )
 		 WHERE tx_role IS NULL
 		   AND EXISTS (
-			   SELECT 1 FROM fin_business_txs bt
-			    WHERE bt.business_id = fin_tx_breakdown.business_id
-			      AND bt.txid = fin_tx_breakdown.txid
+			   SELECT 1 FROM settle_business_txs bt
+			    WHERE bt.business_id = settle_tx_breakdown.business_id
+			      AND bt.txid = settle_tx_breakdown.txid
 		   )
 	`); err != nil {
 		return err
@@ -3444,9 +3443,9 @@ func validateFinTxBreakdownDebts(db *sql.DB, hasOldTable bool) error {
 	if hasOldTable {
 		var missingCount int
 		if err := db.QueryRow(`
-			SELECT COUNT(1) FROM fin_business_txs bt
+			SELECT COUNT(1) FROM settle_business_txs bt
 			 WHERE NOT EXISTS (
-				   SELECT 1 FROM fin_tx_breakdown b
+				   SELECT 1 FROM settle_tx_breakdown b
 				    WHERE b.business_id = bt.business_id
 				      AND b.txid = bt.txid
 			   )`).Scan(&missingCount); err != nil {
@@ -3458,7 +3457,7 @@ func validateFinTxBreakdownDebts(db *sql.DB, hasOldTable bool) error {
 	}
 
 	// 2. null_tx_role：能推断就补，推断不出就失败
-	nullRows, err := db.Query(`SELECT business_id, txid FROM fin_tx_breakdown WHERE tx_role IS NULL`)
+	nullRows, err := db.Query(`SELECT business_id, txid FROM settle_tx_breakdown WHERE tx_role IS NULL`)
 	if err != nil {
 		return fmt.Errorf("query null tx_role: %w", err)
 	}
@@ -3472,7 +3471,7 @@ func validateFinTxBreakdownDebts(db *sql.DB, hasOldTable bool) error {
 		if err != nil {
 			return err
 		}
-		if _, err := db.Exec(`UPDATE fin_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, inferredRole, bid, txid); err != nil {
+		if _, err := db.Exec(`UPDATE settle_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, inferredRole, bid, txid); err != nil {
 			return err
 		}
 	}
@@ -3483,16 +3482,16 @@ func validateFinTxBreakdownDebts(db *sql.DB, hasOldTable bool) error {
 	return nil
 }
 
-// rebuildFinTxBreakdownWithConstraints 重建 fin_tx_breakdown 为强约束版
+// rebuildFinTxBreakdownWithConstraints 重建 settle_tx_breakdown 为强约束版
 func rebuildFinTxBreakdownWithConstraints(db *sql.DB) error {
 	// 0. 先清掉可能残留的中间表，避免上次失败留下脏壳影响本次收口
-	if _, err := db.Exec(`DROP TABLE IF EXISTS fin_tx_breakdown_new`); err != nil {
-		return fmt.Errorf("drop stale fin_tx_breakdown_new: %w", err)
+	if _, err := db.Exec(`DROP TABLE IF EXISTS settle_tx_breakdown_new`); err != nil {
+		return fmt.Errorf("drop stale settle_tx_breakdown_new: %w", err)
 	}
 
 	// 1. 创建新表（带 NOT NULL 和 UNIQUE）
 	if _, err := db.Exec(`
-		CREATE TABLE IF NOT EXISTS fin_tx_breakdown_new(
+		CREATE TABLE IF NOT EXISTS settle_tx_breakdown_new(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			business_id TEXT NOT NULL,
 			txid TEXT NOT NULL,
@@ -3509,35 +3508,35 @@ func rebuildFinTxBreakdownWithConstraints(db *sql.DB) error {
 			payload_json TEXT NOT NULL,
 			UNIQUE(business_id, txid)
 		)`); err != nil {
-		return fmt.Errorf("create fin_tx_breakdown_new: %w", err)
+		return fmt.Errorf("create settle_tx_breakdown_new: %w", err)
 	}
 
 	// 2. 复制数据（让 UNIQUE 约束自然拒绝重复）
 	if _, err := db.Exec(`
-		INSERT INTO fin_tx_breakdown_new(business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json)
+		INSERT INTO settle_tx_breakdown_new(business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json)
 		SELECT business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
-		  FROM fin_tx_breakdown
+		  FROM settle_tx_breakdown
 		 WHERE tx_role IS NOT NULL`); err != nil {
-		return fmt.Errorf("copy to fin_tx_breakdown_new: %w", err)
+		return fmt.Errorf("copy to settle_tx_breakdown_new: %w", err)
 	}
 
 	// 3. 替换旧表
-	if _, err := db.Exec(`DROP TABLE fin_tx_breakdown`); err != nil {
-		return fmt.Errorf("drop old fin_tx_breakdown: %w", err)
+	if _, err := db.Exec(`DROP TABLE settle_tx_breakdown`); err != nil {
+		return fmt.Errorf("drop old settle_tx_breakdown: %w", err)
 	}
-	if _, err := db.Exec(`ALTER TABLE fin_tx_breakdown_new RENAME TO fin_tx_breakdown`); err != nil {
-		return fmt.Errorf("rename fin_tx_breakdown_new: %w", err)
+	if _, err := db.Exec(`ALTER TABLE settle_tx_breakdown_new RENAME TO settle_tx_breakdown`); err != nil {
+		return fmt.Errorf("rename settle_tx_breakdown_new: %w", err)
 	}
 
 	// 4. 立即补回读写所需的索引，保证这里本身就是闭环
 	indexStmts := []string{
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business ON fin_tx_breakdown(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_txid ON fin_tx_breakdown(txid, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fin_tx_breakdown_business_txid ON fin_tx_breakdown(business_id, txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business ON settle_tx_breakdown(business_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_txid ON settle_tx_breakdown(txid, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
 	}
 	for _, stmt := range indexStmts {
 		if _, err := db.Exec(stmt); err != nil {
-			return fmt.Errorf("create fin_tx_breakdown index: %w", err)
+			return fmt.Errorf("create settle_tx_breakdown index: %w", err)
 		}
 	}
 
@@ -3807,17 +3806,17 @@ func normalizeClientPubKeyColumns(db *sql.DB) error {
 		column     string
 		allowEmpty bool
 	}{
-		{table: "direct_deals", column: "buyer_pubkey_hex"},
-		{table: "direct_deals", column: "seller_pubkey_hex"},
-		{table: "direct_transfer_pools", column: "buyer_pubkey_hex"},
-		{table: "direct_transfer_pools", column: "seller_pubkey_hex"},
-		{table: "pool_sessions", column: "counterparty_pubkey_hex", allowEmpty: true},
-		{table: "pool_sessions", column: "seller_pubkey_hex", allowEmpty: true},
-		{table: "pool_sessions", column: "arbiter_pubkey_hex", allowEmpty: true},
-		{table: "pool_sessions", column: "gateway_pubkey_hex", allowEmpty: true},
-		{table: "live_quotes", column: "seller_pubkey_hex"},
-		{table: "live_follows", column: "last_quote_seller_pubkey_hex", allowEmpty: true},
-		{table: "file_download_chunks", column: "seller_pubkey_hex", allowEmpty: true},
+		{table: "proc_direct_deals", column: "buyer_pubkey_hex"},
+		{table: "proc_direct_deals", column: "seller_pubkey_hex"},
+		{table: "proc_direct_transfer_pools", column: "buyer_pubkey_hex"},
+		{table: "proc_direct_transfer_pools", column: "seller_pubkey_hex"},
+		{table: "fact_pool_sessions", column: "counterparty_pubkey_hex", allowEmpty: true},
+		{table: "fact_pool_sessions", column: "seller_pubkey_hex", allowEmpty: true},
+		{table: "fact_pool_sessions", column: "arbiter_pubkey_hex", allowEmpty: true},
+		{table: "fact_pool_sessions", column: "gateway_pubkey_hex", allowEmpty: true},
+		{table: "biz_live_quotes", column: "seller_pubkey_hex"},
+		{table: "proc_live_follows", column: "last_quote_seller_pubkey_hex", allowEmpty: true},
+		{table: "proc_file_download_chunks", column: "seller_pubkey_hex", allowEmpty: true},
 	}
 
 	for _, t := range targets {
@@ -3889,9 +3888,9 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	}
 
 	// 第六次迭代：检查旧字段是否存在，不存在则跳过（全新数据库无旧数据需要清理）
-	cols, err := tableColumns(db, "fin_business")
+	cols, err := tableColumns(db, "settle_businesses")
 	if err != nil {
-		return fmt.Errorf("inspect fin_business columns: %w", err)
+		return fmt.Errorf("inspect settle_businesses columns: %w", err)
 	}
 	if _, hasOldSceneType := cols["scene_type"]; !hasOldSceneType {
 		// 全新数据库，无旧字段，无需清理
@@ -3901,7 +3900,7 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	// 设计说明：
 	// - sqliteactor 把运行时压成单连接后，事务期间不能再回头走库级 Query；
 	// - 这里先在事务外判断旧表是否存在，避免同一函数里"持有 tx 又重新借 db"把自己堵死。
-	legacyExists, legacyErr := hasTable(db, "biz_utxo_links")
+	legacyExists, legacyErr := hasTable(db, "settle_biz_utxo_links")
 	if legacyErr != nil {
 		return legacyErr
 	}
@@ -3917,18 +3916,18 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	}()
 
 	if _, err = tx.Exec(
-		`DELETE FROM fin_tx_breakdown
+		`DELETE FROM settle_tx_breakdown
 		 WHERE business_id IN (
-			 SELECT business_id FROM fin_business
+			 SELECT business_id FROM settle_businesses
 			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
 		 )`,
 	); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(
-		`DELETE FROM fin_tx_utxo_links
+		`DELETE FROM settle_tx_utxo_links
 		 WHERE business_id IN (
-			 SELECT business_id FROM fin_business
+			 SELECT business_id FROM settle_businesses
 			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
 		 )`,
 	); err != nil {
@@ -3937,16 +3936,16 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑
 	if legacyExists {
 		if _, err = tx.Exec(
-			`DELETE FROM biz_utxo_links
+			`DELETE FROM settle_biz_utxo_links
 			 WHERE business_id IN (
-				 SELECT business_id FROM fin_business
+				 SELECT business_id FROM settle_businesses
 				 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
 			 )`,
 		); err != nil {
 			return err
 		}
 	}
-	if _, err = tx.Exec(`DELETE FROM fin_business WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
+	if _, err = tx.Exec(`DELETE FROM settle_businesses WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
 		return err
 	}
 
@@ -3954,13 +3953,13 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	return err
 }
 
-// migrateLegacyBizUTXOLinks 迁移旧版 biz_utxo_links 表数据到新版结构
+// migrateLegacyBizUTXOLinks 迁移旧版settle_biz_utxo_links 表数据到新版结构
 func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 
-	exists, err := hasTable(db, "biz_utxo_links")
+	exists, err := hasTable(db, "settle_biz_utxo_links")
 	if err != nil {
 		return err
 	}
@@ -3971,8 +3970,8 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 	rows, err := db.Query(
 		`SELECT l.business_id,l.txid,l.utxo_id,l.role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json,
 		        COALESCE(b.scene_type,''),COALESCE(b.scene_subtype,'')
-		   FROM biz_utxo_links l
-		   LEFT JOIN fin_business b ON b.business_id=l.business_id
+		   FROM settle_biz_utxo_links l
+		   LEFT JOIN settle_businesses b ON b.business_id=l.business_id
 		   ORDER BY l.id ASC`,
 	)
 	if err != nil {
@@ -3995,9 +3994,9 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 			return err
 		}
 		txRole, ioSide, utxoRole := mapLegacyBizUTXORole(sceneType, sceneSubtype, role)
-		// 第二轮：只写 fin_tx_utxo_links，必须先有 fin_tx_breakdown 存在
+		// 第二轮：只写 settle_tx_utxo_links，必须先有 settle_tx_breakdown 存在
 		// 尝试更新已存在的 breakdown 角色，若不存在则失败
-		result, err := db.Exec(`UPDATE fin_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, txRole, businessID, txid)
+		result, err := db.Exec(`UPDATE settle_tx_breakdown SET tx_role=? WHERE business_id=? AND txid=?`, txRole, businessID, txid)
 		if err != nil {
 			return err
 		}
@@ -4007,7 +4006,7 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 		}
 		if affected == 0 {
 			// legacy 迁移不允许补空壳，必须先有真实 breakdown
-			return fmt.Errorf("cannot migrate legacy utxo for (%s,%s): fin_tx_breakdown not found", businessID, txid)
+			return fmt.Errorf("cannot migrate legacy utxo for (%s,%s): settle_tx_breakdown not found", businessID, txid)
 		}
 		if err := dbAppendFinTxUTXOLinkIfAbsent(db, finTxUTXOLinkEntry{
 			BusinessID:    businessID,
@@ -4026,7 +4025,7 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`DROP TABLE IF EXISTS biz_utxo_links`); err != nil {
+	if _, err := db.Exec(`DROP TABLE IF EXISTS settle_biz_utxo_links`); err != nil {
 		return err
 	}
 	if _, err := db.Exec(`DROP INDEX IF EXISTS idx_biz_utxo_links_business`); err != nil {
@@ -4038,7 +4037,7 @@ func migrateLegacyBizUTXOLinks(db *sql.DB) error {
 	return nil
 }
 
-// mapLegacyBizUTXORole 映射旧版 biz_utxo_links 角色到新结构
+// mapLegacyBizUTXORole 映射旧版settle_biz_utxo_links 角色到新结构
 func mapLegacyBizUTXORole(sceneType string, sceneSubtype string, legacyRole string) (string, string, string) {
 	sceneType = strings.TrimSpace(strings.ToLower(sceneType))
 	sceneSubtype = strings.TrimSpace(strings.ToLower(sceneSubtype))
@@ -4093,7 +4092,7 @@ func hasTable(db *sql.DB, name string) (bool, error) {
 // isFinTxBreakdownFinalized 判断第二轮收口是否已经完成。
 // 说明：只要仍然能看到旧表、可空 tx_role、缺少唯一约束或缺少关键索引，就不能跳过。
 func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
-	hasBreakdown, err := hasTable(db, "fin_tx_breakdown")
+	hasBreakdown, err := hasTable(db, "settle_tx_breakdown")
 	if err != nil {
 		return false, err
 	}
@@ -4101,7 +4100,7 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 		return false, nil
 	}
 
-	hasOldTable, err := hasTable(db, "fin_business_txs")
+	hasOldTable, err := hasTable(db, "settle_business_txs")
 	if err != nil {
 		return false, err
 	}
@@ -4109,7 +4108,7 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 		return false, nil
 	}
 
-	cols, err := tableColumns(db, "fin_tx_breakdown")
+	cols, err := tableColumns(db, "settle_tx_breakdown")
 	if err != nil {
 		return false, err
 	}
@@ -4117,7 +4116,7 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 		return false, nil
 	}
 
-	hasNotNull, err := tableColumnNotNull(db, "fin_tx_breakdown", "tx_role")
+	hasNotNull, err := tableColumnNotNull(db, "settle_tx_breakdown", "tx_role")
 	if err != nil {
 		return false, err
 	}
@@ -4125,7 +4124,7 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 		return false, nil
 	}
 
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "fin_tx_breakdown", []string{"business_id", "txid"})
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_tx_breakdown", []string{"business_id", "txid"})
 	if err != nil {
 		return false, err
 	}
@@ -4134,11 +4133,11 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 	}
 
 	for _, indexName := range []string{
-		"idx_fin_tx_breakdown_business",
-		"idx_fin_tx_breakdown_txid",
-		"idx_fin_tx_breakdown_business_txid",
+		"idx_settle_tx_breakdown_business",
+		"idx_settle_tx_breakdown_txid",
+		"idx_settle_tx_breakdown_business_txid",
 	} {
-		hasIndex, err := tableHasIndex(db, "fin_tx_breakdown", indexName)
+		hasIndex, err := tableHasIndex(db, "settle_tx_breakdown", indexName)
 		if err != nil {
 			return false, err
 		}
@@ -4330,7 +4329,7 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 		return "close_final", nil
 	case strings.HasPrefix(bid, "biz_wallet_chain_"):
 		var accountingSubtype string
-		if err := db.QueryRow(`SELECT accounting_subtype FROM fin_business WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
+		if err := db.QueryRow(`SELECT accounting_subtype FROM settle_businesses WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
 			return "", fmt.Errorf("cannot infer tx_role for (%s,%s): business record not found", bid, txid)
 		}
 		switch accountingSubtype {

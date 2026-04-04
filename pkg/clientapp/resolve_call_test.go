@@ -39,7 +39,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
 	if _, err := receiverDB.Exec(
-		`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		strings.Repeat("ab", 32),
 		1,
 		4096,
@@ -73,7 +73,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 
 	var gotSenderPubKeyHex string
 	var gotTargetInput string
-	if err := receiverDB.QueryRow(`SELECT sender_pubkey_hex,target_input FROM inbox_messages ORDER BY id DESC LIMIT 1`).Scan(&gotSenderPubKeyHex, &gotTargetInput); err != nil {
+	if err := receiverDB.QueryRow(`SELECT sender_pubkey_hex,target_input FROM proc_inbox_messages ORDER BY id DESC LIMIT 1`).Scan(&gotSenderPubKeyHex, &gotTargetInput); err != nil {
 		t.Fatalf("select inbox row: %v", err)
 	}
 	if gotSenderPubKeyHex != senderPubKeyHex || gotTargetInput != receiverPubKeyHex {
@@ -140,7 +140,7 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB}
 
 	if _, err := receiverDB.Exec(
-		`INSERT INTO seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+		`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
 		strings.Repeat("cd", 32),
 		1,
 		1024,

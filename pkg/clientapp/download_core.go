@@ -10,7 +10,7 @@ import (
 
 const (
 	downloadStepPublishDemand = "publish_demand"
-	downloadStepListQuotes    = "list_demand_quotes"
+	downloadStepListQuotes    = "list_biz_demand_quotes"
 	downloadStepTransfer      = "direct_transfer"
 )
 

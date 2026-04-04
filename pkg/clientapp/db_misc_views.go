@@ -44,7 +44,7 @@ func dbListInboxMessages(ctx context.Context, store *clientDB) ([]inboxMessageLi
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]inboxMessageListItem, error) {
 		rows, err := db.Query(
 			`SELECT id,message_id,sender_pubkey_hex,target_input,route,content_type,body_size_bytes,received_at_unix
-			   FROM inbox_messages
+			   FROM proc_inbox_messages
 			  ORDER BY received_at_unix DESC,id DESC`,
 		)
 		if err != nil {
@@ -74,7 +74,7 @@ func dbGetInboxMessageDetail(ctx context.Context, store *clientDB, id int64) (in
 		var out inboxMessageDetailItem
 		err := db.QueryRow(
 			`SELECT message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix
-			   FROM inbox_messages WHERE id=?`,
+			   FROM proc_inbox_messages WHERE id=?`,
 			id,
 		).Scan(&out.MessageID, &out.SenderPubKey, &out.TargetInput, &out.Route, &out.ContentType, &out.BodyBytes, &out.BodySizeBytes, &out.ReceivedAtUnix)
 		if err != nil {
@@ -90,7 +90,7 @@ func dbListRouteIndexes(ctx context.Context, store *clientDB) ([]routeIndexItem,
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]routeIndexItem, error) {
-		rows, err := db.Query(`SELECT route,seed_hash,updated_at_unix FROM published_route_indexes ORDER BY route ASC`)
+		rows, err := db.Query(`SELECT route,seed_hash,updated_at_unix FROM proc_published_route_indexes ORDER BY route ASC`)
 		if err != nil {
 			return nil, err
 		}
@@ -115,7 +115,7 @@ func dbDeleteRouteIndex(ctx context.Context, store *clientDB, route string) erro
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(`DELETE FROM published_route_indexes WHERE route=?`, route)
+		_, err := db.Exec(`DELETE FROM proc_published_route_indexes WHERE route=?`, route)
 		return err
 	})
 }
@@ -135,7 +135,7 @@ func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) 
 	}
 	out, err := clientDBValue(ctx, store, func(db *sql.DB) (uint32, error) {
 		var chunkCount uint32
-		if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+		if err := db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 			return 0, err
 		}
 		return chunkCount, nil
@@ -156,13 +156,13 @@ func dbRecommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedH
 			return "", nil
 		}
 		var stored string
-		if err := db.QueryRow(`SELECT recommended_file_name FROM seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err == nil {
+		if err := db.QueryRow(`SELECT recommended_file_name FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err == nil {
 			if normalized := sanitizeRecommendedFileName(stored); normalized != "" {
 				return normalized, nil
 			}
 		}
 		var workspacePath, filePath string
-		if err := db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
+		if err := db.QueryRow(`SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
 			return "", nil
 		}
 		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(workspacePathJoin(workspacePath, filePath)))), nil
@@ -183,7 +183,7 @@ func dbMimeHintBySeedHash(ctx context.Context, store *clientDB, seedHash string)
 			return "", nil
 		}
 		var stored string
-		if err := db.QueryRow(`SELECT mime_hint FROM seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err != nil {
+		if err := db.QueryRow(`SELECT mime_hint FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err != nil {
 			return "", nil
 		}
 		return sanitizeMIMEHint(stored), nil

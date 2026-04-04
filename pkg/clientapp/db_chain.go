@@ -18,7 +18,7 @@ func dbLoadChainTipState(ctx context.Context, store *clientDB) (chainTipState, e
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (chainTipState, error) {
 		var s chainTipState
-		err := db.QueryRow(`SELECT tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM chain_tip_state WHERE id=1`).Scan(
+		err := db.QueryRow(`SELECT tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM proc_chain_tip_state WHERE id=1`).Scan(
 			&s.TipHeight, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS,
 		)
 		if err == sql.ErrNoRows {
@@ -34,7 +34,7 @@ func dbUpsertChainTipState(ctx context.Context, store *clientDB, tip uint32, las
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
+			`INSERT INTO proc_chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
 			 VALUES(1,?,?,?,?,?,?)
 			 ON CONFLICT(id) DO UPDATE SET
 				tip_height=excluded.tip_height,
@@ -56,7 +56,7 @@ func dbUpdateChainTipStateError(ctx context.Context, store *clientDB, errMsg, tr
 	now := time.Now().Unix()
 	cur, loadErr := dbLoadChainTipState(ctx, store)
 	if loadErr != nil {
-		obs.Error("bitcast-client", "chain_tip_state_load_failed", map[string]any{"error": loadErr.Error()})
+		obs.Error("bitcast-client", "proc_chain_tip_state_load_failed", map[string]any{"error": loadErr.Error()})
 		return loadErr
 	}
 	return dbUpsertChainTipState(ctx, store, cur.TipHeight, errMsg, trigger, now, 0)

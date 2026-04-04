@@ -11,11 +11,11 @@ func TestCommandLinkedTablesFinalSchemaHasFkAndIndexes(t *testing.T) {
 	}
 
 	wantIndexByTable := map[string]string{
-		"domain_events":   "idx_domain_events_cmd_id",
-		"state_snapshots": "idx_state_snapshots_cmd_id",
-		"effect_logs":     "idx_effect_logs_cmd_id",
+		"proc_domain_events":   "idx_proc_domain_events_cmd_id",
+		"proc_state_snapshots": "idx_proc_state_snapshots_cmd_id",
+		"proc_effect_logs":     "idx_proc_effect_logs_cmd_id",
 	}
-	for _, table := range []string{"domain_events", "state_snapshots", "effect_logs"} {
+	for _, table := range []string{"proc_domain_events", "proc_state_snapshots", "proc_effect_logs"} {
 		cols, err := tableColumns(db, table)
 		if err != nil {
 			t.Fatalf("inspect %s columns failed: %v", table, err)
@@ -42,12 +42,12 @@ func TestCommandLinkedTablesFinalSchemaHasFkAndIndexes(t *testing.T) {
 		if !hasCheck {
 			t.Fatalf("%s missing CHECK(trim(command_id) <> '')", table)
 		}
-		hasFK, err := tableHasForeignKey(db, table, "command_id", "command_journal", "command_id")
+		hasFK, err := tableHasForeignKey(db, table, "command_id", "proc_command_journal", "command_id")
 		if err != nil {
 			t.Fatalf("inspect %s foreign key failed: %v", table, err)
 		}
 		if !hasFK {
-			t.Fatalf("%s missing foreign key to command_journal.command_id", table)
+			t.Fatalf("%s missing foreign key to proc_command_journal.command_id", table)
 		}
 		hasIndex, err := tableHasIndex(db, table, wantIndexByTable[table])
 		if err != nil {
@@ -78,7 +78,7 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 		Accepted:      true,
 		Status:        "applied",
 	}); err != nil {
-		t.Fatalf("append command_journal failed: %v", err)
+		t.Fatalf("append proc_command_journal failed: %v", err)
 	}
 
 	testCases := []struct {
@@ -88,31 +88,31 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 		requiredArgs []any
 	}{
 		{
-			table: "domain_events",
-			blankSQL: `INSERT INTO domain_events(
+			table: "proc_domain_events",
+			blankSQL: `INSERT INTO proc_domain_events(
 				created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 			) VALUES(?,?,?,?,?,?,?)`,
-			orphanSQL: `INSERT INTO domain_events(
+			orphanSQL: `INSERT INTO proc_domain_events(
 				created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 			) VALUES(?,?,?,?,?,?,?)`,
 			requiredArgs: []any{int64(1700002002), "   ", "gw1", "fee_pool_opened", "idle", "open", `{"scene":"reject"}`},
 		},
 		{
-			table: "state_snapshots",
-			blankSQL: `INSERT INTO state_snapshots(
+			table: "proc_state_snapshots",
+			blankSQL: `INSERT INTO proc_state_snapshots(
 				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?)`,
-			orphanSQL: `INSERT INTO state_snapshots(
+			orphanSQL: `INSERT INTO proc_state_snapshots(
 				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?)`,
 			requiredArgs: []any{int64(1700002003), "   ", "gw1", "paused_insufficient", "wallet_insufficient", int64(100000), int64(12345), "not enough balance", `{"scene":"reject"}`},
 		},
 		{
-			table: "effect_logs",
-			blankSQL: `INSERT INTO effect_logs(
+			table: "proc_effect_logs",
+			blankSQL: `INSERT INTO proc_effect_logs(
 				created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 			) VALUES(?,?,?,?,?,?,?,?)`,
-			orphanSQL: `INSERT INTO effect_logs(
+			orphanSQL: `INSERT INTO proc_effect_logs(
 				created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 			) VALUES(?,?,?,?,?,?,?,?)`,
 			requiredArgs: []any{int64(1700002004), "   ", "gw1", "chain", "fee_pool_open", "paused", "blocked", `{"scene":"reject"}`},
@@ -130,11 +130,11 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 			args := make([]any, len(tc.requiredArgs))
 			copy(args, tc.requiredArgs)
 			switch tc.table {
-			case "domain_events":
+			case "proc_domain_events":
 				args[1] = "missing_parent_domain"
-			case "state_snapshots":
+			case "proc_state_snapshots":
 				args[1] = "missing_parent_state"
-			case "effect_logs":
+			case "proc_effect_logs":
 				args[1] = "missing_parent_effect"
 			}
 			args[2] = "gw1"

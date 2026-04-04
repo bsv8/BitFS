@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// dbListLiveQuotes 只负责读取 live_quotes，不做业务过滤。
+// dbListLiveQuotes 只负责读取 biz_live_quotes，不做业务过滤。
 func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]LiveQuoteItem, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
@@ -19,7 +19,7 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 		return nil, fmt.Errorf("demand_id required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]LiveQuoteItem, error) {
-		rows, err := db.Query(`SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+		rows, err := db.Query(`SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM biz_live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 		if err != nil {
 			return nil, err
 		}
@@ -43,7 +43,7 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 	})
 }
 
-// dbUpsertLiveQuote 只负责写入 live_quotes，不带任何业务判断。
+// dbUpsertLiveQuote 只负责写入 biz_live_quotes，不带任何业务判断。
 func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -56,7 +56,7 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 		if err != nil {
 			return err
 		}
-		_, err = db.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+		_, err = db.Exec(`INSERT INTO biz_live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
 			VALUES(?,?,?,?,?,?,?)
 			ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
 				stream_id=excluded.stream_id,

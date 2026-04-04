@@ -41,7 +41,7 @@ type PoolReconcileItem struct {
 	PoolAllocationID int64  `json:"pool_allocation_id"`
 	PoolSessionID    string `json:"pool_session_id"`
 	NewModelStatus   string `json:"new_model_status"` // settlement 状态
-	OldPoolStatus    string `json:"old_pool_status"`  // direct_transfer_pools.status
+	OldPoolStatus    string `json:"old_pool_status"`  // proc_direct_transfer_pools.status
 	Consistent       bool   `json:"consistent"`
 }
 
@@ -76,8 +76,8 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 		rows, err := db.Query(`
 			SELECT bs.settlement_id, bs.business_id, bs.status, bs.target_id,
 			       fb.source_type, fb.source_id
-			FROM business_settlements bs
-			JOIN fin_business fb ON fb.business_id = bs.business_id
+			FROM settle_business_settlements bs
+			JOIN settle_businesses fb ON fb.business_id = bs.business_id
 			WHERE fb.accounting_scene = 'domain'
 			ORDER BY bs.created_at_unix DESC
 		`)
@@ -111,7 +111,7 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 			var txid string
 			var cpFound bool
 			if chainPaymentID > 0 {
-				err := db.QueryRow(`SELECT txid FROM chain_payments WHERE id=?`, chainPaymentID).Scan(&txid)
+				err := db.QueryRow(`SELECT txid FROM fact_chain_payments WHERE id=?`, chainPaymentID).Scan(&txid)
 				if err == nil {
 					cpFound = true
 				}
@@ -151,7 +151,7 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 
 // RunPoolReconciliation 池支付新旧口径对账
 // 校验：每条已 settled 的 pool business，是否都有 pool_allocation 目标
-// 同时检查：新模型 settled 时，旧 direct_transfer_pools 不应显示异常状态
+// 同时检查：新模型 settled 时，旧 proc_direct_transfer_pools 不应显示异常状态
 func RunPoolReconciliation(ctx context.Context, store *clientDB) (*ReconciliationReport, error) {
 	report := &ReconciliationReport{
 		CheckedAt: time.Now(),
@@ -164,7 +164,7 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 		// 查询所有 pool 类型的 settlements
 		rows, err := db.Query(`
 			SELECT bs.settlement_id, bs.business_id, bs.status, bs.target_id
-			FROM business_settlements bs
+			FROM settle_business_settlements bs
 			WHERE bs.settlement_method = 'pool'
 			ORDER BY bs.created_at_unix DESC
 		`)
@@ -195,16 +195,16 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 			var paFound bool
 			var poolSessionID string
 			if poolAllocID > 0 {
-				err := db.QueryRow(`SELECT pool_session_id FROM pool_allocations WHERE id=?`, poolAllocID).Scan(&poolSessionID)
+				err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_allocations WHERE id=?`, poolAllocID).Scan(&poolSessionID)
 				if err == nil {
 					paFound = true
 				}
 			}
 
-			// 检查旧 direct_transfer_pools 状态
+			// 检查旧 proc_direct_transfer_pools 状态
 			var oldPoolStatus string
 			if poolSessionID != "" {
-				_ = db.QueryRow(`SELECT status FROM direct_transfer_pools WHERE session_id=?`, poolSessionID).Scan(&oldPoolStatus)
+				_ = db.QueryRow(`SELECT status FROM proc_direct_transfer_pools WHERE session_id=?`, poolSessionID).Scan(&oldPoolStatus)
 			}
 
 			consistent := true
@@ -287,25 +287,25 @@ func CheckNewModelDominance(ctx context.Context, store *clientDB) (*DominanceChe
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
-		// 1. 检查是否有代码还在直接查 direct_transfer_pools 判断支付完成
+		// 1. 检查是否有代码还在直接查 proc_direct_transfer_pools 判断支付完成
 		// 这个检查是静态的，需要在代码审查中完成
 		// 这里只检查数据层面：所有 "已完成" 的业务都应该有 settlement
 
-		// 2. 检查 purchases 表中 status='done' 但 settlement 缺失的记录
+		// 2. 检查 biz_purchases 表中 status='done' 但 settlement 缺失的记录
 		rows, err := db.Query(`
 			SELECT p.id, p.demand_id, p.seller_pub_hex, p.status
-			FROM purchases p
+			FROM biz_purchases p
 			WHERE p.status = 'done'
 				AND NOT EXISTS (
-					SELECT 1 FROM business_triggers bt
-					JOIN fin_business fb ON fb.business_id = bt.business_id
+					SELECT 1 FROM biz_business_triggers bt
+					JOIN settle_businesses fb ON fb.business_id = bt.business_id
 					WHERE bt.trigger_type = 'purchase' 
 					AND bt.trigger_id_value = CAST(p.id AS TEXT)
 				)
 			LIMIT 100
 		`)
 		if err != nil {
-			return fmt.Errorf("check purchases without settlement: %w", err)
+			return fmt.Errorf("check biz_purchases without settlement: %w", err)
 		}
 		defer rows.Close()
 
@@ -315,7 +315,7 @@ func CheckNewModelDominance(ctx context.Context, store *clientDB) (*DominanceChe
 			if err := rows.Scan(&r.ID, &r.RefID, &r.PartyID, &r.Status); err != nil {
 				continue
 			}
-			r.Table = "purchases"
+			r.Table = "biz_purchases"
 			r.Description = "purchase marked done but no settlement found"
 			orphanedPurchases = append(orphanedPurchases, r)
 		}

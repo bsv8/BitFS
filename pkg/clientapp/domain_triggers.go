@@ -218,7 +218,7 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 		return out, nil
 	}
 	// 提交成功，回写 settlement 状态为 settled
-	// 硬要求：target_id 必须写 chain_payments.id，查不到则报错
+	// 硬要求：target_id 必须写 fact_chain_payments.id，查不到则报错
 	if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, true, out.RegisterTxID, ""); err != nil {
 		obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
 		return out, fmt.Errorf("finalize domain register settlement: %w", err)

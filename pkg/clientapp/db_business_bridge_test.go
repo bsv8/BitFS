@@ -218,7 +218,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 	}
 
 	// 模拟支付成功，回写 settled
-	// 硬要求：必须先创建 chain_payment 记录，这样 finalize 才能拿到 chain_payments.id
+	// 硬要求：必须先创建 chain_payment 记录，这样 finalize 才能拿到 fact_chain_payments.id
 	txID := "tx_success_12345"
 	chainPaymentID, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
 		TxID:                txID,
@@ -248,7 +248,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 	if settlement.Status != "settled" {
 		t.Fatalf("expected settlement status settled, got %s", settlement.Status)
 	}
-	// 硬要求验证：target_id 必须是 chain_payments.id，不能是 txid
+	// 硬要求验证：target_id 必须是 fact_chain_payments.id，不能是 txid
 	expectedTargetID := fmt.Sprintf("%d", chainPaymentID)
 	if settlement.TargetID != expectedTargetID {
 		t.Fatalf("expected settlement target_id=%s (chain_payment.id), got %s", expectedTargetID, settlement.TargetID)

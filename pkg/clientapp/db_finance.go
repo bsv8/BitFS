@@ -9,12 +9,12 @@ import (
 	"strings"
 )
 
-// fin_business 语义说明（第七次迭代收口）：
-// - 一条 fin_business = 一条独立收费事实
+// settle_businesses 语义说明（第七次迭代收口）：
+// - 一条 settle_businesses = 一条独立收费事实
 // - 失败重试不新建 business，只更新原记录
 // - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
-// - 本阶段表名保持 fin_business，逻辑上已收口为 businesses
-// - 默认一条 fin_business 对应一条主 business_settlement
+// - 本阶段表名保持 settle_businesses，逻辑上已收口为 businesses
+// - 默认一条 settle_businesses 对应一条主 business_settlement
 
 // financeBusinessFilter 业务查询过滤条件
 // 设计说明：
@@ -239,12 +239,12 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeBusinessPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM fin_business WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM settle_businesses WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeBusinessPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-			 FROM fin_business WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,business_id DESC LIMIT ? OFFSET ?`,
+			 FROM settle_businesses WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,business_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -278,7 +278,7 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		var payload string
 		err := db.QueryRow(
 			`SELECT business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-			 FROM fin_business WHERE business_id=?`,
+			 FROM settle_businesses WHERE business_id=?`,
 			businessID,
 		).Scan(&out.BusinessID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
@@ -330,12 +330,12 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeProcessEventPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM fin_process_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM settle_process_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeProcessEventPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
-			 FROM fin_process_events WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
+			 FROM settle_process_events WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -368,7 +368,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 		var payload string
 		err := db.QueryRow(
 			`SELECT id,process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
-			 FROM fin_process_events WHERE id=?`,
+			 FROM settle_process_events WHERE id=?`,
 			id,
 		).Scan(&out.ID, &out.ProcessID, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.EventType, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
@@ -383,7 +383,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 // 第十一阶段收口：增加 businessRole 参数，不再默认全量
 // 设计说明：
 // - allocation_id 这里只做便利查询输入，不直接落到 source_id；
-// - 底层只按 pool_allocations.id 过滤新口径记录；
+// - 底层只按 fact_pool_allocations.id 过滤新口径记录；
 // - businessRole 必填：formal 或 process，不再允许空值。
 func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, businessRole string, limit, offset int) (financeBusinessPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
@@ -413,7 +413,7 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 // dbListFinanceProcessEventsByPoolAllocationID 按 allocation_id 查流程事件
 // 设计说明：
 // - allocation_id 这里只做便利查询输入，不直接落到 source_id；
-// - 底层只按 pool_allocations.id 过滤新口径记录。
+// - 底层只按 fact_pool_allocations.id 过滤新口径记录。
 func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeProcessEventPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
 	if allocationID == "" {
@@ -438,7 +438,7 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 // 第十一阶段收口：增加 businessRole 参数，不再默认全量
 // 设计说明：
 // - txid 这里只做便利查询输入，不直接作为 source_id；
-// - 底层只按 chain_payments.id 过滤新口径记录；
+// - 底层只按 fact_chain_payments.id 过滤新口径记录；
 // - 查不到 chain_payment 时返回空结果，不模糊搜索；
 // - businessRole 必填：formal 或 process，不再允许空值。
 func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid string, businessRole string, limit, offset int) (financeBusinessPage, error) {
@@ -450,7 +450,7 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 	if businessRole != "formal" && businessRole != "process" {
 		return financeBusinessPage{}, fmt.Errorf("businessRole must be 'formal' or 'process'")
 	}
-	// 先查 chain_payments.id，查不到返回空结果
+	// 先查 fact_chain_payments.id，查不到返回空结果
 	chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txid)
 	if err != nil {
 		return financeBusinessPage{Items: []financeBusinessItem{}}, nil
@@ -468,14 +468,14 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 // dbListFinanceProcessEventsByTxID 按 txid 查流程事件
 // 设计说明：
 // - txid 这里只做便利查询输入，不直接作为 source_id；
-// - 底层只按 chain_payments.id 过滤新口径记录；
+// - 底层只按 fact_chain_payments.id 过滤新口径记录；
 // - 查不到 chain_payment 时返回空结果，不模糊搜索。
 func dbListFinanceProcessEventsByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeProcessEventPage, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
 		return financeProcessEventPage{}, fmt.Errorf("txid is required")
 	}
-	// 先查 chain_payments.id，查不到返回空结果
+	// 先查 fact_chain_payments.id，查不到返回空结果
 	chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txid)
 	if err != nil {
 		return financeProcessEventPage{Items: []financeProcessEventItem{}}, nil
@@ -510,12 +510,12 @@ func dbListFinanceBreakdowns(ctx context.Context, store *clientDB, f financeBrea
 			args = append(args, like, like, like)
 		}
 		var out financeBreakdownPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM fin_tx_breakdown WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM settle_tx_breakdown WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return financeBreakdownPage{}, err
 		}
 		rows, err := db.Query(
 			`SELECT id,business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
-			 FROM fin_tx_breakdown WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
+			 FROM settle_tx_breakdown WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -551,7 +551,7 @@ func dbGetFinanceBreakdown(ctx context.Context, store *clientDB, id int64) (fina
 		var payload string
 		err := db.QueryRow(
 			`SELECT id,business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
-			 FROM fin_tx_breakdown WHERE id=?`,
+			 FROM settle_tx_breakdown WHERE id=?`,
 			id,
 		).Scan(
 			&out.ID, &out.BusinessID, &out.TxID, &out.TxRole, &out.GrossInputSatoshi, &out.ChangeBackSatoshi, &out.ExternalInSatoshi, &out.CounterpartyOutSat,
@@ -604,8 +604,8 @@ func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOL
 		var out financeUTXOLinkPage
 		if err := db.QueryRow(
 			`SELECT COUNT(1)
-			   FROM fin_tx_utxo_links l
-			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
+			   FROM settle_tx_utxo_links l
+			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE 1=1`+where,
 			args...,
 		).Scan(&out.Total); err != nil {
@@ -613,8 +613,8 @@ func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOL
 		}
 		rows, err := db.Query(
 			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
-			   FROM fin_tx_utxo_links l
-			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
+			   FROM settle_tx_utxo_links l
+			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE 1=1`+where+` ORDER BY l.id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -648,8 +648,8 @@ func dbGetFinanceUTXOLink(ctx context.Context, store *clientDB, id int64) (finan
 		var payload string
 		err := db.QueryRow(
 			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
-			   FROM fin_tx_utxo_links l
-			   JOIN fin_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
+			   FROM settle_tx_utxo_links l
+			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
 			  WHERE l.id=?`,
 			id,
 		).Scan(&out.ID, &out.BusinessID, &out.TxID, &out.UTXOID, &out.TxRole, &out.IOSide, &out.UTXORole, &out.AmountSatoshi, &out.CreatedAtUnix, &out.Note, &payload)

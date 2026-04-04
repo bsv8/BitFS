@@ -160,7 +160,7 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register listen task: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE scheduler_tasks SET last_error='mock error', failure_count=2 WHERE task_name=?`, "listen_billing_tick:gw-1"); err != nil {
+	if _, err := db.Exec(`UPDATE proc_scheduler_tasks SET last_error='mock error', failure_count=2 WHERE task_name=?`, "listen_billing_tick:gw-1"); err != nil {
 		t.Fatalf("update scheduler task mock error: %v", err)
 	}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, store: newClientDB(db, nil)}
@@ -239,7 +239,7 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 	}
 	now := time.Now().Unix()
 	_, err = db.Exec(
-		`INSERT INTO scheduler_tasks(
+		`INSERT INTO proc_scheduler_tasks(
 			task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 			last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
 			run_count,success_count,failure_count,last_summary_json,meta_json
@@ -301,7 +301,7 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 	_, err = db.Exec(
-		`INSERT INTO scheduler_task_runs(task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix)
+		`INSERT INTO proc_scheduler_task_runs(task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix)
 		 VALUES
 		 ('workspace_tick','orchestrator','static','periodic_tick',100,101,1000,'success','','{"trigger":"periodic_tick"}',101),
 		 ('live_follow_tick:abc','live_follow','dynamic','periodic_tick',200,201,1000,'failed','mock err','{"stream_id":"abc"}',201)`,
@@ -437,7 +437,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 	}
 
 	var feePoolID int64
-	if err := db.QueryRow(`SELECT id FROM command_journal WHERE command_id='fp_1'`).Scan(&feePoolID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM proc_command_journal WHERE command_id='fp_1'`).Scan(&feePoolID); err != nil {
 		t.Fatalf("query feepool row id failed: %v", err)
 	}
 	notFoundReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands/detail?id="+itoa64(feePoolID), nil)
@@ -820,7 +820,7 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 		t.Fatalf("live plan status: got=%d body=%s", recPlan.Code, recPlan.Body.String())
 	}
 
-	if _, err := db.Exec(`INSERT INTO live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+	if _, err := db.Exec(`INSERT INTO biz_live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
 		VALUES(?,?,?,?,?,?,?)`,
 		"ldmd_http",
 		"seller-live",
@@ -870,7 +870,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	workspace := &workspaceManager{cfg: &cfg, db: db, catalog: &sellerCatalog{seeds: map[string]sellerSeed{}}}
+	workspace := &workspaceManager{cfg: &cfg, db: db, catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}}}
 	if err := workspace.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
@@ -932,7 +932,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	}
 
 	var workspacePath, filePath string
-	if err := db.QueryRow(`SELECT workspace_path,file_path FROM workspace_files WHERE file_path LIKE ? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, "%"+streamID+"%").Scan(&workspacePath, &filePath); err != nil {
+	if err := db.QueryRow(`SELECT workspace_path,file_path FROM biz_workspace_files WHERE file_path LIKE ? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, "%"+streamID+"%").Scan(&workspacePath, &filePath); err != nil {
 		t.Fatalf("query live segment path: %v", err)
 	}
 	if _, err := os.Stat(workspacePathJoin(workspacePath, filePath)); err != nil {

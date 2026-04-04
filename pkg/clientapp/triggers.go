@@ -38,7 +38,7 @@ type WorkspaceSeed struct {
 
 type WorkspaceSyncResult struct {
 	SeedCount int             `json:"seed_count"`
-	Seeds     []WorkspaceSeed `json:"seeds,omitempty"`
+	Seeds     []WorkspaceSeed `json:"biz_seeds,omitempty"`
 }
 
 // TriggerWorkspaceSyncOnce 触发一次 workspace 扫描与同步（用于 e2e）。
@@ -48,14 +48,14 @@ func TriggerWorkspaceSyncOnce(ctx context.Context, rt *Runtime) (WorkspaceSyncRe
 	}
 
 	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_begin", map[string]any{})
-	seeds, err := rt.Workspace.SyncOnce(ctx)
+	biz_seeds, err := rt.Workspace.SyncOnce(ctx)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_workspace_sync_once_failed", map[string]any{"error": err.Error()})
 		return WorkspaceSyncResult{}, err
 	}
 
-	out := make([]WorkspaceSeed, 0, len(seeds))
-	for _, s := range seeds {
+	out := make([]WorkspaceSeed, 0, len(biz_seeds))
+	for _, s := range biz_seeds {
 		out = append(out, WorkspaceSeed{
 			SeedHash:   strings.ToLower(strings.TrimSpace(s.SeedHash)),
 			ChunkCount: s.ChunkCount,
