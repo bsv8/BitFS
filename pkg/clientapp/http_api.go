@@ -344,6 +344,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events/detail", s.withAuth(s.handleAdminWalletUTXOEventDetail))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses", s.withAuth(s.handleAdminFinanceBusinesses))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
+		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/compat", s.withAuth(s.handleAdminFinanceBusinessesCompat)) // 第十阶段新增：兼容/调试全量查询入口
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events", s.withAuth(s.handleAdminFinanceProcessEvents))
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events/detail", s.withAuth(s.handleAdminFinanceProcessEventDetail))
 		mux.HandleFunc(prefix+"/v1/admin/finance/breakdowns", s.withAuth(s.handleAdminFinanceBreakdowns))
@@ -2000,6 +2001,84 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		Limit:             limit,
 		Offset:            offset,
 		BusinessRole:      businessRole,
+		BusinessID:        businessID,
+		SourceType:        sourceType,
+		SourceID:          sourceID,
+		AccountingScene:   accountingScene,
+		AccountingSubtype: accountingSubType,
+		Status:            status,
+		FromPartyID:       fromPartyID,
+		ToPartyID:         toPartyID,
+		Query:             q,
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
+}
+
+// handleAdminFinanceBusinessesCompat 【兼容/调试入口】全量查询财务业务记录
+// 第十阶段新增：独立的全量兼容查询入口，不参与正式业务语义
+//   - 不强制要求 business_role，允许返回全量混合结果
+//   - 仅用于人工排查、历史数据核对、迁移验证、对账辅助
+//   - 不代表正式业务语义，正式查询请走 /api/v1/admin/finance/businesses
+//
+// 注意：
+// - 此接口返回的数据可能同时包含 formal 和 process 类型的业务记录
+// - 返回结果中的 business_role 字段明确标识每条记录的角色
+// - 不要在前台、正式页面、正式脚本中把它当主入口使用
+func (s *httpAPIServer) handleAdminFinanceBusinessesCompat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
+
+	// 兼容入口：不强制 business_role，但允许传值过滤
+	businessRole := strings.TrimSpace(r.URL.Query().Get("business_role"))
+	if businessRole != "" && businessRole != "formal" && businessRole != "process" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role must be 'formal' or 'process' (or empty for all)"})
+		return
+	}
+
+	// 主口径参数
+	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
+	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
+	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
+	accountingSubType := strings.TrimSpace(r.URL.Query().Get("accounting_subtype"))
+
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
+	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
+	q := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	// pool_allocation_id 只做主键换算
+	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
+		poolAllocID, err := dbGetPoolAllocationIDByAllocationID(r.Context(), httpStore(s), poolAllocationID)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeBusinessItem{}})
+				return
+			}
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		sourceType = "pool_allocation"
+		sourceID = fmt.Sprintf("%d", poolAllocID)
+	}
+
+	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
+		Limit:             limit,
+		Offset:            offset,
+		BusinessRole:      businessRole, // 空值时返回全部
 		BusinessID:        businessID,
 		SourceType:        sourceType,
 		SourceID:          sourceID,

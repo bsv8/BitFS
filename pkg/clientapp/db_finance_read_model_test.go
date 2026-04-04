@@ -1187,6 +1187,108 @@ func TestFinanceLayer_HTTPBusinessRoleParam(t *testing.T) {
 	}
 }
 
+// TestFinanceCompat_AllBusinessesReturnsMixed 第十阶段：compat 入口可以查全量
+// 验证：兼容/调试入口不强制 business_role，允许返回全量混合结果
+func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	seedDirectTransferPoolFacts(t, db)
+
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_third_iter_1"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	// 写入过程 business
+	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
+		SessionID:         sessionID,
+		DealID:            "deal_compat_test",
+		BaseTxID:          "base_tx_compat_test",
+		BaseTxHex:         baseTxHex,
+		ClientLockScript:  "",
+		PoolAmountSatoshi: 990,
+		SellerPubHex:      sellerPubHex,
+	})
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_compat_test", baseTxHex, 700, 290, sellerPubHex)
+
+	srv := &httpAPIServer{db: db, store: store}
+
+	// 测试1：不传 business_role 应该成功返回全量
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?limit=50", nil)
+	rec := httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compat all query failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var allResp struct {
+		Items []financeBusinessItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &allResp); err != nil {
+		t.Fatalf("decode compat response failed: %v", err)
+	}
+	// 验证返回中包含 formal 和 process 两种角色（seedDirectTransferPoolFacts 会写入过程对象）
+	var formalCount, processCount int
+	for _, item := range allResp.Items {
+		switch item.BusinessRole {
+		case "formal":
+			formalCount++
+		case "process":
+			processCount++
+		}
+	}
+	if formalCount == 0 && processCount == 0 {
+		t.Fatal("compat query should return at least some records")
+	}
+
+	// 测试2：传 business_role=formal 应该只返回正式对象
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?business_role=formal&limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compat formal query failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var formalResp struct {
+		Items []financeBusinessItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &formalResp); err != nil {
+		t.Fatalf("decode compat formal response failed: %v", err)
+	}
+	for _, item := range formalResp.Items {
+		if item.BusinessRole != "formal" {
+			t.Fatalf("compat formal query returned non-formal item: role=%s", item.BusinessRole)
+		}
+	}
+
+	// 测试3：传 business_role=process 应该只返回过程对象
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?business_role=process&limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compat process query failed: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var processResp struct {
+		Items []financeBusinessItem `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
+		t.Fatalf("decode compat process response failed: %v", err)
+	}
+	for _, item := range processResp.Items {
+		if item.BusinessRole != "process" {
+			t.Fatalf("compat process query returned non-process item: role=%s", item.BusinessRole)
+		}
+	}
+
+	// 测试4：非法 business_role 应该返回 400
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?business_role=invalid&limit=50", nil)
+	rec = httptest.NewRecorder()
+	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("compat invalid role should return 400: got %d", rec.Code)
+	}
+}
+
 // ============================================================
 // 第七阶段新增：business_role 强约束测试
 // ============================================================
