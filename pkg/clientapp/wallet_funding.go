@@ -96,34 +96,30 @@ func listEligiblePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *R
 }
 
 // allocatePlainBSVWalletUTXOs 为普通 BSV 支出选择一组输入。
+// Step 6：改为从 fact 口径选源，不再扫 wallet_utxo
 func allocatePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runtime, purpose string, target uint64) ([]poolcore.UTXO, error) {
 	_ = strings.TrimSpace(purpose)
-	candidates, err := listWalletFundingCandidates(ctx, store, rt)
+	if rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		return nil, err
 	}
-	input := make([]fundalloc.Candidate, 0, len(candidates))
-	for _, item := range candidates {
-		input = append(input, fundalloc.Candidate{
-			ID:               item.UTXOID,
-			TxID:             item.UTXO.TxID,
-			Vout:             item.UTXO.Vout,
-			ValueSatoshi:     item.UTXO.Value,
-			CreatedAtUnix:    item.CreatedAtUnix,
-			ProtectionClass:  fundalloc.ProtectionClass(item.AllocationClass),
-			ProtectionReason: item.AllocationReason,
-		})
-	}
-	selected, err := fundalloc.SelectPlainBSVForTarget(input, target)
+	walletID := walletIDByAddress(addr)
+
+	// Step 6：从 fact 口径选源
+	selected, err := dbSelectSourceFlowsForTarget(ctx, store, walletID, "BSV", "", target)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]poolcore.UTXO, 0, len(selected.Selected))
-	for _, item := range selected.Selected {
+
+	out := make([]poolcore.UTXO, 0, len(selected))
+	for _, s := range selected {
 		out = append(out, poolcore.UTXO{
-			TxID:  strings.ToLower(strings.TrimSpace(item.TxID)),
-			Vout:  item.Vout,
-			Value: item.ValueSatoshi,
+			TxID:  strings.ToLower(strings.TrimSpace(s.TxID)),
+			Vout:  s.Vout,
+			Value: uint64(s.UseAmount),
 		})
 	}
 	return out, nil

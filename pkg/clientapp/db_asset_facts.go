@@ -703,3 +703,63 @@ func dbListSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string,
 	}
 	return out, rows.Err()
 }
+
+// selectedSourceFlow 选源结果（含本次扣减金额）
+type selectedSourceFlow struct {
+	spendableSourceFlow
+	UseAmount int64 `json:"use_amount"`
+}
+
+// dbSelectSourceFlowsForTarget 按目标金额从可花费 source flow 中选源
+// 设计说明：
+// - 按 remaining 升序（小额优先），时间升序
+// - 累计金额 >= target 即停止
+// - 余额不足返回稳定错误
+// - 同一 source flow 不会重复选
+func dbSelectSourceFlowsForTarget(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string, target uint64) ([]selectedSourceFlow, error) {
+	if store == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) ([]selectedSourceFlow, error) {
+		return dbSelectSourceFlowsForTargetDB(db, walletID, assetKind, tokenID, target)
+	})
+}
+
+func dbSelectSourceFlowsForTargetDB(db *sql.DB, walletID string, assetKind string, tokenID string, target uint64) ([]selectedSourceFlow, error) {
+	flows, err := dbListSpendableSourceFlowsDB(db, walletID, assetKind, tokenID)
+	if err != nil {
+		return nil, fmt.Errorf("list spendable flows: %w", err)
+	}
+	if len(flows) == 0 {
+		return nil, fmt.Errorf("no spendable source flows available")
+	}
+
+	// 选源：小额优先，时间升序（已由 SQL ORDER BY 保证）
+	remaining := int64(target)
+	out := make([]selectedSourceFlow, 0, len(flows))
+	for _, f := range flows {
+		if remaining <= 0 {
+			break
+		}
+		use := f.Remaining
+		if use > remaining {
+			use = remaining
+		}
+		out = append(out, selectedSourceFlow{
+			spendableSourceFlow: f,
+			UseAmount:           use,
+		})
+		remaining -= use
+	}
+
+	if remaining > 0 {
+		// 计算可用总额用于错误提示
+		var totalAvailable int64
+		for _, f := range flows {
+			totalAvailable += f.Remaining
+		}
+		return nil, fmt.Errorf("insufficient balance: target=%d, available=%d, missing=%d", target, totalAvailable, remaining)
+	}
+
+	return out, nil
+}

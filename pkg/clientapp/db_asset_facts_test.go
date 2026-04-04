@@ -1518,3 +1518,198 @@ func TestFactBalance_MultiConsumption(t *testing.T) {
 		t.Fatalf("expected remaining 3000, got %d", bal.Remaining)
 	}
 }
+
+// TestSelectSourceFlows_Basic 验证选源函数基本功能
+func TestSelectSourceFlows_Basic(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_select_basic"
+	address := "test_addr_select"
+
+	// 种三个 UTXO 并写入 IN flow（不同金额）
+	utxoIDs := []string{"utxo_sel_1:0", "utxo_sel_2:0", "utxo_sel_3:0"}
+	amounts := []int64{1000, 5000, 3000}
+	for i, utxoID := range utxoIDs {
+		if _, err := db.Exec(`INSERT INTO wallet_utxo(
+			utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+			created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			utxoID, walletID, address, "tx_sel_"+fmt.Sprint(i), 0, amounts[i], "unspent", "plain_bsv", "",
+			"tx_sel_"+fmt.Sprint(i), "", now, now, 0,
+		); err != nil {
+			t.Fatalf("seed utxo %s: %v", utxoID, err)
+		}
+		_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+			FlowID:         "flow_in_sel_" + fmt.Sprint(i),
+			WalletID:       walletID,
+			Address:        address,
+			Direction:      "IN",
+			AssetKind:      "BSV",
+			UTXOID:         utxoID,
+			TxID:           "tx_sel_" + fmt.Sprint(i),
+			Vout:           0,
+			AmountSatoshi:  amounts[i],
+			OccurredAtUnix: now,
+		})
+		if err != nil {
+			t.Fatalf("append flow for %s: %v", utxoID, err)
+		}
+	}
+
+	// 选源：target=4000，应该选 1000+3000（小额优先）
+	selected, err := dbSelectSourceFlowsForTargetDB(db, walletID, "BSV", "", 4000)
+	if err != nil {
+		t.Fatalf("select source flows: %v", err)
+	}
+	if len(selected) != 2 {
+		t.Fatalf("expected 2 selected, got %d", len(selected))
+	}
+	// 验证小额优先
+	if selected[0].UseAmount != 1000 || selected[1].UseAmount != 3000 {
+		t.Fatalf("expected 1000+3000, got %d+%d", selected[0].UseAmount, selected[1].UseAmount)
+	}
+}
+
+// TestSelectSourceFlows_Insufficient 验证余额不足时返回稳定错误
+func TestSelectSourceFlows_Insufficient(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_insufficient"
+	address := "test_addr_insufficient"
+	utxoID := "utxo_insufficient:0"
+
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_insufficient", 0, int64(500), "unspent", "plain_bsv", "",
+		"tx_insufficient", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_insufficient",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_insufficient",
+		Vout:           0,
+		AmountSatoshi:  500,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 选源：target=1000，只有 500
+	_, err = dbSelectSourceFlowsForTargetDB(db, walletID, "BSV", "", 1000)
+	if err == nil {
+		t.Fatalf("expected insufficient error, got nil")
+	}
+	if !strings.Contains(err.Error(), "insufficient balance") {
+		t.Fatalf("expected 'insufficient balance' error, got: %v", err)
+	}
+}
+
+// TestSelectSourceFlows_NoAvailable 验证无可用 source flow 时报错
+func TestSelectSourceFlows_NoAvailable(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+
+	walletID := "wallet_no_available"
+	_, err := dbSelectSourceFlowsForTargetDB(db, walletID, "BSV", "", 1000)
+	if err == nil {
+		t.Fatalf("expected no available error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no spendable source flows") {
+		t.Fatalf("expected 'no spendable' error, got: %v", err)
+	}
+}
+
+// TestSelectSourceFlows_PartialConsumed 验证部分消耗的 source flow 正确选源
+func TestSelectSourceFlows_PartialConsumed(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_partial"
+	address := "test_addr_partial"
+	utxoID := "utxo_partial:0"
+
+	// 种 UTXO（总额 10000）
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(
+		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_partial", 0, int64(10000), "unspent", "plain_bsv", "",
+		"tx_partial", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed utxo: %v", err)
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
+		FlowID:         "flow_in_partial",
+		WalletID:       walletID,
+		Address:        address,
+		Direction:      "IN",
+		AssetKind:      "BSV",
+		UTXOID:         utxoID,
+		TxID:           "tx_partial",
+		Vout:           0,
+		AmountSatoshi:  10000,
+		OccurredAtUnix: now,
+	})
+	if err != nil {
+		t.Fatalf("append flow: %v", err)
+	}
+
+	// 写入消耗 6000
+	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_partial_pay",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  6000,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -6000,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert chain payment: %v", err)
+	}
+	if err := dbAppendAssetConsumptionsForChainPayment(db, payID, []chainPaymentUTXOLinkEntry{
+		{ChainPaymentID: payID, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 6000, CreatedAtUnix: now},
+	}, now); err != nil {
+		t.Fatalf("append consumption: %v", err)
+	}
+
+	// 选源：target=3000，剩余 4000 够选
+	selected, err := dbSelectSourceFlowsForTargetDB(db, walletID, "BSV", "", 3000)
+	if err != nil {
+		t.Fatalf("select source flows: %v", err)
+	}
+	if len(selected) != 1 {
+		t.Fatalf("expected 1 selected, got %d", len(selected))
+	}
+	if selected[0].Remaining != 4000 {
+		t.Fatalf("expected remaining 4000, got %d", selected[0].Remaining)
+	}
+	if selected[0].UseAmount != 3000 {
+		t.Fatalf("expected use 3000, got %d", selected[0].UseAmount)
+	}
+}
