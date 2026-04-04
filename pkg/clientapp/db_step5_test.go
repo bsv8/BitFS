@@ -143,6 +143,7 @@ func TestStep5_SettlementDominatesOverPoolStatus(t *testing.T) {
 
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",

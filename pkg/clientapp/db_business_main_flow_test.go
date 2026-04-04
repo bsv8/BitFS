@@ -51,6 +51,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 	businessID := "biz_domain_reg_001"
 	business := finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",

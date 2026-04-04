@@ -45,6 +45,7 @@ func TestStep4_DomainSettlementSummary(t *testing.T) {
 	businessID := "biz_domain_step4_001"
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",
@@ -201,6 +202,7 @@ func TestStep4_DownloadSettlementSummary(t *testing.T) {
 		// business
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        s.businessID,
+			BusinessRole:      "formal", // 正式收费对象
 			SourceType:        "front_order",
 			SourceID:          frontOrderID,
 			AccountingScene:   "direct_transfer",
@@ -390,6 +392,7 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 	}
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "domain",
@@ -491,6 +494,7 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 	}
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "formal", // 正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",

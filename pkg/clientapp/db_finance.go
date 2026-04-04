@@ -192,13 +192,15 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		where := ""
 		args := make([]any, 0, 16)
 
-		// 第四阶段：按业务角色过滤
-		// formal：只返回正式收费对象（biz_download_pool_* 等）
-		// process：只返回过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
+		// 第五阶段：优先使用 business_role 字段过滤，历史数据兜底使用前缀推断
+		// formal：正式收费对象（biz_download_pool_* 等）
+		// process：过程财务对象（biz_c2c_open_* / biz_c2c_close_*）
 		if f.BusinessRole == "formal" {
-			where += " AND (business_id LIKE 'biz_download_pool_%')"
+			// 优先按字段过滤，历史数据兜底使用前缀
+			where += " AND (business_role='formal' OR (business_role='' AND business_id LIKE 'biz_download_pool_%'))"
 		} else if f.BusinessRole == "process" {
-			where += " AND (business_id LIKE 'biz_c2c_open_%' OR business_id LIKE 'biz_c2c_close_%')"
+			// 优先按字段过滤，历史数据兜底使用前缀
+			where += " AND (business_role='process' OR (business_role='' AND (business_id LIKE 'biz_c2c_open_%' OR business_id LIKE 'biz_c2c_close_%')))"
 		}
 
 		if f.BusinessID != "" {
@@ -243,7 +245,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			return financeBusinessPage{}, err
 		}
 		rows, err := db.Query(
-			`SELECT business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_business WHERE 1=1`+where+` ORDER BY occurred_at_unix DESC,business_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -255,12 +257,14 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		for rows.Next() {
 			var it financeBusinessItem
 			var payload string
-			if err := rows.Scan(&it.BusinessID, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			if err := rows.Scan(&it.BusinessID, &it.BusinessRole, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
 				return financeBusinessPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
-			// 第四阶段：自动推断 business_role，让调用方明确知道这是什么层
-			it.BusinessRole = inferBusinessRole(it.BusinessID)
+			// 第五阶段：优先使用数据库字段，历史数据兜底使用前缀推断
+			if it.BusinessRole == "" {
+				it.BusinessRole = inferBusinessRole(it.BusinessID)
+			}
 			out.Items = append(out.Items, it)
 		}
 		if err := rows.Err(); err != nil {
@@ -278,21 +282,26 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		var out financeBusinessItem
 		var payload string
 		err := db.QueryRow(
-			`SELECT business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+			`SELECT business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM fin_business WHERE business_id=?`,
 			businessID,
-		).Scan(&out.BusinessID, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+		).Scan(&out.BusinessID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
 			return financeBusinessItem{}, err
 		}
 		out.Payload = json.RawMessage(payload)
-		out.BusinessRole = inferBusinessRole(out.BusinessID)
+		// 第五阶段：优先使用数据库字段，历史数据兜底使用前缀推断
+		if out.BusinessRole == "" {
+			out.BusinessRole = inferBusinessRole(out.BusinessID)
+		}
 		return out, nil
 	})
 }
 
 // inferBusinessRole 从 business_id 推断业务角色
-// 第四阶段新增：用于明确区分正式收费和过程财务对象
+// 第五阶段降级：这是历史兼容兜底逻辑，不再是主设计
+// - 新数据应优先使用数据库 business_role 字段
+// - 此函数仅用于历史数据未回填时的临时推断
 // - formal：正式收费对象（如 biz_download_pool_*）
 // - process：过程财务对象（如 biz_c2c_open_* / biz_c2c_close_*）
 // - unknown：其他/未分类

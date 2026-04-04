@@ -608,6 +608,7 @@ func TestFinBusinessIdempotency(t *testing.T) {
 	// 第一次写入
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "process", // 过程财务对象
 		SourceType:        "pool_allocation",
 		SourceID:          "alloc_1",
 		AccountingScene:   "c2c_transfer",
@@ -626,6 +627,7 @@ func TestFinBusinessIdempotency(t *testing.T) {
 	// 第二次写入（相同 idempotency_key）- 应该更新而不是报错
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "process", // 过程财务对象
 		SourceType:        "pool_allocation",
 		SourceID:          "alloc_1",
 		AccountingScene:   "c2c_transfer",

@@ -64,19 +64,19 @@ type CreateBusinessWithFrontTriggerAndPendingSettlementInput struct {
 	TriggerPayload any
 
 	// 结算字段
-	SettlementID      string
-	SettlementMethod  SettlementMethod // 只允许 "pool" 或 "chain"
+	SettlementID         string
+	SettlementMethod     SettlementMethod // 只允许 "pool" 或 "chain"
 	SettlementTargetType string
 	SettlementTargetID   string
-	SettlementPayload any
+	SettlementPayload    any
 }
 
 // CreateBusinessWithFrontTriggerAndPendingSettlement 创建业务主链桥接（事务实现）
 // 职责：
-//   1. 确保 front_order 存在
-//   2. 创建或更新 business
-//   3. 创建 business_trigger（支持一前台单多条 business）
-//   4. 创建 business_settlement(status='pending')
+//  1. 确保 front_order 存在
+//  2. 创建或更新 business
+//  3. 创建 business_trigger（支持一前台单多条 business）
+//  4. 创建 business_settlement(status='pending')
 //
 // 设计约束：
 //   - 单事务：四步全部成功或全部回滚
@@ -134,9 +134,16 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		}
 
 		// 2. 创建或更新 business
+		// 第五阶段：根据 accounting_scene 推断 business_role
+		// direct_transfer 是正式收费场景，其他为过程财务场景
+		businessRole := "formal"
+		if in.AccountingScene == "direct_transfer_process" || in.AccountingScene == "fee_pool" {
+			businessRole = "process"
+		}
 		idempotencyKey := "bridge:" + in.BusinessID
 		if err := dbAppendFinBusinessTx(tx, finBusinessEntry{
 			BusinessID:        in.BusinessID,
+			BusinessRole:      businessRole,
 			SourceType:        in.SourceType,
 			SourceID:          in.SourceID,
 			AccountingScene:   in.AccountingScene,
@@ -197,10 +204,10 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		}
 
 		obs.Info("bitcast-client", "bridge_success", map[string]any{
-			"front_order_id": in.FrontOrderID,
-			"business_id":    in.BusinessID,
-			"trigger_id":     triggerID,
-			"settlement_id":  in.SettlementID,
+			"front_order_id":    in.FrontOrderID,
+			"business_id":       in.BusinessID,
+			"trigger_id":        triggerID,
+			"settlement_id":     in.SettlementID,
 			"settlement_method": in.SettlementMethod,
 		})
 		return nil
@@ -268,8 +275,8 @@ func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := tx.Exec(
-		`INSERT INTO fin_business(business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fin_business(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
@@ -278,8 +285,10 @@ func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
 			source_type=excluded.source_type,
 			source_id=excluded.source_id,
 			accounting_scene=excluded.accounting_scene,
-			accounting_subtype=excluded.accounting_subtype`,
+			accounting_subtype=excluded.accounting_subtype,
+			business_role=excluded.business_role`,
 		e.BusinessID,
+		strings.TrimSpace(e.BusinessRole),
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
 		strings.TrimSpace(e.AccountingScene),

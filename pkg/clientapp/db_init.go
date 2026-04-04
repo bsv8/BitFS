@@ -504,6 +504,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// - 本阶段表名保持 fin_business，逻辑上已收口为 businesses
 		`CREATE TABLE IF NOT EXISTS fin_business(
 			business_id TEXT PRIMARY KEY,
+			business_role TEXT NOT NULL DEFAULT '',
 			source_type TEXT NOT NULL DEFAULT '',
 			source_id TEXT NOT NULL DEFAULT '',
 			accounting_scene TEXT NOT NULL DEFAULT '',
@@ -2248,6 +2249,7 @@ func ensureFinAccountingSchema(db *sql.DB) error {
 		col   string
 		stmt  string
 	}{
+		{table: "fin_business", col: "business_role", stmt: `ALTER TABLE fin_business ADD COLUMN business_role TEXT NOT NULL DEFAULT ''`},
 		{table: "fin_business", col: "source_type", stmt: `ALTER TABLE fin_business ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
 		{table: "fin_business", col: "source_id", stmt: `ALTER TABLE fin_business ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
 		{table: "fin_business", col: "accounting_scene", stmt: `ALTER TABLE fin_business ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
@@ -2282,6 +2284,7 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 	}
 	stmts := []string{
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_business_idempotency ON fin_business(idempotency_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_fin_business_role ON fin_business(business_role, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_source ON fin_business(source_type, source_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fin_business_accounting ON fin_business(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fin_process_events_idempotency ON fin_process_events(idempotency_key)`,
@@ -2329,6 +2332,17 @@ func normalizeClientDBData(db *sql.DB) error {
 	// - 出错必须立刻停，不保留半新半旧状态。
 	if err := backfillLegacyFinanceSources(db); err != nil {
 		return fmt.Errorf("legacy finance source backfill: %w", err)
+	}
+
+	// 6. 第五阶段：history business_role 回填
+	// 设计说明：
+	// - 把 fin_business 历史数据按 business_id 前缀补上 business_role
+	// - biz_download_pool_* -> formal
+	// - biz_c2c_open_* / biz_c2c_close_* -> process
+	// - 其他暂时保持空值
+	// - 这是过渡逻辑，新写入路径应显式写 business_role
+	if err := backfillFinBusinessRole(db); err != nil {
+		return fmt.Errorf("fin_business role backfill: %w", err)
 	}
 
 	return nil

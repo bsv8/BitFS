@@ -567,8 +567,8 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := db.Exec(
-		`INSERT INTO fin_business(business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fin_business(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
@@ -577,8 +577,10 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 			source_type=excluded.source_type,
 			source_id=excluded.source_id,
 			accounting_scene=excluded.accounting_scene,
-			accounting_subtype=excluded.accounting_subtype`,
+			accounting_subtype=excluded.accounting_subtype,
+			business_role=excluded.business_role`,
 		e.BusinessID,
+		strings.TrimSpace(e.BusinessRole),
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
 		strings.TrimSpace(e.AccountingScene),
@@ -838,6 +840,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		// 原则：accounting_* 负责业务分类，source_* 最终只负责事实来源
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
+			BusinessRole:      "process", // 过程财务对象
 			SourceType:        "fee_pool",
 			SourceID:          strings.TrimSpace(in.SpendTxID),
 			AccountingScene:   "fee_pool",
@@ -988,6 +991,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
+			BusinessRole:      "process", // 过程财务对象
 			SourceType:        sourceType,
 			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
@@ -1159,6 +1163,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendFinBusiness(db, finBusinessEntry{
 			BusinessID:        businessID,
+			BusinessRole:      "process", // 过程财务对象
 			SourceType:        sourceType,
 			SourceID:          fmt.Sprintf("%d", sourceID),
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景

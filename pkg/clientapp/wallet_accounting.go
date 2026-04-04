@@ -15,8 +15,11 @@ import (
 // 第六次迭代起只使用主口径字段
 // 设计说明：
 //   - 唯一口径：SourceType/SourceID/AccountingScene/AccountingSubType
+//
+// 第五阶段新增：BusinessRole 显式表达业务角色（formal | process）
 type finBusinessEntry struct {
-	BusinessID string
+	BusinessID   string
+	BusinessRole string // "formal" | "process"
 
 	// 主口径 - 唯一模型字段
 	SourceType        string
@@ -253,6 +256,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
+		BusinessRole:      "process", // 钱包过程财务对象
 		SourceType:        sourceType,
 		SourceID:          sourceID,
 		AccountingScene:   "wallet_transfer",
