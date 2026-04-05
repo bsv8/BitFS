@@ -889,7 +889,7 @@
     walletAddress.textContent = String(payload.wallet_address || "-");
     walletBalance.textContent = walletState.loaded ? formatSat(payload.onchain_balance_satoshi) : "-";
     walletBalanceSource.textContent = String(payload.balance_source || "-");
-    walletLedgerNet.textContent = walletState.loaded ? formatSat(payload.ledger_net_satoshi) : "-";
+    walletLedgerNet.textContent = walletState.loaded ? formatSat(payload.net_amount_delta_satoshi) : "-";
     walletTotalIn.textContent = walletState.loaded ? formatSat(payload.total_in_satoshi) : "-";
     walletTotalOut.textContent = walletState.loaded ? formatSat(payload.total_out_satoshi) : "-";
     walletRefreshButton.disabled = !currentState || !isBackendReady(currentState) || walletState.loading;

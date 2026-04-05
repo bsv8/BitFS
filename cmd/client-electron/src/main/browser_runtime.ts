@@ -720,17 +720,18 @@ export class BitfsBrowserRuntime extends EventEmitter {
     const search = new URLSearchParams();
     search.set("limit", String(limit));
     search.set("offset", String(offset));
-    if (direction === "in") {
-      search.set("direction", "IN");
-    } else if (direction === "out") {
-      search.set("direction", "OUT");
+    // 把前端 in/out 映射成后端 fund_flows 的多方向逗号分隔值
+    const directions = historyDirectionToFundFlowDirections(direction);
+    if (directions.length > 0) {
+      search.set("direction", directions.join(","));
     }
-    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/ledger?${search.toString()}`);
+    // 改读 wallet_fund_flows，映射成现有 history 返回结构
+    const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/fund-flows?${search.toString()}`);
     return {
       total: Math.max(0, readIntegerField(payload, "total")),
       limit,
       offset,
-      items: readHistoryItems(payload)
+      items: readHistoryItemsFromFundFlows(payload)
     };
   }
 
@@ -1744,6 +1745,38 @@ function normalizePublicWalletHistoryDirection(raw: string): BitfsPublicWalletHi
   return "unknown";
 }
 
+// fund_flows.direction → history.direction 映射
+// IN/credit → in（资金增加）
+// out/lock/settle/debit → out（资金减少）
+// internal/info/其他 → unknown（内部调账或信息记录）
+function fundFlowDirectionToHistory(raw: string): BitfsPublicWalletHistoryDirection {
+  const value = raw.trim().toLowerCase();
+  switch (value) {
+    case "in":
+    case "credit":
+      return "in";
+    case "out":
+    case "lock":
+    case "settle":
+    case "debit":
+      return "out";
+    default:
+      return "unknown";
+  }
+}
+
+// 前端 in/out 筛选映射到后端 fund_flows 的实际方向值
+function historyDirectionToFundFlowDirections(dir: BitfsPublicWalletHistoryDirection): string[] {
+  switch (dir) {
+    case "in":
+      return ["in", "credit"];
+    case "out":
+      return ["out", "lock", "settle", "debit"];
+    default:
+      return []; // unknown 不传筛选
+  }
+}
+
 function normalizePublicWalletTokenStandard(raw: string): "" | "bsv20" | "bsv21" {
   const value = raw.trim().toLowerCase();
   if (value === "bsv20" || value === "bsv21") {
@@ -1768,6 +1801,29 @@ function readHistoryItems(payload: Record<string, unknown>): BitfsPublicWalletHi
       status: readStringField(item, "status").toLowerCase(),
       block_height: Math.max(0, readIntegerField(item, "block_height")),
       occurred_at_unix: Math.max(0, readIntegerField(item, "occurred_at_unix"))
+    });
+  }
+  return items;
+}
+
+// 从 wallet_fund_flows 映射成 history 返回结构
+// 设计说明：对外保持 history 接口不变，内部改读 fund_flows
+function readHistoryItemsFromFundFlows(payload: Record<string, unknown>): BitfsPublicWalletHistoryItem[] {
+  const rawItems = Array.isArray(payload.items) ? payload.items : [];
+  const items: BitfsPublicWalletHistoryItem[] = [];
+  for (const rawItem of rawItems) {
+    if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+      continue;
+    }
+    const item = rawItem as Record<string, unknown>;
+    items.push({
+      id: Math.max(0, readIntegerField(item, "id")),
+      txid: readStringField(item, "related_txid").toLowerCase(),
+      direction: fundFlowDirectionToHistory(readStringField(item, "direction")),
+      amount_satoshi: Math.abs(readIntegerField(item, "amount_satoshi")),
+      status: "confirmed", // fund_flows 没有 status 字段，默认已确认
+      block_height: 0, // fund_flows 没有 block_height 字段
+      occurred_at_unix: Math.max(0, readIntegerField(item, "created_at_unix"))
     });
   }
   return items;

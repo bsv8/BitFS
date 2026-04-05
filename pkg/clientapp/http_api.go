@@ -81,20 +81,6 @@ const (
 	requestVisitMetaContextKey = requestVisitContextKey("bitfs_request_visit_meta")
 )
 
-type walletLedgerEntry struct {
-	TxID              string
-	Direction         string
-	Category          string
-	AmountSatoshi     int64
-	CounterpartyLabel string
-	Status            string
-	BlockHeight       int64
-	OccurredAtUnix    int64
-	RawRefID          string
-	Note              string
-	Payload           any
-}
-
 type schedulerTaskSnapshot struct {
 	Name              string
 	Status            string
@@ -257,8 +243,6 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/sync-once", s.withAuth(s.handleWalletSyncOnce))
 		mux.HandleFunc(prefix+"/v1/wallet/business/preview", s.withAuth(s.handleWalletBusinessPreview))
 		mux.HandleFunc(prefix+"/v1/wallet/business/sign", s.withAuth(s.handleWalletBusinessSign))
-		mux.HandleFunc(prefix+"/v1/wallet/ledger", s.withAuth(s.handleWalletLedger))
-		mux.HandleFunc(prefix+"/v1/wallet/ledger/detail", s.withAuth(s.handleWalletLedgerDetail))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/preview", s.withAuth(s.handleWalletTokenCreatePreview))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/sign", s.withAuth(s.handleWalletTokenCreateSign))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/submit", s.withAuth(s.handleWalletTokenCreateSubmit))
@@ -602,10 +586,6 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		"total_returned_satoshi":                          counters.TotalReturned,
 		"net_spent_satoshi":                               counters.TotalUsed - counters.TotalReturned,
 		"net_amount_delta_satoshi":                        counters.TotalIn - counters.TotalOut,
-		"ledger_count":                                    counters.LedgerCount,
-		"ledger_total_in_satoshi":                         counters.LedgerIn,
-		"ledger_total_out_satoshi":                        counters.LedgerOut,
-		"ledger_net_satoshi":                              counters.LedgerIn - counters.LedgerOut,
 		"wallet_address":                                  walletAddr,
 		"onchain_balance_satoshi":                         onchainBal,
 		"wallet_total_unspent_utxo_count":                 walletUTXOTotalCount,
@@ -751,56 +731,6 @@ func walletChainTypeOfRuntime(rt *Runtime) string {
 	return fmt.Sprintf("%T", rt.WalletChain)
 }
 
-func (s *httpAPIServer) handleWalletLedger(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	direction := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("direction")))
-	category := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("category")))
-	status := strings.ToUpper(strings.TrimSpace(r.URL.Query().Get("status")))
-	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	data, err := dbListWalletLedger(r.Context(), httpStore(s), walletLedgerFilter{
-		Limit:     limit,
-		Offset:    offset,
-		Direction: direction,
-		Category:  category,
-		Status:    status,
-		TxID:      txid,
-		Query:     q,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": data.Total, "limit": limit, "offset": offset, "items": data.Items})
-}
-
-func (s *httpAPIServer) handleWalletLedgerDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
-		return
-	}
-	it, err := dbGetWalletLedgerItem(r.Context(), httpStore(s), int64(id))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
 func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -817,18 +747,28 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 	relatedTxID := strings.TrimSpace(r.URL.Query().Get("related_txid"))
 	visitID := normalizeVisitIDHeader(r.URL.Query().Get("visit_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	// 支持逗号分隔的多方向筛选
+	var directions []string
+	if direction != "" {
+		for _, d := range strings.Split(direction, ",") {
+			d = strings.TrimSpace(d)
+			if d != "" {
+				directions = append(directions, d)
+			}
+		}
+	}
 	page, err := dbListWalletFundFlows(r.Context(), httpStore(s), walletFundFlowFilter{
-		Limit:       limit,
-		Offset:      offset,
-		FlowID:      flowID,
-		FlowType:    flowType,
-		RefID:       refID,
-		Stage:       stage,
-		Direction:   direction,
-		Purpose:     purpose,
-		RelatedTxID: relatedTxID,
-		VisitID:     visitID,
-		Query:       q,
+		Limit:        limit,
+		Offset:       offset,
+		FlowID:       flowID,
+		FlowType:     flowType,
+		RefID:        refID,
+		Stage:        stage,
+		Directions:   directions,
+		Purpose:      purpose,
+		RelatedTxID:  relatedTxID,
+		VisitID:      visitID,
+		Query:        q,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})

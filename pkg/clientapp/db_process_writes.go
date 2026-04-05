@@ -213,59 +213,6 @@ func dbAppendWalletFundFlowFromContext(ctx context.Context, store *clientDB, e w
 	dbAppendWalletFundFlow(ctx, store, e)
 }
 
-func dbAppendWalletLedgerEntry(ctx context.Context, store *clientDB, e walletLedgerEntry) {
-	if store == nil {
-		return
-	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
-		e.TxID = strings.ToLower(strings.TrimSpace(e.TxID))
-		if e.TxID == "" {
-			e.TxID = "unknown"
-		}
-		e.Direction = strings.ToUpper(strings.TrimSpace(e.Direction))
-		if e.Direction == "" {
-			e.Direction = "UNKNOWN"
-		}
-		e.Category = strings.ToUpper(strings.TrimSpace(e.Category))
-		if e.Category == "" {
-			e.Category = "UNKNOWN"
-		}
-		e.Status = strings.ToUpper(strings.TrimSpace(e.Status))
-		if e.Status == "" {
-			e.Status = "UNKNOWN"
-		}
-		if e.OccurredAtUnix <= 0 {
-			e.OccurredAtUnix = time.Now().Unix()
-		}
-		_, err := db.Exec(
-			`INSERT INTO wallet_ledger_entries(
-				created_at_unix,txid,direction,category,amount_satoshi,counterparty_label,status,block_height,occurred_at_unix,raw_ref_id,note,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			e.TxID,
-			e.Direction,
-			e.Category,
-			e.AmountSatoshi,
-			strings.TrimSpace(e.CounterpartyLabel),
-			e.Status,
-			e.BlockHeight,
-			e.OccurredAtUnix,
-			strings.TrimSpace(e.RawRefID),
-			e.Note,
-			mustJSONString(e.Payload),
-		)
-		if err != nil {
-			obs.Error("bitcast-client", "wallet_ledger_entry_append_failed", map[string]any{
-				"error":     err.Error(),
-				"txid":      e.TxID,
-				"direction": e.Direction,
-				"category":  e.Category,
-			})
-		}
-		return nil
-	})
-}
-
 func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEntry) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")

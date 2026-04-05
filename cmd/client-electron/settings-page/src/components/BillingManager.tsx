@@ -133,7 +133,7 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
         </article>
         <article className="metric-card">
           <span>账面净值</span>
-          <strong>{formatSat(Number(walletSummary?.ledger_net_satoshi || 0))}</strong>
+          <strong>{formatSat(Number(walletSummary?.net_amount_delta_satoshi || 0))}</strong>
           <p>当前账面净入账结果。</p>
         </article>
       </div>

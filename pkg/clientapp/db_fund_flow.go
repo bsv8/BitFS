@@ -5,20 +5,21 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 type walletFundFlowFilter struct {
-	Limit       int
-	Offset      int
-	FlowID      string
-	FlowType    string
-	RefID       string
-	Stage       string
-	Direction   string
-	Purpose     string
-	RelatedTxID string
-	VisitID     string
-	Query       string
+	Limit        int
+	Offset       int
+	FlowID       string
+	FlowType     string
+	RefID        string
+	Stage        string
+	Directions   []string // 多值 IN 匹配
+	Purpose      string
+	RelatedTxID  string
+	VisitID      string
+	Query        string
 }
 
 type walletFundFlowPage struct {
@@ -68,9 +69,13 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 			where += " AND stage=?"
 			args = append(args, f.Stage)
 		}
-		if f.Direction != "" {
-			where += " AND direction=?"
-			args = append(args, f.Direction)
+		if len(f.Directions) > 0 {
+			placeholders := make([]string, len(f.Directions))
+			for i, d := range f.Directions {
+				placeholders[i] = "?"
+				args = append(args, d)
+			}
+			where += " AND direction IN (" + strings.Join(placeholders, ",") + ")"
 		}
 		if f.Purpose != "" {
 			where += " AND purpose=?"

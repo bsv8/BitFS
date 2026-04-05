@@ -65,7 +65,7 @@ export type WalletSummary = {
   balance_source?: string;
   wallet_chain_type?: string;
   wallet_chain_base_url?: string;
-  ledger_net_satoshi?: number;
+  net_amount_delta_satoshi?: number;
   total_in_satoshi?: number;
   total_out_satoshi?: number;
   total_used_satoshi?: number;
