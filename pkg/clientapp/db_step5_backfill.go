@@ -207,19 +207,21 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				ps.seller_pubkey_hex,
 				ps.counterparty_pubkey_hex,
 				ps.pool_amount_satoshi
-			FROM fact_pool_allocations pa
+			FROM fact_pool_session_events pa
 			JOIN fact_pool_sessions ps ON ps.pool_session_id = pa.pool_session_id
-			WHERE pa.allocation_kind = 'pay'
+			WHERE pa.event_kind = 'pool_event'
+				AND pa.allocation_kind = 'pay'
 				AND pa.id = (
 					-- 取该 session 的第一次 pay allocation
-					SELECT MIN(id) FROM fact_pool_allocations 
+					SELECT MIN(id) FROM fact_pool_session_events 
 					WHERE pool_session_id = pa.pool_session_id 
+					AND event_kind = 'pool_event'
 					AND allocation_kind = 'pay'
 				)
 			ORDER BY pa.id ASC
 		`)
 		if err != nil {
-			return fmt.Errorf("query fact_pool_allocations: %w", err)
+			return fmt.Errorf("query fact_pool_session_events: %w", err)
 		}
 		defer rows.Close()
 
@@ -329,7 +331,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 		}
 
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate fact_pool_allocations: %w", err)
+			return fmt.Errorf("iterate fact_pool_session_events: %w", err)
 		}
 		return nil
 	})

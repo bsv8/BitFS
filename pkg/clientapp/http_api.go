@@ -342,6 +342,13 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos/detail", s.withAuth(s.handleAdminWalletUTXODetail))
 		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events", s.withAuth(s.handleAdminWalletUTXOEvents))
 		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events/detail", s.withAuth(s.handleAdminWalletUTXOEventDetail))
+		// 资产确认队列运维
+		mux.HandleFunc(prefix+"/v1/admin/verification/summary", s.withAuth(s.handleAdminVerificationSummary))
+		mux.HandleFunc(prefix+"/v1/admin/verification/failed", s.withAuth(s.handleAdminVerificationFailed))
+		mux.HandleFunc(prefix+"/v1/admin/verification/items", s.withAuth(s.handleAdminVerificationItems))
+		mux.HandleFunc(prefix+"/v1/admin/verification/reconcile", s.withAuth(s.handleAdminVerificationReconcile))
+		mux.HandleFunc(prefix+"/v1/admin/verification/reset", s.withAuth(s.handleAdminVerificationReset))
+		mux.HandleFunc(prefix+"/v1/admin/verification/batch-retry", s.withAuth(s.handleAdminVerificationBatchRetry))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses", s.withAuth(s.handleAdminFinanceBusinesses))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/compat", s.withAuth(s.handleAdminFinanceBusinessesCompat)) // 第十阶段新增：兼容/调试全量查询入口
@@ -2704,10 +2711,10 @@ func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":              true,
-		"seed_count":      len(biz_seeds),
-		"synced_at_unix":  time.Now().Unix(),
-		"workspace_dir":   s.cfg.Storage.WorkspaceDir,
+		"ok":                  true,
+		"seed_count":          len(biz_seeds),
+		"synced_at_unix":      time.Now().Unix(),
+		"workspace_dir":       s.cfg.Storage.WorkspaceDir,
 		"biz_workspace_files": len(biz_seeds),
 	})
 }
@@ -5251,4 +5258,250 @@ func maskSecretForAdminConfig(raw string) string {
 		return "********"
 	}
 	return value[:4] + "..." + value[len(value)-4:]
+}
+
+// ==================== 资产确认队列运维 API ====================
+
+// writeVerificationResponse 统一写 verification API 响应，保证 data_role/source_of_truth 口径一致
+// 设计说明（Step 14）：
+// - 所有 verification 查询接口必须通过此函数返回，避免漏字段
+func writeVerificationResponse(w http.ResponseWriter, data map[string]any) {
+	data["data_role"] = "primary"
+	data["source_of_truth"] = "fact_chain_asset_flows"
+	writeJSON(w, http.StatusOK, data)
+}
+
+func (s *httpAPIServer) handleAdminVerificationSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	summary, err := dbGetVerificationQueueSummary(r.Context(), httpStore(s))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	// 同时发射日志事件
+	emitVerificationQueueSummaryLog(r.Context(), httpStore(s), "admin_api")
+	writeVerificationResponse(w, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"summary":  summary,
+		"total":    summary.Total,
+		"limit":    0,
+		"offset":   0,
+	})
+}
+
+func (s *httpAPIServer) handleAdminVerificationFailed(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
+	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
+	includePending := false
+	if ip := r.URL.Query().Get("include_pending"); ip != "" {
+		includePending = ip == "1" || ip == "true" || ip == "yes"
+	}
+	allItems, err := dbListFailedVerificationItems(r.Context(), httpStore(s), 1_000_000, includePending)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	// 分页截取
+	start := offset
+	if start > len(allItems) {
+		start = len(allItems)
+	}
+	end := start + limit
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	items := allItems[start:end]
+	writeVerificationResponse(w, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"total":    len(allItems),
+		"limit":    limit,
+		"offset":   offset,
+		"items":    items,
+	})
+}
+
+func (s *httpAPIServer) handleAdminVerificationItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	q := r.URL.Query()
+	limit := parseBoundInt(q.Get("limit"), 100, 1, 500)
+	offset := parseBoundInt(q.Get("offset"), 0, 0, 1_000_000)
+
+	f := verificationQueueFilter{
+		Status:   strings.ToLower(strings.TrimSpace(q.Get("status"))),
+		WalletID: strings.TrimSpace(q.Get("wallet_id")),
+		Limit:    1_000_000, // 查全部以便客户端分页
+	}
+	if a := q.Get("after_unix"); a != "" {
+		if n, err := strconv.ParseInt(a, 10, 64); err == nil {
+			f.AfterUnix = n
+		}
+	}
+	if b := q.Get("before_unix"); b != "" {
+		if n, err := strconv.ParseInt(b, 10, 64); err == nil {
+			f.BeforeUnix = n
+		}
+	}
+	if o := q.Get("order_by"); o == "updated_desc" {
+		f.OrderByUpdate = true
+	}
+	allItems, err := dbListVerificationItems(r.Context(), httpStore(s), f)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	// 分页截取
+	start := offset
+	if start > len(allItems) {
+		start = len(allItems)
+	}
+	end := start + limit
+	if end > len(allItems) {
+		end = len(allItems)
+	}
+	items := allItems[start:end]
+	writeVerificationResponse(w, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"total":    len(allItems),
+		"limit":    limit,
+		"offset":   offset,
+		"items":    items,
+	})
+}
+
+func (s *httpAPIServer) handleAdminVerificationReconcile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	report, err := dbCheckVerificationReconciliation(r.Context(), httpStore(s))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	// 同时发射日志事件
+	emitVerificationReconcileReportLog(r.Context(), httpStore(s), "admin_api")
+	writeVerificationResponse(w, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"report":   report,
+		"total":    report.Summary["confirmed_without_fact"] + report.Summary["fact_pending_or_missing"],
+		"limit":    0,
+		"offset":   0,
+	})
+}
+
+func (s *httpAPIServer) handleAdminVerificationReset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var body struct {
+		UTXOID string `json:"utxo_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+		return
+	}
+	utxoID := strings.TrimSpace(body.UTXOID)
+	if utxoID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "utxo_id is required"})
+		return
+	}
+	err := dbResetVerificationToPending(r.Context(), httpStore(s), utxoID)
+	// 审计日志
+	operator := r.Header.Get("X-Visit-ID")
+	if operator == "" {
+		operator = "unknown"
+	}
+	emitVerificationAuditLog(r.Context(), httpStore(s), "reset", operator,
+		map[string]any{"utxo_id": utxoID},
+		func() int {
+			if err == nil {
+				return 1
+			}
+			return 0
+		}(),
+		err,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	writeVerificationResponse(w, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"reset":    utxoID,
+		"status":   "pending",
+	})
+}
+
+func (s *httpAPIServer) handleAdminVerificationBatchRetry(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.db == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	var body struct {
+		WalletID   string `json:"wallet_id"`
+		AfterUnix  int64  `json:"after_unix"`
+		BeforeUnix int64  `json:"before_unix"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json body"})
+		return
+	}
+	count, err := dbBatchRetryFailed(r.Context(), httpStore(s), body.WalletID, body.AfterUnix, body.BeforeUnix)
+	// 审计日志
+	operator := r.Header.Get("X-Visit-ID")
+	if operator == "" {
+		operator = "unknown"
+	}
+	emitVerificationAuditLog(r.Context(), httpStore(s), "batch_retry", operator,
+		map[string]any{
+			"wallet_id":   body.WalletID,
+			"after_unix":  body.AfterUnix,
+			"before_unix": body.BeforeUnix,
+		},
+		count,
+		err,
+	)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeVerificationResponse(w, map[string]any{
+		"now_unix": time.Now().Unix(),
+		"retried":  count,
+	})
 }

@@ -383,7 +383,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 // 第十一阶段收口：增加 businessRole 参数，不再默认全量
 // 设计说明：
 // - allocation_id 这里只做便利查询输入，不直接落到 source_id；
-// - 底层只按 fact_pool_allocations.id 过滤新口径记录；
+// - 底层只按 fact_pool_session_events.id 过滤新口径记录；
 // - businessRole 必填：formal 或 process，不再允许空值。
 func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, businessRole string, limit, offset int) (financeBusinessPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
@@ -413,7 +413,7 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 // dbListFinanceProcessEventsByPoolAllocationID 按 allocation_id 查流程事件
 // 设计说明：
 // - allocation_id 这里只做便利查询输入，不直接落到 source_id；
-// - 底层只按 fact_pool_allocations.id 过滤新口径记录。
+// - 底层只按 fact_pool_session_events.id 过滤新口径记录。
 func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *clientDB, allocationID string, limit, offset int) (financeProcessEventPage, error) {
 	allocationID = strings.TrimSpace(allocationID)
 	if allocationID == "" {

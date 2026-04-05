@@ -450,8 +450,8 @@ func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (t
 		where := ""
 		args := make([]any, 0, 8)
 		if f.EventType != "" {
-			where += " AND event_type=?"
-			args = append(args, f.EventType)
+			where += " AND payload_json LIKE ?"
+			args = append(args, "%\"event_type\":\""+f.EventType+"\"%")
 		}
 		if f.Direction != "" {
 			where += " AND direction=?"
@@ -467,10 +467,10 @@ func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (t
 			args = append(args, like, like, like)
 		}
 		var out txHistoryPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM fact_tx_history WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := db.QueryRow("SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind='tx_history' AND 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return txHistoryPage{}, err
 		}
-		rows, err := db.Query("SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM fact_tx_history WHERE 1=1"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
+		rows, err := db.Query("SELECT id,created_at_unix,gateway_pubkey_hex,event_kind,direction,amount_satoshi,purpose,note,pool_session_id,msg_id,sequence_num,cycle_index,payload_json FROM fact_pool_session_events WHERE event_kind='tx_history' AND 1=1"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return txHistoryPage{}, err
 		}
@@ -495,7 +495,7 @@ func dbGetTxHistoryItem(ctx context.Context, store *clientDB, id int64) (txHisto
 		return txHistoryItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (txHistoryItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index FROM fact_tx_history WHERE id=?`, id)
+		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_kind,direction,amount_satoshi,purpose,note,pool_session_id,msg_id,sequence_num,cycle_index,payload_json FROM fact_pool_session_events WHERE id=? AND event_kind='tx_history'`, id)
 		return scanTxHistoryItem(row)
 	})
 }
@@ -590,9 +590,18 @@ type scanTxHistory interface {
 
 func scanTxHistoryItem(row scanTxHistory) (txHistoryItem, error) {
 	var out txHistoryItem
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.EventType, &out.Direction, &out.AmountSatoshi, &out.Purpose, &out.Note, &out.PoolID, &out.MsgID, &out.SequenceNum, &out.CycleIndex)
+	var payload string
+	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.EventType, &out.Direction, &out.AmountSatoshi, &out.Purpose, &out.Note, &out.PoolID, &out.MsgID, &out.SequenceNum, &out.CycleIndex, &payload)
 	if err != nil {
 		return txHistoryItem{}, err
+	}
+	if strings.TrimSpace(out.EventType) == "tx_history" && strings.TrimSpace(payload) != "" {
+		var body map[string]any
+		if json.Unmarshal([]byte(payload), &body) == nil {
+			if eventType, ok := body["event_type"].(string); ok && strings.TrimSpace(eventType) != "" {
+				out.EventType = eventType
+			}
+		}
 	}
 	return out, nil
 }

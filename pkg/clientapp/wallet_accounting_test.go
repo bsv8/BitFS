@@ -240,7 +240,7 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	}
 	rows, err := db.Query(
 		`SELECT allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex
-		   FROM fact_pool_allocations WHERE pool_session_id=? ORDER BY allocation_no ASC`,
+		   FROM fact_pool_session_events WHERE pool_session_id=? ORDER BY allocation_no ASC`,
 		sessionID,
 	)
 	if err != nil {
@@ -279,7 +279,7 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 }
 
 // TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证第二步整改 + 第二阶段
-// source_id 应该是 fact_pool_allocations.id（整数），而不是 allocation_id（业务键）
+// source_id 应该是 fact_pool_session_events.id（整数），而不是 allocation_id（业务键）
 // 第二阶段：open/close 为过程型财务对象，只验证 pay 的 source_id 格式
 func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
@@ -358,7 +358,7 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 		t.Fatal("pay 应生成 fin_process_event 过程记录")
 	}
 
-	// 验证：settle_process_events 的 source_id 是 fact_pool_allocations.id
+	// 验证：settle_process_events 的 source_id 是 fact_pool_session_events.id
 	var procSourceType, procSourceIDStr string
 	if err := db.QueryRow(
 		`SELECT source_type, source_id FROM settle_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
@@ -388,7 +388,7 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 }
 
 // TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID 验证第二步整改
-// process events 的 source_id 应该是 fact_pool_allocations.id（整数）
+// process events 的 source_id 应该是 fact_pool_session_events.id（整数）
 func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
 
@@ -577,7 +577,7 @@ func TestDirectTransferAccounting_CloseUsesExplicitSequence(t *testing.T) {
 		t.Fatalf("第二阶段：close 的 accounting_subtype 应为 pool_close_settle，got %s", closeSubtype)
 	}
 
-	// 验证：settle_process_events 的 source_id 是 fact_pool_allocations.id
+	// 验证：settle_process_events 的 source_id 是 fact_pool_session_events.id
 	var processSourceID string
 	if err := db.QueryRow(
 		`SELECT source_id FROM settle_process_events WHERE process_id=? AND accounting_subtype='close' ORDER BY id DESC LIMIT 1`,
@@ -1278,7 +1278,7 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 }
 
 // TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts
-// 第二阶段硬约束：查不到 fact_pool_allocations.id 时，直连池财务写入必须直接失败
+// 第二阶段硬约束：查不到 fact_pool_session_events.id 时，直连池财务写入必须直接失败
 func TestDirectTransferAccounting_RejectsMissingPoolAllocationFacts(t *testing.T) {
 	t.Parallel()
 

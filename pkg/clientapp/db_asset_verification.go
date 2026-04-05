@@ -176,6 +176,13 @@ func runUnknownAssetVerification(ctx context.Context, rt *Runtime, store *client
 	taskCtx, cancel := context.WithTimeout(ctx, assetVerificationTimeout)
 	defer cancel()
 
+	// 0. 自动将超过最大重试次数的 pending 项转 failed
+	if autoFailed, err := dbAutoFailExhaustedRetries(taskCtx, store); err == nil && autoFailed > 0 {
+		obs.Info("bitcast-client", "verification_auto_failed_max_retries", map[string]any{
+			"auto_failed_count": autoFailed,
+		})
+	}
+
 	// 1. 从队列表获取待处理项
 	rows, err := dbListPendingVerificationItems(taskCtx, store, assetVerificationMaxBatch)
 	if err != nil {

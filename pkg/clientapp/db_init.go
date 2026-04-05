@@ -66,21 +66,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			UNIQUE(demand_id)
 		)`,
 
-		// 交易历史
-		`CREATE TABLE IF NOT EXISTS fact_tx_history(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			gateway_pubkey_hex TEXT NOT NULL,
-			event_type TEXT NOT NULL,
-			direction TEXT NOT NULL,
-			amount_satoshi INTEGER NOT NULL,
-			purpose TEXT NOT NULL,
-			note TEXT NOT NULL,
-			pool_id TEXT NOT NULL,
-			msg_id TEXT NOT NULL,
-			sequence_num INTEGER NOT NULL,
-			cycle_index INTEGER NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS biz_purchases(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			demand_id TEXT NOT NULL,
@@ -185,7 +170,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		// 直连传输费用池事实层：只保留真实池会话与逐次动作，不承载运行时快照职责。
+		// 直连传输费用池事实层：只保留真实池会话与会话事件，不承载运行时快照职责。
 		`CREATE TABLE IF NOT EXISTS fact_pool_sessions(
 			pool_session_id TEXT PRIMARY KEY,
 			pool_scheme TEXT NOT NULL,
@@ -202,19 +187,28 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS fact_pool_allocations(
+		`CREATE TABLE IF NOT EXISTS fact_pool_session_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			allocation_id TEXT NOT NULL,
-			pool_session_id TEXT NOT NULL,
-			allocation_no INTEGER NOT NULL,
-			allocation_kind TEXT NOT NULL,
-			sequence_num INTEGER NOT NULL,
-			payee_amount_after INTEGER NOT NULL,
-			payer_amount_after INTEGER NOT NULL,
-			txid TEXT NOT NULL,
-			tx_hex TEXT NOT NULL,
+			pool_session_id TEXT NOT NULL DEFAULT '',
+			allocation_no INTEGER NOT NULL DEFAULT 0,
+			allocation_kind TEXT NOT NULL DEFAULT '',
+			event_kind TEXT NOT NULL DEFAULT 'pool_event',
+			sequence_num INTEGER NOT NULL DEFAULT 0,
+			state TEXT NOT NULL DEFAULT 'confirmed',
+			direction TEXT NOT NULL DEFAULT '',
+			amount_satoshi INTEGER NOT NULL DEFAULT 0,
+			purpose TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			msg_id TEXT NOT NULL DEFAULT '',
+			cycle_index INTEGER NOT NULL DEFAULT 0,
+			payee_amount_after INTEGER NOT NULL DEFAULT 0,
+			payer_amount_after INTEGER NOT NULL DEFAULT 0,
+			txid TEXT NOT NULL DEFAULT '',
+			tx_hex TEXT NOT NULL DEFAULT '',
+			gateway_pubkey_hex TEXT NOT NULL DEFAULT '',
 			created_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(pool_session_id) REFERENCES fact_pool_sessions(pool_session_id) ON DELETE CASCADE,
+			payload_json TEXT NOT NULL DEFAULT '{}',
 			UNIQUE(allocation_id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS fact_chain_payments(
@@ -247,11 +241,13 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			FOREIGN KEY(utxo_id) REFERENCES wallet_utxo(utxo_id) ON DELETE CASCADE,
 			UNIQUE(chain_payment_id, utxo_id, io_side, utxo_role)
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_allocations_session_kind_seq ON fact_pool_allocations(pool_session_id,allocation_kind,sequence_num)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='pool_event'`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_scheme_status ON fact_pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_counterparty ON fact_pool_sessions(counterparty_pubkey_hex,status)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_session_no ON fact_pool_allocations(pool_session_id,allocation_no DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_txid ON fact_pool_allocations(txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_session_no ON fact_pool_session_events(pool_session_id,allocation_no DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_kind_seq ON fact_pool_session_events(pool_session_id,event_kind,sequence_num)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_txid ON fact_pool_session_events(txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_created ON fact_pool_session_events(created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_occurred ON fact_chain_payments(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_subtype ON fact_chain_payments(payment_subtype, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_status ON fact_chain_payments(status, occurred_at_unix DESC)`,
@@ -773,7 +769,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_proc_file_download_chunks_seed ON proc_file_download_chunks(seed_hash,chunk_index)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_live_quotes_demand ON biz_live_quotes(demand_id, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_node_reachability_cache_expires ON proc_node_reachability_cache(expires_at_unix DESC, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_tx_history_created_at ON fact_tx_history(created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_created_at ON fact_pool_session_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_created_at ON biz_purchases(created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_demand_created ON biz_purchases(demand_id, created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_seller_created ON biz_purchases(seller_pub_hex, created_at_unix DESC, id DESC)`,
@@ -896,22 +892,35 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// - 去重使用部分唯一索引（partial unique index），因为 SQLite 的 UNIQUE 对 NULL 不可靠
 		`CREATE TABLE IF NOT EXISTS fact_asset_consumptions(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source_flow_id INTEGER NOT NULL,
+			consumption_id TEXT NOT NULL DEFAULT '',
+			source_flow_id INTEGER,
+			source_utxo_id TEXT NOT NULL DEFAULT '',
 			chain_payment_id INTEGER,
 			pool_allocation_id INTEGER,
+			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
 			used_satoshi INTEGER NOT NULL DEFAULT 0,
 			used_quantity_text TEXT NOT NULL DEFAULT '',
 			occurred_at_unix INTEGER NOT NULL,
+			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
 			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
-			FOREIGN KEY(pool_allocation_id) REFERENCES fact_pool_allocations(id),
+			FOREIGN KEY(pool_allocation_id) REFERENCES fact_pool_session_events(id),
 			CHECK(
 				(chain_payment_id IS NOT NULL AND pool_allocation_id IS NULL) OR
 				(chain_payment_id IS NULL AND pool_allocation_id IS NOT NULL)
 			)
 		)`,
+		`CREATE TRIGGER IF NOT EXISTS trg_fact_asset_consumptions_fill_consumption_id
+			AFTER INSERT ON fact_asset_consumptions
+			FOR EACH ROW
+			WHEN trim(NEW.consumption_id) = ''
+			BEGIN
+				UPDATE fact_asset_consumptions
+				SET consumption_id = 'cons_' || NEW.id
+				WHERE id = NEW.id;
+			END`,
 
 		// fact_chain_asset_flows 索引
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_wallet_asset ON fact_chain_asset_flows(wallet_id, asset_kind, token_id, id DESC)`,
@@ -921,12 +930,14 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 
 		// fact_asset_consumptions 索引
 		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_source ON fact_asset_consumptions(source_flow_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_source_utxo ON fact_asset_consumptions(source_utxo_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_payment ON fact_asset_consumptions(chain_payment_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_allocation ON fact_asset_consumptions(pool_allocation_id, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_consumption_id ON fact_asset_consumptions(consumption_id)`,
 		// 部分唯一索引：解决 SQLite UNIQUE 对 NULL 不可靠的问题
-		// 确保同一 source_flow_id 不能重复关联到同一个 payment 或 allocation
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_payment ON fact_asset_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_allocation ON fact_asset_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL`,
+		// 确保同一源流不会重复关联到同一个 settlement 入口
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_payment ON fact_asset_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL AND source_flow_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_allocation ON fact_asset_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL AND source_flow_id IS NOT NULL`,
 
 		// Step 9: WOC 证据驱动 token IN 入账 - 待确认队列表
 		// 设计说明：
@@ -2050,23 +2061,32 @@ func normalizeSQLWhitespace(in string) string {
 	return strings.NewReplacer(" ", "", "\n", "", "\t", "", "\r", "").Replace(strings.TrimSpace(in))
 }
 
-// ensurePoolAllocationsSchema 只处理 fact_pool_allocations 的结构升级。
+// ensurePoolAllocationsSchema 只处理 fact_pool_session_events 的结构升级。
 // 设计说明：
-// - 只补 id 和唯一业务键，不碰写入、读取和其他财务表；
-// - 老库走重建表迁移，新库直接跳过；
-// - 拷贝顺序固定，保证同库内新 id 的生成顺序可预期；
-// - 这个 id 只保证同库内稳定，不当作跨库可比的业务主键。
+// - 老库会把 fact_pool_allocations 和 fact_tx_history 合并进新事件表；
+// - 新库直接跳过；
+// - 事件表同时承接池内动作和 tx 历史，区别只靠 event_kind。
 func ensurePoolAllocationsSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 
-	cols, err := tableColumns(db, "fact_pool_allocations")
+	hasLegacyAllocations, err := hasRealTable(db, "fact_pool_allocations")
 	if err != nil {
-		return fmt.Errorf("inspect fact_pool_allocations: %w", err)
+		return err
 	}
-	if _, ok := cols["id"]; ok {
-		return nil
+	hasLegacyTxHistory, err := hasRealTable(db, "fact_tx_history")
+	if err != nil {
+		return err
+	}
+	cols, err := tableColumns(db, "fact_pool_session_events")
+	if err != nil {
+		return fmt.Errorf("inspect fact_pool_session_events: %w", err)
+	}
+	if _, ok := cols["id"]; ok && !hasLegacyAllocations && !hasLegacyTxHistory {
+		if _, ok := cols["event_kind"]; ok {
+			return nil
+		}
 	}
 
 	tx, err := db.Begin()
@@ -2080,58 +2100,96 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS fact_pool_allocations_new`); err != nil {
+	if hasLegacyAllocations {
+		if _, err := tx.Exec(`ALTER TABLE fact_pool_allocations RENAME TO fact_pool_allocations_legacy`); err != nil {
+			rollback()
+			return err
+		}
+	}
+	if hasLegacyTxHistory {
+		if _, err := tx.Exec(`ALTER TABLE fact_tx_history RENAME TO fact_tx_history_legacy`); err != nil {
+			rollback()
+			return err
+		}
+	}
+	if hasLegacyAllocations {
+		if _, err := tx.Exec(`INSERT INTO fact_pool_session_events(
+			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+		) SELECT
+			allocation_id,pool_session_id,allocation_no,allocation_kind,'pool_event',sequence_num,'confirmed','',0,allocation_kind,'','',0,payee_amount_after,payer_amount_after,txid,tx_hex,'',created_at_unix,'{}'
+		FROM fact_pool_allocations_legacy
+		ORDER BY pool_session_id ASC, allocation_no ASC, allocation_id ASC`); err != nil {
+			rollback()
+			return err
+		}
+		if _, err := tx.Exec(`DROP TABLE fact_pool_allocations_legacy`); err != nil {
+			rollback()
+			return err
+		}
+	}
+	if hasLegacyTxHistory {
+		if _, err := tx.Exec(`INSERT INTO fact_pool_session_events(
+			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+		) SELECT
+			'txhist_' || id,
+			COALESCE(pool_id,''),
+			0,
+			event_type,
+			'tx_history',
+			sequence_num,
+			'confirmed',
+			direction,
+			amount_satoshi,
+			purpose,
+			note,
+			msg_id,
+			cycle_index,
+			0,
+			0,
+			COALESCE(pool_id,''),
+			'',
+			gateway_pubkey_hex,
+			created_at_unix,
+			'{}'
+		FROM fact_tx_history_legacy
+		ORDER BY id ASC`); err != nil {
+			rollback()
+			return err
+		}
+		if _, err := tx.Exec(`DROP TABLE fact_tx_history_legacy`); err != nil {
+			rollback()
+			return err
+		}
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_allocation_id ON fact_pool_session_events(allocation_id)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE fact_pool_allocations RENAME TO fact_pool_allocations_legacy`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_session_no ON fact_pool_session_events(pool_session_id,allocation_no DESC)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE fact_pool_allocations_new(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		allocation_id TEXT NOT NULL,
-		pool_session_id TEXT NOT NULL,
-		allocation_no INTEGER NOT NULL,
-		allocation_kind TEXT NOT NULL,
-		sequence_num INTEGER NOT NULL,
-		payee_amount_after INTEGER NOT NULL,
-		payer_amount_after INTEGER NOT NULL,
-		txid TEXT NOT NULL,
-		tx_hex TEXT NOT NULL,
-		created_at_unix INTEGER NOT NULL,
-		FOREIGN KEY(pool_session_id) REFERENCES fact_pool_sessions(pool_session_id) ON DELETE CASCADE,
-		UNIQUE(allocation_id)
-	)`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_kind_seq ON fact_pool_session_events(pool_session_id,event_kind,sequence_num)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO fact_pool_allocations_new(
-		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-	) SELECT
-		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-	FROM fact_pool_allocations_legacy
-	ORDER BY pool_session_id ASC, allocation_no ASC, allocation_id ASC`); err != nil {
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='pool_event'`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE fact_pool_allocations_legacy`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_txid ON fact_pool_session_events(txid)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE fact_pool_allocations_new RENAME TO fact_pool_allocations`); err != nil {
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_created ON fact_pool_session_events(created_at_unix DESC, id DESC)`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_allocations_session_kind_seq ON fact_pool_allocations(pool_session_id,allocation_kind,sequence_num)`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS fact_pool_allocations_legacy`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_session_no ON fact_pool_allocations(pool_session_id,allocation_no DESC)`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_pool_allocations_txid ON fact_pool_allocations(txid)`); err != nil {
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS fact_tx_history_legacy`); err != nil {
 		rollback()
 		return err
 	}
@@ -4112,8 +4170,24 @@ func mapLegacyBizUTXORole(sceneType string, sceneSubtype string, legacyRole stri
 
 // hasTable 检查表是否存在
 func hasTable(db *sql.DB, name string) (bool, error) {
+	return hasSchemaObject(db, name)
+}
+
+func hasRealTable(db *sql.DB, name string) (bool, error) {
 	var one int
 	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func hasSchemaObject(db *sql.DB, name string) (bool, error) {
+	var one int
+	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}

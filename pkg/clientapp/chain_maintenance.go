@@ -791,6 +791,13 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		logWalletSyncStepInfo(meta, "unknown_asset_verification", map[string]any{
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
+		// Step 11: 链同步完成后，固定触发 verification 运维日志
+		// 设计说明：
+		// - 不阻塞主流程，仅增强可观测性
+		// - 包含队列汇总 + 对账报告 + 阈值告警
+		emitVerificationQueueSummaryLog(ctx, m.store, "chain_sync")
+		emitVerificationReconcileReportLog(ctx, m.store, "chain_sync")
+		emitVerificationThresholdAlerts(ctx, m.store, "chain_sync")
 	}
 
 	select {

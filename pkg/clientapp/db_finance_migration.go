@@ -98,7 +98,7 @@ func backfillLegacyPoolAllocationFinanceSources(db *sql.DB) error {
 		if looksLikeIntegerID(sourceID) {
 			if !legacyPoolAllocationIDExistsTx(tx, sourceID) {
 				rollback()
-				return fmt.Errorf("pool_allocation source id %s already looks migrated but fact_pool_allocations row is missing", sourceID)
+				return fmt.Errorf("pool_allocation source id %s already looks migrated but fact_pool_session_events row is missing", sourceID)
 			}
 			continue
 		}
@@ -108,7 +108,7 @@ func backfillLegacyPoolAllocationFinanceSources(db *sql.DB) error {
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				rollback()
-				return fmt.Errorf("pool_allocation source id %s has no fact_pool_allocations mapping", allocationID)
+				return fmt.Errorf("pool_allocation source id %s has no fact_pool_session_events mapping", allocationID)
 			}
 			rollback()
 			return fmt.Errorf("resolve pool_allocation mapping for %s: %w", allocationID, err)
@@ -256,7 +256,7 @@ func legacyPoolAllocationIDExistsTx(tx *sql.Tx, sourceID string) bool {
 		return false
 	}
 	var exists int
-	err := tx.QueryRow(`SELECT 1 FROM fact_pool_allocations WHERE id=?`, sourceID).Scan(&exists)
+	err := tx.QueryRow(`SELECT 1 FROM fact_pool_session_events WHERE id=?`, sourceID).Scan(&exists)
 	return err == nil
 }
 

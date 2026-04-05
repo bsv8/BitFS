@@ -78,7 +78,7 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	for _, table := range []string{"fact_pool_sessions", "fact_pool_allocations", "fact_chain_payments", "fact_chain_payment_utxo_links"} {
+	for _, table := range []string{"fact_pool_sessions", "fact_pool_session_events", "fact_chain_payments", "fact_chain_payment_utxo_links"} {
 		exists, err := hasTable(db, table)
 		if err != nil {
 			t.Fatalf("hasTable %s failed: %v", table, err)
@@ -88,24 +88,24 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		}
 	}
 
-	allocCols, err := tableColumns(db, "fact_pool_allocations")
+	allocCols, err := tableColumns(db, "fact_pool_session_events")
 	if err != nil {
-		t.Fatalf("inspect fact_pool_allocations columns failed: %v", err)
+		t.Fatalf("inspect fact_pool_session_events columns failed: %v", err)
 	}
 	for _, col := range []string{"id", "allocation_id", "pool_session_id", "allocation_no", "allocation_kind", "sequence_num", "payee_amount_after", "payer_amount_after", "txid", "tx_hex", "created_at_unix"} {
 		if _, ok := allocCols[col]; !ok {
-			t.Fatalf("fact_pool_allocations missing column %s", col)
+			t.Fatalf("fact_pool_session_events missing column %s", col)
 		}
 	}
-	if notNull, err := tableColumnNotNull(db, "fact_pool_allocations", "allocation_id"); err != nil {
-		t.Fatalf("inspect fact_pool_allocations allocation_id notnull failed: %v", err)
+	if notNull, err := tableColumnNotNull(db, "fact_pool_session_events", "allocation_id"); err != nil {
+		t.Fatalf("inspect fact_pool_session_events allocation_id notnull failed: %v", err)
 	} else if !notNull {
-		t.Fatalf("fact_pool_allocations.allocation_id should be NOT NULL")
+		t.Fatalf("fact_pool_session_events.allocation_id should be NOT NULL")
 	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_pool_allocations", []string{"allocation_id"}); err != nil {
-		t.Fatalf("inspect fact_pool_allocations unique constraint failed: %v", err)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_pool_session_events", []string{"allocation_id"}); err != nil {
+		t.Fatalf("inspect fact_pool_session_events unique constraint failed: %v", err)
 	} else if !unique {
-		t.Fatalf("fact_pool_allocations should keep unique constraint on allocation_id")
+		t.Fatalf("fact_pool_session_events should keep unique constraint on allocation_id")
 	}
 
 	for _, table := range []string{"fact_chain_payments", "fact_chain_payment_utxo_links"} {
@@ -134,12 +134,12 @@ func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	cols, err := tableColumns(db, "fact_pool_allocations")
+	cols, err := tableColumns(db, "fact_pool_session_events")
 	if err != nil {
-		t.Fatalf("inspect migrated fact_pool_allocations columns failed: %v", err)
+		t.Fatalf("inspect migrated fact_pool_session_events columns failed: %v", err)
 	}
 	if _, ok := cols["id"]; !ok {
-		t.Fatalf("fact_pool_allocations should have id after migration")
+		t.Fatalf("fact_pool_session_events should have id after migration")
 	}
 
 	type row struct {
@@ -148,9 +148,9 @@ func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
 		sessionID    string
 		allocationNo int64
 	}
-	rows, err := db.Query(`SELECT id,allocation_id,pool_session_id,allocation_no FROM fact_pool_allocations ORDER BY id ASC`)
+	rows, err := db.Query(`SELECT id,allocation_id,pool_session_id,allocation_no FROM fact_pool_session_events ORDER BY id ASC`)
 	if err != nil {
-		t.Fatalf("query migrated fact_pool_allocations failed: %v", err)
+		t.Fatalf("query migrated fact_pool_session_events failed: %v", err)
 	}
 	defer rows.Close()
 
@@ -158,12 +158,12 @@ func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.id, &r.allocationID, &r.sessionID, &r.allocationNo); err != nil {
-			t.Fatalf("scan migrated fact_pool_allocations failed: %v", err)
+			t.Fatalf("scan migrated fact_pool_session_events failed: %v", err)
 		}
 		got = append(got, r)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate migrated fact_pool_allocations failed: %v", err)
+		t.Fatalf("iterate migrated fact_pool_session_events failed: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("unexpected migrated row count: got=%d want=3", len(got))
@@ -179,13 +179,13 @@ func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
 		}
 	}
 
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_pool_allocations", []string{"allocation_id"}); err != nil {
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_pool_session_events", []string{"allocation_id"}); err != nil {
 		t.Fatalf("inspect allocation_id unique constraint failed: %v", err)
 	} else if !unique {
 		t.Fatalf("allocation_id unique constraint should exist after migration")
 	}
 
-	if _, err := db.Exec(`INSERT INTO fact_pool_allocations(
+	if _, err := db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		"alloc_a_1", "sess_a", 3, "pay", 3, 1, 999, "tx_dup", "hex_dup", 1700000004,
@@ -197,9 +197,9 @@ func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
 		t.Fatalf("second initIndexDB failed: %v", err)
 	}
 
-	rows, err = db.Query(`SELECT id,allocation_id,pool_session_id,allocation_no FROM fact_pool_allocations ORDER BY id ASC`)
+	rows, err = db.Query(`SELECT id,allocation_id,pool_session_id,allocation_no FROM fact_pool_session_events ORDER BY id ASC`)
 	if err != nil {
-		t.Fatalf("query fact_pool_allocations after second init failed: %v", err)
+		t.Fatalf("query fact_pool_session_events after second init failed: %v", err)
 	}
 	defer rows.Close()
 
@@ -207,12 +207,12 @@ func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
 	for rows.Next() {
 		var r row
 		if err := rows.Scan(&r.id, &r.allocationID, &r.sessionID, &r.allocationNo); err != nil {
-			t.Fatalf("scan fact_pool_allocations after second init failed: %v", err)
+			t.Fatalf("scan fact_pool_session_events after second init failed: %v", err)
 		}
 		got = append(got, r)
 	}
 	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate fact_pool_allocations after second init failed: %v", err)
+		t.Fatalf("iterate fact_pool_session_events after second init failed: %v", err)
 	}
 	if len(got) != 3 {
 		t.Fatalf("row count changed after second init: got=%d want=3", len(got))
@@ -233,16 +233,16 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 	}
 
 	for _, indexName := range []string{
-		"uq_fact_pool_allocations_session_kind_seq",
-		"idx_fact_pool_allocations_session_no",
-		"idx_fact_pool_allocations_txid",
+		"uq_fact_pool_session_events_session_kind_seq",
+		"idx_fact_pool_session_events_session_no",
+		"idx_fact_pool_session_events_txid",
 		"idx_fact_chain_payments_occurred",
 		"idx_fact_chain_payments_subtype",
 		"idx_fact_chain_payments_status",
 		"idx_fact_chain_payment_utxo_links_payment",
 		"idx_fact_chain_payment_utxo_links_utxo",
 	} {
-		tableName := "fact_pool_allocations"
+		tableName := "fact_pool_session_events"
 		if indexName == "idx_fact_chain_payments_occurred" || indexName == "idx_fact_chain_payments_subtype" || indexName == "idx_fact_chain_payments_status" {
 			tableName = "fact_chain_payments"
 		}
@@ -275,7 +275,7 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 	}
 	wantFKs := map[string]bool{
 		"chain_payment_id->fact_chain_payments.id": true,
-		"utxo_id->wallet_utxo.utxo_id":        true,
+		"utxo_id->wallet_utxo.utxo_id":             true,
 	}
 	for _, fk := range fks {
 		delete(wantFKs, fk)
@@ -301,15 +301,15 @@ func TestInitIndexDB_PoolSchemaIsIdempotent(t *testing.T) {
 	}
 
 	var count int64
-	if err := db.QueryRow(`SELECT COUNT(*) FROM fact_pool_allocations WHERE pool_session_id=?`, "sess_idem").Scan(&count); err != nil {
-		t.Fatalf("count fact_pool_allocations failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM fact_pool_session_events WHERE pool_session_id=?`, "sess_idem").Scan(&count); err != nil {
+		t.Fatalf("count fact_pool_session_events failed: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("fact_pool_allocations row count changed after repeated init: got=%d want=1", count)
+		t.Fatalf("fact_pool_session_events row count changed after repeated init: got=%d want=1", count)
 	}
 
 	var id int64
-	if err := db.QueryRow(`SELECT id FROM fact_pool_allocations WHERE allocation_id=?`, "alloc_idem_1").Scan(&id); err != nil {
+	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, "alloc_idem_1").Scan(&id); err != nil {
 		t.Fatalf("query migrated allocation id failed: %v", err)
 	}
 	if id != 1 {

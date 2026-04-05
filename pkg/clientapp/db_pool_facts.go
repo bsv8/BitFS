@@ -131,33 +131,47 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	}
 	var allocationNo int64
 	if err := tx.QueryRow(
-		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM fact_pool_allocations WHERE pool_session_id=?`,
+		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind='pool_event'`,
 		sessionID,
 	).Scan(&allocationNo); err != nil {
 		return err
 	}
 	_, err := tx.Exec(
-		`INSERT INTO fact_pool_allocations(
-			allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO fact_pool_session_events(
+			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(allocation_id) DO UPDATE SET
 			pool_session_id=excluded.pool_session_id,
 			allocation_kind=excluded.allocation_kind,
+			event_kind=excluded.event_kind,
 			sequence_num=excluded.sequence_num,
+			state=excluded.state,
 			payee_amount_after=excluded.payee_amount_after,
 			payer_amount_after=excluded.payer_amount_after,
 			txid=excluded.txid,
-			tx_hex=excluded.tx_hex`,
+			tx_hex=excluded.tx_hex,
+			created_at_unix=excluded.created_at_unix,
+			payload_json=excluded.payload_json`,
 		allocID,
 		sessionID,
 		allocationNo,
 		kind,
+		"pool_event",
 		in.SequenceNum,
+		"confirmed",
+		"",
+		0,
+		kind,
+		"",
+		"",
+		0,
 		in.PayeeAmountAfter,
 		in.PayerAmountAfter,
 		txID,
 		txHex,
+		"",
 		createdAt,
+		"{}",
 	)
 	if err != nil {
 		return err
@@ -166,8 +180,7 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	// Step 4 出项关联：对 input UTXO 写入 fact_asset_consumptions
 	// 设计说明：
 	// - 先查 allocation 的自增 id，再写消耗
-	// - unknown UTXO 没有 source flow，跳过不产生消耗记录
-	// - 幂等：同一 source_flow_id + pool_allocation_id 不会重复写
+	// - unknown UTXO 会先记 pending，等钱包同步追上再补成 confirmed
 	if len(in.UTXOFacts) > 0 {
 		poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
 		if err != nil {
@@ -218,7 +231,7 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 	return strings.ToLower(strings.TrimSpace(parsed.TxID().String())), nil
 }
 
-// dbGetPoolAllocationIDByAllocationIDDB 按 allocation_id 查 fact_pool_allocations.id
+// dbGetPoolAllocationIDByAllocationIDDB 按 allocation_id 查 fact_pool_session_events.id
 // 设计说明：
 // - 写入层和读层都只认事实表自增主键；
 // - allocation_id 只作为旧入口和 payload 保留，不再直接承担 source_id 语义。
@@ -232,7 +245,7 @@ func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int
 	}
 	var id int64
 	err := db.QueryRow(
-		`SELECT id FROM fact_pool_allocations WHERE allocation_id=?`,
+		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
 	if err != nil {
@@ -264,7 +277,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 	}
 	var id int64
 	err := tx.QueryRow(
-		`SELECT id FROM fact_pool_allocations WHERE allocation_id=?`,
+		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
 	if err != nil {

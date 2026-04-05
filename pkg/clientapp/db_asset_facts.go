@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // chainAssetFlowEntry fact_chain_asset_flows 写入条目
@@ -34,12 +36,15 @@ type chainAssetFlowEntry struct {
 
 // assetConsumptionEntry fact_asset_consumptions 写入条目
 // 设计说明：
-// - 把资产消耗关联到 chain_payment 或 pool_allocation
-// - 二选一：ChainPaymentID 与 PoolAllocationID 必须且只能有一个非零
+// - 把资金消耗关联到 chain_payment 或 pool_allocation
+// - 允许 pending：source_flow_id 查不到时，先记 source_utxo_id，不碰钱包同步表
 type assetConsumptionEntry struct {
+	ConsumptionID    string
 	SourceFlowID     int64
+	SourceUTXOID     string
 	ChainPaymentID   int64
 	PoolAllocationID int64
+	State            string
 	UsedSatoshi      int64
 	UsedQuantityText string
 	OccurredAtUnix   int64
@@ -192,50 +197,47 @@ func dbAppendAssetConsumptionIfAbsentDB(db sqlConn, e assetConsumptionEntry, lin
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if e.SourceFlowID <= 0 {
-		return fmt.Errorf("source_flow_id is required")
+	sourceUTXOID := strings.ToLower(strings.TrimSpace(e.SourceUTXOID))
+	state := strings.ToLower(strings.TrimSpace(e.State))
+	if state == "" {
+		state = "confirmed"
 	}
-
-	// 校验二选一约束
+	if state != "pending" && state != "confirmed" && state != "failed" {
+		return fmt.Errorf("state must be pending, confirmed or failed, got %s", state)
+	}
+	// 校验 settlement 锚点
 	if linkType == "payment" {
 		if e.ChainPaymentID <= 0 {
 			return fmt.Errorf("chain_payment_id is required for payment link type")
 		}
-		if e.PoolAllocationID != 0 {
+		if e.PoolAllocationID > 0 {
 			return fmt.Errorf("pool_allocation_id must be NULL for payment link type")
 		}
 	} else if linkType == "allocation" {
 		if e.PoolAllocationID <= 0 {
 			return fmt.Errorf("pool_allocation_id is required for allocation link type")
 		}
-		if e.ChainPaymentID != 0 {
+		if e.ChainPaymentID > 0 {
 			return fmt.Errorf("chain_payment_id must be NULL for allocation link type")
 		}
 	} else {
 		return fmt.Errorf("link_type must be 'payment' or 'allocation', got %s", linkType)
 	}
 
-	// 检查是否已存在（幂等）
-	var n int
-	if linkType == "payment" {
-		err := db.QueryRow(
-			`SELECT COUNT(1) FROM fact_asset_consumptions WHERE source_flow_id=? AND chain_payment_id=?`,
-			e.SourceFlowID, e.ChainPaymentID,
-		).Scan(&n)
-		if err != nil {
-			return err
-		}
-	} else {
-		err := db.QueryRow(
-			`SELECT COUNT(1) FROM fact_asset_consumptions WHERE source_flow_id=? AND pool_allocation_id=?`,
-			e.SourceFlowID, e.PoolAllocationID,
-		).Scan(&n)
-		if err != nil {
-			return err
-		}
+	if sourceUTXOID == "" && e.SourceFlowID <= 0 {
+		return fmt.Errorf("source_utxo_id or source_flow_id is required")
 	}
-	if n > 0 {
-		return nil
+	consumptionID := strings.TrimSpace(e.ConsumptionID)
+	if consumptionID == "" {
+		if sourceUTXOID == "" {
+			sourceUTXOID = fmt.Sprintf("flow_%d", e.SourceFlowID)
+		}
+		switch linkType {
+		case "payment":
+			consumptionID = fmt.Sprintf("cons_pay_%d_%s", e.ChainPaymentID, sourceUTXOID)
+		case "allocation":
+			consumptionID = fmt.Sprintf("cons_alloc_%d_%s", e.PoolAllocationID, sourceUTXOID)
+		}
 	}
 
 	// 不存在则插入
@@ -247,15 +249,42 @@ func dbAppendAssetConsumptionIfAbsentDB(db sqlConn, e assetConsumptionEntry, lin
 
 	_, err := db.Exec(
 		`INSERT INTO fact_asset_consumptions(
-			source_flow_id,chain_payment_id,pool_allocation_id,used_satoshi,used_quantity_text,
-			occurred_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?)`,
-		e.SourceFlowID,
+			consumption_id,source_flow_id,source_utxo_id,chain_payment_id,pool_allocation_id,state,used_satoshi,used_quantity_text,
+			occurred_at_unix,confirmed_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(consumption_id) DO UPDATE SET
+			source_flow_id=COALESCE(excluded.source_flow_id, fact_asset_consumptions.source_flow_id),
+			source_utxo_id=CASE WHEN excluded.source_utxo_id!='' THEN excluded.source_utxo_id ELSE fact_asset_consumptions.source_utxo_id END,
+			chain_payment_id=COALESCE(excluded.chain_payment_id, fact_asset_consumptions.chain_payment_id),
+			pool_allocation_id=COALESCE(excluded.pool_allocation_id, fact_asset_consumptions.pool_allocation_id),
+			state=CASE
+				WHEN fact_asset_consumptions.state='confirmed' AND excluded.state='pending' THEN fact_asset_consumptions.state
+				ELSE excluded.state
+			END,
+			used_satoshi=excluded.used_satoshi,
+			used_quantity_text=excluded.used_quantity_text,
+			occurred_at_unix=excluded.occurred_at_unix,
+			confirmed_at_unix=CASE
+				WHEN excluded.state='confirmed' THEN excluded.occurred_at_unix
+				ELSE fact_asset_consumptions.confirmed_at_unix
+			END,
+			note=excluded.note,
+			payload_json=excluded.payload_json`,
+		consumptionID,
+		nilIfZero(e.SourceFlowID),
+		sourceUTXOID,
 		nilIfZero(e.ChainPaymentID),
 		nilIfZero(e.PoolAllocationID),
+		state,
 		e.UsedSatoshi,
 		strings.TrimSpace(e.UsedQuantityText),
 		occurredAt,
+		func() any {
+			if state == "confirmed" {
+				return occurredAt
+			}
+			return 0
+		}(),
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
 	)
@@ -414,17 +443,23 @@ func dbAppendAssetConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, 
 		}
 		// 查找源流入记录
 		sourceFlowID, err := dbGetAssetFlowInByUTXO(db, utxoID)
+		state := "confirmed"
 		if err != nil {
 			if err == sql.ErrNoRows {
-				// 没有 source flow（unknown UTXO），跳过
-				continue
+				// 没有 source flow（同步还没到），先记 pending，不碰钱包事实表
+				sourceFlowID = 0
+				state = "pending"
+			} else {
+				return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 			}
-			return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 		}
 		// 写入消耗记录
 		if err := dbAppendAssetConsumptionIfAbsentDB(db, assetConsumptionEntry{
+			ConsumptionID:    fmt.Sprintf("cons_pay_%d_%s", chainPaymentID, utxoID),
 			SourceFlowID:     sourceFlowID,
+			SourceUTXOID:     utxoID,
 			ChainPaymentID:   chainPaymentID,
+			State:            state,
 			UsedSatoshi:      fact.AmountSatoshi,
 			UsedQuantityText: "",
 			OccurredAtUnix:   occurredAtUnix,
@@ -461,17 +496,23 @@ func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int
 		}
 		// 查找源流入记录
 		sourceFlowID, err := dbGetAssetFlowInByUTXO(db, utxoID)
+		state := "confirmed"
 		if err != nil {
 			if err == sql.ErrNoRows {
-				// 没有 source flow（unknown UTXO），跳过
-				continue
+				// 没有 source flow（同步还没到），先记 pending，不碰钱包事实表
+				sourceFlowID = 0
+				state = "pending"
+			} else {
+				return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 			}
-			return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 		}
 		// 写入消耗记录
 		if err := dbAppendAssetConsumptionIfAbsentDB(db, assetConsumptionEntry{
+			ConsumptionID:    fmt.Sprintf("cons_alloc_%d_%s", poolAllocationID, utxoID),
 			SourceFlowID:     sourceFlowID,
+			SourceUTXOID:     utxoID,
 			PoolAllocationID: poolAllocationID,
+			State:            state,
 			UsedSatoshi:      fact.AmountSatoshi,
 			UsedQuantityText: "",
 			OccurredAtUnix:   occurredAtUnix,
@@ -827,6 +868,7 @@ func dbListTokenSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind st
 		 ) used_agg ON f.id=used_agg.source_flow_id
 		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'
 		   AND w.state='unspent'
+		   AND w.allocation_class != 'unknown'
 		 ORDER BY f.occurred_at_unix ASC, f.id ASC`,
 		walletID, assetKind, tokenID,
 	)
@@ -947,6 +989,12 @@ func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64,
 		return err
 	}
 	if n > 0 {
+		// Step 13：命中幂等，记录 info 日志便于排障
+		obs.Info("bitcast-client", "token_consumption_idempotent_skip", map[string]any{
+			"utxo_id":          utxoID,
+			"chain_payment_id": chainPaymentID,
+			"source_flow_id":   sourceFlowID,
+		})
 		return nil
 	}
 

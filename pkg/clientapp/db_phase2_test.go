@@ -10,11 +10,11 @@ import (
 // 目标：验证第二阶段清理目标
 // 1. open/close 不再是正式收费 business
 // 2. 正式收费主线只认 biz_download_pool_*
-// 3. 第一次成功 pay 回写 settlement，target_id = fact_pool_allocations.id
+// 3. 第一次成功 pay 回写 settlement，target_id = fact_pool_session_events.id
 // 4. 正式查询只从 front_order -> biz_business_triggers -> settle_business_settlements 走
 
 // seedPhase2DirectTransferPoolFacts 为第二阶段测试准备 pool 事实
-// 创建完整的 fact_pool_sessions 和 fact_pool_allocations 记录
+// 创建完整的 fact_pool_sessions 和 fact_pool_session_events 记录
 func seedPhase2DirectTransferPoolFacts(t *testing.T, db *sql.DB) (sessionID, dealID string) {
 	t.Helper()
 

@@ -248,8 +248,8 @@ func TestAppendAssetConsumptionForPoolAllocation_PowerIdempotent(t *testing.T) {
 		t.Fatalf("seed pool session: %v", err)
 	}
 
-	// 写入 fact_pool_allocations
-	allocRes, err := db.Exec(`INSERT INTO fact_pool_allocations(
+	// 写入 fact_pool_session_events
+	allocRes, err := db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num, payee_amount_after,
 		payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -663,8 +663,8 @@ func TestChainPaymentConsumption_MultipleUTXO(t *testing.T) {
 	}
 }
 
-// TestChainPaymentConsumption_UnknownUTXOSkipped 验证 unknown UTXO 不产生消耗
-func TestChainPaymentConsumption_UnknownUTXOSkipped(t *testing.T) {
+// TestChainPaymentConsumption_UnknownUTXOQueued 验证 unknown UTXO 会先进入待确认消耗
+func TestChainPaymentConsumption_UnknownUTXOQueued(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetFactsTestDB(t)
@@ -743,13 +743,20 @@ func TestChainPaymentConsumption_UnknownUTXOSkipped(t *testing.T) {
 		t.Fatalf("append consumptions: %v", err)
 	}
 
-	// 验证：只有 1 条消耗记录（unknown UTXO 被跳过）
+	// 验证：会留下 2 条消耗记录，其中 unknown 先挂 pending
 	var consCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE chain_payment_id=?`, paymentID).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions: %v", err)
 	}
-	if consCount != 1 {
-		t.Fatalf("expected 1 consumption (unknown skipped), got %d", consCount)
+	if consCount != 2 {
+		t.Fatalf("expected 2 consumptions, got %d", consCount)
+	}
+	var pendingCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE chain_payment_id=? AND state='pending'`, paymentID).Scan(&pendingCount); err != nil {
+		t.Fatalf("count pending consumptions: %v", err)
+	}
+	if pendingCount != 1 {
+		t.Fatalf("expected 1 pending consumption, got %d", pendingCount)
 	}
 }
 

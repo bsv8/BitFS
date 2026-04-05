@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"fmt"
 	"math/big"
+	"os"
 	"strings"
 	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // subtractDecimalText 计算 a - b（高精度字符串小数减法）
@@ -79,42 +81,105 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 
 // loadWalletTokenBalanceWithFallback 统一 token 余额读取入口
 // 设计说明：
-// - 先查 fact 口径，有数据则计算 remaining = in - used
-// - fact 无数据时回退到旧口径（loadWalletTokenSpendableCandidates 汇总）
+// - Step 12 收口：fact 为主口径
+// - Step 13：所有回退路径统一打 `reason` 标签，便于后续统计和下线旧路径
+// - fact 查询成功（含空结果/0 值）→ 直接返回，不回退旧路径
+// - fact 查询失败 → 记录 reason 后回退旧路径
 // - unknown 不参与 fact，不影响余额
 func loadWalletTokenBalanceWithFallback(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) (string, error) {
 	walletID := walletIDByAddress(address)
 	assetKind := strings.ToUpper(strings.TrimSpace(standard))
 
-	// Step 8：先尝试 fact 口径
+	// Step 12/13/14：先尝试 fact 口径
 	bal, err := dbLoadTokenBalanceFact(ctx, store, walletID, assetKind, assetKey)
 	if err != nil {
-		// fact 查询失败，回退旧口径
+		// fact 查询失败：记录 reason 后回退（带开关检查）
+		logTokenBalanceFallback(ctx, walletID, assetKind, assetKey, "fact_query_error", err.Error())
 		return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
 	}
-	if bal.TotalInText != "" {
-		// fact 有数据，计算 remaining = in - used
-		totalIn, err := sumDecimalTexts(bal.TotalInText)
-		if err != nil {
-			return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
-		}
-		totalUsed, err := sumDecimalTexts(bal.TotalUsedText)
-		if err != nil {
-			return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
-		}
-		remaining, err := subtractTokenDecimalText(totalIn, totalUsed)
-		if err != nil {
-			return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
-		}
-		return remaining, nil
+
+	// Step 12 收口：fact 查询成功，即使 TotalInText 为空也返回 "0"（不回退旧路径）
+	// 设计说明：
+	// - fact 已建账但无 IN 记录 = 该 token 余额确实为 0
+	// - 不再因 "fact 返回空" 回退到旧路径，避免新旧口径混用
+	if bal.TotalInText == "" && bal.TotalUsedText == "" {
+		// Step 14：主路径成功日志
+		logTokenBalanceSuccess(ctx, walletID, assetKind, assetKey, "0")
+		return "0", nil
 	}
 
-	// fact 无数据，回退旧口径
-	return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
+	// fact 有数据，计算 remaining = in - used
+	totalIn, err := sumDecimalTexts(bal.TotalInText)
+	if err != nil {
+		logTokenBalanceFallback(ctx, walletID, assetKind, assetKey, "total_in_parse_error", err.Error())
+		return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
+	}
+	totalUsed, err := sumDecimalTexts(bal.TotalUsedText)
+	if err != nil {
+		logTokenBalanceFallback(ctx, walletID, assetKind, assetKey, "total_used_parse_error", err.Error())
+		return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
+	}
+	remaining, err := subtractTokenDecimalText(totalIn, totalUsed)
+	if err != nil {
+		logTokenBalanceFallback(ctx, walletID, assetKind, assetKey, "remaining_calc_error", err.Error())
+		return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
+	}
+	// Step 14：主路径成功日志
+	logTokenBalanceSuccess(ctx, walletID, assetKind, assetKey, remaining)
+	return remaining, nil
+}
+
+// logTokenBalanceFallback 统一记录回退日志，带 reason 枚举
+func logTokenBalanceFallback(ctx context.Context, walletID string, assetKind string, tokenID string, reason string, errMsg string) {
+	_ = ctx // 预留 context 用于后续 tracing
+	obs.Error("bitcast-client", "token_balance_fact_fallback", map[string]any{
+		"wallet_id":       walletID,
+		"asset_kind":      assetKind,
+		"token_id":        tokenID,
+		"reason":          reason,
+		"error":           errMsg,
+		"fallback":        "old_path_runtime_debug_only",
+		"source_of_truth": "fact_chain_asset_flows",
+	})
+}
+
+// logTokenBalanceSuccess 记录主路径成功日志
+func logTokenBalanceSuccess(ctx context.Context, walletID string, assetKind string, tokenID string, balance string) {
+	_ = ctx
+	obs.Info("bitcast-client", "token_balance_fact_ok", map[string]any{
+		"wallet_id":       walletID,
+		"asset_kind":      assetKind,
+		"token_id":        tokenID,
+		"balance":         balance,
+		"source_of_truth": "fact_chain_asset_flows",
+	})
+}
+
+// isTokenOldPathEnabled 检查是否允许走旧路径
+// 设计说明（Step 14）：
+// - 默认禁用，需显式设置 BITFS_ENABLE_TOKEN_OLD_PATH=1
+// - 用于过渡期排障，生产环境不应开启
+func isTokenOldPathEnabled() bool {
+	return os.Getenv("BITFS_ENABLE_TOKEN_OLD_PATH") == "1"
 }
 
 // loadWalletTokenBalanceFromOldPath 旧口径：从 wallet_utxo_assets + local broadcast 汇总
+// 设计说明（Step 12/14 收口）：
+// - runtime_debug_only：不再参与主流程决策，仅在 fact 查询失败时作为兜底
+// - Step 14：默认禁用，需显式设置 BITFS_ENABLE_TOKEN_OLD_PATH=1 才允许走旧路径
+// - 语义：非主路径，仅供排障和兼容过渡期使用
+// - 新代码不应依赖此函数的返回值做业务决策
 func loadWalletTokenBalanceFromOldPath(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) (string, error) {
+	// Step 14：旧路径硬降级，默认禁用
+	if !isTokenOldPathEnabled() {
+		obs.Error("bitcast-client", "token_old_path_disabled", map[string]any{
+			"wallet_id":  walletIDByAddress(address),
+			"asset_kind": strings.ToUpper(strings.TrimSpace(standard)),
+			"token_id":   assetKey,
+			"reason":     "BITFS_ENABLE_TOKEN_OLD_PATH not set",
+		})
+		return "", fmt.Errorf("token old path is disabled, set BITFS_ENABLE_TOKEN_OLD_PATH=1 to enable")
+	}
 	candidates, err := loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return "", err
@@ -130,19 +195,37 @@ func loadWalletTokenBalanceFromOldPath(ctx context.Context, store *clientDB, rt 
 
 // loadWalletTokenSpendableCandidatesWithFallback 统一 token 可花费来源入口
 // 设计说明：
-// - 先尝试 fact 口径（dbListTokenSpendableSourceFlows）
-// - fact 有候选则返回
-// - fact 无候选但有历史记录时，说明已花完，直接返回空（不回退旧路径）
-// - fact 完全无数据时才回退旧路径
+// - Step 12/13/14：fact 为主口径
+// - fact 查询成功 → 有候选则返回
+// - fact 查询成功且无候选但有历史记录 → 说明已花完，返回空（不回退旧路径）
+// - fact 查询成功且无候选且无历史 → fact 未建账（空结果），返回空
+// - fact 查询失败 → 仅当 BITFS_ENABLE_TOKEN_OLD_PATH=1 时回退旧路径
 // - 返回格式统一为 walletTokenPreviewCandidate，方便上层消费
 func loadWalletTokenSpendableCandidatesWithFallback(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
 	walletID := walletIDByAddress(address)
 	assetKind := strings.ToUpper(strings.TrimSpace(standard))
 
-	// Step 8：先尝试 fact 口径
+	// Step 12/13/14：先尝试 fact 口径
 	flows, err := dbListTokenSpendableSourceFlows(ctx, store, walletID, assetKind, assetKey)
 	if err != nil {
-		// fact 查询失败，回退旧路径
+		// fact 查询失败，检查旧路径开关
+		if !isTokenOldPathEnabled() {
+			obs.Error("bitcast-client", "token_spendable_fact_query_failed", map[string]any{
+				"wallet_id":  walletID,
+				"asset_kind": assetKind,
+				"token_id":   assetKey,
+				"error":      err.Error(),
+				"fallback":   "blocked_old_path_disabled",
+			})
+			return nil, fmt.Errorf("token old path disabled: %w", err)
+		}
+		obs.Error("bitcast-client", "token_spendable_fact_query_failed", map[string]any{
+			"wallet_id":  walletID,
+			"asset_kind": assetKind,
+			"token_id":   assetKey,
+			"error":      err.Error(),
+			"fallback":   "old_path_runtime_debug_only",
+		})
 		return loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
 	}
 	if len(flows) > 0 {
@@ -168,7 +251,10 @@ func loadWalletTokenSpendableCandidatesWithFallback(ctx context.Context, store *
 	// fact 无候选，检查是否有历史记录
 	hasHistory, err := hasFactTokenHistory(ctx, store, walletID, assetKind, assetKey)
 	if err != nil {
-		// 查询失败，回退旧路径
+		// 查询失败，检查旧路径开关
+		if !isTokenOldPathEnabled() {
+			return nil, fmt.Errorf("token old path disabled: %w", err)
+		}
 		return loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
 	}
 	if hasHistory {
@@ -176,8 +262,9 @@ func loadWalletTokenSpendableCandidatesWithFallback(ctx context.Context, store *
 		return []walletTokenPreviewCandidate{}, nil
 	}
 
-	// fact 完全无数据，回退旧路径
-	return loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
+	// Step 13 加强：fact 完全无数据（无候选 + 无历史），说明 fact 未建账
+	// 不再回退旧路径，返回空集合，避免临时空结果误回退
+	return []walletTokenPreviewCandidate{}, nil
 }
 
 // appendTokenConsumptionAfterChainPayment token 发送成功后写入 fact 消耗记录

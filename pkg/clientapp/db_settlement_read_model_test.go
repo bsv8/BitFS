@@ -595,7 +595,7 @@ func dbTestInsertPoolAllocation(t *testing.T, store *clientDB, input directTrans
 	ctx := context.Background()
 	allocationID := directTransferPoolAllocationID(input.SessionID, input.AllocationKind, input.SequenceNum)
 
-	_, err := store.db.Exec(`INSERT INTO fact_pool_allocations(
+	_, err := store.db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,

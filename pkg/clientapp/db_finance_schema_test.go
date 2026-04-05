@@ -200,6 +200,20 @@ func TestInitIndexDB_BackfillsLegacyPoolAllocationFinanceSources(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
+	if _, err := db.Exec(`CREATE TABLE fact_pool_allocations(
+		allocation_id TEXT PRIMARY KEY,
+		pool_session_id TEXT NOT NULL,
+		allocation_no INTEGER NOT NULL,
+		allocation_kind TEXT NOT NULL,
+		sequence_num INTEGER NOT NULL,
+		payee_amount_after INTEGER NOT NULL,
+		payer_amount_after INTEGER NOT NULL,
+		txid TEXT NOT NULL,
+		tx_hex TEXT NOT NULL,
+		created_at_unix INTEGER NOT NULL
+	)`); err != nil {
+		t.Fatalf("create legacy pool allocation table failed: %v", err)
+	}
 	sessionID := "sess_backfill_pool_1"
 	allocationID := "poolalloc_" + sessionID + "_open_1"
 	insertLegacyPoolSession(t, db, sessionID)
@@ -225,7 +239,7 @@ func TestInitIndexDB_BackfillsLegacyPoolAllocationFinanceSources(t *testing.T) {
 	}
 
 	var expectedID int64
-	if err := db.QueryRow(`SELECT id FROM fact_pool_allocations WHERE allocation_id=?`, allocationID).Scan(&expectedID); err != nil {
+	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, allocationID).Scan(&expectedID); err != nil {
 		t.Fatalf("lookup pool allocation id failed: %v", err)
 	}
 	wantSourceID := fmt.Sprintf("%d", expectedID)

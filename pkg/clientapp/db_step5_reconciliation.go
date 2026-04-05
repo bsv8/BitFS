@@ -195,7 +195,7 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 			var paFound bool
 			var poolSessionID string
 			if poolAllocID > 0 {
-				err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_allocations WHERE id=?`, poolAllocID).Scan(&poolSessionID)
+				err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, poolAllocID).Scan(&poolSessionID)
 				if err == nil {
 					paFound = true
 				}

@@ -42,22 +42,50 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 		if strings.TrimSpace(e.Purpose) == "" {
 			e.Purpose = e.EventType
 		}
+		now := time.Now().Unix()
+		allocationID := fmt.Sprintf("txhist_%s_%d_%d_%d", strings.TrimSpace(e.GatewayPeerID), now, e.SequenceNum, e.CycleIndex)
 		_, err := db.Exec(
-			`INSERT INTO fact_tx_history(created_at_unix,gateway_pubkey_hex,event_type,direction,amount_satoshi,purpose,note,pool_id,msg_id,sequence_num,cycle_index) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			e.GatewayPeerID,
-			e.EventType,
+			`INSERT INTO fact_pool_session_events(
+				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(allocation_id) DO UPDATE SET
+				event_kind=excluded.event_kind,
+				state=excluded.state,
+				direction=excluded.direction,
+				amount_satoshi=excluded.amount_satoshi,
+				purpose=excluded.purpose,
+				note=excluded.note,
+				msg_id=excluded.msg_id,
+				cycle_index=excluded.cycle_index,
+				txid=excluded.txid,
+				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
+				created_at_unix=excluded.created_at_unix,
+				payload_json=excluded.payload_json`,
+			allocationID,
+			"",
+			0,
+			"tx_history",
+			"tx_history",
+			e.SequenceNum,
+			"confirmed",
 			e.Direction,
 			e.AmountSatoshi,
 			e.Purpose,
 			e.Note,
-			e.PoolID,
 			e.MsgID,
-			e.SequenceNum,
 			e.CycleIndex,
+			0,
+			0,
+			e.PoolID,
+			"",
+			e.GatewayPeerID,
+			now,
+			mustJSONString(map[string]any{
+				"event_type": e.EventType,
+			}),
 		)
 		if err != nil {
-			obs.Error("bitcast-client", "fact_tx_history_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
+			obs.Error("bitcast-client", "fact_pool_session_events_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
 		}
 		return nil
 	})

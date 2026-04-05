@@ -64,7 +64,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		if err := db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN direction='IN' THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN direction='OUT' THEN amount_satoshi ELSE 0 END),0) FROM wallet_ledger_entries`).Scan(&out.LedgerCount, &out.LedgerIn, &out.LedgerOut); err != nil {
 			return walletSummaryCounters{}, err
 		}
-		if err := db.QueryRow(`SELECT COUNT(1) FROM fact_tx_history`).Scan(&out.TxCount); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind='tx_history'`).Scan(&out.TxCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
 		if err := db.QueryRow(`SELECT COUNT(1) FROM biz_purchases WHERE status='done'`).Scan(&out.PurchaseCount); err != nil {

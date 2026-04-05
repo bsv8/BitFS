@@ -222,7 +222,7 @@ func TestDbGetPoolAllocationIDByAllocationID(t *testing.T) {
 
 	// 创建 pool_allocation
 	allocationID := "poolalloc_" + sessionID + "_open_1"
-	_, err = db.Exec(`INSERT INTO fact_pool_allocations(
+	_, err = db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,

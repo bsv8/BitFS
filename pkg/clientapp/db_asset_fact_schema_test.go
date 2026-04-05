@@ -247,8 +247,8 @@ func TestInitIndexDB_AssetConsumptionXorConstraint(t *testing.T) {
 		t.Fatalf("insert pool session failed: %v", err)
 	}
 
-	// 5. fact_pool_allocations 记录
-	res, err = db.Exec(`INSERT INTO fact_pool_allocations(
+	// 5. fact_pool_session_events 记录
+	res, err = db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -355,9 +355,9 @@ func TestInitIndexDB_AssetFactForeignKeys(t *testing.T) {
 		t.Fatalf("inspect fact_asset_consumptions foreign keys failed: %v", err)
 	}
 	wantConsFKs := map[string]bool{
-		"source_flow_id->fact_chain_asset_flows.id":   true,
-		"chain_payment_id->fact_chain_payments.id":    true,
-		"pool_allocation_id->fact_pool_allocations.id": true,
+		"source_flow_id->fact_chain_asset_flows.id":    true,
+		"chain_payment_id->fact_chain_payments.id":     true,
+		"pool_allocation_id->fact_pool_session_events.id": true,
 	}
 	for _, fk := range consFKs {
 		delete(wantConsFKs, fk)
@@ -431,7 +431,6 @@ func TestInitIndexDB_AssetFactIdempotent(t *testing.T) {
 		t.Fatalf("fact_chain_asset_flows table missing after repeated init")
 	}
 }
-
 
 // TestInitIndexDB_AssetConsumptionPartialUnique 验证部分唯一索引生效
 // 这是关键测试：SQLite 的普通 UNIQUE 对 NULL 不可靠，必须用部分唯一索引
@@ -534,7 +533,7 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 		t.Fatalf("insert pool session failed: %v", err)
 	}
 
-	res, err = db.Exec(`INSERT INTO fact_pool_allocations(
+	res, err = db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -543,9 +542,12 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert allocation_1 failed: %v", err)
 	}
-	allocationID1, _ := res.LastInsertId()
+	var allocationID1 int64
+	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, "alloc_1").Scan(&allocationID1); err != nil {
+		t.Fatalf("lookup allocation_1 id failed: %v", err)
+	}
 
-	res, err = db.Exec(`INSERT INTO fact_pool_allocations(
+	res, err = db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num,
 		payee_amount_after, payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -554,7 +556,10 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert allocation_2 failed: %v", err)
 	}
-	allocationID2, _ := res.LastInsertId()
+	var allocationID2 int64
+	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, "alloc_2").Scan(&allocationID2); err != nil {
+		t.Fatalf("lookup allocation_2 id failed: %v", err)
+	}
 
 	// ========== 测试部分唯一索引：source_flow_id + chain_payment_id ==========
 

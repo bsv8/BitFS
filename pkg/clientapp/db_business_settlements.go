@@ -530,7 +530,7 @@ type PoolSettlementChain struct {
 	PoolSession    *PoolSessionItem       `json:"pool_session,omitempty"`
 }
 
-// PoolAllocationItem fact_pool_allocations 查询返回项
+// PoolAllocationItem fact_pool_session_events 查询返回项
 type PoolAllocationItem struct {
 	ID               int64  `json:"id"`
 	AllocationID     string `json:"allocation_id"`
@@ -586,7 +586,7 @@ func GetPoolAllocationByBusinessID(ctx context.Context, store *clientDB, busines
 	return GetPoolAllocationByID(ctx, store, poolAllocationID)
 }
 
-// GetPoolAllocationByID 按 id 查 fact_pool_allocations
+// GetPoolAllocationByID 按 id 查 fact_pool_session_events
 func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (PoolAllocationItem, error) {
 	if store == nil {
 		return PoolAllocationItem{}, fmt.Errorf("client db is nil")
@@ -596,7 +596,7 @@ func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (Pool
 		err := db.QueryRow(
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-			 FROM fact_pool_allocations WHERE id=?`,
+			 FROM fact_pool_session_events WHERE id=?`,
 			id,
 		).Scan(
 			&item.ID, &item.AllocationID, &item.PoolSessionID, &item.AllocationNo, &item.AllocationKind,
@@ -639,7 +639,7 @@ func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID stri
 	})
 }
 
-// ListPoolAllocationsBySession 按 pool_session_id 列该池下 allocations
+// ListPoolAllocationsBySession 按 pool_session_id 列该池下 events
 func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSessionID string) ([]PoolAllocationItem, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
@@ -652,7 +652,7 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 		rows, err := db.Query(
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-			 FROM fact_pool_allocations WHERE pool_session_id=? ORDER BY allocation_no DESC`,
+			 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind='pool_event' ORDER BY allocation_no DESC`,
 			poolSessionID,
 		)
 		if err != nil {
