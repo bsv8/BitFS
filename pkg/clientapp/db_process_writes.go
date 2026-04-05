@@ -579,6 +579,11 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 	}
 }
 
+// dbAppendFinBusiness 是共享写入口，给前台业务和非结算主线复用。
+// 设计边界：
+// - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
+// - 结算链路必须走 dbAppendSettlementCycleFinBusiness，不能绕回这个入口；
+// - 这样做是为了让共享能力和结算口径分开，避免后续把旧来源重新写回主口径。
 func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -630,6 +635,20 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 		mustJSONString(e.Payload),
 	)
 	return err
+}
+
+// 结算写入专用入口只认 settlement_cycle 主键，调用方不再有机会手填来源口径。
+// 设计边界：
+// - source_type/source_id 在这里统一生成；
+// - 结算链路只传 settlementCycleID 和业务字段；
+// - 这样才能把“入口可用”和“入口可误用”彻底分开。
+func dbAppendSettlementCycleFinBusiness(db sqlConn, settlementCycleID int64, e finBusinessEntry) error {
+	if settlementCycleID <= 0 {
+		return fmt.Errorf("settlement_cycle_id must be positive")
+	}
+	e.SourceType = "settlement_cycle"
+	e.SourceID = fmt.Sprintf("%d", settlementCycleID)
+	return dbAppendFinBusiness(db, e)
 }
 
 func dbAppendFinTxBreakdownIfAbsent(db sqlConn, e finTxBreakdownEntry) error {
@@ -752,6 +771,11 @@ func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string, e finTxUTXOLink
 	return dbAppendFinTxUTXOLinkIfAbsent(db, e)
 }
 
+// dbAppendFinProcessEvent 是共享写入口，给前台业务和非结算主线复用。
+// 设计边界：
+// - 这里只负责落一条财务流程事件，不替调用方兜底来源口径；
+// - 结算链路必须走 dbAppendSettlementCycleFinProcessEvent；
+// - 不要在这里塞兼容分支，不然旧口径会重新污染主线。
 func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -794,9 +818,19 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	return err
 }
 
-// 直连池财务解释统一挂到 allocation，别再用 session 漂着。
+// 结算流程事件专用入口只认 settlement_cycle 主键，避免调用方把旧来源带进来。
+func dbAppendSettlementCycleFinProcessEvent(db sqlConn, settlementCycleID int64, e finProcessEventEntry) error {
+	if settlementCycleID <= 0 {
+		return fmt.Errorf("settlement_cycle_id must be positive")
+	}
+	e.SourceType = "settlement_cycle"
+	e.SourceID = fmt.Sprintf("%d", settlementCycleID)
+	return dbAppendFinProcessEvent(db, e)
+}
+
+// 直连池财务解释统一挂到 settlement_cycle，别再用 session / allocation 漂着。
 func directTransferPoolAccountingSource(sessionID string, allocationKind string, sequenceNum uint32) (string, string) {
-	return "pool_allocation", directTransferPoolAllocationID(sessionID, allocationKind, sequenceNum)
+	return "settlement_cycle", directTransferPoolAllocationID(sessionID, allocationKind, sequenceNum)
 }
 
 func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
@@ -871,14 +905,17 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		if minerFee < 0 {
 			minerFee = 0
 		}
-		// 过渡态标记：fee_pool 的 source_type 当前是抽象业务名，不是最终事实实体
-		// 说明：现在用 "fee_pool" 只是过渡写法，等 fee_pool 事实层明确后要改成指向真实事实记录
-		// 原则：accounting_* 负责业务分类，source_* 最终只负责事实来源
-		if err := dbAppendFinBusiness(db, finBusinessEntry{
+		// 这里直接按 chain_payment 反查 settlement_cycle，别再把旧 fee_pool 口径塞回写入口。
+		settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(db, strings.TrimSpace(in.SpendTxID))
+		if err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			return
+		}
+		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
 			BusinessRole:      "process", // 过程财务对象
-			SourceType:        "fee_pool",
-			SourceID:          strings.TrimSpace(in.SpendTxID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			FromPartyID:       strings.TrimSpace(in.FromPartyID),
@@ -919,13 +956,16 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID string, sequence uint32, amount uint64, gatewayPeerID string) {
 	dbRecordAccounting(ctx, store, func(db *sql.DB) {
 		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
-		// 过渡态标记：fee_pool 的 source_type 当前是抽象业务名，不是最终事实实体
-		// 说明：现在用 "fee_pool" 只是过渡写法，等 fee_pool 事实层明确后要改成指向真实事实记录
-		// 原则：accounting_* 负责业务分类，source_* 最终只负责事实来源
-		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+		// 这里直接按 chain_payment 反查 settlement_cycle，保证写入和查询走同一条路。
+		settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(db, strings.TrimSpace(spendTxID))
+		if err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			return
+		}
+		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         processID,
-			SourceType:        "fee_pool",
-			SourceID:          strings.TrimSpace(spendTxID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "cycle_pay",
 			EventType:         "update",
@@ -959,12 +999,15 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	return store.Do(ctx, func(db *sql.DB) error {
 		// 第二阶段整改：open 继续有自己的 settle_businesses，但定性为过程型财务对象
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
-		sourceType := "pool_allocation"
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(in.SessionID), "open", 1)
 		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
 		if err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
+		}
+		settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, sourceID)
+		if err != nil {
+			return fmt.Errorf("resolve settlement cycle for pool allocation %d: %w", sourceID, err)
 		}
 		lockScript := strings.TrimSpace(in.ClientLockScript)
 		var grossInput, changeBack, lockAmount int64
@@ -1025,11 +1068,11 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}
 		// 第二阶段整改：open 继续写 settle_businesses，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
-		if err := dbAppendFinBusiness(db, finBusinessEntry{
+		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
 			BusinessRole:      "process", // 过程财务对象
-			SourceType:        sourceType,
-			SourceID:          fmt.Sprintf("%d", sourceID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
 			AccountingSubType: "pool_open_lock",          // 明确是过程动作，不是收费
 			FromPartyID:       "client:self",
@@ -1049,10 +1092,10 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
-		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
-			SourceType:        sourceType,
-			SourceID:          fmt.Sprintf("%d", sourceID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			EventType:         "accounting",
@@ -1110,18 +1153,21 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		sourceType := "pool_allocation"
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
 		if err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
+		settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, sourceID)
+		if err != nil {
+			return fmt.Errorf("resolve settlement cycle for pool allocation %d: %w", sourceID, err)
+		}
 
 		// 过程事件：记录 pay 财务动作，供审计/对账/调试使用
-		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
-			SourceType:        sourceType,
-			SourceID:          fmt.Sprintf("%d", sourceID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
 			EventType:         "accounting",
@@ -1189,19 +1235,22 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		}
 		// 第二阶段整改：close 继续有自己的 settle_businesses，但定性为过程型财务对象
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
-		sourceType := "pool_allocation"
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "close", sequence)
 		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
 		if err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
+		settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, sourceID)
+		if err != nil {
+			return fmt.Errorf("resolve settlement cycle for pool allocation %d: %w", sourceID, err)
+		}
 		// 第二阶段整改：close 继续写 settle_businesses，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
-		if err := dbAppendFinBusiness(db, finBusinessEntry{
+		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
 			BusinessRole:      "process", // 过程财务对象
-			SourceType:        sourceType,
-			SourceID:          fmt.Sprintf("%d", sourceID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
 			AccountingSubType: "pool_close_settle",       // 明确是过程动作，不是收费
 			FromPartyID:       "client:self",
@@ -1221,10 +1270,10 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			return err
 		}
 		// 过程事件继续使用统一的过程追踪 id
-		if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
+		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
-			SourceType:        sourceType,
-			SourceID:          fmt.Sprintf("%d", sourceID),
+			SourceType:        "settlement_cycle",
+			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
 			EventType:         "accounting",

@@ -248,13 +248,18 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		obs.Error("bitcast-client", "wallet_accounting_chain_payment_failed", map[string]any{"error": err.Error(), "txid": txid})
 		return fmt.Errorf("upsert chain_payment failed: %w", err)
 	}
+	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
+	if err != nil {
+		return fmt.Errorf("resolve settlement cycle for chain payment %d: %w", chainPaymentID, err)
+	}
 
-	// 第二步整改：source_type = "chain_payment", source_id = fact_chain_payments.id
+	// 第二步整改：这里开始只写 settlement_cycle 口径。
+	// 说明：钱包/费用池的财务结果已经收口到结算周期，不能再回写旧来源。
 	businessID := "biz_wallet_chain_" + txid
-	sourceType := "chain_payment"
-	sourceID := fmt.Sprintf("%d", chainPaymentID)
+	sourceType := "settlement_cycle"
+	sourceID := fmt.Sprintf("%d", settlementCycleID)
 
-	if err := dbAppendFinBusiness(db, finBusinessEntry{
+	if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "process", // 钱包过程财务对象
 		SourceType:        sourceType,
@@ -345,7 +350,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		if event.OccurredAtUnix <= 0 {
 			event.OccurredAtUnix = now
 		}
-		if err := dbAppendFinProcessEvent(db, event); err != nil {
+		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, event); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "wallet_chain", "txid": txid})
 			return fmt.Errorf("append settle_process_events failed: %w", err)
 		}
