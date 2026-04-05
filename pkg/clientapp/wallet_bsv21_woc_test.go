@@ -150,17 +150,24 @@ func seedWalletBSV21LocalCreateCandidate(t *testing.T, db *sql.DB, rt *Runtime, 
 	now := time.Now().Unix()
 	walletID := walletIDByAddress(address)
 	if _, err := db.Exec(
-		`INSERT INTO wallet_local_broadcast_txs(txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,observed_at_unix)
-		 VALUES(?,?,?,?,?,?,?)`,
+		`INSERT INTO fact_chain_payments(txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		txID,
+		"wallet_local_broadcast",
+		"submitted",
+		int64(0),
+		int64(0),
+		int64(0),
+		int64(0),
+		now,
+		now,
+		int64(0),
 		walletID,
-		address,
-		strings.ToLower(strings.TrimSpace(tx.Hex())),
-		now,
-		now,
+		"external:unknown",
+		`{"tx_hex":"`+strings.ToLower(strings.TrimSpace(tx.Hex()))+`"}`,
 		now,
 	); err != nil {
-		t.Fatalf("insert wallet_local_broadcast_txs: %v", err)
+		t.Fatalf("insert fact_chain_payments: %v", err)
 	}
 	if _, err := db.Exec(
 		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)

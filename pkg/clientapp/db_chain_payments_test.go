@@ -18,7 +18,7 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	txid := "tx_idem_test_123"
 
 	// 第一次写入
-	id1, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_in",
 		Status:              "confirmed",
@@ -39,7 +39,7 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	}
 
 	// 第二次写入（相同 txid）- 应该返回相同 id
-	id2, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_in",
 		Status:              "confirmed",
@@ -88,7 +88,7 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 
 	txid := "tx_backfill_cycle_001"
 
-	id1, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -110,7 +110,7 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 		t.Fatalf("delete settlement cycle failed: %v", err)
 	}
 
-	id2, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -145,6 +145,73 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 	wantCycleID := fmt.Sprintf("cycle_chain_%d", id1)
 	if cycleID != wantCycleID {
 		t.Fatalf("expected %s, got %s", wantCycleID, cycleID)
+	}
+}
+
+// TestDbUpsertChainPayment_PreservesSubmitAndObservedTime 验证两时间字段只增不减。
+func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	txid := "tx_time_guard_001"
+
+	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+		TxID:                 txid,
+		PaymentSubType:       "wallet_local_broadcast",
+		Status:               "submitted",
+		WalletInputSatoshi:   0,
+		WalletOutputSatoshi:  0,
+		NetAmountSatoshi:     0,
+		BlockHeight:          0,
+		OccurredAtUnix:       1700001000,
+		SubmittedAtUnix:      1700001000,
+		WalletObservedAtUnix: 0,
+		FromPartyID:          "wallet:self",
+		ToPartyID:            "external:unknown",
+		Payload:              map[string]any{"test": 1},
+	})
+	if err != nil {
+		t.Fatalf("first upsert failed: %v", err)
+	}
+	if id1 <= 0 {
+		t.Fatalf("expected positive id, got %d", id1)
+	}
+
+	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+		TxID:                 txid,
+		PaymentSubType:       "wallet_local_broadcast",
+		Status:               "observed",
+		WalletInputSatoshi:   0,
+		WalletOutputSatoshi:  0,
+		NetAmountSatoshi:     0,
+		BlockHeight:          0,
+		OccurredAtUnix:       1700000500,
+		SubmittedAtUnix:      1700000500,
+		WalletObservedAtUnix: 1700002000,
+		FromPartyID:          "wallet:self",
+		ToPartyID:            "external:unknown",
+		Payload:              map[string]any{"test": 2},
+	})
+	if err != nil {
+		t.Fatalf("second upsert failed: %v", err)
+	}
+	if id2 != id1 {
+		t.Fatalf("expected same id (%d), got %d", id1, id2)
+	}
+
+	var submittedAt int64
+	var observedAt int64
+	if err := db.QueryRow(`SELECT submitted_at_unix,wallet_observed_at_unix FROM fact_chain_payments WHERE id=?`, id1).Scan(&submittedAt, &observedAt); err != nil {
+		t.Fatalf("query fact_chain_payments failed: %v", err)
+	}
+	if submittedAt != 1700001000 {
+		t.Fatalf("submitted_at_unix mismatch: got=%d want=1700001000", submittedAt)
+	}
+	if observedAt != 1700002000 {
+		t.Fatalf("wallet_observed_at_unix mismatch: got=%d want=1700002000", observedAt)
 	}
 }
 

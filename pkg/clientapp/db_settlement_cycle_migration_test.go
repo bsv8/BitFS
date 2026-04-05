@@ -31,9 +31,17 @@ func TestEnsureSettlementCyclesSchema_BackfillsPartialCycles(t *testing.T) {
 		`CREATE TABLE fact_chain_payments(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			txid TEXT NOT NULL UNIQUE,
+			payment_subtype TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
 			wallet_input_satoshi INTEGER NOT NULL DEFAULT 0,
+			wallet_output_satoshi INTEGER NOT NULL DEFAULT 0,
 			net_amount_satoshi INTEGER NOT NULL DEFAULT 0,
+			block_height INTEGER NOT NULL DEFAULT 0,
 			occurred_at_unix INTEGER NOT NULL,
+			submitted_at_unix INTEGER NOT NULL DEFAULT 0,
+			wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0,
+			from_party_id TEXT NOT NULL DEFAULT '',
+			to_party_id TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}'
 		)`,
 		`CREATE TABLE fact_pool_session_events(

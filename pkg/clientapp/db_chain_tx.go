@@ -45,12 +45,11 @@ func loadWalletLocalBroadcastTxsTx(tx *sql.Tx, walletID string, address string) 
 		return nil, fmt.Errorf("tx is nil")
 	}
 	rows, err := tx.Query(
-		`SELECT txid,tx_hex,created_at_unix,updated_at_unix,observed_at_unix
-		 FROM wallet_local_broadcast_txs
-		 WHERE wallet_id=? AND address=?
-		 ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`,
+		`SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
+		 FROM fact_chain_payments
+		 WHERE from_party_id=? AND payment_subtype='wallet_local_broadcast' AND submitted_at_unix>0
+		 ORDER BY submitted_at_unix ASC, updated_at_unix ASC, txid ASC`,
 		walletID,
-		address,
 	)
 	if err != nil {
 		return nil, err
@@ -59,11 +58,16 @@ func loadWalletLocalBroadcastTxsTx(tx *sql.Tx, walletID string, address string) 
 	out := make([]walletLocalBroadcastRow, 0, 8)
 	for rows.Next() {
 		var row walletLocalBroadcastRow
-		if err := rows.Scan(&row.TxID, &row.TxHex, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.ObservedAtUnix); err != nil {
+		var payloadJSON string
+		if err := rows.Scan(&row.TxID, &payloadJSON, &row.CreatedAtUnix, &row.ObservedAtUnix, &row.UpdatedAtUnix); err != nil {
 			return nil, err
 		}
 		row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
-		row.TxHex = strings.ToLower(strings.TrimSpace(row.TxHex))
+		txHex, err := factChainPaymentPayloadTxHex(payloadJSON)
+		if err != nil {
+			return nil, fmt.Errorf("parse fact_chain_payments payload for txid=%s: %w", row.TxID, err)
+		}
+		row.TxHex = txHex
 		out = append(out, row)
 	}
 	if err := rows.Err(); err != nil {
@@ -223,10 +227,10 @@ func markObservedWalletLocalBroadcastTxsTx(tx *sql.Tx, observedTxIDs map[string]
 		return nil
 	}
 	_, err := tx.Exec(
-		`UPDATE wallet_local_broadcast_txs
-		 SET observed_at_unix=CASE WHEN observed_at_unix>0 THEN observed_at_unix ELSE ? END,
+		`UPDATE fact_chain_payments
+		 SET wallet_observed_at_unix=CASE WHEN wallet_observed_at_unix>0 THEN wallet_observed_at_unix ELSE ? END,
 		     updated_at_unix=?
-		 WHERE txid IN (`+strings.Join(holders, ",")+`)`,
+		 WHERE payment_subtype='wallet_local_broadcast' AND txid IN (`+strings.Join(holders, ",")+`)`,
 		args...,
 	)
 	return err

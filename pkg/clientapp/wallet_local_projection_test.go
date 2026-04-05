@@ -284,11 +284,11 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 	}
 
 	var observedAt int64
-	if err := db.QueryRow(`SELECT observed_at_unix FROM wallet_local_broadcast_txs WHERE txid=?`, localTxID).Scan(&observedAt); err != nil {
-		t.Fatalf("query wallet_local_broadcast_txs: %v", err)
+	if err := db.QueryRow(`SELECT wallet_observed_at_unix FROM fact_chain_payments WHERE txid=?`, localTxID).Scan(&observedAt); err != nil {
+		t.Fatalf("query fact_chain_payments: %v", err)
 	}
 	if observedAt != 0 {
-		t.Fatalf("observed_at_unix mismatch: got=%d want=0", observedAt)
+		t.Fatalf("wallet_observed_at_unix mismatch: got=%d want=0", observedAt)
 	}
 }
 

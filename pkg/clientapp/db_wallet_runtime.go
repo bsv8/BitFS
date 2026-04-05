@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -440,12 +441,11 @@ func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address
 func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, walletID string, address string) ([]walletLocalBroadcastRow, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletLocalBroadcastRow, error) {
 		rows, err := db.Query(
-			`SELECT txid,tx_hex,created_at_unix,updated_at_unix,observed_at_unix
-			 FROM wallet_local_broadcast_txs
-			 WHERE wallet_id=? AND address=?
-			 ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`,
+			`SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
+			 FROM fact_chain_payments
+			 WHERE from_party_id=? AND payment_subtype='wallet_local_broadcast' AND submitted_at_unix>0
+			 ORDER BY submitted_at_unix ASC, updated_at_unix ASC, txid ASC`,
 			strings.TrimSpace(walletID),
-			strings.TrimSpace(address),
 		)
 		if err != nil {
 			return nil, err
@@ -454,11 +454,16 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 		out := make([]walletLocalBroadcastRow, 0, 8)
 		for rows.Next() {
 			var row walletLocalBroadcastRow
-			if err := rows.Scan(&row.TxID, &row.TxHex, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.ObservedAtUnix); err != nil {
+			var payloadJSON string
+			if err := rows.Scan(&row.TxID, &payloadJSON, &row.CreatedAtUnix, &row.ObservedAtUnix, &row.UpdatedAtUnix); err != nil {
 				return nil, err
 			}
 			row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
-			row.TxHex = strings.ToLower(strings.TrimSpace(row.TxHex))
+			txHex, err := factChainPaymentPayloadTxHex(payloadJSON)
+			if err != nil {
+				return nil, fmt.Errorf("parse fact_chain_payments payload for txid=%s: %w", row.TxID, err)
+			}
+			row.TxHex = txHex
 			out = append(out, row)
 		}
 		if err := rows.Err(); err != nil {
@@ -470,14 +475,34 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 
 func dbLoadWalletLocalBroadcastHex(ctx context.Context, store *clientDB, txid string) (string, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		var txHex string
-		err := db.QueryRow(`SELECT tx_hex FROM wallet_local_broadcast_txs WHERE txid=?`, strings.ToLower(strings.TrimSpace(txid))).Scan(&txHex)
+		var payloadJSON string
+		err := db.QueryRow(`SELECT payload_json FROM fact_chain_payments WHERE txid=? AND payment_subtype='wallet_local_broadcast'`, strings.ToLower(strings.TrimSpace(txid))).Scan(&payloadJSON)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return "", nil
 			}
 			return "", err
 		}
-		return strings.ToLower(strings.TrimSpace(txHex)), nil
+		txHex, err := factChainPaymentPayloadTxHex(payloadJSON)
+		if err != nil {
+			return "", err
+		}
+		return txHex, nil
 	})
+}
+
+func factChainPaymentPayloadTxHex(payloadJSON string) (string, error) {
+	payloadJSON = strings.TrimSpace(payloadJSON)
+	if payloadJSON == "" {
+		return "", fmt.Errorf("payload_json is empty")
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return "", err
+	}
+	txHex := strings.ToLower(strings.TrimSpace(firstNonEmptyStringField(payload, "tx_hex", "txHex")))
+	if txHex == "" {
+		return "", fmt.Errorf("tx_hex is missing")
+	}
+	return txHex, nil
 }

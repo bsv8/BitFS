@@ -16,17 +16,19 @@ type sqlConn interface {
 // chainPaymentEntry fact_chain_payments 写入条目
 // 设计说明：为 wallet_chain 财务来源切换提供事实层支持，后续写入都靠事实表主键收口。
 type chainPaymentEntry struct {
-	TxID                string
-	PaymentSubType      string
-	Status              string
-	WalletInputSatoshi  int64
-	WalletOutputSatoshi int64
-	NetAmountSatoshi    int64
-	BlockHeight         int64
-	OccurredAtUnix      int64
-	FromPartyID         string
-	ToPartyID           string
-	Payload             any
+	TxID                 string
+	PaymentSubType       string
+	Status               string
+	WalletInputSatoshi   int64
+	WalletOutputSatoshi  int64
+	NetAmountSatoshi     int64
+	BlockHeight          int64
+	OccurredAtUnix       int64
+	SubmittedAtUnix      int64
+	WalletObservedAtUnix int64
+	FromPartyID          string
+	ToPartyID            string
+	Payload              any
 }
 
 // chainPaymentUTXOLinkEntry 统一结算链路的 UTXO 明细条目。
@@ -52,8 +54,30 @@ func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEn
 	})
 }
 
-// dbUpsertChainPaymentDB 在已打开的 sql.DB 上执行 upsert
+// dbUpsertChainPaymentWithSettlementCycle 走同一个上下文包装，但会补 settlement_cycle。
+func dbUpsertChainPaymentWithSettlementCycle(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+		return dbUpsertChainPaymentWithSettlementCycleDB(db, e)
+	})
+}
+
+// dbUpsertChainPaymentDB 在已打开的 sql.DB 上执行 upsert，只落 fact。
 func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
+	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, false)
+}
+
+// dbUpsertChainPaymentWithSettlementCycleDB 先写 fact，再补 settlement_cycle。
+// 设计说明：
+// - 只有账务路径需要结算周期锚点；
+// - 提交、迁移、投影写入只落 fact，不要把“已提交”误写成“已确认结算”。
+func dbUpsertChainPaymentWithSettlementCycleDB(db sqlConn, e chainPaymentEntry) (int64, error) {
+	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, true)
+}
+
+func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, writeSettlementCycle bool) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -66,11 +90,24 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 	if occurredAt <= 0 {
 		occurredAt = now
 	}
+	submittedAt := e.SubmittedAtUnix
+	walletObservedAt := e.WalletObservedAtUnix
 
 	// 先尝试查询已存在的记录
 	var existingID int64
+	var existingSubmittedAt int64
+	var existingWalletObservedAt int64
 	err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&existingID)
 	if err == nil {
+		if err := db.QueryRow(`SELECT submitted_at_unix,wallet_observed_at_unix FROM fact_chain_payments WHERE id=?`, existingID).Scan(&existingSubmittedAt, &existingWalletObservedAt); err != nil {
+			return 0, err
+		}
+		if submittedAt < existingSubmittedAt {
+			submittedAt = existingSubmittedAt
+		}
+		if walletObservedAt < existingWalletObservedAt {
+			walletObservedAt = existingWalletObservedAt
+		}
 		// 存在则更新
 		_, err = db.Exec(
 			`UPDATE fact_chain_payments SET
@@ -80,6 +117,9 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 				wallet_output_satoshi=?,
 				net_amount_satoshi=?,
 				block_height=?,
+				occurred_at_unix=?,
+				submitted_at_unix=?,
+				wallet_observed_at_unix=?,
 				from_party_id=?,
 				to_party_id=?,
 				payload_json=?,
@@ -91,6 +131,9 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 			e.WalletOutputSatoshi,
 			e.NetAmountSatoshi,
 			e.BlockHeight,
+			occurredAt,
+			submittedAt,
+			walletObservedAt,
 			strings.TrimSpace(e.FromPartyID),
 			strings.TrimSpace(e.ToPartyID),
 			mustJSONString(e.Payload),
@@ -100,13 +143,15 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
-		if err := dbUpsertSettlementCycle(db,
-			fmt.Sprintf("cycle_chain_%d", existingID), "chain", "confirmed",
-			0, existingID,
-			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
-			0, occurredAt, "auto-created from chain payment", e.Payload,
-		); err != nil {
-			return 0, fmt.Errorf("upsert settlement cycle for existing chain payment %d: %w", existingID, err)
+		if writeSettlementCycle {
+			if err := dbUpsertSettlementCycle(db,
+				fmt.Sprintf("cycle_chain_%d", existingID), "chain", "confirmed",
+				0, existingID,
+				e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
+				0, occurredAt, "auto-created from chain payment", e.Payload,
+			); err != nil {
+				return 0, fmt.Errorf("upsert settlement cycle for existing chain payment %d: %w", existingID, err)
+			}
 		}
 		return existingID, nil
 	}
@@ -118,8 +163,8 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 	res, err := db.Exec(
 		`INSERT INTO fact_chain_payments(
 			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
-			block_height,occurred_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		txid,
 		strings.TrimSpace(e.PaymentSubType),
 		strings.TrimSpace(e.Status),
@@ -128,6 +173,8 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 		e.NetAmountSatoshi,
 		e.BlockHeight,
 		occurredAt,
+		submittedAt,
+		walletObservedAt,
 		strings.TrimSpace(e.FromPartyID),
 		strings.TrimSpace(e.ToPartyID),
 		mustJSONString(e.Payload),
@@ -141,14 +188,15 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 		return 0, err
 	}
 
-	// Step 15: 同时写入 settlement_cycle 统一锚点
-	if err := dbUpsertSettlementCycle(db,
-		fmt.Sprintf("cycle_chain_%d", paymentID), "chain", "confirmed",
-		0, paymentID,
-		e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
-		0, occurredAt, "auto-created from chain payment", e.Payload,
-	); err != nil {
-		return 0, fmt.Errorf("upsert settlement cycle for chain payment %d: %w", paymentID, err)
+	if writeSettlementCycle {
+		if err := dbUpsertSettlementCycle(db,
+			fmt.Sprintf("cycle_chain_%d", paymentID), "chain", "confirmed",
+			0, paymentID,
+			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
+			0, occurredAt, "auto-created from chain payment", e.Payload,
+		); err != nil {
+			return 0, fmt.Errorf("upsert settlement cycle for chain payment %d: %w", paymentID, err)
+		}
 	}
 
 	return paymentID, nil

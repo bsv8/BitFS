@@ -221,6 +221,8 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			net_amount_satoshi INTEGER NOT NULL,
 			block_height INTEGER NOT NULL,
 			occurred_at_unix INTEGER NOT NULL,
+			submitted_at_unix INTEGER NOT NULL DEFAULT 0,
+			wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0,
 			from_party_id TEXT NOT NULL,
 			to_party_id TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
@@ -395,15 +397,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			payload_json TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
 			PRIMARY KEY(utxo_id, asset_group, asset_standard, asset_key)
-		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
-			txid TEXT PRIMARY KEY,
-			wallet_id TEXT NOT NULL,
-			address TEXT NOT NULL,
-			tx_hex TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			observed_at_unix INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_bsv21_create_status(
 			token_id TEXT PRIMARY KEY,
@@ -769,10 +762,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_signal_type ON proc_orchestrator_logs(signal_type, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_gateway ON proc_orchestrator_logs(gateway_pubkey_hex, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_idempotency ON proc_orchestrator_logs(idempotency_key, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_created_at ON wallet_ledger_entries(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_occurred_at ON wallet_ledger_entries(occurred_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_txid ON wallet_ledger_entries(txid, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_ledger_entries_direction_category ON wallet_ledger_entries(direction, category, id DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
@@ -792,7 +781,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_target ON settle_business_settlements(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_state ON wallet_bsv21_create_status(status, next_auto_check_at_unix ASC, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
@@ -1035,8 +1023,8 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureWalletUTXOAssetsSchema(db); err != nil {
 		return fmt.Errorf("wallet_utxo_assets: %w", err)
 	}
-	if err := ensureWalletLocalBroadcastSchema(db); err != nil {
-		return fmt.Errorf("wallet_local_broadcast_txs: %w", err)
+	if err := ensureFactChainPaymentTimingSchema(db); err != nil {
+		return fmt.Errorf("fact_chain_payments timing columns: %w", err)
 	}
 	if err := ensureWalletBSV21CreateStatusSchema(db); err != nil {
 		return fmt.Errorf("wallet_bsv21_create_status: %w", err)
@@ -1049,6 +1037,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	}
 	if err := ensureSettlementCyclesSchema(db); err != nil {
 		return fmt.Errorf("settlement_cycles: %w", err)
+	}
+	if err := migrateWalletLocalBroadcastFacts(db); err != nil {
+		return fmt.Errorf("wallet local broadcast facts: %w", err)
 	}
 
 	return nil
@@ -3819,37 +3810,113 @@ func ensureWalletUTXOAssetsSchema(db *sql.DB) error {
 	return nil
 }
 
-// ensureWalletLocalBroadcastSchema 处理 wallet_local_broadcast_txs 表的历史列迁移
-func ensureWalletLocalBroadcastSchema(db *sql.DB) error {
+func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
-		txid TEXT PRIMARY KEY,
-		wallet_id TEXT NOT NULL,
-		address TEXT NOT NULL,
-		tx_hex TEXT NOT NULL,
-		created_at_unix INTEGER NOT NULL,
-		updated_at_unix INTEGER NOT NULL,
-		observed_at_unix INTEGER NOT NULL DEFAULT 0
-	)`); err != nil {
+	legacyTableName := strings.Join([]string{"wallet", "local", "broadcast", "txs"}, "_")
+	exists, err := hasTable(db, legacyTableName)
+	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_wallet ON wallet_local_broadcast_txs(wallet_id, address, updated_at_unix DESC)`); err != nil {
-		return err
+	if !exists {
+		return nil
 	}
 
-	cols, err := tableColumns(db, "wallet_local_broadcast_txs")
+	cols, err := tableColumns(db, legacyTableName)
 	if err != nil {
 		return err
 	}
 	if len(cols) == 0 {
 		return nil
 	}
+	observedCol := "observed_at_unix"
 	if _, ok := cols["observed_at_unix"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE wallet_local_broadcast_txs ADD COLUMN observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
+		observedCol = "0"
+	}
+
+	type legacyWalletLocalBroadcastRow struct {
+		TxID           string
+		WalletID       string
+		Address        string
+		TxHex          string
+		CreatedAtUnix  int64
+		UpdatedAtUnix  int64
+		ObservedAtUnix int64
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	rows, err := tx.Query(fmt.Sprintf(`SELECT txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,%s FROM %s`, observedCol, legacyTableName))
+	if err != nil {
+		rollback()
+		return err
+	}
+	defer rows.Close()
+
+	legacyRows := make([]legacyWalletLocalBroadcastRow, 0, 32)
+	for rows.Next() {
+		var row legacyWalletLocalBroadcastRow
+		if scanErr := rows.Scan(&row.TxID, &row.WalletID, &row.Address, &row.TxHex, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.ObservedAtUnix); scanErr != nil {
+			rollback()
+			return scanErr
 		}
+		legacyRows = append(legacyRows, row)
+	}
+	if err := rows.Err(); err != nil {
+		rollback()
+		return err
+	}
+
+	for _, row := range legacyRows {
+		submittedAt := row.CreatedAtUnix
+		if submittedAt <= 0 {
+			submittedAt = row.UpdatedAtUnix
+		}
+		if submittedAt <= 0 {
+			submittedAt = time.Now().Unix()
+		}
+		status := "submitted"
+		if row.ObservedAtUnix > 0 {
+			status = "observed"
+		}
+		payload := map[string]any{
+			"tx_hex":    strings.ToLower(strings.TrimSpace(row.TxHex)),
+			"wallet_id": strings.TrimSpace(row.WalletID),
+			"address":   strings.TrimSpace(row.Address),
+		}
+		if _, err := dbUpsertChainPaymentDB(tx, chainPaymentEntry{
+			TxID:                 row.TxID,
+			PaymentSubType:       "wallet_local_broadcast",
+			Status:               status,
+			WalletInputSatoshi:   0,
+			WalletOutputSatoshi:  0,
+			NetAmountSatoshi:     0,
+			BlockHeight:          0,
+			OccurredAtUnix:       submittedAt,
+			SubmittedAtUnix:      submittedAt,
+			WalletObservedAtUnix: row.ObservedAtUnix,
+			FromPartyID:          strings.TrimSpace(row.WalletID),
+			ToPartyID:            "external:unknown",
+			Payload:              payload,
+		}); err != nil {
+			rollback()
+			return fmt.Errorf("migrate legacy wallet broadcast txid=%s: %w", strings.TrimSpace(row.TxID), err)
+		}
+	}
+
+	if _, err := tx.Exec(`DROP TABLE ` + legacyTableName); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
 	}
 	return nil
 }
@@ -3885,6 +3952,30 @@ func ensureWalletBSV21CreateStatusSchema(db *sql.DB) error {
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`); err != nil {
 		return err
+	}
+	return nil
+}
+
+func ensureFactChainPaymentTimingSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	cols, err := tableColumns(db, "fact_chain_payments")
+	if err != nil {
+		return err
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, ok := cols["submitted_at_unix"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE fact_chain_payments ADD COLUMN submitted_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
+	}
+	if _, ok := cols["wallet_observed_at_unix"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE fact_chain_payments ADD COLUMN wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return err
+		}
 	}
 	return nil
 }

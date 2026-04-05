@@ -79,7 +79,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 				return err
 			}
 		}
-		if err := dbUpsertWalletLocalBroadcastTx(dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
+		if err := dbUpsertWalletLocalBroadcastFactTx(dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
 			return err
 		}
 		stats := summarizeWalletUTXOState(existing)
@@ -177,7 +177,7 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 	return stats
 }
 
-func dbUpsertWalletLocalBroadcastTx(tx *sql.Tx, walletID string, address string, txid string, txHex string, updatedAt int64) error {
+func dbUpsertWalletLocalBroadcastFactTx(tx *sql.Tx, walletID string, address string, txid string, txHex string, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -186,21 +186,26 @@ func dbUpsertWalletLocalBroadcastTx(tx *sql.Tx, walletID string, address string,
 	if txid == "" || txHex == "" {
 		return fmt.Errorf("local broadcast txid and tx hex are required")
 	}
-	if _, err := tx.Exec(
-		`INSERT INTO wallet_local_broadcast_txs(txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,observed_at_unix)
-		 VALUES(?,?,?,?,?,?,0)
-		 ON CONFLICT(txid) DO UPDATE SET
-		 	wallet_id=excluded.wallet_id,
-		 	address=excluded.address,
-		 	tx_hex=excluded.tx_hex,
-		 	updated_at_unix=excluded.updated_at_unix`,
-		txid,
-		strings.TrimSpace(walletID),
-		strings.TrimSpace(address),
-		txHex,
-		updatedAt,
-		updatedAt,
-	); err != nil {
+	_, err := dbUpsertChainPaymentDB(tx, chainPaymentEntry{
+		TxID:                 txid,
+		PaymentSubType:       "wallet_local_broadcast",
+		Status:               "submitted",
+		WalletInputSatoshi:   0,
+		WalletOutputSatoshi:  0,
+		NetAmountSatoshi:     0,
+		BlockHeight:          0,
+		OccurredAtUnix:       updatedAt,
+		SubmittedAtUnix:      updatedAt,
+		WalletObservedAtUnix: 0,
+		FromPartyID:          strings.TrimSpace(walletID),
+		ToPartyID:            "external:unknown",
+		Payload: map[string]any{
+			"tx_hex":    txHex,
+			"wallet_id": strings.TrimSpace(walletID),
+			"address":   strings.TrimSpace(address),
+		},
+	})
+	if err != nil {
 		return err
 	}
 	return nil
