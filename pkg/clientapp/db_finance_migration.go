@@ -9,6 +9,11 @@ import (
 	"time"
 )
 
+// 说明：
+// - 这里所有 legacy* 逻辑都只用于历史回填；
+// - 不参与运行时主链路；
+// - 不新增业务入口，只做旧数据整理和审计。
+
 type legacyWalletChainBackfillFacts struct {
 	TxID                string
 	PaymentSubType      string
@@ -66,13 +71,15 @@ type legacyFinanceSourceBackfillReport struct {
 	UnmappedRows  int
 }
 
-// backfillLegacyFinanceSources 负责把历史财务来源回填到新口径。
+// backfillHistoricalFinanceSources 负责把历史财务来源回填到新口径。
+// 仅用于历史回填，不参与运行时。
 // 设计说明：
 // - 先回填 fee_pool，再回填 pool_allocation，最后回填 wallet_chain；
 // - 三条路径彼此独立，不做万能迁移；
 // - 任何一条路径证据不够时，直接报错，不吞；
+// - 这里只用于历史回填，不能当成运行时业务入口；
 // - 返回改写数量和未映射数量，方便审计和测试。
-func backfillLegacyFinanceSources(db *sql.DB) (legacyFinanceSourceBackfillReport, error) {
+func backfillHistoricalFinanceSources(db *sql.DB) (legacyFinanceSourceBackfillReport, error) {
 	if db == nil {
 		return legacyFinanceSourceBackfillReport{}, fmt.Errorf("db is nil")
 	}
@@ -356,7 +363,7 @@ func legacyResolveSettlementCycleIDTx(tx *sql.Tx, sourceType, sourceID string) (
 		}
 		return dbGetSettlementCycleByChainPayment(tx, paymentID)
 	default:
-		return 0, fmt.Errorf("unsupported legacy source_type: %s", sourceType)
+		return 0, fmt.Errorf("unsupported source_type for historical backfill: %s", sourceType)
 	}
 }
 

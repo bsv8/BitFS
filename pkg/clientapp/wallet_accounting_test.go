@@ -278,9 +278,9 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	}
 }
 
-// TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证第二步整改 + 第二阶段
+// TestDirectTransferAccounting_SourceIDUsesAutoIncrementID 验证结算锚点已经收口到自增主键
 // source_id 应该是 fact_pool_session_events.id（整数），而不是 allocation_id（业务键）
-// 第二阶段：open/close 为过程型财务对象，只验证 pay 的 source_id 格式
+// open/close 为过程型财务对象，只验证 pay 的 source_id 格式
 func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
 
@@ -305,7 +305,7 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_third_iter_1")
 	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_third_iter_1", baseTxHex, 700, 290, sellerPubHex)
 
-	// 第二阶段整改验证：open/close 生成过程型 settle_businesses，不是正式收费对象
+	// 这里验证 open/close 生成过程型 settle_businesses，不是正式收费对象
 	// 设计意图：open/close 保留为过程型财务对象，正式收费主线只认 biz_download_pool_*
 	var openBusinessCount, closeBusinessCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&openBusinessCount); err != nil {
@@ -391,7 +391,7 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	}
 }
 
-// TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID 验证第二步整改
+// TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID 验证结算锚点已经收口到自增主键
 // process events 的 source_id 应该是 fact_pool_session_events.id（整数）
 func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *testing.T) {
 	t.Parallel()
@@ -458,7 +458,7 @@ func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *te
 		if gotSourceType != "settlement_cycle" {
 			t.Fatalf("unexpected source_type for %s: got=%s want=settlement_cycle", want.subtype, gotSourceType)
 		}
-		// 第二步整改验证：source_id 应该是整数主键
+		// 这里的 source_id 应该是整数主键
 		wantSourceIDStr := fmt.Sprintf("%d", want.expectedSource)
 		if gotSourceIDStr != wantSourceIDStr {
 			if gotSourceIDStr == openAllocID || gotSourceIDStr == payAllocID || gotSourceIDStr == closeAllocID {
@@ -878,9 +878,8 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 	}
 }
 
-// TestDirectTransferAccounting_CompatibilityQueryByAllocationID 验证兼容层
-// 使用 allocation_id 查询能正确映射到新的 source_id
-func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T) {
+// TestDirectTransferAccounting_QueryByAllocationID 验证调试/正式查询都能按 allocation_id 命中统一来源。
+func TestDirectTransferAccounting_QueryByAllocationID(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -891,15 +890,15 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 	sessionID := "sess_third_iter_1"
 
 	// 第二阶段：改用 pay 测试（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
-	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_compat_test")
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_main_test")
 
-	// 使用 pay allocation_id 查询（兼容层）
+	// 使用 pay allocation_id 查询
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 
 	// 验证：pay 不再生成 settle_businesses（正式查询应返回空）
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocID, "formal", 10, 0)
 	if err != nil {
-		t.Fatalf("compatibility query failed: %v", err)
+		t.Fatalf("formal query failed: %v", err)
 	}
 	if bizPage.Total != 0 {
 		t.Fatalf("pay 不应生成 settle_businesses，got %d", bizPage.Total)
@@ -908,14 +907,14 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 	// 验证：process events 存在（pay 生成 process events）
 	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, payAllocID, 10, 0)
 	if err != nil {
-		t.Fatalf("compatibility query for process events failed: %v", err)
+		t.Fatalf("process query failed: %v", err)
 	}
 	if procPage.Total == 0 {
-		t.Fatal("compatibility query for process events returned no results")
+		t.Fatal("process query returned no results")
 	}
 }
 
-// TestRecordWalletChainAccounting_UsesChainPaymentID 验证第二步整改
+// TestRecordWalletChainAccounting_UsesChainPaymentID 验证钱包链财务已收口到 settlement_cycle
 // wallet_chain 财务记录的 source_id 应该是 settlement_cycle.id
 func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 	t.Parallel()
@@ -968,7 +967,7 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 }
 
 // TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID
-// 第二阶段兼容层：查询可以继续用 txid，但底层必须换算成 settlement_cycle.id
+// 主口径查询：可以继续用 txid，但底层必须换算成 settlement_cycle.id
 func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T) {
 	t.Parallel()
 
@@ -1116,6 +1115,7 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&paymentID); err != nil {
 		t.Fatalf("query chain_payment failed: %v", err)
 	}
+	businessID := "biz_wallet_chain_" + txid
 	type wantLink struct {
 		utxoID   string
 		ioSide   string
@@ -1130,9 +1130,9 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 		var count int
 		var amount int64
 		if err := db.QueryRow(
-			`SELECT COUNT(1),COALESCE(SUM(amount_satoshi),0) FROM fact_chain_payment_utxo_links
-			  WHERE chain_payment_id=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
-			paymentID, want.utxoID, want.ioSide, want.utxoRole,
+			`SELECT COUNT(1),COALESCE(SUM(amount_satoshi),0) FROM settle_tx_utxo_links
+			  WHERE business_id=? AND txid=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
+			businessID, txid, want.utxoID, want.ioSide, want.utxoRole,
 		).Scan(&count, &amount); err != nil {
 			t.Fatalf("query link %s failed: %v", want.utxoID, err)
 		}
@@ -1146,8 +1146,8 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 
 	var skippedCount int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_role IN ('counterparty_out','external_in')`,
-		paymentID,
+		`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_role IN ('counterparty_out','external_in')`,
+		businessID, txid,
 	).Scan(&skippedCount); err != nil {
 		t.Fatalf("query skipped links failed: %v", err)
 	}
@@ -1200,11 +1200,11 @@ func TestRecordWalletChainAccounting_Idempotent(t *testing.T) {
 	if paymentCount != 1 {
 		t.Fatalf("expected 1 chain_payment, got %d", paymentCount)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
-		t.Fatalf("count fact_chain_payment_utxo_links failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=?`, "biz_wallet_chain_"+txid, txid).Scan(&linkCount); err != nil {
+		t.Fatalf("count settle_tx_utxo_links failed: %v", err)
 	}
 	if linkCount != 2 {
-		t.Fatalf("expected 2 fact_chain_payment_utxo_links, got %d", linkCount)
+		t.Fatalf("expected 2 settle_tx_utxo_links, got %d", linkCount)
 	}
 }
 
@@ -1231,7 +1231,7 @@ func TestRecordWalletChainAccounting_FeePoolSettleLink(t *testing.T) {
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE utxo_role='fee_pool_settle' AND utxo_id=?`, settleUTXO).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_role='fee_pool_settle' AND utxo_id=?`, "biz_wallet_chain_"+txid, txid, settleUTXO).Scan(&count); err != nil {
 		t.Fatalf("query fee_pool_settle link failed: %v", err)
 	}
 	if count != 1 {
@@ -1305,17 +1305,17 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 	}
 
 	var linkCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?)`, txid).Scan(&linkCount); err != nil {
-		t.Fatalf("count fact_chain_payment_utxo_links failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=?`, "biz_wallet_chain_"+txid, txid).Scan(&linkCount); err != nil {
+		t.Fatalf("count settle_tx_utxo_links failed: %v", err)
 	}
 	if linkCount != 2 {
-		t.Fatalf("expected 2 fact_chain_payment_utxo_links, got %d", linkCount)
+		t.Fatalf("expected 2 settle_tx_utxo_links, got %d", linkCount)
 	}
 
 	var inputRole, outputRole string
 	if err := db.QueryRow(
-		`SELECT utxo_role FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?) AND io_side='input' LIMIT 1`,
-		txid,
+		`SELECT utxo_role FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND io_side='input' LIMIT 1`,
+		"biz_wallet_chain_"+txid, txid,
 	).Scan(&inputRole); err != nil {
 		t.Fatalf("query input role failed: %v", err)
 	}
@@ -1323,8 +1323,8 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 		t.Fatalf("unexpected input role: %s", inputRole)
 	}
 	if err := db.QueryRow(
-		`SELECT utxo_role FROM fact_chain_payment_utxo_links WHERE chain_payment_id=(SELECT id FROM fact_chain_payments WHERE txid=?) AND io_side='output' LIMIT 1`,
-		txid,
+		`SELECT utxo_role FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND io_side='output' LIMIT 1`,
+		"biz_wallet_chain_"+txid, txid,
 	).Scan(&outputRole); err != nil {
 		t.Fatalf("query output role failed: %v", err)
 	}

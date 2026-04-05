@@ -1,8 +1,48 @@
 package clientapp
 
 import (
+	"database/sql"
+	"fmt"
 	"testing"
 )
+
+func seedAssetConsumptionChainCycle(t *testing.T, db *sql.DB, paymentID int64, occurredAt int64) int64 {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO fact_settlement_cycles(
+		cycle_id, channel, state, chain_payment_id, gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
+		cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		fmt.Sprintf("cycle_payment_%d", paymentID), "chain", "confirmed", paymentID, 0, 0, 0,
+		0, occurredAt, occurredAt, "test cycle", "{}",
+	)
+	if err != nil {
+		t.Fatalf("seed chain settlement cycle failed: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("seed chain settlement cycle id failed: %v", err)
+	}
+	return id
+}
+
+func seedAssetConsumptionPoolCycle(t *testing.T, db *sql.DB, poolEventID int64, occurredAt int64) int64 {
+	t.Helper()
+	res, err := db.Exec(`INSERT INTO fact_settlement_cycles(
+		cycle_id, channel, state, pool_session_event_id, gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
+		cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		fmt.Sprintf("cycle_pool_%d", poolEventID), "pool", "confirmed", poolEventID, 0, 0, 0,
+		0, occurredAt, occurredAt, "test cycle", "{}",
+	)
+	if err != nil {
+		t.Fatalf("seed pool settlement cycle failed: %v", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		t.Fatalf("seed pool settlement cycle id failed: %v", err)
+	}
+	return id
+}
 
 // TestInitIndexDB_CreatesAssetFactSchema 验证资产事实层两张表创建成功
 func TestInitIndexDB_CreatesAssetFactSchema(t *testing.T) {
@@ -53,6 +93,13 @@ func TestInitIndexDB_CreatesAssetFactSchema(t *testing.T) {
 		if _, ok := consCols[col]; !ok {
 			t.Fatalf("fact_asset_consumptions missing column %s", col)
 		}
+	}
+	notNull, err := tableColumnNotNull(db, "fact_asset_consumptions", "settlement_cycle_id")
+	if err != nil {
+		t.Fatalf("inspect fact_asset_consumptions settlement_cycle_id nullability failed: %v", err)
+	}
+	if !notNull {
+		t.Fatal("fact_asset_consumptions.settlement_cycle_id should be NOT NULL")
 	}
 }
 
@@ -234,6 +281,7 @@ func TestInitIndexDB_AssetConsumptionXorConstraint(t *testing.T) {
 		t.Fatalf("insert payment failed: %v", err)
 	}
 	paymentID, _ := res.LastInsertId()
+	paymentCycleID := seedAssetConsumptionChainCycle(t, db, paymentID, 1700000000)
 
 	// 4. fact_pool_sessions 记录
 	_, err = db.Exec(`INSERT INTO fact_pool_sessions(
@@ -259,12 +307,13 @@ func TestInitIndexDB_AssetConsumptionXorConstraint(t *testing.T) {
 		t.Fatalf("insert pool allocation failed: %v", err)
 	}
 	allocationID, _ := res.LastInsertId()
+	allocationCycleID := seedAssetConsumptionPoolCycle(t, db, allocationID, 1700000000)
 
 	// 测试：二选一约束 - 两个都为空应该失败
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID, nil, nil, 100, 1700000000,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID, nil, nil, paymentCycleID, 100, 1700000000,
 	)
 	if err == nil {
 		t.Fatalf("consumption with both NULL should fail")
@@ -272,9 +321,9 @@ func TestInitIndexDB_AssetConsumptionXorConstraint(t *testing.T) {
 
 	// 测试：二选一约束 - 两个都非空应该失败
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID, paymentID, allocationID, 100, 1700000000,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID, paymentID, allocationID, paymentCycleID, 100, 1700000000,
 	)
 	if err == nil {
 		t.Fatalf("consumption with both non-NULL should fail")
@@ -282,9 +331,9 @@ func TestInitIndexDB_AssetConsumptionXorConstraint(t *testing.T) {
 
 	// 测试：只有 chain_payment_id 应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID, paymentID, nil, 100, 1700000000,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID, paymentID, nil, paymentCycleID, 100, 1700000000,
 	)
 	if err != nil {
 		t.Fatalf("consumption with only chain_payment_id failed: %v", err)
@@ -317,9 +366,9 @@ func TestInitIndexDB_AssetConsumptionXorConstraint(t *testing.T) {
 
 	// 测试：只有 pool_allocation_id 应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID2, nil, allocationID, 100, 1700000000,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID2, nil, allocationID, allocationCycleID, 100, 1700000000,
 	)
 	if err != nil {
 		t.Fatalf("consumption with only pool_allocation_id failed: %v", err)
@@ -561,14 +610,18 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, "alloc_2").Scan(&allocationID2); err != nil {
 		t.Fatalf("lookup allocation_2 id failed: %v", err)
 	}
+	paymentCycleID1 := seedAssetConsumptionChainCycle(t, db, paymentID1, 1700000000)
+	paymentCycleID2 := seedAssetConsumptionChainCycle(t, db, paymentID2, 1700000000)
+	allocationCycleID1 := seedAssetConsumptionPoolCycle(t, db, allocationID1, 1700000000)
+	allocationCycleID2 := seedAssetConsumptionPoolCycle(t, db, allocationID2, 1700000001)
 
 	// ========== 测试部分唯一索引：source_flow_id + chain_payment_id ==========
 
 	// 第一次插入：flow_1 -> payment_1，应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID1, paymentID1, nil, 100, 1700000000,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID1, paymentID1, nil, paymentCycleID1, 100, 1700000000,
 	)
 	if err != nil {
 		t.Fatalf("first insert flow_1->payment_1 failed: %v", err)
@@ -576,9 +629,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// 重复插入：flow_1 -> payment_1，应该失败（部分唯一索引）
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID1, paymentID1, nil, 200, 1700000001,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID1, paymentID1, nil, paymentCycleID1, 200, 1700000001,
 	)
 	if err == nil {
 		t.Fatalf("duplicate insert flow_1->payment_1 should fail")
@@ -586,9 +639,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// 不同 flow 同一 payment：flow_2 -> payment_1，应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID2, paymentID1, nil, 150, 1700000002,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID2, paymentID1, nil, paymentCycleID1, 150, 1700000002,
 	)
 	if err != nil {
 		t.Fatalf("insert flow_2->payment_1 failed: %v", err)
@@ -596,9 +649,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// 同一 flow 不同 payment：flow_1 -> payment_2，应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID1, paymentID2, nil, 300, 1700000003,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID1, paymentID2, nil, paymentCycleID2, 300, 1700000003,
 	)
 	if err != nil {
 		t.Fatalf("insert flow_1->payment_2 failed: %v", err)
@@ -608,9 +661,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// flow_1 -> allocation_1，应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID1, nil, allocationID1, 100, 1700000004,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID1, nil, allocationID1, allocationCycleID1, 100, 1700000004,
 	)
 	if err != nil {
 		t.Fatalf("first insert flow_1->allocation_1 failed: %v", err)
@@ -618,9 +671,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// 重复插入：flow_1 -> allocation_1，应该失败（部分唯一索引）
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID1, nil, allocationID1, 200, 1700000005,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID1, nil, allocationID1, allocationCycleID1, 200, 1700000005,
 	)
 	if err == nil {
 		t.Fatalf("duplicate insert flow_1->allocation_1 should fail")
@@ -628,9 +681,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// 不同 flow 同一 allocation：flow_2 -> allocation_1，应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID2, nil, allocationID1, 150, 1700000006,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID2, nil, allocationID1, allocationCycleID1, 150, 1700000006,
 	)
 	if err != nil {
 		t.Fatalf("insert flow_2->allocation_1 failed: %v", err)
@@ -638,9 +691,9 @@ func TestInitIndexDB_AssetConsumptionPartialUnique(t *testing.T) {
 
 	// 同一 flow 不同 allocation：flow_1 -> allocation_2，应该成功
 	_, err = db.Exec(`INSERT INTO fact_asset_consumptions(
-		source_flow_id, chain_payment_id, pool_allocation_id, used_satoshi, occurred_at_unix
-	) VALUES(?,?,?,?,?)`,
-		flowID1, nil, allocationID2, 300, 1700000007,
+		source_flow_id, chain_payment_id, pool_allocation_id, settlement_cycle_id, used_satoshi, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		flowID1, nil, allocationID2, allocationCycleID2, 300, 1700000007,
 	)
 	if err != nil {
 		t.Fatalf("insert flow_1->allocation_2 failed: %v", err)

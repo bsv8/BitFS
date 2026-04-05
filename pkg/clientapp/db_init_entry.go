@@ -46,10 +46,10 @@ func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	return nil
 }
 
-// initIndexDB 是数据库初始化的旧入口，保留给测试代码兼容使用。
+// initIndexDB 是数据库初始化的测试入口。
 // 设计说明：
 // - 新代码应直接使用 ensureClientDBSchema 或 ensureClientDBSchemaOnDB；
-// - 该函数仅作为测试兼容层，内部包装新的分层初始化逻辑。
+// - 这里只是给现有测试保留的薄包装。
 func initIndexDB(db *sql.DB) error {
 	return ensureClientDBSchemaOnDB(db)
 }

@@ -179,37 +179,13 @@ func financeDetailAllowsAllStates(r *http.Request) bool {
 func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceType, sourceID string) (string, string, error) {
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)
-	switch sourceType {
-	case "":
+	if sourceType == "" {
 		return "", sourceID, nil
-	case "settlement_cycle":
-		return "settlement_cycle", sourceID, nil
-	case "pool_allocation":
-		cycleID, err := resolvePoolAllocationSourceToSettlementCycle(ctx, store, sourceID)
-		if err != nil {
-			return "", "", err
-		}
-		return "settlement_cycle", fmt.Sprintf("%d", cycleID), nil
-	case "chain_payment", "fee_pool":
-		cycleID, err := resolveChainPaymentSourceToSettlementCycle(ctx, store, sourceID)
-		if err != nil {
-			return "", "", err
-		}
-		return "settlement_cycle", fmt.Sprintf("%d", cycleID), nil
-	case "wallet_chain":
-		if strings.TrimSpace(sourceID) == "" {
-			return "", "", fmt.Errorf("source_id is required")
-		}
-		cycleID, err := clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-			return resolveWalletChainSourceToSettlementCycleDB(db, sourceID)
-		})
-		if err != nil {
-			return "", "", err
-		}
-		return "settlement_cycle", fmt.Sprintf("%d", cycleID), nil
-	default:
-		return "", "", fmt.Errorf("source_type must be settlement_cycle or a supported legacy alias")
 	}
+	if sourceType != "settlement_cycle" {
+		return "", "", fmt.Errorf("source_type must be settlement_cycle")
+	}
+	return "settlement_cycle", sourceID, nil
 }
 
 type httpAPIServer struct {
@@ -295,10 +271,10 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
 		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
 		mux.HandleFunc(prefix+"/v1/direct/quotes/detail", s.withAuth(s.handleDirectQuoteDetail))
-		// 【第五步：调试/兼容接口】proc_direct_transfer_pools 已降级为协议运行态表
+		// 调试接口：proc_direct_transfer_pools 只表达协议运行态
 		// 业务状态查询请使用 /v1/downloads/settlement-status
-		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPoolsCompat))
-		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetailCompat))
+		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPoolsDebug))
+		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetailDebug))
 		mux.HandleFunc(prefix+"/v1/transactions", s.withAuth(s.handleTransactions))
 		mux.HandleFunc(prefix+"/v1/transactions/detail", s.withAuth(s.handleTransactionDetail))
 		mux.HandleFunc(prefix+"/v1/biz_purchases", s.withAuth(s.handlePurchases))
@@ -363,7 +339,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
 		mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
 		mux.HandleFunc(prefix+"/v1/admin/routes/indexes", s.withAuth(s.handleAdminRouteIndexes))
-		// 费用池审计旧接口（兼容口，非主入口，仅保留原始事实查询能力）
+		// 费用池审计历史查询入口（非主入口，仅保留原始事实查询能力）
 		// 主排障入口请使用 /v1/admin/feepool/audit/gateway-timeline 和 command-timeline
 		mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))
 		mux.HandleFunc(prefix+"/v1/admin/feepool/commands/detail", s.withAuth(s.handleAdminFeePoolCommandDetail))
@@ -401,7 +377,6 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/verification/batch-retry", s.withAuth(s.handleAdminVerificationBatchRetry))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses", s.withAuth(s.handleAdminFinanceBusinesses))
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
-		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/compat", s.withAuth(s.handleAdminFinanceBusinessesCompat)) // 第十阶段新增：兼容/调试全量查询入口
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events", s.withAuth(s.handleAdminFinanceProcessEvents))
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events/detail", s.withAuth(s.handleAdminFinanceProcessEventDetail))
 		mux.HandleFunc(prefix+"/v1/admin/finance/breakdowns", s.withAuth(s.handleAdminFinanceBreakdowns))
@@ -938,11 +913,11 @@ func (s *httpAPIServer) handleDirectQuoteDetail(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, it)
 }
 
-// handleDirectTransferPoolsCompat 【第五步：调试/兼容接口】
+// handleDirectTransferPoolsDebug 调试接口。
 // - 此接口返回的是协议运行态数据，不是业务结算状态
 // - 业务状态查询请使用 /v1/downloads/settlement-status (GetFrontOrderSettlementSummary)
 // - proc_direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
-func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleDirectTransferPoolsDebug(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -955,7 +930,7 @@ func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r
 	sellerPeerID := strings.TrimSpace(r.URL.Query().Get("seller_pubkey_hex"))
 	buyerPeerID := strings.TrimSpace(r.URL.Query().Get("buyer_pubkey_hex"))
 	arbiterPeerID := strings.TrimSpace(r.URL.Query().Get("arbiter_pubkey_hex"))
-	page, err := dbListDirectTransferPoolsCompat(r.Context(), httpStore(s), directTransferPoolFilter{
+	page, err := dbListDirectTransferPoolsDebug(r.Context(), httpStore(s), directTransferPoolFilter{
 		Limit:         limit,
 		Offset:        offset,
 		SessionID:     sessionID,
@@ -979,11 +954,11 @@ func (s *httpAPIServer) handleDirectTransferPoolsCompat(w http.ResponseWriter, r
 	})
 }
 
-// handleDirectTransferPoolDetailCompat 【第五步：调试/兼容接口】
+// handleDirectTransferPoolDetailDebug 调试接口。
 // - 此接口返回的是协议运行态数据，不是业务结算状态
 // - 业务状态查询请使用 /v1/downloads/settlement-status (GetFrontOrderSettlementSummary)
 // - proc_direct_transfer_pools.status 是协议运行时状态，不代表业务是否完成
-func (s *httpAPIServer) handleDirectTransferPoolDetailCompat(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleDirectTransferPoolDetailDebug(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -993,7 +968,7 @@ func (s *httpAPIServer) handleDirectTransferPoolDetailCompat(w http.ResponseWrit
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "session_id is required"})
 		return
 	}
-	it, err := dbGetDirectTransferPoolItemCompat(r.Context(), httpStore(s), sessionID)
+	it, err := dbGetDirectTransferPoolItemDebug(r.Context(), httpStore(s), sessionID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -1206,7 +1181,7 @@ func (s *httpAPIServer) handleGatewayEventDetail(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, it)
 }
 
-// 兼容口：原始命令查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
+// 历史查询入口：原始命令查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1237,7 +1212,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommands(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
-// 兼容口：单条命令详情，非主入口。
+// 历史查询入口：单条命令详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1260,7 +1235,7 @@ func (s *httpAPIServer) handleAdminFeePoolCommandDetail(w http.ResponseWriter, r
 	writeJSON(w, http.StatusOK, it)
 }
 
-// 兼容口：原始领域事件查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
+// 历史查询入口：原始领域事件查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1285,7 +1260,7 @@ func (s *httpAPIServer) handleAdminFeePoolEvents(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
-// 兼容口：单条事件详情，非主入口。
+// 历史查询入口：单条事件详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1308,7 +1283,7 @@ func (s *httpAPIServer) handleAdminFeePoolEventDetail(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, it)
 }
 
-// 兼容口：原始观察事实查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
+// 历史查询入口：原始观察事实查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolObservedStates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1335,7 +1310,7 @@ func (s *httpAPIServer) handleAdminFeePoolObservedStates(w http.ResponseWriter, 
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
-// 兼容口：单条观察事实详情，非主入口。
+// 历史查询入口：单条观察事实详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolObservedStateDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1358,7 +1333,7 @@ func (s *httpAPIServer) handleAdminFeePoolObservedStateDetail(w http.ResponseWri
 	writeJSON(w, http.StatusOK, it)
 }
 
-// 兼容口：原始状态快照查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
+// 历史查询入口：原始状态快照查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1383,7 +1358,7 @@ func (s *httpAPIServer) handleAdminFeePoolStates(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
-// 兼容口：单条状态快照详情，非主入口。
+// 历史查询入口：单条状态快照详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1406,7 +1381,7 @@ func (s *httpAPIServer) handleAdminFeePoolStateDetail(w http.ResponseWriter, r *
 	writeJSON(w, http.StatusOK, it)
 }
 
-// 兼容口：原始效果日志查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
+// 历史查询入口：原始效果日志查询，非主入口。排障请使用 handleAdminFeePoolGatewayAuditTimeline。
 func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -1435,7 +1410,7 @@ func (s *httpAPIServer) handleAdminFeePoolEffects(w http.ResponseWriter, r *http
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
-// 兼容口：单条效果日志详情，非主入口。
+// 历史查询入口：单条效果日志详情，非主入口。
 func (s *httpAPIServer) handleAdminFeePoolEffectDetail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2005,7 +1980,7 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 // 强制要求：
 //   - business_role 必填：formal 或 process
 //   - 不传返回 400
-//   - 不支持自由模糊搜索（q 参数），请使用 compat 入口
+//   - 不支持自由模糊搜索（q 参数），请使用调试入口
 //
 // 结构化条件（仅用于过滤）：
 //   - business_id：按业务 ID 精确查
@@ -2015,7 +1990,6 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 //   - from_party_id/to_party_id：按参与方查
 //   - accounting_scene/accounting_subtype：补充过滤条件
 //
-// 如需全量排查或自由搜索，请使用 /api/v1/admin/finance/businesses/compat 兼容入口。
 func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2030,9 +2004,9 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
 
-	// 正式口不支持自由模糊搜索，q 只属于 compat/debug 入口
+	// 正式口不支持自由模糊搜索，q 不是正式查询条件。
 	if strings.TrimSpace(r.URL.Query().Get("q")) != "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "q parameter is not supported in formal query, use /businesses/compat instead"})
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "q parameter is not supported in formal query"})
 		return
 	}
 
@@ -2098,99 +2072,6 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
-}
-
-// handleAdminFinanceBusinessesCompat 【兼容/调试入口】全量查询财务业务记录
-// 第十一阶段收口：此接口仅用于排查、迁移、对账辅助，不参与正式业务语义
-//
-// 兼容/调试查询：
-//   - 不强制要求 business_role，允许返回全量混合结果
-//   - 仅用于人工排查、历史数据核对、迁移验证、对账辅助
-//   - 不代表正式业务语义，正式查询请走 /api/v1/admin/finance/businesses
-//
-// 注意：
-//   - 此接口返回的数据可能同时包含 formal 和 process 类型的业务记录
-//   - 返回结果中带有 data_role = "compat_debug_only" 标识
-//   - 不要在前台、正式页面、正式脚本中把它当主入口使用
-func (s *httpAPIServer) handleAdminFinanceBusinessesCompat(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
-	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
-
-	// 兼容入口：不强制 business_role，但允许传值过滤
-	businessRole := strings.TrimSpace(r.URL.Query().Get("business_role"))
-	if businessRole != "" && businessRole != "formal" && businessRole != "process" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_role must be 'formal' or 'process' (or empty for all)"})
-		return
-	}
-
-	// 主口径参数
-	sourceType := strings.TrimSpace(r.URL.Query().Get("source_type"))
-	sourceID := strings.TrimSpace(r.URL.Query().Get("source_id"))
-	accountingScene := strings.TrimSpace(r.URL.Query().Get("accounting_scene"))
-	accountingSubType := strings.TrimSpace(r.URL.Query().Get("accounting_subtype"))
-
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
-	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	var err error
-
-	// pool_allocation_id 只做主键换算
-	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
-		poolAllocID, err := resolvePoolAllocationSourceToSettlementCycle(r.Context(), httpStore(s), poolAllocationID)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeBusinessItem{}})
-				return
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		sourceType = "settlement_cycle"
-		sourceID = fmt.Sprintf("%d", poolAllocID)
-	}
-
-	sourceType, sourceID, err = normalizeFinanceQuerySource(r.Context(), httpStore(s), sourceType, sourceID)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-
-	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
-		Limit:             limit,
-		Offset:            offset,
-		BusinessRole:      businessRole, // 空值时返回全部
-		BusinessID:        businessID,
-		SourceType:        sourceType,
-		SourceID:          sourceID,
-		AccountingScene:   accountingScene,
-		AccountingSubtype: accountingSubType,
-		Status:            status,
-		FromPartyID:       fromPartyID,
-		ToPartyID:         toPartyID,
-		Query:             q,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"total":     page.Total,
-		"limit":     limit,
-		"offset":    offset,
-		"items":     page.Items,
-		"data_role": "compat_debug_only", // 第十一阶段：明确标识这是兼容/调试数据
-	})
 }
 
 func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, r *http.Request) {

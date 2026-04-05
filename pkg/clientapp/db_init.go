@@ -227,20 +227,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			UNIQUE(txid)
 		)`,
-		`CREATE TABLE IF NOT EXISTS fact_chain_payment_utxo_links(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			chain_payment_id INTEGER NOT NULL,
-			utxo_id TEXT NOT NULL,
-			io_side TEXT NOT NULL,
-			utxo_role TEXT NOT NULL,
-			amount_satoshi INTEGER NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id) ON DELETE CASCADE,
-			FOREIGN KEY(utxo_id) REFERENCES wallet_utxo(utxo_id) ON DELETE CASCADE,
-			UNIQUE(chain_payment_id, utxo_id, io_side, utxo_role)
-		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='pool_event'`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_scheme_status ON fact_pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_counterparty ON fact_pool_sessions(counterparty_pubkey_hex,status)`,
@@ -251,8 +237,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_occurred ON fact_chain_payments(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_subtype ON fact_chain_payments(payment_subtype, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_status ON fact_chain_payments(status, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payment_utxo_links_payment ON fact_chain_payment_utxo_links(chain_payment_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payment_utxo_links_utxo ON fact_chain_payment_utxo_links(utxo_id, id DESC)`,
 		// 钱包资金流水
 		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2363,7 +2347,7 @@ func migrateLegacyDirectTransferPoolFacts(db *sql.DB) error {
 	return nil
 }
 
-// ensureFinAccountingSchema 只补财务表的新口径列，不改旧口径行为。
+// ensureFinAccountingSchema 只补财务表的主口径列，不改历史数据行为。
 // 设计说明：
 // - 新库由 CREATE TABLE 直接带上新列；
 // - 老库靠这里补列，避免启动时因缺列失败；
@@ -2429,7 +2413,7 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 	return nil
 }
 
-func ensureNoLegacyFinanceSourceRows(db *sql.DB) error {
+func ensureNoHistoricalFinanceSourceRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -2513,9 +2497,9 @@ func normalizeClientDBData(db *sql.DB) error {
 	// 5. 历史财务来源回填
 	// 设计说明：
 	// - 先把 pool_allocation / wallet_chain 的旧 source_id 收口到事实主键；
-	// - 这一步不补新模型，只清旧口径残留；
+	// - 这一步不补新模型，只清历史回填残留；
 	// - 出错必须立刻停，不保留半新半旧状态。
-	if report, err := backfillLegacyFinanceSources(db); err != nil {
+	if report, err := backfillHistoricalFinanceSources(db); err != nil {
 		return fmt.Errorf("legacy finance source backfill: %w", err)
 	} else {
 		obs.Info("bitcast-client", "legacy_finance_source_backfill_done", map[string]any{
@@ -2523,7 +2507,7 @@ func normalizeClientDBData(db *sql.DB) error {
 			"unmapped_rows":  report.UnmappedRows,
 		})
 	}
-	if err := ensureNoLegacyFinanceSourceRows(db); err != nil {
+	if err := ensureNoHistoricalFinanceSourceRows(db); err != nil {
 		return fmt.Errorf("legacy finance source guard: %w", err)
 	}
 
@@ -2821,7 +2805,7 @@ func ensureWalletFundFlowsSchema(db *sql.DB) error {
 // ensureWorkspaceStorageSchema 迁移客户端本地库存的核心五张表。
 // 设计说明：
 // - 这里不做列级兼容补丁，直接按新模型重建；
-// - 老表里的旧口径会一次性搬走，再删除；
+// - 老表里的历史数据会一次性搬走，再删除；
 // - 这样后续业务代码只面对唯一真相。
 func ensureWorkspaceStorageSchema(db *sql.DB) error {
 	if db == nil {
@@ -4546,6 +4530,7 @@ type rawJSONPayload string
 // 2. 回填 chain 结算：从 fact_chain_payments 生成 settlement_cycle（channel='chain'）
 // 3. 回填 pool 结算：从 fact_pool_session_events(event_kind='pool_event') 生成 settlement_cycle（channel='pool'）
 // 4. 回填 fact_asset_consumptions.settlement_cycle_id：通过 chain_payment_id 或 pool_allocation_id 映射
+// 5. 清理无法补齐的残留行，再把 settlement_cycle_id 收紧成必填
 func ensureSettlementCyclesSchema(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -4592,7 +4577,7 @@ func ensureSettlementCyclesSchema(db *sql.DB) error {
 		return fmt.Errorf("backfill chain cycles: %w", err)
 	}
 
-	// 回填 pool 结算（每个 pool_session_event 对应一条 settlement_cycle）
+	// 仅用于历史回填：pool 结算（每个 pool_session_event 对应一条 settlement_cycle）
 	_, err = db.Exec(`
 		INSERT OR IGNORE INTO fact_settlement_cycles(
 			cycle_id, channel, state, pool_session_event_id,
@@ -4610,7 +4595,7 @@ func ensureSettlementCyclesSchema(db *sql.DB) error {
 		return fmt.Errorf("backfill pool cycles: %w", err)
 	}
 
-	// 回填 fact_asset_consumptions.settlement_cycle_id（幂等：只更新 NULL 的行）
+	// 仅用于历史回填：fact_asset_consumptions.settlement_cycle_id（幂等：只更新 NULL 的行）
 	// 通过 chain_payment_id 映射
 	_, err = db.Exec(`
 		UPDATE fact_asset_consumptions
@@ -4637,5 +4622,223 @@ func ensureSettlementCyclesSchema(db *sql.DB) error {
 		return fmt.Errorf("backfill consumption pool links: %w", err)
 	}
 
+	if err := cleanupUnresolvedAssetConsumptions(db); err != nil {
+		return fmt.Errorf("cleanup unresolved asset consumptions: %w", err)
+	}
+	if err := requireAssetConsumptionSettlementCycleNotNull(db); err != nil {
+		return fmt.Errorf("require settlement_cycle_id not null: %w", err)
+	}
+
+	return nil
+}
+
+func cleanupUnresolvedAssetConsumptions(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	var unresolved int64
+	if err := db.QueryRow(`
+		SELECT COUNT(1)
+		  FROM fact_asset_consumptions
+		 WHERE settlement_cycle_id IS NULL
+	`).Scan(&unresolved); err != nil {
+		return fmt.Errorf("count unresolved asset consumptions: %w", err)
+	}
+	if unresolved == 0 {
+		return nil
+	}
+
+	var linked int64
+	if err := db.QueryRow(`
+		SELECT COUNT(1)
+		  FROM fact_asset_consumptions
+		 WHERE settlement_cycle_id IS NULL
+		   AND (chain_payment_id IS NOT NULL OR pool_allocation_id IS NOT NULL)
+	`).Scan(&linked); err != nil {
+		return fmt.Errorf("count linked unresolved asset consumptions: %w", err)
+	}
+	if linked > 0 {
+		return fmt.Errorf("found %d unresolved asset consumptions with settlement links", linked)
+	}
+
+	if _, err := db.Exec(`
+		DELETE FROM fact_asset_consumptions
+		 WHERE settlement_cycle_id IS NULL
+		   AND chain_payment_id IS NULL
+		   AND pool_allocation_id IS NULL
+	`); err != nil {
+		return fmt.Errorf("delete orphan asset consumptions: %w", err)
+	}
+	return nil
+}
+
+func requireAssetConsumptionSettlementCycleNotNull(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	notNull, err := tableColumnNotNull(db, "fact_asset_consumptions", "settlement_cycle_id")
+	if err != nil {
+		return fmt.Errorf("inspect settlement_cycle_id nullability: %w", err)
+	}
+	if notNull {
+		return nil
+	}
+	return rebuildFactAssetConsumptionsSettlementCycleSchema(db)
+}
+
+func rebuildFactAssetConsumptionsSettlementCycleSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+		rollback()
+		return fmt.Errorf("disable foreign keys: %w", err)
+	}
+
+	const oldTable = "fact_asset_consumptions_rebuild"
+	if _, err := tx.Exec(`DROP TABLE IF EXISTS ` + oldTable); err != nil {
+		rollback()
+		return fmt.Errorf("drop temp asset consumption table: %w", err)
+	}
+	if _, err := tx.Exec(`ALTER TABLE fact_asset_consumptions RENAME TO ` + oldTable); err != nil {
+		rollback()
+		return fmt.Errorf("rename fact_asset_consumptions: %w", err)
+	}
+	oldCols, err := tableColumnsTx(tx, oldTable)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("inspect old fact_asset_consumptions columns: %w", err)
+	}
+	if _, err := tx.Exec(`
+		CREATE TABLE fact_asset_consumptions(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			consumption_id TEXT NOT NULL DEFAULT '',
+			source_flow_id INTEGER,
+			source_utxo_id TEXT NOT NULL DEFAULT '',
+			chain_payment_id INTEGER,
+			pool_allocation_id INTEGER,
+			settlement_cycle_id INTEGER NOT NULL REFERENCES fact_settlement_cycles(id),
+			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
+			used_satoshi INTEGER NOT NULL DEFAULT 0,
+			used_quantity_text TEXT NOT NULL DEFAULT '',
+			occurred_at_unix INTEGER NOT NULL,
+			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
+			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
+			FOREIGN KEY(pool_allocation_id) REFERENCES fact_pool_session_events(id),
+			CHECK(
+				(chain_payment_id IS NOT NULL AND pool_allocation_id IS NULL) OR
+				(chain_payment_id IS NULL AND pool_allocation_id IS NOT NULL)
+			)
+		)
+	`); err != nil {
+		rollback()
+		return fmt.Errorf("create rebuilt fact_asset_consumptions: %w", err)
+	}
+	insertSQL := buildFactAssetConsumptionsRebuildInsertSQL(oldTable, oldCols)
+	if _, err := tx.Exec(insertSQL); err != nil {
+		rollback()
+		return fmt.Errorf("copy rebuilt fact_asset_consumptions: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE fact_asset_consumptions SET consumption_id='cons_' || id WHERE trim(consumption_id)=''`); err != nil {
+		rollback()
+		return fmt.Errorf("repair rebuilt consumption_id: %w", err)
+	}
+	if _, err := tx.Exec(`DROP TABLE ` + oldTable); err != nil {
+		rollback()
+		return fmt.Errorf("drop old fact_asset_consumptions: %w", err)
+	}
+	if err := recreateFactAssetConsumptionsIndexes(tx); err != nil {
+		rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return err
+	}
+	return nil
+}
+
+func buildFactAssetConsumptionsRebuildInsertSQL(oldTable string, oldCols map[string]struct{}) string {
+	if oldCols == nil {
+		oldCols = map[string]struct{}{}
+	}
+	colExpr := func(col string, fallback string) string {
+		if _, ok := oldCols[strings.ToLower(strings.TrimSpace(col))]; ok {
+			return col
+		}
+		return fallback
+	}
+	return fmt.Sprintf(`
+		INSERT INTO fact_asset_consumptions(
+			id,consumption_id,source_flow_id,source_utxo_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,state,
+			used_satoshi,used_quantity_text,occurred_at_unix,confirmed_at_unix,note,payload_json
+		)
+		SELECT
+			%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s
+		  FROM %s
+		 WHERE %s IS NOT NULL
+	`,
+		colExpr("id", "NULL"),
+		colExpr("consumption_id", "''"),
+		colExpr("source_flow_id", "NULL"),
+		colExpr("source_utxo_id", "''"),
+		colExpr("chain_payment_id", "NULL"),
+		colExpr("pool_allocation_id", "NULL"),
+		colExpr("settlement_cycle_id", "NULL"),
+		colExpr("state", "'confirmed'"),
+		colExpr("used_satoshi", "0"),
+		colExpr("used_quantity_text", "''"),
+		colExpr("occurred_at_unix", "0"),
+		colExpr("confirmed_at_unix", "0"),
+		colExpr("note", "''"),
+		colExpr("payload_json", "'{}'"),
+		oldTable,
+		func() string {
+			if _, ok := oldCols["settlement_cycle_id"]; ok {
+				return "settlement_cycle_id"
+			}
+			return "1"
+		}(),
+	)
+}
+
+func recreateFactAssetConsumptionsIndexes(db sqlConn) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	stmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_source ON fact_asset_consumptions(source_flow_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_source_utxo ON fact_asset_consumptions(source_utxo_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_payment ON fact_asset_consumptions(chain_payment_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_allocation ON fact_asset_consumptions(pool_allocation_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_settlement_cycle ON fact_asset_consumptions(settlement_cycle_id, id DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_consumption_id ON fact_asset_consumptions(consumption_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_payment ON fact_asset_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL AND source_flow_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_allocation ON fact_asset_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL AND source_flow_id IS NOT NULL`,
+		`CREATE TRIGGER IF NOT EXISTS trg_fact_asset_consumptions_fill_consumption_id
+			AFTER INSERT ON fact_asset_consumptions
+			FOR EACH ROW
+			WHEN trim(NEW.consumption_id) = ''
+			BEGIN
+				UPDATE fact_asset_consumptions
+				SET consumption_id = 'cons_' || NEW.id
+				WHERE id = NEW.id;
+			END`,
+	}
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return fmt.Errorf("recreate fact_asset_consumptions schema objects: %w", err)
+		}
+	}
 	return nil
 }

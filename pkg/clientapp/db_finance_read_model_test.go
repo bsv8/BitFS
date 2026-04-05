@@ -146,7 +146,7 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	// 第二阶段：改用 pay 测试（pay 暂保留完整 settle_businesses，open/close 为过程型）
+	// 第二阶段：改用 pay 测试（pay 通过 pool_allocation_id 换算到 settlement_cycle）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_finance_trace_1")
 
 	allocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
@@ -163,7 +163,7 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 	// 验证：pay 不再生成 settle_businesses（正式查询应返回空）
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, allocationID, "formal", 20, 0)
 	if err != nil {
-		t.Fatalf("trace businesses by pool_allocation_id failed: %v", err)
+		t.Fatalf("trace businesses by settlement_cycle conversion failed: %v", err)
 	}
 	if bizPage.Total != 0 {
 		t.Fatalf("pay 不应生成 settle_businesses，got %d", bizPage.Total)
@@ -172,7 +172,7 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 	// 验证 process events 存在（pay 生成 process events）
 	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, allocationID, 20, 0)
 	if err != nil {
-		t.Fatalf("trace process events by pool_allocation_id failed: %v", err)
+		t.Fatalf("trace process events by settlement_cycle conversion failed: %v", err)
 	}
 	if procPage.Total == 0 {
 		t.Fatalf("trace process page should not be empty")
@@ -310,7 +310,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("process list by pool_allocation_id status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("process list by settlement_cycle conversion status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	if err = json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
 		t.Fatalf("decode process list by allocation failed: %v", err)
@@ -469,20 +469,20 @@ func TestFinanceDefaultFilter_QueryDefaults(t *testing.T) {
 
 	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
 		SessionID:         sessionID,
-		DealID:            "deal_compat_test",
-		BaseTxID:          "base_tx_compat_test",
+		DealID:            "deal_main_test",
+		BaseTxID:          "base_tx_main_test",
 		BaseTxHex:         baseTxHex,
 		ClientLockScript:  "",
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_compat_test")
-	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_compat_test", baseTxHex, 700, 290, sellerPubHex)
+	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_main_test")
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_main_test", baseTxHex, 700, 290, sellerPubHex)
 
 }
 
 // TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields 禁扩散测试
-// 新增读取帮助函数不依赖旧口径字段
+	// 新增读取帮助函数只认主口径字段
 func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	t.Parallel()
 
@@ -657,7 +657,7 @@ func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 	srv := &httpAPIServer{db: db, store: store}
 
 	// 第二阶段：改用 pay 测试（pay 不再生成 settle_businesses，只生成 process event + tx_breakdown）
-	// 测试：用 pool_allocation_id（新口径）查询 pay 的 process event
+	// 测试：用 pool_allocation_id 兼容换算查询 pay 的 process event
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payAllocIntID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
 	if err != nil {
@@ -681,7 +681,7 @@ func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 		t.Fatalf("decode failed: %v", err)
 	}
 	if len(resp.Items) != 1 || resp.Items[0].SourceID != payAllocSourceID {
-		t.Fatalf("pool_allocation_id should match pay allocation: %+v", resp.Items)
+		t.Fatalf("pool_allocation_id conversion should match pay allocation: %+v", resp.Items)
 	}
 
 	// 验证返回的数据主口径字段正确
@@ -712,7 +712,7 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	srv := &httpAPIServer{db: db, store: store}
 
 	// 构造冲突：
-	// - 新参数：pool_allocation_id=pay_alloc（应该命中 pay 记录）
+	// - 主参数：pool_allocation_id=pay_alloc（应该命中 pay 记录）
 	// - 旧参数：scene_subtype=open（如果生效会查不到记录，与 pay_alloc 冲突）
 	// - 旧参数：ref_id=wrong_session（如果生效会导致查不到任何记录）
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
@@ -726,7 +726,7 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	}
 	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementCycleID)
 
-	// 测试1：pool_allocation_id 精确查询 pay 过程记录
+	// 测试1：pool_allocation_id 兼容换算后精确查询 pay 过程记录
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/v1/admin/finance/process-events?pool_allocation_id="+payAllocID+"&limit=10", nil)
 	rec := httptest.NewRecorder()
@@ -753,7 +753,7 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 
 	// 测试2：source_type/source_id 精确查询（改用 process events）
 	req = httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/process-events?source_type=pool_allocation&source_id="+payAllocSourceID+"&limit=10", nil)
+		"/api/v1/admin/finance/process-events?source_type=settlement_cycle&source_id="+payAllocSourceID+"&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
@@ -832,7 +832,7 @@ func TestFinanceProcessEvent_ConflictParams_NewWins(t *testing.T) {
 	closeAllocSourceID := fmt.Sprintf("%d", closeAllocSettlementCycleID)
 	wrongSessionID := "wrong_session_id"
 
-	// 测试1：pool_allocation_id + scene_subtype 冲突
+	// 测试1：pool_allocation_id + scene_subtype 冲突（兼容换算场景）
 	// pool_allocation_id 指向 close，但 scene_subtype=chunk_pay 指向 pay
 	req := httptest.NewRequest(http.MethodGet,
 		"/api/v1/admin/finance/process-events?pool_allocation_id="+closeAllocID+
@@ -851,13 +851,13 @@ func TestFinanceProcessEvent_ConflictParams_NewWins(t *testing.T) {
 	// 验证返回的是 close 相关事件，不是 chunk_pay
 	for _, item := range resp.Items {
 		if item.SourceID != closeAllocSourceID {
-			t.Fatalf("pool_allocation_id should win: expected source_id=%s, got=%s", closeAllocSourceID, item.SourceID)
+			t.Fatalf("pool_allocation_id conversion should win: expected source_id=%s, got=%s", closeAllocSourceID, item.SourceID)
 		}
 	}
 
 	// 测试2：source_* + ref_id 冲突
 	req = httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/process-events?source_type=pool_allocation&source_id="+closeAllocSourceID+
+		"/api/v1/admin/finance/process-events?source_type=settlement_cycle&source_id="+closeAllocSourceID+
 			"&ref_id="+wrongSessionID+"&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
@@ -921,7 +921,7 @@ func TestFinanceLayer_FormalBusinessOnly(t *testing.T) {
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	// 写入正式 business：直接挂到 settlement_cycle，避免再走 front_order 旧口径
+	// 写入正式 business：直接挂到 settlement_cycle，避免再走 front_order 历史口径
 	businessID := "biz_download_pool_layer_formal_1"
 	res, err := db.Exec(`INSERT INTO fact_settlement_cycles(
 		cycle_id,channel,state,pool_session_event_id,gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
@@ -1226,7 +1226,7 @@ func TestFinanceLayer_HTTPBusinessRoleParam(t *testing.T) {
 }
 
 // TestFinanceFormalQuery_RejectsQ 第十一阶段：正式接口不支持 q 参数
-// 验证：正式接口传 q 返回 400，q 只属于 compat/debug 入口
+// 验证：正式接口传 q 返回 400，q 只属于调试入口
 func TestFinanceFormalQuery_RejectsQ(t *testing.T) {
 	t.Parallel()
 
@@ -1252,9 +1252,8 @@ func TestFinanceFormalQuery_RejectsQ(t *testing.T) {
 	}
 }
 
-// TestFinanceCompat_AllBusinessesReturnsMixed 第十阶段：compat 入口可以查全量
-// 验证：兼容/调试入口不强制 business_role，允许返回全量混合结果
-func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
+// TestFinanceFormalQuery_ByRoleFilters 验证正式口按 business_role 过滤。
+func TestFinanceFormalQuery_ByRoleFilters(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -1269,7 +1268,7 @@ func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
 	res, err := db.Exec(`INSERT INTO fact_settlement_cycles(
 		cycle_id,channel,state,pool_session_event_id,gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"cycle_compat_formal_1", "pool", "confirmed", 9002, 990, 0, 990, 1, 1700000501, 1700000501, "compat formal test", "{}",
+		"cycle_formal_1", "pool", "confirmed", 9002, 990, 0, 990, 1, 1700000501, 1700000501, "formal test", "{}",
 	)
 	if err != nil {
 		t.Fatalf("insert formal settlement cycle failed: %v", err)
@@ -1279,7 +1278,7 @@ func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
 		t.Fatalf("get formal settlement cycle id failed: %v", err)
 	}
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
-		BusinessID:        "biz_download_pool_compat_formal_1",
+		BusinessID:        "biz_download_pool_formal_1",
 		BusinessRole:      "formal",
 		SourceType:        "settlement_cycle",
 		SourceID:          fmt.Sprintf("%d", settlementCycleID),
@@ -1289,9 +1288,9 @@ func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
 		ToPartyID:         "seller:" + sellerPubHex,
 		Status:            "confirmed",
 		OccurredAtUnix:    1700000501,
-		IdempotencyKey:    "compat_formal_business_1",
-		Note:              "compat formal test",
-		Payload:           map[string]any{"test": "compat"},
+		IdempotencyKey:    "formal_business_1",
+		Note:              "formal test",
+		Payload:           map[string]any{"test": "formal"},
 	}); err != nil {
 		t.Fatalf("append formal business failed: %v", err)
 	}
@@ -1299,96 +1298,68 @@ func TestFinanceCompat_AllBusinessesReturnsMixed(t *testing.T) {
 	// 写入过程 business
 	dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
 		SessionID:         sessionID,
-		DealID:            "deal_compat_test",
-		BaseTxID:          "base_tx_compat_test",
+		DealID:            "deal_formal_test",
+		BaseTxID:          "base_tx_formal_test",
 		BaseTxHex:         baseTxHex,
 		ClientLockScript:  "",
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_compat_test", baseTxHex, 700, 290, sellerPubHex)
+	dbRecordDirectPoolCloseAccounting(ctx, store, sessionID, 3, "close_tx_formal_test", baseTxHex, 700, 290, sellerPubHex)
 
 	srv := &httpAPIServer{db: db, store: store}
 
-	// 测试1：不传 business_role 应该成功返回全量
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?limit=50", nil)
+	// 测试1：不传 business_role 应该返回 400
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?limit=50", nil)
 	rec := httptest.NewRecorder()
-	srv.handleAdminFinanceBusinessesCompat(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("compat all query failed: status=%d body=%s", rec.Code, rec.Body.String())
+	srv.handleAdminFinanceBusinesses(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing business_role should return 400: status=%d body=%s", rec.Code, rec.Body.String())
 	}
-	var allResp struct {
-		Items []financeBusinessItem `json:"items"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &allResp); err != nil {
-		t.Fatalf("decode compat response failed: %v", err)
-	}
-	// 验证返回中包含 formal 和 process 两种角色（seedDirectTransferPoolFacts 会写入过程对象）
-	var formalCount, processCount int
-	for _, item := range allResp.Items {
-		switch item.BusinessRole {
-		case "formal":
-			formalCount++
-		case "process":
-			processCount++
-		}
-	}
-	if formalCount == 0 && processCount == 0 {
-		t.Fatal("compat query should return at least some records")
-	}
-
-	// 测试2：传 business_role=formal 应该只返回正式对象
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?business_role=formal&limit=50", nil)
+	// 测试2：正式口按 business_role=formal 只返回正式对象
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&limit=50", nil)
 	rec = httptest.NewRecorder()
-	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("compat formal query failed: status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("formal query failed: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var formalResp struct {
 		Items []financeBusinessItem `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &formalResp); err != nil {
-		t.Fatalf("decode compat formal response failed: %v", err)
+		t.Fatalf("decode formal response failed: %v", err)
 	}
 	for _, item := range formalResp.Items {
 		if item.BusinessRole != "formal" {
-			t.Fatalf("compat formal query returned non-formal item: role=%s", item.BusinessRole)
+			t.Fatalf("formal query returned non-formal item: role=%s", item.BusinessRole)
 		}
 	}
 
-	// 测试3：传 business_role=process 应该只返回过程对象
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?business_role=process&limit=50", nil)
+	// 测试3：正式口按 business_role=process 只返回过程对象
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=process&limit=50", nil)
 	rec = httptest.NewRecorder()
-	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("compat process query failed: status=%d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("process query failed: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var processResp struct {
 		Items []financeBusinessItem `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
-		t.Fatalf("decode compat process response failed: %v", err)
+		t.Fatalf("decode process response failed: %v", err)
 	}
 	for _, item := range processResp.Items {
 		if item.BusinessRole != "process" {
-			t.Fatalf("compat process query returned non-process item: role=%s", item.BusinessRole)
+			t.Fatalf("process query returned non-process item: role=%s", item.BusinessRole)
 		}
 	}
 
-	// 测试4：非法 business_role 应该返回 400
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?business_role=invalid&limit=50", nil)
+	// 测试4：正式口传 q 应该返回 400
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&q=test&limit=50", nil)
 	rec = httptest.NewRecorder()
-	srv.handleAdminFinanceBusinessesCompat(rec, req)
+	srv.handleAdminFinanceBusinesses(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("compat invalid role should return 400: got %d", rec.Code)
-	}
-
-	// 测试5：compat 接口支持 q 参数（正式接口不支持）
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses/compat?q=test&limit=50", nil)
-	rec = httptest.NewRecorder()
-	srv.handleAdminFinanceBusinessesCompat(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("compat query with q should return 200: got %d body=%s", rec.Code, rec.Body.String())
+		t.Fatalf("formal query with q should return 400: got %d", rec.Code)
 	}
 }
 

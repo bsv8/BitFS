@@ -26,7 +26,7 @@ func openSchemaTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func createLegacyFinanceTables(t *testing.T, db *sql.DB) {
+func createHistoricalFinanceTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	// 创建真实老库结构（第五轮迭代前），用于测试迁移逻辑
@@ -61,12 +61,12 @@ func createLegacyFinanceTables(t *testing.T, db *sql.DB) {
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create legacy table failed: %v", err)
+			t.Fatalf("create historical table failed: %v", err)
 		}
 	}
 }
 
-func createLegacyDirectTransferPoolTable(t *testing.T, db *sql.DB) {
+func createHistoricalDirectTransferPoolTable(t *testing.T, db *sql.DB) {
 	t.Helper()
 	if _, err := db.Exec(`CREATE TABLE proc_direct_transfer_pools(
 		session_id TEXT PRIMARY KEY,
@@ -88,7 +88,7 @@ func createLegacyDirectTransferPoolTable(t *testing.T, db *sql.DB) {
 		created_at_unix INTEGER NOT NULL,
 		updated_at_unix INTEGER NOT NULL
 	)`); err != nil {
-		t.Fatalf("create legacy proc_direct_transfer_pools failed: %v", err)
+		t.Fatalf("create historical proc_direct_transfer_pools failed: %v", err)
 	}
 }
 
@@ -96,21 +96,21 @@ func TestInitIndexDB_MigratesFinanceColumns(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	createLegacyFinanceTables(t, db)
+	createHistoricalFinanceTables(t, db)
 
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,scene_type,scene_subtype,from_party_id,to_party_id,ref_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_legacy_1", "fee_pool", "open", "client:self", "pool:peer", "sess_1", "posted", 1700000001, "idem_biz_1", "旧业务", "{}",
+		"biz_history_1", "fee_pool", "open", "client:self", "pool:peer", "sess_1", "posted", 1700000001, "idem_biz_1", "历史业务", "{}",
 	); err != nil {
-		t.Fatalf("insert legacy settle_businesses failed: %v", err)
+		t.Fatalf("insert historical settle_businesses failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_process_events(
 		process_id,scene_type,scene_subtype,event_type,status,ref_id,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		"proc_legacy_1", "fee_pool", "cycle_pay", "update", "applied", "sess_1", 1700000002, "idem_evt_1", "旧事件", "{}",
+		"proc_history_1", "fee_pool", "cycle_pay", "update", "applied", "sess_1", 1700000002, "idem_evt_1", "历史事件", "{}",
 	); err != nil {
-		t.Fatalf("insert legacy settle_process_events failed: %v", err)
+		t.Fatalf("insert historical settle_process_events failed: %v", err)
 	}
 
 	if err := initIndexDB(db); err != nil {
@@ -133,7 +133,7 @@ func TestInitIndexDB_MigratesFinanceColumns(t *testing.T) {
 	var businessSourceType, businessSourceID, businessAccountingScene, businessAccountingSubtype string
 	if err := db.QueryRow(
 		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM settle_businesses WHERE business_id=?`,
-		"biz_legacy_1",
+		"biz_history_1",
 	).Scan(&businessSourceType, &businessSourceID, &businessAccountingScene, &businessAccountingSubtype); err != nil {
 		t.Fatalf("query migrated settle_businesses failed: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestInitIndexDB_MigratesFinanceColumns(t *testing.T) {
 	var eventSourceType, eventSourceID, eventAccountingScene, eventAccountingSubtype string
 	if err := db.QueryRow(
 		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM settle_process_events WHERE process_id=?`,
-		"proc_legacy_1",
+		"proc_history_1",
 	).Scan(&eventSourceType, &eventSourceID, &eventAccountingScene, &eventAccountingSubtype); err != nil {
 		t.Fatalf("query migrated settle_process_events failed: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 }
 
-func TestInitIndexDB_BackfillsLegacyPoolAllocationFinanceSources(t *testing.T) {
+func TestInitIndexDB_BackfillsHistoricalPoolAllocationFinanceSources(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -215,34 +215,34 @@ func TestInitIndexDB_BackfillsLegacyPoolAllocationFinanceSources(t *testing.T) {
 		tx_hex TEXT NOT NULL,
 		created_at_unix INTEGER NOT NULL
 	)`); err != nil {
-		t.Fatalf("create legacy pool allocation table failed: %v", err)
+		t.Fatalf("create historical pool allocation table failed: %v", err)
 	}
 	sessionID := "sess_backfill_pool_1"
 	allocationID := "poolalloc_" + sessionID + "_open_1"
-	insertLegacyPoolSession(t, db, sessionID)
-	insertLegacyPoolAllocation(t, db, allocationID, sessionID, 1, "open", 1, 0, 1000, "tx_backfill_pool_1", "hex_backfill_pool_1", 1700000101)
+	insertHistoricalPoolSession(t, db, sessionID)
+	insertHistoricalPoolAllocation(t, db, allocationID, sessionID, 1, "open", 1, 0, 1000, "tx_backfill_pool_1", "hex_backfill_pool_1", 1700000101)
 	if _, err := db.Exec(`INSERT INTO fact_settlement_cycles(
 		cycle_id,channel,state,pool_session_event_id,gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,
 		cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"cycle_pool_backfill_1", "pool", "confirmed", 1, 1000, 0, 1000, 1, 1700000101, 1700000101, "legacy pool settlement", "{}",
+		"cycle_pool_backfill_1", "pool", "confirmed", 1, 1000, 0, 1000, 1, 1700000101, 1700000101, "历史回填池结算", "{}",
 	); err != nil {
-		t.Fatalf("seed legacy settlement cycle failed: %v", err)
+		t.Fatalf("seed historical settlement cycle failed: %v", err)
 	}
 
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_pool_backfill_1", "pool_allocation", allocationID, "fee_pool", "open", "client:self", "pool:peer", "posted", 1700000102, "idem_pool_backfill_1", "legacy pool allocation", "{}",
+		"biz_pool_backfill_1", "pool_allocation", allocationID, "fee_pool", "open", "client:self", "pool:peer", "posted", 1700000102, "idem_pool_backfill_1", "历史回填池划拨", "{}",
 	); err != nil {
-		t.Fatalf("seed legacy settle_businesses failed: %v", err)
+		t.Fatalf("seed historical settle_businesses failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_process_events(
 		process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"proc_pool_backfill_1", "pool_allocation", allocationID, "fee_pool", "open", "accounting", "applied", 1700000102, "idem_pool_evt_backfill_1", "legacy pool allocation event", "{}",
+		"proc_pool_backfill_1", "pool_allocation", allocationID, "fee_pool", "open", "accounting", "applied", 1700000102, "idem_pool_evt_backfill_1", "历史回填池划拨事件", "{}",
 	); err != nil {
-		t.Fatalf("seed legacy settle_process_events failed: %v", err)
+		t.Fatalf("seed historical settle_process_events failed: %v", err)
 	}
 
 	if err := initIndexDB(db); err != nil {
@@ -276,7 +276,7 @@ func TestInitIndexDB_BackfillsLegacyPoolAllocationFinanceSources(t *testing.T) {
 	}
 }
 
-func TestInitIndexDB_BackfillsLegacyFeePoolFinanceSources(t *testing.T) {
+func TestInitIndexDB_BackfillsHistoricalFeePoolFinanceSources(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -309,21 +309,21 @@ func TestInitIndexDB_BackfillsLegacyFeePoolFinanceSources(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_fee_pool_backfill_1", "process", "fee_pool", txid, "fee_pool", "open", "client:self", "gateway:gw1", "posted", 1700000502, "idem_fee_pool_biz_1", "legacy fee pool business", "{}",
+		"biz_fee_pool_backfill_1", "process", "fee_pool", txid, "fee_pool", "open", "client:self", "gateway:gw1", "posted", 1700000502, "idem_fee_pool_biz_1", "历史回填费用池业务", "{}",
 	); err != nil {
-		t.Fatalf("seed legacy fee_pool business failed: %v", err)
+		t.Fatalf("seed historical fee_pool business failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_process_events(
 		process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"proc_fee_pool_backfill_1", "fee_pool", txid, "fee_pool", "cycle_pay", "update", "applied", 1700000503, "idem_fee_pool_evt_1", "legacy fee pool event", "{}",
+		"proc_fee_pool_backfill_1", "fee_pool", txid, "fee_pool", "cycle_pay", "update", "applied", 1700000503, "idem_fee_pool_evt_1", "历史回填费用池事件", "{}",
 	); err != nil {
-		t.Fatalf("seed legacy fee_pool process failed: %v", err)
+		t.Fatalf("seed historical fee_pool process failed: %v", err)
 	}
 
-	report, err := backfillLegacyFinanceSources(db)
+	report, err := backfillHistoricalFinanceSources(db)
 	if err != nil {
-		t.Fatalf("backfillLegacyFinanceSources failed: %v", err)
+		t.Fatalf("backfillHistoricalFinanceSources failed: %v", err)
 	}
 	if report.RewrittenRows < 2 {
 		t.Fatalf("expected fee_pool rows to be rewritten, got %d", report.RewrittenRows)
@@ -348,16 +348,16 @@ func TestInitIndexDB_BackfillsLegacyFeePoolFinanceSources(t *testing.T) {
 		t.Fatalf("unexpected backfilled fee_pool process source: %s %s", eventSourceType, eventSourceID)
 	}
 
-	report2, err := backfillLegacyFinanceSources(db)
+	report2, err := backfillHistoricalFinanceSources(db)
 	if err != nil {
-		t.Fatalf("second backfillLegacyFinanceSources failed: %v", err)
+		t.Fatalf("second backfillHistoricalFinanceSources failed: %v", err)
 	}
 	if report2.RewrittenRows != 0 || report2.UnmappedRows != 0 {
 		t.Fatalf("expected second backfill to be idempotent, got rewritten=%d unmapped=%d", report2.RewrittenRows, report2.UnmappedRows)
 	}
 }
 
-func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBreakdown(t *testing.T) {
+func TestInitIndexDB_BackfillsHistoricalWalletChainFinanceSourcesFromBreakdown(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -369,23 +369,23 @@ func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBreakdown(t *te
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "external:unknown", "wallet:self", "posted", 1700000201, "wallet_chain:"+txid, "legacy wallet chain business", `{"txid":"`+txid+`"}`,
+		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "external:unknown", "wallet:self", "posted", 1700000201, "wallet_chain:"+txid, "历史回填钱包链业务", `{"txid":"`+txid+`"}`,
 	); err != nil {
-		t.Fatalf("seed legacy wallet business failed: %v", err)
+		t.Fatalf("seed historical wallet business failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_process_events(
 		process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"proc_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "accounting", "applied", 1700000202, "wallet_chain_event:"+txid, "legacy wallet chain process", `{"txid":"`+txid+`"}`,
+		"proc_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "accounting", "applied", 1700000202, "wallet_chain_event:"+txid, "历史回填钱包链过程", `{"txid":"`+txid+`"}`,
 	); err != nil {
-		t.Fatalf("seed legacy wallet process failed: %v", err)
+		t.Fatalf("seed historical wallet process failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_tx_breakdown(
 		business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_wallet_chain_"+txid, txid, "external_in", 0, 0, 5000, 0, 0, 0, 5000, 1700000201, "legacy wallet chain breakdown", `{"txid":"`+txid+`"}`,
+		"biz_wallet_chain_"+txid, txid, "external_in", 0, 0, 5000, 0, 0, 0, 5000, 1700000201, "历史回填钱包链拆分", `{"txid":"`+txid+`"}`,
 	); err != nil {
-		t.Fatalf("seed legacy wallet breakdown failed: %v", err)
+		t.Fatalf("seed historical wallet breakdown failed: %v", err)
 	}
 
 	if err := initIndexDB(db); err != nil {
@@ -441,7 +441,7 @@ func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBreakdown(t *te
 	}
 }
 
-func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBusinessPayload(t *testing.T) {
+func TestInitIndexDB_BackfillsHistoricalWalletChainFinanceSourcesFromBusinessPayload(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -453,9 +453,9 @@ func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBusinessPayload
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_out", "wallet:self", "external:unknown", "posted", 1700000301, "wallet_chain:"+txid, "legacy wallet chain business payload", `{"wallet_input_satoshi":7200,"wallet_output_satoshi":0,"net_amount_satoshi":-7200,"payment_subtype":"external_out"}`,
+		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_out", "wallet:self", "external:unknown", "posted", 1700000301, "wallet_chain:"+txid, "历史回填钱包链业务载荷", `{"wallet_input_satoshi":7200,"wallet_output_satoshi":0,"net_amount_satoshi":-7200,"payment_subtype":"external_out"}`,
 	); err != nil {
-		t.Fatalf("seed legacy wallet business failed: %v", err)
+		t.Fatalf("seed historical wallet business failed: %v", err)
 	}
 
 	if err := initIndexDB(db); err != nil {
@@ -500,7 +500,7 @@ func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesFromBusinessPayload
 	}
 }
 
-func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesConflictFails(t *testing.T) {
+func TestInitIndexDB_BackfillsHistoricalWalletChainFinanceSourcesConflictFails(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -512,16 +512,16 @@ func TestInitIndexDB_BackfillsLegacyWalletChainFinanceSourcesConflictFails(t *te
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "external:unknown", "wallet:self", "posted", 1700000401, "wallet_chain:"+txid, "legacy wallet chain business conflict", `{"wallet_input_satoshi":0,"wallet_output_satoshi":5000,"net_amount_satoshi":5000,"payment_subtype":"external_in"}`,
+		"biz_wallet_chain_"+txid, "wallet_chain", txid, "wallet_transfer", "external_in", "external:unknown", "wallet:self", "posted", 1700000401, "wallet_chain:"+txid, "历史回填钱包链业务冲突", `{"wallet_input_satoshi":0,"wallet_output_satoshi":5000,"net_amount_satoshi":5000,"payment_subtype":"external_in"}`,
 	); err != nil {
-		t.Fatalf("seed legacy wallet business failed: %v", err)
+		t.Fatalf("seed historical wallet business failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_tx_breakdown(
 		business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_wallet_chain_"+txid, txid, "external_out", 7200, 0, 0, 7200, 0, 7200, 0, 1700000401, "legacy wallet chain breakdown conflict", `{"txid":"`+txid+`"}`,
+		"biz_wallet_chain_"+txid, txid, "external_out", 7200, 0, 0, 7200, 0, 7200, 0, 1700000401, "历史回填钱包链拆分冲突", `{"txid":"`+txid+`"}`,
 	); err != nil {
-		t.Fatalf("seed legacy wallet breakdown failed: %v", err)
+		t.Fatalf("seed historical wallet breakdown failed: %v", err)
 	}
 
 	if err := initIndexDB(db); err == nil {
@@ -615,7 +615,7 @@ func TestInitIndexDB_CreatesFinanceReadIndexes(t *testing.T) {
 	}
 }
 
-func TestFinanceDBLayerRejectsLegacySourceType(t *testing.T) {
+func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -628,7 +628,7 @@ func TestFinanceDBLayerRejectsLegacySourceType(t *testing.T) {
 		SourceID:   "1",
 	})
 	if err == nil {
-		t.Fatal("expected dbListFinanceBusinesses to reject legacy source_type")
+		t.Fatal("expected dbListFinanceBusinesses to reject historical source_type")
 	}
 	if !strings.Contains(err.Error(), "source_type must be settlement_cycle") {
 		t.Fatalf("unexpected error: %v", err)
@@ -640,14 +640,14 @@ func TestFinanceDBLayerRejectsLegacySourceType(t *testing.T) {
 		SourceID:   "1",
 	})
 	if err == nil {
-		t.Fatal("expected dbListFinanceProcessEvents to reject legacy source_type")
+		t.Fatal("expected dbListFinanceProcessEvents to reject historical source_type")
 	}
 	if !strings.Contains(err.Error(), "source_type must be settlement_cycle") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
-func TestEnsureNoLegacyFinanceSourceRowsFailsOnLegacyRows(t *testing.T) {
+func TestEnsureNoHistoricalFinanceSourceRowsFailsOnHistoricalRows(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -658,17 +658,17 @@ func TestEnsureNoLegacyFinanceSourceRowsFailsOnLegacyRows(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_legacy_guard_1", "process", "fee_pool", "tx_guard_1", "fee_pool", "open", "client:self", "gateway:gw1", "posted", 1700000601, "idem_guard_1", "legacy row", "{}",
+		"biz_history_guard_1", "process", "fee_pool", "tx_guard_1", "fee_pool", "open", "client:self", "gateway:gw1", "posted", 1700000601, "idem_guard_1", "历史回填行", "{}",
 	); err != nil {
-		t.Fatalf("insert legacy business failed: %v", err)
+		t.Fatalf("insert historical business failed: %v", err)
 	}
 
-	if err := ensureNoLegacyFinanceSourceRows(db); err == nil {
-		t.Fatal("expected legacy source guard to fail")
+	if err := ensureNoHistoricalFinanceSourceRows(db); err == nil {
+		t.Fatal("expected historical source guard to fail")
 	}
 }
 
-func TestEnsureNoLegacyFinanceSourceRowsFailsOnBothTables(t *testing.T) {
+func TestEnsureNoHistoricalFinanceSourceRowsFailsOnBothTables(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -679,21 +679,21 @@ func TestEnsureNoLegacyFinanceSourceRowsFailsOnBothTables(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_legacy_guard_both_1", "process", "fee_pool", "tx_guard_both_1", "fee_pool", "open", "client:self", "gateway:gw1", "posted", 1700000606, "idem_guard_both_biz", "legacy row biz", "{}",
+		"biz_history_guard_both_1", "process", "fee_pool", "tx_guard_both_1", "fee_pool", "open", "client:self", "gateway:gw1", "posted", 1700000606, "idem_guard_both_biz", "历史回填行业务", "{}",
 	); err != nil {
-		t.Fatalf("insert legacy business failed: %v", err)
+		t.Fatalf("insert historical business failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO settle_process_events(
 		process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"proc_legacy_guard_both_1", "wallet_chain", "tx_guard_both_2", "wallet_transfer", "open", "state_change", "applied", 1700000607, "idem_guard_both_evt", "legacy row evt", "{}",
+		"proc_history_guard_both_1", "wallet_chain", "tx_guard_both_2", "wallet_transfer", "open", "state_change", "applied", 1700000607, "idem_guard_both_evt", "历史回填行事件", "{}",
 	); err != nil {
-		t.Fatalf("insert legacy process event failed: %v", err)
+		t.Fatalf("insert historical process event failed: %v", err)
 	}
 
-	err := ensureNoLegacyFinanceSourceRows(db)
+	err := ensureNoHistoricalFinanceSourceRows(db)
 	if err == nil {
-		t.Fatal("expected legacy source guard to fail when both tables have residual rows")
+		t.Fatal("expected historical source guard to fail when both tables have residual rows")
 	}
 	if !strings.Contains(err.Error(), "settle_businesses") {
 		t.Fatalf("unexpected error: %v", err)
@@ -715,7 +715,7 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 		Status:            "posted",
 		OccurredAtUnix:    1700000602,
 		IdempotencyKey:    "idem_settlement_guard_1",
-		Note:              "legacy business",
+		Note:              "历史回填业务",
 	}); err != nil {
 		t.Fatalf("settlement cycle business write failed: %v", err)
 	}
@@ -728,7 +728,7 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 		Status:            "applied",
 		OccurredAtUnix:    1700000603,
 		IdempotencyKey:    "idem_settlement_guard_evt_1",
-		Note:              "legacy event",
+		Note:              "历史回填事件",
 	}); err != nil {
 		t.Fatalf("settlement cycle process event write failed: %v", err)
 	}
@@ -756,12 +756,16 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 	}
 }
 
-func TestEnsureNoSharedEntryDirectCallsInSettlementWriteFiles(t *testing.T) {
+// TestSettlementCycleWriteGuard_NoSharedEntryDirectCalls 是收官固定检查：
+// 这里只允许结算写入口经过专用封装，不允许新增共享入口直调或手填来源字段。
+func TestSettlementCycleWriteGuard_NoSharedEntryDirectCalls(t *testing.T) {
 	t.Parallel()
 
 	files := []string{
 		"wallet_accounting.go",
 		"db_process_writes.go",
+		"db_finance_migration.go",
+		"db_init.go",
 	}
 	allowed := map[string]map[string]bool{
 		"db_process_writes.go": {

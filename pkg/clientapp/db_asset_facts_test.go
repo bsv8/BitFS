@@ -263,6 +263,7 @@ func TestAppendAssetConsumptionForPoolAllocation_PowerIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get allocation id: %v", err)
 	}
+	seedAssetConsumptionPoolCycle(t, db, allocDBID, 1700000020)
 
 	// 写入 asset flow
 	flowID := "flow_test_002"
@@ -2315,11 +2316,15 @@ func TestTokenBalance_WithUsedReturnsRemaining(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert chain payment: %v", err)
 	}
+	payCycleID, err := dbGetSettlementCycleByChainPayment(db, payID)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle: %v", err)
+	}
 
 	// 种消耗记录（3000）
-	if _, err := db.Exec(`INSERT INTO fact_asset_consumptions(source_flow_id,chain_payment_id,pool_allocation_id,used_satoshi,used_quantity_text,occurred_at_unix,note,payload_json)
-		VALUES(?,?,?,?,?,?,?,?)`,
-		1, payID, nil, 0, "3000", now, "token send", "{}",
+	if _, err := db.Exec(`INSERT INTO fact_asset_consumptions(source_flow_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,used_satoshi,used_quantity_text,occurred_at_unix,note,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?)`,
+		1, payID, nil, payCycleID, 0, "3000", now, "token send", "{}",
 	); err != nil {
 		t.Fatalf("seed consumption: %v", err)
 	}

@@ -583,7 +583,7 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 // 设计边界：
 // - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
 // - 结算链路必须走 dbAppendSettlementCycleFinBusiness，不能绕回这个入口；
-// - 这样做是为了让共享能力和结算口径分开，避免后续把旧来源重新写回主口径。
+// - 这里已经收口到 settlement_cycle，旧来源一律拒绝。
 func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -602,6 +602,17 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	}
 	if e.BusinessRole != "formal" && e.BusinessRole != "process" {
 		return fmt.Errorf("business_role must be 'formal' or 'process', got '%s'", e.BusinessRole)
+	}
+	e.SourceType = strings.ToLower(strings.TrimSpace(e.SourceType))
+	e.SourceID = strings.TrimSpace(e.SourceID)
+	switch e.SourceType {
+	case "":
+		return fmt.Errorf("source_type is required")
+	case "fee_pool", "pool_allocation", "chain_payment", "wallet_chain":
+		return fmt.Errorf("source_type must be settlement_cycle")
+	}
+	if e.SourceID == "" {
+		return fmt.Errorf("source_id is required")
 	}
 	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
 	if e.IdempotencyKey == "" {
@@ -775,7 +786,8 @@ func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string, e finTxUTXOLink
 // 设计边界：
 // - 这里只负责落一条财务流程事件，不替调用方兜底来源口径；
 // - 结算链路必须走 dbAppendSettlementCycleFinProcessEvent；
-// - 不要在这里塞兼容分支，不然旧口径会重新污染主线。
+// - 不要在这里塞兼容分支，不然历史口径会重新污染主线；
+// - 这里已经只接受 settlement_cycle。
 func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -790,6 +802,17 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.ProcessID + ":" + strings.TrimSpace(e.EventType)
+	}
+	e.SourceType = strings.ToLower(strings.TrimSpace(e.SourceType))
+	e.SourceID = strings.TrimSpace(e.SourceID)
+	switch e.SourceType {
+	case "":
+		return fmt.Errorf("source_type is required")
+	case "fee_pool", "pool_allocation", "chain_payment", "wallet_chain":
+		return fmt.Errorf("source_type must be settlement_cycle")
+	}
+	if e.SourceID == "" {
+		return fmt.Errorf("source_id is required")
 	}
 	_, err := db.Exec(
 		`INSERT INTO settle_process_events(process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json)

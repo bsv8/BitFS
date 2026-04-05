@@ -398,10 +398,10 @@ func TestPhase2_MainSettlementStatusReadsFromBusinessSettlements(t *testing.T) {
 		t.Fatalf("update settlement target failed: %v", err)
 	}
 
-	// 验证：通过 GetMainSettlementStatusByFrontOrderIDCompat 能查到 settled 状态
-	// 注：这是兼容函数，只取最近一条 business，不代表正式聚合口径
+	// 验证：通过 GetMainSettlementStatusByFrontOrderID 能查到 settled 状态
+	// 注：这是调试函数，只取最近一条 business，不代表正式聚合口径
 	// 正式应使用 GetFrontOrderSettlementSummary（返回全部 business + 汇总状态）
-	settlement, err := GetMainSettlementStatusByFrontOrderIDCompat(ctx, store, frontOrderID)
+	settlement, err := GetMainSettlementStatusByFrontOrderID(ctx, store, frontOrderID)
 	if err != nil {
 		t.Fatalf("get settlement status failed: %v", err)
 	}

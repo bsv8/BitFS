@@ -26,7 +26,7 @@ import (
 // 第四阶段新增：BusinessRole 用于区分正式收费和过程财务对象
 //   - formal：正式收费对象（如 biz_download_pool_*）
 //   - process：过程财务对象（如 biz_c2c_open_* / biz_c2c_close_*）
-//   - 空值：默认返回全部（保持向后兼容）
+//   - 空值：默认返回全部（主口径查询）
 type financeBusinessFilter struct {
 	Limit  int
 	Offset int
@@ -228,7 +228,7 @@ func normalizeSettlementStateFilter(state string) (string, error) {
 	}
 }
 
-// 财务查询只认 settlement_cycle；旧口径不在这里兼容。
+// 财务查询只认 settlement_cycle；这里把空输入收口到主口径。
 func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)

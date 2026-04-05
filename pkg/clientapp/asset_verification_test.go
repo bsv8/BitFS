@@ -1089,11 +1089,28 @@ func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed fact: %v", err)
 	}
+	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_hist_pay",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  1,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    0,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("seed chain payment: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleByChainPayment(db, payID)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle: %v", err)
+	}
 	// 再种一个消耗记录（把 IN 全部消耗掉，导致余额为 0）
 	_, err = db.Exec(
-		`INSERT INTO fact_asset_consumptions(source_flow_id,chain_payment_id,pool_allocation_id,used_satoshi,used_quantity_text,occurred_at_unix,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		1, 1, nil, 0, "100", now, "test", "{}",
+		`INSERT INTO fact_asset_consumptions(source_flow_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,used_satoshi,used_quantity_text,occurred_at_unix,note,payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		1, payID, nil, cycleID, 0, "100", now, "test", "{}",
 	)
 	if err != nil {
 		t.Fatalf("seed consumption: %v", err)
@@ -1143,20 +1160,33 @@ func TestTokenConsumptionIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 	}
 
 	// 第一次写消耗
-	err = dbAppendTokenConsumptionForChainPaymentDB(db, 100, "tx_idem:0", "50", now)
+	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_idem_pay",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  1,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    0,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("seed chain payment: %v", err)
+	}
+	err = dbAppendTokenConsumptionForChainPaymentDB(db, payID, "tx_idem:0", "50", now)
 	if err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 
 	// 第二次写消耗（相同 chain_payment_id，应被幂等跳过）
-	err = dbAppendTokenConsumptionForChainPaymentDB(db, 100, "tx_idem:0", "50", now)
+	err = dbAppendTokenConsumptionForChainPaymentDB(db, payID, "tx_idem:0", "50", now)
 	if err != nil {
 		t.Fatalf("second write (idempotent): %v", err)
 	}
 
 	// 验证只有一条消耗记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE chain_payment_id=100`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE chain_payment_id=?`, payID).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 1 {

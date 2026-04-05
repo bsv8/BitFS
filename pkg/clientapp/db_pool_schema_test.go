@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func createLegacyPoolAllocationsSchema(t *testing.T, db *sql.DB) {
+func createHistoricalPoolAllocationsSchema(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	stmts := []string{
@@ -40,12 +40,12 @@ func createLegacyPoolAllocationsSchema(t *testing.T, db *sql.DB) {
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create legacy pool schema failed: %v", err)
+			t.Fatalf("create historical pool schema failed: %v", err)
 		}
 	}
 }
 
-func insertLegacyPoolAllocation(t *testing.T, db *sql.DB, allocationID, sessionID string, allocationNo int64, kind string, sequenceNum int64, payeeAfter int64, payerAfter int64, txid, txHex string, createdAtUnix int64) {
+func insertHistoricalPoolAllocation(t *testing.T, db *sql.DB, allocationID, sessionID string, allocationNo int64, kind string, sequenceNum int64, payeeAfter int64, payerAfter int64, txid, txHex string, createdAtUnix int64) {
 	t.Helper()
 
 	if _, err := db.Exec(`INSERT INTO fact_pool_allocations(
@@ -53,11 +53,11 @@ func insertLegacyPoolAllocation(t *testing.T, db *sql.DB, allocationID, sessionI
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		allocationID, sessionID, allocationNo, kind, sequenceNum, payeeAfter, payerAfter, txid, txHex, createdAtUnix,
 	); err != nil {
-		t.Fatalf("insert legacy pool allocation failed: %v", err)
+		t.Fatalf("insert historical pool allocation failed: %v", err)
 	}
 }
 
-func insertLegacyPoolSession(t *testing.T, db *sql.DB, sessionID string) {
+func insertHistoricalPoolSession(t *testing.T, db *sql.DB, sessionID string) {
 	t.Helper()
 
 	if _, err := db.Exec(`INSERT INTO fact_pool_sessions(
@@ -66,7 +66,7 @@ func insertLegacyPoolSession(t *testing.T, db *sql.DB, sessionID string) {
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		sessionID, "2of3", "", "", "", "", int64(0), int64(0), float64(0), int64(0), "", "active", int64(1700000000), int64(1700000000),
 	); err != nil {
-		t.Fatalf("insert legacy pool session failed: %v", err)
+		t.Fatalf("insert historical pool session failed: %v", err)
 	}
 }
 
@@ -78,7 +78,7 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	for _, table := range []string{"fact_pool_sessions", "fact_pool_session_events", "fact_chain_payments", "fact_chain_payment_utxo_links"} {
+	for _, table := range []string{"fact_pool_sessions", "fact_pool_session_events", "fact_chain_payments", "settle_tx_utxo_links"} {
 		exists, err := hasTable(db, table)
 		if err != nil {
 			t.Fatalf("hasTable %s failed: %v", table, err)
@@ -108,7 +108,7 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		t.Fatalf("fact_pool_session_events should keep unique constraint on allocation_id")
 	}
 
-	for _, table := range []string{"fact_chain_payments", "fact_chain_payment_utxo_links"} {
+	for _, table := range []string{"fact_chain_payments", "settle_tx_utxo_links"} {
 		cols, err := tableColumns(db, table)
 		if err != nil {
 			t.Fatalf("inspect %s columns failed: %v", table, err)
@@ -119,16 +119,16 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 	}
 }
 
-func TestInitIndexDB_MigratesLegacyPoolAllocations(t *testing.T) {
+func TestInitIndexDB_MigratesHistoricalPoolAllocations(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	createLegacyPoolAllocationsSchema(t, db)
-	insertLegacyPoolSession(t, db, "sess_b")
-	insertLegacyPoolSession(t, db, "sess_a")
-	insertLegacyPoolAllocation(t, db, "alloc_b_2", "sess_b", 2, "pay", 2, 150, 850, "tx_b_2", "hex_b_2", 1700000003)
-	insertLegacyPoolAllocation(t, db, "alloc_a_2", "sess_a", 2, "pay", 2, 200, 800, "tx_a_2", "hex_a_2", 1700000002)
-	insertLegacyPoolAllocation(t, db, "alloc_a_1", "sess_a", 1, "open", 1, 0, 1000, "tx_a_1", "hex_a_1", 1700000001)
+	createHistoricalPoolAllocationsSchema(t, db)
+	insertHistoricalPoolSession(t, db, "sess_b")
+	insertHistoricalPoolSession(t, db, "sess_a")
+	insertHistoricalPoolAllocation(t, db, "alloc_b_2", "sess_b", 2, "pay", 2, 150, 850, "tx_b_2", "hex_b_2", 1700000003)
+	insertHistoricalPoolAllocation(t, db, "alloc_a_2", "sess_a", 2, "pay", 2, 200, 800, "tx_a_2", "hex_a_2", 1700000002)
+	insertHistoricalPoolAllocation(t, db, "alloc_a_1", "sess_a", 1, "open", 1, 0, 1000, "tx_a_1", "hex_a_1", 1700000001)
 
 	if err := initIndexDB(db); err != nil {
 		t.Fatalf("initIndexDB failed: %v", err)
@@ -239,15 +239,16 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 		"idx_fact_chain_payments_occurred",
 		"idx_fact_chain_payments_subtype",
 		"idx_fact_chain_payments_status",
-		"idx_fact_chain_payment_utxo_links_payment",
-		"idx_fact_chain_payment_utxo_links_utxo",
+		"idx_settle_tx_utxo_links_business",
+		"idx_settle_tx_utxo_links_utxo",
+		"idx_settle_tx_utxo_links_txid",
 	} {
 		tableName := "fact_pool_session_events"
 		if indexName == "idx_fact_chain_payments_occurred" || indexName == "idx_fact_chain_payments_subtype" || indexName == "idx_fact_chain_payments_status" {
 			tableName = "fact_chain_payments"
 		}
-		if indexName == "idx_fact_chain_payment_utxo_links_payment" || indexName == "idx_fact_chain_payment_utxo_links_utxo" {
-			tableName = "fact_chain_payment_utxo_links"
+		if indexName == "idx_settle_tx_utxo_links_business" || indexName == "idx_settle_tx_utxo_links_utxo" || indexName == "idx_settle_tx_utxo_links_txid" {
+			tableName = "settle_tx_utxo_links"
 		}
 		hasIndex, err := tableHasIndex(db, tableName, indexName)
 		if err != nil {
@@ -263,25 +264,16 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 	} else if !unique {
 		t.Fatalf("fact_chain_payments should keep unique constraint on txid")
 	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_chain_payment_utxo_links", []string{"chain_payment_id", "utxo_id", "io_side", "utxo_role"}); err != nil {
-		t.Fatalf("inspect fact_chain_payment_utxo_links unique constraint failed: %v", err)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "settle_tx_utxo_links", []string{"business_id", "txid", "utxo_id", "io_side", "utxo_role"}); err != nil {
+		t.Fatalf("inspect settle_tx_utxo_links unique constraint failed: %v", err)
 	} else if !unique {
-		t.Fatalf("fact_chain_payment_utxo_links should keep unique constraint on (chain_payment_id, utxo_id, io_side, utxo_role)")
+		t.Fatalf("settle_tx_utxo_links should keep unique constraint on (business_id, txid, utxo_id, io_side, utxo_role)")
 	}
 
-	fks, err := tableForeignKeys(db, "fact_chain_payment_utxo_links")
-	if err != nil {
-		t.Fatalf("inspect fact_chain_payment_utxo_links foreign keys failed: %v", err)
-	}
-	wantFKs := map[string]bool{
-		"chain_payment_id->fact_chain_payments.id": true,
-		"utxo_id->wallet_utxo.utxo_id":             true,
-	}
-	for _, fk := range fks {
-		delete(wantFKs, fk)
-	}
-	if len(wantFKs) != 0 {
-		t.Fatalf("missing foreign keys on fact_chain_payment_utxo_links: %v", wantFKs)
+	if exists, err := hasTable(db, "fact_chain_payment_utxo_links"); err != nil {
+		t.Fatalf("check historical table absence failed: %v", err)
+	} else if exists {
+		t.Fatal("fact_chain_payment_utxo_links should not exist anymore")
 	}
 }
 
@@ -289,9 +281,9 @@ func TestInitIndexDB_PoolSchemaIsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	createLegacyPoolAllocationsSchema(t, db)
-	insertLegacyPoolSession(t, db, "sess_idem")
-	insertLegacyPoolAllocation(t, db, "alloc_idem_1", "sess_idem", 1, "open", 1, 0, 1000, "tx_idem_1", "hex_idem_1", 1700000101)
+	createHistoricalPoolAllocationsSchema(t, db)
+	insertHistoricalPoolSession(t, db, "sess_idem")
+	insertHistoricalPoolAllocation(t, db, "alloc_idem_1", "sess_idem", 1, "open", 1, 0, 1000, "tx_idem_1", "hex_idem_1", 1700000101)
 
 	if err := initIndexDB(db); err != nil {
 		t.Fatalf("first initIndexDB failed: %v", err)

@@ -104,6 +104,13 @@ func TestEnsureSettlementCyclesSchema_BackfillsPartialCycles(t *testing.T) {
 	if _, ok := cols["settlement_cycle_id"]; !ok {
 		t.Fatal("fact_asset_consumptions missing settlement_cycle_id after migration")
 	}
+	notNull, err := tableColumnNotNull(db, "fact_asset_consumptions", "settlement_cycle_id")
+	if err != nil {
+		t.Fatalf("inspect settlement_cycle_id nullability failed: %v", err)
+	}
+	if !notNull {
+		t.Fatal("fact_asset_consumptions.settlement_cycle_id should be NOT NULL after migration")
+	}
 
 	var chainCycleID int64
 	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_asset_consumptions WHERE chain_payment_id=1`).Scan(&chainCycleID); err != nil {

@@ -266,12 +266,11 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 	return rows.Err()
 }
 
-// dbListDirectTransferPoolsCompat 【第五步：调试/兼容接口】
-// - 此函数只用于调试/兼容查询，不再作为业务状态主入口
-// - 业务状态统一走 GetFrontOrderSettlementSummary
-// - proc_direct_transfer_pools 已降级为【协议运行态表】，status 字段是协议运行时状态，不代表业务结算状态
-// - 禁止用此函数判断"下载是否完成/是否已付费"等业务状态
-func dbListDirectTransferPoolsCompat(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
+// dbListDirectTransferPoolsDebug 只用于调试查询。
+// - 业务状态统一走 GetFrontOrderSettlementSummary；
+// - proc_direct_transfer_pools 只表达协议运行态，不代表业务结算结果；
+// - 不要用它判断下载是否完成、是否已付费这类业务结论。
+func dbListDirectTransferPoolsDebug(ctx context.Context, store *clientDB, f directTransferPoolFilter) (directTransferPoolPage, error) {
 	if store == nil {
 		return directTransferPoolPage{}, fmt.Errorf("client db is nil")
 	}
@@ -330,12 +329,11 @@ func dbListDirectTransferPoolsCompat(ctx context.Context, store *clientDB, f dir
 	})
 }
 
-// dbGetDirectTransferPoolItemCompat 【第五步：调试/兼容接口】
-// - 此函数只用于调试/兼容查询，不再作为业务状态主入口
-// - 业务状态统一走 GetFrontOrderSettlementSummary
-// - proc_direct_transfer_pools 已降级为【协议运行态表】
-// - 禁止用此函数判断"下载是否完成"等业务状态
-func dbGetDirectTransferPoolItemCompat(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
+// dbGetDirectTransferPoolItemDebug 只用于调试查询。
+// - 业务状态统一走 GetFrontOrderSettlementSummary；
+// - proc_direct_transfer_pools 只表达协议运行态；
+// - 不要用它判断下载是否完成这类业务结论。
+func dbGetDirectTransferPoolItemDebug(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolItem, error) {
 	if store == nil {
 		return directTransferPoolItem{}, fmt.Errorf("client db is nil")
 	}
@@ -349,9 +347,8 @@ func dbGetDirectTransferPoolItemCompat(ctx context.Context, store *clientDB, ses
 	})
 }
 
-// Deprecated: 第五步降级
-// - biz_purchases 是旧过程表，新代码应走 biz_front_orders -> settle_business_settlements
-// - 此函数保留用于兼容查询
+// Deprecated: 保留给历史查询。
+// - biz_purchases 是历史过程表，新代码应走 biz_front_orders -> settle_business_settlements
 func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (purchasePage, error) {
 	if store == nil {
 		return purchasePage{}, fmt.Errorf("client db is nil")
@@ -414,8 +411,7 @@ func dbGetPurchaseItem(ctx context.Context, store *clientDB, id int64) (purchase
 	})
 }
 
-// Deprecated: 第五步降级
-// - 此函数基于旧 biz_purchases 表统计，只用于兼容
+// Deprecated: 保留给历史统计查询。
 // - 新代码应使用 GetFrontOrderSettlementSummary 统计 settlement 状态
 func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID string) (purchaseDemandSummary, error) {
 	if store == nil {

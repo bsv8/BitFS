@@ -623,7 +623,7 @@ type directTransferPoolCloseResult struct {
 // 设计约束（第五步）：
 // - FrontOrderID 是正式下载主流程的必填字段，用于关联 front_order -> business -> settlement 主线
 // - 缺失 FrontOrderID 表示调用方试图绕过新主线，直接拒绝
-// - 如需兼容老路径，应使用专门的 debug/compat 包装函数，不能共用此正式入口
+// - 如需临时调试老路径，应使用专门的 debug 包装函数，不能共用此正式入口
 func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
 	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")

@@ -576,11 +576,11 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 		t.Fatalf("expected settled_count 1, got %d", summary.Summary.SettledCount)
 	}
 
-	// 4. 再验证兼容函数（GetFullPoolSettlementChainByFrontOrderIDCompat）也返回 settled
-	// 注：这是 compat 函数，只取最近一条 business，不代表正式聚合口径
-	poolChain, err := GetFullPoolSettlementChainByFrontOrderIDCompat(ctx, store, frontOrderID)
+	// 4. 再验证主读函数（GetFullPoolSettlementChainByFrontOrderID）也返回 settled
+	// 注：这是调试函数，只取最近一条 business，不代表正式聚合口径
+	poolChain, err := GetFullPoolSettlementChainByFrontOrderID(ctx, store, frontOrderID)
 	if err != nil {
-		t.Fatalf("GetFullPoolSettlementChainByFrontOrderIDCompat: %v", err)
+		t.Fatalf("GetFullPoolSettlementChainByFrontOrderID: %v", err)
 	}
 	if poolChain.Settlement.Status != "settled" {
 		t.Fatalf("expected pool chain settlement status settled, got %s", poolChain.Settlement.Status)
@@ -684,44 +684,44 @@ func TestStep4_FrontOrderNoBusinessYet(t *testing.T) {
 }
 
 // ============================================================
-// 兼容函数测试（Compat）
+// 主读函数测试
 // ============================================================
 
-// TestCompat_MainSettlementStatusByFrontOrderID_StillWorks
-// 验证：compat 函数仍返回单条视图，但不代表正式聚合口径
-func TestCompat_MainSettlementStatusByFrontOrderID_StillWorks(t *testing.T) {
+// TestMainSettlementStatusByFrontOrderID_StillWorks
+// 验证：主读函数仍返回单条视图，但不代表正式聚合汇总口径
+func TestMainSettlementStatusByFrontOrderID_StillWorks(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
 
-	frontOrderID := "front_order_compat_test_1"
+	frontOrderID := "front_order_main_test_1"
 	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
 		FrontOrderID:   frontOrderID,
 		FrontType:      "download",
 		FrontSubtype:   "direct_transfer",
 		OwnerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		TargetObjectID: "demand_compat_1",
+		TargetObjectID: "demand_main_1",
 		Status:         "pending",
-		Note:           "compat 测试",
-		Payload:        map[string]any{"test": "compat"},
+		Note:           "主口径测试",
+		Payload:        map[string]any{"test": "main"},
 	}); err != nil {
 		t.Fatalf("upsert front_order: %v", err)
 	}
 
-	businessID := "biz_download_pool_compat_test_1"
-	settlementID := "set_download_pool_compat_test_1"
+	businessID := "biz_download_pool_main_test_1"
+	settlementID := "set_download_pool_main_test_1"
 	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:      frontOrderID,
 		FrontType:         "download",
 		FrontSubtype:      "direct_transfer",
 		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		TargetObjectType:  "demand",
-		TargetObjectID:    "demand_compat_1",
-		FrontOrderNote:    "compat 测试",
+		TargetObjectID:    "demand_main_1",
+		FrontOrderNote:    "主口径测试",
 		BusinessID:        businessID,
-		BusinessRole:      "formal", // 兼容测试用正式收费对象
+		BusinessRole:      "formal", // 主口径测试用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",
@@ -737,54 +737,54 @@ func TestCompat_MainSettlementStatusByFrontOrderID_StillWorks(t *testing.T) {
 		t.Fatalf("create business chain: %v", err)
 	}
 
-	// compat 函数应返回最近一条 business 的 settlement
-	compatSettlement, err := GetMainSettlementStatusByFrontOrderIDCompat(ctx, store, frontOrderID)
+	// 调试函数应返回最近一条 business 的 settlement
+	settlement, err := GetMainSettlementStatusByFrontOrderID(ctx, store, frontOrderID)
 	if err != nil {
-		t.Fatalf("GetMainSettlementStatusByFrontOrderIDCompat: %v", err)
+		t.Fatalf("GetMainSettlementStatusByFrontOrderID: %v", err)
 	}
-	if compatSettlement.SettlementID != settlementID {
-		t.Fatalf("expected settlementID %s, got %s", settlementID, compatSettlement.SettlementID)
+	if settlement.SettlementID != settlementID {
+		t.Fatalf("expected settlementID %s, got %s", settlementID, settlement.SettlementID)
 	}
-	if compatSettlement.Status != "pending" {
-		t.Fatalf("expected status pending, got %s", compatSettlement.Status)
+	if settlement.Status != "pending" {
+		t.Fatalf("expected status pending, got %s", settlement.Status)
 	}
 }
 
-// TestCompat_FullPoolSettlementChain_StillWorks
-// 验证：compat 函数仍可读，但不代表正式聚合口径
-func TestCompat_FullPoolSettlementChain_StillWorks(t *testing.T) {
+// TestMainFullPoolSettlementChain_StillWorks
+// 验证：主读函数仍可读，但不代表正式聚合汇总口径
+func TestMainFullPoolSettlementChain_StillWorks(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
 
-	frontOrderID := "front_order_compat_chain_test"
+	frontOrderID := "front_order_main_chain_test"
 	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
 		FrontOrderID:   frontOrderID,
 		FrontType:      "download",
 		FrontSubtype:   "direct_transfer",
 		OwnerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		TargetObjectID: "demand_compat_chain",
+		TargetObjectID: "demand_main_chain",
 		Status:         "pending",
-		Note:           "compat chain 测试",
-		Payload:        map[string]any{"test": "compat_chain"},
+		Note:           "主口径链测试",
+		Payload:        map[string]any{"test": "main_chain"},
 	}); err != nil {
 		t.Fatalf("upsert front_order: %v", err)
 	}
 
-	businessID := "biz_download_pool_compat_chain"
-	settlementID := "set_download_pool_compat_chain"
+	businessID := "biz_download_pool_main_chain"
+	settlementID := "set_download_pool_main_chain"
 	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:      frontOrderID,
 		FrontType:         "download",
 		FrontSubtype:      "direct_transfer",
 		OwnerPubkeyHex:    "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		TargetObjectType:  "demand",
-		TargetObjectID:    "demand_compat_chain",
-		FrontOrderNote:    "compat chain 测试",
+		TargetObjectID:    "demand_main_chain",
+		FrontOrderNote:    "主口径链测试",
 		BusinessID:        businessID,
-		BusinessRole:      "formal", // 兼容链测试用正式收费对象
+		BusinessRole:      "formal", // 主口径测试用正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
 		AccountingScene:   "direct_transfer",
@@ -800,10 +800,10 @@ func TestCompat_FullPoolSettlementChain_StillWorks(t *testing.T) {
 		t.Fatalf("create business chain: %v", err)
 	}
 
-	// compat 函数应返回单条视图
-	poolChain, err := GetFullPoolSettlementChainByFrontOrderIDCompat(ctx, store, frontOrderID)
+	// 调试函数应返回单条视图
+	poolChain, err := GetFullPoolSettlementChainByFrontOrderID(ctx, store, frontOrderID)
 	if err != nil {
-		t.Fatalf("GetFullPoolSettlementChainByFrontOrderIDCompat: %v", err)
+		t.Fatalf("GetFullPoolSettlementChainByFrontOrderID: %v", err)
 	}
 	if poolChain.Business.BusinessID != businessID {
 		t.Fatalf("expected business_id %s, got %s", businessID, poolChain.Business.BusinessID)

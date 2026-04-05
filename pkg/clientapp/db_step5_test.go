@@ -10,7 +10,7 @@ import (
 // 第五步测试：边界封死，旧表彻底降级
 // 测试目标：
 //   1. 正式下载开池缺 front_order_id 必须失败
-//   2. 旧池查询接口明确标注 runtime/debug 语义
+//   2. 旧池查询接口明确标注运行时状态语义
 //   3. 协议读取函数不被业务测试复用
 // ============================================================
 
@@ -54,8 +54,8 @@ func TestStep5_MainflowRequiresFrontOrderID(t *testing.T) {
 	t.Log("Step5: Mainflow download correctly requires front_order_id")
 }
 
-// TestStep5_OldPoolQueryMarkedAsRuntimeDebug 旧池查询接口标注 runtime/debug 语义
-func TestStep5_OldPoolQueryMarkedAsRuntimeDebug(t *testing.T) {
+// TestStep5_PoolQueryMarkedAsRuntimeStatus 旧池查询接口标注运行时状态语义
+func TestStep5_PoolQueryMarkedAsRuntimeStatus(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
@@ -78,29 +78,29 @@ func TestStep5_OldPoolQueryMarkedAsRuntimeDebug(t *testing.T) {
 	}
 
 	// 使用降级接口查询
-	page, err := dbListDirectTransferPoolsCompat(ctx, store, directTransferPoolFilter{
+	page, err := dbListDirectTransferPoolsDebug(ctx, store, directTransferPoolFilter{
 		Limit:     10,
 		Offset:    0,
 		SessionID: "session_step5_test",
 	})
 	if err != nil {
-		t.Fatalf("dbListDirectTransferPoolsCompat: %v", err)
+		t.Fatalf("dbListDirectTransferPoolsDebug: %v", err)
 	}
 
 	if page.Total != 1 {
 		t.Fatalf("expected 1 pool, got %d", page.Total)
 	}
 
-	// 验证：接口返回的数据应明确标注 runtime/debug 语义
+	// 验证：接口返回的数据应明确标注运行时状态语义
 	// 在实际 HTTP 响应中，应该包含 data_role 和 status_note 字段
-	t.Log("Step5: Old pool query returns runtime_debug_only data")
-	t.Log("  - data_role: runtime_debug_only")
+	t.Log("Step5: pool query returns runtime-only data")
+	t.Log("  - data_role: runtime_only")
 	t.Log("  - status_note: proc_direct_transfer_pools.status is protocol runtime status, not settlement status")
 
 	// 验证：单条查询也使用降级接口
-	item, err := dbGetDirectTransferPoolItemCompat(ctx, store, "session_step5_test")
+	item, err := dbGetDirectTransferPoolItemDebug(ctx, store, "session_step5_test")
 	if err != nil {
-		t.Fatalf("dbGetDirectTransferPoolItemCompat: %v", err)
+		t.Fatalf("dbGetDirectTransferPoolItemDebug: %v", err)
 	}
 	if item.SessionID != "session_step5_test" {
 		t.Fatalf("expected session_id session_step5_test, got %s", item.SessionID)

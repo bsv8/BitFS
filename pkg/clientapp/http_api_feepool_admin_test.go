@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-// TestHandleAdminFeePoolLegacy_BasicAvailability 验证旧分表接口仍可用（兼容口）。
+// TestHandleAdminFeePoolHistory_BasicAvailability 验证费用池历史查询入口基本可用。
 // 第七轮：这些接口不再承载主产品语义，测试只保留基本可用性，但要求"至少查得到 1 条真实数据 + detail 能打开"。
-func TestHandleAdminFeePoolLegacy_BasicAvailability(t *testing.T) {
+func TestHandleAdminFeePoolHistory_BasicAvailability(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}

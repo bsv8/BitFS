@@ -116,7 +116,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	{
 		req := httptest.NewRequest(http.MethodGet, "/api/v1/direct/transfer-pools?status=active", nil)
 		rec := httptest.NewRecorder()
-		srv.handleDirectTransferPoolsCompat(rec, req)
+		srv.handleDirectTransferPoolsDebug(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("pools list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}
@@ -133,7 +133,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode pools list: %v", err)
 		}
-		// 【第五步】验证 compat 接口明确标注 runtime/debug 语义
+		// 【第五步】验证运行时接口明确标注运行时语义
 		if body.DataRole != "runtime_debug_only" {
 			t.Fatalf("expected data_role=runtime_debug_only, got=%s", body.DataRole)
 		}
@@ -146,7 +146,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 
 		reqDetail := httptest.NewRequest(http.MethodGet, "/api/v1/direct/transfer-pools/detail?session_id=sess_1", nil)
 		recDetail := httptest.NewRecorder()
-		srv.handleDirectTransferPoolDetailCompat(recDetail, reqDetail)
+		srv.handleDirectTransferPoolDetailDebug(recDetail, reqDetail)
 		if recDetail.Code != http.StatusOK {
 			t.Fatalf("pools detail status mismatch: got=%d want=%d body=%s", recDetail.Code, http.StatusOK, recDetail.Body.String())
 		}
@@ -161,7 +161,7 @@ func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 		if err := json.Unmarshal(recDetail.Body.Bytes(), &detailBody); err != nil {
 			t.Fatalf("decode pools detail: %v", err)
 		}
-		// 【第五步】验证 compat 详情接口也明确标注 runtime/debug 语义
+		// 【第五步】验证运行时详情接口也明确标注运行时语义
 		if detailBody.DataRole != "runtime_debug_only" {
 			t.Fatalf("expected detail data_role=runtime_debug_only, got=%s", detailBody.DataRole)
 		}

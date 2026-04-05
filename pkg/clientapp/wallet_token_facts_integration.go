@@ -82,9 +82,9 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 // loadWalletTokenBalanceWithFallback 统一 token 余额读取入口
 // 设计说明：
 // - Step 12 收口：fact 为主口径
-// - Step 13：所有回退路径统一打 `reason` 标签，便于后续统计和下线旧路径
-// - fact 查询成功（含空结果/0 值）→ 直接返回，不回退旧路径
-// - fact 查询失败 → 记录 reason 后回退旧路径
+// - Step 13：所有兜底路径统一打 `reason` 标签，便于后续统计
+// - fact 查询成功（含空结果/0 值）→ 直接返回，不再切到历史路径
+// - fact 查询失败 → 记录 reason 后走历史路径
 // - unknown 不参与 fact，不影响余额
 func loadWalletTokenBalanceWithFallback(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) (string, error) {
 	walletID := walletIDByAddress(address)
@@ -93,15 +93,15 @@ func loadWalletTokenBalanceWithFallback(ctx context.Context, store *clientDB, rt
 	// Step 12/13/14：先尝试 fact 口径
 	bal, err := dbLoadTokenBalanceFact(ctx, store, walletID, assetKind, assetKey)
 	if err != nil {
-		// fact 查询失败：记录 reason 后回退（带开关检查）
+		// fact 查询失败：记录 reason 后走历史路径（带开关检查）
 		logTokenBalanceFallback(ctx, walletID, assetKind, assetKey, "fact_query_error", err.Error())
 		return loadWalletTokenBalanceFromOldPath(ctx, store, rt, address, standard, assetKey)
 	}
 
-	// Step 12 收口：fact 查询成功，即使 TotalInText 为空也返回 "0"（不回退旧路径）
+	// Step 12 收口：fact 查询成功，即使 TotalInText 为空也返回 "0"
 	// 设计说明：
 	// - fact 已建账但无 IN 记录 = 该 token 余额确实为 0
-	// - 不再因 "fact 返回空" 回退到旧路径，避免新旧口径混用
+	// - 不再因 "fact 返回空" 切回历史路径，避免口径混用
 	if bal.TotalInText == "" && bal.TotalUsedText == "" {
 		// Step 14：主路径成功日志
 		logTokenBalanceSuccess(ctx, walletID, assetKind, assetKey, "0")
@@ -155,20 +155,19 @@ func logTokenBalanceSuccess(ctx context.Context, walletID string, assetKind stri
 	})
 }
 
-// isTokenOldPathEnabled 检查是否允许走旧路径
+// isTokenOldPathEnabled 检查是否允许走历史路径
 // 设计说明（Step 14）：
 // - 默认禁用，需显式设置 BITFS_ENABLE_TOKEN_OLD_PATH=1
-// - 用于过渡期排障，生产环境不应开启
+// - 仅用于排障，生产环境不应开启
 func isTokenOldPathEnabled() bool {
 	return os.Getenv("BITFS_ENABLE_TOKEN_OLD_PATH") == "1"
 }
 
-// loadWalletTokenBalanceFromOldPath 旧口径：从 wallet_utxo_assets + local broadcast 汇总
+// loadWalletTokenBalanceFromOldPath 历史路径：从 wallet_utxo_assets + local broadcast 汇总
 // 设计说明（Step 12/14 收口）：
-// - runtime_debug_only：不再参与主流程决策，仅在 fact 查询失败时作为兜底
-// - Step 14：默认禁用，需显式设置 BITFS_ENABLE_TOKEN_OLD_PATH=1 才允许走旧路径
-// - 语义：非主路径，仅供排障和兼容过渡期使用
-// - 新代码不应依赖此函数的返回值做业务决策
+// - 这里只在 fact 查询失败时作为兜底
+// - Step 14：默认禁用，需显式设置 BITFS_ENABLE_TOKEN_OLD_PATH=1 才允许走历史路径
+// - 仅供排障，不应作为新代码的业务依据
 func loadWalletTokenBalanceFromOldPath(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) (string, error) {
 	// Step 14：旧路径硬降级，默认禁用
 	if !isTokenOldPathEnabled() {
@@ -197,9 +196,9 @@ func loadWalletTokenBalanceFromOldPath(ctx context.Context, store *clientDB, rt 
 // 设计说明：
 // - Step 12/13/14：fact 为主口径
 // - fact 查询成功 → 有候选则返回
-// - fact 查询成功且无候选但有历史记录 → 说明已花完，返回空（不回退旧路径）
+// - fact 查询成功且无候选但有历史记录 → 说明已花完，返回空
 // - fact 查询成功且无候选且无历史 → fact 未建账（空结果），返回空
-// - fact 查询失败 → 仅当 BITFS_ENABLE_TOKEN_OLD_PATH=1 时回退旧路径
+// - fact 查询失败 → 仅当 BITFS_ENABLE_TOKEN_OLD_PATH=1 时走历史路径
 // - 返回格式统一为 walletTokenPreviewCandidate，方便上层消费
 func loadWalletTokenSpendableCandidatesWithFallback(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
 	walletID := walletIDByAddress(address)
@@ -208,7 +207,7 @@ func loadWalletTokenSpendableCandidatesWithFallback(ctx context.Context, store *
 	// Step 12/13/14：先尝试 fact 口径
 	flows, err := dbListTokenSpendableSourceFlows(ctx, store, walletID, assetKind, assetKey)
 	if err != nil {
-		// fact 查询失败，检查旧路径开关
+		// fact 查询失败，检查历史路径开关
 		if !isTokenOldPathEnabled() {
 			obs.Error("bitcast-client", "token_spendable_fact_query_failed", map[string]any{
 				"wallet_id":  walletID,

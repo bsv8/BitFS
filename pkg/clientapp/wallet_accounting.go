@@ -253,8 +253,8 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		return fmt.Errorf("resolve settlement cycle for chain payment %d: %w", chainPaymentID, err)
 	}
 
-	// 第二步整改：这里开始只写 settlement_cycle 口径。
-	// 说明：钱包/费用池的财务结果已经收口到结算周期，不能再回写旧来源。
+	// 这里开始只写 settlement_cycle 口径。
+	// 说明：钱包/费用池的财务结果已经收口到结算周期，历史来源只用于回填，不再参与新写入。
 	businessID := "biz_wallet_chain_" + txid
 
 	if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
@@ -311,17 +311,18 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		if !exists {
 			continue
 		}
-		if err := dbAppendChainPaymentUTXOLinkIfAbsentDB(db, chainPaymentUTXOLinkEntry{
-			ChainPaymentID: chainPaymentID,
-			UTXOID:         utxoID,
-			IOSide:         ioSide,
-			UTXORole:       utxoRole,
-			AmountSatoshi:  fact.AmountSatoshi,
-			CreatedAtUnix:  now,
-			Note:           fact.Note,
-			Payload:        fact.Payload,
+		if err := dbAppendFinTxUTXOLinkIfAbsent(db, finTxUTXOLinkEntry{
+			BusinessID:    businessID,
+			TxID:          txid,
+			UTXOID:        utxoID,
+			IOSide:        ioSide,
+			UTXORole:      utxoRole,
+			AmountSatoshi: fact.AmountSatoshi,
+			CreatedAtUnix: now,
+			Note:          fact.Note,
+			Payload:       fact.Payload,
 		}); err != nil {
-			return fmt.Errorf("append chain_payment_utxo_link failed: %w", err)
+			return fmt.Errorf("append settle_tx_utxo_links failed: %w", err)
 		}
 	}
 

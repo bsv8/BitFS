@@ -192,34 +192,14 @@ func TestDbGetChainPaymentByTxID(t *testing.T) {
 	}
 }
 
-// TestDbAppendChainPaymentUTXOLinkIfAbsent_Idempotent 验证 utxo link 幂等性
-func TestDbAppendChainPaymentUTXOLinkIfAbsent_Idempotent(t *testing.T) {
+// TestDbAppendFinTxUTXOLinkIfAbsent_Idempotent 验证统一结算 UTXO link 幂等性
+func TestDbAppendFinTxUTXOLinkIfAbsent_Idempotent(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
-	ctx := context.Background()
-	store := newClientDB(db, nil)
-
-	// 先创建 chain_payment
-	paymentID, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
-		TxID:                "tx_utxo_link_test",
-		PaymentSubType:      "external_in",
-		Status:              "confirmed",
-		WalletInputSatoshi:  0,
-		WalletOutputSatoshi: 3000,
-		NetAmountSatoshi:    3000,
-		BlockHeight:         300,
-		OccurredAtUnix:      1700000004,
-		FromPartyID:         "external:unknown",
-		ToPartyID:           "wallet:self",
-		Payload:             map[string]any{},
-	})
-	if err != nil {
-		t.Fatalf("upsert chain_payment failed: %v", err)
-	}
 
 	// 需要先插入 wallet_utxo 记录（因为外键约束）
-	_, err = db.Exec(`INSERT INTO wallet_utxo(
+	_, err := db.Exec(`INSERT INTO wallet_utxo(
 		utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
 		created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -230,30 +210,52 @@ func TestDbAppendChainPaymentUTXOLinkIfAbsent_Idempotent(t *testing.T) {
 		t.Fatalf("insert wallet_utxo failed: %v", err)
 	}
 
+	businessID := "biz_utxo_link_test"
+	txid := "tx_utxo_link_test"
+	if err := dbAppendFinTxBreakdown(db, finTxBreakdownEntry{
+		BusinessID:         businessID,
+		TxID:               txid,
+		TxRole:             "external_in",
+		GrossInputSatoshi:  3000,
+		ChangeBackSatoshi:  0,
+		ExternalInSatoshi:  3000,
+		CounterpartyOutSat: 0,
+		MinerFeeSatoshi:    0,
+		NetOutSatoshi:      0,
+		NetInSatoshi:       3000,
+		CreatedAtUnix:      1700000004,
+		Note:               "test utxo breakdown",
+		Payload:            map[string]any{"idx": 1},
+	}); err != nil {
+		t.Fatalf("seed settle_tx_breakdown failed: %v", err)
+	}
+
 	// 第一次写入 link
-	if err := dbAppendChainPaymentUTXOLinkIfAbsent(ctx, store, chainPaymentUTXOLinkEntry{
-		ChainPaymentID: paymentID,
-		UTXOID:         "utxo_test_1:0",
-		IOSide:         "output",
-		UTXORole:       "external_in",
-		AmountSatoshi:  3000,
-		CreatedAtUnix:  1700000004,
-		Note:           "test utxo link",
-		Payload:        map[string]any{"idx": 1},
+	if err := dbAppendBusinessUTXOFactIfAbsent(db, "external_in", finTxUTXOLinkEntry{
+		BusinessID:    businessID,
+		TxID:          txid,
+		UTXOID:        "utxo_test_1:0",
+		IOSide:        "output",
+		UTXORole:      "external_in",
+		AmountSatoshi: 3000,
+		CreatedAtUnix: 1700000004,
+		Note:          "test utxo link",
+		Payload:       map[string]any{"idx": 1},
 	}); err != nil {
 		t.Fatalf("first link append failed: %v", err)
 	}
 
 	// 第二次写入（相同 link）- 应该无错误且不重复
-	if err := dbAppendChainPaymentUTXOLinkIfAbsent(ctx, store, chainPaymentUTXOLinkEntry{
-		ChainPaymentID: paymentID,
-		UTXOID:         "utxo_test_1:0",
-		IOSide:         "output",
-		UTXORole:       "external_in",
-		AmountSatoshi:  3000,
-		CreatedAtUnix:  1700000005,
-		Note:           "duplicate link",
-		Payload:        map[string]any{"idx": 2},
+	if err := dbAppendBusinessUTXOFactIfAbsent(db, "external_in", finTxUTXOLinkEntry{
+		BusinessID:    businessID,
+		TxID:          txid,
+		UTXOID:        "utxo_test_1:0",
+		IOSide:        "output",
+		UTXORole:      "external_in",
+		AmountSatoshi: 3000,
+		CreatedAtUnix: 1700000005,
+		Note:          "duplicate link",
+		Payload:       map[string]any{"idx": 2},
 	}); err != nil {
 		t.Fatalf("second link append failed: %v", err)
 	}
@@ -261,8 +263,8 @@ func TestDbAppendChainPaymentUTXOLinkIfAbsent_Idempotent(t *testing.T) {
 	// 验证只有一条 link 记录
 	var count int
 	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=?`,
-		paymentID, "utxo_test_1:0",
+		`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_id=?`,
+		businessID, txid, "utxo_test_1:0",
 	).Scan(&count); err != nil {
 		t.Fatalf("count check failed: %v", err)
 	}

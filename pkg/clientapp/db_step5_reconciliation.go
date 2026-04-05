@@ -11,7 +11,7 @@ import (
 
 // ============================================================
 // 第五步：一致性校验
-// 职责：验证新旧口径是否一致，找出漂移点
+// 职责：验证主口径与历史数据是否一致，找出漂移点
 // 原则：
 //   - 只报告，不自动修复（防止误修复）
 //   - 新模型认定 settled 时，旧表不应显示异常
@@ -61,7 +61,7 @@ type ReconciliationSummary struct {
 	InconsistentCount int `json:"inconsistent_count"`
 }
 
-// RunDomainRegisterReconciliation 域名注册新旧口径对账
+// RunDomainRegisterReconciliation 域名注册主口径对账
 // 校验：每条已 settled 的 domain business，是否都有 chain_payment 目标
 func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*ReconciliationReport, error) {
 	report := &ReconciliationReport{
@@ -149,7 +149,7 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 	return report, err
 }
 
-// RunPoolReconciliation 池支付新旧口径对账
+// RunPoolReconciliation 池支付主口径对账
 // 校验：每条已 settled 的 pool business，是否都有 pool_allocation 目标
 // 同时检查：新模型 settled 时，旧 proc_direct_transfer_pools 不应显示异常状态
 func RunPoolReconciliation(ctx context.Context, store *clientDB) (*ReconciliationReport, error) {

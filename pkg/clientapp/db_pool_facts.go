@@ -266,7 +266,7 @@ func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int
 }
 
 // dbGetPoolAllocationIDByAllocationID 按 allocation_id 查自增 id
-// 第二步整改：财务来源从业务键切换到事实表自增主键
+// 设计说明：财务来源已经收口到事实表自增主键，不再依赖业务键。
 func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, allocationID string) (int64, error) {
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")

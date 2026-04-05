@@ -176,7 +176,20 @@ func dbAppendAssetConsumptionForChainPaymentIfAbsent(ctx context.Context, store 
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
+	if e.ChainPaymentID <= 0 {
+		return fmt.Errorf("chain_payment_id is required for payment link type")
+	}
+	if e.PoolAllocationID > 0 {
+		return fmt.Errorf("pool_allocation_id must be NULL for payment link type")
+	}
 	return store.Do(ctx, func(db *sql.DB) error {
+		if e.SettlementCycleID <= 0 {
+			cycleID, err := dbGetSettlementCycleByChainPayment(db, e.ChainPaymentID)
+			if err != nil {
+				return fmt.Errorf("lookup settlement cycle for chain payment %d: %w", e.ChainPaymentID, err)
+			}
+			e.SettlementCycleID = cycleID
+		}
 		return dbAppendAssetConsumptionIfAbsentDB(db, e, "payment")
 	})
 }
@@ -189,7 +202,20 @@ func dbAppendAssetConsumptionForPoolAllocationIfAbsent(ctx context.Context, stor
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
+	if e.PoolAllocationID <= 0 {
+		return fmt.Errorf("pool_allocation_id is required for allocation link type")
+	}
+	if e.ChainPaymentID > 0 {
+		return fmt.Errorf("chain_payment_id must be NULL for allocation link type")
+	}
 	return store.Do(ctx, func(db *sql.DB) error {
+		if e.SettlementCycleID <= 0 {
+			cycleID, err := dbGetSettlementCycleByPoolEvent(db, e.PoolAllocationID)
+			if err != nil {
+				return fmt.Errorf("lookup settlement cycle for pool event %d: %w", e.PoolAllocationID, err)
+			}
+			e.SettlementCycleID = cycleID
+		}
 		return dbAppendAssetConsumptionIfAbsentDB(db, e, "allocation")
 	})
 }
@@ -224,6 +250,9 @@ func dbAppendAssetConsumptionIfAbsentDB(db sqlConn, e assetConsumptionEntry, lin
 		}
 	} else {
 		return fmt.Errorf("link_type must be 'payment' or 'allocation', got %s", linkType)
+	}
+	if e.SettlementCycleID <= 0 {
+		return fmt.Errorf("settlement_cycle_id is required")
 	}
 
 	if sourceUTXOID == "" && e.SourceFlowID <= 0 {
@@ -278,7 +307,7 @@ func dbAppendAssetConsumptionIfAbsentDB(db sqlConn, e assetConsumptionEntry, lin
 		sourceUTXOID,
 		nilIfZero(e.ChainPaymentID),
 		nilIfZero(e.PoolAllocationID),
-		nilIfZero(e.SettlementCycleID),
+		e.SettlementCycleID,
 		state,
 		e.UsedSatoshi,
 		strings.TrimSpace(e.UsedQuantityText),
@@ -1099,6 +1128,13 @@ func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64,
 		}
 		return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 	}
+	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
+	if err != nil {
+		return fmt.Errorf("lookup settlement cycle for chain payment %d: %w", chainPaymentID, err)
+	}
+	if settlementCycleID <= 0 {
+		return fmt.Errorf("settlement cycle missing for chain payment %d", chainPaymentID)
+	}
 
 	// 幂等检查
 	var n int
@@ -1126,12 +1162,13 @@ func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64,
 
 	_, err = db.Exec(
 		`INSERT INTO fact_asset_consumptions(
-			source_flow_id,chain_payment_id,pool_allocation_id,used_satoshi,used_quantity_text,
+			source_flow_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,used_satoshi,used_quantity_text,
 			occurred_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?)`,
+		) VALUES(?,?,?,?,?,?,?,?,?)`,
 		sourceFlowID,
 		chainPaymentID,
 		nil,
+		settlementCycleID,
 		0,
 		strings.TrimSpace(usedQuantityText),
 		occurredAt,

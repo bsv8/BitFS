@@ -14,7 +14,7 @@ type sqlConn interface {
 }
 
 // chainPaymentEntry fact_chain_payments 写入条目
-// 第二步整改：为 wallet_chain 财务来源切换提供事实层支持
+// 设计说明：为 wallet_chain 财务来源切换提供事实层支持，后续写入都靠事实表主键收口。
 type chainPaymentEntry struct {
 	TxID                string
 	PaymentSubType      string
@@ -29,7 +29,7 @@ type chainPaymentEntry struct {
 	Payload             any
 }
 
-// chainPaymentUTXOLinkEntry fact_chain_payment_utxo_links 写入条目
+// chainPaymentUTXOLinkEntry 统一结算链路的 UTXO 明细条目。
 type chainPaymentUTXOLinkEntry struct {
 	ChainPaymentID int64
 	UTXOID         string
@@ -189,71 +189,6 @@ func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool
 		}
 		return true, nil
 	})
-}
-
-// dbAppendChainPaymentUTXOLinkIfAbsent 幂等追加 fact_chain_payment_utxo_links
-// 同一 payment-utxo link 重复写入不会生成多条记录
-func dbAppendChainPaymentUTXOLinkIfAbsent(ctx context.Context, store *clientDB, e chainPaymentUTXOLinkEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		return dbAppendChainPaymentUTXOLinkIfAbsentDB(db, e)
-	})
-}
-
-// dbAppendChainPaymentUTXOLinkIfAbsentDB 在已打开的 sql.DB 上执行幂等追加
-func dbAppendChainPaymentUTXOLinkIfAbsentDB(db sqlConn, e chainPaymentUTXOLinkEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if e.ChainPaymentID <= 0 {
-		return fmt.Errorf("chain_payment_id is required")
-	}
-	utxoID := strings.ToLower(strings.TrimSpace(e.UTXOID))
-	if utxoID == "" {
-		return fmt.Errorf("utxo_id is required")
-	}
-	ioSide := strings.TrimSpace(e.IOSide)
-	if ioSide == "" {
-		return fmt.Errorf("io_side is required")
-	}
-	utxoRole := strings.TrimSpace(e.UTXORole)
-	if utxoRole == "" {
-		return fmt.Errorf("utxo_role is required")
-	}
-
-	// 检查是否已存在
-	var n int
-	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fact_chain_payment_utxo_links WHERE chain_payment_id=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
-		e.ChainPaymentID, utxoID, ioSide, utxoRole,
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-
-	createdAt := e.CreatedAtUnix
-	if createdAt <= 0 {
-		createdAt = time.Now().Unix()
-	}
-
-	_, err := db.Exec(
-		`INSERT INTO fact_chain_payment_utxo_links(
-			chain_payment_id,utxo_id,io_side,utxo_role,amount_satoshi,created_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?)`,
-		e.ChainPaymentID,
-		utxoID,
-		ioSide,
-		utxoRole,
-		e.AmountSatoshi,
-		createdAt,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-	)
-	return err
 }
 
 func dbWalletUTXOExistsConn(db sqlConn, utxoID string) (bool, error) {
