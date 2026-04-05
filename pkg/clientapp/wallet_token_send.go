@@ -14,6 +14,7 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 const walletTokenContentType = "application/bsv-20"
@@ -166,6 +167,11 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 	if err := applyLocalBroadcastWalletTx(r.Context(), s.store, s.rt, txHex, "wallet_token_send_submit"); err != nil {
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed: %w", err)
 	}
+	// Step 8：token 发送成功后写入 fact 消耗记录
+	if err := appendTokenConsumptionFromTxHex(r.Context(), s.store, txHex, finalTxID); err != nil {
+		// 消耗写入失败不影响发送成功（记录日志即可）
+		obs.Error("bitcast-client", "wallet_token_consumption_write_failed", map[string]any{"error": err.Error(), "txid": finalTxID})
+	}
 	return walletAssetActionSubmitResp{
 		Ok:      true,
 		Code:    "OK",
@@ -193,7 +199,8 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	if requested.scale != 0 {
 		return preparedWalletTokenSend{}, fmt.Errorf("%s amount_text must be an integer", standard)
 	}
-	candidates, err := loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
+	// Step 8：接入 fact 选源，无 fact 数据时回退旧路径
+	candidates, err := loadWalletTokenSpendableCandidatesWithFallback(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}

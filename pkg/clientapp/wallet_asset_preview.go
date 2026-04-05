@@ -162,7 +162,8 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 
 func previewWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
 	requested, _ := parseDecimalText(amountText)
-	candidates, err := loadWalletTokenSpendableCandidates(ctx, store, rt, address, standard, assetKey)
+	// Step 8：接入 fact 选源，无 fact 数据时回退旧路径
+	candidates, err := loadWalletTokenSpendableCandidatesWithFallback(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}

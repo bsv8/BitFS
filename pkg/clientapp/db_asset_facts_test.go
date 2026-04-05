@@ -2162,3 +2162,226 @@ func TestTokenConsumptionIdempotent(t *testing.T) {
 		t.Fatalf("expected used_quantity_text '3000', got %q", usedText)
 	}
 }
+
+// TestTokenBalance_WithUsedReturnsRemaining 验证 fact in+used 后余额应为 remaining
+func TestTokenBalance_WithUsedReturnsRemaining(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "9999999999999999999999999999999999999999999999999999999999999999"
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+	tokenID := "token_used_test_001"
+
+	// 种 fact IN 记录（10000）
+	if _, err := db.Exec(`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"flow_token_used_in", walletID, address, "IN", "BSV21", tokenID,
+		"utxo_token_used:0", "tx_token_used", 0, int64(1),
+		"10000", now, now, "WOC", "token in", "{}",
+	); err != nil {
+		t.Fatalf("seed fact in: %v", err)
+	}
+
+	// 种 wallet_utxo
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"utxo_token_used:0", walletID, address, "tx_token_used", 0, int64(1), "unspent", "plain_bsv", "",
+		"tx_token_used", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo: %v", err)
+	}
+
+	// 种 chain_payment
+	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		TxID:                "tx_token_used_pay",
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  1,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    0,
+		BlockHeight:         100,
+		OccurredAtUnix:      now,
+	})
+	if err != nil {
+		t.Fatalf("upsert chain payment: %v", err)
+	}
+
+	// 种消耗记录（3000）
+	if _, err := db.Exec(`INSERT INTO fact_asset_consumptions(source_flow_id,chain_payment_id,pool_allocation_id,used_satoshi,used_quantity_text,occurred_at_unix,note,payload_json)
+		VALUES(?,?,?,?,?,?,?,?)`,
+		1, payID, nil, 0, "3000", now, "token send", "{}",
+	); err != nil {
+		t.Fatalf("seed consumption: %v", err)
+	}
+
+	// 验证余额 = 10000 - 3000 = 7000
+	balText, err := loadWalletTokenBalanceWithFallback(ctx, store, rt, address, "bsv21", tokenID)
+	if err != nil {
+		t.Fatalf("load token balance: %v", err)
+	}
+	if balText != "7000" {
+		t.Fatalf("expected remaining '7000', got %q", balText)
+	}
+}
+
+// TestTokenSpendable_HistoryExistsButZeroNotFallback 验证 fact 历史存在但可花费 0，不回退旧路径
+func TestTokenSpendable_HistoryExistsButZeroNotFallback(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+	tokenID := "token_zero_spend_001"
+
+	// 种 fact IN 记录（但 UTXO 已 spent）
+	if _, err := db.Exec(`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"flow_token_spent", walletID, address, "IN", "BSV21", tokenID,
+		"utxo_token_spent:0", "tx_token_spent", 0, int64(1),
+		"5000", now, now, "WOC", "token in (spent)", "{}",
+	); err != nil {
+		t.Fatalf("seed fact in: %v", err)
+	}
+
+	// 种 wallet_utxo（state=spent）
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"utxo_token_spent:0", walletID, address, "tx_token_spent", 0, int64(1), "spent", "plain_bsv", "",
+		"tx_token_spent", "tx_spent_tx", now, now, now,
+	); err != nil {
+		t.Fatalf("seed spent wallet_utxo: %v", err)
+	}
+
+	// 验证：fact 有历史但无可花费，应返回空列表（不回退旧路径）
+	flows, err := dbListTokenSpendableSourceFlows(ctx, store, walletID, "BSV21", tokenID)
+	if err != nil {
+		t.Fatalf("list token spendable: %v", err)
+	}
+	if len(flows) != 0 {
+		t.Fatalf("expected 0 spendable flows (all spent), got %d", len(flows))
+	}
+
+	// 验证 loadWalletTokenSpendableCandidatesWithFallback 也返回空（不回退）
+	candidates, err := loadWalletTokenSpendableCandidatesWithFallback(ctx, store, rt, address, "bsv21", tokenID)
+	if err != nil {
+		t.Fatalf("load with fallback: %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("expected 0 candidates (should not fallback when fact history exists), got %d", len(candidates))
+	}
+}
+
+// TestTokenConsumptionWrite_AfterSend 验证 token send 成功后写入 consumption，重复回调幂等
+func TestTokenConsumptionWrite_AfterSend(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	walletID := "wallet_token_send_cons"
+	address := "test_addr_send_cons"
+	utxoID := "utxo_send_cons:0"
+	tokenID := "token_send_cons_001"
+	quantityText := "2500"
+
+	// 种 wallet_utxo
+	if _, err := db.Exec(`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "tx_send_cons", 0, int64(1), "unspent", "plain_bsv", "",
+		"tx_send_cons", "", now, now, 0,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo: %v", err)
+	}
+
+	// 种 wallet_utxo_assets（token 资产记录）
+	if _, err := db.Exec(`INSERT INTO wallet_utxo_assets(utxo_id,wallet_id,address,asset_group,asset_standard,asset_key,asset_symbol,quantity_text,source_name,payload_json,updated_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, "token", "bsv21", tokenID, "TST", quantityText,
+		"local_broadcast", "{}", now,
+	); err != nil {
+		t.Fatalf("seed wallet_utxo_assets: %v", err)
+	}
+
+	// 种 fact IN 记录
+	if _, err := db.Exec(`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"flow_send_cons_in", walletID, address, "IN", "BSV21", tokenID,
+		utxoID, "tx_send_cons", 0, int64(1),
+		quantityText, now, now, "WOC", "token in", "{}",
+	); err != nil {
+		t.Fatalf("seed fact in: %v", err)
+	}
+
+	// 模拟 token send tx hex（使用有效的 tx hex，1 input，source 匹配 utxo_send_cons:0）
+	// utxo_send_cons 的 txid 需要是有效 hex，我们直接用全零 txid 作为 source
+	txHex := "010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0101000000000000001976a914000000000000000000000000000000000000000088ac00000000"
+	txID := "tx_send_cons_broadcast"
+
+	// 直接使用 appendTokenConsumptionAfterChainPayment 测试（绕过 tx hex 解析）
+	tokenUTXOIDs := map[string]string{
+		utxoID: quantityText,
+	}
+	if err := appendTokenConsumptionAfterChainPayment(ctx, store, txHex, txID, tokenUTXOIDs, now); err != nil {
+		t.Fatalf("first append consumption: %v", err)
+	}
+
+	// 验证 chain_payment 已写入
+	var payID int64
+	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txID).Scan(&payID); err != nil {
+		t.Fatalf("query chain_payment: %v", err)
+	}
+
+	// 验证 consumption 已写入
+	var consCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE chain_payment_id=?`, payID).Scan(&consCount); err != nil {
+		t.Fatalf("count consumptions: %v", err)
+	}
+	if consCount != 1 {
+		t.Fatalf("expected 1 consumption, got %d", consCount)
+	}
+
+	var usedText string
+	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_asset_consumptions WHERE chain_payment_id=?`, payID).Scan(&usedText); err != nil {
+		t.Fatalf("query used_quantity_text: %v", err)
+	}
+	if usedText != quantityText {
+		t.Fatalf("expected used_quantity_text %q, got %q", quantityText, usedText)
+	}
+
+	// 第二次调用（模拟重试）：应幂等跳过
+	if err := appendTokenConsumptionAfterChainPayment(ctx, store, txHex, txID, tokenUTXOIDs, now); err != nil {
+		t.Fatalf("second append consumption (idempotent): %v", err)
+	}
+
+	// 验证只有一条 consumption
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE chain_payment_id=?`, payID).Scan(&consCount); err != nil {
+		t.Fatalf("count consumptions after retry: %v", err)
+	}
+	if consCount != 1 {
+		t.Fatalf("expected 1 consumption after retry (idempotent), got %d", consCount)
+	}
+}
