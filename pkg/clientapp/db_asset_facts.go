@@ -76,6 +76,62 @@ func dbAppendAssetFlowOutIfAbsent(ctx context.Context, store *clientDB, e chainA
 	})
 }
 
+// verifiedAssetFlowParams verification 确认后写入 fact 的参数
+// 设计说明：
+// - verification 流程确认 unknown UTXO 的真实资产类型后调用此入口
+// - 封装了 flowEntry 的构造细节，避免在 verification 逻辑里手写
+type verifiedAssetFlowParams struct {
+	WalletID      string
+	Address       string
+	UTXOID        string
+	TxID          string
+	Vout          uint32
+	ValueSatoshi  uint64
+	AssetKind     string
+	TokenID       string
+	QuantityText  string
+	CreatedAtUnix int64
+	Trigger       string
+	Symbol        string
+}
+
+// ApplyVerifiedAssetFlow 写入 verification 确认后的资产事实
+// 设计说明：
+// - 封装幂等写入逻辑，调用方只需提供资产参数
+// - 这是 verification 流程写入 fact 的唯一入口
+func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAssetFlowParams) error {
+	if store == nil {
+		return fmt.Errorf("store is nil")
+	}
+	entry := chainAssetFlowEntry{
+		FlowID:        fmt.Sprintf("flow_in_%s", p.UTXOID),
+		WalletID:      p.WalletID,
+		Address:       p.Address,
+		Direction:     "IN",
+		AssetKind:     p.AssetKind,
+		TokenID:       p.TokenID,
+		UTXOID:        p.UTXOID,
+		TxID:          p.TxID,
+		Vout:          p.Vout,
+		AmountSatoshi: int64(p.ValueSatoshi),
+		QuantityText:  p.QuantityText,
+		OccurredAtUnix: func() int64 {
+			if p.CreatedAtUnix > 0 {
+				return p.CreatedAtUnix
+			}
+			return time.Now().Unix()
+		}(),
+		EvidenceSource: "WOC",
+		Note:           fmt.Sprintf("verified %s by WOC (trigger: %s)", strings.ToLower(p.AssetKind), p.Trigger),
+		Payload: map[string]any{
+			"verification_trigger": p.Trigger,
+			"token_symbol":         p.Symbol,
+		},
+	}
+	_, err := dbAppendAssetFlowInIfAbsent(ctx, store, entry)
+	return err
+}
+
 // dbAppendAssetFlowIfAbsentDB 在已打开的 sql.DB 上执行幂等追加
 // 设计说明：
 // - 使用 UNIQUE(wallet_id, utxo_id, direction) 约束做幂等检查

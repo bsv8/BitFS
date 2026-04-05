@@ -134,7 +134,7 @@ func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []poolcore.U
 		balance += u.Value
 		live[strings.ToLower(u.TxID)+":"+fmt.Sprint(u.Vout)] = u
 	}
-	return reconcileWalletUTXOSet(
+	return SyncWalletAndApplyFacts(
 		context.Background(),
 		newClientDB(db, nil),
 		address,

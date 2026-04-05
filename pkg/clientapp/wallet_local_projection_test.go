@@ -259,8 +259,8 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		Count:              1,
 	}
 	cursor := walletUTXOHistoryCursor{WalletID: walletID, NextConfirmedHeight: 1, RoundTipHeight: 1}
-	if err := reconcileWalletUTXOSet(context.Background(), newClientDB(db, nil), addr, staleSnapshot, nil, cursor, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
-		t.Fatalf("reconcileWalletUTXOSet: %v", err)
+	if err := SyncWalletAndApplyFacts(context.Background(), newClientDB(db, nil), addr, staleSnapshot, nil, cursor, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
 	}
 
 	utxos, err := getWalletUTXOsFromDB(context.Background(), newClientDB(db, nil), rt)

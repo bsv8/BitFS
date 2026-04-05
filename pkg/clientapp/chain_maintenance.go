@@ -731,11 +731,15 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	durationMS := time.Since(startedAt).Milliseconds()
 	stepStart = time.Now()
-	if err := reconcileWalletUTXOSet(ctx, m.store, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
-		wrappedErr := wrapWalletSyncStepError(meta, "reconcile_wallet_utxo_set", "", err)
+	// 编排层：先同步钱包状态，再写入 fact
+	// 设计说明：
+	// - 两阶段错误处理：同步失败直接返回，fact 失败可重试
+	// - fact 写入是幂等的，失败后下次同步会重新尝试
+	if err := SyncWalletAndApplyFacts(ctx, m.store, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
+		wrappedErr := wrapWalletSyncStepError(meta, "sync_wallet_and_apply_facts", "", err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
 		_ = dbUpdateWalletUTXOHistoryCursorError(context.Background(), m.store, addr, err.Error())
-		logWalletSyncStepError(meta, "reconcile_wallet_utxo_set", err, map[string]any{
+		logWalletSyncStepError(meta, "sync_wallet_and_apply_facts", err, map[string]any{
 			"utxo_count":        snapshot.Count,
 			"history_tx_cnt":    len(history),
 			"step_duration_ms":  time.Since(stepStart).Milliseconds(),
@@ -749,7 +753,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"sync_round_id":  meta.RoundID,
 		}, err
 	}
-	logWalletSyncStepInfo(meta, "reconcile_wallet_utxo_set", map[string]any{
+	logWalletSyncStepInfo(meta, "sync_wallet_and_apply_facts", map[string]any{
 		"utxo_count":        snapshot.Count,
 		"balance_satoshi":   snapshot.Balance,
 		"history_tx_cnt":    len(history),

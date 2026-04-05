@@ -293,33 +293,25 @@ func processAssetVerificationResult(ctx context.Context, store *clientDB, row un
 		return fmt.Errorf("update allocation class: %w", err)
 	}
 
-	// 幂等写入 fact_chain_asset_flows
+	// 调用统一 fact 入口写入 verified 资产事实
 	// 设计说明：
-	// - 只对已确认的 token 或 plain_bsv 写入 IN 事实
-	// - 使用幂等写入防止重复
-	flowEntry := chainAssetFlowEntry{
-		FlowID:         fmt.Sprintf("flow_in_%s", row.UTXOID),
-		WalletID:       row.WalletID,
-		Address:        row.Address,
-		Direction:      "IN",
-		AssetKind:      assetKind,
-		TokenID:        tokenID,
-		UTXOID:         row.UTXOID,
-		TxID:           row.TxID,
-		Vout:           row.Vout,
-		AmountSatoshi:  int64(row.ValueSatoshi),
-		QuantityText:   quantityText,
-		OccurredAtUnix: row.CreatedAtUnix,
-		EvidenceSource: "WOC",
-		Note:           note + " (trigger: " + trigger + ")",
-		Payload: map[string]any{
-			"verification_trigger": trigger,
-			"token_symbol":         symbol,
-		},
-	}
-
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, flowEntry); err != nil {
-		return fmt.Errorf("append asset flow: %w", err)
+	// - 通过 ApplyVerifiedAssetFlow 封装 fact 写入细节
+	// - 幂等写入，同一 UTXO 不会重复写入
+	if err := ApplyVerifiedAssetFlow(ctx, store, verifiedAssetFlowParams{
+		WalletID:      row.WalletID,
+		Address:       row.Address,
+		UTXOID:        row.UTXOID,
+		TxID:          row.TxID,
+		Vout:          row.Vout,
+		ValueSatoshi:  row.ValueSatoshi,
+		AssetKind:     assetKind,
+		TokenID:       tokenID,
+		QuantityText:  quantityText,
+		CreatedAtUnix: row.CreatedAtUnix,
+		Trigger:       trigger,
+		Symbol:        symbol,
+	}); err != nil {
+		return fmt.Errorf("apply verified asset flow: %w", err)
 	}
 
 	// 更新 verification 队列表状态（闭环关键）

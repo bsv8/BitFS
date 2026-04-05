@@ -355,23 +355,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			payload_json TEXT NOT NULL
 		)`,
 
-		// 钱包账本
-		`CREATE TABLE IF NOT EXISTS wallet_ledger_entries(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			txid TEXT NOT NULL,
-			direction TEXT NOT NULL,
-			category TEXT NOT NULL,
-			amount_satoshi INTEGER NOT NULL,
-			counterparty_label TEXT NOT NULL,
-			status TEXT NOT NULL,
-			block_height INTEGER NOT NULL,
-			occurred_at_unix INTEGER NOT NULL,
-			raw_ref_id TEXT NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
-		)`,
-
 		// UTXO 管理
 		`CREATE TABLE IF NOT EXISTS wallet_utxo(
 			utxo_id TEXT PRIMARY KEY,

@@ -393,7 +393,7 @@ func TestAppendAssetConsumption_MutualExclusion(t *testing.T) {
 }
 
 // TestReconcileWalletUTXOSet_PendingLocalBroadcastNotWrittenToFact 验证 pending local broadcast 输出不入 fact
-func TestReconcileWalletUTXOSet_PendingLocalBroadcastNotWrittenToFact(t *testing.T) {
+func TestApplyConfirmedUTXOChanges_OnlyConfirmedUTXOsWritten(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetFactsTestDB(t)
@@ -428,38 +428,29 @@ func TestReconcileWalletUTXOSet_PendingLocalBroadcastNotWrittenToFact(t *testing
 		t.Fatalf("seed pending utxo: %v", err)
 	}
 
-	// 构造 existing map（模拟 reconcile 中的 existing）
-	existing := map[string]utxoStateRow{
-		confirmedTxID + ":0": {
-			UTXOID: confirmedTxID + ":0", TxID: confirmedTxID, Vout: 0, Value: 1000,
-			State: "unspent", AllocationClass: "plain_bsv", CreatedTxID: confirmedTxID,
+	// 构造 confirmedUTXOChange 列表（只包含 confirmed 的）
+	// pending UTXO 不会出现在这个列表中，因为它是 overlayPendingLocalBroadcastsTx 加进来的，不在 snapshot.Live 里
+	changes := []confirmedUTXOChange{
+		{
+			UTXOID:          confirmedTxID + ":0",
+			WalletID:        walletID,
+			Address:         address,
+			TxID:            confirmedTxID,
+			Vout:            0,
+			Value:           1000,
+			AllocationClass: "plain_bsv",
+			CreatedAtUnix:   now,
 		},
-		pendingTxID + ":0": {
-			UTXOID: pendingTxID + ":0", TxID: pendingTxID, Vout: 0, Value: 500,
-			State: "unspent", AllocationClass: "plain_bsv", CreatedTxID: pendingTxID,
-		},
 	}
 
-	// 构造 confirmedUTXOSet（只包含 snapshot.Live 中的 UTXO）
-	confirmedUTXOSet := map[string]struct{}{
-		confirmedTxID + ":0": {},
-		// pendingTxID + ":0" 不在这里
-	}
-
-	// 调用 appendWalletUTXOAssetFlowsTx
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("begin tx: %v", err)
-	}
-	defer tx.Rollback()
-
-	if err := appendWalletUTXOAssetFlowsTx(tx, walletID, address, existing, confirmedUTXOSet, now); err != nil {
-		t.Fatalf("appendWalletUTXOAssetFlowsTx: %v", err)
+	// 调用 ApplyConfirmedUTXOChanges（只传 confirmed 的变化）
+	if err := ApplyConfirmedUTXOChanges(ctx, store, changes, now); err != nil {
+		t.Fatalf("ApplyConfirmedUTXOChanges: %v", err)
 	}
 
 	// 验证：fact 里只有 confirmedTxID:0，没有 pendingUTXO
 	var flowCount int
-	if err := tx.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows`).Scan(&flowCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows`).Scan(&flowCount); err != nil {
 		t.Fatalf("count flows: %v", err)
 	}
 	if flowCount != 1 {
@@ -467,17 +458,16 @@ func TestReconcileWalletUTXOSet_PendingLocalBroadcastNotWrittenToFact(t *testing
 	}
 
 	var exists int
-	err = tx.QueryRow(`SELECT 1 FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&exists)
+	err := db.QueryRow(`SELECT 1 FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&exists)
 	if err != nil {
 		t.Fatalf("expected flow for confirmed utxo: %v", err)
 	}
 
-	err = tx.QueryRow(`SELECT 1 FROM fact_chain_asset_flows WHERE utxo_id=?`, pendingTxID+":0").Scan(&exists)
+	err = db.QueryRow(`SELECT 1 FROM fact_chain_asset_flows WHERE utxo_id=?`, pendingTxID+":0").Scan(&exists)
 	if err == nil {
 		t.Fatalf("pending local broadcast utxo should NOT be in fact_chain_asset_flows")
 	}
 
-	_ = ctx
 	_ = store
 }
 
@@ -511,7 +501,7 @@ func TestReconcileWalletUTXOSet_ConfirmedLiveUTXOWrittenToFact(t *testing.T) {
 		t.Fatalf("seed old utxo: %v", err)
 	}
 
-	// 第一次 reconcile：写入 fact
+	// 第一次 reconcile：写入 fact（通过编排函数）
 	snapshot := liveWalletSnapshot{
 		Live: map[string]poolcore.UTXO{
 			oldTxID + ":0": {TxID: oldTxID, Vout: 0, Value: 2000},
@@ -523,8 +513,8 @@ func TestReconcileWalletUTXOSet_ConfirmedLiveUTXOWrittenToFact(t *testing.T) {
 		OldestConfirmedHeight: 200,
 	}
 	cursor := walletUTXOHistoryCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 200}
-	if err := reconcileWalletUTXOSet(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
-		t.Fatalf("reconcileWalletUTXOSet round-1: %v", err)
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts round-1: %v", err)
 	}
 
 	var flowCount int
@@ -541,8 +531,8 @@ func TestReconcileWalletUTXOSet_ConfirmedLiveUTXOWrittenToFact(t *testing.T) {
 	}
 
 	// 第二次 reconcile：幂等，不新增
-	if err := reconcileWalletUTXOSet(context.Background(), store, address, snapshot, nil, cursor, "round-2", "", "test", now+1, 10); err != nil {
-		t.Fatalf("reconcileWalletUTXOSet round-2: %v", err)
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-2", "", "test", now+1, 10); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts round-2: %v", err)
 	}
 
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows`).Scan(&flowCount); err != nil {

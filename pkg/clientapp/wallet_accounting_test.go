@@ -1292,8 +1292,8 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 		NextConfirmedHeight: 1,
 	}
 
-	if err := reconcileWalletUTXOSet(context.Background(), store, address, snapshot, history, cursor, "round-sync-1", "", "sync-test", time.Now().Unix(), 1); err != nil {
-		t.Fatalf("reconcileWalletUTXOSet failed: %v", err)
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, history, cursor, "round-sync-1", "", "sync-test", time.Now().Unix(), 1); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts failed: %v", err)
 	}
 
 	var paymentCount int
