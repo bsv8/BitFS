@@ -421,3 +421,113 @@ func seedTestAddressWithKey(t *testing.T, db *sql.DB, privKeyHex string) string 
 	
 	return strings.TrimSpace(actor.Addr)
 }
+
+// TestVerificationQueue_StateTransitionSuccess 验证成功后 status 正确迁移且不再被查到
+func TestVerificationQueue_StateTransitionSuccess(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetVerificationTestDB(t)
+	store := newClientDB(db, nil)
+	address := seedTestAddress(t, db)
+	walletID := walletIDByAddress(address)
+	now := time.Now().Unix()
+
+	// 种子 pending 项
+	_, err := db.Exec(
+		`INSERT INTO wallet_utxo_token_verification(utxo_id,wallet_id,address,txid,vout,value_satoshi,status,next_retry_at_unix,updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		"tx_succ:0", walletID, address, "tx_succ", 0, 1, "pending", now, now,
+	)
+	if err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	// 验证 pending 项被查出
+	rows, err := dbListPendingVerificationItems(context.Background(), store, 100)
+	if err != nil {
+		t.Fatalf("list pending: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 pending, got %d", len(rows))
+	}
+
+	// 模拟成功路径：更新为 confirmed_bsv21
+	if err := updateVerificationQueueSuccess(context.Background(), store, "tx_succ:0", "confirmed_bsv21", &wocTokenEvidence{
+		IsToken: true, TokenStandard: "bsv21", TokenID: "token123", Symbol: "TST", QuantityText: "100",
+	}); err != nil {
+		t.Fatalf("update success: %v", err)
+	}
+
+	// 验证状态
+	var status string
+	var checkAt int64
+	var retryCount int
+	if err := db.QueryRow(`SELECT status, last_check_at_unix, retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, "tx_succ:0").Scan(&status, &checkAt, &retryCount); err != nil {
+		t.Fatalf("query status: %v", err)
+	}
+	if status != "confirmed_bsv21" {
+		t.Fatalf("expected status confirmed_bsv21, got %s", status)
+	}
+	if checkAt == 0 {
+		t.Fatalf("expected last_check_at_unix > 0")
+	}
+	if retryCount != 0 {
+		t.Fatalf("expected retry_count 0, got %d", retryCount)
+	}
+
+	// 验证不再被 dbListPendingVerificationItems 查到
+	rows2, err := dbListPendingVerificationItems(context.Background(), store, 100)
+	if err != nil {
+		t.Fatalf("list pending after success: %v", err)
+	}
+	if len(rows2) != 0 {
+		t.Fatalf("expected 0 pending after success, got %d", len(rows2))
+	}
+}
+
+// TestVerificationQueue_StateTransitionFailure 验证失败后 retry_count/next_retry/last_check_at_unix 正确更新
+func TestVerificationQueue_StateTransitionFailure(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetVerificationTestDB(t)
+	store := newClientDB(db, nil)
+	address := seedTestAddress(t, db)
+	walletID := walletIDByAddress(address)
+	now := time.Now().Unix()
+
+	// 种子 pending 项
+	_, err := db.Exec(
+		`INSERT INTO wallet_utxo_token_verification(utxo_id,wallet_id,address,txid,vout,value_satoshi,status,next_retry_at_unix,updated_at_unix,retry_count)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"tx_fail:0", walletID, address, "tx_fail", 0, 1, "pending", now, now, 0,
+	)
+	if err != nil {
+		t.Fatalf("seed pending: %v", err)
+	}
+
+	// 模拟失败路径
+	if err := updateVerificationBackoff(context.Background(), store, "tx_fail:0", "woc timeout"); err != nil {
+		t.Fatalf("update backoff: %v", err)
+	}
+
+	// 验证更新
+	var retryCount int
+	var nextRetry int64
+	var checkAt int64
+	var errMsg string
+	if err := db.QueryRow(`SELECT retry_count, next_retry_at_unix, last_check_at_unix, error_message FROM wallet_utxo_token_verification WHERE utxo_id=?`, "tx_fail:0").Scan(&retryCount, &nextRetry, &checkAt, &errMsg); err != nil {
+		t.Fatalf("query backoff: %v", err)
+	}
+	if retryCount != 1 {
+		t.Fatalf("expected retry_count 1, got %d", retryCount)
+	}
+	if nextRetry <= now {
+		t.Fatalf("expected next_retry_at_unix > now (%d), got %d", now, nextRetry)
+	}
+	if checkAt == 0 {
+		t.Fatalf("expected last_check_at_unix > 0")
+	}
+	if !strings.Contains(errMsg, "woc timeout") {
+		t.Fatalf("expected error to contain 'woc timeout', got %s", errMsg)
+	}
+}

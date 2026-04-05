@@ -3,9 +3,10 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
-	"strings"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,9 +21,9 @@ import (
 // - 保持幂等：同一 UTXO 不会重复确认，同一 flow 不会重复写入
 
 const (
-	assetVerificationTimeout  = 30 * time.Second
-	assetVerificationMaxBatch   = 50
-	assetVerificationBaseDelay = 60 // 1 minute
+	assetVerificationTimeout   = 30 * time.Second
+	assetVerificationMaxBatch  = 50
+	assetVerificationBaseDelay = 60    // 1 minute
 	assetVerificationMaxDelay  = 86400 // 1 day
 )
 
@@ -249,14 +250,15 @@ func processAssetVerificationResult(ctx context.Context, store *clientDB, row un
 		return fmt.Errorf("evidence is nil")
 	}
 
-	// 判定新的 allocation_class
-	var newClass, assetKind, note string
+	// 判定新的 allocation_class 和 verification 状态
+	var newClass, assetKind, note, verifyStatus string
 	var tokenID, symbol, quantityText string
 
 	switch {
 	case evidence.IsToken && evidence.TokenStandard == "bsv21":
 		newClass = walletUTXOAllocationProtectedAsset
 		assetKind = "BSV21"
+		verifyStatus = "confirmed_bsv21"
 		tokenID = evidence.TokenID
 		symbol = evidence.Symbol
 		quantityText = evidence.QuantityText
@@ -265,6 +267,7 @@ func processAssetVerificationResult(ctx context.Context, store *clientDB, row un
 	case evidence.IsToken && evidence.TokenStandard == "bsv20":
 		newClass = walletUTXOAllocationProtectedAsset
 		assetKind = "BSV20"
+		verifyStatus = "confirmed_bsv20"
 		tokenID = evidence.TokenID
 		symbol = evidence.Symbol
 		quantityText = evidence.QuantityText
@@ -274,6 +277,7 @@ func processAssetVerificationResult(ctx context.Context, store *clientDB, row un
 		// 非 token，回落为 BSV
 		newClass = walletUTXOAllocationPlainBSV
 		assetKind = "BSV"
+		verifyStatus = "confirmed_plain_bsv"
 		note = "verified as plain BSV by WOC"
 	}
 
@@ -309,6 +313,18 @@ func processAssetVerificationResult(ctx context.Context, store *clientDB, row un
 
 	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, flowEntry); err != nil {
 		return fmt.Errorf("append asset flow: %w", err)
+	}
+
+	// 更新 verification 队列表状态（闭环关键）
+	// 设计说明：
+	// - 成功后必须更新 status 为 confirmed_*，否则会被反复重试
+	// - 记录 woc_response_json 和 last_check_at_unix 用于审计
+	if err := updateVerificationQueueSuccess(ctx, store, row.UTXOID, verifyStatus, evidence); err != nil {
+		// 队列状态更新失败不阻塞主流程，仅记录日志
+		obs.Error("bitcast-client", "verification_queue_update_failed", map[string]any{
+			"utxo_id": row.UTXOID,
+			"error":   err.Error(),
+		})
 	}
 
 	return nil
@@ -411,6 +427,32 @@ func queryBSV20TokenEvidence(ctx context.Context, rt *Runtime, address string, t
 	return nil, nil
 }
 
+// updateVerificationQueueSuccess 更新 verification 队列表为成功状态
+// 设计说明：
+// - 必须调用，否则 pending 项会被无限重试
+// - 记录证据快照和检查时间
+func updateVerificationQueueSuccess(ctx context.Context, store *clientDB, utxoID string, status string, evidence *wocTokenEvidence) error {
+	if store == nil {
+		return fmt.Errorf("store is nil")
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		now := time.Now().Unix()
+		wocJSON := "{}"
+		if evidence != nil {
+			if b, err := json.Marshal(evidence); err == nil {
+				wocJSON = string(b)
+			}
+		}
+		_, err := db.Exec(
+			`UPDATE wallet_utxo_token_verification
+			 SET status=?, woc_response_json=?, last_check_at_unix=?, next_retry_at_unix=?, retry_count=?, error_message=?, updated_at_unix=?
+			 WHERE utxo_id=?`,
+			status, wocJSON, now, now+86400*30, 0, "", now, utxoID,
+		)
+		return err
+	})
+}
+
 // updateVerificationBackoff 更新重试时间（指数退避）
 func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID string, errMsg string) error {
 	if store == nil {
@@ -425,8 +467,8 @@ func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID stri
 		retryCount++
 		nextRetry := time.Now().Unix() + int64(math.Min(float64(assetVerificationBaseDelay*int(math.Pow(2, float64(retryCount)))), float64(assetVerificationMaxDelay)))
 		_, err = db.Exec(
-			`UPDATE wallet_utxo_token_verification SET retry_count=?, next_retry_at_unix=?, error_message=?, updated_at_unix=? WHERE utxo_id=?`,
-			retryCount, nextRetry, errMsg, time.Now().Unix(), utxoID,
+			`UPDATE wallet_utxo_token_verification SET retry_count=?, next_retry_at_unix=?, last_check_at_unix=?, error_message=?, updated_at_unix=? WHERE utxo_id=?`,
+			retryCount, nextRetry, time.Now().Unix(), errMsg, time.Now().Unix(), utxoID,
 		)
 		return err
 	})
