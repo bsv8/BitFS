@@ -914,8 +914,6 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
 			BusinessRole:      "process", // 过程财务对象
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			FromPartyID:       strings.TrimSpace(in.FromPartyID),
@@ -964,8 +962,6 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 		}
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         processID,
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "cycle_pay",
 			EventType:         "update",
@@ -1070,9 +1066,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
-			BusinessRole:      "process", // 过程财务对象
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
+			BusinessRole:      "process",                 // 过程财务对象
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
 			AccountingSubType: "pool_open_lock",          // 明确是过程动作，不是收费
 			FromPartyID:       "client:self",
@@ -1094,8 +1088,6 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
 			EventType:         "accounting",
@@ -1166,8 +1158,6 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 		// 过程事件：记录 pay 财务动作，供审计/对账/调试使用
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
 			EventType:         "accounting",
@@ -1248,9 +1238,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
-			BusinessRole:      "process", // 过程财务对象
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
+			BusinessRole:      "process",                 // 过程财务对象
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
 			AccountingSubType: "pool_close_settle",       // 明确是过程动作，不是收费
 			FromPartyID:       "client:self",
@@ -1272,8 +1260,6 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		// 过程事件继续使用统一的过程追踪 id
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
-			SourceType:        "settlement_cycle",
-			SourceID:          fmt.Sprintf("%d", settlementCycleID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
 			EventType:         "accounting",

@@ -256,14 +256,10 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	// 第二步整改：这里开始只写 settlement_cycle 口径。
 	// 说明：钱包/费用池的财务结果已经收口到结算周期，不能再回写旧来源。
 	businessID := "biz_wallet_chain_" + txid
-	sourceType := "settlement_cycle"
-	sourceID := fmt.Sprintf("%d", settlementCycleID)
 
 	if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "process", // 钱包过程财务对象
-		SourceType:        sourceType,
-		SourceID:          sourceID,
 		AccountingScene:   "wallet_transfer",
 		AccountingSubType: paymentSubType,
 		FromPartyID:       fromParty,
@@ -341,12 +337,6 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 
 	for _, e := range in.ProcessEvents {
 		event := e
-		if strings.TrimSpace(event.SourceType) == "" {
-			event.SourceType = sourceType
-		}
-		if strings.TrimSpace(event.SourceID) == "" {
-			event.SourceID = sourceID
-		}
 		if event.OccurredAtUnix <= 0 {
 			event.OccurredAtUnix = now
 		}

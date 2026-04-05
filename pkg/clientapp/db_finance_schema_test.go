@@ -789,6 +789,20 @@ func TestEnsureNoSharedEntryDirectCallsInSettlementWriteFiles(t *testing.T) {
 			t.Fatalf("forbidden shared finance write call in %s:%d: %s", file, idx+1, trimmed)
 		}
 	}
+
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s failed: %v", file, err)
+		}
+		lines := strings.Split(string(data), "\n")
+		for idx, line := range lines {
+			trimmed := strings.TrimSpace(line)
+			if strings.Contains(trimmed, "SourceType:") || strings.Contains(trimmed, "SourceID:") {
+				t.Fatalf("forbidden manual settlement source field in %s:%d: %s", file, idx+1, trimmed)
+			}
+		}
+	}
 }
 
 func TestInitIndexDB_IsIdempotentOnRepeatedRun(t *testing.T) {
