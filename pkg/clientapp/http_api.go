@@ -162,6 +162,56 @@ func normalizeVisitLocatorHeader(raw string) string {
 	return value
 }
 
+func financeDetailAllowsAllStates(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	state := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("settlement_state")))
+	if state == "all" {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("include_unconfirmed")), "true") {
+		return true
+	}
+	return false
+}
+
+func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceType, sourceID string) (string, string, error) {
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	sourceID = strings.TrimSpace(sourceID)
+	switch sourceType {
+	case "":
+		return "", sourceID, nil
+	case "settlement_cycle":
+		return "settlement_cycle", sourceID, nil
+	case "pool_allocation":
+		cycleID, err := resolvePoolAllocationSourceToSettlementCycle(ctx, store, sourceID)
+		if err != nil {
+			return "", "", err
+		}
+		return "settlement_cycle", fmt.Sprintf("%d", cycleID), nil
+	case "chain_payment", "fee_pool":
+		cycleID, err := resolveChainPaymentSourceToSettlementCycle(ctx, store, sourceID)
+		if err != nil {
+			return "", "", err
+		}
+		return "settlement_cycle", fmt.Sprintf("%d", cycleID), nil
+	case "wallet_chain":
+		if strings.TrimSpace(sourceID) == "" {
+			return "", "", fmt.Errorf("source_id is required")
+		}
+		cycleID, err := clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+			return resolveWalletChainSourceToSettlementCycleDB(db, sourceID)
+		})
+		if err != nil {
+			return "", "", err
+		}
+		return "settlement_cycle", fmt.Sprintf("%d", cycleID), nil
+	default:
+		return "", "", fmt.Errorf("source_type must be settlement_cycle or a supported legacy alias")
+	}
+}
+
 type httpAPIServer struct {
 	rt        *Runtime
 	cfg       *Config
@@ -2006,10 +2056,11 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
 	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
+	var err error
 
 	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
-		poolAllocID, err := dbGetPoolAllocationIDByAllocationID(r.Context(), httpStore(s), poolAllocationID)
+		poolAllocID, err := resolvePoolAllocationSourceToSettlementCycle(r.Context(), httpStore(s), poolAllocationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeBusinessItem{}})
@@ -2018,8 +2069,14 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		sourceType = "pool_allocation"
+		sourceType = "settlement_cycle"
 		sourceID = fmt.Sprintf("%d", poolAllocID)
+	}
+
+	sourceType, sourceID, err = normalizeFinanceQuerySource(r.Context(), httpStore(s), sourceType, sourceID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 
 	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
@@ -2086,10 +2143,11 @@ func (s *httpAPIServer) handleAdminFinanceBusinessesCompat(w http.ResponseWriter
 	fromPartyID := strings.TrimSpace(r.URL.Query().Get("from_party_id"))
 	toPartyID := strings.TrimSpace(r.URL.Query().Get("to_party_id"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	var err error
 
 	// pool_allocation_id 只做主键换算
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
-		poolAllocID, err := dbGetPoolAllocationIDByAllocationID(r.Context(), httpStore(s), poolAllocationID)
+		poolAllocID, err := resolvePoolAllocationSourceToSettlementCycle(r.Context(), httpStore(s), poolAllocationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeBusinessItem{}})
@@ -2098,8 +2156,14 @@ func (s *httpAPIServer) handleAdminFinanceBusinessesCompat(w http.ResponseWriter
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		sourceType = "pool_allocation"
+		sourceType = "settlement_cycle"
 		sourceID = fmt.Sprintf("%d", poolAllocID)
+	}
+
+	sourceType, sourceID, err = normalizeFinanceQuerySource(r.Context(), httpStore(s), sourceType, sourceID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 
 	page, err := dbListFinanceBusinesses(r.Context(), httpStore(s), financeBusinessFilter{
@@ -2168,6 +2232,16 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in this business_role layer"})
 		return
 	}
+	if !financeDetailAllowsAllStates(r) && it.SourceType == "settlement_cycle" {
+		cycleID, err := strconv.ParseInt(strings.TrimSpace(it.SourceID), 10, 64)
+		if err == nil && cycleID > 0 {
+			state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
+			if err == nil && state != "confirmed" {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
+				return
+			}
+		}
+	}
 
 	writeJSON(w, http.StatusOK, it)
 }
@@ -2212,10 +2286,11 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
+	var err error
 
 	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
-		poolAllocID, err := dbGetPoolAllocationIDByAllocationID(r.Context(), httpStore(s), poolAllocationID)
+		poolAllocID, err := resolvePoolAllocationSourceToSettlementCycle(r.Context(), httpStore(s), poolAllocationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeProcessEventItem{}})
@@ -2224,8 +2299,14 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		sourceType = "pool_allocation"
+		sourceType = "settlement_cycle"
 		sourceID = fmt.Sprintf("%d", poolAllocID)
+	}
+
+	sourceType, sourceID, err = normalizeFinanceQuerySource(r.Context(), httpStore(s), sourceType, sourceID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
 	}
 
 	page, err := dbListFinanceProcessEvents(r.Context(), httpStore(s), financeProcessEventFilter{
@@ -2265,6 +2346,16 @@ func (s *httpAPIServer) handleAdminFinanceProcessEventDetail(w http.ResponseWrit
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	if !financeDetailAllowsAllStates(r) && it.SourceType == "settlement_cycle" {
+		cycleID, err := strconv.ParseInt(strings.TrimSpace(it.SourceID), 10, 64)
+		if err == nil && cycleID > 0 {
+			state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
+			if err == nil && state != "confirmed" {
+				writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
+				return
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, it)
 }
@@ -2315,6 +2406,19 @@ func (s *httpAPIServer) handleAdminFinanceBreakdownDetail(w http.ResponseWriter,
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	if !financeDetailAllowsAllStates(r) {
+		biz, err := dbGetFinanceBusiness(r.Context(), httpStore(s), it.BusinessID)
+		if err == nil && biz.SourceType == "settlement_cycle" {
+			cycleID, err := strconv.ParseInt(strings.TrimSpace(biz.SourceID), 10, 64)
+			if err == nil && cycleID > 0 {
+				state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
+				if err == nil && state != "confirmed" {
+					writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
+					return
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, it)
 }
@@ -2374,6 +2478,19 @@ func (s *httpAPIServer) handleAdminFinanceUTXOLinkDetail(w http.ResponseWriter, 
 		}
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
+	}
+	if !financeDetailAllowsAllStates(r) {
+		biz, err := dbGetFinanceBusiness(r.Context(), httpStore(s), it.BusinessID)
+		if err == nil && biz.SourceType == "settlement_cycle" {
+			cycleID, err := strconv.ParseInt(strings.TrimSpace(biz.SourceID), 10, 64)
+			if err == nil && cycleID > 0 {
+				state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
+				if err == nil && state != "confirmed" {
+					writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
+					return
+				}
+			}
+		}
 	}
 	writeJSON(w, http.StatusOK, it)
 }

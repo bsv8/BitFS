@@ -181,11 +181,22 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	// 设计说明：
 	// - 先查 allocation 的自增 id，再写消耗
 	// - unknown UTXO 会先记 pending，等钱包同步追上再补成 confirmed
+	// - Step 15: 同时创建结算周期记录（统一锚点）
+	poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
+	if err != nil {
+		return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
+	}
+	// 结算周期必须先落地；这是写账本的锚点，不允许只写消耗不写 cycle。
+	cycleID := fmt.Sprintf("cycle_pool_%d", poolAllocID)
+	if err := dbUpsertSettlementCycle(tx,
+		cycleID, "pool", "confirmed",
+		poolAllocID, 0,
+		0, 0, 0,
+		0, createdAt, "auto-created from pool allocation", map[string]any{},
+	); err != nil {
+		return fmt.Errorf("upsert settlement cycle for pool allocation %d: %w", poolAllocID, err)
+	}
 	if len(in.UTXOFacts) > 0 {
-		poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
-		if err != nil {
-			return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
-		}
 		if err := dbAppendAssetConsumptionsForPoolAllocation(tx, poolAllocID, in.UTXOFacts, createdAt); err != nil {
 			return fmt.Errorf("append asset consumptions for pool allocation %s: %w", allocID, err)
 		}

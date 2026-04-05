@@ -939,6 +939,43 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_payment ON fact_asset_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL AND source_flow_id IS NOT NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_allocation ON fact_asset_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL AND source_flow_id IS NOT NULL`,
 
+		// Step 15: 统一结算锚点 — fact_settlement_cycles
+		// 设计说明：
+		// - 把 chain_payment 和 pool_allocation 两类结算入口统一到一个周期结算事实层
+		// - pool 内部多次划拨不增加支付笔数，只对应一条周期结算
+		// - CHECK 约束：pool_session_event_id 和 chain_payment_id 二选一
+		`CREATE TABLE IF NOT EXISTS fact_settlement_cycles(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			cycle_id TEXT NOT NULL UNIQUE,
+			channel TEXT NOT NULL CHECK(channel IN ('pool','chain')),
+			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
+			pool_session_event_id INTEGER,
+			chain_payment_id INTEGER,
+			gross_amount_satoshi INTEGER NOT NULL DEFAULT 0,
+			gate_fee_satoshi INTEGER NOT NULL DEFAULT 0,
+			net_amount_satoshi INTEGER NOT NULL DEFAULT 0,
+			cycle_index INTEGER NOT NULL DEFAULT 0,
+			occurred_at_unix INTEGER NOT NULL,
+			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY(pool_session_event_id) REFERENCES fact_pool_session_events(id),
+			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
+			CHECK(
+				(pool_session_event_id IS NOT NULL AND chain_payment_id IS NULL) OR
+				(pool_session_event_id IS NULL AND chain_payment_id IS NOT NULL)
+			)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_channel_state ON fact_settlement_cycles(channel, state, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id, id DESC)`,
+		// Step 15: 唯一约束 — 同一 pool/chain 入口只对应一条 cycle
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id) WHERE pool_session_event_id IS NOT NULL`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
+
+		// Step 15: fact_asset_consumptions 加 settlement_cycle_id 列（迁移过渡列）
+		// 注意：ALTER TABLE ADD COLUMN 不是幂等的，在 ensureSettlementCyclesSchema 中处理
+
 		// Step 9: WOC 证据驱动 token IN 入账 - 待确认队列表
 		// 设计说明：
 		// - 轮询到可疑 UTXO 先进入此表，状态为 pending
@@ -1042,6 +1079,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	}
 	if err := normalizeClientDBData(db); err != nil {
 		return fmt.Errorf("normalize client db data: %w", err)
+	}
+	if err := ensureSettlementCyclesSchema(db); err != nil {
+		return fmt.Errorf("settlement_cycles: %w", err)
 	}
 
 	return nil
@@ -2389,6 +2429,33 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 	return nil
 }
 
+func ensureNoLegacyFinanceSourceRows(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	legacyTypes := []string{"fee_pool", "pool_allocation", "chain_payment", "wallet_chain"}
+	legacyList := "'" + strings.Join(legacyTypes, "','") + "'"
+	checks := []struct {
+		table string
+		label string
+	}{
+		{table: "settle_businesses", label: "settle_businesses"},
+		{table: "settle_process_events", label: "settle_process_events"},
+	}
+	for _, check := range checks {
+		var count int64
+		if err := db.QueryRow(
+			"SELECT COUNT(1) FROM " + check.table + " WHERE source_type IN (" + legacyList + ")",
+		).Scan(&count); err != nil {
+			return fmt.Errorf("check %s legacy source rows: %w", check.label, err)
+		}
+		if count > 0 {
+			return fmt.Errorf("%s still has %d legacy source rows", check.label, count)
+		}
+	}
+	return nil
+}
+
 // normalizeClientDBData 处理历史脏数据口径纠偏，不是结构迁移。
 func normalizeClientDBData(db *sql.DB) error {
 	if db == nil {
@@ -2448,8 +2515,16 @@ func normalizeClientDBData(db *sql.DB) error {
 	// - 先把 pool_allocation / wallet_chain 的旧 source_id 收口到事实主键；
 	// - 这一步不补新模型，只清旧口径残留；
 	// - 出错必须立刻停，不保留半新半旧状态。
-	if err := backfillLegacyFinanceSources(db); err != nil {
+	if report, err := backfillLegacyFinanceSources(db); err != nil {
 		return fmt.Errorf("legacy finance source backfill: %w", err)
+	} else {
+		obs.Info("bitcast-client", "legacy_finance_source_backfill_done", map[string]any{
+			"rewritten_rows": report.RewrittenRows,
+			"unmapped_rows":  report.UnmappedRows,
+		})
+	}
+	if err := ensureNoLegacyFinanceSourceRows(db); err != nil {
+		return fmt.Errorf("legacy finance source guard: %w", err)
 	}
 
 	// 6. 第五阶段：history business_role 回填
@@ -4464,3 +4539,103 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 
 // rawJSONPayload 用于标记原始 JSON 字符串类型
 type rawJSONPayload string
+
+// ensureSettlementCyclesSchema Step 15: 统一结算锚点 migration
+// 设计说明：
+// 1. 给 fact_asset_consumptions 加 settlement_cycle_id 列（幂等）
+// 2. 回填 chain 结算：从 fact_chain_payments 生成 settlement_cycle（channel='chain'）
+// 3. 回填 pool 结算：从 fact_pool_session_events(event_kind='pool_event') 生成 settlement_cycle（channel='pool'）
+// 4. 回填 fact_asset_consumptions.settlement_cycle_id：通过 chain_payment_id 或 pool_allocation_id 映射
+func ensureSettlementCyclesSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+
+	// 给 fact_asset_consumptions 加 settlement_cycle_id 列（幂等）
+	var hasColumn int
+	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('fact_asset_consumptions') WHERE name='settlement_cycle_id'`).Scan(&hasColumn)
+	if err != nil {
+		return fmt.Errorf("check settlement_cycle_id column: %w", err)
+	}
+	if hasColumn == 0 {
+		if _, err := db.Exec(`ALTER TABLE fact_asset_consumptions ADD COLUMN settlement_cycle_id INTEGER REFERENCES fact_settlement_cycles(id)`); err != nil {
+			return fmt.Errorf("add settlement_cycle_id column: %w", err)
+		}
+	}
+
+	// 创建索引（幂等）
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_settlement_cycle ON fact_asset_consumptions(settlement_cycle_id, id DESC)`); err != nil {
+		return fmt.Errorf("create settlement_cycle index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id) WHERE pool_session_event_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("create unique pool_event index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id) WHERE chain_payment_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("create unique chain_payment index: %w", err)
+	}
+
+	// 回填步骤都必须独立幂等，不能因为库里已经有部分 cycle 就提前停掉。
+	// 回填 chain 结算（幂等：INSERT OR IGNORE 按 cycle_id 唯一键）
+	_, err = db.Exec(`
+		INSERT OR IGNORE INTO fact_settlement_cycles(
+			cycle_id, channel, state, chain_payment_id,
+			gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
+			cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
+		)
+		SELECT 'cycle_chain_' || id, 'chain', 'confirmed', id,
+			wallet_input_satoshi, 0, net_amount_satoshi,
+			0, occurred_at_unix, occurred_at_unix,
+			'backfilled from fact_chain_payments', payload_json
+		FROM fact_chain_payments
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill chain cycles: %w", err)
+	}
+
+	// 回填 pool 结算（每个 pool_session_event 对应一条 settlement_cycle）
+	_, err = db.Exec(`
+		INSERT OR IGNORE INTO fact_settlement_cycles(
+			cycle_id, channel, state, pool_session_event_id,
+			gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
+			cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
+		)
+		SELECT 'cycle_pool_' || id, 'pool', 'confirmed', id,
+			amount_satoshi, 0, amount_satoshi,
+			cycle_index, created_at_unix, created_at_unix,
+			'backfilled from fact_pool_session_events', payload_json
+		FROM fact_pool_session_events
+		WHERE event_kind = 'pool_event'
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill pool cycles: %w", err)
+	}
+
+	// 回填 fact_asset_consumptions.settlement_cycle_id（幂等：只更新 NULL 的行）
+	// 通过 chain_payment_id 映射
+	_, err = db.Exec(`
+		UPDATE fact_asset_consumptions
+		SET settlement_cycle_id = (
+			SELECT id FROM fact_settlement_cycles
+			WHERE chain_payment_id = fact_asset_consumptions.chain_payment_id
+		)
+		WHERE chain_payment_id IS NOT NULL AND settlement_cycle_id IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill consumption chain links: %w", err)
+	}
+
+	// 通过 pool_allocation_id 映射
+	_, err = db.Exec(`
+		UPDATE fact_asset_consumptions
+		SET settlement_cycle_id = (
+			SELECT id FROM fact_settlement_cycles
+			WHERE pool_session_event_id = fact_asset_consumptions.pool_allocation_id
+		)
+		WHERE pool_allocation_id IS NOT NULL AND settlement_cycle_id IS NULL
+	`)
+	if err != nil {
+		return fmt.Errorf("backfill consumption pool links: %w", err)
+	}
+
+	return nil
+}

@@ -100,6 +100,14 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 		if err != nil {
 			return 0, err
 		}
+		if err := dbUpsertSettlementCycle(db,
+			fmt.Sprintf("cycle_chain_%d", existingID), "chain", "confirmed",
+			0, existingID,
+			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
+			0, occurredAt, "auto-created from chain payment", e.Payload,
+		); err != nil {
+			return 0, fmt.Errorf("upsert settlement cycle for existing chain payment %d: %w", existingID, err)
+		}
 		return existingID, nil
 	}
 	if err != sql.ErrNoRows {
@@ -128,7 +136,22 @@ func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	return res.LastInsertId()
+	paymentID, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+
+	// Step 15: 同时写入 settlement_cycle 统一锚点
+	if err := dbUpsertSettlementCycle(db,
+		fmt.Sprintf("cycle_chain_%d", paymentID), "chain", "confirmed",
+		0, paymentID,
+		e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
+		0, occurredAt, "auto-created from chain payment", e.Payload,
+	); err != nil {
+		return 0, fmt.Errorf("upsert settlement cycle for chain payment %d: %w", paymentID, err)
+	}
+
+	return paymentID, nil
 }
 
 // dbGetChainPaymentByTxID 按 txid 查 fact_chain_payments

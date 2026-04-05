@@ -3,7 +3,6 @@ package clientapp
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -62,90 +61,134 @@ type legacyWalletChainProcessRow struct {
 	PayloadJSON       string
 }
 
-// backfillLegacyFinanceSources 负责把历史财务来源回填到新口径。
-// 设计说明：
-// - 先回填 pool_allocation，再回填 wallet_chain；
-// - 两条路径彼此独立，不做万能迁移；
-// - 任何一条路径证据不够时，直接报错，不吞。
-func backfillLegacyFinanceSources(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if err := backfillLegacyPoolAllocationFinanceSources(db); err != nil {
-		return err
-	}
-	if err := backfillLegacyWalletChainFinanceSources(db); err != nil {
-		return err
-	}
-	return nil
+type legacyFinanceSourceBackfillReport struct {
+	RewrittenRows int
+	UnmappedRows  int
 }
 
-func backfillLegacyPoolAllocationFinanceSources(db *sql.DB) error {
+// backfillLegacyFinanceSources 负责把历史财务来源回填到新口径。
+// 设计说明：
+// - 先回填 fee_pool，再回填 pool_allocation，最后回填 wallet_chain；
+// - 三条路径彼此独立，不做万能迁移；
+// - 任何一条路径证据不够时，直接报错，不吞；
+// - 返回改写数量和未映射数量，方便审计和测试。
+func backfillLegacyFinanceSources(db *sql.DB) (legacyFinanceSourceBackfillReport, error) {
+	if db == nil {
+		return legacyFinanceSourceBackfillReport{}, fmt.Errorf("db is nil")
+	}
+	report, err := backfillLegacyFeePoolFinanceSources(db)
+	if err != nil {
+		return legacyFinanceSourceBackfillReport{}, err
+	}
+	poolReport, err := backfillLegacyPoolAllocationFinanceSources(db)
+	if err != nil {
+		return legacyFinanceSourceBackfillReport{}, err
+	}
+	report.RewrittenRows += poolReport.RewrittenRows
+	report.UnmappedRows += poolReport.UnmappedRows
+	walletReport, err := backfillLegacyWalletChainFinanceSources(db)
+	if err != nil {
+		return legacyFinanceSourceBackfillReport{}, err
+	}
+	report.RewrittenRows += walletReport.RewrittenRows
+	report.UnmappedRows += walletReport.UnmappedRows
+	return report, nil
+}
+
+func backfillLegacyFeePoolFinanceSources(db *sql.DB) (legacyFinanceSourceBackfillReport, error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return legacyFinanceSourceBackfillReport{}, err
 	}
 	rollback := func() {
 		_ = tx.Rollback()
 	}
+	report := legacyFinanceSourceBackfillReport{}
 
-	ids, err := legacyFinanceDistinctSourceIDs(tx, "pool_allocation")
+	ids, err := legacyFinanceDistinctSourceIDs(tx, "fee_pool")
 	if err != nil {
 		rollback()
-		return fmt.Errorf("collect pool_allocation source ids: %w", err)
+		return report, fmt.Errorf("collect fee_pool source ids: %w", err)
 	}
 	for _, sourceID := range ids {
-		if looksLikeIntegerID(sourceID) {
-			if !legacyPoolAllocationIDExistsTx(tx, sourceID) {
-				rollback()
-				return fmt.Errorf("pool_allocation source id %s already looks migrated but fact_pool_session_events row is missing", sourceID)
-			}
-			continue
-		}
-
-		allocationID := sourceID
-		poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocationID)
+		cycleID, err := legacyResolveSettlementCycleIDTx(tx, "fee_pool", sourceID)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				rollback()
-				return fmt.Errorf("pool_allocation source id %s has no fact_pool_session_events mapping", allocationID)
-			}
+			report.UnmappedRows++
 			rollback()
-			return fmt.Errorf("resolve pool_allocation mapping for %s: %w", allocationID, err)
+			return report, fmt.Errorf("resolve settlement cycle for fee_pool %s: %w", sourceID, err)
 		}
-		newSourceID := fmt.Sprintf("%d", poolAllocID)
-		if err := legacyRewriteFinanceSourceTx(tx, "pool_allocation", allocationID, "pool_allocation", newSourceID); err != nil {
+		updated, err := legacyRewriteFinanceSourceTx(tx, "fee_pool", sourceID, "settlement_cycle", fmt.Sprintf("%d", cycleID))
+		if err != nil {
 			rollback()
-			return fmt.Errorf("rewrite pool_allocation source %s -> %s: %w", allocationID, newSourceID, err)
+			return report, fmt.Errorf("rewrite fee_pool source %s -> %d: %w", sourceID, cycleID, err)
 		}
+		report.RewrittenRows += int(updated)
 	}
 
 	if err := tx.Commit(); err != nil {
 		rollback()
-		return err
+		return report, err
 	}
-	return nil
+	return report, nil
 }
 
-func backfillLegacyWalletChainFinanceSources(db *sql.DB) error {
+func backfillLegacyPoolAllocationFinanceSources(db *sql.DB) (legacyFinanceSourceBackfillReport, error) {
 	tx, err := db.Begin()
 	if err != nil {
-		return err
+		return legacyFinanceSourceBackfillReport{}, err
 	}
 	rollback := func() {
 		_ = tx.Rollback()
 	}
+	report := legacyFinanceSourceBackfillReport{}
+
+	ids, err := legacyFinanceDistinctSourceIDs(tx, "pool_allocation")
+	if err != nil {
+		rollback()
+		return report, fmt.Errorf("collect pool_allocation source ids: %w", err)
+	}
+	for _, sourceID := range ids {
+		cycleID, err := legacyResolveSettlementCycleIDTx(tx, "pool_allocation", sourceID)
+		if err != nil {
+			report.UnmappedRows++
+			rollback()
+			return report, fmt.Errorf("resolve settlement cycle for pool_allocation %s: %w", sourceID, err)
+		}
+		updated, err := legacyRewriteFinanceSourceTx(tx, "pool_allocation", sourceID, "settlement_cycle", fmt.Sprintf("%d", cycleID))
+		if err != nil {
+			rollback()
+			return report, fmt.Errorf("rewrite pool_allocation source %s -> %d: %w", sourceID, cycleID, err)
+		}
+		report.RewrittenRows += int(updated)
+	}
+
+	if err := tx.Commit(); err != nil {
+		rollback()
+		return report, err
+	}
+	return report, nil
+}
+
+func backfillLegacyWalletChainFinanceSources(db *sql.DB) (legacyFinanceSourceBackfillReport, error) {
+	tx, err := db.Begin()
+	if err != nil {
+		return legacyFinanceSourceBackfillReport{}, err
+	}
+	rollback := func() {
+		_ = tx.Rollback()
+	}
+	report := legacyFinanceSourceBackfillReport{}
 
 	txIDs, err := legacyFinanceDistinctSourceIDs(tx, "wallet_chain")
 	if err != nil {
 		rollback()
-		return fmt.Errorf("collect wallet_chain source ids: %w", err)
+		return report, fmt.Errorf("collect wallet_chain source ids: %w", err)
 	}
 	for _, txid := range txIDs {
 		facts, err := resolveLegacyWalletChainFactsTx(tx, txid)
 		if err != nil {
 			rollback()
-			return fmt.Errorf("resolve wallet_chain txid=%s: %w", txid, err)
+			return report, fmt.Errorf("resolve wallet_chain txid=%s: %w", txid, err)
 		}
 
 		chainPaymentID, err := dbUpsertChainPaymentDB(tx, chainPaymentEntry{
@@ -163,21 +206,27 @@ func backfillLegacyWalletChainFinanceSources(db *sql.DB) error {
 		})
 		if err != nil {
 			rollback()
-			return fmt.Errorf("upsert chain_payment for txid=%s: %w", txid, err)
+			return report, fmt.Errorf("upsert chain_payment for txid=%s: %w", txid, err)
 		}
 
-		newSourceID := fmt.Sprintf("%d", chainPaymentID)
-		if err := legacyRewriteFinanceSourceTx(tx, "wallet_chain", txid, "chain_payment", newSourceID); err != nil {
+		cycleID, err := dbGetSettlementCycleByChainPayment(tx, chainPaymentID)
+		if err != nil {
 			rollback()
-			return fmt.Errorf("rewrite wallet_chain source for txid=%s: %w", txid, err)
+			return report, fmt.Errorf("resolve settlement cycle for txid=%s: %w", txid, err)
 		}
+		updated, err := legacyRewriteFinanceSourceTx(tx, "wallet_chain", txid, "settlement_cycle", fmt.Sprintf("%d", cycleID))
+		if err != nil {
+			rollback()
+			return report, fmt.Errorf("rewrite wallet_chain source for txid=%s: %w", txid, err)
+		}
+		report.RewrittenRows += int(updated)
 	}
 
 	if err := tx.Commit(); err != nil {
 		rollback()
-		return err
+		return report, err
 	}
-	return nil
+	return report, nil
 }
 
 func legacyFinanceDistinctSourceIDs(tx *sql.Tx, sourceType string) ([]string, error) {
@@ -214,40 +263,101 @@ func legacyFinanceDistinctSourceIDs(tx *sql.Tx, sourceType string) ([]string, er
 	return out, rows.Err()
 }
 
-func legacyRewriteFinanceSourceTx(tx *sql.Tx, oldSourceType, oldSourceID, newSourceType, newSourceID string) error {
+func legacyRewriteFinanceSourceTx(tx *sql.Tx, oldSourceType, oldSourceID, newSourceType, newSourceID string) (int64, error) {
 	if tx == nil {
-		return fmt.Errorf("tx is nil")
+		return 0, fmt.Errorf("tx is nil")
 	}
 	oldSourceType = strings.TrimSpace(oldSourceType)
 	oldSourceID = strings.TrimSpace(oldSourceID)
 	newSourceType = strings.TrimSpace(newSourceType)
 	newSourceID = strings.TrimSpace(newSourceID)
 	if oldSourceType == "" {
-		return fmt.Errorf("old source type is required")
+		return 0, fmt.Errorf("old source type is required")
 	}
 	if newSourceType == "" {
-		return fmt.Errorf("new source type is required")
+		return 0, fmt.Errorf("new source type is required")
 	}
 	if oldSourceID == "" {
-		return fmt.Errorf("old source id is required")
+		return 0, fmt.Errorf("old source id is required")
 	}
 	if newSourceID == "" {
-		return fmt.Errorf("new source id is required")
+		return 0, fmt.Errorf("new source id is required")
 	}
 
-	if _, err := tx.Exec(
+	res, err := tx.Exec(
 		`UPDATE settle_businesses SET source_type=?, source_id=? WHERE source_type=? AND lower(trim(source_id))=?`,
 		newSourceType, newSourceID, oldSourceType, strings.ToLower(oldSourceID),
-	); err != nil {
-		return err
+	)
+	if err != nil {
+		return 0, err
 	}
-	if _, err := tx.Exec(
+	businessRows, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	res, err = tx.Exec(
 		`UPDATE settle_process_events SET source_type=?, source_id=? WHERE source_type=? AND lower(trim(source_id))=?`,
 		newSourceType, newSourceID, oldSourceType, strings.ToLower(oldSourceID),
-	); err != nil {
-		return err
+	)
+	if err != nil {
+		return 0, err
 	}
-	return nil
+	processRows, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return businessRows + processRows, nil
+}
+
+func legacyResolveSettlementCycleIDTx(tx *sql.Tx, sourceType, sourceID string) (int64, error) {
+	if tx == nil {
+		return 0, fmt.Errorf("tx is nil")
+	}
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceType == "" {
+		return 0, fmt.Errorf("source_type is required")
+	}
+	if sourceID == "" {
+		return 0, fmt.Errorf("source_id is required")
+	}
+	switch sourceType {
+	case "fee_pool":
+		if paymentID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && paymentID > 0 {
+			return dbGetSettlementCycleByChainPayment(tx, paymentID)
+		}
+		var paymentID int64
+		if err := tx.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, strings.ToLower(sourceID)).Scan(&paymentID); err != nil {
+			return 0, err
+		}
+		return dbGetSettlementCycleByChainPayment(tx, paymentID)
+	case "pool_allocation":
+		if allocID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && allocID > 0 {
+			return dbGetSettlementCycleByPoolEvent(tx, allocID)
+		}
+		var poolAllocID int64
+		if err := tx.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolAllocID); err != nil {
+			return 0, err
+		}
+		return dbGetSettlementCycleByPoolEvent(tx, poolAllocID)
+	case "chain_payment":
+		if paymentID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && paymentID > 0 {
+			return dbGetSettlementCycleByChainPayment(tx, paymentID)
+		}
+		var paymentID int64
+		if err := tx.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, strings.ToLower(sourceID)).Scan(&paymentID); err != nil {
+			return 0, err
+		}
+		return dbGetSettlementCycleByChainPayment(tx, paymentID)
+	case "wallet_chain":
+		var paymentID int64
+		if err := tx.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, strings.ToLower(sourceID)).Scan(&paymentID); err != nil {
+			return 0, err
+		}
+		return dbGetSettlementCycleByChainPayment(tx, paymentID)
+	default:
+		return 0, fmt.Errorf("unsupported legacy source_type: %s", sourceType)
+	}
 }
 
 func legacyPoolAllocationIDExistsTx(tx *sql.Tx, sourceID string) bool {

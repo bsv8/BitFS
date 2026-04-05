@@ -103,13 +103,19 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				continue
 			}
 
+			settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, cp.ID)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for chain payment %d: %v", cp.ID, err))
+				continue
+			}
+
 			// 2. 创建 business（第七阶段整改：显式写 business_role='formal'）
 			if _, err := db.Exec(`
 				INSERT INTO settle_businesses(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
-				VALUES(?, 'formal', 'front_order', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?)
+				VALUES(?, 'formal', 'settlement_cycle', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
-				businessID, frontOrderID, cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
+				businessID, fmt.Sprintf("%d", settlementCycleID), cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
 				"backfill:"+businessID, "历史回填：域名注册",
 				fmt.Sprintf(`{"backfill":true,"chain_payment_id":%d}`, cp.ID),
 			); err != nil {
@@ -280,13 +286,20 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				completed = false
 			}
 
+			settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, payAlloc.ID)
+			if err != nil {
+				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for pool allocation %d: %v", payAlloc.ID, err))
+				completed = false
+				continue
+			}
+
 			// 3. 逐对象补齐：business（第七阶段整改：显式写 business_role='formal'）
 			if _, err := db.Exec(`
 				INSERT INTO settle_businesses(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
-				VALUES(?, 'formal', 'front_order', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?)
+				VALUES(?, 'formal', 'settlement_cycle', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
-				businessID, frontOrderID, payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
+				businessID, fmt.Sprintf("%d", settlementCycleID), payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
 				"backfill:"+businessID,
 				"历史回填：池支付",
 				fmt.Sprintf(`{"backfill":true,"pool_session_id":"%s","pay_amount":%d}`, payAlloc.PoolSessionID, payAlloc.PayeeAmountAfter),
