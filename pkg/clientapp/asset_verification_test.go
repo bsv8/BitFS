@@ -1089,7 +1089,7 @@ func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed fact: %v", err)
 	}
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_hist_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1160,7 +1160,7 @@ func TestTokenConsumptionIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 	}
 
 	// 第一次写消耗
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_idem_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",

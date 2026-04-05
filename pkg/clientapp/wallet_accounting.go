@@ -231,7 +231,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	}
 	now := time.Now().Unix()
 
-	chainPaymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	chainPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      paymentSubType,
 		Status:              status,

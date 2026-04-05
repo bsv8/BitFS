@@ -273,7 +273,7 @@ func loadWalletTokenSpendableCandidatesWithFallback(ctx context.Context, store *
 func appendTokenConsumptionAfterChainPayment(ctx context.Context, store *clientDB, txHex string, txID string, tokenUTXOIDs map[string]string, occurredAtUnix int64) error {
 	return store.Do(ctx, func(db *sql.DB) error {
 		// 先写入 chain_payment 事实（token 发送也需要链上记录）
-		chainPaymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+		chainPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 			TxID:                txID,
 			PaymentSubType:      "token_send",
 			Status:              "confirmed",

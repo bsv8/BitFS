@@ -198,7 +198,7 @@ func backfillLegacyWalletChainFinanceSources(db *sql.DB) (legacyFinanceSourceBac
 			return report, fmt.Errorf("resolve wallet_chain txid=%s: %w", txid, err)
 		}
 
-		chainPaymentID, err := dbUpsertChainPaymentDB(tx, chainPaymentEntry{
+		chainPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(tx, chainPaymentEntry{
 			TxID:                txid,
 			PaymentSubType:      facts.PaymentSubType,
 			Status:              facts.Status,

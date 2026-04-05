@@ -151,7 +151,7 @@ func TestAppendAssetConsumptionForChainPayment_PowerIdempotent(t *testing.T) {
 	store := newClientDB(db, nil)
 
 	// 先写入 fact_chain_payments
-	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "ctx001",
 		PaymentSubType:      "direct_payment",
 		Status:              "confirmed",
@@ -598,7 +598,7 @@ func TestChainPaymentConsumption_MultipleUTXO(t *testing.T) {
 	}
 
 	// 写入 chain payment
-	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_multi_utxo_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -706,7 +706,7 @@ func TestChainPaymentConsumption_UnknownUTXOQueued(t *testing.T) {
 	}
 
 	// 写入 chain payment
-	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_pay_with_unknown",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -791,7 +791,7 @@ func TestChainPaymentConsumption_Idempotent(t *testing.T) {
 	}
 
 	// 写入 chain payment
-	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_idem_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1333,7 +1333,7 @@ func TestFactBalance_AfterConsumption(t *testing.T) {
 	}
 
 	// 写入 chain payment
-	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_pay_cons",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1475,7 +1475,7 @@ func TestSpendableSourceFlows_Basic(t *testing.T) {
 	}
 
 	// 写入消耗（只消耗第一个 UTXO 的部分）
-	paymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_pay_spend",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1554,7 +1554,7 @@ func TestFactBalance_MultiConsumption(t *testing.T) {
 	}
 
 	// 第一次消耗 3000
-	pay1, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	pay1, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_pay_multi_1",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1574,7 +1574,7 @@ func TestFactBalance_MultiConsumption(t *testing.T) {
 	}
 
 	// 第二次消耗 4000
-	pay2, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	pay2, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_pay_multi_2",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1769,7 +1769,7 @@ func TestSelectSourceFlows_PartialConsumed(t *testing.T) {
 	}
 
 	// 写入消耗 6000
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_partial_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -1863,7 +1863,7 @@ func TestListEligiblePlainBSVWalletUTXOsFact_UsesFactSource(t *testing.T) {
 	}
 
 	// 写入消耗 3000，验证 getWalletUTXOsFromDB 返回剩余金额
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_fromdb_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -2032,7 +2032,7 @@ func TestTokenConsumptionWrite(t *testing.T) {
 	}
 
 	// 写入 chain payment
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_token_cons_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -2206,7 +2206,7 @@ func TestTokenConsumptionIdempotent(t *testing.T) {
 	}
 
 	// 写入 chain payment
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_token_idem_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -2293,7 +2293,7 @@ func TestTokenBalance_WithUsedReturnsRemaining(t *testing.T) {
 	}
 
 	// 种 chain_payment
-	payID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	payID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "tx_token_used_pay",
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",

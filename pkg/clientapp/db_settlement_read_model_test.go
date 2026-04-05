@@ -593,9 +593,9 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 
 func dbTestInsertChainPayment(t *testing.T, store *clientDB, entry chainPaymentEntry) string {
 	t.Helper()
-	id, err := dbUpsertChainPayment(context.Background(), store, entry)
+	id, err := dbUpsertChainPaymentWithSettlementCycle(context.Background(), store, entry)
 	if err != nil {
-		t.Fatalf("dbUpsertChainPayment: %v", err)
+		t.Fatalf("dbUpsertChainPaymentWithSettlementCycle: %v", err)
 	}
 	return fmt.Sprintf("%d", id)
 }

@@ -285,7 +285,7 @@ func TestInitIndexDB_BackfillsHistoricalFeePoolFinanceSources(t *testing.T) {
 	}
 
 	txid := "tx_fee_pool_backfill_1"
-	chainPaymentID, err := dbUpsertChainPaymentDB(db, chainPaymentEntry{
+	chainPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_in",
 		Status:              "posted",
