@@ -46,7 +46,7 @@ func TestInitIndexDB_CreatesAssetFactSchema(t *testing.T) {
 		t.Fatalf("inspect fact_asset_consumptions columns failed: %v", err)
 	}
 	requiredConsCols := []string{
-		"id", "source_flow_id", "chain_payment_id", "pool_allocation_id",
+		"id", "source_flow_id", "chain_payment_id", "pool_allocation_id", "settlement_cycle_id",
 		"used_satoshi", "used_quantity_text", "occurred_at_unix", "note", "payload_json",
 	}
 	for _, col := range requiredConsCols {
@@ -87,6 +87,7 @@ func TestInitIndexDB_CreatesAssetFactIndexes(t *testing.T) {
 		"idx_fact_asset_consumptions_source",
 		"idx_fact_asset_consumptions_payment",
 		"idx_fact_asset_consumptions_allocation",
+		"idx_fact_asset_consumptions_settlement_cycle",
 		"uq_fact_asset_consumptions_flow_payment",
 		"uq_fact_asset_consumptions_flow_allocation",
 	}
@@ -355,8 +356,8 @@ func TestInitIndexDB_AssetFactForeignKeys(t *testing.T) {
 		t.Fatalf("inspect fact_asset_consumptions foreign keys failed: %v", err)
 	}
 	wantConsFKs := map[string]bool{
-		"source_flow_id->fact_chain_asset_flows.id":    true,
-		"chain_payment_id->fact_chain_payments.id":     true,
+		"source_flow_id->fact_chain_asset_flows.id":       true,
+		"chain_payment_id->fact_chain_payments.id":        true,
 		"pool_allocation_id->fact_pool_session_events.id": true,
 	}
 	for _, fk := range consFKs {

@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"fmt"
 	"testing"
 )
 
@@ -74,6 +75,76 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	}
 	if walletOut != 2000 {
 		t.Fatalf("expected wallet_output_satoshi=2000, got %d", walletOut)
+	}
+}
+
+// TestDbUpsertChainPayment_BackfillsMissingSettlementCycle 验证已有 chain_payment 但缺 cycle 时可自愈补齐。
+func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	txid := "tx_backfill_cycle_001"
+
+	id1, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  1200,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -1200,
+		BlockHeight:         200,
+		OccurredAtUnix:      1700000100,
+		FromPartyID:         "wallet:self",
+		ToPartyID:           "external:unknown",
+		Payload:             map[string]any{"round": 1},
+	})
+	if err != nil {
+		t.Fatalf("seed upsert failed: %v", err)
+	}
+
+	// 模拟异常老数据：chain_payment 已有，但 settlement_cycle 缺失。
+	if _, err := db.Exec(`DELETE FROM fact_settlement_cycles WHERE chain_payment_id=?`, id1); err != nil {
+		t.Fatalf("delete settlement cycle failed: %v", err)
+	}
+
+	id2, err := dbUpsertChainPayment(ctx, store, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      "external_out",
+		Status:              "confirmed",
+		WalletInputSatoshi:  1500,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -1500,
+		BlockHeight:         201,
+		OccurredAtUnix:      1700000200,
+		FromPartyID:         "wallet:self",
+		ToPartyID:           "external:unknown",
+		Payload:             map[string]any{"round": 2},
+	})
+	if err != nil {
+		t.Fatalf("re-upsert failed: %v", err)
+	}
+	if id2 != id1 {
+		t.Fatalf("expected same id %d, got %d", id1, id2)
+	}
+
+	var cycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE chain_payment_id=?`, id1).Scan(&cycleCount); err != nil {
+		t.Fatalf("count settlement cycles failed: %v", err)
+	}
+	if cycleCount != 1 {
+		t.Fatalf("expected 1 settlement cycle after backfill, got %d", cycleCount)
+	}
+
+	var cycleID string
+	if err := db.QueryRow(`SELECT cycle_id FROM fact_settlement_cycles WHERE chain_payment_id=?`, id1).Scan(&cycleID); err != nil {
+		t.Fatalf("query settlement cycle failed: %v", err)
+	}
+	wantCycleID := fmt.Sprintf("cycle_chain_%d", id1)
+	if cycleID != wantCycleID {
+		t.Fatalf("expected %s, got %s", wantCycleID, cycleID)
 	}
 }
 

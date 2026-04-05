@@ -339,6 +339,10 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	// 获取 pay allocation 的自增 id
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
 	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
+	paySettlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, payID)
+	if err != nil {
+		t.Fatalf("lookup pay settlement cycle id failed: %v", err)
+	}
 
 	// 验证：pay 不再生成 biz_c2c_pay_* 正式收费对象，只保留 fin_process_event + settle_tx_breakdown
 	var payBusinessCount int
@@ -358,7 +362,7 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 		t.Fatal("pay 应生成 fin_process_event 过程记录")
 	}
 
-	// 验证：settle_process_events 的 source_id 是 fact_pool_session_events.id
+	// 验证：settle_process_events 的 source_id 已统一落到 settlement_cycle.id
 	var procSourceType, procSourceIDStr string
 	if err := db.QueryRow(
 		`SELECT source_type, source_id FROM settle_process_events WHERE process_id=? AND accounting_subtype='chunk_pay' ORDER BY id DESC LIMIT 1`,
@@ -366,10 +370,10 @@ func TestDirectTransferAccounting_SourceIDUsesAutoIncrementID(t *testing.T) {
 	).Scan(&procSourceType, &procSourceIDStr); err != nil {
 		t.Fatalf("query settle_process_events pay source failed: %v", err)
 	}
-	if procSourceType != "pool_allocation" {
-		t.Fatalf("unexpected source_type for pay process: got=%s want=pool_allocation", procSourceType)
+	if procSourceType != "settlement_cycle" {
+		t.Fatalf("unexpected source_type for pay process: got=%s want=settlement_cycle", procSourceType)
 	}
-	wantSourceIDStr := fmt.Sprintf("%d", payID)
+	wantSourceIDStr := fmt.Sprintf("%d", paySettlementCycleID)
 	if procSourceIDStr != wantSourceIDStr {
 		if procSourceIDStr == payAllocID {
 			t.Fatalf("source_id is still allocation_id for pay: got=%s (expected integer id)", procSourceIDStr)
@@ -421,15 +425,27 @@ func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *te
 	openID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, openAllocID)
 	payID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, payAllocID)
 	closeID, _ := dbGetPoolAllocationIDByAllocationID(ctx, store, closeAllocID)
+	openCycleID, err := dbGetSettlementCycleByPoolEvent(db, openID)
+	if err != nil {
+		t.Fatalf("lookup open settlement cycle id failed: %v", err)
+	}
+	payCycleID, err := dbGetSettlementCycleByPoolEvent(db, payID)
+	if err != nil {
+		t.Fatalf("lookup pay settlement cycle id failed: %v", err)
+	}
+	closeCycleID, err := dbGetSettlementCycleByPoolEvent(db, closeID)
+	if err != nil {
+		t.Fatalf("lookup close settlement cycle id failed: %v", err)
+	}
 
 	type wantRow struct {
 		subtype        string
 		expectedSource int64
 	}
 	checks := []wantRow{
-		{subtype: "open", expectedSource: openID},
-		{subtype: "chunk_pay", expectedSource: payID},
-		{subtype: "close", expectedSource: closeID},
+		{subtype: "open", expectedSource: openCycleID},
+		{subtype: "chunk_pay", expectedSource: payCycleID},
+		{subtype: "close", expectedSource: closeCycleID},
 	}
 	for _, want := range checks {
 		var gotSourceType, gotSourceIDStr, gotAccountingScene, gotAccountingSubtype string
@@ -439,8 +455,8 @@ func TestDirectTransferAccounting_ProcessEventsSourceIDUsesAutoIncrementID(t *te
 		).Scan(&gotSourceType, &gotSourceIDStr, &gotAccountingScene, &gotAccountingSubtype); err != nil {
 			t.Fatalf("query settle_process_events %s failed: %v", want.subtype, err)
 		}
-		if gotSourceType != "pool_allocation" {
-			t.Fatalf("unexpected source_type for %s: got=%s want=pool_allocation", want.subtype, gotSourceType)
+		if gotSourceType != "settlement_cycle" {
+			t.Fatalf("unexpected source_type for %s: got=%s want=settlement_cycle", want.subtype, gotSourceType)
 		}
 		// 第二步整改验证：source_id 应该是整数主键
 		wantSourceIDStr := fmt.Sprintf("%d", want.expectedSource)
@@ -503,7 +519,7 @@ func TestDirectTransferAccounting_ReadableByPrimaryQueries(t *testing.T) {
 		t.Fatalf("process read returned no rows")
 	}
 	// 第六次迭代：验证主口径字段
-	if page.Items[0].SourceType != "pool_allocation" || page.Items[0].SourceID == "" {
+	if page.Items[0].SourceType != "settlement_cycle" || page.Items[0].SourceID == "" {
 		t.Fatalf("process new fields incorrect: %+v", page.Items[0])
 	}
 }
@@ -609,8 +625,8 @@ func TestFinBusinessIdempotency(t *testing.T) {
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "process", // 过程财务对象
-		SourceType:        "pool_allocation",
-		SourceID:          "alloc_1",
+		SourceType:        "settlement_cycle",
+		SourceID:          "1",
 		AccountingScene:   "c2c_transfer",
 		AccountingSubType: "open",
 		FromPartyID:       "client:self",
@@ -628,8 +644,8 @@ func TestFinBusinessIdempotency(t *testing.T) {
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "process", // 过程财务对象
-		SourceType:        "pool_allocation",
-		SourceID:          "alloc_1",
+		SourceType:        "settlement_cycle",
+		SourceID:          "1",
 		AccountingScene:   "c2c_transfer",
 		AccountingSubType: "open",
 		FromPartyID:       "client:self",
@@ -690,8 +706,8 @@ func TestFinProcessEventIdempotency(t *testing.T) {
 	// 第一次写入
 	if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 		ProcessID:         processID,
-		SourceType:        "pool_allocation",
-		SourceID:          "alloc_1",
+		SourceType:        "settlement_cycle",
+		SourceID:          "1",
 		AccountingScene:   "c2c_transfer",
 		AccountingSubType: "pay",
 		EventType:         "accounting",
@@ -707,8 +723,8 @@ func TestFinProcessEventIdempotency(t *testing.T) {
 	// 第二次写入（相同 idempotency_key）- 应该更新而不是报错
 	if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 		ProcessID:         processID,
-		SourceType:        "pool_allocation",
-		SourceID:          "alloc_1",
+		SourceType:        "settlement_cycle",
+		SourceID:          "1",
 		AccountingScene:   "c2c_transfer",
 		AccountingSubType: "pay",
 		EventType:         "accounting",
@@ -900,7 +916,7 @@ func TestDirectTransferAccounting_CompatibilityQueryByAllocationID(t *testing.T)
 }
 
 // TestRecordWalletChainAccounting_UsesChainPaymentID 验证第二步整改
-// wallet_chain 财务记录的 source_id 应该是 fact_chain_payments.id
+// wallet_chain 财务记录的 source_id 应该是 settlement_cycle.id
 func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
@@ -925,7 +941,7 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 		t.Fatalf("expected positive chain_payment id, got %d", chainPaymentID)
 	}
 
-	// 验证 settle_businesses 的 source_id 是 fact_chain_payments.id
+	// 验证 settle_businesses 的 source_id 已统一落到 settlement_cycle.id
 	var sourceType, sourceID string
 	if err := db.QueryRow(
 		`SELECT source_type, source_id FROM settle_businesses WHERE business_id=?`,
@@ -934,21 +950,25 @@ func TestRecordWalletChainAccounting_UsesChainPaymentID(t *testing.T) {
 		t.Fatalf("settle_businesses not found: %v", err)
 	}
 
-	if sourceType != "chain_payment" {
-		t.Fatalf("unexpected source_type: got=%s want=chain_payment", sourceType)
+	if sourceType != "settlement_cycle" {
+		t.Fatalf("unexpected source_type: got=%s want=settlement_cycle", sourceType)
 	}
-	expectedSourceID := fmt.Sprintf("%d", chainPaymentID)
+	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle id failed: %v", err)
+	}
+	expectedSourceID := fmt.Sprintf("%d", settlementCycleID)
 	if sourceID != expectedSourceID {
 		// 如果 source_id 是 txid，说明还是旧逻辑
 		if sourceID == txid {
-			t.Fatalf("source_id is still txid (old logic), expected chain_payment id: %s", expectedSourceID)
+			t.Fatalf("source_id is still txid (old logic), expected settlement_cycle id: %s", expectedSourceID)
 		}
 		t.Fatalf("unexpected source_id: got=%s want=%s", sourceID, expectedSourceID)
 	}
 }
 
 // TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID
-// 第二阶段兼容层：查询可以继续用 txid，但底层必须换算成 fact_chain_payments.id
+// 第二阶段兼容层：查询可以继续用 txid，但底层必须换算成 settlement_cycle.id
 func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T) {
 	t.Parallel()
 
@@ -983,13 +1003,13 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T)
 	if bizPage.Total != 1 || len(bizPage.Items) != 1 {
 		t.Fatalf("business lookup by txid mismatch: total=%d items=%d", bizPage.Total, len(bizPage.Items))
 	}
-	if bizPage.Items[0].SourceType != "chain_payment" || bizPage.Items[0].SourceID != wantSourceID {
+	if bizPage.Items[0].SourceType != "settlement_cycle" || bizPage.Items[0].SourceID != wantSourceID {
 		t.Fatalf("business lookup by txid returned wrong source: %+v", bizPage.Items[0])
 	}
 
 	if err := dbAppendFinProcessEvent(db, finProcessEventEntry{
 		ProcessID:         "proc_wallet_chain_query_" + txid,
-		SourceType:        "chain_payment",
+		SourceType:        "settlement_cycle",
 		SourceID:          wantSourceID,
 		AccountingScene:   "wallet_transfer",
 		AccountingSubType: "query_probe",
@@ -1009,8 +1029,44 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainPaymentID(t *testing.T)
 	if procPage.Total != 1 || len(procPage.Items) != 1 {
 		t.Fatalf("process lookup by txid mismatch: total=%d items=%d", procPage.Total, len(procPage.Items))
 	}
-	if procPage.Items[0].SourceType != "chain_payment" || procPage.Items[0].SourceID != wantSourceID {
+	if procPage.Items[0].SourceType != "settlement_cycle" || procPage.Items[0].SourceID != wantSourceID {
 		t.Fatalf("process lookup by txid returned wrong source: %+v", procPage.Items[0])
+	}
+
+	// 直接按 settlement_cycle 查询，DB 层不再接受旧来源
+	feePoolBizPage, err := dbListFinanceBusinesses(ctx, store, financeBusinessFilter{
+		Limit:           10,
+		Offset:          0,
+		BusinessRole:    "process",
+		SourceType:      "settlement_cycle",
+		SourceID:        wantSourceID,
+		SettlementState: "confirmed",
+	})
+	if err != nil {
+		t.Fatalf("business lookup by settlement_cycle failed: %v", err)
+	}
+	if feePoolBizPage.Total != 1 || len(feePoolBizPage.Items) != 1 {
+		t.Fatalf("business lookup by settlement_cycle mismatch: total=%d items=%d", feePoolBizPage.Total, len(feePoolBizPage.Items))
+	}
+	if feePoolBizPage.Items[0].SourceType != "settlement_cycle" || feePoolBizPage.Items[0].SourceID != wantSourceID {
+		t.Fatalf("business lookup by settlement_cycle returned wrong source: %+v", feePoolBizPage.Items[0])
+	}
+
+	feePoolProcPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
+		Limit:           10,
+		Offset:          0,
+		SourceType:      "settlement_cycle",
+		SourceID:        wantSourceID,
+		SettlementState: "confirmed",
+	})
+	if err != nil {
+		t.Fatalf("process lookup by settlement_cycle failed: %v", err)
+	}
+	if feePoolProcPage.Total != 1 || len(feePoolProcPage.Items) != 1 {
+		t.Fatalf("process lookup by settlement_cycle mismatch: total=%d items=%d", feePoolProcPage.Total, len(feePoolProcPage.Items))
+	}
+	if feePoolProcPage.Items[0].SourceType != "settlement_cycle" || feePoolProcPage.Items[0].SourceID != wantSourceID {
+		t.Fatalf("process lookup by settlement_cycle returned wrong source: %+v", feePoolProcPage.Items[0])
 	}
 }
 

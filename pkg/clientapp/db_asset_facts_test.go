@@ -833,6 +833,20 @@ func TestChainPaymentConsumption_Idempotent(t *testing.T) {
 	if consCount != 1 {
 		t.Fatalf("expected 1 consumption after first, got %d", consCount)
 	}
+	var chainCycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE chain_payment_id=?`, paymentID).Scan(&chainCycleCount); err != nil {
+		t.Fatalf("count chain settlement cycles failed: %v", err)
+	}
+	if chainCycleCount != 1 {
+		t.Fatalf("expected 1 chain settlement cycle, got %d", chainCycleCount)
+	}
+	var chainCycleID int64
+	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_asset_consumptions WHERE chain_payment_id=? LIMIT 1`, paymentID).Scan(&chainCycleID); err != nil {
+		t.Fatalf("query chain settlement_cycle_id failed: %v", err)
+	}
+	if chainCycleID <= 0 {
+		t.Fatal("chain consumption should carry settlement_cycle_id")
+	}
 
 	// 第二次写入（幂等）
 	if err := dbAppendAssetConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
@@ -1120,6 +1134,13 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 	if openConsCount != 1 {
 		t.Fatalf("expected 1 open consumption, got %d", openConsCount)
 	}
+	var openCycleID int64
+	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_asset_consumptions WHERE pool_allocation_id=? LIMIT 1`, openAllocDBID).Scan(&openCycleID); err != nil {
+		t.Fatalf("query open settlement_cycle_id failed: %v", err)
+	}
+	if openCycleID <= 0 {
+		t.Fatal("open consumption should carry settlement_cycle_id")
+	}
 
 	// pay tx hex（使用同一个有效 tx hex）
 	currentTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
@@ -1143,6 +1164,13 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 	if payConsCount != 1 {
 		t.Fatalf("expected 1 pay consumption, got %d", payConsCount)
 	}
+	var payCycleID int64
+	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_asset_consumptions WHERE pool_allocation_id=? LIMIT 1`, payAllocDBID).Scan(&payCycleID); err != nil {
+		t.Fatalf("query pay settlement_cycle_id failed: %v", err)
+	}
+	if payCycleID <= 0 {
+		t.Fatal("pay consumption should carry settlement_cycle_id")
+	}
 
 	// 重复调用 pay（幂等）
 	if err := dbUpdateDirectTransferPoolPay(ctx, store, "sess_runtime", 2, 300, 690, currentTxHex, 300); err != nil {
@@ -1155,6 +1183,70 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 	}
 	if payConsCount2 != payConsCount {
 		t.Fatalf("expected idempotent pay consumptions %d, got %d", payConsCount, payConsCount2)
+	}
+}
+
+// TestPoolAllocationCreatesSettlementCycleWithoutUTXOFacts 验证空出项时仍会先落 settlement cycle。
+func TestPoolAllocationCreatesSettlementCycleWithoutUTXOFacts(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	if err := dbUpsertDirectTransferPoolSession(ctx, store, directTransferPoolSessionFactInput{
+		SessionID:          "sess_cycle_only",
+		PoolScheme:         "2of3",
+		CounterpartyPubHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		SellerPubHex:       "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		ArbiterPubHex:      "04cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		GatewayPubHex:      "05dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+		PoolAmountSat:      1000,
+		SpendTxFeeSat:      10,
+		LockBlocks:         6,
+		OpenBaseTxID:       "base_tx_cycle_only",
+		Status:             "active",
+		CreatedAtUnix:      now,
+		UpdatedAtUnix:      now,
+	}); err != nil {
+		t.Fatalf("upsert pool session failed: %v", err)
+	}
+
+	if err := dbUpsertDirectTransferPoolAllocation(ctx, store, directTransferPoolAllocationFactInput{
+		SessionID:        "sess_cycle_only",
+		AllocationKind:   "pay",
+		SequenceNum:      1,
+		PayeeAmountAfter: 400,
+		PayerAmountAfter: 600,
+		TxID:             "tx_cycle_only",
+		TxHex:            "00",
+		CreatedAtUnix:    now,
+		UTXOFacts:        nil,
+	}); err != nil {
+		t.Fatalf("upsert pool allocation failed: %v", err)
+	}
+
+	allocID := "poolalloc_sess_cycle_only_pay_1"
+	allocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
+	if err != nil {
+		t.Fatalf("get pool allocation db id failed: %v", err)
+	}
+
+	var cycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE pool_session_event_id=?`, allocDBID).Scan(&cycleCount); err != nil {
+		t.Fatalf("count settlement cycles failed: %v", err)
+	}
+	if cycleCount != 1 {
+		t.Fatalf("expected 1 settlement cycle, got %d", cycleCount)
+	}
+
+	var consCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_asset_consumptions WHERE pool_allocation_id=?`, allocDBID).Scan(&consCount); err != nil {
+		t.Fatalf("count consumptions failed: %v", err)
+	}
+	if consCount != 0 {
+		t.Fatalf("expected 0 consumptions without utxo facts, got %d", consCount)
 	}
 }
 

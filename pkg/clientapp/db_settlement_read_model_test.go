@@ -390,16 +390,38 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("upsert front_order: %v", err)
 	}
+	settlementSourceID := ""
+
+	chainPaymentID := dbTestInsertChainPayment(t, store, chainPaymentEntry{
+		TxID:               "tx_reverse_001",
+		PaymentSubType:     "domain_register",
+		Status:             "confirmed",
+		WalletInputSatoshi: 10000,
+		NetAmountSatoshi:   10000,
+		BlockHeight:        1000000,
+		OccurredAtUnix:     1700000000,
+		FromPartyID:        "client:self",
+		ToPartyID:          "registry:peer",
+	})
+	chainPaymentIntID, err := parseInt64(chainPaymentID)
+	if err != nil {
+		t.Fatalf("parse chain_payment_id: %v", err)
+	}
+	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentIntID)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle id failed: %v", err)
+	}
+	settlementSourceID = fmt.Sprintf("%d", settlementCycleID)
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "formal", // 正式收费对象
-		SourceType:        "front_order",
-		SourceID:          frontOrderID,
+		SourceType:        "settlement_cycle",
+		SourceID:          settlementSourceID,
 		AccountingScene:   "domain",
 		AccountingSubType: "register",
 		FromPartyID:       "client:self",
 		ToPartyID:         "registry:peer",
-		Status:            "pending",
+		Status:            "confirmed",
 		IdempotencyKey:    "idem_reverse_001",
 	}); err != nil {
 		t.Fatalf("append business: %v", err)
@@ -413,18 +435,6 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append trigger: %v", err)
 	}
-
-	chainPaymentID := dbTestInsertChainPayment(t, store, chainPaymentEntry{
-		TxID:               "tx_reverse_001",
-		PaymentSubType:     "domain_register",
-		Status:             "confirmed",
-		WalletInputSatoshi: 10000,
-		NetAmountSatoshi:   10000,
-		BlockHeight:        1000000,
-		OccurredAtUnix:     1700000000,
-		FromPartyID:        "client:self",
-		ToPartyID:          "registry:peer",
-	})
 
 	if err := dbUpsertBusinessSettlement(ctx, store, businessSettlementEntry{
 		SettlementID:     settlementID,
@@ -461,8 +471,8 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 	if biz.BusinessID != businessID {
 		t.Fatalf("expected business_id %s, got %s", businessID, biz.BusinessID)
 	}
-	if biz.SourceID != frontOrderID {
-		t.Fatalf("expected source_id (front_order_id) %s, got %s", frontOrderID, biz.SourceID)
+	if biz.SourceID != settlementSourceID {
+		t.Fatalf("expected source_id (settlement_cycle_id) %s, got %s", settlementSourceID, biz.SourceID)
 	}
 }
 
