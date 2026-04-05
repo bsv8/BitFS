@@ -927,6 +927,29 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// 确保同一 source_flow_id 不能重复关联到同一个 payment 或 allocation
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_payment ON fact_asset_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_asset_consumptions_flow_allocation ON fact_asset_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL`,
+
+		// Step 9: WOC 证据驱动 token IN 入账 - 待确认队列表
+		// 设计说明：
+		// - 轮询到可疑 UTXO 先进入此表，状态为 pending
+		// - 通过 WOC 查询证据后更新状态，成功则写 fact IN，失败则指数退避重试
+		// - 与 wallet_utxo 关联，但独立管理重试周期
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_token_verification(
+			utxo_id TEXT PRIMARY KEY,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			txid TEXT NOT NULL,
+			vout INTEGER NOT NULL,
+			value_satoshi INTEGER NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'confirmed_bsv20', 'confirmed_bsv21', 'confirmed_plain_bsv', 'failed')),
+			woc_response_json TEXT NOT NULL DEFAULT '{}',
+			last_check_at_unix INTEGER NOT NULL DEFAULT 0,
+			next_retry_at_unix INTEGER NOT NULL DEFAULT 0,
+			retry_count INTEGER NOT NULL DEFAULT 0,
+			error_message TEXT NOT NULL DEFAULT '',
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_token_verification_status ON wallet_utxo_token_verification(status, next_retry_at_unix ASC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_token_verification_wallet ON wallet_utxo_token_verification(wallet_id, status)`,
 	}
 
 	for _, s := range stmts {
@@ -1600,7 +1623,7 @@ func ensureCommandJournalIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`,
 	}
 	for _, stmt := range stmts {
-	if _, err := db.Exec(stmt); err != nil {
+		if _, err := db.Exec(stmt); err != nil {
 			return err
 		}
 	}

@@ -11,57 +11,26 @@ import (
 
 // ==================== Unknown 资产确认测试 ====================
 
-func TestDbListUnknownOneSatUTXOs(t *testing.T) {
+func TestDbListPendingVerificationItems(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetVerificationTestDB(t)
 	store := newClientDB(db, nil)
 	address := seedTestAddress(t, db)
 	walletID := walletIDByAddress(address)
-	
+
+	// Step 9: 直接种子 verification 队列表
 	now := time.Now().Unix()
-	
-	// 插入测试数据：unknown 1-sat UTXO
 	_, err := db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"tx1:0", walletID, address, "tx1", 0, 1, "unspent", walletUTXOAllocationUnknown, "awaiting evidence", "tx1", "", now, now, 0,
+		`INSERT INTO wallet_utxo_token_verification(utxo_id,wallet_id,address,txid,vout,value_satoshi,status,next_retry_at_unix,updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		"tx1:0", walletID, address, "tx1", 0, 1, "pending", now, now,
 	)
 	if err != nil {
-		t.Fatalf("insert unknown utxo: %v", err)
+		t.Fatalf("insert pending verification: %v", err)
 	}
-	
-	// 插入非 1-sat 的 unknown（不应被列出）
-	_, err = db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"tx2:0", walletID, address, "tx2", 0, 1000, "unspent", walletUTXOAllocationUnknown, "awaiting evidence", "tx2", "", now, now, 0,
-	)
-	if err != nil {
-		t.Fatalf("insert non-1sat unknown utxo: %v", err)
-	}
-	
-	// 插入 plain_bsv 的 1-sat（不应被列出）
-	_, err = db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"tx3:0", walletID, address, "tx3", 0, 1, "unspent", walletUTXOAllocationPlainBSV, "", "tx3", "", now, now, 0,
-	)
-	if err != nil {
-		t.Fatalf("insert plain bsv utxo: %v", err)
-	}
-	
-	// 插入 spent 的 unknown 1-sat（不应被列出）
-	_, err = db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"tx4:0", walletID, address, "tx4", 0, 1, "spent", walletUTXOAllocationUnknown, "awaiting evidence", "tx4", "tx5", now, now, now,
-	)
-	if err != nil {
-		t.Fatalf("insert spent unknown utxo: %v", err)
-	}
-	
-	rows, err := dbListUnknownOneSatUTXOs(context.Background(), store, address, 100)
+
+	rows, err := dbListPendingVerificationItems(context.Background(), store, 100)
 	if err != nil {
 		t.Fatalf("list unknown utxos: %v", err)
 	}
@@ -384,7 +353,7 @@ func TestDbListUnknownOneSatUTXOs_WrongAddress(t *testing.T) {
 	db := newAssetVerificationTestDB(t)
 	store := newClientDB(db, nil)
 	address1 := seedTestAddress(t, db)
-	address2 := seedTestAddressWithKey(t, db, strings.Repeat("2", 64))
+	_ = seedTestAddressWithKey(t, db, strings.Repeat("2", 64))
 	walletID1 := walletIDByAddress(address1)
 	
 	now := time.Now().Unix()
@@ -400,7 +369,7 @@ func TestDbListUnknownOneSatUTXOs_WrongAddress(t *testing.T) {
 	}
 	
 	// 查询 address2，应该返回空
-	rows, err := dbListUnknownOneSatUTXOs(context.Background(), store, address2, 100)
+	rows, err := dbListPendingVerificationItems(context.Background(), store, 100)
 	if err != nil {
 		t.Fatalf("list unknown utxos: %v", err)
 	}

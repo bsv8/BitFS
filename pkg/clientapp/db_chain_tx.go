@@ -11,6 +11,7 @@ import (
 	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
@@ -180,6 +181,22 @@ func reconcileWalletUTXOSet(ctx context.Context, store *clientDB, address string
 		}
 		if err := appendWalletUTXOAssetFlowsTx(tx, walletID, address, existing, confirmedUTXOSet, updatedAt); err != nil {
 			return err
+		}
+
+		// Step 9: 将 unknown UTXO 加入待确认队列
+		for utxoID, row := range existing {
+			if normalizeWalletUTXOAllocationClass(row.AllocationClass) == walletUTXOAllocationUnknown {
+				// 如果是 confirmed (在 Live 中) 且是 unknown，加入队列等待 WOC 验证
+				if _, isConfirmed := confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))]; isConfirmed {
+					if err := enqueueUnknownUTXOToVerification(ctx, store, walletID, address, utxoID, row.TxID, row.Vout, row.Value); err != nil {
+						// 入队失败不阻塞主流程
+						obs.Error("bitcast-client", "enqueue_token_verification_failed", map[string]any{
+							"utxo_id": utxoID,
+							"error":   err.Error(),
+						})
+					}
+				}
+			}
 		}
 
 		if _, err = tx.Exec(
