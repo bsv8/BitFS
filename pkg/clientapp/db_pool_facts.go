@@ -181,7 +181,7 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	// B组改造：
 	// - BSV 消耗写入 fact_bsv_consumptions
 	// - Token 消耗写入 fact_token_consumptions + fact_token_utxo_links
-	// - 不再写入旧表 fact_asset_consumptions
+	// - 只写新消费表，不回到旧消费表语义
 	poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
 	if err != nil {
 		return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
@@ -354,7 +354,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 // dbExtractUTXOFactsFromTxHex 从交易 hex 中提取 input UTXO facts
 // 设计说明：
 // - pool allocation 的 UTXO 明细从交易本身解析，不依赖外部传入
-// - 只提取 input 方向，用于后续 fact_asset_consumptions 关联
+// - 只提取 input 方向，用于后续新消费表分流
 func dbExtractUTXOFactsFromTxHex(txHex string, now int64) ([]chainPaymentUTXOLinkEntry, error) {
 	txHex = strings.TrimSpace(txHex)
 	if txHex == "" {

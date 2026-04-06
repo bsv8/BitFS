@@ -330,7 +330,6 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	// B组改造：
 	// - BSV 消耗写入 fact_bsv_consumptions
 	// - Token 消耗写入 fact_token_consumptions + fact_token_utxo_links
-	// - 不再写入旧表 fact_asset_consumptions
 	utxoFacts := buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now)
 	bsvFacts, tokenFacts, err := splitUTXOFactsByAssetKind(db, utxoFacts)
 	if err != nil {

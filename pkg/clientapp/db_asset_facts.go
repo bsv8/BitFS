@@ -32,26 +32,6 @@ type chainAssetFlowEntry struct {
 	Payload        any
 }
 
-// assetConsumptionEntry fact_asset_consumptions 写入条目
-// 设计说明：
-// - 把资金消耗关联到 chain_payment 或 pool_allocation
-// - 允许 pending：source_flow_id 查不到时，先记 source_utxo_id，不碰钱包同步表
-// - Step 15：新增 SettlementCycleID 统一结算锚点
-type assetConsumptionEntry struct {
-	ConsumptionID     string
-	SourceFlowID      int64
-	SourceUTXOID      string
-	ChainPaymentID    int64
-	PoolAllocationID  int64
-	SettlementCycleID int64 // Step 15: 统一结算锚点
-	State             string
-	UsedSatoshi       int64
-	UsedQuantityText  string
-	OccurredAtUnix    int64
-	Note              string
-	Payload           any
-}
-
 // dbAppendAssetFlowInIfAbsent 幂等追加资产流入事实
 // 同一 wallet_id + utxo_id + direction 不会重复写入
 func dbAppendAssetFlowInIfAbsent(ctx context.Context, store *clientDB, e chainAssetFlowEntry) (int64, error) {
@@ -222,21 +202,6 @@ func dbAppendAssetFlowIfAbsentDB(db sqlConn, e chainAssetFlowEntry, directionOve
 	return res.LastInsertId()
 }
 
-// dbAppendAssetConsumptionForChainPaymentIfAbsent 【B组禁用】请使用 dbAppendBSVConsumptionsForChainPayment 或 dbAppendTokenConsumptionsForChainPayment
-func dbAppendAssetConsumptionForChainPaymentIfAbsent(ctx context.Context, store *clientDB, e assetConsumptionEntry) error {
-	return fmt.Errorf("dbAppendAssetConsumptionForChainPaymentIfAbsent is DISABLED after B-group hard switch")
-}
-
-// dbAppendAssetConsumptionForPoolAllocationIfAbsent 【B组禁用】请使用 dbAppendBSVConsumptionsForPoolAllocation 或 dbAppendTokenConsumptionsForPoolAllocation
-func dbAppendAssetConsumptionForPoolAllocationIfAbsent(ctx context.Context, store *clientDB, e assetConsumptionEntry) error {
-	return fmt.Errorf("dbAppendAssetConsumptionForPoolAllocationIfAbsent is DISABLED after B-group hard switch")
-}
-
-// dbAppendAssetConsumptionIfAbsentDB 【B组禁用】请使用 dbAppendBSVConsumptionIfAbsentDB 或 dbAppendTokenConsumptionIfAbsentDB
-func dbAppendAssetConsumptionIfAbsentDB(db sqlConn, e assetConsumptionEntry, linkType string) error {
-	return fmt.Errorf("dbAppendAssetConsumptionIfAbsentDB is DISABLED after B-group hard switch")
-}
-
 // nilIfZero 把 0 转成 nil，用于 SQLite NULL 插入
 func nilIfZero(v int64) any {
 	if v == 0 {
@@ -365,25 +330,14 @@ func dbGetAssetFlowInByUTXO(db sqlConn, utxoID string) (int64, error) {
 	return id, nil
 }
 
-// dbAppendAssetConsumptionsForChainPayment 【B组禁用】请使用 dbAppendBSVConsumptionsForChainPayment 或 dbAppendTokenConsumptionsForChainPayment
-func dbAppendAssetConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	return fmt.Errorf("dbAppendAssetConsumptionsForChainPayment is DISABLED after B-group hard switch, use dbAppendBSVConsumptionsForChainPayment or dbAppendTokenConsumptionsForChainPayment")
-}
-
-// dbAppendAssetConsumptionsForPoolAllocation 【B组禁用】请使用 dbAppendBSVConsumptionsForPoolAllocation 或 dbAppendTokenConsumptionsForPoolAllocation
-func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	return fmt.Errorf("dbAppendAssetConsumptionsForPoolAllocation is DISABLED after B-group hard switch, use dbAppendBSVConsumptionsForPoolAllocation or dbAppendTokenConsumptionsForPoolAllocation")
-}
-
-// ==================== B组改造：资产分流消费写入（硬切换到新表） ====================
-// B组改造说明：
-// - 旧表 fact_asset_consumptions 已停写，B组完成后可归档删除
+// ==================== 新消费表写入 ====================
+// 设计说明：
 // - BSV 消耗写入 fact_bsv_consumptions
 // - Token 消耗写入 fact_token_consumptions
 // - Token 消耗同步写 fact_token_utxo_links 建立载体映射
 
 // dbAppendBSVConsumptionsForChainPayment 写入 BSV 消耗（关联 chain_payment）
-// B组新入口：直接写入 fact_bsv_consumptions，不再经过旧表
+// 设计说明：直接写入 fact_bsv_consumptions，不再经过旧消费表
 func dbAppendBSVConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -440,7 +394,7 @@ func dbAppendBSVConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, ut
 }
 
 // dbAppendBSVConsumptionsForPoolAllocation 写入 BSV 消耗（关联 pool_allocation）
-// B组新入口：直接写入 fact_bsv_consumptions，不再经过旧表
+// 设计说明：直接写入 fact_bsv_consumptions，不再经过旧消费表
 func dbAppendBSVConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
