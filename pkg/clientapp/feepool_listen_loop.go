@@ -558,7 +558,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 			"fee_rate_sat_per_byte":      info.FeeRateSatPerByte,
 		},
 	})
-	// wallet_fund_flows 写入已下线
+	// 资金流水已迁移到 fact_* 事实表组装
 	dbRecordFeePoolOpenAccounting(ctx, store, feePoolOpenAccountingInput{
 		BusinessID:        "biz_feepool_open_" + strings.TrimSpace(createResp.SpendTxID),
 		SpendTxID:         createResp.SpendTxID,
@@ -597,7 +597,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 				"trigger":           "open_create",
 			},
 		})
-		// wallet_fund_flows 写入已下线
+		// 资金流水已迁移到 fact_* 事实表组装
 	}
 	if err := applyLocalBroadcastWalletTx(ctx, store, rt, baseResp.Tx.Hex(), "fee_pool_open_base"); err != nil {
 		return nil, fmt.Errorf("project fee pool base tx to wallet utxo failed: %w", err)

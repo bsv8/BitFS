@@ -147,7 +147,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *client
 	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, built.RawTx, "peer_call_chain_tx"); err != nil {
 		return ncall.CallResp{}, err
 	}
-	// wallet_fund_flows 写入已下线
+	// 资金流水已迁移到 fact_* 事实表组装
 	obs.Business("bitcast-client", "evt_trigger_peer_call_chain_tx_end", map[string]any{
 		"quote_charge_sat":     quoted.ServiceQuote.ChargeAmountSatoshi,
 		"miner_fee_sat":        built.MinerFeeSatoshi,

@@ -7,7 +7,7 @@ import (
 )
 
 // walletSummaryCounters 钱包统计计数器
-// 设计说明：已改为 fact_* 事实表口径，不再依赖 wallet_fund_flows
+// 设计说明：已改为 fact_* 事实表口径
 type walletSummaryCounters struct {
 	FlowCount         int64 // fact_chain_asset_flows 记录数
 	TotalIn           int64 // fact_chain_asset_flows IN 方向总金额

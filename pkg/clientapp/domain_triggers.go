@@ -223,7 +223,6 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 		obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
 		return out, fmt.Errorf("finalize domain register settlement: %w", err)
 	}
-	// wallet_fund_flows 写入已下线
 	obs.Business("bitcast-client", "evt_trigger_domain_register_name_end", map[string]any{
 		"resolver_pubkey_hex":        strings.TrimSpace(p.ResolverPubkeyHex),
 		"name":                       out.Name,

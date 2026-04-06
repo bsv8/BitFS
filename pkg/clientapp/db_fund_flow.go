@@ -9,7 +9,7 @@ import (
 )
 
 // walletFundFlowFilter 资金流水过滤条件（历史兼容层）
-// 设计说明：底层已从 wallet_fund_flows 迁移到 fact_* 事实表组装
+// 设计说明：底层已迁移到 fact_* 事实表组装
 // - visit_id 保留字段，不参与过滤（fact 表未保留该上下文）
 // - 查询使用 UNION ALL 统一视图，保证全局排序和分页正确
 type walletFundFlowFilter struct {

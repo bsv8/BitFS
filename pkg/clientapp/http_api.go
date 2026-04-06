@@ -728,7 +728,7 @@ func walletChainTypeOfRuntime(rt *Runtime) string {
 }
 
 func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Request) {
-	// 兼容接口：底层已从 wallet_fund_flows 迁移到 fact_* 事实表组装
+	// 兼容接口：底层已迁移到 fact_* 事实表组装
 	// visit_id 已废弃，传入即 400
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

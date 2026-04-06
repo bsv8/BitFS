@@ -954,7 +954,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"lock_blocks":             req.LockBlocks,
 			"recommended_file_source": "direct_transfer_pool_open",
 		})
-		// wallet_fund_flows 写入已下线
+		// 资金流水已迁移到 fact_* 事实表组装
 		if err := dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
 			SessionID:         curSessionID,
 			DealID:            dealID,
@@ -1055,8 +1055,7 @@ func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt *Runtime, flowI
 	if err := applyLocalBroadcastWalletTx(ctx, store, rt, splitTx.Hex(), "direct_transfer_pool_split"); err != nil {
 		return nil, "", fmt.Errorf("project split tx failed: %w", err)
 	}
-	_ = int64(total - target - fee) // change，wallet_fund_flows 写入已下线
-	// wallet_fund_flows 写入已下线
+	_ = int64(total - target - fee) // change，资金流水已迁移到 fact_* 事实表组装
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -1220,7 +1219,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		"pool_amount_satoshi": session.PoolAmountSat,
 		"chunk_price_satoshi": p.Amount,
 	})
-	// wallet_fund_flows 写入已下线
+	// 资金流水已迁移到 fact_* 事实表组装
 	if err := dbRecordDirectPoolPayAccounting(
 		ctx,
 		store,
@@ -1373,7 +1372,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		"transfer_state":        "closed",
 		"transfer_entry_source": "direct_transfer_pool_close",
 	})
-	// wallet_fund_flows 写入已下线
+	// 资金流水已迁移到 fact_* 事实表组装
 	if err := dbRecordDirectPoolCloseAccounting(
 		ctx,
 		store,

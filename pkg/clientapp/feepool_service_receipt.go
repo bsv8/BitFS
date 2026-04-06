@@ -156,7 +156,7 @@ func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, store *clien
 	session.FinalTxID = strings.TrimSpace(finalTxID)
 	session.Status = "closed"
 	rt.setFeePool(gatewayPeerID, session)
-	// wallet_fund_flows 写入已下线，改为 fact_* 事实表组装查询
+	// 资金流水改走 fact_* 事实表组装查询
 	return map[string]any{"status": "broadcasted", "final_txid": session.FinalTxID, "expire_height": expireHeight, "tip_height": tip}, nil
 }
 

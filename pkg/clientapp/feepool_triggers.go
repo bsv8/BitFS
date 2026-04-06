@@ -278,7 +278,6 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		return FeePoolCloseResult{}, fmt.Errorf("session not found by spend_txid: %s", spendTxID)
 	}
 	if strings.TrimSpace(st.Status) == "closed" {
-		// wallet_fund_flows 写入已下线
 		return FeePoolCloseResult{
 			GatewayPeerID: gatewayID,
 			Result: poolcore.CloseResp{
@@ -340,8 +339,5 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		"final_txid":         resp.FinalSpendTxID,
 		"status":             resp.Status,
 	})
-	if resp.Success && strings.TrimSpace(resp.Status) == "closed" {
-		// wallet_fund_flows 写入已下线
-	}
 	return FeePoolCloseResult{GatewayPeerID: gatewayID, Result: resp}, nil
 }

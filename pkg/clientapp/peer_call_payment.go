@@ -278,7 +278,7 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, store *cl
 			nextTxHex = strings.ToLower(hex.EncodeToString(receipt.MergedCurrentTx))
 		}
 		applyFeePoolChargeToSession(chargeCtx.Session, chargeCtx.NextSeq, chargeCtx.NextServerAmount, nextTxHex)
-		// wallet_fund_flows 写入已下线
+		// 资金流水已迁移到 fact_* 事实表组装
 	}
 	return out, nil
 }
