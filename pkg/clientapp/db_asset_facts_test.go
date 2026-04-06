@@ -512,7 +512,7 @@ func TestReconcileWalletUTXOSet_ConfirmedLiveUTXOWrittenToFact(t *testing.T) {
 		Count:                 1,
 		OldestConfirmedHeight: 200,
 	}
-	cursor := walletUTXOHistoryCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 200}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 200}
 	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts round-1: %v", err)
 	}

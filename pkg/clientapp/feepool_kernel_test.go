@@ -145,7 +145,7 @@ func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []poolcore.U
 			Count:              len(utxos),
 		},
 		nil,
-		walletUTXOHistoryCursor{
+		walletUTXOSyncCursor{
 			WalletID:            walletIDByAddress(address),
 			Address:             address,
 			NextConfirmedHeight: 1,

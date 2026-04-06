@@ -1286,7 +1286,7 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 			},
 		},
 	}
-	cursor := walletUTXOHistoryCursor{
+	cursor := walletUTXOSyncCursor{
 		WalletID:            walletID,
 		Address:             address,
 		NextConfirmedHeight: 1,

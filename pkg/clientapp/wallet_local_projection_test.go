@@ -258,7 +258,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		Balance:            100,
 		Count:              1,
 	}
-	cursor := walletUTXOHistoryCursor{WalletID: walletID, NextConfirmedHeight: 1, RoundTipHeight: 1}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, NextConfirmedHeight: 1, RoundTipHeight: 1}
 	if err := SyncWalletAndApplyFacts(context.Background(), newClientDB(db, nil), addr, staleSnapshot, nil, cursor, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
 	}
@@ -392,10 +392,10 @@ func TestGetWalletUTXOsFromDB_ExcludesProtectedAssetOutputs(t *testing.T) {
 	}
 }
 
-func TestAlignWalletUTXOHistoryCursor_RewindsToOlderCurrentUnspent(t *testing.T) {
+func TestAlignWalletUTXOSyncCursor_RewindsToOlderCurrentUnspent(t *testing.T) {
 	t.Parallel()
 
-	cursor := walletUTXOHistoryCursor{
+	cursor := walletUTXOSyncCursor{
 		WalletID:            "wallet:test",
 		Address:             "addr",
 		AnchorHeight:        120,
@@ -403,7 +403,7 @@ func TestAlignWalletUTXOHistoryCursor_RewindsToOlderCurrentUnspent(t *testing.T)
 		NextPageToken:       "page-old",
 		RoundTipHeight:      199,
 	}
-	next := alignWalletUTXOHistoryCursor(cursor, 100, 200)
+	next := alignWalletUTXOSyncCursor(cursor, 100, 200)
 	if next.AnchorHeight != 100 {
 		t.Fatalf("anchor height mismatch: got=%d want=100", next.AnchorHeight)
 	}

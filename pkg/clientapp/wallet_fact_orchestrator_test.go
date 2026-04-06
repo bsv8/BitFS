@@ -55,7 +55,7 @@ func TestSyncWalletAndApplyFacts_NormalCase(t *testing.T) {
 		Count:                 1,
 		OldestConfirmedHeight: 100,
 	}
-	cursor := walletUTXOHistoryCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 100}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 100}
 
 	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
@@ -110,7 +110,7 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 		Count:                 1,
 		OldestConfirmedHeight: 200,
 	}
-	cursor := walletUTXOHistoryCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 200}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 200}
 
 	// 第一次同步
 	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
@@ -187,7 +187,7 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 		Count:                 1,
 		OldestConfirmedHeight: 300,
 	}
-	cursor := walletUTXOHistoryCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 300}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 300}
 
 	// 步骤1：分步执行第一阶段，获取 changes
 	changes, err := reconcileWalletUTXOSetAndReturnChanges(

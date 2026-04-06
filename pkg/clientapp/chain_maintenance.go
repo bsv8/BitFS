@@ -91,7 +91,7 @@ type walletUTXOSyncState struct {
 	LastHTTPStatus          int    `json:"last_http_status"`
 }
 
-type walletUTXOHistoryCursor struct {
+type walletUTXOSyncCursor struct {
 	WalletID            string `json:"wallet_id"`
 	Address             string `json:"address"`
 	NextConfirmedHeight int64  `json:"next_confirmed_height"`
@@ -638,7 +638,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "wallet_chain_get_tip", tipPath, err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOHistoryCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "wallet_chain_get_tip", err, map[string]any{
 			"upstream_path":    tipPath,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
@@ -657,7 +657,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, meta)
 	if err != nil {
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, err, task.TriggerSource)
-		_ = dbUpdateWalletUTXOHistoryCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
 			"address":       addr,
@@ -672,19 +672,19 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"oldest_confirmed_height": snapshot.OldestConfirmedHeight,
 	})
 	stepStart = time.Now()
-	cursor, err := dbLoadWalletUTXOHistoryCursor(ctx, m.store, addr)
+	cursor, err := dbLoadWalletUTXOSyncCursor(ctx, m.store, addr)
 	if err != nil {
-		wrappedErr := wrapWalletSyncStepError(meta, "load_wallet_utxo_history_cursor", "", err)
+		wrappedErr := wrapWalletSyncStepError(meta, "load_wallet_utxo_sync_cursor", "", err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOHistoryCursorError(context.Background(), m.store, addr, err.Error())
-		logWalletSyncStepError(meta, "load_wallet_utxo_history_cursor", err, nil)
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		logWalletSyncStepError(meta, "load_wallet_utxo_sync_cursor", err, nil)
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
 			"address":       addr,
 			"sync_round_id": meta.RoundID,
 		}, err
 	}
-	logWalletSyncStepInfo(meta, "load_wallet_utxo_history_cursor", map[string]any{
+	logWalletSyncStepInfo(meta, "load_wallet_utxo_sync_cursor", map[string]any{
 		"next_confirmed_height": cursor.NextConfirmedHeight,
 		"next_page_token":       cursor.NextPageToken,
 		"anchor_height":         cursor.AnchorHeight,
@@ -693,12 +693,12 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	cursor.WalletID = walletIDByAddress(addr)
 	cursor.Address = addr
-	cursor = alignWalletUTXOHistoryCursor(cursor, snapshot.OldestConfirmedHeight, tip)
+	cursor = alignWalletUTXOSyncCursor(cursor, snapshot.OldestConfirmedHeight, tip)
 	stepStart = time.Now()
 	history, nextCursor, err := collectConfirmedHistoryRange(ctx, chain, addr, cursor, tip, meta)
 	if err != nil {
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, err, task.TriggerSource)
-		_ = dbUpdateWalletUTXOHistoryCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "collect_confirmed_history_range", err, map[string]any{
 			"tip_height":           tip,
 			"cursor_anchor_height": cursor.AnchorHeight,
@@ -728,7 +728,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if err := SyncWalletAndApplyFacts(ctx, m.store, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "sync_wallet_and_apply_facts", "", err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOHistoryCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "sync_wallet_and_apply_facts", err, map[string]any{
 			"utxo_count":        snapshot.Count,
 			"history_tx_cnt":    len(history),
@@ -1263,7 +1263,7 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainClie
 	}
 }
 
-func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, address string, cursor walletUTXOHistoryCursor, tip uint32, meta walletSyncRoundMeta) ([]walletHistoryTxRecord, walletUTXOHistoryCursor, error) {
+func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, address string, cursor walletUTXOSyncCursor, tip uint32, meta walletSyncRoundMeta) ([]walletHistoryTxRecord, walletUTXOSyncCursor, error) {
 	next := cursor
 	next.RoundTipHeight = int64(tip)
 	next.UpdatedAtUnix = time.Now().Unix()
@@ -1525,12 +1525,12 @@ func satoshiFromTxOutputValue(v float64) uint64 {
 	return uint64(v*100000000 + 0.5)
 }
 
-// alignWalletUTXOHistoryCursor 把历史游标和“当前仍未花费集合”的最老确认高度重新对齐。
+// alignWalletUTXOSyncCursor 把同步游标和“当前仍未花费集合”的最老确认高度重新对齐。
 // 设计说明：
 // - 钱包开始处理 1sat 后，当前未花费集合不再只是 plain BSV；
 // - 如果当前仍未花费集合里出现了更老的输出，必须把同步锚点回退过去重扫；
 // - 否则后续资产识别可能拿不到那段历史，导致 UTXO 有了但资产语义丢了。
-func alignWalletUTXOHistoryCursor(cursor walletUTXOHistoryCursor, oldestCurrentConfirmedHeight int64, tip uint32) walletUTXOHistoryCursor {
+func alignWalletUTXOSyncCursor(cursor walletUTXOSyncCursor, oldestCurrentConfirmedHeight int64, tip uint32) walletUTXOSyncCursor {
 	next := cursor
 	if oldestCurrentConfirmedHeight > 0 && (next.AnchorHeight <= 0 || oldestCurrentConfirmedHeight < next.AnchorHeight) {
 		next.AnchorHeight = oldestCurrentConfirmedHeight

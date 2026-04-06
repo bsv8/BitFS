@@ -104,23 +104,23 @@ func dbLoadWalletUTXOSyncState(ctx context.Context, store *clientDB, address str
 	})
 }
 
-func dbLoadWalletUTXOHistoryCursor(ctx context.Context, store *clientDB, address string) (walletUTXOHistoryCursor, error) {
+func dbLoadWalletUTXOSyncCursor(ctx context.Context, store *clientDB, address string) (walletUTXOSyncCursor, error) {
 	if store == nil {
-		return walletUTXOHistoryCursor{}, fmt.Errorf("client db is nil")
+		return walletUTXOSyncCursor{}, fmt.Errorf("client db is nil")
 	}
 	address = strings.TrimSpace(address)
 	if address == "" {
-		return walletUTXOHistoryCursor{}, fmt.Errorf("wallet address is empty")
+		return walletUTXOSyncCursor{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOHistoryCursor, error) {
-		var s walletUTXOHistoryCursor
+	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOSyncCursor, error) {
+		var s walletUTXOSyncCursor
 		err := db.QueryRow(
 			`SELECT wallet_id,address,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error
-			 FROM wallet_utxo_history_cursor WHERE address=?`,
+			 FROM wallet_utxo_sync_cursor WHERE address=?`,
 			address,
 		).Scan(&s.WalletID, &s.Address, &s.NextConfirmedHeight, &s.NextPageToken, &s.AnchorHeight, &s.RoundTipHeight, &s.UpdatedAtUnix, &s.LastError)
 		if err == sql.ErrNoRows {
-			return walletUTXOHistoryCursor{}, nil
+			return walletUTXOSyncCursor{}, nil
 		}
 		return s, err
 	})
@@ -213,7 +213,7 @@ func dbUpdateWalletUTXOSyncStateError(ctx context.Context, store *clientDB, addr
 	})
 }
 
-func dbUpdateWalletUTXOHistoryCursorError(ctx context.Context, store *clientDB, address, errMsg string) error {
+func dbUpdateWalletUTXOSyncCursorError(ctx context.Context, store *clientDB, address, errMsg string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
@@ -225,7 +225,7 @@ func dbUpdateWalletUTXOHistoryCursorError(ctx context.Context, store *clientDB, 
 	now := time.Now().Unix()
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := db.Exec(
-			`INSERT INTO wallet_utxo_history_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
+			`INSERT INTO wallet_utxo_sync_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
 			 VALUES(?,?,?,?,?,?,?,?)
 			 ON CONFLICT(address) DO UPDATE SET
 				wallet_id=excluded.wallet_id,
@@ -234,7 +234,7 @@ func dbUpdateWalletUTXOHistoryCursorError(ctx context.Context, store *clientDB, 
 			address, walletID, 0, "", 0, 0, now, strings.TrimSpace(errMsg),
 		)
 		if err != nil {
-			obs.Error("bitcast-client", "wallet_utxo_history_cursor_upsert_failed", map[string]any{"error": err.Error(), "address": address})
+			obs.Error("bitcast-client", "wallet_utxo_sync_cursor_upsert_failed", map[string]any{"error": err.Error(), "address": address})
 		}
 		return err
 	})

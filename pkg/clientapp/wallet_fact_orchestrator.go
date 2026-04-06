@@ -30,7 +30,7 @@ type confirmedUTXOChange struct {
 // - 先执行同步状态（reconcileWalletUTXOSet），再执行 fact 写入
 // - 两阶段错误处理：同步失败直接返回，fact 失败可重试
 // - 这是唯一的钱包同步入口，以后所有同步入口都只调它
-func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOHistoryCursor, syncRoundID string, lastError string, trigger string, updatedAt int64, durationMS int64) error {
+func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOSyncCursor, syncRoundID string, lastError string, trigger string, updatedAt int64, durationMS int64) error {
 	if store == nil {
 		return fmt.Errorf("store is nil")
 	}
@@ -70,7 +70,7 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 // 设计说明：
 // - 内部执行完整的钱包 UTXO 对账，但不写 fact
 // - 返回 confirmed + unspent + plain_bsv 的 UTXO 变化，供上层调用方写入 fact
-func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOHistoryCursor, syncRoundID string, lastError string, trigger string, updatedAt int64, durationMS int64) ([]confirmedUTXOChange, error) {
+func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB, address string, snapshot liveWalletSnapshot, history []walletHistoryTxRecord, cursor walletUTXOSyncCursor, syncRoundID string, lastError string, trigger string, updatedAt int64, durationMS int64) ([]confirmedUTXOChange, error) {
 	if store == nil {
 		return nil, fmt.Errorf("store is nil")
 	}
@@ -291,7 +291,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 			return err
 		}
 		if _, err = tx.Exec(
-			`INSERT INTO wallet_utxo_history_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
+			`INSERT INTO wallet_utxo_sync_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
 			 VALUES(?,?,?,?,?,?,?,?)
 			 ON CONFLICT(address) DO UPDATE SET
 				wallet_id=excluded.wallet_id,

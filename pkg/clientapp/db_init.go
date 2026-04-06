@@ -400,7 +400,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			last_upstream_path TEXT NOT NULL DEFAULT '',
 			last_http_status INTEGER NOT NULL DEFAULT 0
 		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_utxo_history_cursor(
+		`CREATE TABLE IF NOT EXISTS wallet_utxo_sync_cursor(
 			address TEXT PRIMARY KEY,
 			wallet_id TEXT NOT NULL,
 			next_confirmed_height INTEGER NOT NULL,
@@ -739,7 +739,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_target ON settle_business_settlements(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_token_id ON fact_bsv21_events(token_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_kind_time ON fact_bsv21_events(event_kind, event_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_sync_cursor_round_tip ON wallet_utxo_sync_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		// 第六次迭代：finance 表索引移到 ensureFinAccountingIndexes 中创建
 		// 避免老库迁移时列不存在导致错误
 		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_process ON settle_process_events(process_id, id DESC)`,
