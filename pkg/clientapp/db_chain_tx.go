@@ -3,42 +3,13 @@ package clientapp
 import (
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
-
-func appendWalletUTXOEventTx(tx *sql.Tx, utxoID string, eventType string, refTxID string, refBusinessID string, note string, payload any) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	p := "{}"
-	if payload != nil {
-		if b, err := json.Marshal(payload); err == nil {
-			p = string(b)
-		}
-	}
-	_, err := tx.Exec(
-		`INSERT INTO wallet_utxo_events(created_at_unix,utxo_id,event_type,ref_txid,ref_business_id,note,payload_json) VALUES(?,?,?,?,?,?,?)`,
-		time.Now().Unix(),
-		strings.TrimSpace(utxoID),
-		strings.TrimSpace(eventType),
-		strings.ToLower(strings.TrimSpace(refTxID)),
-		strings.TrimSpace(refBusinessID),
-		strings.TrimSpace(note),
-		p,
-	)
-	return err
-}
-
-func upsertWalletUTXORowTx(tx *sql.Tx, existing map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, updatedAt int64) error {
-	return upsertWalletUTXORowTxWithEvent(tx, existing, walletID, address, utxoID, txid, vout, value, state, spentTxID, updatedAt, "detected", "utxo detected by chain sync", map[string]any{"state": state})
-}
 
 func loadWalletLocalBroadcastTxsTx(tx *sql.Tx, walletID string, address string) ([]walletLocalBroadcastRow, error) {
 	if tx == nil {
@@ -120,9 +91,7 @@ func overlayPendingLocalBroadcastsTx(tx *sql.Tx, existing map[string]utxoStateRo
 				continue
 			}
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
-			if err := setWalletUTXOSpentTxWithNote(tx, existing, utxoID, row.TxID, updatedAt, "local_pending_spent", "utxo preserved by local pending broadcast", map[string]any{
-				"txid": row.TxID,
-			}); err != nil {
+			if err := setWalletUTXOSpentTx(tx, existing, utxoID, row.TxID, updatedAt); err != nil {
 				return err
 			}
 		}
@@ -134,9 +103,7 @@ func overlayPendingLocalBroadcastsTx(tx *sql.Tx, existing map[string]utxoStateRo
 				continue
 			}
 			utxoID := row.TxID + ":" + fmt.Sprint(idx)
-			if err := upsertWalletUTXORowTxWithEvent(tx, existing, walletID, address, utxoID, row.TxID, uint32(idx), out.Satoshis, "unspent", "", updatedAt, "local_pending_detected", "utxo preserved by local pending broadcast", map[string]any{
-				"txid": row.TxID,
-			}); err != nil {
+			if err := upsertWalletUTXORowTx(tx, existing, walletID, address, utxoID, row.TxID, uint32(idx), out.Satoshis, "unspent", "", updatedAt); err != nil {
 				return err
 			}
 		}
@@ -236,7 +203,7 @@ func markObservedWalletLocalBroadcastTxsTx(tx *sql.Tx, observedTxIDs map[string]
 	return err
 }
 
-func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, updatedAt int64, eventType string, eventNote string, payload any) error {
+func upsertWalletUTXORowTx(tx *sql.Tx, existing map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -248,11 +215,6 @@ func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow
 	if ok && row.CreatedAtUnix > 0 {
 		createdAtUnix = row.CreatedAtUnix
 	}
-	// 设计说明：
-	// - 按当前 1sat 资产模型，真正需要先保护的是“1 聪输出”；
-	// - 这些输出在链上先出现、索引后确认之间有时间差，若先按 plain_bsv 放行，可能被分配器误花；
-	// - 因此 value=1 的新 UTXO 先进入 unknown，等索引明确确认“不是 1sat 资产输出”后才放行；
-	// - 非 1 聪输出默认仍按 plain_bsv 处理，避免把保护范围错误扩大到整个钱包。
 	allocationClass, allocationReason := defaultWalletUTXOProtectionForValue(value)
 	if ok {
 		allocationClass = normalizeWalletUTXOAllocationClass(row.AllocationClass)
@@ -304,14 +266,10 @@ func upsertWalletUTXORowTxWithEvent(tx *sql.Tx, existing map[string]utxoStateRow
 		SpentTxID:        spentTxID,
 		CreatedAtUnix:    createdAtUnix,
 	}
-	return appendWalletUTXOEventTx(tx, utxoID, strings.TrimSpace(eventType), txid, "", strings.TrimSpace(eventNote), payload)
+	return nil
 }
 
-func setWalletUTXOSpentTx(tx *sql.Tx, existing map[string]utxoStateRow, utxoID string, spentTxID string, updatedAt int64, eventType string) error {
-	return setWalletUTXOSpentTxWithNote(tx, existing, utxoID, spentTxID, updatedAt, eventType, "utxo spent by chain sync", nil)
-}
-
-func setWalletUTXOSpentTxWithNote(tx *sql.Tx, existing map[string]utxoStateRow, utxoID string, spentTxID string, updatedAt int64, eventType string, eventNote string, payload any) error {
+func setWalletUTXOSpentTx(tx *sql.Tx, existing map[string]utxoStateRow, utxoID string, spentTxID string, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -320,16 +278,11 @@ func setWalletUTXOSpentTxWithNote(tx *sql.Tx, existing map[string]utxoStateRow, 
 		return nil
 	}
 	spentTxID = strings.ToLower(strings.TrimSpace(spentTxID))
-	prevState := strings.TrimSpace(strings.ToLower(row.State))
-	prevSpentTxID := strings.TrimSpace(strings.ToLower(row.SpentTxID))
 	if _, err := tx.Exec(`UPDATE wallet_utxo SET state='spent',spent_txid=?,spent_at_unix=?,updated_at_unix=? WHERE utxo_id=?`, spentTxID, updatedAt, updatedAt, utxoID); err != nil {
 		return err
 	}
 	row.State = "spent"
 	row.SpentTxID = spentTxID
 	existing[utxoID] = row
-	if prevState == "spent" && prevSpentTxID == spentTxID {
-		return nil
-	}
-	return appendWalletUTXOEventTx(tx, utxoID, strings.TrimSpace(eventType), spentTxID, "", strings.TrimSpace(eventNote), payload)
+	return nil
 }

@@ -55,9 +55,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 				continue
 			}
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
-			if err := setWalletUTXOSpentTxWithNote(dbtx, existing, utxoID, txid, updatedAt, "local_broadcast_spent", "utxo spent by local broadcast", map[string]any{
-				"trigger": trigger,
-			}); err != nil {
+			if err := setWalletUTXOSpentTx(dbtx, existing, utxoID, txid, updatedAt); err != nil {
 				return err
 			}
 		}
@@ -73,9 +71,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 				continue
 			}
 			utxoID := txid + ":" + fmt.Sprint(idx)
-			if err := upsertWalletUTXORowTxWithEvent(dbtx, existing, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", updatedAt, "local_broadcast_detected", "utxo detected by local broadcast", map[string]any{
-				"trigger": trigger,
-			}); err != nil {
+			if err := upsertWalletUTXORowTx(dbtx, existing, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", updatedAt); err != nil {
 				return err
 			}
 		}

@@ -206,32 +206,6 @@ type walletUTXOItem struct {
 	Assets           any    `json:"assets,omitempty"`
 }
 
-type walletUTXOEventFilter struct {
-	Limit         int
-	Offset        int
-	UTXOID        string
-	EventType     string
-	RefTxID       string
-	RefBusinessID string
-	Query         string
-}
-
-type walletUTXOEventPage struct {
-	Total int
-	Items []walletUTXOEventItem
-}
-
-type walletUTXOEventItem struct {
-	ID            int64           `json:"id"`
-	CreatedAtUnix int64           `json:"created_at_unix"`
-	UTXOID        string          `json:"utxo_id"`
-	EventType     string          `json:"event_type"`
-	RefTxID       string          `json:"ref_txid"`
-	RefBusinessID string          `json:"ref_business_id"`
-	Note          string          `json:"note"`
-	Payload       json.RawMessage `json:"payload"`
-}
-
 func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestratorLogFilter) (orchestratorLogPage, error) {
 	if store == nil {
 		return orchestratorLogPage{}, fmt.Errorf("client db is nil")
@@ -704,86 +678,5 @@ func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walle
 	if err == nil && len(assets) > 0 {
 		out.Assets = assets
 	}
-	return out, nil
-}
-
-func dbListWalletUTXOEvents(ctx context.Context, store *clientDB, f walletUTXOEventFilter) (walletUTXOEventPage, error) {
-	if store == nil {
-		return walletUTXOEventPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOEventPage, error) {
-		where := ""
-		args := make([]any, 0, 12)
-		if f.UTXOID != "" {
-			where += " AND utxo_id=?"
-			args = append(args, f.UTXOID)
-		}
-		if f.EventType != "" {
-			where += " AND event_type=?"
-			args = append(args, f.EventType)
-		}
-		if f.RefTxID != "" {
-			where += " AND ref_txid=?"
-			args = append(args, f.RefTxID)
-		}
-		if f.RefBusinessID != "" {
-			where += " AND ref_business_id=?"
-			args = append(args, f.RefBusinessID)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (utxo_id LIKE ? OR note LIKE ? OR ref_txid LIKE ? OR ref_business_id LIKE ?)"
-			args = append(args, like, like, like, like)
-		}
-		var out walletUTXOEventPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM wallet_utxo_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return walletUTXOEventPage{}, err
-		}
-		rows, err := db.Query(
-			`SELECT id,created_at_unix,utxo_id,event_type,ref_txid,ref_business_id,note,payload_json
-			 FROM wallet_utxo_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return walletUTXOEventPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]walletUTXOEventItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanWalletUTXOEventItem(rows)
-			if err != nil {
-				return walletUTXOEventPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return walletUTXOEventPage{}, err
-		}
-		return out, nil
-	})
-}
-
-func dbGetWalletUTXOEvent(ctx context.Context, store *clientDB, id int64) (walletUTXOEventItem, error) {
-	if store == nil {
-		return walletUTXOEventItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,utxo_id,event_type,ref_txid,ref_business_id,note,payload_json FROM wallet_utxo_events WHERE id=?`, id)
-		return scanWalletUTXOEventItem(row)
-	})
-}
-
-type scanWalletUTXOEvent interface {
-	Scan(dest ...any) error
-}
-
-func scanWalletUTXOEventItem(row scanWalletUTXOEvent) (walletUTXOEventItem, error) {
-	var out walletUTXOEventItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.UTXOID, &out.EventType, &out.RefTxID, &out.RefBusinessID, &out.Note, &payload)
-	if err != nil {
-		return walletUTXOEventItem{}, err
-	}
-	out.Payload = json.RawMessage(payload)
 	return out, nil
 }

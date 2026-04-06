@@ -355,16 +355,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			spent_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_utxo_events(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			utxo_id TEXT NOT NULL,
-			event_type TEXT NOT NULL,
-			ref_txid TEXT NOT NULL,
-			ref_business_id TEXT NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
-		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_utxo_assets(
 			utxo_id TEXT NOT NULL,
 			wallet_id TEXT NOT NULL,
@@ -749,8 +739,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_utxo ON wallet_utxo_events(utxo_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_events_business ON wallet_utxo_events(ref_business_id, id DESC)`,
 		// 前台业务主身份层索引（第七次迭代新增）
 		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_type_status ON biz_front_orders(front_type, status, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_target ON biz_front_orders(target_object_type, target_object_id)`,
@@ -3432,6 +3420,9 @@ func migrateLegacyChainTables(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(`DROP TABLE IF EXISTS wallet_chain_tx_raw`); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`DROP TABLE IF EXISTS wallet_utxo_events`); err != nil {
 		return err
 	}
 	return nil

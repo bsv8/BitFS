@@ -348,8 +348,6 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/chain/utxo/logs", s.withAuth(s.handleAdminChainUTXOLogs))
 		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos", s.withAuth(s.handleAdminWalletUTXOs))
 		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos/detail", s.withAuth(s.handleAdminWalletUTXODetail))
-		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events", s.withAuth(s.handleAdminWalletUTXOEvents))
-		mux.HandleFunc(prefix+"/v1/admin/wallet/utxo-events/detail", s.withAuth(s.handleAdminWalletUTXOEventDetail))
 		// 资产确认队列运维
 		mux.HandleFunc(prefix+"/v1/admin/verification/summary", s.withAuth(s.handleAdminVerificationSummary))
 		mux.HandleFunc(prefix+"/v1/admin/verification/failed", s.withAuth(s.handleAdminVerificationFailed))
@@ -1851,60 +1849,6 @@ func (s *httpAPIServer) handleAdminWalletUTXODetail(w http.ResponseWriter, r *ht
 		return
 	}
 	it, err := dbGetWalletUTXO(r.Context(), httpStore(s), utxoID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
-func (s *httpAPIServer) handleAdminWalletUTXOEvents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	utxoID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("utxo_id")))
-	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
-	refTxID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("ref_txid")))
-	refBusinessID := strings.TrimSpace(r.URL.Query().Get("ref_business_id"))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	page, err := dbListWalletUTXOEvents(r.Context(), httpStore(s), walletUTXOEventFilter{
-		Limit:         limit,
-		Offset:        offset,
-		UTXOID:        utxoID,
-		EventType:     eventType,
-		RefTxID:       refTxID,
-		RefBusinessID: refBusinessID,
-		Query:         q,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
-}
-
-func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
-		return
-	}
-	it, err := dbGetWalletUTXOEvent(r.Context(), httpStore(s), int64(id))
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})

@@ -133,7 +133,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 				if _, ok := existing[spentID]; !ok {
 					continue
 				}
-				if err = setWalletUTXOSpentTx(tx, existing, spentID, historyTxID, updatedAt, "confirmed_history_spent"); err != nil {
+				if err = setWalletUTXOSpentTx(tx, existing, spentID, historyTxID, updatedAt); err != nil {
 					return err
 				}
 			}
@@ -155,7 +155,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 				if _, ok := existing[spentID]; !ok {
 					continue
 				}
-				if err = setWalletUTXOSpentTx(tx, existing, spentID, mempoolTxID, updatedAt, "mempool_spent"); err != nil {
+				if err = setWalletUTXOSpentTx(tx, existing, spentID, mempoolTxID, updatedAt); err != nil {
 					return err
 				}
 			}
