@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -727,20 +726,6 @@ func TestVerificationReconcile_ConsecutiveAnomaly(t *testing.T) {
 }
 
 // ==================== Step 14 回归测试 ====================
-
-// TestOldPathSwitch_DisabledByDefault 验证旧路径开关关闭时不回退
-func TestOldPathSwitch_DisabledByDefault(t *testing.T) {
-	t.Parallel()
-
-	// 确保环境变量未设置
-	if os.Getenv("BITFS_ENABLE_TOKEN_OLD_PATH") != "" {
-		t.Skip("BITFS_ENABLE_TOKEN_OLD_PATH is set in environment, skipping")
-	}
-
-	if isTokenOldPathEnabled() {
-		t.Fatalf("expected old path to be disabled by default")
-	}
-}
 
 // TestVerificationResponseHelper_FieldsConsistent 验证 API 统一响应辅助函数覆盖
 func TestVerificationResponseHelper_FieldsConsistent(t *testing.T) {

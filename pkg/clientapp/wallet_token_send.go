@@ -199,8 +199,8 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	if requested.scale != 0 {
 		return preparedWalletTokenSend{}, fmt.Errorf("%s amount_text must be an integer", standard)
 	}
-	// Step 8：接入 fact 选源，无 fact 数据时回退旧路径
-	candidates, err := loadWalletTokenSpendableCandidatesWithFallback(ctx, store, rt, address, standard, assetKey)
+	// fact_chain_asset_flows 为唯一 token 选源口径
+	candidates, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}

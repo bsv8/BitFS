@@ -2156,13 +2156,14 @@ func TestTokenBalanceWithFallback_FactEmptyFallback(t *testing.T) {
 		t.Fatalf("expected empty total_in when no fact data, got %q", bal.TotalInText)
 	}
 
-	// 验证 loadWalletTokenBalanceWithFallback 在 fact 无数据时尝试回退
-	// 注意：因为没有 WalletChain，旧路径会失败，这验证了"fact 空 → 回退"逻辑确实执行了
-	_, err = loadWalletTokenBalanceWithFallback(ctx, store, rt, address, "bsv21", assetKey)
-	if err == nil {
-		// 如果旧路径成功（比如有候选），也可以
+	// 验证 loadWalletTokenBalance 在 fact 无数据时返回 "0"
+	balText, err := loadWalletTokenBalance(ctx, store, rt, address, "bsv21", assetKey)
+	if err != nil {
+		t.Fatalf("load token balance (empty fact): %v", err)
 	}
-	// 我们验证了 fact 是空的，回退逻辑被触发
+	if balText != "0" {
+		t.Fatalf("expected balance 0 when no fact data, got %q", balText)
+	}
 }
 
 // TestTokenConsumptionIdempotent 验证重试幂等：同一 chain_payment 不重复写消耗
@@ -2320,7 +2321,7 @@ func TestTokenBalance_WithUsedReturnsRemaining(t *testing.T) {
 	}
 
 	// 验证余额 = 10000 - 3000 = 7000
-	balText, err := loadWalletTokenBalanceWithFallback(ctx, store, rt, address, "bsv21", tokenID)
+	balText, err := loadWalletTokenBalance(ctx, store, rt, address, "bsv21", tokenID)
 	if err != nil {
 		t.Fatalf("load token balance: %v", err)
 	}
@@ -2377,13 +2378,13 @@ func TestTokenSpendable_HistoryExistsButZeroNotFallback(t *testing.T) {
 		t.Fatalf("expected 0 spendable flows (all spent), got %d", len(flows))
 	}
 
-	// 验证 loadWalletTokenSpendableCandidatesWithFallback 也返回空（不回退）
-	candidates, err := loadWalletTokenSpendableCandidatesWithFallback(ctx, store, rt, address, "bsv21", tokenID)
+	// 验证 loadWalletTokenSpendableCandidatesFromFact 也返回空
+	candidates, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, "bsv21", tokenID)
 	if err != nil {
-		t.Fatalf("load with fallback: %v", err)
+		t.Fatalf("load from fact: %v", err)
 	}
 	if len(candidates) != 0 {
-		t.Fatalf("expected 0 candidates (should not fallback when fact history exists), got %d", len(candidates))
+		t.Fatalf("expected 0 candidates (all spent), got %d", len(candidates))
 	}
 }
 
@@ -2409,15 +2410,6 @@ func TestTokenConsumptionWrite_AfterSend(t *testing.T) {
 		"tx_send_cons", "", now, now, 0,
 	); err != nil {
 		t.Fatalf("seed wallet_utxo: %v", err)
-	}
-
-	// 种 wallet_utxo_assets（token 资产记录）
-	if _, err := db.Exec(`INSERT INTO wallet_utxo_assets(utxo_id,wallet_id,address,asset_group,asset_standard,asset_key,asset_symbol,quantity_text,source_name,payload_json,updated_at_unix)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		utxoID, walletID, address, "token", "bsv21", tokenID, "TST", quantityText,
-		"local_broadcast", "{}", now,
-	); err != nil {
-		t.Fatalf("seed wallet_utxo_assets: %v", err)
 	}
 
 	// 种 fact IN 记录

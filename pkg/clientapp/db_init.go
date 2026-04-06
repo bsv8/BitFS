@@ -355,20 +355,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			spent_at_unix INTEGER NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_utxo_assets(
-			utxo_id TEXT NOT NULL,
-			wallet_id TEXT NOT NULL,
-			address TEXT NOT NULL,
-			asset_group TEXT NOT NULL,
-			asset_standard TEXT NOT NULL,
-			asset_key TEXT NOT NULL,
-			asset_symbol TEXT NOT NULL,
-			quantity_text TEXT NOT NULL,
-			source_name TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			PRIMARY KEY(utxo_id, asset_group, asset_standard, asset_key)
-		)`,
 		`CREATE TABLE IF NOT EXISTS fact_bsv21(
 			token_id TEXT PRIMARY KEY,
 			create_txid TEXT NOT NULL,
@@ -751,8 +737,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_status ON settle_business_settlements(status, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_method ON settle_business_settlements(settlement_method, status, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_target ON settle_business_settlements(target_type, target_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_token_id ON fact_bsv21_events(token_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_kind_time ON fact_bsv21_events(event_kind, event_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
@@ -988,9 +972,6 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	// 依赖这两个列的索引必须放到专门的迁移函数里创建。
 	if err := ensureWalletUTXOSchema(db); err != nil {
 		return fmt.Errorf("wallet_utxo: %w", err)
-	}
-	if err := ensureWalletUTXOAssetsSchema(db); err != nil {
-		return fmt.Errorf("wallet_utxo_assets: %w", err)
 	}
 	if err := ensureFactChainPaymentTimingSchema(db); err != nil {
 		return fmt.Errorf("fact_chain_payments timing columns: %w", err)
@@ -3725,36 +3706,6 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 		return err
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
-		return err
-	}
-	return nil
-}
-
-// ensureWalletUTXOAssetsSchema 处理 wallet_utxo_assets 表的历史索引迁移
-func ensureWalletUTXOAssetsSchema(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS wallet_utxo_assets(
-		utxo_id TEXT NOT NULL,
-		wallet_id TEXT NOT NULL,
-		address TEXT NOT NULL,
-		asset_group TEXT NOT NULL,
-		asset_standard TEXT NOT NULL,
-		asset_key TEXT NOT NULL,
-		asset_symbol TEXT NOT NULL,
-		quantity_text TEXT NOT NULL,
-		source_name TEXT NOT NULL,
-		payload_json TEXT NOT NULL,
-		updated_at_unix INTEGER NOT NULL,
-		PRIMARY KEY(utxo_id, asset_group, asset_standard, asset_key)
-	)`); err != nil {
-		return err
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`); err != nil {
-		return err
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`); err != nil {
 		return err
 	}
 	return nil

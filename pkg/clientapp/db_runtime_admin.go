@@ -203,7 +203,6 @@ type walletUTXOItem struct {
 	CreatedAtUnix    int64  `json:"created_at_unix"`
 	UpdatedAtUnix    int64  `json:"updated_at_unix"`
 	SpentAtUnix      int64  `json:"spent_at_unix"`
-	Assets           any    `json:"assets,omitempty"`
 }
 
 func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestratorLogFilter) (orchestratorLogPage, error) {
@@ -659,7 +658,7 @@ func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walle
 	if store == nil {
 		return walletUTXOItem{}, fmt.Errorf("client db is nil")
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOItem, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOItem, error) {
 		var item walletUTXOItem
 		err := db.QueryRow(
 			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
@@ -671,12 +670,4 @@ func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walle
 		)
 		return item, err
 	})
-	if err != nil {
-		return walletUTXOItem{}, err
-	}
-	assets, err := dbListWalletUTXOAssetRows(ctx, store, utxoID)
-	if err == nil && len(assets) > 0 {
-		out.Assets = assets
-	}
-	return out, nil
 }

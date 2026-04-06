@@ -102,48 +102,6 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 	})
 }
 
-func dbListWalletUTXOAssetRows(ctx context.Context, store *clientDB, utxoID string) ([]walletUTXOAssetRow, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletUTXOAssetRow, error) {
-		utxoID = strings.ToLower(strings.TrimSpace(utxoID))
-		if utxoID == "" {
-			return []walletUTXOAssetRow{}, nil
-		}
-		rows, err := db.Query(`SELECT utxo_id,wallet_id,address,asset_group,asset_standard,asset_key,asset_symbol,quantity_text,source_name,payload_json,updated_at_unix
-			FROM wallet_utxo_assets
-			WHERE utxo_id=?
-			ORDER BY asset_group ASC, asset_standard ASC, asset_key ASC`, utxoID)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		out := make([]walletUTXOAssetRow, 0, 4)
-		for rows.Next() {
-			var item walletUTXOAssetRow
-			if err := rows.Scan(&item.UTXOID, &item.WalletID, &item.Address, &item.AssetGroup, &item.AssetStandard, &item.AssetKey, &item.AssetSymbol, &item.QuantityText, &item.SourceName, &item.PayloadJSON, &item.UpdatedAtUnix); err != nil {
-				return nil, err
-			}
-			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-			item.WalletID = strings.TrimSpace(item.WalletID)
-			item.Address = strings.TrimSpace(item.Address)
-			item.AssetGroup = strings.TrimSpace(item.AssetGroup)
-			item.AssetStandard = strings.TrimSpace(item.AssetStandard)
-			item.AssetKey = strings.TrimSpace(item.AssetKey)
-			item.AssetSymbol = strings.TrimSpace(item.AssetSymbol)
-			item.QuantityText = strings.TrimSpace(item.QuantityText)
-			item.SourceName = strings.TrimSpace(item.SourceName)
-			item.PayloadJSON = strings.TrimSpace(item.PayloadJSON)
-			if item.PayloadJSON == "" {
-				item.PayloadJSON = "{}"
-			}
-			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
-		}
-		return out, nil
-	})
-}
-
 func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, address string) ([]fundalloc.Candidate, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]fundalloc.Candidate, error) {
 		address = strings.TrimSpace(address)

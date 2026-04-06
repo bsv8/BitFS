@@ -207,7 +207,7 @@ func dbUpsertWalletLocalBroadcastFactTx(tx *sql.Tx, walletID string, address str
 	return nil
 }
 
-// dbRefreshWalletAssetProjection 负责清掉旧资产影子，并把当前 wallet_utxo 重新归一。
+// dbRefreshWalletAssetProjection 把当前 wallet_utxo 未花费输出重新归一保护分类。
 // 设计说明：
 // - 这里只做数据库投影，不再碰 Runtime 里的旧 DB 字段；
 // - 这样资产视图和本地广播投影都统一走 clientDB。
@@ -224,10 +224,6 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 		return err
 	}
 	if err := store.Tx(ctx, func(tx *sql.Tx) error {
-		walletID := walletIDByAddress(address)
-		if _, err := tx.Exec(`DELETE FROM wallet_utxo_assets WHERE wallet_id=? AND address=?`, walletID, address); err != nil {
-			return err
-		}
 		updatedAt := time.Now().Unix()
 		for utxoID, row := range current {
 			if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
@@ -254,7 +250,6 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 		"address":            address,
 		"trigger":            strings.TrimSpace(trigger),
 		"current_utxo_count": len(current),
-		"asset_rows_cleared": true,
 	}
 	obs.Info("bitcast-client", "wallet_asset_projection_refreshed", payload)
 	return nil
