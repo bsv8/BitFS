@@ -144,6 +144,30 @@ func TestAppendAssetFlowIn_UnknownNotWritten(t *testing.T) {
 	_, _ = db.Exec(`DELETE FROM fact_chain_asset_flows WHERE utxo_id=?`, utxoID)
 }
 
+// TestPoolAccountingBoundary_Kinds 验证第1步统一口径函数。
+func TestPoolAccountingBoundary_Kinds(t *testing.T) {
+	t.Parallel()
+
+	if !IsPoolFactEventKind(PoolFactEventKindPoolEvent) {
+		t.Fatalf("pool_event should be recognized as fact event kind")
+	}
+	if !IsPoolFactEventKind(PoolFactEventKindTxHistory) {
+		t.Fatalf("tx_history should be recognized as fact event kind")
+	}
+	if IsPoolFactAllocationDisallowed(PoolBusinessActionOpen) {
+		t.Fatalf("open should stay allowed on current fact path")
+	}
+	if IsPoolFactAllocationDisallowed(PoolBusinessActionClose) {
+		t.Fatalf("close should stay allowed on current fact path")
+	}
+	if !IsPoolFactAllocationDisallowed(PoolBusinessActionServicePay) {
+		t.Fatalf("service_pay should be treated as legacy allocation path")
+	}
+	if NormalizePoolBusinessAction(PoolBusinessActionPayLegacy) != PoolBusinessActionServicePay {
+		t.Fatalf("pay should normalize to service_pay")
+	}
+}
+
 // TestAppendAssetConsumptionForChainPayment_PowerIdempotent 验证 chain_payment 消耗关联幂等
 func TestAppendAssetConsumptionForChainPayment_PowerIdempotent(t *testing.T) {
 	db := newAssetFactsTestDB(t)

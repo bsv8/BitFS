@@ -174,6 +174,26 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 		}
 	}
 
+	cycleCols, err := tableColumns(db, "fact_settlement_cycles")
+	if err != nil {
+		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
+	}
+	for _, col := range []string{"pool_session_id", "pool_session_event_id", "chain_payment_id", "cycle_id"} {
+		if _, ok := cycleCols[col]; !ok {
+			t.Fatalf("missing column %s on fact_settlement_cycles", col)
+		}
+	}
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "pool_session_id"); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles pool_session_id notnull failed: %v", err)
+	} else if !notNull {
+		t.Fatal("fact_settlement_cycles.pool_session_id should be NOT NULL")
+	}
+	if hasIndex, err := tableHasIndex(db, "fact_settlement_cycles", "idx_fact_settlement_cycles_pool_session"); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles pool_session index failed: %v", err)
+	} else if !hasIndex {
+		t.Fatal("fact_settlement_cycles should keep index on pool_session_id")
+	}
+
 	// 第六次迭代：只测试主口径字段
 	if _, err := db.Exec(`INSERT INTO settle_businesses(
 		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json

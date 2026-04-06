@@ -88,6 +88,47 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		}
 	}
 
+	for _, tableCheck := range []struct {
+		table string
+		cols  []string
+	}{
+		{
+			table: "biz_pool",
+			cols: []string{
+				"pool_session_id", "pool_scheme", "counterparty_pubkey_hex", "seller_pubkey_hex",
+				"arbiter_pubkey_hex", "gateway_pubkey_hex", "pool_amount_satoshi", "spend_tx_fee_satoshi",
+				"allocated_satoshi", "cycle_fee_satoshi", "available_satoshi", "next_sequence_num",
+				"status", "open_base_txid", "open_allocation_id", "close_allocation_id",
+				"created_at_unix", "updated_at_unix",
+			},
+		},
+		{
+			table: "biz_pool_allocations",
+			cols: []string{
+				"allocation_id", "pool_session_id", "allocation_no", "allocation_kind", "sequence_num",
+				"payee_amount_after", "payer_amount_after", "txid", "tx_hex", "created_at_unix",
+			},
+		},
+		{
+			table: "fact_settlement_cycles",
+			cols: []string{
+				"id", "cycle_id", "channel", "state", "pool_session_id", "pool_session_event_id",
+				"chain_payment_id", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi",
+				"cycle_index", "occurred_at_unix", "confirmed_at_unix", "note", "payload_json",
+			},
+		},
+	} {
+		cols, err := tableColumns(db, tableCheck.table)
+		if err != nil {
+			t.Fatalf("inspect %s columns failed: %v", tableCheck.table, err)
+		}
+		for _, col := range tableCheck.cols {
+			if _, ok := cols[col]; !ok {
+				t.Fatalf("%s missing column %s", tableCheck.table, col)
+			}
+		}
+	}
+
 	allocCols, err := tableColumns(db, "fact_pool_session_events")
 	if err != nil {
 		t.Fatalf("inspect fact_pool_session_events columns failed: %v", err)
@@ -106,6 +147,16 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		t.Fatalf("inspect fact_pool_session_events unique constraint failed: %v", err)
 	} else if !unique {
 		t.Fatalf("fact_pool_session_events should keep unique constraint on allocation_id")
+	}
+	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool", []string{"pool_session_id"}); err != nil {
+		t.Fatalf("inspect biz_pool unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatalf("biz_pool should keep primary key on pool_session_id")
+	}
+	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool_allocations", []string{"pool_session_id", "allocation_kind", "sequence_num"}); err != nil {
+		t.Fatalf("inspect biz_pool_allocations unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatalf("biz_pool_allocations should keep unique constraint on (pool_session_id, allocation_kind, sequence_num)")
 	}
 
 	for _, table := range []string{"fact_chain_payments", "settle_tx_utxo_links"} {
@@ -132,6 +183,16 @@ func TestInitIndexDB_MigratesHistoricalPoolAllocations(t *testing.T) {
 
 	if err := initIndexDB(db); err != nil {
 		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	for _, table := range []string{"biz_pool", "biz_pool_allocations", "fact_settlement_cycles"} {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("hasTable %s failed: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("missing %s table after migration", table)
+		}
 	}
 
 	cols, err := tableColumns(db, "fact_pool_session_events")
@@ -233,9 +294,13 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 	}
 
 	for _, indexName := range []string{
+		"idx_biz_pool_status_updated",
+		"idx_biz_pool_allocations_session_no",
+		"idx_biz_pool_allocations_session_kind_seq",
 		"uq_fact_pool_session_events_session_kind_seq",
 		"idx_fact_pool_session_events_session_no",
 		"idx_fact_pool_session_events_txid",
+		"idx_fact_settlement_cycles_pool_session",
 		"idx_fact_chain_payments_occurred",
 		"idx_fact_chain_payments_subtype",
 		"idx_fact_chain_payments_status",
@@ -244,8 +309,17 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 		"idx_settle_tx_utxo_links_txid",
 	} {
 		tableName := "fact_pool_session_events"
+		if indexName == "idx_biz_pool_status_updated" {
+			tableName = "biz_pool"
+		}
+		if indexName == "idx_biz_pool_allocations_session_no" || indexName == "idx_biz_pool_allocations_session_kind_seq" {
+			tableName = "biz_pool_allocations"
+		}
 		if indexName == "idx_fact_chain_payments_occurred" || indexName == "idx_fact_chain_payments_subtype" || indexName == "idx_fact_chain_payments_status" {
 			tableName = "fact_chain_payments"
+		}
+		if indexName == "idx_fact_settlement_cycles_pool_session" {
+			tableName = "fact_settlement_cycles"
 		}
 		if indexName == "idx_settle_tx_utxo_links_business" || indexName == "idx_settle_tx_utxo_links_utxo" || indexName == "idx_settle_tx_utxo_links_txid" {
 			tableName = "settle_tx_utxo_links"
@@ -263,6 +337,16 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 		t.Fatalf("inspect fact_chain_payments unique constraint failed: %v", err)
 	} else if !unique {
 		t.Fatalf("fact_chain_payments should keep unique constraint on txid")
+	}
+	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool", []string{"pool_session_id"}); err != nil {
+		t.Fatalf("inspect biz_pool unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatalf("biz_pool should keep unique constraint on pool_session_id")
+	}
+	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool_allocations", []string{"pool_session_id", "allocation_kind", "sequence_num"}); err != nil {
+		t.Fatalf("inspect biz_pool_allocations unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatalf("biz_pool_allocations should keep unique constraint on (pool_session_id, allocation_kind, sequence_num)")
 	}
 	if unique, err := tableHasUniqueIndexOnColumns(db, "settle_tx_utxo_links", []string{"business_id", "txid", "utxo_id", "io_side", "utxo_role"}); err != nil {
 		t.Fatalf("inspect settle_tx_utxo_links unique constraint failed: %v", err)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -190,6 +191,168 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 //   - 按 pool_session_id 分组，找到每个 session 的第一次 pay allocation
 //   - 为每个 session 创建完整的主链：front_order -> trigger -> business -> settlement
 //   - settlement 指向那条 pay allocation 的 id
+//   - 同步回填 biz_pool / biz_pool_allocations，作为新业务快照
+func backfillBizPoolFacts(db *sql.DB) error {
+	sessions, err := db.Query(`
+		SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+		       pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
+		FROM fact_pool_sessions
+		ORDER BY created_at_unix ASC, pool_session_id ASC
+	`)
+	if err != nil {
+		return fmt.Errorf("query fact_pool_sessions: %w", err)
+	}
+	defer sessions.Close()
+
+	for sessions.Next() {
+		var session PoolSessionItem
+		if err := sessions.Scan(
+			&session.PoolSessionID, &session.PoolScheme, &session.CounterpartyPubHex, &session.SellerPubHex, &session.ArbiterPubHex,
+			&session.GatewayPubHex, &session.PoolAmountSat, &session.SpendTxFeeSat, &session.FeeRateSatByte, &session.LockBlocks,
+			&session.OpenBaseTxID, &session.Status, &session.CreatedAtUnix, &session.UpdatedAtUnix,
+		); err != nil {
+			return fmt.Errorf("scan fact_pool_sessions: %w", err)
+		}
+
+		events, err := db.Query(`
+			SELECT allocation_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+			FROM fact_pool_session_events
+			WHERE pool_session_id=? AND event_kind=?
+			ORDER BY allocation_no ASC
+		`, session.PoolSessionID, PoolFactEventKindPoolEvent)
+		if err != nil {
+			return fmt.Errorf("query fact_pool_session_events for %s: %w", session.PoolSessionID, err)
+		}
+
+		var (
+			lastSequence      uint32
+			lastPayeeAfter    uint64
+			lastPayerAfter    uint64
+			openAllocationID  string
+			closeAllocationID string
+			haveEvent         bool
+		)
+		for events.Next() {
+			var item struct {
+				AllocationID     string
+				AllocationNo     int64
+				AllocationKind   string
+				SequenceNum      uint32
+				PayeeAmountAfter uint64
+				PayerAmountAfter uint64
+				TxID             string
+				TxHex            string
+				CreatedAtUnix    int64
+			}
+			if err := events.Scan(
+				&item.AllocationID, &item.AllocationNo, &item.AllocationKind, &item.SequenceNum,
+				&item.PayeeAmountAfter, &item.PayerAmountAfter, &item.TxID, &item.TxHex, &item.CreatedAtUnix,
+			); err != nil {
+				_ = events.Close()
+				return fmt.Errorf("scan fact_pool_session_events for %s: %w", session.PoolSessionID, err)
+			}
+			haveEvent = true
+			lastSequence = item.SequenceNum
+			lastPayeeAfter = item.PayeeAmountAfter
+			lastPayerAfter = item.PayerAmountAfter
+			switch strings.TrimSpace(item.AllocationKind) {
+			case PoolBusinessActionOpen:
+				if openAllocationID == "" {
+					openAllocationID = item.AllocationID
+				}
+			case PoolBusinessActionClose:
+				closeAllocationID = item.AllocationID
+			}
+			if _, err := db.Exec(`
+				INSERT INTO biz_pool_allocations(
+					allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
+				) VALUES(?,?,?,?,?,?,?,?,?,?)
+				ON CONFLICT(allocation_id) DO UPDATE SET
+					pool_session_id=excluded.pool_session_id,
+					allocation_kind=excluded.allocation_kind,
+					sequence_num=excluded.sequence_num,
+					payee_amount_after=excluded.payee_amount_after,
+					payer_amount_after=excluded.payer_amount_after,
+					txid=excluded.txid,
+					tx_hex=excluded.tx_hex,
+					created_at_unix=excluded.created_at_unix`,
+				item.AllocationID, session.PoolSessionID, item.AllocationNo, item.AllocationKind, item.SequenceNum,
+				item.PayeeAmountAfter, item.PayerAmountAfter, strings.ToLower(strings.TrimSpace(item.TxID)), strings.ToLower(strings.TrimSpace(item.TxHex)), item.CreatedAtUnix,
+			); err != nil {
+				_ = events.Close()
+				return fmt.Errorf("upsert biz_pool_allocations for %s: %w", item.AllocationID, err)
+			}
+		}
+		if err := events.Err(); err != nil {
+			_ = events.Close()
+			return fmt.Errorf("iterate fact_pool_session_events for %s: %w", session.PoolSessionID, err)
+		}
+		_ = events.Close()
+
+		nextSequence := uint32(1)
+		if haveEvent {
+			nextSequence = lastSequence + 1
+		}
+		poolAmount := uint64(0)
+		if session.PoolAmountSat > 0 {
+			poolAmount = uint64(session.PoolAmountSat)
+		}
+		if session.SpendTxFeeSat > 0 {
+			poolAmount += uint64(session.SpendTxFeeSat)
+		}
+		if _, err := db.Exec(`
+			INSERT INTO biz_pool(
+				pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+				pool_amount_satoshi,spend_tx_fee_satoshi,allocated_satoshi,cycle_fee_satoshi,available_satoshi,next_sequence_num,
+				status,open_base_txid,open_allocation_id,close_allocation_id,created_at_unix,updated_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(pool_session_id) DO UPDATE SET
+				pool_scheme=excluded.pool_scheme,
+				counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
+				seller_pubkey_hex=excluded.seller_pubkey_hex,
+				arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
+				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
+				pool_amount_satoshi=excluded.pool_amount_satoshi,
+				spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
+				allocated_satoshi=excluded.allocated_satoshi,
+				cycle_fee_satoshi=excluded.cycle_fee_satoshi,
+				available_satoshi=excluded.available_satoshi,
+				next_sequence_num=excluded.next_sequence_num,
+				status=excluded.status,
+				open_base_txid=CASE WHEN excluded.open_base_txid<>'' THEN excluded.open_base_txid ELSE biz_pool.open_base_txid END,
+				open_allocation_id=CASE WHEN excluded.open_allocation_id<>'' THEN excluded.open_allocation_id ELSE biz_pool.open_allocation_id END,
+				close_allocation_id=CASE WHEN excluded.close_allocation_id<>'' THEN excluded.close_allocation_id ELSE biz_pool.close_allocation_id END,
+				updated_at_unix=excluded.updated_at_unix
+			WHERE excluded.next_sequence_num >= biz_pool.next_sequence_num`,
+			session.PoolSessionID,
+			session.PoolScheme,
+			strings.ToLower(strings.TrimSpace(session.CounterpartyPubHex)),
+			strings.ToLower(strings.TrimSpace(session.SellerPubHex)),
+			strings.ToLower(strings.TrimSpace(session.ArbiterPubHex)),
+			strings.ToLower(strings.TrimSpace(session.GatewayPubHex)),
+			poolAmount,
+			uint64(session.SpendTxFeeSat),
+			lastPayeeAfter,
+			uint64(session.SpendTxFeeSat),
+			lastPayerAfter,
+			nextSequence,
+			session.Status,
+			strings.ToLower(strings.TrimSpace(session.OpenBaseTxID)),
+			openAllocationID,
+			closeAllocationID,
+			session.CreatedAtUnix,
+			session.UpdatedAtUnix,
+		); err != nil {
+			return fmt.Errorf("upsert biz_pool for %s: %w", session.PoolSessionID, err)
+		}
+	}
+
+	if err := sessions.Err(); err != nil {
+		return fmt.Errorf("iterate fact_pool_sessions: %w", err)
+	}
+	return nil
+}
+
 func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*BackfillResult, error) {
 	result := &BackfillResult{
 		BackfillType: "pool_pay_per_seller",
@@ -200,6 +363,9 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
+		if err := backfillBizPoolFacts(db); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("backfill biz pool facts: %v", err))
+		}
 		// 查询每个 pool_session 的第一次 pay allocation
 		// 粒度对齐：一个 session 一次下载 = 一条 business（只用第一次 pay）
 		rows, err := db.Query(`
@@ -215,14 +381,14 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				ps.pool_amount_satoshi
 			FROM fact_pool_session_events pa
 			JOIN fact_pool_sessions ps ON ps.pool_session_id = pa.pool_session_id
-			WHERE pa.event_kind = 'pool_event'
-				AND pa.allocation_kind = 'pay'
+			WHERE pa.event_kind = '` + PoolFactEventKindPoolEvent + `'
+				AND pa.allocation_kind = '` + PoolBusinessActionPayLegacy + `'
 				AND pa.id = (
 					-- 取该 session 的第一次 pay allocation
 					SELECT MIN(id) FROM fact_pool_session_events 
 					WHERE pool_session_id = pa.pool_session_id 
-					AND event_kind = 'pool_event'
-					AND allocation_kind = 'pay'
+					AND event_kind = '` + PoolFactEventKindPoolEvent + `'
+					AND allocation_kind = '` + PoolBusinessActionPayLegacy + `'
 				)
 			ORDER BY pa.id ASC
 		`)

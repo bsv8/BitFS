@@ -125,6 +125,35 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 	}
 }
 
+// TestFinanceReadModel_UsesSharedTxHistoryKind 验证读模型仍按统一的 tx_history 口径计数。
+func TestFinanceReadModel_UsesSharedTxHistoryKind(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
+
+	dbAppendTxHistory(context.Background(), store, txHistoryEntry{
+		GatewayPeerID: "gateway_1",
+		EventType:     PoolFactEventKindTxHistory,
+		Direction:     "in",
+		AmountSatoshi: 100,
+		Purpose:       "test",
+		Note:          "boundary test",
+		PoolID:        "pool_1",
+		MsgID:         "msg_1",
+		SequenceNum:   1,
+		CycleIndex:    1,
+	})
+
+	counters, err := dbLoadWalletSummaryCounters(context.Background(), store)
+	if err != nil {
+		t.Fatalf("load wallet summary counters failed: %v", err)
+	}
+	if counters.TxCount != 1 {
+		t.Fatalf("tx_history counter mismatch: got=%d want=1", counters.TxCount)
+	}
+}
+
 func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 	t.Parallel()
 
@@ -482,7 +511,7 @@ func TestFinanceDefaultFilter_QueryDefaults(t *testing.T) {
 }
 
 // TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields 禁扩散测试
-	// 新增读取帮助函数只认主口径字段
+// 新增读取帮助函数只认主口径字段
 func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	t.Parallel()
 

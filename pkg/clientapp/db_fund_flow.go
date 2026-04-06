@@ -206,14 +206,15 @@ func unionAllQuery() string {
 			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
 		FROM fact_chain_payments
 		UNION ALL
-		SELECT id, created_at_unix, allocation_id AS flow_id, 'pool_event' AS flow_type,
+		SELECT id, created_at_unix, allocation_id AS flow_id, '` + PoolFactEventKindPoolEvent + `' AS flow_type,
 			pool_session_id AS ref_id, event_kind AS stage, direction, purpose,
 			'BSV' AS asset_kind, '' AS token_id, '' AS token_standard,
 			amount_satoshi, 0 AS used_satoshi, 0 AS returned_satoshi,
 			COALESCE(txid, '') AS related_txid, COALESCE(note, '') AS note,
 			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
 		FROM fact_pool_session_events
-		WHERE event_kind = 'tx_history'`
+		WHERE event_kind = '` + PoolFactEventKindTxHistory + `'
+	`
 }
 
 // dbGetWalletFundFlowItem 从 fact_* 事实表获取单条资金流水详情
@@ -280,12 +281,12 @@ func queryUnionSourceByID(db *sql.DB, id int64, flowType string, src *unionSourc
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
-	case "pool_event":
+	case PoolFactEventKindPoolEvent:
 		err = db.QueryRow(`
-			SELECT id, created_at_unix, allocation_id, 'pool_event', pool_session_id, event_kind,
+			SELECT id, created_at_unix, allocation_id, '`+PoolFactEventKindPoolEvent+`', pool_session_id, event_kind,
 				direction, purpose, 'BSV', '', '', amount_satoshi, 0, 0,
 				COALESCE(txid,''), COALESCE(note,''), COALESCE(payload_json,'{}'), ''
-			FROM fact_pool_session_events WHERE id=? AND event_kind='tx_history'`, id).
+			FROM fact_pool_session_events WHERE id=? AND event_kind=?`, id, PoolFactEventKindTxHistory).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -27,7 +28,7 @@ type FrontOrderSettlementSummary struct {
 
 // BusinessSettlementView 单条 business + settlement + 底层支付事实
 type BusinessSettlementView struct {
-	Business       financeBusinessItem `json:"business"`
+	Business       financeBusinessItem    `json:"business"`
 	Settlement     BusinessSettlementItem `json:"settlement"`
 	ChainPayment   *ChainPaymentItem      `json:"chain_payment,omitempty"`
 	PoolAllocation *PoolAllocationItem    `json:"pool_allocation,omitempty"`
@@ -164,6 +165,59 @@ func computeSettlementSummary(views []BusinessSettlementView) SettlementSummary 
 	}
 
 	return summary
+}
+
+// GetFullPoolSettlementChainByPoolSessionID 按 pool_session_id 直接查完整池结算链。
+// 说明：
+// - 这是 session 维度的新入口，保留 front_order 入口不变；
+// - 这里只负责把 pool_session -> settlement_cycle -> business -> settlement 串起来；
+// - 旧的 front_order 读法仍然可用。
+func GetFullPoolSettlementChainByPoolSessionID(ctx context.Context, store *clientDB, poolSessionID string) (PoolSettlementChain, error) {
+	var out PoolSettlementChain
+	if store == nil {
+		return out, fmt.Errorf("client db is nil")
+	}
+	poolSessionID = strings.TrimSpace(poolSessionID)
+	if poolSessionID == "" {
+		return out, fmt.Errorf("pool_session_id is required")
+	}
+
+	poolSession, err := GetPoolSessionByID(ctx, store, poolSessionID)
+	if err != nil {
+		return out, fmt.Errorf("find pool_session: %w", err)
+	}
+	out.PoolSession = &poolSession
+
+	cycleID, err := dbGetSettlementCycleByPoolSessionIDDB(store.db, poolSessionID)
+	if err != nil {
+		return out, fmt.Errorf("find settlement cycle: %w", err)
+	}
+
+	business, err := dbGetLatestBusinessBySettlementCycleID(ctx, store, cycleID)
+	if err != nil {
+		return out, fmt.Errorf("find business: %w", err)
+	}
+	out.Business = business
+
+	settlement, err := GetSettlementByBusinessID(ctx, store, business.BusinessID)
+	if err != nil {
+		return out, fmt.Errorf("find settlement: %w", err)
+	}
+	out.Settlement = settlement
+
+	if settlement.SettlementMethod == string(SettlementMethodPool) && settlement.Status == "settled" && settlement.TargetID != "" {
+		poolAllocationID, err := strconv.ParseInt(strings.TrimSpace(settlement.TargetID), 10, 64)
+		if err != nil {
+			return out, fmt.Errorf("parse settlement target_id: %w", err)
+		}
+		poolAllocation, err := GetPoolAllocationByID(ctx, store, poolAllocationID)
+		if err != nil {
+			return out, fmt.Errorf("find pool_allocation: %w", err)
+		}
+		out.PoolAllocation = &poolAllocation
+	}
+
+	return out, nil
 }
 
 // GetSettlementByChainPaymentID 按 chain_payment.id 反查 settlement

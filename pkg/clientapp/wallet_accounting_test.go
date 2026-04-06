@@ -81,6 +81,110 @@ func seedWalletUTXO(t *testing.T, db *sql.DB, utxoID string, txid string, vout i
 	}
 }
 
+// TestPoolAccountingBoundary_ActionKinds 验证业务动作口径和 fact 口径的分界。
+func TestPoolAccountingBoundary_ActionKinds(t *testing.T) {
+	t.Parallel()
+
+	if !IsPoolFactOpenCloseAction(PoolBusinessActionOpen) {
+		t.Fatalf("open should be part of current fact path")
+	}
+	if !IsPoolFactOpenCloseAction(PoolBusinessActionClose) {
+		t.Fatalf("close should be part of current fact path")
+	}
+	if IsPoolFactOpenCloseAction(PoolBusinessActionCycleFee) {
+		t.Fatalf("cycle_fee should stay outside current fact path")
+	}
+	if NormalizePoolBusinessAction(PoolBusinessActionPayLegacy) != PoolBusinessActionServicePay {
+		t.Fatalf("pay should normalize to service_pay")
+	}
+}
+
+// TestDirectTransferPoolBizSnapshot_RuntimeWrite 验证 open/pay/close 会同步写新业务池表。
+func TestDirectTransferPoolBizSnapshot_RuntimeWrite(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	sessionID := "sess_biz_pool_runtime"
+	dealID := "deal_biz_pool_runtime"
+	buyerPubHex := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	arbiterPubHex := "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	openReq := directTransferPoolOpenReq{
+		SessionID:      sessionID,
+		DealID:         dealID,
+		BuyerPeerID:    buyerPubHex,
+		ArbiterPeerID:  arbiterPubHex,
+		ArbiterPubKey:  arbiterPubHex,
+		PoolAmount:     990,
+		SpendTxFee:     10,
+		Sequence:       1,
+		SellerAmount:   0,
+		BuyerAmount:    990,
+		BaseTxID:       "base_tx_biz_pool_runtime",
+		FeeRateSatByte: 0.5,
+		LockBlocks:     6,
+	}
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, openReq, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
+		t.Fatalf("open write failed: %v", err)
+	}
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, openReq, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
+		t.Fatalf("replay open write failed: %v", err)
+	}
+
+	var openCount int64
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE pool_session_id=?`, sessionID).Scan(&openCount); err != nil {
+		t.Fatalf("query biz_pool_allocations after open replay failed: %v", err)
+	}
+	if openCount != 1 {
+		t.Fatalf("open replay should not duplicate biz_pool_allocations, got %d", openCount)
+	}
+
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 2, 300, 690, baseTxHex, 300); err != nil {
+		t.Fatalf("pay write failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, 3, 700, 290, baseTxHex); err != nil {
+		t.Fatalf("close write failed: %v", err)
+	}
+
+	var poolAmountSat, spendFeeSat, allocatedSat, cycleFeeSat, availableSat, nextSeq int64
+	var status, openBaseTxID, openAllocationID, closeAllocationID string
+	if err := db.QueryRow(`
+		SELECT pool_amount_satoshi,spend_tx_fee_satoshi,allocated_satoshi,cycle_fee_satoshi,available_satoshi,next_sequence_num,
+		       status,open_base_txid,open_allocation_id,close_allocation_id
+		FROM biz_pool WHERE pool_session_id=?`,
+		sessionID,
+	).Scan(&poolAmountSat, &spendFeeSat, &allocatedSat, &cycleFeeSat, &availableSat, &nextSeq, &status, &openBaseTxID, &openAllocationID, &closeAllocationID); err != nil {
+		t.Fatalf("query biz_pool failed: %v", err)
+	}
+	if poolAmountSat != 1000 || spendFeeSat != 10 {
+		t.Fatalf("unexpected biz_pool gross amount: pool=%d fee=%d", poolAmountSat, spendFeeSat)
+	}
+	if allocatedSat != 700 || cycleFeeSat != 10 || availableSat != 290 || nextSeq != 4 {
+		t.Fatalf("unexpected biz_pool snapshot: allocated=%d cycle_fee=%d available=%d next_seq=%d", allocatedSat, cycleFeeSat, availableSat, nextSeq)
+	}
+	if status != "closing" || openBaseTxID != "base_tx_biz_pool_runtime" {
+		t.Fatalf("unexpected biz_pool status/base tx: status=%s open_base_txid=%s", status, openBaseTxID)
+	}
+	if openAllocationID != directTransferPoolAllocationID(sessionID, PoolBusinessActionOpen, 1) {
+		t.Fatalf("unexpected open_allocation_id: %s", openAllocationID)
+	}
+	if closeAllocationID != directTransferPoolAllocationID(sessionID, PoolBusinessActionClose, 3) {
+		t.Fatalf("unexpected close_allocation_id: %s", closeAllocationID)
+	}
+
+	var allocCount int64
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE pool_session_id=?`, sessionID).Scan(&allocCount); err != nil {
+		t.Fatalf("query biz_pool_allocations failed: %v", err)
+	}
+	if allocCount != 3 {
+		t.Fatalf("unexpected biz_pool_allocations count: %d", allocCount)
+	}
+}
+
 func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)

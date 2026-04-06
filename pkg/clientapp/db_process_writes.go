@@ -43,6 +43,7 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 			e.Purpose = e.EventType
 		}
 		now := time.Now().Unix()
+		// tx_history 仍是兼容事实事件，写入口径统一收口到常量。
 		allocationID := fmt.Sprintf("txhist_%s_%d_%d_%d", strings.TrimSpace(e.GatewayPeerID), now, e.SequenceNum, e.CycleIndex)
 		_, err := db.Exec(
 			`INSERT INTO fact_pool_session_events(
@@ -64,8 +65,8 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 			allocationID,
 			"",
 			0,
-			"tx_history",
-			"tx_history",
+			PoolFactEventKindTxHistory,
+			PoolFactEventKindTxHistory,
 			e.SequenceNum,
 			"confirmed",
 			e.Direction,

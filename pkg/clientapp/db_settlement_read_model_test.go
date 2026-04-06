@@ -812,3 +812,116 @@ func TestMainFullPoolSettlementChain_StillWorks(t *testing.T) {
 		t.Fatalf("expected settlement_id %s, got %s", settlementID, poolChain.Settlement.SettlementID)
 	}
 }
+
+// TestFullPoolSettlementChainByPoolSessionID_StillWorks 验证 session 维度的新入口可直接串到业务与结算。
+func TestFullPoolSettlementChainByPoolSessionID_StillWorks(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	sessionID := "sess_pool_session_chain"
+	dealID := "deal_pool_session_chain"
+	buyerPubHex := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	arbiterPubHex := "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, directTransferPoolOpenReq{
+		SessionID:      sessionID,
+		DealID:         dealID,
+		BuyerPeerID:    buyerPubHex,
+		ArbiterPeerID:  arbiterPubHex,
+		ArbiterPubKey:  arbiterPubHex,
+		PoolAmount:     990,
+		SpendTxFee:     10,
+		Sequence:       1,
+		SellerAmount:   0,
+		BuyerAmount:    990,
+		BaseTxID:       "base_tx_pool_session_chain",
+		FeeRateSatByte: 0.5,
+		LockBlocks:     6,
+	}, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
+		t.Fatalf("open write failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 2, 300, 690, baseTxHex, 300); err != nil {
+		t.Fatalf("pay write failed: %v", err)
+	}
+
+	payAllocID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, directTransferPoolAllocationID(sessionID, PoolBusinessActionPayLegacy, 2))
+	if err != nil {
+		t.Fatalf("load pay allocation id failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleByPoolEvent(db, payAllocID)
+	if err != nil {
+		t.Fatalf("load settlement cycle by pay allocation failed: %v", err)
+	}
+
+	frontOrderID := "fo_pool_session_chain"
+	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
+		FrontOrderID:   frontOrderID,
+		FrontType:      "download",
+		FrontSubtype:   "direct_transfer",
+		OwnerPubkeyHex: buyerPubHex,
+		TargetObjectID: "demand_pool_session_chain",
+		Status:         "pending",
+		Note:           "session 读入口测试",
+	}); err != nil {
+		t.Fatalf("upsert front_order failed: %v", err)
+	}
+
+	businessID := "biz_download_pool_session_chain"
+	settlementID := "set_download_pool_session_chain"
+	if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+		FrontOrderID:      frontOrderID,
+		FrontType:         "download",
+		FrontSubtype:      "direct_transfer",
+		OwnerPubkeyHex:    buyerPubHex,
+		TargetObjectType:  "demand",
+		TargetObjectID:    "demand_pool_session_chain",
+		FrontOrderNote:    "session 读入口测试",
+		BusinessID:        businessID,
+		BusinessRole:      "formal",
+		SourceType:        "settlement_cycle",
+		SourceID:          fmt.Sprintf("%d", cycleID),
+		AccountingScene:   "direct_transfer",
+		AccountingSubType: "download_pool",
+		FromPartyID:       "client:self",
+		ToPartyID:         "seller:" + sellerPubHex,
+		TriggerType:       "front_order",
+		TriggerIDValue:    frontOrderID,
+		TriggerRole:       "primary",
+		SettlementID:      settlementID,
+		SettlementMethod:  SettlementMethodPool,
+	}); err != nil {
+		t.Fatalf("create business chain failed: %v", err)
+	}
+	if err := dbUpsertBusinessSettlement(ctx, store, businessSettlementEntry{
+		SettlementID:     settlementID,
+		BusinessID:       businessID,
+		SettlementMethod: string(SettlementMethodPool),
+		Status:           "settled",
+		TargetType:       "pool_allocation",
+		TargetID:         fmt.Sprintf("%d", payAllocID),
+	}); err != nil {
+		t.Fatalf("upsert settlement failed: %v", err)
+	}
+
+	chain, err := GetFullPoolSettlementChainByPoolSessionID(ctx, store, sessionID)
+	if err != nil {
+		t.Fatalf("GetFullPoolSettlementChainByPoolSessionID: %v", err)
+	}
+	if chain.Business.BusinessID != businessID {
+		t.Fatalf("expected business_id %s, got %s", businessID, chain.Business.BusinessID)
+	}
+	if chain.Settlement.SettlementID != settlementID || chain.Settlement.Status != "settled" {
+		t.Fatalf("unexpected settlement: id=%s status=%s", chain.Settlement.SettlementID, chain.Settlement.Status)
+	}
+	if chain.PoolAllocation == nil || chain.PoolAllocation.PoolSessionID != sessionID {
+		t.Fatalf("expected pool_allocation for session %s", sessionID)
+	}
+	if chain.PoolSession == nil || chain.PoolSession.PoolSessionID != sessionID {
+		t.Fatalf("expected pool_session %s", sessionID)
+	}
+}

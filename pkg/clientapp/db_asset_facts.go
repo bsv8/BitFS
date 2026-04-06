@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // chainAssetFlowEntry fact_chain_asset_flows 写入条目
@@ -394,7 +396,9 @@ func dbAppendBSVConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, ut
 }
 
 // dbAppendBSVConsumptionsForPoolAllocation 写入 BSV 消耗（关联 pool_allocation）
-// 设计说明：直接写入 fact_bsv_consumptions，不再经过旧消费表
+// 设计说明：
+// - 第1步先保留旧路径行为，只把这个入口标成“旧口径”并打告警
+// - 真正去掉 pool_allocation 作为 fact 消耗主语义，放到后续硬切换
 func dbAppendBSVConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -402,6 +406,11 @@ func dbAppendBSVConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64
 	if poolAllocationID <= 0 {
 		return fmt.Errorf("pool_allocation_id is required")
 	}
+	obs.Important("bitcast-client", "pool_allocation_consumption_legacy_path", map[string]any{
+		"pool_allocation_id": poolAllocationID,
+		"asset_kind":         "BSV",
+		"legacy_fact_path":   true,
+	})
 	settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, poolAllocationID)
 	if err != nil {
 		return fmt.Errorf("lookup settlement cycle for pool event %d: %w", poolAllocationID, err)
@@ -534,7 +543,9 @@ func dbAppendTokenConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, 
 }
 
 // dbAppendTokenConsumptionsForPoolAllocation 写入 Token 消耗（关联 pool_allocation）
-// B组新入口：写入 fact_token_consumptions + fact_token_utxo_links
+// 设计说明：
+// - 第1步保留旧路径结果，不改写入结果
+// - 这里只把 pool_allocation 作为兼容入口显式标出来，后续再切到业务表
 func dbAppendTokenConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -542,6 +553,10 @@ func dbAppendTokenConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int
 	if poolAllocationID <= 0 {
 		return fmt.Errorf("pool_allocation_id is required")
 	}
+	obs.Important("bitcast-client", "pool_allocation_token_consumption_legacy_path", map[string]any{
+		"pool_allocation_id": poolAllocationID,
+		"legacy_fact_path":   true,
+	})
 	settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, poolAllocationID)
 	if err != nil {
 		return fmt.Errorf("lookup settlement cycle for pool event %d: %w", poolAllocationID, err)
@@ -1009,6 +1024,15 @@ func dbUpsertSettlementCycle(db sqlConn, cycleID string, channel string, state s
 	if state != "pending" && state != "confirmed" && state != "failed" {
 		return fmt.Errorf("state must be pending/confirmed/failed, got %s", state)
 	}
+	poolSessionID := ""
+	if channel == "pool" {
+		if poolEventID <= 0 {
+			return fmt.Errorf("pool_session_event_id is required for pool settlement cycle")
+		}
+		if err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, poolEventID).Scan(&poolSessionID); err != nil {
+			return fmt.Errorf("lookup pool_session_id for pool_session_event_id %d: %w", poolEventID, err)
+		}
+	}
 	now := time.Now().Unix()
 	occurredAt := occurredAtUnix
 	if occurredAt <= 0 {
@@ -1023,15 +1047,16 @@ func dbUpsertSettlementCycle(db sqlConn, cycleID string, channel string, state s
 
 	_, err := db.Exec(
 		`INSERT INTO fact_settlement_cycles(
-			cycle_id,channel,state,pool_session_event_id,chain_payment_id,
+			cycle_id,channel,state,pool_session_id,pool_session_event_id,chain_payment_id,
 			gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,
 			cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(cycle_id) DO UPDATE SET
 			state=CASE
 				WHEN fact_settlement_cycles.state='confirmed' AND excluded.state='pending' THEN fact_settlement_cycles.state
 				ELSE excluded.state
 			END,
+			pool_session_id=excluded.pool_session_id,
 			confirmed_at_unix=CASE
 				WHEN excluded.state='confirmed' THEN excluded.occurred_at_unix
 				ELSE fact_settlement_cycles.confirmed_at_unix
@@ -1042,7 +1067,7 @@ func dbUpsertSettlementCycle(db sqlConn, cycleID string, channel string, state s
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
 			payload_json=excluded.payload_json`,
-		cycleID, channel, state,
+		cycleID, channel, state, poolSessionID,
 		nilIfZero(poolEventID), nilIfZero(chainPaymentID),
 		grossSatoshi, gateFeeSatoshi, netSatoshi,
 		cycleIndex, occurredAt, confirmedAt,

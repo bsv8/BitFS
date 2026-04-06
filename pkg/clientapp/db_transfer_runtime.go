@@ -155,6 +155,26 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		}); err != nil {
 			return err
 		}
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+			SessionID:          sessionID,
+			PoolScheme:         "2of3",
+			CounterpartyPubHex: sellerPubHex,
+			SellerPubHex:       sellerPubHex,
+			ArbiterPubHex:      arbiterPubHex,
+			PoolAmountSat:      req.PoolAmount + req.SpendTxFee,
+			SpendTxFeeSat:      req.SpendTxFee,
+			AllocatedSat:       0,
+			CycleFeeSat:        req.SpendTxFee,
+			AvailableSat:       req.PoolAmount,
+			NextSequenceNum:    req.Sequence + 1,
+			Status:             "active",
+			OpenBaseTxID:       strings.TrimSpace(req.BaseTxID),
+			OpenAllocationID:   directTransferPoolAllocationID(sessionID, PoolBusinessActionOpen, req.Sequence),
+			CreatedAtUnix:      now,
+			UpdatedAtUnix:      now,
+		}); err != nil {
+			return err
+		}
 		// Step 4 出项关联：从交易 hex 提取 input UTXO 明细
 		utxoFacts, err := dbExtractUTXOFactsFromTxHex(baseTxHex, now)
 		if err != nil {
@@ -211,6 +231,30 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		}); err != nil {
 			return err
 		}
+		openAllocationID, err := dbGetPoolAllocationIDByKindTx(tx, sessionID, PoolBusinessActionOpen)
+		if err != nil {
+			return fmt.Errorf("load open allocation id: %w", err)
+		}
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+			SessionID:          sessionID,
+			PoolScheme:         "2of3",
+			CounterpartyPubHex: row.SellerPubHex,
+			SellerPubHex:       row.SellerPubHex,
+			ArbiterPubHex:      row.ArbiterPubHex,
+			PoolAmountSat:      row.PoolAmount + row.SpendTxFee,
+			SpendTxFeeSat:      row.SpendTxFee,
+			AllocatedSat:       sellerAmount,
+			CycleFeeSat:        row.SpendTxFee,
+			AvailableSat:       buyerAmount,
+			NextSequenceNum:    sequence + 1,
+			Status:             "active",
+			OpenBaseTxID:       row.BaseTxID,
+			OpenAllocationID:   openAllocationID,
+			CreatedAtUnix:      row.CreatedAtUnix,
+			UpdatedAtUnix:      now,
+		}); err != nil {
+			return err
+		}
 		// Step 4 出项关联：从交易 hex 提取 input UTXO 明细
 		utxoFacts, err := dbExtractUTXOFactsFromTxHex(currentTxHex, now)
 		if err != nil {
@@ -260,6 +304,31 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 			LockBlocks:         row.LockBlocks,
 			OpenBaseTxID:       row.BaseTxID,
 			Status:             "closing",
+			CreatedAtUnix:      row.CreatedAtUnix,
+			UpdatedAtUnix:      now,
+		}); err != nil {
+			return err
+		}
+		openAllocationID, err := dbGetPoolAllocationIDByKindTx(tx, sessionID, PoolBusinessActionOpen)
+		if err != nil {
+			return fmt.Errorf("load open allocation id: %w", err)
+		}
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+			SessionID:          sessionID,
+			PoolScheme:         "2of3",
+			CounterpartyPubHex: row.SellerPubHex,
+			SellerPubHex:       row.SellerPubHex,
+			ArbiterPubHex:      row.ArbiterPubHex,
+			PoolAmountSat:      row.PoolAmount + row.SpendTxFee,
+			SpendTxFeeSat:      row.SpendTxFee,
+			AllocatedSat:       sellerAmount,
+			CycleFeeSat:        row.SpendTxFee,
+			AvailableSat:       buyerAmount,
+			NextSequenceNum:    sequence + 1,
+			Status:             "closing",
+			OpenBaseTxID:       row.BaseTxID,
+			OpenAllocationID:   openAllocationID,
+			CloseAllocationID:  directTransferPoolAllocationID(sessionID, PoolBusinessActionClose, sequence),
 			CreatedAtUnix:      row.CreatedAtUnix,
 			UpdatedAtUnix:      now,
 		}); err != nil {

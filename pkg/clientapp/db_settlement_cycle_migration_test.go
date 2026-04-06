@@ -146,4 +146,22 @@ func TestEnsureSettlementCyclesSchema_BackfillsPartialCycles(t *testing.T) {
 	} else if !unique {
 		t.Fatal("fact_settlement_cycles should keep unique index on pool_session_event_id")
 	}
+
+	cycleCols, err := tableColumns(db, "fact_settlement_cycles")
+	if err != nil {
+		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
+	}
+	if _, ok := cycleCols["pool_session_id"]; !ok {
+		t.Fatal("fact_settlement_cycles missing pool_session_id after migration")
+	}
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "pool_session_id"); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles pool_session_id notnull failed: %v", err)
+	} else if !notNull {
+		t.Fatal("fact_settlement_cycles.pool_session_id should be NOT NULL after migration")
+	}
+	if hasIndex, err := tableHasIndex(db, "fact_settlement_cycles", "idx_fact_settlement_cycles_pool_session"); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles pool_session index failed: %v", err)
+	} else if !hasIndex {
+		t.Fatal("fact_settlement_cycles should keep index on pool_session_id")
+	}
 }

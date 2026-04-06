@@ -146,6 +146,9 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			UNIQUE(demand_id, seller_pubkey_hex)
 		)`,
+	}
+	stmts = append(stmts, bizPoolSchemaStmts()...)
+	stmts = append(stmts, []string{
 		// 第五步定性：proc_direct_transfer_pools 是【运行态池状态表】
 		// - 职责：保存池协议运行期的动态状态（sequence_num、current_tx_hex、status 等）
 		// - 非业务主判断入口，只服务于协议运行期
@@ -193,7 +196,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			pool_session_id TEXT NOT NULL DEFAULT '',
 			allocation_no INTEGER NOT NULL DEFAULT 0,
 			allocation_kind TEXT NOT NULL DEFAULT '',
-			event_kind TEXT NOT NULL DEFAULT 'pool_event',
+			event_kind TEXT NOT NULL DEFAULT '` + PoolFactEventKindPoolEvent + `',
 			sequence_num INTEGER NOT NULL DEFAULT 0,
 			state TEXT NOT NULL DEFAULT 'confirmed',
 			direction TEXT NOT NULL DEFAULT '',
@@ -229,7 +232,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			UNIQUE(txid)
 		)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='pool_event'`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='` + PoolFactEventKindPoolEvent + `'`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_scheme_status ON fact_pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_counterparty ON fact_pool_sessions(counterparty_pubkey_hex,status)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_session_no ON fact_pool_session_events(pool_session_id,allocation_no DESC)`,
@@ -1008,6 +1011,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			cycle_id TEXT NOT NULL UNIQUE,
 			channel TEXT NOT NULL CHECK(channel IN ('pool','chain')),
 			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
+			pool_session_id TEXT NOT NULL DEFAULT '',
 			pool_session_event_id INTEGER,
 			chain_payment_id INTEGER,
 			gross_amount_satoshi INTEGER NOT NULL DEFAULT 0,
@@ -1026,6 +1030,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_channel_state ON fact_settlement_cycles(channel, state, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_session ON fact_settlement_cycles(pool_session_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id, id DESC)`,
 		// Step 15: 唯一约束 — 同一 pool/chain 入口只对应一条 cycle
@@ -1057,7 +1062,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_token_verification_status ON wallet_utxo_token_verification(status, next_retry_at_unix ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_token_verification_wallet ON wallet_utxo_token_verification(wallet_id, status)`,
-	}
+	}...)
 
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
@@ -1085,6 +1090,9 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	}
 	if err := ensurePoolAllocationsSchema(db); err != nil {
 		return fmt.Errorf("pool allocations schema: %w", err)
+	}
+	if err := ensureBizPoolSchema(db); err != nil {
+		return fmt.Errorf("biz pool schema: %w", err)
 	}
 	if err := ensureFinAccountingSchema(db); err != nil {
 		return fmt.Errorf("fin accounting schema: %w", err)
@@ -2216,7 +2224,7 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		if _, err := tx.Exec(`INSERT INTO fact_pool_session_events(
 			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
 		) SELECT
-			allocation_id,pool_session_id,allocation_no,allocation_kind,'pool_event',sequence_num,'confirmed','',0,allocation_kind,'','',0,payee_amount_after,payer_amount_after,txid,tx_hex,'',created_at_unix,'{}'
+			allocation_id,pool_session_id,allocation_no,allocation_kind,'` + PoolFactEventKindPoolEvent + `',sequence_num,'confirmed','',0,allocation_kind,'','',0,payee_amount_after,payer_amount_after,txid,tx_hex,'',created_at_unix,'{}'
 		FROM fact_pool_allocations_legacy
 		ORDER BY pool_session_id ASC, allocation_no ASC, allocation_id ASC`); err != nil {
 			rollback()
@@ -2235,7 +2243,7 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 			COALESCE(pool_id,''),
 			0,
 			event_type,
-			'tx_history',
+			'` + PoolFactEventKindTxHistory + `',
 			sequence_num,
 			'confirmed',
 			direction,
@@ -2273,7 +2281,7 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='pool_event'`); err != nil {
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='` + PoolFactEventKindPoolEvent + `'`); err != nil {
 		rollback()
 		return err
 	}
@@ -2298,6 +2306,113 @@ func ensurePoolAllocationsSchema(db *sql.DB) error {
 		return err
 	}
 	return nil
+}
+
+// ensureBizPoolSchema 处理费用池业务表和结算周期的池会话列。
+// 设计说明：
+// - 新库直接建表；
+// - 老库只补列和索引，不回头删旧结构；
+// - pool_session_id 先作为查询维度保存，后续写路径再补齐真实值。
+func ensureBizPoolSchema(db *sql.DB) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+
+	stmts := bizPoolSchemaStmts()
+	for _, stmt := range stmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+	indexStmts := []string{
+		`CREATE INDEX IF NOT EXISTS idx_biz_pool_status_updated ON biz_pool(status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_pool_allocations_session_no ON biz_pool_allocations(pool_session_id, allocation_no DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_pool_allocations_session_kind_seq ON biz_pool_allocations(pool_session_id, allocation_kind, sequence_num)`,
+	}
+	for _, stmt := range indexStmts {
+		if _, err := db.Exec(stmt); err != nil {
+			return err
+		}
+	}
+
+	cols, err := tableColumns(db, "fact_settlement_cycles")
+	if err != nil {
+		return fmt.Errorf("inspect fact_settlement_cycles: %w", err)
+	}
+	if len(cols) == 0 {
+		return nil
+	}
+	if _, ok := cols["pool_session_id"]; !ok {
+		if _, err := db.Exec(`ALTER TABLE fact_settlement_cycles ADD COLUMN pool_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add fact_settlement_cycles.pool_session_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_session ON fact_settlement_cycles(pool_session_id, id DESC)`); err != nil {
+		return fmt.Errorf("create fact_settlement_cycles pool_session index: %w", err)
+	}
+	poolEventCols, err := tableColumns(db, "fact_pool_session_events")
+	if err != nil {
+		return fmt.Errorf("inspect fact_pool_session_events: %w", err)
+	}
+	poolSessionExpr := "''"
+	if _, ok := poolEventCols["pool_session_id"]; ok {
+		poolSessionExpr = "COALESCE(pool_session_id, '')"
+	}
+	if _, err := db.Exec(`
+		UPDATE fact_settlement_cycles
+		   SET pool_session_id = COALESCE((
+			   SELECT ` + poolSessionExpr + `
+			     FROM fact_pool_session_events
+			    WHERE fact_pool_session_events.id = fact_settlement_cycles.pool_session_event_id
+			    LIMIT 1
+		   ), '')
+		 WHERE channel='pool'
+		   AND (pool_session_id IS NULL OR trim(pool_session_id) = '')
+	`); err != nil {
+		return fmt.Errorf("backfill fact_settlement_cycles.pool_session_id: %w", err)
+	}
+	return nil
+}
+
+// bizPoolSchemaStmts 费用池业务表定义。
+// 说明：基础建表和迁移补丁必须共用同一份字符串，避免两处 schema 漂移。
+func bizPoolSchemaStmts() []string {
+	return []string{
+		`CREATE TABLE IF NOT EXISTS biz_pool(
+			pool_session_id TEXT PRIMARY KEY,
+			pool_scheme TEXT NOT NULL,
+			counterparty_pubkey_hex TEXT NOT NULL DEFAULT '',
+			seller_pubkey_hex TEXT NOT NULL DEFAULT '',
+			arbiter_pubkey_hex TEXT NOT NULL DEFAULT '',
+			gateway_pubkey_hex TEXT NOT NULL DEFAULT '',
+			pool_amount_satoshi INTEGER NOT NULL DEFAULT 0,
+			spend_tx_fee_satoshi INTEGER NOT NULL DEFAULT 0,
+			allocated_satoshi INTEGER NOT NULL DEFAULT 0,
+			cycle_fee_satoshi INTEGER NOT NULL DEFAULT 0,
+			available_satoshi INTEGER NOT NULL DEFAULT 0,
+			next_sequence_num INTEGER NOT NULL DEFAULT 1,
+			status TEXT NOT NULL,
+			open_base_txid TEXT NOT NULL DEFAULT '',
+			open_allocation_id TEXT NOT NULL DEFAULT '',
+			close_allocation_id TEXT NOT NULL DEFAULT '',
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS biz_pool_allocations(
+			allocation_id TEXT PRIMARY KEY,
+			pool_session_id TEXT NOT NULL,
+			allocation_no INTEGER NOT NULL,
+			allocation_kind TEXT NOT NULL,
+			sequence_num INTEGER NOT NULL,
+			payee_amount_after INTEGER NOT NULL DEFAULT 0,
+			payer_amount_after INTEGER NOT NULL DEFAULT 0,
+			txid TEXT NOT NULL,
+			tx_hex TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(pool_session_id) REFERENCES biz_pool(pool_session_id) ON DELETE CASCADE,
+			UNIQUE(pool_session_id, allocation_kind, sequence_num)
+		)`,
+	}
 }
 
 // migrateLegacyDirectTransferPoolFacts 只把旧直连池快照回填成最小可信事实。
@@ -4884,6 +4999,27 @@ func ensureSettlementCyclesSchema(db *sql.DB) error {
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_asset_consumptions_settlement_cycle ON fact_asset_consumptions(settlement_cycle_id, id DESC)`); err != nil {
 		return fmt.Errorf("create settlement_cycle index: %w", err)
 	}
+	var hasPoolSessionColumn int
+	err = db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('fact_settlement_cycles') WHERE name='pool_session_id'`).Scan(&hasPoolSessionColumn)
+	if err != nil {
+		return fmt.Errorf("check pool_session_id column: %w", err)
+	}
+	if hasPoolSessionColumn == 0 {
+		if _, err := db.Exec(`ALTER TABLE fact_settlement_cycles ADD COLUMN pool_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("add pool_session_id column: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_session ON fact_settlement_cycles(pool_session_id, id DESC)`); err != nil {
+		return fmt.Errorf("create pool_session index: %w", err)
+	}
+	poolEventCols, err := tableColumns(db, "fact_pool_session_events")
+	if err != nil {
+		return fmt.Errorf("inspect fact_pool_session_events: %w", err)
+	}
+	poolSessionExpr := "''"
+	if _, ok := poolEventCols["pool_session_id"]; ok {
+		poolSessionExpr = "COALESCE(pool_session_id, '')"
+	}
 	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id) WHERE pool_session_event_id IS NOT NULL`); err != nil {
 		return fmt.Errorf("create unique pool_event index: %w", err)
 	}
@@ -4895,11 +5031,11 @@ func ensureSettlementCyclesSchema(db *sql.DB) error {
 	// 回填 chain 结算（幂等：INSERT OR IGNORE 按 cycle_id 唯一键）
 	_, err = db.Exec(`
 		INSERT OR IGNORE INTO fact_settlement_cycles(
-			cycle_id, channel, state, chain_payment_id,
+			cycle_id, channel, state, pool_session_id, chain_payment_id,
 			gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
 			cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
 		)
-		SELECT 'cycle_chain_' || id, 'chain', 'confirmed', id,
+		SELECT 'cycle_chain_' || id, 'chain', 'confirmed', '', id,
 			wallet_input_satoshi, 0, net_amount_satoshi,
 			0, occurred_at_unix, occurred_at_unix,
 			'backfilled from fact_chain_payments', payload_json
@@ -4912,16 +5048,16 @@ func ensureSettlementCyclesSchema(db *sql.DB) error {
 	// 仅用于历史回填：pool 结算（每个 pool_session_event 对应一条 settlement_cycle）
 	_, err = db.Exec(`
 		INSERT OR IGNORE INTO fact_settlement_cycles(
-			cycle_id, channel, state, pool_session_event_id,
+			cycle_id, channel, state, pool_session_id, pool_session_event_id,
 			gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
 			cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
 		)
-		SELECT 'cycle_pool_' || id, 'pool', 'confirmed', id,
+		SELECT 'cycle_pool_' || id, 'pool', 'confirmed', ` + poolSessionExpr + `, id,
 			amount_satoshi, 0, amount_satoshi,
 			cycle_index, created_at_unix, created_at_unix,
 			'backfilled from fact_pool_session_events', payload_json
 		FROM fact_pool_session_events
-		WHERE event_kind = 'pool_event'
+		WHERE event_kind = '` + PoolFactEventKindPoolEvent + `'
 	`)
 	if err != nil {
 		return fmt.Errorf("backfill pool cycles: %w", err)

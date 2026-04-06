@@ -238,15 +238,26 @@ func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (se
 	if sourceType == "" {
 		sourceType = "settlement_cycle"
 	}
-	if sourceType != "settlement_cycle" {
-		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle")
-	}
 	if sourceID == "" {
 		return settlementCycleSourceResolution{SourceType: "settlement_cycle"}, nil
 	}
-	cycleID, err := strconv.ParseInt(sourceID, 10, 64)
-	if err != nil || cycleID <= 0 {
-		return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
+	var (
+		cycleID int64
+		err     error
+	)
+	switch sourceType {
+	case "settlement_cycle":
+		cycleID, err = strconv.ParseInt(sourceID, 10, 64)
+		if err != nil || cycleID <= 0 {
+			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
+		}
+	case "pool_session":
+		cycleID, err = dbGetSettlementCycleByPoolSessionIDDB(db, sourceID)
+		if err != nil {
+			return settlementCycleSourceResolution{}, err
+		}
+	default:
+		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle or pool_session")
 	}
 	state, err := dbGetSettlementCycleStateByIDDB(db, cycleID)
 	if err != nil {
@@ -258,6 +269,27 @@ func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (se
 		SettlementCycleID:    cycleID,
 		SettlementCycleState: state,
 	}, nil
+}
+
+func dbGetSettlementCycleByPoolSessionIDDB(db sqlConn, poolSessionID string) (int64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
+	poolSessionID = strings.TrimSpace(poolSessionID)
+	if poolSessionID == "" {
+		return 0, fmt.Errorf("pool_session_id is required")
+	}
+	var id int64
+	if err := db.QueryRow(
+		`SELECT id FROM fact_settlement_cycles WHERE pool_session_id=? ORDER BY id DESC LIMIT 1`,
+		poolSessionID,
+	).Scan(&id); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, fmt.Errorf("settlement cycle not found for pool session %s", poolSessionID)
+		}
+		return 0, err
+	}
+	return id, nil
 }
 
 func resolvePoolAllocationSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {

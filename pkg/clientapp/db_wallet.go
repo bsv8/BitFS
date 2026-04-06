@@ -73,7 +73,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		}
 		out.TotalReturned = 0 // fact 表无直接对应字段
 		// 交易历史统计
-		if err := db.QueryRow(`SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind='tx_history'`).Scan(&out.TxCount); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind=?`, PoolFactEventKindTxHistory).Scan(&out.TxCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
 		// 购买统计
