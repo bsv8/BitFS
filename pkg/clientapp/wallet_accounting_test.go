@@ -1,15 +1,20 @@
 package clientapp
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	tx "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
@@ -166,7 +171,7 @@ func TestDirectTransferPoolBizSnapshot_RuntimeWrite(t *testing.T) {
 	if allocatedSat != 700 || cycleFeeSat != 10 || availableSat != 290 || nextSeq != 4 {
 		t.Fatalf("unexpected biz_pool snapshot: allocated=%d cycle_fee=%d available=%d next_seq=%d", allocatedSat, cycleFeeSat, availableSat, nextSeq)
 	}
-	if status != "closing" || openBaseTxID != "base_tx_biz_pool_runtime" {
+	if status != "closed" || openBaseTxID != "base_tx_biz_pool_runtime" {
 		t.Fatalf("unexpected biz_pool status/base tx: status=%s open_base_txid=%s", status, openBaseTxID)
 	}
 	if openAllocationID != directTransferPoolAllocationID(sessionID, PoolBusinessActionOpen, 1) {
@@ -183,8 +188,110 @@ func TestDirectTransferPoolBizSnapshot_RuntimeWrite(t *testing.T) {
 	if allocCount != 3 {
 		t.Fatalf("unexpected biz_pool_allocations count: %d", allocCount)
 	}
+
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 4, 100, 190, baseTxHex, 100); err == nil {
+		t.Fatal("expected pay after close to fail")
+	}
 }
 
+func TestDirectTransferPoolClose_ReplayAfterClosed(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+
+	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+	sessionID := "sess_close_replay"
+	dealID := "deal_close_replay"
+	buyerPriv, err := ec.PrivateKeyFromHex("2796e78fad7d383fa5236607eba52d9a1904325daf9b4da3d77be5ad15ab1dae")
+	if err != nil {
+		t.Fatalf("load buyer key failed: %v", err)
+	}
+	sellerPriv, err := ec.PrivateKeyFromHex("e6d4d7685894d2644d1f4bf31c0b87f3f6aa8a3d7d4091eaa375e81d6c9f9091")
+	if err != nil {
+		t.Fatalf("load seller key failed: %v", err)
+	}
+	arbiterPriv, err := ec.PrivateKeyFromHex("a682814ac246ca65543197e593aa3b2633b891959c183416f54e2c63a8de1d8c")
+	if err != nil {
+		t.Fatalf("load arbiter key failed: %v", err)
+	}
+	buyerPubHex := strings.ToLower(hex.EncodeToString(buyerPriv.PubKey().Compressed()))
+	sellerPubHex := strings.ToLower(hex.EncodeToString(sellerPriv.PubKey().Compressed()))
+	arbiterPubHex := strings.ToLower(hex.EncodeToString(arbiterPriv.PubKey().Compressed()))
+
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, directTransferPoolOpenReq{
+		SessionID:      sessionID,
+		DealID:         dealID,
+		BuyerPeerID:    buyerPubHex,
+		ArbiterPeerID:  arbiterPubHex,
+		ArbiterPubKey:  arbiterPubHex,
+		PoolAmount:     990,
+		SpendTxFee:     10,
+		Sequence:       1,
+		SellerAmount:   0,
+		BuyerAmount:    990,
+		BaseTxID:       "base_tx_close_replay",
+		FeeRateSatByte: 0.5,
+		LockBlocks:     6,
+	}, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
+		t.Fatalf("seed open facts failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 2, 300, 690, baseTxHex, 300); err != nil {
+		t.Fatalf("seed pay facts failed: %v", err)
+	}
+	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, 3, 700, 290, baseTxHex); err != nil {
+		t.Fatalf("seed close facts failed: %v", err)
+	}
+
+	rawTx, err := tx.NewTransactionFromHex(baseTxHex)
+	if err != nil {
+		t.Fatalf("parse close tx failed: %v", err)
+	}
+	seq := uint32(3)
+	if len(rawTx.Inputs) > 0 && rawTx.Inputs[0].SequenceNumber != 0 {
+		seq = rawTx.Inputs[0].SequenceNumber
+	}
+	locktime := rawTx.LockTime
+	parsedTx, err := te.TripleFeePoolLoadTx(baseTxHex, &locktime, seq, 700, arbiterPriv.PubKey(), buyerPriv.PubKey(), sellerPriv.PubKey(), 990)
+	if err != nil {
+		t.Fatalf("build close tx failed: %v", err)
+	}
+	buyerSig, err := te.ClientATripleFeePoolSpendTXUpdateSign(parsedTx, arbiterPriv.PubKey(), buyerPriv, sellerPriv.PubKey())
+	if err != nil {
+		t.Fatalf("sign buyer close tx failed: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.Keys.PrivkeyHex = sellerPriv.Hex()
+	req := directTransferPoolCloseReq{
+		SessionID:    sessionID,
+		Sequence:     3,
+		SellerAmount: 700,
+		BuyerAmount:  290,
+		CurrentTx:    mustDecodeHex(baseTxHex),
+		BuyerSig:     append([]byte(nil), (*buyerSig)...),
+	}
+
+	resp1, err := handleDirectTransferPoolClose(nil, store, cfg, req)
+	if err != nil {
+		t.Fatalf("first close replay failed: %v", err)
+	}
+	if resp1.Status != "closed" || len(resp1.SellerSig) == 0 {
+		t.Fatalf("unexpected first close replay resp: %+v", resp1)
+	}
+
+	resp2, err := handleDirectTransferPoolClose(nil, store, cfg, req)
+	if err != nil {
+		t.Fatalf("second close replay failed: %v", err)
+	}
+	if resp2.Status != "closed" || len(resp2.SellerSig) == 0 {
+		t.Fatalf("unexpected second close replay resp: %+v", resp2)
+	}
+	if !bytes.Equal(resp1.SellerSig, resp2.SellerSig) {
+		t.Fatalf("close replay should return same seller sig")
+	}
+}
 func TestRecordDirectPoolCloseAccounting_AppendsUTXOLinks(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
@@ -327,7 +434,7 @@ func TestDirectTransferPoolRuntimeWritesPoolFacts(t *testing.T) {
 	).Scan(&status, &scheme, &counterparty, &openBaseTxID, &amountSat, &feeSat); err != nil {
 		t.Fatalf("query pool session failed: %v", err)
 	}
-	if status != "closing" || scheme != "2of3" || strings.ToLower(counterparty) != sellerPubHex || openBaseTxID != strings.ToLower("base_tx_pool_fact_1") {
+	if status != "closed" || scheme != "2of3" || strings.ToLower(counterparty) != sellerPubHex || openBaseTxID != strings.ToLower("base_tx_pool_fact_1") {
 		t.Fatalf("unexpected pool session row: status=%s scheme=%s counterparty=%s open_base_txid=%s", status, scheme, counterparty, openBaseTxID)
 	}
 	if amountSat != 990 || feeSat != 10 {

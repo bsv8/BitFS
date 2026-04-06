@@ -386,7 +386,8 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	if err != nil {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
-	if row.Status != "active" && row.Status != "closing" {
+	// 关单要支持丢包重试：第一次成功后库里会落成 closed，第二次还要能按同一请求重放。
+	if row.Status != "active" && row.Status != "closing" && row.Status != "closed" {
 		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 	}
 	if req.SellerAmount != row.SellerAmount {
@@ -413,6 +414,11 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	seq := req.Sequence
 	if len(rawTx.Inputs) > 0 && rawTx.Inputs[0].SequenceNumber != 0 {
 		seq = rawTx.Inputs[0].SequenceNumber
+	}
+	if row.Status == "closed" {
+		if strings.TrimSpace(row.CurrentTxHex) != currentTxHex || row.SequenceNum != req.Sequence || row.BuyerAmount != req.BuyerAmount {
+			return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
+		}
 	}
 	locktime := rawTx.LockTime
 	parsedTx, err := te.TripleFeePoolLoadTx(
@@ -446,7 +452,7 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	})
 	return directTransferPoolCloseResp{
 		SessionID: sessionID,
-		Status:    "closing",
+		Status:    "closed",
 		SellerSig: append([]byte(nil), (*sellerSig)...),
 	}, nil
 

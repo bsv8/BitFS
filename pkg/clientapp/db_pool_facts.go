@@ -37,7 +37,7 @@ type directTransferPoolAllocationFactInput struct {
 	TxID             string
 	TxHex            string
 	CreatedAtUnix    int64
-	UTXOFacts        []chainPaymentUTXOLinkEntry // Step 4 出项关联：UTXO 消耗明细
+	UTXOFacts        []chainPaymentUTXOLinkEntry // 兼容保留：旧消费明细输入，主路径不再直写 fact_consumptions
 }
 
 type directTransferBizPoolSnapshotInput struct {
@@ -352,31 +352,15 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	if err != nil {
 		return err
 	}
-	if err := dbUpsertDirectTransferBizPoolAllocationTx(tx, directTransferBizPoolAllocationInput{
-		SessionID:        sessionID,
-		AllocationID:     allocID,
-		AllocationNo:     allocationNo,
-		AllocationKind:   kind,
-		SequenceNum:      in.SequenceNum,
-		PayeeAmountAfter: in.PayeeAmountAfter,
-		PayerAmountAfter: in.PayerAmountAfter,
-		TxID:             txID,
-		TxHex:            txHex,
-		CreatedAtUnix:    createdAt,
-	}); err != nil {
-		return fmt.Errorf("upsert biz pool allocation for %s: %w", allocID, err)
+	// 旧 fact 事件只保留兼容锚点，真正的池账写入走 dbApplyDirectTransferBizPoolAccountingTx。
+	if err := dbApplyDirectTransferBizPoolAccountingTx(tx, in, allocationNo); err != nil {
+		return err
 	}
-
-	// Step 4 出项关联：对 input UTXO 按资产类型分流写入新消费表
-	// B组改造：
-	// - BSV 消耗写入 fact_bsv_consumptions
-	// - Token 消耗写入 fact_token_consumptions + fact_token_utxo_links
-	// - 只写新消费表，不回到旧消费表语义
 	poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
 	if err != nil {
 		return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
 	}
-	// 结算周期必须先落地；这是写账本的锚点，不允许只写消耗不写 cycle。
+	// 结算周期必须先落地；这是写账本的锚点，业务层只认这个主键。
 	cycleID := fmt.Sprintf("cycle_pool_%d", poolAllocID)
 	if err := dbUpsertSettlementCycle(tx,
 		cycleID, "pool", "confirmed",
@@ -386,66 +370,7 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 	); err != nil {
 		return fmt.Errorf("upsert settlement cycle for pool allocation %d: %w", poolAllocID, err)
 	}
-	if len(in.UTXOFacts) > 0 {
-		bsvFacts, tokenFacts, err := splitPoolAllocationUTXOFactsByAssetKind(tx, in.UTXOFacts)
-		if err != nil {
-			return fmt.Errorf("split utxo facts by asset kind: %w", err)
-		}
-		if len(bsvFacts) > 0 {
-			if err := dbAppendBSVConsumptionsForPoolAllocation(tx, poolAllocID, bsvFacts, createdAt); err != nil {
-				return fmt.Errorf("append BSV consumptions for pool allocation %s: %w", allocID, err)
-			}
-		}
-		if len(tokenFacts) > 0 {
-			if err := dbAppendTokenConsumptionsForPoolAllocation(tx, poolAllocID, tokenFacts, createdAt); err != nil {
-				return fmt.Errorf("append token consumptions for pool allocation %s: %w", allocID, err)
-			}
-		}
-	}
 	return nil
-}
-
-// splitPoolAllocationUTXOFactsByAssetKind 按资产类型分流 Pool Allocation UTXO facts
-// B组改造：从数据库查询 UTXO 的 asset_kind（当入参 AssetKind 为空时）
-// 如果查不到记录，默认当作 BSV 处理（Pool 场景主要处理 BSV）
-func splitPoolAllocationUTXOFactsByAssetKind(db sqlConn, facts []chainPaymentUTXOLinkEntry) ([]chainPaymentUTXOLinkEntry, []chainPaymentUTXOLinkEntry, error) {
-	bsvFacts := make([]chainPaymentUTXOLinkEntry, 0)
-	tokenFacts := make([]chainPaymentUTXOLinkEntry, 0)
-	for _, fact := range facts {
-		ioSide := strings.TrimSpace(fact.IOSide)
-		if ioSide != "input" {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-		if utxoID == "" {
-			continue
-		}
-		assetKind := strings.TrimSpace(fact.AssetKind)
-		if assetKind == "" {
-			var dbAssetKind, tokenID, quantityText string
-			err := db.QueryRow(
-				`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' LIMIT 1`,
-				utxoID,
-			).Scan(&dbAssetKind, &tokenID, &quantityText)
-			if err != nil && err != sql.ErrNoRows {
-				return nil, nil, fmt.Errorf("lookup asset kind for utxo %s: %w", utxoID, err)
-			}
-			if err == nil {
-				assetKind = dbAssetKind
-				fact.TokenID = tokenID
-				fact.QuantityText = quantityText
-			} else {
-				assetKind = "BSV"
-			}
-		}
-		if assetKind == "BSV" {
-			bsvFacts = append(bsvFacts, fact)
-		} else if assetKind == "BSV20" || assetKind == "BSV21" {
-			fact.TokenStandard = assetKind
-			tokenFacts = append(tokenFacts, fact)
-		}
-	}
-	return bsvFacts, tokenFacts, nil
 }
 
 func dbUpsertDirectTransferPoolSession(ctx context.Context, store *clientDB, in directTransferPoolSessionFactInput) error {

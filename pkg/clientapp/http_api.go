@@ -168,10 +168,10 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 	if sourceType == "" {
 		return "", sourceID, nil
 	}
-	if sourceType != "settlement_cycle" {
-		return "", "", fmt.Errorf("source_type must be settlement_cycle")
+	if sourceType != "settlement_cycle" && sourceType != "pool_session" {
+		return "", "", fmt.Errorf("source_type must be settlement_cycle or pool_session")
 	}
-	return "settlement_cycle", sourceID, nil
+	return sourceType, sourceID, nil
 }
 
 type httpAPIServer struct {

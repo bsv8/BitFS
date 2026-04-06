@@ -111,6 +111,11 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 	}
 	now := time.Now().Unix()
 	return store.Tx(ctx, func(tx *sql.Tx) error {
+		if row, err := loadDirectTransferPoolRowDB(tx, sessionID); err == nil {
+			if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
+				return fmt.Errorf("transfer pool is closed")
+			}
+		}
 		if _, err := tx.Exec(
 			`INSERT INTO proc_direct_transfer_pools(
 				session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
@@ -204,6 +209,9 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		if err != nil {
 			return err
 		}
+		if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
+			return fmt.Errorf("transfer pool is closed")
+		}
 		if _, err := tx.Exec(
 			`UPDATE proc_direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
 			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID,
@@ -284,7 +292,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(`UPDATE proc_direct_transfer_pools SET status='closing',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
+		if _, err := tx.Exec(`UPDATE proc_direct_transfer_pools SET status='closed',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
 			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID); err != nil {
 			return err
 		}
@@ -303,7 +311,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 			FeeRateSatByte:     row.FeeRateSatByte,
 			LockBlocks:         row.LockBlocks,
 			OpenBaseTxID:       row.BaseTxID,
-			Status:             "closing",
+			Status:             "closed",
 			CreatedAtUnix:      row.CreatedAtUnix,
 			UpdatedAtUnix:      now,
 		}); err != nil {
@@ -325,7 +333,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 			CycleFeeSat:        row.SpendTxFee,
 			AvailableSat:       buyerAmount,
 			NextSequenceNum:    sequence + 1,
-			Status:             "closing",
+			Status:             "closed",
 			OpenBaseTxID:       row.BaseTxID,
 			OpenAllocationID:   openAllocationID,
 			CloseAllocationID:  directTransferPoolAllocationID(sessionID, PoolBusinessActionClose, sequence),

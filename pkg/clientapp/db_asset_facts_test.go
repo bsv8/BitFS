@@ -956,7 +956,7 @@ func TestPoolAllocationConsumption_MultipleUTXO(t *testing.T) {
 		},
 	}
 
-	// 调用 allocation 写入（包含消耗写入）
+	// 调用 allocation 写入（新主路径只落业务池账，不再写 fact 消耗）
 	if err := dbUpsertDirectTransferPoolAllocation(ctx, store, allocInput); err != nil {
 		t.Fatalf("upsert allocation: %v", err)
 	}
@@ -967,13 +967,21 @@ func TestPoolAllocationConsumption_MultipleUTXO(t *testing.T) {
 		t.Fatalf("get allocation db id: %v", err)
 	}
 
-	// 验证：两条消耗记录，都指向同一个 pool_allocation_id
+	// 验证：业务层池账写入成功
+	var bizAllocCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, "poolalloc_"+allocInput.SessionID+"_"+allocInput.AllocationKind+"_1").Scan(&bizAllocCount); err != nil {
+		t.Fatalf("count biz pool allocations: %v", err)
+	}
+	if bizAllocCount != 1 {
+		t.Fatalf("expected 1 biz pool allocation, got %d", bizAllocCount)
+	}
+
 	var consCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, allocDBID).Scan(&consCount); err != nil {
-		t.Fatalf("count consumptions: %v", err)
+		t.Fatalf("count legacy consumptions: %v", err)
 	}
-	if consCount != 2 {
-		t.Fatalf("expected 2 consumptions, got %d", consCount)
+	if consCount != 0 {
+		t.Fatalf("expected 0 legacy consumptions on main path, got %d", consCount)
 	}
 }
 
@@ -1048,35 +1056,29 @@ func TestPoolAllocationConsumption_Idempotent(t *testing.T) {
 		t.Fatalf("first upsert allocation: %v", err)
 	}
 
-	allocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, "poolalloc_sess_pool_idem_pay_1")
-	if err != nil {
-		t.Fatalf("get allocation db id: %v", err)
+	var allocCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, "poolalloc_sess_pool_idem_pay_1").Scan(&allocCount); err != nil {
+		t.Fatalf("count biz allocation after first: %v", err)
+	}
+	if allocCount != 1 {
+		t.Fatalf("expected 1 biz allocation after first, got %d", allocCount)
 	}
 
-	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, allocDBID).Scan(&consCount); err != nil {
-		t.Fatalf("count after first: %v", err)
-	}
-	if consCount != 1 {
-		t.Fatalf("expected 1 consumption after first, got %d", consCount)
-	}
-
-	// 第二次写入（幂等：ON CONFLICT DO UPDATE 不会触发新的消耗写入，
-	// 因为消耗函数内部已有幂等检查）
+	// 第二次写入（幂等：业务层只保留一条 allocation）
 	if err := dbUpsertDirectTransferPoolAllocation(ctx, store, allocInput); err != nil {
 		t.Fatalf("second upsert allocation (idempotent): %v", err)
 	}
 
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, allocDBID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, "poolalloc_sess_pool_idem_pay_1").Scan(&allocCount); err != nil {
 		t.Fatalf("count after second: %v", err)
 	}
-	if consCount != 1 {
-		t.Fatalf("expected 1 consumption after second (idempotent), got %d", consCount)
+	if allocCount != 1 {
+		t.Fatalf("expected 1 allocation after second (idempotent), got %d", allocCount)
 	}
 }
 
-// TestPoolAllocationConsumption_RuntimePath 验证主流程 runtime 路径：dbUpdateDirectTransferPoolPay -> fact_bsv_consumptions
-func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
+// TestPoolAllocationAccounting_RuntimePath 验证主流程 runtime 路径只写业务池账，不再写 fact 消耗。
+func TestPoolAllocationAccounting_RuntimePath(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetFactsTestDB(t)
@@ -1141,26 +1143,27 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 		t.Fatalf("open pool: %v", err)
 	}
 
-	// 验证 open allocation 产生了消耗记录
+	// 验证 open allocation 已进入业务层池账
 	openAllocID := "poolalloc_sess_runtime_open_1"
 	openAllocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, openAllocID)
 	if err != nil {
 		t.Fatalf("get open allocation db id: %v", err)
 	}
 
+	var openBizAllocCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, openAllocID).Scan(&openBizAllocCount); err != nil {
+		t.Fatalf("count open biz allocations: %v", err)
+	}
+	if openBizAllocCount != 1 {
+		t.Fatalf("expected 1 open biz allocation, got %d", openBizAllocCount)
+	}
+
 	var openConsCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, openAllocDBID).Scan(&openConsCount); err != nil {
-		t.Fatalf("count open consumptions: %v", err)
+		t.Fatalf("count open legacy consumptions: %v", err)
 	}
-	if openConsCount != 1 {
-		t.Fatalf("expected 1 open consumption, got %d", openConsCount)
-	}
-	var openCycleID int64
-	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_bsv_consumptions WHERE pool_allocation_id=? LIMIT 1`, openAllocDBID).Scan(&openCycleID); err != nil {
-		t.Fatalf("query open settlement_cycle_id failed: %v", err)
-	}
-	if openCycleID <= 0 {
-		t.Fatal("open consumption should carry settlement_cycle_id")
+	if openConsCount != 0 {
+		t.Fatalf("expected 0 open legacy consumptions, got %d", openConsCount)
 	}
 
 	// pay tx hex（使用同一个有效 tx hex）
@@ -1171,26 +1174,27 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 		t.Fatalf("pay pool: %v", err)
 	}
 
-	// 验证 pay allocation 产生了消耗记录
+	// 验证 pay allocation 进入业务层池账
 	payAllocID := "poolalloc_sess_runtime_pay_2"
 	payAllocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, payAllocID)
 	if err != nil {
 		t.Fatalf("get pay allocation db id: %v", err)
 	}
 
+	var payBizAllocCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, payAllocID).Scan(&payBizAllocCount); err != nil {
+		t.Fatalf("count pay biz allocations: %v", err)
+	}
+	if payBizAllocCount != 1 {
+		t.Fatalf("expected 1 pay biz allocation, got %d", payBizAllocCount)
+	}
+
 	var payConsCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, payAllocDBID).Scan(&payConsCount); err != nil {
-		t.Fatalf("count pay consumptions: %v", err)
+		t.Fatalf("count pay legacy consumptions: %v", err)
 	}
-	if payConsCount != 1 {
-		t.Fatalf("expected 1 pay consumption, got %d", payConsCount)
-	}
-	var payCycleID int64
-	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_bsv_consumptions WHERE pool_allocation_id=? LIMIT 1`, payAllocDBID).Scan(&payCycleID); err != nil {
-		t.Fatalf("query pay settlement_cycle_id failed: %v", err)
-	}
-	if payCycleID <= 0 {
-		t.Fatal("pay consumption should carry settlement_cycle_id")
+	if payConsCount != 0 {
+		t.Fatalf("expected 0 pay legacy consumptions, got %d", payConsCount)
 	}
 
 	// 重复调用 pay（幂等）
@@ -1198,12 +1202,12 @@ func TestPoolAllocationConsumption_RuntimePath(t *testing.T) {
 		t.Fatalf("pay pool again: %v", err)
 	}
 
-	var payConsCount2 int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, payAllocDBID).Scan(&payConsCount2); err != nil {
-		t.Fatalf("count pay consumptions after second: %v", err)
+	var payBizAllocCount2 int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, payAllocID).Scan(&payBizAllocCount2); err != nil {
+		t.Fatalf("count pay biz allocations after second: %v", err)
 	}
-	if payConsCount2 != payConsCount {
-		t.Fatalf("expected idempotent pay consumptions %d, got %d", payConsCount, payConsCount2)
+	if payBizAllocCount2 != payBizAllocCount {
+		t.Fatalf("expected idempotent pay biz allocations %d, got %d", payBizAllocCount, payBizAllocCount2)
 	}
 }
 

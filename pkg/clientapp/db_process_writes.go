@@ -732,6 +732,153 @@ func dbAppendSettlementCycleFinProcessEvent(db sqlConn, settlementCycleID int64,
 	return dbAppendFinProcessEvent(db, e)
 }
 
+// dbApplyDirectTransferBizPoolAccountingTx 统一写 direct_transfer_pool 的业务层池账。
+// 设计说明：
+// - 这里只负责 biz_pool_allocations 和 biz_pool 快照，不碰 fact 消耗主路径；
+// - 调用方仍然可以先写兼容 fact 事件，但真正的划拨账必须从这里落到业务层；
+// - 幂等性依赖 allocation_id + (pool_session_id, allocation_kind, sequence_num) 的唯一约束。
+func dbApplyDirectTransferBizPoolAccountingTx(tx *sql.Tx, in directTransferPoolAllocationFactInput, allocationNo int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	sessionID := strings.TrimSpace(in.SessionID)
+	if sessionID == "" {
+		return fmt.Errorf("pool_session_id is required")
+	}
+	kind := strings.TrimSpace(in.AllocationKind)
+	if kind == "" {
+		return fmt.Errorf("allocation_kind is required")
+	}
+	allocationID := directTransferPoolAllocationID(sessionID, kind, in.SequenceNum)
+	if allocationID == "" {
+		return fmt.Errorf("allocation_id is required")
+	}
+	txID := strings.ToLower(strings.TrimSpace(in.TxID))
+	if txID == "" {
+		return fmt.Errorf("txid is required")
+	}
+	txHex := strings.ToLower(strings.TrimSpace(in.TxHex))
+	if txHex == "" {
+		return fmt.Errorf("tx_hex is required")
+	}
+	if allocationNo <= 0 {
+		return fmt.Errorf("allocation_no must be positive")
+	}
+
+	var existingStatus string
+	if err := tx.QueryRow(`SELECT status FROM biz_pool WHERE pool_session_id=?`, sessionID).Scan(&existingStatus); err == nil {
+		existingStatus = strings.ToLower(strings.TrimSpace(existingStatus))
+		if existingStatus == "closed" && kind != PoolBusinessActionClose {
+			return fmt.Errorf("pool session %s is closed", sessionID)
+		}
+	}
+
+	var session struct {
+		PoolScheme         string
+		CounterpartyPubHex string
+		SellerPubHex       string
+		ArbiterPubHex      string
+		GatewayPubHex      string
+		PoolAmountSat      int64
+		SpendTxFeeSat      int64
+		Status             string
+		OpenBaseTxID       string
+		CreatedAtUnix      int64
+		UpdatedAtUnix      int64
+	}
+	if err := tx.QueryRow(`
+		SELECT pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+		       pool_amount_satoshi,spend_tx_fee_satoshi,status,open_base_txid,created_at_unix,updated_at_unix
+		  FROM fact_pool_sessions
+		 WHERE pool_session_id=?`,
+		sessionID,
+	).Scan(
+		&session.PoolScheme, &session.CounterpartyPubHex, &session.SellerPubHex, &session.ArbiterPubHex, &session.GatewayPubHex,
+		&session.PoolAmountSat, &session.SpendTxFeeSat, &session.Status, &session.OpenBaseTxID, &session.CreatedAtUnix, &session.UpdatedAtUnix,
+	); err != nil {
+		return fmt.Errorf("load fact_pool_sessions for %s: %w", sessionID, err)
+	}
+
+	poolAmountSat := uint64(0)
+	if session.PoolAmountSat > 0 {
+		poolAmountSat = uint64(session.PoolAmountSat)
+	}
+	if session.SpendTxFeeSat > 0 {
+		poolAmountSat += uint64(session.SpendTxFeeSat)
+	}
+	cycleFeeSat := uint64(0)
+	if session.SpendTxFeeSat > 0 {
+		cycleFeeSat = uint64(session.SpendTxFeeSat)
+	}
+	allocatedSat := in.PayeeAmountAfter
+	availableSat := in.PayerAmountAfter
+	if kind == PoolBusinessActionOpen {
+		allocatedSat = 0
+		availableSat = uint64(session.PoolAmountSat)
+		if availableSat == 0 && poolAmountSat >= cycleFeeSat {
+			availableSat = poolAmountSat - cycleFeeSat
+		}
+	}
+	if availableSat == 0 && poolAmountSat >= allocatedSat+cycleFeeSat {
+		availableSat = poolAmountSat - allocatedSat - cycleFeeSat
+	}
+	if strings.TrimSpace(session.Status) == "" {
+		session.Status = "active"
+	}
+	now := time.Now().Unix()
+	createdAt := in.CreatedAtUnix
+	if createdAt <= 0 {
+		createdAt = now
+	}
+
+	if err := dbUpsertDirectTransferBizPoolAllocationTx(tx, directTransferBizPoolAllocationInput{
+		SessionID:        sessionID,
+		AllocationID:     allocationID,
+		AllocationNo:     allocationNo,
+		AllocationKind:   kind,
+		SequenceNum:      in.SequenceNum,
+		PayeeAmountAfter: allocatedSat,
+		PayerAmountAfter: availableSat,
+		TxID:             txID,
+		TxHex:            txHex,
+		CreatedAtUnix:    createdAt,
+	}); err != nil {
+		return fmt.Errorf("upsert biz pool allocation for %s: %w", allocationID, err)
+	}
+
+	snapshot := directTransferBizPoolSnapshotInput{
+		SessionID:          sessionID,
+		PoolScheme:         session.PoolScheme,
+		CounterpartyPubHex: session.CounterpartyPubHex,
+		SellerPubHex:       session.SellerPubHex,
+		ArbiterPubHex:      session.ArbiterPubHex,
+		GatewayPubHex:      session.GatewayPubHex,
+		PoolAmountSat:      poolAmountSat,
+		SpendTxFeeSat:      uint64(session.SpendTxFeeSat),
+		AllocatedSat:       allocatedSat,
+		CycleFeeSat:        cycleFeeSat,
+		AvailableSat:       availableSat,
+		NextSequenceNum:    in.SequenceNum + 1,
+		Status:             session.Status,
+		OpenBaseTxID:       session.OpenBaseTxID,
+		CreatedAtUnix:      session.CreatedAtUnix,
+		UpdatedAtUnix:      createdAt,
+	}
+	switch kind {
+	case PoolBusinessActionOpen:
+		snapshot.OpenAllocationID = allocationID
+	case PoolBusinessActionClose:
+		snapshot.CloseAllocationID = allocationID
+		if strings.TrimSpace(snapshot.Status) == "active" || strings.TrimSpace(snapshot.Status) == "closing" {
+			snapshot.Status = "closed"
+		}
+	}
+	if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, snapshot); err != nil {
+		return fmt.Errorf("upsert biz pool snapshot for %s: %w", sessionID, err)
+	}
+	return nil
+}
+
 // 直连池财务解释统一挂到 settlement_cycle，别再用 session / allocation 漂着。
 func directTransferPoolAccountingSource(sessionID string, allocationKind string, sequenceNum uint32) (string, string) {
 	return "settlement_cycle", directTransferPoolAllocationID(sessionID, allocationKind, sequenceNum)

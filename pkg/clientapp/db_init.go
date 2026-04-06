@@ -2334,43 +2334,6 @@ func ensureBizPoolSchema(db *sql.DB) error {
 			return err
 		}
 	}
-
-	cols, err := tableColumns(db, "fact_settlement_cycles")
-	if err != nil {
-		return fmt.Errorf("inspect fact_settlement_cycles: %w", err)
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-	if _, ok := cols["pool_session_id"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE fact_settlement_cycles ADD COLUMN pool_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add fact_settlement_cycles.pool_session_id: %w", err)
-		}
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_session ON fact_settlement_cycles(pool_session_id, id DESC)`); err != nil {
-		return fmt.Errorf("create fact_settlement_cycles pool_session index: %w", err)
-	}
-	poolEventCols, err := tableColumns(db, "fact_pool_session_events")
-	if err != nil {
-		return fmt.Errorf("inspect fact_pool_session_events: %w", err)
-	}
-	poolSessionExpr := "''"
-	if _, ok := poolEventCols["pool_session_id"]; ok {
-		poolSessionExpr = "COALESCE(pool_session_id, '')"
-	}
-	if _, err := db.Exec(`
-		UPDATE fact_settlement_cycles
-		   SET pool_session_id = COALESCE((
-			   SELECT ` + poolSessionExpr + `
-			     FROM fact_pool_session_events
-			    WHERE fact_pool_session_events.id = fact_settlement_cycles.pool_session_event_id
-			    LIMIT 1
-		   ), '')
-		 WHERE channel='pool'
-		   AND (pool_session_id IS NULL OR trim(pool_session_id) = '')
-	`); err != nil {
-		return fmt.Errorf("backfill fact_settlement_cycles.pool_session_id: %w", err)
-	}
 	return nil
 }
 
