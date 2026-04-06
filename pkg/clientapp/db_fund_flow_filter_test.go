@@ -216,7 +216,7 @@ func TestWalletFundFlows_PaginationStable(t *testing.T) {
 		t.Fatalf("page1 status: got=%d want=200", rec1.Code)
 	}
 	var body1 struct {
-		Total int               `json:"total"`
+		Total int                  `json:"total"`
 		Items []walletFundFlowItem `json:"items"`
 	}
 	if err := json.Unmarshal(rec1.Body.Bytes(), &body1); err != nil {
@@ -241,7 +241,7 @@ func TestWalletFundFlows_PaginationStable(t *testing.T) {
 		t.Fatalf("page2 status: got=%d want=200", rec2.Code)
 	}
 	var body2 struct {
-		Total int               `json:"total"`
+		Total int                  `json:"total"`
 		Items []walletFundFlowItem `json:"items"`
 	}
 	if err := json.Unmarshal(rec2.Body.Bytes(), &body2); err != nil {
@@ -256,6 +256,63 @@ func TestWalletFundFlows_PaginationStable(t *testing.T) {
 		if page1IDs[it.ID] {
 			t.Fatalf("page2 contains ID %d already in page1: pagination overlap", it.ID)
 		}
+	}
+}
+
+// TestWalletFundFlows_ExposesAssetKind 验证流水返回里显式带出 asset_kind / token_id。
+func TestWalletFundFlows_ExposesAssetKind(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAPITestDB(t)
+	srv := &httpAPIServer{db: db}
+
+	_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
+		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
+	) VALUES
+		('asset_bsv_1', 'wallet_kind', 'addr_kind', 'IN', 'BSV', '', 'utxo_bsv_1', 'tx_bsv_1', 0, 1234, '', 1700000101, 1700000101, 'WOC', 'bsv in', '{}'),
+		('asset_token_1', 'wallet_kind', 'addr_kind', 'IN', 'BSV21', 'token_kind_1', 'utxo_token_1', 'tx_token_1', 0, 1, '2500', 1700000102, 1700000102, 'WOC', 'token in', '{}')
+	`)
+	if err != nil {
+		t.Fatalf("insert asset facts: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows?limit=10", nil)
+	rec := httptest.NewRecorder()
+	srv.handleWalletFundFlows(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Items []struct {
+			FlowID        string `json:"flow_id"`
+			AssetKind     string `json:"asset_kind"`
+			TokenID       string `json:"token_id"`
+			TokenStandard string `json:"token_standard"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(body.Items) != 2 {
+		t.Fatalf("item count mismatch: %+v", body.Items)
+	}
+	seen := map[string]struct {
+		AssetKind     string
+		TokenID       string
+		TokenStandard string
+	}{}
+	for _, item := range body.Items {
+		seen[item.FlowID] = struct {
+			AssetKind     string
+			TokenID       string
+			TokenStandard string
+		}{item.AssetKind, item.TokenID, item.TokenStandard}
+	}
+	if got := seen["asset_bsv_1"]; got.AssetKind != "BSV" || got.TokenID != "" || got.TokenStandard != "" {
+		t.Fatalf("bsv item mismatch: %+v", got)
+	}
+	if got := seen["asset_token_1"]; got.AssetKind != "BSV21" || got.TokenID != "token_kind_1" || got.TokenStandard != "BSV21" {
+		t.Fatalf("token item mismatch: %+v", got)
 	}
 }
 

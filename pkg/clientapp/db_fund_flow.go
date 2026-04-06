@@ -13,17 +13,17 @@ import (
 // - visit_id 保留字段，不参与过滤（fact 表未保留该上下文）
 // - 查询使用 UNION ALL 统一视图，保证全局排序和分页正确
 type walletFundFlowFilter struct {
-	Limit        int
-	Offset       int
-	FlowID       string
-	FlowType     string
-	RefID        string
-	Stage        string
-	Directions   []string // 多值 IN 匹配
-	Purpose      string
-	RelatedTxID  string
-	VisitID      string
-	Query        string
+	Limit       int
+	Offset      int
+	FlowID      string
+	FlowType    string
+	RefID       string
+	Stage       string
+	Directions  []string // 多值 IN 匹配
+	Purpose     string
+	RelatedTxID string
+	VisitID     string
+	Query       string
 }
 
 type walletFundFlowPage struct {
@@ -42,6 +42,9 @@ type walletFundFlowItem struct {
 	Stage           string          `json:"stage"`
 	Direction       string          `json:"direction"`
 	Purpose         string          `json:"purpose"`
+	AssetKind       string          `json:"asset_kind"`
+	TokenID         string          `json:"token_id"`
+	TokenStandard   string          `json:"token_standard"`
 	AmountSatoshi   int64           `json:"amount_satoshi"`
 	UsedSatoshi     int64           `json:"used_satoshi"`
 	ReturnedSatoshi int64           `json:"returned_satoshi"`
@@ -61,6 +64,9 @@ type unionSource struct {
 	Stage           string
 	Direction       string
 	Purpose         string
+	AssetKind       string
+	TokenID         string
+	TokenStandard   string
 	AmountSatoshi   int64
 	UsedSatoshi     int64
 	ReturnedSatoshi int64
@@ -131,7 +137,7 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 		}
 
 		// 明细查询：全局排序 + 分页
-		detailSQL := `SELECT id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id FROM (` + unionAllQuery() + `) AS unified WHERE 1=1` + where + ` ORDER BY created_at_unix DESC, flow_type, id DESC LIMIT ? OFFSET ?`
+		detailSQL := `SELECT id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, asset_kind, token_id, token_standard, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id FROM (` + unionAllQuery() + `) AS unified WHERE 1=1` + where + ` ORDER BY created_at_unix DESC, flow_type, id DESC LIMIT ? OFFSET ?`
 		rows, err := db.Query(detailSQL, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return walletFundFlowPage{}, err
@@ -141,7 +147,7 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 		out.Items = make([]walletFundFlowItem, 0, f.Limit)
 		for rows.Next() {
 			var src unionSource
-			if err := rows.Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage, &src.Direction, &src.Purpose, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi, &src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID); err != nil {
+			if err := rows.Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage, &src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi, &src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID); err != nil {
 				return walletFundFlowPage{}, err
 			}
 			out.Items = append(out.Items, walletFundFlowItem{
@@ -155,6 +161,9 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 				Stage:           src.Stage,
 				Direction:       src.Direction,
 				Purpose:         src.Purpose,
+				AssetKind:       src.AssetKind,
+				TokenID:         src.TokenID,
+				TokenStandard:   src.TokenStandard,
 				AmountSatoshi:   src.AmountSatoshi,
 				UsedSatoshi:     src.UsedSatoshi,
 				ReturnedSatoshi: src.ReturnedSatoshi,
@@ -172,12 +181,14 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 
 // unionAllQuery 构建三张 fact 表的 UNION ALL 统一视图
 // 设计说明：
-// - 列顺序必须一致：id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id
+// - 列顺序必须一致：id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, asset_kind, token_id, token_standard, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id
 // - visit_id 保留字段，不参与过滤（fact 表未保留该上下文）
 func unionAllQuery() string {
 	return `
 		SELECT id, occurred_at_unix AS created_at_unix, flow_id, 'chain_asset' AS flow_type,
 			utxo_id AS ref_id, 'confirmed' AS stage, direction, asset_kind AS purpose,
+			COALESCE(asset_kind, '') AS asset_kind, COALESCE(token_id, '') AS token_id,
+			CASE WHEN asset_kind IN ('BSV20', 'BSV21') THEN asset_kind ELSE '' END AS token_standard,
 			amount_satoshi, 0 AS used_satoshi, 0 AS returned_satoshi,
 			txid AS related_txid, COALESCE(note, '') AS note,
 			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
@@ -187,6 +198,7 @@ func unionAllQuery() string {
 			txid AS ref_id, status AS stage,
 			CASE WHEN net_amount_satoshi > 0 THEN 'IN' ELSE 'OUT' END AS direction,
 			payment_subtype AS purpose,
+			'BSV' AS asset_kind, '' AS token_id, '' AS token_standard,
 			net_amount_satoshi AS amount_satoshi,
 			CASE WHEN net_amount_satoshi < 0 THEN -net_amount_satoshi ELSE 0 END AS used_satoshi,
 			0 AS returned_satoshi,
@@ -196,6 +208,7 @@ func unionAllQuery() string {
 		UNION ALL
 		SELECT id, created_at_unix, allocation_id AS flow_id, 'pool_event' AS flow_type,
 			pool_session_id AS ref_id, event_kind AS stage, direction, purpose,
+			'BSV' AS asset_kind, '' AS token_id, '' AS token_standard,
 			amount_satoshi, 0 AS used_satoshi, 0 AS returned_satoshi,
 			COALESCE(txid, '') AS related_txid, COALESCE(note, '') AS note,
 			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
@@ -248,30 +261,33 @@ func queryUnionSourceByID(db *sql.DB, id int64, flowType string, src *unionSourc
 	case "chain_asset":
 		err = db.QueryRow(`
 			SELECT id, occurred_at_unix, flow_id, 'chain_asset', utxo_id, 'confirmed', direction, asset_kind,
+				COALESCE(asset_kind, ''), COALESCE(token_id, ''),
+				CASE WHEN asset_kind IN ('BSV20', 'BSV21') THEN asset_kind ELSE '' END,
 				amount_satoshi, 0, 0, txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_chain_asset_flows WHERE id=?`, id).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
-				&src.Direction, &src.Purpose, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
+				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	case "chain_payment":
 		err = db.QueryRow(`
 			SELECT id, occurred_at_unix, txid, 'chain_payment', txid, status,
 				CASE WHEN net_amount_satoshi > 0 THEN 'IN' ELSE 'OUT' END,
-				payment_subtype, net_amount_satoshi,
+				payment_subtype, 'BSV', '', '',
+				net_amount_satoshi,
 				CASE WHEN net_amount_satoshi < 0 THEN -net_amount_satoshi ELSE 0 END,
 				0, txid, '', COALESCE(payload_json,'{}'), ''
 			FROM fact_chain_payments WHERE id=?`, id).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
-				&src.Direction, &src.Purpose, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
+				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	case "pool_event":
 		err = db.QueryRow(`
 			SELECT id, created_at_unix, allocation_id, 'pool_event', pool_session_id, event_kind,
-				direction, purpose, amount_satoshi, 0, 0,
+				direction, purpose, 'BSV', '', '', amount_satoshi, 0, 0,
 				COALESCE(txid,''), COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_pool_session_events WHERE id=? AND event_kind='tx_history'`, id).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
-				&src.Direction, &src.Purpose, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
+				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	default:
 		return fmt.Errorf("unknown flow_type: %s", flowType)

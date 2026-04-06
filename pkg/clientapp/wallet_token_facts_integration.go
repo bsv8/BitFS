@@ -196,7 +196,7 @@ func appendTokenConsumptionAfterChainPayment(ctx context.Context, store *clientD
 
 		// 逐条写 token 消耗
 		for utxoID, quantityText := range tokenUTXOIDs {
-			if err := dbAppendTokenConsumptionForChainPaymentDB(db, chainPaymentID, utxoID, quantityText, occurredAtUnix); err != nil {
+			if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, chainPaymentID, utxoID, quantityText, occurredAtUnix); err != nil {
 				return fmt.Errorf("append token consumption for utxo %s: %w", utxoID, err)
 			}
 		}
