@@ -398,7 +398,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			PRIMARY KEY(utxo_id, asset_group, asset_standard, asset_key)
 		)`,
-		`CREATE TABLE IF NOT EXISTS wallet_bsv21_create_status(
+		`CREATE TABLE IF NOT EXISTS fact_bsv21(
 			token_id TEXT PRIMARY KEY,
 			create_txid TEXT NOT NULL,
 			wallet_id TEXT NOT NULL,
@@ -408,14 +408,19 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			max_supply TEXT NOT NULL,
 			decimals INTEGER NOT NULL,
 			icon TEXT NOT NULL,
-			status TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			submitted_at_unix INTEGER NOT NULL,
-			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
-			last_check_at_unix INTEGER NOT NULL DEFAULT 0,
-			next_auto_check_at_unix INTEGER NOT NULL DEFAULT 0,
 			updated_at_unix INTEGER NOT NULL,
-			last_check_error TEXT NOT NULL DEFAULT ''
+			payload_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE TABLE IF NOT EXISTS fact_bsv21_events(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_id TEXT NOT NULL,
+			event_kind TEXT NOT NULL,
+			event_at_unix INTEGER NOT NULL,
+			txid TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}'
 		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_utxo_sync_state(
 			address TEXT PRIMARY KEY,
@@ -781,8 +786,8 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_target ON settle_business_settlements(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_wallet ON wallet_utxo_assets(wallet_id, address, asset_group, asset_standard, asset_key, updated_at_unix DESC, utxo_id ASC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_assets_utxo ON wallet_utxo_assets(utxo_id, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_state ON wallet_bsv21_create_status(status, next_auto_check_at_unix ASC, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_token_id ON fact_bsv21_events(token_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_kind_time ON fact_bsv21_events(event_kind, event_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_history_cursor_round_tip ON wallet_utxo_history_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		// 第六次迭代：finance 表索引移到 ensureFinAccountingIndexes 中创建
 		// 避免老库迁移时列不存在导致错误
@@ -1026,8 +1031,8 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 	if err := ensureFactChainPaymentTimingSchema(db); err != nil {
 		return fmt.Errorf("fact_chain_payments timing columns: %w", err)
 	}
-	if err := ensureWalletBSV21CreateStatusSchema(db); err != nil {
-		return fmt.Errorf("wallet_bsv21_create_status: %w", err)
+	if err := runBSV21CreateHardCutoverMigration(db); err != nil {
+		return fmt.Errorf("bsv21 create hard cutover: %w", err)
 	}
 	if err := ensureWalletUTXOSyncStateSchema(db); err != nil {
 		return fmt.Errorf("wallet_utxo_sync_state: %w", err)
@@ -3921,36 +3926,241 @@ func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
 	return nil
 }
 
-// ensureWalletBSV21CreateStatusSchema 处理 wallet_bsv21_create_status 表的历史列迁移
-func ensureWalletBSV21CreateStatusSchema(db *sql.DB) error {
+// runBSV21CreateHardCutoverMigration 负责把旧 create 状态表硬切到 fact 层。
+// 设计说明：
+// - 新库只建新表，不再创建旧状态表；
+// - 老库升级时一次性回填主事实和事件，再物理删除旧表；
+// - 迁移必须走事务，避免半截迁移把新旧两套都留下。
+func runBSV21CreateHardCutoverMigration(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS wallet_bsv21_create_status(
-		token_id TEXT PRIMARY KEY,
-		create_txid TEXT NOT NULL,
-		wallet_id TEXT NOT NULL,
-		address TEXT NOT NULL,
-		token_standard TEXT NOT NULL,
-		symbol TEXT NOT NULL,
-		max_supply TEXT NOT NULL,
-		decimals INTEGER NOT NULL,
-		icon TEXT NOT NULL,
-		status TEXT NOT NULL,
-		created_at_unix INTEGER NOT NULL,
-		submitted_at_unix INTEGER NOT NULL,
-		confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
-		last_check_at_unix INTEGER NOT NULL DEFAULT 0,
-		next_auto_check_at_unix INTEGER NOT NULL DEFAULT 0,
-		updated_at_unix INTEGER NOT NULL,
-		last_check_error TEXT NOT NULL DEFAULT ''
-	)`); err != nil {
+	tx, err := db.Begin()
+	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_state ON wallet_bsv21_create_status(status, next_auto_check_at_unix ASC, updated_at_unix DESC)`); err != nil {
+	defer func() { _ = tx.Rollback() }()
+
+	stmts := []string{
+		`CREATE TABLE IF NOT EXISTS fact_bsv21(
+			token_id TEXT PRIMARY KEY,
+			create_txid TEXT NOT NULL,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			token_standard TEXT NOT NULL,
+			symbol TEXT NOT NULL,
+			max_supply TEXT NOT NULL,
+			decimals INTEGER NOT NULL,
+			icon TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			submitted_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			payload_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE TABLE IF NOT EXISTS fact_bsv21_events(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token_id TEXT NOT NULL,
+			event_kind TEXT NOT NULL,
+			event_at_unix INTEGER NOT NULL,
+			txid TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_token_id ON fact_bsv21_events(token_id, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_kind_time ON fact_bsv21_events(event_kind, event_at_unix DESC)`,
+	}
+	for _, stmt := range stmts {
+		if _, err := tx.Exec(stmt); err != nil {
+			return err
+		}
+	}
+
+	legacyExists := hasTableValue(tx, "wallet_bsv21_create_status")
+	if !legacyExists {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	rows, err := tx.Query(`SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,status,created_at_unix,submitted_at_unix,confirmed_at_unix,last_check_at_unix,next_auto_check_at_unix,updated_at_unix,last_check_error
+		FROM wallet_bsv21_create_status
+		ORDER BY created_at_unix ASC, submitted_at_unix ASC, token_id ASC`)
+	if err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_bsv21_create_status_wallet ON wallet_bsv21_create_status(wallet_id, address, updated_at_unix DESC)`); err != nil {
+	defer func() { _ = rows.Close() }()
+
+	type legacyBSV21CreateStatusRow struct {
+		TokenID             string
+		CreateTxID          string
+		WalletID            string
+		Address             string
+		TokenStandard       string
+		Symbol              string
+		MaxSupply           string
+		Decimals            int64
+		Icon                string
+		Status              string
+		CreatedAtUnix       int64
+		SubmittedAtUnix     int64
+		ConfirmedAtUnix     int64
+		LastCheckAtUnix     int64
+		NextAutoCheckAtUnix int64
+		UpdatedAtUnix       int64
+		LastCheckError      string
+	}
+
+	for rows.Next() {
+		var row legacyBSV21CreateStatusRow
+		if err := rows.Scan(
+			&row.TokenID,
+			&row.CreateTxID,
+			&row.WalletID,
+			&row.Address,
+			&row.TokenStandard,
+			&row.Symbol,
+			&row.MaxSupply,
+			&row.Decimals,
+			&row.Icon,
+			&row.Status,
+			&row.CreatedAtUnix,
+			&row.SubmittedAtUnix,
+			&row.ConfirmedAtUnix,
+			&row.LastCheckAtUnix,
+			&row.NextAutoCheckAtUnix,
+			&row.UpdatedAtUnix,
+			&row.LastCheckError,
+		); err != nil {
+			return err
+		}
+
+		tokenID := strings.ToLower(strings.TrimSpace(row.TokenID))
+		createTxID := strings.ToLower(strings.TrimSpace(row.CreateTxID))
+		walletID := strings.TrimSpace(row.WalletID)
+		address := strings.TrimSpace(row.Address)
+		tokenStandard := strings.TrimSpace(row.TokenStandard)
+		if tokenStandard == "" {
+			tokenStandard = "bsv21"
+		}
+		if tokenID == "" || createTxID == "" {
+			continue
+		}
+		nowUnix := time.Now().Unix()
+		createdAtUnix := row.CreatedAtUnix
+		if createdAtUnix <= 0 {
+			createdAtUnix = nowUnix
+		}
+		submittedAtUnix := row.SubmittedAtUnix
+		if submittedAtUnix <= 0 {
+			submittedAtUnix = createdAtUnix
+		}
+		updatedAtUnix := row.UpdatedAtUnix
+		if updatedAtUnix <= 0 {
+			updatedAtUnix = nowUnix
+		}
+		payloadBytes, err := json.Marshal(map[string]any{
+			"source_table":                   "wallet_bsv21_create_status",
+			"legacy_status":                  strings.TrimSpace(row.Status),
+			"legacy_confirmed_at_unix":       row.ConfirmedAtUnix,
+			"legacy_last_check_at_unix":      row.LastCheckAtUnix,
+			"legacy_next_auto_check_at_unix": row.NextAutoCheckAtUnix,
+			"legacy_last_check_error":        strings.TrimSpace(row.LastCheckError),
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO fact_bsv21(
+			token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(token_id) DO UPDATE SET
+			create_txid=excluded.create_txid,
+			wallet_id=excluded.wallet_id,
+			address=excluded.address,
+			token_standard=excluded.token_standard,
+			symbol=excluded.symbol,
+			max_supply=excluded.max_supply,
+			decimals=excluded.decimals,
+			icon=excluded.icon,
+			created_at_unix=excluded.created_at_unix,
+			submitted_at_unix=excluded.submitted_at_unix,
+			updated_at_unix=excluded.updated_at_unix,
+			payload_json=excluded.payload_json`,
+			tokenID,
+			createTxID,
+			walletID,
+			address,
+			tokenStandard,
+			strings.TrimSpace(row.Symbol),
+			strings.TrimSpace(row.MaxSupply),
+			row.Decimals,
+			strings.TrimSpace(row.Icon),
+			createdAtUnix,
+			submittedAtUnix,
+			updatedAtUnix,
+			string(payloadBytes),
+		); err != nil {
+			return err
+		}
+		submittedEventPayload, err := json.Marshal(map[string]any{
+			"source_table":  "wallet_bsv21_create_status",
+			"legacy_status": strings.TrimSpace(row.Status),
+			"create_txid":   createTxID,
+			"wallet_id":     walletID,
+			"address":       address,
+		})
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`INSERT INTO fact_bsv21_events(
+			token_id,event_kind,event_at_unix,txid,note,payload_json
+		) VALUES(?,?,?,?,?,?)`,
+			tokenID,
+			"submitted",
+			submittedAtUnix,
+			createTxID,
+			"legacy create submit migrated",
+			string(submittedEventPayload),
+		); err != nil {
+			return err
+		}
+		if strings.EqualFold(strings.TrimSpace(row.Status), "externally_verified") {
+			verifiedAtUnix := row.ConfirmedAtUnix
+			if verifiedAtUnix <= 0 {
+				verifiedAtUnix = updatedAtUnix
+			}
+			legacyEventPayload, err := json.Marshal(map[string]any{
+				"source_table":            "wallet_bsv21_create_status",
+				"legacy_status":           strings.TrimSpace(row.Status),
+				"verified_at_unix":        verifiedAtUnix,
+				"last_check_at_unix":      row.LastCheckAtUnix,
+				"next_auto_check_at_unix": row.NextAutoCheckAtUnix,
+				"last_check_error":        strings.TrimSpace(row.LastCheckError),
+			})
+			if err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`INSERT INTO fact_bsv21_events(
+				token_id,event_kind,event_at_unix,txid,note,payload_json
+			) VALUES(?,?,?,?,?,?)`,
+				tokenID,
+				"legacy_external_verified",
+				verifiedAtUnix,
+				createTxID,
+				"legacy external verification migrated",
+				string(legacyEventPayload),
+			); err != nil {
+				return err
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DROP TABLE wallet_bsv21_create_status`); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
 	return nil

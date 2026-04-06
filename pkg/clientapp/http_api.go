@@ -246,8 +246,6 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/preview", s.withAuth(s.handleWalletTokenCreatePreview))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/sign", s.withAuth(s.handleWalletTokenCreateSign))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/submit", s.withAuth(s.handleWalletTokenCreateSubmit))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/status", s.withAuth(s.handleWalletTokenCreateStatus))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/status/refresh", s.withAuth(s.handleWalletTokenCreateStatusRefresh))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/preview", s.withAuth(s.handleWalletTokenSendPreview))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/sign", s.withAuth(s.handleWalletTokenSendSign))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/submit", s.withAuth(s.handleWalletTokenSendSubmit))
@@ -758,17 +756,17 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 		}
 	}
 	page, err := dbListWalletFundFlows(r.Context(), httpStore(s), walletFundFlowFilter{
-		Limit:        limit,
-		Offset:       offset,
-		FlowID:       flowID,
-		FlowType:     flowType,
-		RefID:        refID,
-		Stage:        stage,
-		Directions:   directions,
-		Purpose:      purpose,
-		RelatedTxID:  relatedTxID,
-		VisitID:      visitID,
-		Query:        q,
+		Limit:       limit,
+		Offset:      offset,
+		FlowID:      flowID,
+		FlowType:    flowType,
+		RefID:       refID,
+		Stage:       stage,
+		Directions:  directions,
+		Purpose:     purpose,
+		RelatedTxID: relatedTxID,
+		VisitID:     visitID,
+		Query:       q,
 	})
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
@@ -1929,7 +1927,6 @@ func (s *httpAPIServer) handleAdminWalletUTXOEventDetail(w http.ResponseWriter, 
 //   - status：按状态过滤
 //   - from_party_id/to_party_id：按参与方查
 //   - accounting_scene/accounting_subtype：补充过滤条件
-//
 func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

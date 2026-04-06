@@ -223,32 +223,54 @@ func buildWalletTokenCreateSubmit(r *http.Request, s *httpAPIServer, req walletA
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token create failed: %w", err)
 	}
 	addr, _ := clientWalletAddress(s.rt)
+	walletID := walletIDByAddress(addr)
 	nowUnix := time.Now().Unix()
-	statusItem := walletBSV21CreateStatusItem{
+	factPayload := marshalFactBSV21Payload(map[string]any{
+		"source":         "wallet_token_create_submit",
+		"token_id":       tokenID,
+		"create_txid":    finalTxID,
+		"wallet_id":      walletID,
+		"address":        strings.TrimSpace(addr),
+		"token_standard": "bsv21",
+		"symbol":         meta.Symbol,
+		"max_supply":     meta.MaxSupply,
+		"decimals":       meta.Decimals,
+		"icon":           meta.Icon,
+	})
+	if err := upsertFactBSV21Create(r.Context(), s.store, factBSV21CreateItem{
 		TokenID:         tokenID,
 		CreateTxID:      finalTxID,
-		WalletID:        walletIDByAddress(addr),
+		WalletID:        walletID,
 		Address:         strings.TrimSpace(addr),
 		TokenStandard:   "bsv21",
 		Symbol:          meta.Symbol,
 		MaxSupply:       meta.MaxSupply,
 		Decimals:        meta.Decimals,
 		Icon:            meta.Icon,
-		Status:          walletBSV21CreateStatusPendingExternalVerification,
 		CreatedAtUnix:   nowUnix,
 		SubmittedAtUnix: nowUnix,
 		UpdatedAtUnix:   nowUnix,
+		PayloadJSON:     factPayload,
+	}); err != nil {
+		return walletAssetActionSubmitResp{}, fmt.Errorf("record token create fact failed: %w", err)
 	}
-	if err := recordWalletBSV21CreateSubmitted(r.Context(), s.store, s.rt, statusItem); err != nil {
-		return walletAssetActionSubmitResp{}, fmt.Errorf("record token create status failed: %w", err)
+	if err := appendFactBSV21Event(r.Context(), s.store, factBSV21EventItem{
+		TokenID:     tokenID,
+		EventKind:   "submitted",
+		EventAtUnix: nowUnix,
+		TxID:        finalTxID,
+		Note:        "create tx submitted",
+		PayloadJSON: factPayload,
+	}); err != nil {
+		return walletAssetActionSubmitResp{}, fmt.Errorf("record token create event failed: %w", err)
 	}
 	return walletAssetActionSubmitResp{
 		Ok:      true,
 		Code:    "OK",
-		Message: "交易已提交，本地 token 链路已可继续；create 状态仅表示外部验真进度。",
+		Message: "交易已提交，主事实已落库。",
 		TxID:    finalTxID,
 		TokenID: tokenID,
-		Status:  walletBSV21CreateStatusPendingExternalVerification,
+		Status:  "submitted",
 	}, nil
 }
 

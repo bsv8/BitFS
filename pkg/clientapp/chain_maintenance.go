@@ -567,16 +567,6 @@ func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (m
 	}
 	emitted := false
 	if before.TipHeight > 0 && tip > before.TipHeight {
-		if err := scheduleWalletBSV21CreateAutoCheckAfterTipChange(ctx, m.store, m.rt, time.Now().Add(walletBSV21CreateAutoCheckDelay).Unix()); err != nil {
-			obs.Error("bitcast-client", "wallet_bsv21_create_auto_check_schedule_failed", map[string]any{
-				"error":        err.Error(),
-				"tip_from":     before.TipHeight,
-				"tip_to":       tip,
-				"trigger":      strings.TrimSpace(task.TriggerSource),
-				"task_type":    chainTaskTip,
-				"runtime_type": fmt.Sprintf("%T", m.rt.WalletChain),
-			})
-		}
 		if m.rt != nil && m.rt.orch != nil {
 			m.rt.orch.EmitSignal(orchestratorSignal{
 				Source:       "chain_tip_worker",
@@ -770,17 +760,6 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 	}
-	stepStart = time.Now()
-	if err := refreshDueWalletBSV21CreateStatuses(ctx, m.store, m.rt, task.TriggerSource); err != nil {
-		logWalletSyncStepError(meta, "refresh_due_wallet_bsv21_create_statuses", err, map[string]any{
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-	} else {
-		logWalletSyncStepInfo(meta, "refresh_due_wallet_bsv21_create_statuses", map[string]any{
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-	}
-
 	// 触发 unknown 1-sat 资产确认流程
 	// 设计说明：
 	// - 在链同步成功后，异步确认 unknown 资产的类型
