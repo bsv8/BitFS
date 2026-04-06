@@ -612,7 +612,7 @@ const SETTINGS_ALLOWED_PATHS = [
   "/api/v1/wallet/summary",
   // 设计说明：
   // - settings 账务页和侧栏访问概述要看同一批后台流水；
-  // - 因此设置页必须能读取 wallet_fund_flows 列表与详情，不能只看 summary。
+  // - 因此设置页必须能读取 fact_* 组装的 fund-flows 列表与详情，不能只看 summary。
   "/api/v1/wallet/fund-flows",
   "/api/v1/wallet/fund-flows/detail",
   "/api/v1/gateways",

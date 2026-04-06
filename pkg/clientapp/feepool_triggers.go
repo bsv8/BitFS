@@ -278,20 +278,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		return FeePoolCloseResult{}, fmt.Errorf("session not found by spend_txid: %s", spendTxID)
 	}
 	if strings.TrimSpace(st.Status) == "closed" {
-		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + spendTxID,
-			FlowType:        "fee_pool",
-			RefID:           spendTxID,
-			Stage:           "close_settle",
-			Direction:       "settle",
-			Purpose:         "fee_pool_close",
-			AmountSatoshi:   0,
-			UsedSatoshi:     int64(st.ServerAmountSat),
-			ReturnedSatoshi: int64(st.ClientAmountSat),
-			RelatedTxID:     strings.TrimSpace(st.FinalTxID),
-			Note:            "already_closed",
-			Payload:         st,
-		})
+		// wallet_fund_flows 写入已下线
 		return FeePoolCloseResult{
 			GatewayPeerID: gatewayID,
 			Result: poolcore.CloseResp{
@@ -354,20 +341,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		"status":             resp.Status,
 	})
 	if resp.Success && strings.TrimSpace(resp.Status) == "closed" {
-		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + spendTxID,
-			FlowType:        "fee_pool",
-			RefID:           spendTxID,
-			Stage:           "close_settle",
-			Direction:       "settle",
-			Purpose:         "fee_pool_close",
-			AmountSatoshi:   0,
-			UsedSatoshi:     int64(st.ServerAmountSat),
-			ReturnedSatoshi: int64(st.ClientAmountSat),
-			RelatedTxID:     strings.TrimSpace(resp.FinalSpendTxID),
-			Note:            fmt.Sprintf("gateway=%s", gatewayID),
-			Payload:         resp,
-		})
+		// wallet_fund_flows 写入已下线
 	}
 	return FeePoolCloseResult{GatewayPeerID: gatewayID, Result: resp}, nil
 }

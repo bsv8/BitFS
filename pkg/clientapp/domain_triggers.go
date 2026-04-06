@@ -223,27 +223,7 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 		obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
 		return out, fmt.Errorf("finalize domain register settlement: %w", err)
 	}
-	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-		FlowID:          "domain_register:" + out.RegisterTxID,
-		FlowType:        "domain_register",
-		RefID:           out.Name,
-		Stage:           "broadcast",
-		Direction:       "out",
-		Purpose:         "domain_register_total_payment",
-		AmountSatoshi:   -int64(prepared.TotalRegisterPaySatoshi),
-		UsedSatoshi:     int64(prepared.TotalRegisterPaySatoshi),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     out.RegisterTxID,
-		Note:            fmt.Sprintf("resolver_pubkey_hex=%s", strings.TrimSpace(p.ResolverPubkeyHex)),
-		Payload: map[string]any{
-			"name":                        out.Name,
-			"owner_pubkey_hex":            out.OwnerPubkeyHex,
-			"target_pubkey_hex":           out.TargetPubkeyHex,
-			"register_price_satoshi":      prepared.RegisterPriceSatoshi,
-			"register_submit_fee_satoshi": prepared.RegisterSubmitFeeSatoshi,
-			"total_pay_satoshi":           prepared.TotalRegisterPaySatoshi,
-		},
-	})
+	// wallet_fund_flows 写入已下线
 	obs.Business("bitcast-client", "evt_trigger_domain_register_name_end", map[string]any{
 		"resolver_pubkey_hex":        strings.TrimSpace(p.ResolverPubkeyHex),
 		"name":                       out.Name,

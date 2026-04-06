@@ -730,6 +730,8 @@ func walletChainTypeOfRuntime(rt *Runtime) string {
 }
 
 func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Request) {
+	// 兼容接口：底层已从 wallet_fund_flows 迁移到 fact_* 事实表组装
+	// visit_id 已废弃，传入即 400
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -743,7 +745,10 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
 	purpose := strings.TrimSpace(r.URL.Query().Get("purpose"))
 	relatedTxID := strings.TrimSpace(r.URL.Query().Get("related_txid"))
-	visitID := normalizeVisitIDHeader(r.URL.Query().Get("visit_id"))
+	if strings.TrimSpace(r.URL.Query().Get("visit_id")) != "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "visit_id filter is deprecated"})
+		return
+	}
 	q := strings.TrimSpace(r.URL.Query().Get("q"))
 	// 支持逗号分隔的多方向筛选
 	var directions []string
@@ -765,7 +770,6 @@ func (s *httpAPIServer) handleWalletFundFlows(w http.ResponseWriter, r *http.Req
 		Directions:  directions,
 		Purpose:     purpose,
 		RelatedTxID: relatedTxID,
-		VisitID:     visitID,
 		Query:       q,
 	})
 	if err != nil {
@@ -790,7 +794,12 @@ func (s *httpAPIServer) handleWalletFundFlowDetail(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
 		return
 	}
-	it, err := dbGetWalletFundFlowItem(r.Context(), httpStore(s), int64(id))
+	flowType := strings.TrimSpace(r.URL.Query().Get("flow_type"))
+	if flowType == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "flow_type is required"})
+		return
+	}
+	it, err := dbGetWalletFundFlowItem(r.Context(), httpStore(s), int64(id), flowType)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})

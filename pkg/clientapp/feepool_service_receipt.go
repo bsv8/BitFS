@@ -156,25 +156,7 @@ func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, store *clien
 	session.FinalTxID = strings.TrimSpace(finalTxID)
 	session.Status = "closed"
 	rt.setFeePool(gatewayPeerID, session)
-	dbAppendWalletFundFlow(context.Background(), store, walletFundFlowEntry{
-		FlowID:          "fee_pool:" + session.SpendTxID,
-		FlowType:        "fee_pool",
-		RefID:           session.SpendTxID,
-		Stage:           "suspicious_expiry_settle",
-		Direction:       "settle",
-		Purpose:         "fee_pool_suspicious_expiry_settle",
-		AmountSatoshi:   0,
-		UsedSatoshi:     int64(session.ServerAmount),
-		ReturnedSatoshi: int64(session.ClientAmount),
-		RelatedTxID:     session.FinalTxID,
-		Note:            strings.TrimSpace(session.SuspiciousReason),
-		Payload: map[string]any{
-			"gateway_peer_id":    gatewayPeerID,
-			"suspicious_at_unix": session.SuspiciousAtUnix,
-			"suspicious_reason":  session.SuspiciousReason,
-			"expire_height":      expireHeight,
-		},
-	})
+	// wallet_fund_flows 写入已下线，改为 fact_* 事实表组装查询
 	return map[string]any{"status": "broadcasted", "final_txid": session.FinalTxID, "expire_height": expireHeight, "tip_height": tip}, nil
 }
 

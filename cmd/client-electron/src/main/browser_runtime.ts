@@ -725,7 +725,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
     if (directions.length > 0) {
       search.set("direction", directions.join(","));
     }
-    // 改读 wallet_fund_flows，映射成现有 history 返回结构
+    // 改读 fact_* 事实表组装的 fund-flows API，映射成现有 history 返回结构
     const payload = await this.fetchJSON<Record<string, unknown>>(`/api/v1/wallet/fund-flows?${search.toString()}`);
     return {
       total: Math.max(0, readIntegerField(payload, "total")),
@@ -1595,7 +1595,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
     try {
       // 设计说明：
       // - “访问会话概述”和 settings 账务明细要看同一批后台业务流水；
-      // - 所以这里不能再按时间窗口猜测，而是直接按 visit_id 查 wallet_fund_flows。
+      // - 所以这里不能再按时间窗口猜测，而是直接按 visit_id 查 /api/v1/wallet/fund-flows。
       const payload = await this.fetchJSONSilent<WalletFundFlowListResponse>(`/api/v1/wallet/fund-flows?limit=200&offset=0&visit_id=${encodeURIComponent(visitID)}`);
       return Array.isArray(payload.items) ? payload.items : [];
     } catch (error) {
@@ -1806,7 +1806,7 @@ function readHistoryItems(payload: Record<string, unknown>): BitfsPublicWalletHi
   return items;
 }
 
-// 从 wallet_fund_flows 映射成 history 返回结构
+// 从 fact_* 事实表组装的 fund-flows API 映射成 history 返回结构
 // 设计说明：对外保持 history 接口不变，内部改读 fund_flows
 function readHistoryItemsFromFundFlows(payload: Record<string, unknown>): BitfsPublicWalletHistoryItem[] {
   const rawItems = Array.isArray(payload.items) ? payload.items : [];

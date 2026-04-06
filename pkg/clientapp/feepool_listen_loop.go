@@ -558,25 +558,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 			"fee_rate_sat_per_byte":      info.FeeRateSatPerByte,
 		},
 	})
-	dbAppendWalletFundFlow(ctx, store, walletFundFlowEntry{
-		FlowID:          "fee_pool:" + createResp.SpendTxID,
-		FlowType:        "fee_pool",
-		RefID:           createResp.SpendTxID,
-		Stage:           "open_lock",
-		Direction:       "lock",
-		Purpose:         "fee_pool_open",
-		AmountSatoshi:   int64(createResp.PoolAmountSat),
-		UsedSatoshi:     0,
-		ReturnedSatoshi: 0,
-		RelatedTxID:     baseOut.BaseTxID,
-		Note:            fmt.Sprintf("gateway=%s", gwID),
-		Payload: map[string]any{
-			"base_txid":            baseOut.BaseTxID,
-			"pool_amount_satoshi":  createResp.PoolAmountSat,
-			"spend_tx_fee_satoshi": createResp.SpendTxFeeSat,
-			"server_amount":        initialServerAmount,
-		},
-	})
+	// wallet_fund_flows 写入已下线
 	dbRecordFeePoolOpenAccounting(ctx, store, feePoolOpenAccountingInput{
 		BusinessID:        "biz_feepool_open_" + strings.TrimSpace(createResp.SpendTxID),
 		SpendTxID:         createResp.SpendTxID,
@@ -615,24 +597,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 				"trigger":           "open_create",
 			},
 		})
-		dbAppendWalletFundFlow(ctx, store, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + createResp.SpendTxID,
-			FlowType:        "fee_pool",
-			RefID:           createResp.SpendTxID,
-			Stage:           "use_open",
-			Direction:       "out",
-			Purpose:         "listen_cycle_fee",
-			AmountSatoshi:   -int64(initialServerAmount),
-			UsedSatoshi:     int64(initialServerAmount),
-			ReturnedSatoshi: 0,
-			RelatedTxID:     createResp.SpendTxID,
-			Note:            "sequence=1 trigger=open_create",
-			Payload: map[string]any{
-				"sequence":          1,
-				"charge_reason":     "listen_cycle_fee",
-				"charge_amount_sat": initialServerAmount,
-			},
-		})
+		// wallet_fund_flows 写入已下线
 	}
 	if err := applyLocalBroadcastWalletTx(ctx, store, rt, baseResp.Tx.Hex(), "fee_pool_open_base"); err != nil {
 		return nil, fmt.Errorf("project fee pool base tx to wallet utxo failed: %w", err)

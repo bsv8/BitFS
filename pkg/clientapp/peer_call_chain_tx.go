@@ -15,6 +15,7 @@ import (
 	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -146,28 +147,12 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *client
 	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, built.RawTx, "peer_call_chain_tx"); err != nil {
 		return ncall.CallResp{}, err
 	}
-	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-		FlowID:          "chain_tx:" + built.TxID,
-		FlowType:        "chain_tx",
-		RefID:           strings.TrimSpace(req.Route),
-		Stage:           "use_peer_call",
-		Direction:       "out",
-		Purpose:         nonEmptyPeerCallPurpose(quoted.ChargeReason, req.Route),
-		AmountSatoshi:   -int64(quoted.ServiceQuote.ChargeAmountSatoshi + built.MinerFeeSatoshi),
-		UsedSatoshi:     int64(quoted.ServiceQuote.ChargeAmountSatoshi + built.MinerFeeSatoshi),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     built.TxID,
-		Note:            fmt.Sprintf("route=%s payment_domain=%s", strings.TrimSpace(req.Route), strings.TrimSpace(option.PaymentDomain)),
-		Payload: map[string]any{
-			"route":                strings.TrimSpace(req.Route),
-			"payment_domain":       strings.TrimSpace(option.PaymentDomain),
-			"charge_reason":        strings.TrimSpace(quoted.ChargeReason),
-			"payment_scheme":       ncall.PaymentSchemeChainTxV1,
-			"quote_charge_sat":     quoted.ServiceQuote.ChargeAmountSatoshi,
-			"miner_fee_sat":        built.MinerFeeSatoshi,
-			"change_satoshi":       built.ChangeSatoshi,
-			"payment_receipt_txid": strings.TrimSpace(receipt.PaymentTxID),
-		},
+	// wallet_fund_flows 写入已下线
+	obs.Business("bitcast-client", "evt_trigger_peer_call_chain_tx_end", map[string]any{
+		"quote_charge_sat":     quoted.ServiceQuote.ChargeAmountSatoshi,
+		"miner_fee_sat":        built.MinerFeeSatoshi,
+		"change_satoshi":       built.ChangeSatoshi,
+		"payment_receipt_txid": strings.TrimSpace(receipt.PaymentTxID),
 	})
 	resultPayloadBytes, err := expectedPeerCallResultPayload(req.Route, out.Body)
 	if err != nil {

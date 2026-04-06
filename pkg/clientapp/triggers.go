@@ -954,25 +954,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"lock_blocks":             req.LockBlocks,
 			"recommended_file_source": "direct_transfer_pool_open",
 		})
-		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-			FlowID:          "direct_pool:" + curSessionID,
-			FlowType:        "direct_transfer_pool",
-			RefID:           curSessionID,
-			Stage:           "open_lock",
-			Direction:       "lock",
-			Purpose:         "direct_transfer_pool_open",
-			AmountSatoshi:   int64(req.PoolAmount),
-			UsedSatoshi:     0,
-			ReturnedSatoshi: 0,
-			RelatedTxID:     baseTxID,
-			Note:            fmt.Sprintf("deal_id=%s", dealID),
-			Payload: map[string]any{
-				"deal_id":              dealID,
-				"pool_amount_satoshi":  req.PoolAmount,
-				"spend_tx_fee_satoshi": req.SpendTxFee,
-				"sequence":             req.Sequence,
-			},
-		})
+		// wallet_fund_flows 写入已下线
 		if err := dbRecordDirectPoolOpenAccounting(ctx, store, directPoolOpenAccountingInput{
 			SessionID:         curSessionID,
 			DealID:            dealID,
@@ -1073,26 +1055,8 @@ func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt *Runtime, flowI
 	if err := applyLocalBroadcastWalletTx(ctx, store, rt, splitTx.Hex(), "direct_transfer_pool_split"); err != nil {
 		return nil, "", fmt.Errorf("project split tx failed: %w", err)
 	}
-	change := int64(total - target - fee)
-	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-		FlowID:          flowID,
-		FlowType:        "direct_transfer_pool",
-		RefID:           strings.TrimPrefix(flowID, "direct_pool:"),
-		Stage:           "fund_split",
-		Direction:       "internal",
-		Purpose:         "prepare_exact_pool_amount",
-		AmountSatoshi:   int64(target),
-		UsedSatoshi:     0,
-		ReturnedSatoshi: 0,
-		RelatedTxID:     splitTxID,
-		Note:            fmt.Sprintf("selected_total=%d split_fee=%d change=%d", total, fee, change),
-		Payload: map[string]any{
-			"selected_total_satoshi": total,
-			"target_satoshi":         target,
-			"split_fee_satoshi":      fee,
-			"change_satoshi":         change,
-		},
-	})
+	_ = int64(total - target - fee) // change，wallet_fund_flows 写入已下线
+	// wallet_fund_flows 写入已下线
 
 	deadline := time.Now().Add(20 * time.Second)
 	for {
@@ -1256,24 +1220,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		"pool_amount_satoshi": session.PoolAmountSat,
 		"chunk_price_satoshi": p.Amount,
 	})
-	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-		FlowID:          "direct_pool:" + session.SessionID,
-		FlowType:        "direct_transfer_pool",
-		RefID:           session.SessionID,
-		Stage:           "use_pay",
-		Direction:       "out",
-		Purpose:         "direct_transfer_chunk_pay",
-		AmountSatoshi:   -int64(p.Amount),
-		UsedSatoshi:     int64(p.Amount),
-		ReturnedSatoshi: 0,
-		RelatedTxID:     strings.TrimSpace(merged.TxID().String()),
-		Note:            fmt.Sprintf("chunk_index=%d", p.ChunkIndex),
-		Payload: map[string]any{
-			"chunk_hash":  chunkHash,
-			"chunk_index": p.ChunkIndex,
-			"sequence":    req.Sequence,
-		},
-	})
+	// wallet_fund_flows 写入已下线
 	if err := dbRecordDirectPoolPayAccounting(
 		ctx,
 		store,
@@ -1426,24 +1373,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		"transfer_state":        "closed",
 		"transfer_entry_source": "direct_transfer_pool_close",
 	})
-	dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-		FlowID:          "direct_pool:" + session.SessionID,
-		FlowType:        "direct_transfer_pool",
-		RefID:           session.SessionID,
-		Stage:           "close_settle",
-		Direction:       "settle",
-		Purpose:         "direct_transfer_pool_close",
-		AmountSatoshi:   0,
-		UsedSatoshi:     int64(session.SellerAmount),
-		ReturnedSatoshi: int64(session.BuyerAmount),
-		RelatedTxID:     finalTxID,
-		Note:            fmt.Sprintf("sequence=%d", session.Sequence),
-		Payload: map[string]any{
-			"seller_amount_satoshi": session.SellerAmount,
-			"buyer_amount_satoshi":  session.BuyerAmount,
-			"pool_amount_satoshi":   session.PoolAmountSat,
-		},
-	})
+	// wallet_fund_flows 写入已下线
 	if err := dbRecordDirectPoolCloseAccounting(
 		ctx,
 		store,

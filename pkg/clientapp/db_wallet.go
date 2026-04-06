@@ -6,15 +6,17 @@ import (
 	"fmt"
 )
 
+// walletSummaryCounters 钱包统计计数器
+// 设计说明：已改为 fact_* 事实表口径，不再依赖 wallet_fund_flows
 type walletSummaryCounters struct {
-	FlowCount         int64
-	TotalIn           int64
-	TotalOut          int64
-	TotalUsed         int64
-	TotalReturned     int64
-	TxCount           int64
-	PurchaseCount     int64
-	GatewayEventCount int64
+	FlowCount         int64 // fact_chain_asset_flows 记录数
+	TotalIn           int64 // fact_chain_asset_flows IN 方向总金额
+	TotalOut          int64 // fact_chain_asset_flows OUT 方向总金额
+	TotalUsed         int64 // fact_asset_consumptions 总消耗
+	TotalReturned     int64 // 保留字段，fact 表无直接对应，给 0
+	TxCount           int64 // fact_pool_session_events tx_history 记录数
+	PurchaseCount     int64 // biz_purchases 完成数
+	GatewayEventCount int64 // proc_gateway_events 记录数
 }
 
 func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSummaryCounters, error) {
@@ -23,15 +25,24 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (walletSummaryCounters, error) {
 		var out walletSummaryCounters
-		if err := db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN amount_satoshi>0 THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN amount_satoshi<0 THEN -amount_satoshi ELSE 0 END),0),COALESCE(SUM(used_satoshi),0),COALESCE(SUM(returned_satoshi),0) FROM wallet_fund_flows`).Scan(&out.FlowCount, &out.TotalIn, &out.TotalOut, &out.TotalUsed, &out.TotalReturned); err != nil {
+		// 从 fact_chain_asset_flows 统计资金流水
+		if err := db.QueryRow(`SELECT COUNT(1),COALESCE(SUM(CASE WHEN direction='IN' THEN amount_satoshi ELSE 0 END),0),COALESCE(SUM(CASE WHEN direction='OUT' THEN amount_satoshi ELSE 0 END),0) FROM fact_chain_asset_flows`).Scan(&out.FlowCount, &out.TotalIn, &out.TotalOut); err != nil {
 			return walletSummaryCounters{}, err
 		}
+		// 从 fact_asset_consumptions 统计消耗
+		if err := db.QueryRow(`SELECT COALESCE(SUM(used_satoshi),0) FROM fact_asset_consumptions`).Scan(&out.TotalUsed); err != nil {
+			return walletSummaryCounters{}, err
+		}
+		out.TotalReturned = 0 // fact 表无直接对应字段
+		// 交易历史统计
 		if err := db.QueryRow(`SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind='tx_history'`).Scan(&out.TxCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
+		// 购买统计
 		if err := db.QueryRow(`SELECT COUNT(1) FROM biz_purchases WHERE status='done'`).Scan(&out.PurchaseCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
+		// 网关事件统计
 		if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events`).Scan(&out.GatewayEventCount); err != nil {
 			return walletSummaryCounters{}, err
 		}

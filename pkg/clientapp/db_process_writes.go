@@ -143,75 +143,8 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 	})
 }
 
-func dbAppendWalletFundFlow(ctx context.Context, store *clientDB, e walletFundFlowEntry) {
-	if store == nil {
-		return
-	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
-		e.VisitID = strings.TrimSpace(e.VisitID)
-		e.VisitLocator = strings.TrimSpace(e.VisitLocator)
-		e.FlowID = strings.TrimSpace(e.FlowID)
-		if e.FlowID == "" {
-			e.FlowID = "unknown"
-		}
-		e.FlowType = strings.TrimSpace(e.FlowType)
-		if e.FlowType == "" {
-			e.FlowType = "unknown"
-		}
-		e.RefID = strings.TrimSpace(e.RefID)
-		e.Stage = strings.TrimSpace(e.Stage)
-		if e.Stage == "" {
-			e.Stage = "unknown"
-		}
-		e.Direction = strings.TrimSpace(e.Direction)
-		if e.Direction == "" {
-			e.Direction = "unknown"
-		}
-		e.Purpose = strings.TrimSpace(e.Purpose)
-		if e.Purpose == "" {
-			e.Purpose = "unknown"
-		}
-		_, err := db.Exec(
-			`INSERT INTO wallet_fund_flows(
-				created_at_unix,visit_id,visit_locator,flow_id,flow_type,ref_id,stage,direction,purpose,amount_satoshi,used_satoshi,returned_satoshi,related_txid,note,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			e.VisitID,
-			e.VisitLocator,
-			e.FlowID,
-			e.FlowType,
-			e.RefID,
-			e.Stage,
-			e.Direction,
-			e.Purpose,
-			e.AmountSatoshi,
-			e.UsedSatoshi,
-			e.ReturnedSatoshi,
-			strings.TrimSpace(e.RelatedTxID),
-			e.Note,
-			mustJSONString(e.Payload),
-		)
-		if err != nil {
-			obs.Error("bitcast-client", "wallet_fund_flow_append_failed", map[string]any{
-				"error":   err.Error(),
-				"flow_id": e.FlowID,
-				"stage":   e.Stage,
-			})
-		}
-		return nil
-	})
-}
-
-func dbAppendWalletFundFlowFromContext(ctx context.Context, store *clientDB, e walletFundFlowEntry) {
-	meta := requestVisitMetaFromContext(ctx)
-	if strings.TrimSpace(e.VisitID) == "" {
-		e.VisitID = meta.VisitID
-	}
-	if strings.TrimSpace(e.VisitLocator) == "" {
-		e.VisitLocator = meta.VisitLocator
-	}
-	dbAppendWalletFundFlow(ctx, store, e)
-}
+// dbAppendWalletFundFlow 已下线，改为 fact_* 事实表组装查询
+// dbAppendWalletFundFlowFromContext 已下线
 
 func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEntry) error {
 	if store == nil {

@@ -278,28 +278,7 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, store *cl
 			nextTxHex = strings.ToLower(hex.EncodeToString(receipt.MergedCurrentTx))
 		}
 		applyFeePoolChargeToSession(chargeCtx.Session, chargeCtx.NextSeq, chargeCtx.NextServerAmount, nextTxHex)
-		dbAppendWalletFundFlowFromContext(ctx, store, walletFundFlowEntry{
-			FlowID:          "fee_pool:" + chargeCtx.Session.SpendTxID,
-			FlowType:        "fee_pool",
-			RefID:           chargeCtx.Session.SpendTxID,
-			Stage:           "use_peer_call",
-			Direction:       "out",
-			Purpose:         nonEmptyPeerCallPurpose(quoted.ChargeReason, req.Route),
-			AmountSatoshi:   -int64(chargeCtx.Charge),
-			UsedSatoshi:     int64(chargeCtx.Charge),
-			ReturnedSatoshi: 0,
-			RelatedTxID:     receipt.UpdatedTxID,
-			Note:            fmt.Sprintf("route=%s payment_domain=%s", strings.TrimSpace(req.Route), strings.TrimSpace(option.PaymentDomain)),
-			Payload: map[string]any{
-				"route":               strings.TrimSpace(req.Route),
-				"payment_domain":      strings.TrimSpace(option.PaymentDomain),
-				"charge_reason":       strings.TrimSpace(quoted.ChargeReason),
-				"charged_amount_sat":  receipt.ChargedAmountSatoshi,
-				"sequence_number":     chargeCtx.NextSeq,
-				"server_amount":       chargeCtx.NextServerAmount,
-				"minimum_pool_amount": info.MinimumPoolAmountSatoshi,
-			},
-		})
+		// wallet_fund_flows 写入已下线
 	}
 	return out, nil
 }

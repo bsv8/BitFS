@@ -34,7 +34,6 @@ export function getWalletSummary(): Promise<WalletSummary> {
 export function getWalletFundFlows(query?: {
   limit?: number;
   offset?: number;
-  visitID?: string;
   flowID?: string;
   flowType?: string;
   refID?: string;
@@ -50,9 +49,6 @@ export function getWalletFundFlows(query?: {
   }
   if (query?.offset && query.offset >= 0) {
     search.set("offset", String(query.offset));
-  }
-  if (query?.visitID) {
-    search.set("visit_id", query.visitID);
   }
   if (query?.flowID) {
     search.set("flow_id", query.flowID);
@@ -82,8 +78,12 @@ export function getWalletFundFlows(query?: {
   return requestJSON<WalletFundFlowListResp>("GET", `/api/v1/wallet/fund-flows${suffix ? `?${suffix}` : ""}`);
 }
 
-export function getWalletFundFlowDetail(id: number): Promise<WalletFundFlowItem> {
-  return requestJSON<WalletFundFlowItem>("GET", `/api/v1/wallet/fund-flows/detail?id=${id}`);
+export function getWalletFundFlowDetail(id: number, flowType?: string): Promise<WalletFundFlowItem> {
+  let url = `/api/v1/wallet/fund-flows/detail?id=${id}`;
+  if (flowType) {
+    url += `&flow_type=${encodeURIComponent(flowType)}`;
+  }
+  return requestJSON<WalletFundFlowItem>("GET", url);
 }
 
 export function setUserHomepage(seedHash: string): Promise<ShellState> {

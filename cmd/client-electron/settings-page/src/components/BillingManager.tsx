@@ -13,8 +13,9 @@ type BillingManagerProps = {
   shellState: ShellState | null;
 };
 
+// visit_id 已下线：fact 表未保留访问会话上下文
+// TODO: 若需恢复按会话筛选，需在 fact 写入链路或映射表中保留 visit_id
 type BillingQuery = {
-  visitID: string;
   direction: string;
   purpose: string;
   stage: string;
@@ -24,12 +25,11 @@ type BillingQuery = {
 
 const pageSize = 20;
 
-export function BillingManager({ walletSummary, shellBusy, shellState }: BillingManagerProps) {
+export function BillingManager({ walletSummary, shellBusy, shellState: _shellState }: BillingManagerProps) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [page, setPage] = useState(0);
   const [query, setQuery] = useState<BillingQuery>({
-    visitID: "",
     direction: "",
     purpose: "",
     stage: "",
@@ -37,7 +37,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
     q: ""
   });
   const [draftQuery, setDraftQuery] = useState<BillingQuery>({
-    visitID: "",
     direction: "",
     purpose: "",
     stage: "",
@@ -56,7 +55,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
       const resp = await getWalletFundFlows({
         limit: pageSize,
         offset: nextPage * pageSize,
-        visitID: nextQuery.visitID,
         direction: nextQuery.direction,
         purpose: nextQuery.purpose,
         stage: nextQuery.stage,
@@ -82,9 +80,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
   const items = listResp?.items || [];
   const total = Number(listResp?.total || 0);
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const currentVisit = shellState?.currentVisit;
-  const currentVisitID = String(currentVisit?.visitID || "").trim();
-  const isFilteringCurrentVisit = query.visitID !== "" && query.visitID === currentVisitID;
 
   return (
     <section className="panel">
@@ -138,44 +133,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
         </article>
       </div>
 
-      <section className="path-strip">
-        <span>当前壳访问会话</span>
-        <strong>{currentVisit?.locator || "当前没有访问会话"}</strong>
-        <p className="helper-copy">
-          {currentVisitID
-            ? `visit_id: ${currentVisitID} | 状态: ${formatVisitStatus(currentVisit?.status)} | 已花费: ${formatSat(Number(currentVisit?.totalUsedSatoshi || 0))}`
-            : "如果你要把账务明细和当前访问真正对上，可以直接使用下面的“筛选当前访问”。"}
-        </p>
-        <div className="panel-actions">
-          <button
-            className="ghost-button"
-            type="button"
-            disabled={shellBusy || loading || currentVisitID === ""}
-            onClick={() => {
-              const next = { ...draftQuery, visitID: currentVisitID };
-              setDraftQuery(next);
-              setQuery(next);
-              setPage(0);
-            }}
-          >
-            筛选当前访问
-          </button>
-          <button
-            className="ghost-button"
-            type="button"
-            disabled={shellBusy || loading || query.visitID === ""}
-            onClick={() => {
-              const next = { ...draftQuery, visitID: "" };
-              setDraftQuery(next);
-              setQuery(next);
-              setPage(0);
-            }}
-          >
-            清除访问筛选
-          </button>
-        </div>
-      </section>
-
       <form
         className="billing-filter-grid"
         onSubmit={(event) => {
@@ -184,15 +141,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
           setQuery({ ...draftQuery });
         }}
       >
-        <label>
-          <span>访问会话</span>
-          <input
-            className="text-input"
-            value={draftQuery.visitID}
-            onChange={(event) => setDraftQuery({ ...draftQuery, visitID: event.target.value })}
-            placeholder="visit_id"
-          />
-        </label>
         <label>
           <span>方向</span>
           <select
@@ -249,7 +197,7 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
             type="button"
             disabled={shellBusy || loading}
             onClick={() => {
-              const empty = { visitID: "", direction: "", purpose: "", stage: "", flowType: "", q: "" };
+              const empty = { direction: "", purpose: "", stage: "", flowType: "", q: "" };
               setDraftQuery(empty);
               setQuery(empty);
               setPage(0);
@@ -266,14 +214,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
         ))}
       </datalist>
 
-      {isFilteringCurrentVisit ? (
-        <section className="path-strip">
-          <span>当前正在查看</span>
-          <strong>{currentVisit?.locator || query.visitID}</strong>
-          <p className="helper-copy">这份流水已经按当前访问会话过滤，只会显示同一次访问链路里落下来的账务记录。</p>
-        </section>
-      ) : null}
-
       {error ? <section className="error-banner"><strong>账务查询失败</strong><span>{error}</span></section> : null}
 
       <div className="table-wrap">
@@ -288,7 +228,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
               <th>金额</th>
               <th>已用</th>
               <th>退回</th>
-              <th>访问</th>
               <th>引用</th>
               <th>相关交易</th>
               <th>操作</th>
@@ -297,11 +236,11 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={12} className="empty-cell">正在读取账务流水...</td>
+                <td colSpan={11} className="empty-cell">正在读取账务流水...</td>
               </tr>
             ) : items.length === 0 ? (
               <tr>
-                <td colSpan={12} className="empty-cell">当前筛选条件下没有账务记录。</td>
+                <td colSpan={11} className="empty-cell">当前筛选条件下没有账务记录。</td>
               </tr>
             ) : items.map((item) => (
               <tr key={item.id}>
@@ -313,7 +252,6 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
                 <td>{formatSignedSat(item.amount_satoshi)}</td>
                 <td>{formatSat(item.used_satoshi)}</td>
                 <td>{formatSat(item.returned_satoshi)}</td>
-                <td title={item.visit_locator || item.visit_id || "-"}>{item.visit_id ? shortHex(item.visit_id, 8, 8) : "-"}</td>
                 <td title={item.ref_id}>{item.ref_id ? shortHex(item.ref_id, 8, 8) : "-"}</td>
                 <td title={item.related_txid}>{item.related_txid ? shortHex(item.related_txid, 8, 8) : "-"}</td>
                 <td className="row-actions">
@@ -324,7 +262,7 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
                       setDetailLoading(true);
                       setDetailError("");
                       setDetail(null);
-                      void getWalletFundFlowDetail(item.id).then((resp) => {
+                      void getWalletFundFlowDetail(item.id, item.flow_type || undefined).then((resp) => {
                         setDetail(resp);
                       }).catch((nextError) => {
                         setDetailError(nextError instanceof Error ? nextError.message : String(nextError));
@@ -362,10 +300,8 @@ export function BillingManager({ walletSummary, shellBusy, shellState }: Billing
             <div className="detail-grid">
               <div><dt>ID</dt><dd>{detail.id}</dd></div>
               <div><dt>时间</dt><dd>{formatTime(detail.created_at_unix)}</dd></div>
-              <div><dt>访问 ID</dt><dd title={detail.visit_id}>{detail.visit_id || "-"}</dd></div>
-              <div><dt>访问地址</dt><dd title={detail.visit_locator}>{detail.visit_locator || "-"}</dd></div>
-              <div><dt>方向</dt><dd>{formatDirection(detail.direction)}</dd></div>
               <div><dt>类型</dt><dd>{detail.flow_type || "-"}</dd></div>
+              <div><dt>方向</dt><dd>{formatDirection(detail.direction)}</dd></div>
               <div><dt>用途</dt><dd>{formatPurposeLabel(detail.purpose)} ({detail.purpose || "-"})</dd></div>
               <div><dt>阶段</dt><dd>{detail.stage || "-"}</dd></div>
               <div><dt>金额</dt><dd>{formatSignedSat(detail.amount_satoshi)}</dd></div>
@@ -415,20 +351,6 @@ function formatSignedSat(value: number): string {
     return `+${amount} sat`;
   }
   return `${amount} sat`;
-}
-
-function formatVisitStatus(value: string | undefined): string {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (normalized === "opening") {
-    return "打开中";
-  }
-  if (normalized === "open") {
-    return "已打开";
-  }
-  if (normalized === "failed") {
-    return "已失败";
-  }
-  return normalized || "空闲";
 }
 
 function safeJSONStringify(value: unknown): string {

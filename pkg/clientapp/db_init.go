@@ -239,25 +239,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_occurred ON fact_chain_payments(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_subtype ON fact_chain_payments(payment_subtype, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_status ON fact_chain_payments(status, occurred_at_unix DESC)`,
-		// 钱包资金流水
-		`CREATE TABLE IF NOT EXISTS wallet_fund_flows(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			created_at_unix INTEGER NOT NULL,
-			visit_id TEXT NOT NULL DEFAULT '',
-			visit_locator TEXT NOT NULL DEFAULT '',
-			flow_id TEXT NOT NULL,
-			flow_type TEXT NOT NULL,
-			ref_id TEXT NOT NULL,
-			stage TEXT NOT NULL,
-			direction TEXT NOT NULL,
-			purpose TEXT NOT NULL,
-			amount_satoshi INTEGER NOT NULL,
-			used_satoshi INTEGER NOT NULL,
-			returned_satoshi INTEGER NOT NULL,
-			related_txid TEXT NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
-		)`,
 
 		// 命令日志
 		// trigger_key 设计说明：表示"这次命令执行是被哪一条上游触发链路推出来的"
@@ -742,8 +723,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_biz_purchases_history_lookup ON biz_purchases(demand_id, chunk_index, seller_pub_hex, arbiter_pub_hex, created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_created_at ON proc_gateway_events(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_cmd_id ON proc_gateway_events(command_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_created_at ON wallet_fund_flows(created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_flow_id ON wallet_fund_flows(flow_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_created_at ON proc_command_journal(created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_cmd_id ON proc_command_journal(command_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_gateway ON proc_command_journal(gateway_pubkey_hex, id DESC)`,
@@ -977,9 +956,6 @@ func migrateClientDBLegacySchema(db *sql.DB) error {
 
 	if err := ensureDemandQuoteCurrentSchema(db); err != nil {
 		return fmt.Errorf("demand quote schema: %w", err)
-	}
-	if err := ensureWalletFundFlowsSchema(db); err != nil {
-		return fmt.Errorf("wallet_fund_flows: %w", err)
 	}
 	if err := ensureWorkspaceStorageSchema(db); err != nil {
 		return fmt.Errorf("workspace storage: %w", err)
@@ -2757,28 +2733,6 @@ func normalizePubHexList(in []string) ([]string, error) {
 		out = append(out, pubHex)
 	}
 	return out, nil
-}
-
-// ensureWalletFundFlowsSchema 处理 wallet_fund_flows 表的历史列迁移
-func ensureWalletFundFlowsSchema(db *sql.DB) error {
-	cols, err := tableColumns(db, "wallet_fund_flows")
-	if err != nil {
-		return err
-	}
-	if _, ok := cols["visit_id"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE wallet_fund_flows ADD COLUMN visit_id TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-	}
-	if _, ok := cols["visit_locator"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE wallet_fund_flows ADD COLUMN visit_locator TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_fund_flows_visit_id ON wallet_fund_flows(visit_id, id DESC)`); err != nil {
-		return err
-	}
-	return nil
 }
 
 // ensureWorkspaceStorageSchema 迁移客户端本地库存的核心五张表。
