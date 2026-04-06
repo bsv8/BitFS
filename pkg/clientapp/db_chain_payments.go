@@ -32,12 +32,17 @@ type chainPaymentEntry struct {
 }
 
 // chainPaymentUTXOLinkEntry 统一结算链路的 UTXO 明细条目。
+// B组改造：增加 AssetKind/TokenID/TokenStandard 用于资产分流写入
 type chainPaymentUTXOLinkEntry struct {
 	ChainPaymentID int64
 	UTXOID         string
 	IOSide         string
 	UTXORole       string
+	AssetKind      string // BSV/BSV20/BSV21，B组新增
+	TokenID        string // Token ID，当 AssetKind 不是 BSV 时使用，B组新增
+	TokenStandard  string // BSV20/BSV21，B组新增
 	AmountSatoshi  int64
+	QuantityText   string // Token 数量（十进制字符串），B组新增
 	CreatedAtUnix  int64
 	Note           string
 	Payload        any

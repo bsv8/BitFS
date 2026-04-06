@@ -813,7 +813,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS fact_bsv_consumptions(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			consumption_id TEXT NOT NULL DEFAULT '',
-			source_flow_id INTEGER NOT NULL,
+			source_flow_id INTEGER,
 			source_utxo_id TEXT NOT NULL DEFAULT '',
 			chain_payment_id INTEGER,
 			pool_allocation_id INTEGER,
@@ -857,7 +857,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS fact_token_consumptions(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			consumption_id TEXT NOT NULL DEFAULT '',
-			source_flow_id INTEGER NOT NULL,
+			source_flow_id INTEGER,
 			source_utxo_id TEXT NOT NULL DEFAULT '',
 			token_id TEXT NOT NULL,
 			token_standard TEXT NOT NULL CHECK(token_standard IN ('BSV20','BSV21')),

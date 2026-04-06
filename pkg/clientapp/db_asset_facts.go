@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-
-	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // chainAssetFlowEntry fact_chain_asset_flows 写入条目
@@ -224,160 +222,19 @@ func dbAppendAssetFlowIfAbsentDB(db sqlConn, e chainAssetFlowEntry, directionOve
 	return res.LastInsertId()
 }
 
-// dbAppendAssetConsumptionForChainPaymentIfAbsent 幂等追加资产消耗（关联 chain_payment）
-// 设计说明：
-// - 使用部分唯一索引 uq_fact_asset_consumptions_flow_payment 做幂等
-// - 同一 source_flow_id + chain_payment_id 只记录一次
+// dbAppendAssetConsumptionForChainPaymentIfAbsent 【B组禁用】请使用 dbAppendBSVConsumptionsForChainPayment 或 dbAppendTokenConsumptionsForChainPayment
 func dbAppendAssetConsumptionForChainPaymentIfAbsent(ctx context.Context, store *clientDB, e assetConsumptionEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	if e.ChainPaymentID <= 0 {
-		return fmt.Errorf("chain_payment_id is required for payment link type")
-	}
-	if e.PoolAllocationID > 0 {
-		return fmt.Errorf("pool_allocation_id must be NULL for payment link type")
-	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		if e.SettlementCycleID <= 0 {
-			cycleID, err := dbGetSettlementCycleByChainPayment(db, e.ChainPaymentID)
-			if err != nil {
-				return fmt.Errorf("lookup settlement cycle for chain payment %d: %w", e.ChainPaymentID, err)
-			}
-			e.SettlementCycleID = cycleID
-		}
-		return dbAppendAssetConsumptionIfAbsentDB(db, e, "payment")
-	})
+	return fmt.Errorf("dbAppendAssetConsumptionForChainPaymentIfAbsent is DISABLED after B-group hard switch")
 }
 
-// dbAppendAssetConsumptionForPoolAllocationIfAbsent 幂等追加资产消耗（关联 pool_allocation）
-// 设计说明：
-// - 使用部分唯一索引 uq_fact_asset_consumptions_flow_allocation 做幂等
-// - 同一 source_flow_id + pool_allocation_id 只记录一次
+// dbAppendAssetConsumptionForPoolAllocationIfAbsent 【B组禁用】请使用 dbAppendBSVConsumptionsForPoolAllocation 或 dbAppendTokenConsumptionsForPoolAllocation
 func dbAppendAssetConsumptionForPoolAllocationIfAbsent(ctx context.Context, store *clientDB, e assetConsumptionEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	if e.PoolAllocationID <= 0 {
-		return fmt.Errorf("pool_allocation_id is required for allocation link type")
-	}
-	if e.ChainPaymentID > 0 {
-		return fmt.Errorf("chain_payment_id must be NULL for allocation link type")
-	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		if e.SettlementCycleID <= 0 {
-			cycleID, err := dbGetSettlementCycleByPoolEvent(db, e.PoolAllocationID)
-			if err != nil {
-				return fmt.Errorf("lookup settlement cycle for pool event %d: %w", e.PoolAllocationID, err)
-			}
-			e.SettlementCycleID = cycleID
-		}
-		return dbAppendAssetConsumptionIfAbsentDB(db, e, "allocation")
-	})
+	return fmt.Errorf("dbAppendAssetConsumptionForPoolAllocationIfAbsent is DISABLED after B-group hard switch")
 }
 
-// dbAppendAssetConsumptionIfAbsentDB 在已打开的 sql.DB 上执行幂等追加
+// dbAppendAssetConsumptionIfAbsentDB 【B组禁用】请使用 dbAppendBSVConsumptionIfAbsentDB 或 dbAppendTokenConsumptionIfAbsentDB
 func dbAppendAssetConsumptionIfAbsentDB(db sqlConn, e assetConsumptionEntry, linkType string) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	sourceUTXOID := strings.ToLower(strings.TrimSpace(e.SourceUTXOID))
-	state := strings.ToLower(strings.TrimSpace(e.State))
-	if state == "" {
-		state = "confirmed"
-	}
-	if state != "pending" && state != "confirmed" && state != "failed" {
-		return fmt.Errorf("state must be pending, confirmed or failed, got %s", state)
-	}
-	// 校验 settlement 锚点
-	if linkType == "payment" {
-		if e.ChainPaymentID <= 0 {
-			return fmt.Errorf("chain_payment_id is required for payment link type")
-		}
-		if e.PoolAllocationID > 0 {
-			return fmt.Errorf("pool_allocation_id must be NULL for payment link type")
-		}
-	} else if linkType == "allocation" {
-		if e.PoolAllocationID <= 0 {
-			return fmt.Errorf("pool_allocation_id is required for allocation link type")
-		}
-		if e.ChainPaymentID > 0 {
-			return fmt.Errorf("chain_payment_id must be NULL for allocation link type")
-		}
-	} else {
-		return fmt.Errorf("link_type must be 'payment' or 'allocation', got %s", linkType)
-	}
-	if e.SettlementCycleID <= 0 {
-		return fmt.Errorf("settlement_cycle_id is required")
-	}
-
-	if sourceUTXOID == "" && e.SourceFlowID <= 0 {
-		return fmt.Errorf("source_utxo_id or source_flow_id is required")
-	}
-	consumptionID := strings.TrimSpace(e.ConsumptionID)
-	if consumptionID == "" {
-		if sourceUTXOID == "" {
-			sourceUTXOID = fmt.Sprintf("flow_%d", e.SourceFlowID)
-		}
-		switch linkType {
-		case "payment":
-			consumptionID = fmt.Sprintf("cons_pay_%d_%s", e.ChainPaymentID, sourceUTXOID)
-		case "allocation":
-			consumptionID = fmt.Sprintf("cons_alloc_%d_%s", e.PoolAllocationID, sourceUTXOID)
-		}
-	}
-
-	// 不存在则插入
-	now := time.Now().Unix()
-	occurredAt := e.OccurredAtUnix
-	if occurredAt <= 0 {
-		occurredAt = now
-	}
-
-	_, err := db.Exec(
-		`INSERT INTO fact_asset_consumptions(
-			consumption_id,source_flow_id,source_utxo_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,state,used_satoshi,used_quantity_text,
-			occurred_at_unix,confirmed_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(consumption_id) DO UPDATE SET
-			source_flow_id=COALESCE(excluded.source_flow_id, fact_asset_consumptions.source_flow_id),
-			source_utxo_id=CASE WHEN excluded.source_utxo_id!='' THEN excluded.source_utxo_id ELSE fact_asset_consumptions.source_utxo_id END,
-			chain_payment_id=COALESCE(excluded.chain_payment_id, fact_asset_consumptions.chain_payment_id),
-			pool_allocation_id=COALESCE(excluded.pool_allocation_id, fact_asset_consumptions.pool_allocation_id),
-			settlement_cycle_id=COALESCE(excluded.settlement_cycle_id, fact_asset_consumptions.settlement_cycle_id),
-			state=CASE
-				WHEN fact_asset_consumptions.state='confirmed' AND excluded.state='pending' THEN fact_asset_consumptions.state
-				ELSE excluded.state
-			END,
-			used_satoshi=excluded.used_satoshi,
-			used_quantity_text=excluded.used_quantity_text,
-			occurred_at_unix=excluded.occurred_at_unix,
-			confirmed_at_unix=CASE
-				WHEN excluded.state='confirmed' THEN excluded.occurred_at_unix
-				ELSE fact_asset_consumptions.confirmed_at_unix
-			END,
-			note=excluded.note,
-			payload_json=excluded.payload_json`,
-		consumptionID,
-		nilIfZero(e.SourceFlowID),
-		sourceUTXOID,
-		nilIfZero(e.ChainPaymentID),
-		nilIfZero(e.PoolAllocationID),
-		e.SettlementCycleID,
-		state,
-		e.UsedSatoshi,
-		strings.TrimSpace(e.UsedQuantityText),
-		occurredAt,
-		func() any {
-			if state == "confirmed" {
-				return occurredAt
-			}
-			return 0
-		}(),
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-	)
-	return err
+	return fmt.Errorf("dbAppendAssetConsumptionIfAbsentDB is DISABLED after B-group hard switch")
 }
 
 // nilIfZero 把 0 转成 nil，用于 SQLite NULL 插入
@@ -508,19 +365,32 @@ func dbGetAssetFlowInByUTXO(db sqlConn, utxoID string) (int64, error) {
 	return id, nil
 }
 
-// dbAppendAssetConsumptionsForChainPayment 批量写入资产消耗（关联 chain_payment）
-// 设计说明：
-// - 对每个 input UTXO，查 fact_chain_asset_flows 找到 source_flow_id
-// - 找不到 source_flow_id 的 UTXO（如 unknown）跳过，不产生消耗记录
-// - 幂等：同一 source_flow_id + chain_payment_id 不会重复写
+// dbAppendAssetConsumptionsForChainPayment 【B组禁用】请使用 dbAppendBSVConsumptionsForChainPayment 或 dbAppendTokenConsumptionsForChainPayment
 func dbAppendAssetConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	return fmt.Errorf("dbAppendAssetConsumptionsForChainPayment is DISABLED after B-group hard switch, use dbAppendBSVConsumptionsForChainPayment or dbAppendTokenConsumptionsForChainPayment")
+}
+
+// dbAppendAssetConsumptionsForPoolAllocation 【B组禁用】请使用 dbAppendBSVConsumptionsForPoolAllocation 或 dbAppendTokenConsumptionsForPoolAllocation
+func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	return fmt.Errorf("dbAppendAssetConsumptionsForPoolAllocation is DISABLED after B-group hard switch, use dbAppendBSVConsumptionsForPoolAllocation or dbAppendTokenConsumptionsForPoolAllocation")
+}
+
+// ==================== B组改造：资产分流消费写入（硬切换到新表） ====================
+// B组改造说明：
+// - 旧表 fact_asset_consumptions 已停写，B组完成后可归档删除
+// - BSV 消耗写入 fact_bsv_consumptions
+// - Token 消耗写入 fact_token_consumptions
+// - Token 消耗同步写 fact_token_utxo_links 建立载体映射
+
+// dbAppendBSVConsumptionsForChainPayment 写入 BSV 消耗（关联 chain_payment）
+// B组新入口：直接写入 fact_bsv_consumptions，不再经过旧表
+func dbAppendBSVConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	if chainPaymentID <= 0 {
 		return fmt.Errorf("chain_payment_id is required")
 	}
-	// 先拿统一结算锚点，再写消耗；没有锚点就直接失败，避免写进空关联。
 	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
 	if err != nil {
 		return fmt.Errorf("lookup settlement cycle for chain payment %d: %w", chainPaymentID, err)
@@ -529,7 +399,6 @@ func dbAppendAssetConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, 
 		return fmt.Errorf("settlement cycle missing for chain payment %d", chainPaymentID)
 	}
 	for _, fact := range utxoFacts {
-		// 只处理 input 方向的 UTXO
 		ioSide := strings.TrimSpace(fact.IOSide)
 		if ioSide != "input" {
 			continue
@@ -538,52 +407,47 @@ func dbAppendAssetConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, 
 		if utxoID == "" {
 			continue
 		}
-		// 查找源流入记录
+		assetKind := strings.TrimSpace(fact.AssetKind)
+		if assetKind != "" && assetKind != "BSV" {
+			continue
+		}
 		sourceFlowID, err := dbGetAssetFlowInByUTXO(db, utxoID)
 		state := "confirmed"
 		if err != nil {
 			if err == sql.ErrNoRows {
-				// 没有 source flow（同步还没到），先记 pending，不碰钱包事实表
 				sourceFlowID = 0
 				state = "pending"
 			} else {
 				return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 			}
 		}
-
-		// 写入消耗记录
-		if err := dbAppendAssetConsumptionIfAbsentDB(db, assetConsumptionEntry{
-			ConsumptionID:     fmt.Sprintf("cons_pay_%d_%s", chainPaymentID, utxoID),
+		if err := dbAppendBSVConsumptionIfAbsentDB(db, bsvConsumptionEntry{
+			ConsumptionID:     fmt.Sprintf("bsv_cons_pay_%d_%s", chainPaymentID, utxoID),
 			SourceFlowID:      sourceFlowID,
 			SourceUTXOID:      utxoID,
 			ChainPaymentID:    chainPaymentID,
 			SettlementCycleID: settlementCycleID,
 			State:             state,
 			UsedSatoshi:       fact.AmountSatoshi,
-			UsedQuantityText:  "",
 			OccurredAtUnix:    occurredAtUnix,
-			Note:              "consumed by chain payment",
+			Note:              "BSV consumed by chain payment",
 			Payload:           fact.Payload,
 		}, "payment"); err != nil {
-			return fmt.Errorf("append consumption for utxo %s: %w", utxoID, err)
+			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
 		}
 	}
 	return nil
 }
 
-// dbAppendAssetConsumptionsForPoolAllocation 批量写入资产消耗（关联 pool_allocation）
-// 设计说明：
-// - 对每个 input UTXO，查 fact_chain_asset_flows 找到 source_flow_id
-// - 找不到 source_flow_id 的 UTXO（如 unknown）跳过，不产生消耗记录
-// - 幂等：同一 source_flow_id + pool_allocation_id 不会重复写
-func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+// dbAppendBSVConsumptionsForPoolAllocation 写入 BSV 消耗（关联 pool_allocation）
+// B组新入口：直接写入 fact_bsv_consumptions，不再经过旧表
+func dbAppendBSVConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	if poolAllocationID <= 0 {
 		return fmt.Errorf("pool_allocation_id is required")
 	}
-	// 先拿统一结算锚点，再写消耗；没有锚点就直接失败，避免写进空关联。
 	settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, poolAllocationID)
 	if err != nil {
 		return fmt.Errorf("lookup settlement cycle for pool event %d: %w", poolAllocationID, err)
@@ -592,7 +456,6 @@ func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int
 		return fmt.Errorf("settlement cycle missing for pool event %d", poolAllocationID)
 	}
 	for _, fact := range utxoFacts {
-		// 只处理 input 方向的 UTXO
 		ioSide := strings.TrimSpace(fact.IOSide)
 		if ioSide != "input" {
 			continue
@@ -601,37 +464,541 @@ func dbAppendAssetConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int
 		if utxoID == "" {
 			continue
 		}
-		// 查找源流入记录
+		assetKind := strings.TrimSpace(fact.AssetKind)
+		if assetKind != "" && assetKind != "BSV" {
+			continue
+		}
 		sourceFlowID, err := dbGetAssetFlowInByUTXO(db, utxoID)
 		state := "confirmed"
 		if err != nil {
 			if err == sql.ErrNoRows {
-				// 没有 source flow（同步还没到），先记 pending，不碰钱包事实表
 				sourceFlowID = 0
 				state = "pending"
 			} else {
 				return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 			}
 		}
-
-		// 写入消耗记录
-		if err := dbAppendAssetConsumptionIfAbsentDB(db, assetConsumptionEntry{
-			ConsumptionID:     fmt.Sprintf("cons_alloc_%d_%s", poolAllocationID, utxoID),
+		amountSatoshi := fact.AmountSatoshi
+		if amountSatoshi == 0 && sourceFlowID > 0 {
+			var dbAmount int64
+			if err := db.QueryRow(`SELECT amount_satoshi FROM fact_chain_asset_flows WHERE id=?`, sourceFlowID).Scan(&dbAmount); err == nil {
+				amountSatoshi = dbAmount
+			}
+		}
+		if amountSatoshi <= 0 {
+			amountSatoshi = 1
+		}
+		if err := dbAppendBSVConsumptionIfAbsentDB(db, bsvConsumptionEntry{
+			ConsumptionID:     fmt.Sprintf("bsv_cons_alloc_%d_%s", poolAllocationID, utxoID),
 			SourceFlowID:      sourceFlowID,
 			SourceUTXOID:      utxoID,
 			PoolAllocationID:  poolAllocationID,
 			SettlementCycleID: settlementCycleID,
 			State:             state,
-			UsedSatoshi:       fact.AmountSatoshi,
-			UsedQuantityText:  "",
+			UsedSatoshi:       amountSatoshi,
 			OccurredAtUnix:    occurredAtUnix,
-			Note:              "consumed by pool allocation",
+			Note:              "BSV consumed by pool allocation",
 			Payload:           fact.Payload,
 		}, "allocation"); err != nil {
-			return fmt.Errorf("append consumption for utxo %s: %w", utxoID, err)
+			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
 		}
 	}
 	return nil
+}
+
+// dbAppendTokenConsumptionsForChainPayment 写入 Token 消耗（关联 chain_payment）
+// B组新入口：写入 fact_token_consumptions + fact_token_utxo_links
+func dbAppendTokenConsumptionsForChainPayment(db sqlConn, chainPaymentID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if chainPaymentID <= 0 {
+		return fmt.Errorf("chain_payment_id is required")
+	}
+	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
+	if err != nil {
+		return fmt.Errorf("lookup settlement cycle for chain payment %d: %w", chainPaymentID, err)
+	}
+	if settlementCycleID <= 0 {
+		return fmt.Errorf("settlement cycle missing for chain payment %d", chainPaymentID)
+	}
+	for _, fact := range utxoFacts {
+		ioSide := strings.TrimSpace(fact.IOSide)
+		if ioSide != "input" {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+		if utxoID == "" {
+			continue
+		}
+		assetKind := strings.TrimSpace(fact.AssetKind)
+		if assetKind == "" || assetKind == "BSV" {
+			continue
+		}
+		tokenID := strings.TrimSpace(fact.TokenID)
+		if tokenID == "" {
+			return fmt.Errorf("token_id is required for token consumption, utxo %s", utxoID)
+		}
+		tokenStandard := strings.TrimSpace(fact.TokenStandard)
+		if tokenStandard != "BSV20" && tokenStandard != "BSV21" {
+			return fmt.Errorf("token_standard must be BSV20 or BSV21, got %s for utxo %s", tokenStandard, utxoID)
+		}
+		quantityText := strings.TrimSpace(fact.QuantityText)
+		if quantityText == "" {
+			return fmt.Errorf("quantity_text is required for token consumption, utxo %s", utxoID)
+		}
+		sourceFlowID, state, err := dbGetTokenFlowInByUTXO(db, utxoID, tokenID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				sourceFlowID = 0
+				state = "pending"
+			} else {
+				return fmt.Errorf("lookup token source flow for utxo %s: %w", utxoID, err)
+			}
+		}
+		if err := dbAppendTokenConsumptionIfAbsentDB(db, tokenConsumptionEntry{
+			ConsumptionID:     fmt.Sprintf("tok_cons_pay_%d_%s", chainPaymentID, utxoID),
+			SourceFlowID:      sourceFlowID,
+			SourceUTXOID:      utxoID,
+			TokenID:           tokenID,
+			TokenStandard:     tokenStandard,
+			ChainPaymentID:    chainPaymentID,
+			SettlementCycleID: settlementCycleID,
+			State:             state,
+			UsedQuantityText:  quantityText,
+			OccurredAtUnix:    occurredAtUnix,
+			Note:              "Token consumed by chain payment",
+			Payload:           fact.Payload,
+		}, "payment"); err != nil {
+			return fmt.Errorf("append token consumption for utxo %s: %w", utxoID, err)
+		}
+		if err := dbAppendTokenUTXOLinkIfAbsentForConsumption(db, sourceFlowID, utxoID, tokenID, tokenStandard, quantityText, "OUT", occurredAtUnix); err != nil {
+			return fmt.Errorf("append token utxo link for utxo %s: %w", utxoID, err)
+		}
+	}
+	return nil
+}
+
+// dbAppendTokenConsumptionsForPoolAllocation 写入 Token 消耗（关联 pool_allocation）
+// B组新入口：写入 fact_token_consumptions + fact_token_utxo_links
+func dbAppendTokenConsumptionsForPoolAllocation(db sqlConn, poolAllocationID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if poolAllocationID <= 0 {
+		return fmt.Errorf("pool_allocation_id is required")
+	}
+	settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, poolAllocationID)
+	if err != nil {
+		return fmt.Errorf("lookup settlement cycle for pool event %d: %w", poolAllocationID, err)
+	}
+	if settlementCycleID <= 0 {
+		return fmt.Errorf("settlement cycle missing for pool event %d", poolAllocationID)
+	}
+	for _, fact := range utxoFacts {
+		ioSide := strings.TrimSpace(fact.IOSide)
+		if ioSide != "input" {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+		if utxoID == "" {
+			continue
+		}
+		assetKind := strings.TrimSpace(fact.AssetKind)
+		if assetKind == "" || assetKind == "BSV" {
+			continue
+		}
+		tokenID := strings.TrimSpace(fact.TokenID)
+		if tokenID == "" {
+			return fmt.Errorf("token_id is required for token consumption, utxo %s", utxoID)
+		}
+		tokenStandard := strings.TrimSpace(fact.TokenStandard)
+		if tokenStandard != "BSV20" && tokenStandard != "BSV21" {
+			return fmt.Errorf("token_standard must be BSV20 or BSV21, got %s for utxo %s", tokenStandard, utxoID)
+		}
+		quantityText := strings.TrimSpace(fact.QuantityText)
+		if quantityText == "" {
+			return fmt.Errorf("quantity_text is required for token consumption, utxo %s", utxoID)
+		}
+		sourceFlowID, state, err := dbGetTokenFlowInByUTXO(db, utxoID, tokenID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				sourceFlowID = 0
+				state = "pending"
+			} else {
+				return fmt.Errorf("lookup token source flow for utxo %s: %w", utxoID, err)
+			}
+		}
+		if err := dbAppendTokenConsumptionIfAbsentDB(db, tokenConsumptionEntry{
+			ConsumptionID:     fmt.Sprintf("tok_cons_alloc_%d_%s", poolAllocationID, utxoID),
+			SourceFlowID:      sourceFlowID,
+			SourceUTXOID:      utxoID,
+			TokenID:           tokenID,
+			TokenStandard:     tokenStandard,
+			PoolAllocationID:  poolAllocationID,
+			SettlementCycleID: settlementCycleID,
+			State:             state,
+			UsedQuantityText:  quantityText,
+			OccurredAtUnix:    occurredAtUnix,
+			Note:              "Token consumed by pool allocation",
+			Payload:           fact.Payload,
+		}, "allocation"); err != nil {
+			return fmt.Errorf("append token consumption for utxo %s: %w", utxoID, err)
+		}
+		if err := dbAppendTokenUTXOLinkIfAbsentForConsumption(db, sourceFlowID, utxoID, tokenID, tokenStandard, quantityText, "OUT", occurredAtUnix); err != nil {
+			return fmt.Errorf("append token utxo link for utxo %s: %w", utxoID, err)
+		}
+	}
+	return nil
+}
+
+// ==================== B组改造：新消费表底层写入函数 ====================
+
+// bsvConsumptionEntry fact_bsv_consumptions 写入条目
+type bsvConsumptionEntry struct {
+	ConsumptionID     string
+	SourceFlowID      int64
+	SourceUTXOID      string
+	ChainPaymentID    int64
+	PoolAllocationID  int64
+	SettlementCycleID int64
+	State             string
+	UsedSatoshi       int64
+	OccurredAtUnix    int64
+	Note              string
+	Payload           any
+}
+
+// tokenConsumptionEntry fact_token_consumptions 写入条目
+type tokenConsumptionEntry struct {
+	ConsumptionID     string
+	SourceFlowID      int64
+	SourceUTXOID      string
+	TokenID           string
+	TokenStandard     string
+	ChainPaymentID    int64
+	PoolAllocationID  int64
+	SettlementCycleID int64
+	State             string
+	UsedQuantityText  string
+	OccurredAtUnix    int64
+	Note              string
+	Payload           any
+}
+
+// dbAppendBSVConsumptionIfAbsentDB 写入 fact_bsv_consumptions（幂等）
+func dbAppendBSVConsumptionIfAbsentDB(db sqlConn, e bsvConsumptionEntry, linkType string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	sourceUTXOID := strings.ToLower(strings.TrimSpace(e.SourceUTXOID))
+	state := strings.ToLower(strings.TrimSpace(e.State))
+	if state == "" {
+		state = "confirmed"
+	}
+	if state != "pending" && state != "confirmed" && state != "failed" {
+		return fmt.Errorf("state must be pending, confirmed or failed, got %s", state)
+	}
+	if linkType == "payment" {
+		if e.ChainPaymentID <= 0 {
+			return fmt.Errorf("chain_payment_id is required for payment link type")
+		}
+		if e.PoolAllocationID > 0 {
+			return fmt.Errorf("pool_allocation_id must be NULL for payment link type")
+		}
+	} else if linkType == "allocation" {
+		if e.PoolAllocationID <= 0 {
+			return fmt.Errorf("pool_allocation_id is required for allocation link type")
+		}
+		if e.ChainPaymentID > 0 {
+			return fmt.Errorf("chain_payment_id must be NULL for allocation link type")
+		}
+	} else {
+		return fmt.Errorf("link_type must be 'payment' or 'allocation', got %s", linkType)
+	}
+	if e.SettlementCycleID <= 0 {
+		return fmt.Errorf("settlement_cycle_id is required")
+	}
+	if sourceUTXOID == "" && e.SourceFlowID <= 0 {
+		return fmt.Errorf("source_utxo_id or source_flow_id is required")
+	}
+	consumptionID := strings.TrimSpace(e.ConsumptionID)
+	if consumptionID == "" {
+		if sourceUTXOID == "" {
+			sourceUTXOID = fmt.Sprintf("flow_%d", e.SourceFlowID)
+		}
+		switch linkType {
+		case "payment":
+			consumptionID = fmt.Sprintf("bsv_cons_pay_%d_%s", e.ChainPaymentID, sourceUTXOID)
+		case "allocation":
+			consumptionID = fmt.Sprintf("bsv_cons_alloc_%d_%s", e.PoolAllocationID, sourceUTXOID)
+		}
+	}
+	now := time.Now().Unix()
+	occurredAt := e.OccurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+	_, err := db.Exec(
+		`INSERT INTO fact_bsv_consumptions(
+			consumption_id,source_flow_id,source_utxo_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,state,used_satoshi,
+			occurred_at_unix,confirmed_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(consumption_id) DO UPDATE SET
+			source_flow_id=COALESCE(excluded.source_flow_id, fact_bsv_consumptions.source_flow_id),
+			source_utxo_id=CASE WHEN excluded.source_utxo_id!='' THEN excluded.source_utxo_id ELSE fact_bsv_consumptions.source_utxo_id END,
+			chain_payment_id=COALESCE(excluded.chain_payment_id, fact_bsv_consumptions.chain_payment_id),
+			pool_allocation_id=COALESCE(excluded.pool_allocation_id, fact_bsv_consumptions.pool_allocation_id),
+			settlement_cycle_id=COALESCE(excluded.settlement_cycle_id, fact_bsv_consumptions.settlement_cycle_id),
+			state=CASE
+				WHEN fact_bsv_consumptions.state='confirmed' AND excluded.state='pending' THEN fact_bsv_consumptions.state
+				ELSE excluded.state
+			END,
+			used_satoshi=excluded.used_satoshi,
+			occurred_at_unix=excluded.occurred_at_unix,
+			confirmed_at_unix=CASE
+				WHEN excluded.state='confirmed' THEN excluded.occurred_at_unix
+				ELSE fact_bsv_consumptions.confirmed_at_unix
+			END,
+			note=excluded.note,
+			payload_json=excluded.payload_json`,
+		consumptionID,
+		nilIfZero(e.SourceFlowID),
+		sourceUTXOID,
+		nilIfZero(e.ChainPaymentID),
+		nilIfZero(e.PoolAllocationID),
+		e.SettlementCycleID,
+		state,
+		e.UsedSatoshi,
+		occurredAt,
+		func() any {
+			if state == "confirmed" {
+				return occurredAt
+			}
+			return 0
+		}(),
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+// dbAppendTokenConsumptionIfAbsentDB 写入 fact_token_consumptions（幂等）
+func dbAppendTokenConsumptionIfAbsentDB(db sqlConn, e tokenConsumptionEntry, linkType string) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	sourceUTXOID := strings.ToLower(strings.TrimSpace(e.SourceUTXOID))
+	state := strings.ToLower(strings.TrimSpace(e.State))
+	if state == "" {
+		state = "confirmed"
+	}
+	if state != "pending" && state != "confirmed" && state != "failed" {
+		return fmt.Errorf("state must be pending, confirmed or failed, got %s", state)
+	}
+	if linkType == "payment" {
+		if e.ChainPaymentID <= 0 {
+			return fmt.Errorf("chain_payment_id is required for payment link type")
+		}
+		if e.PoolAllocationID > 0 {
+			return fmt.Errorf("pool_allocation_id must be NULL for payment link type")
+		}
+	} else if linkType == "allocation" {
+		if e.PoolAllocationID <= 0 {
+			return fmt.Errorf("pool_allocation_id is required for allocation link type")
+		}
+		if e.ChainPaymentID > 0 {
+			return fmt.Errorf("chain_payment_id must be NULL for allocation link type")
+		}
+	} else {
+		return fmt.Errorf("link_type must be 'payment' or 'allocation', got %s", linkType)
+	}
+	if e.SettlementCycleID <= 0 {
+		return fmt.Errorf("settlement_cycle_id is required")
+	}
+	tokenID := strings.TrimSpace(e.TokenID)
+	if tokenID == "" {
+		return fmt.Errorf("token_id is required")
+	}
+	tokenStandard := strings.TrimSpace(e.TokenStandard)
+	if tokenStandard != "BSV20" && tokenStandard != "BSV21" {
+		return fmt.Errorf("token_standard must be BSV20 or BSV21, got %s", tokenStandard)
+	}
+	if sourceUTXOID == "" && e.SourceFlowID <= 0 {
+		return fmt.Errorf("source_utxo_id or source_flow_id is required")
+	}
+	consumptionID := strings.TrimSpace(e.ConsumptionID)
+	if consumptionID == "" {
+		if sourceUTXOID == "" {
+			sourceUTXOID = fmt.Sprintf("flow_%d", e.SourceFlowID)
+		}
+		switch linkType {
+		case "payment":
+			consumptionID = fmt.Sprintf("tok_cons_pay_%d_%s", e.ChainPaymentID, sourceUTXOID)
+		case "allocation":
+			consumptionID = fmt.Sprintf("tok_cons_alloc_%d_%s", e.PoolAllocationID, sourceUTXOID)
+		}
+	}
+	now := time.Now().Unix()
+	occurredAt := e.OccurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+	quantityText := strings.TrimSpace(e.UsedQuantityText)
+	_, err := db.Exec(
+		`INSERT INTO fact_token_consumptions(
+			consumption_id,source_flow_id,source_utxo_id,token_id,token_standard,chain_payment_id,pool_allocation_id,settlement_cycle_id,state,used_quantity_text,
+			occurred_at_unix,confirmed_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(consumption_id) DO UPDATE SET
+			source_flow_id=COALESCE(excluded.source_flow_id, fact_token_consumptions.source_flow_id),
+			source_utxo_id=CASE WHEN excluded.source_utxo_id!='' THEN excluded.source_utxo_id ELSE fact_token_consumptions.source_utxo_id END,
+			token_id=COALESCE(excluded.token_id, fact_token_consumptions.token_id),
+			token_standard=COALESCE(excluded.token_standard, fact_token_consumptions.token_standard),
+			chain_payment_id=COALESCE(excluded.chain_payment_id, fact_token_consumptions.chain_payment_id),
+			pool_allocation_id=COALESCE(excluded.pool_allocation_id, fact_token_consumptions.pool_allocation_id),
+			settlement_cycle_id=COALESCE(excluded.settlement_cycle_id, fact_token_consumptions.settlement_cycle_id),
+			state=CASE
+				WHEN fact_token_consumptions.state='confirmed' AND excluded.state='pending' THEN fact_token_consumptions.state
+				ELSE excluded.state
+			END,
+			used_quantity_text=excluded.used_quantity_text,
+			occurred_at_unix=excluded.occurred_at_unix,
+			confirmed_at_unix=CASE
+				WHEN excluded.state='confirmed' THEN excluded.occurred_at_unix
+				ELSE fact_token_consumptions.confirmed_at_unix
+			END,
+			note=excluded.note,
+			payload_json=excluded.payload_json`,
+		consumptionID,
+		nilIfZero(e.SourceFlowID),
+		sourceUTXOID,
+		tokenID,
+		tokenStandard,
+		nilIfZero(e.ChainPaymentID),
+		nilIfZero(e.PoolAllocationID),
+		e.SettlementCycleID,
+		state,
+		quantityText,
+		occurredAt,
+		func() any {
+			if state == "confirmed" {
+				return occurredAt
+			}
+			return 0
+		}(),
+		strings.TrimSpace(e.Note),
+		mustJSONString(e.Payload),
+	)
+	return err
+}
+
+// dbAppendTokenUTXOLinkIfAbsentForConsumption 写入 fact_token_utxo_links（幂等）
+// B组改造：Token 消耗时同步建立载体映射，校验 carrier_flow_id 对应的 token_id/token_standard 是否和入参一致
+func dbAppendTokenUTXOLinkIfAbsentForConsumption(db sqlConn, carrierFlowID int64, carrierUTXOID, tokenID, tokenStandard, quantityText, direction string, occurredAtUnix int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if carrierFlowID <= 0 {
+		return fmt.Errorf("carrier_flow_id is required for token utxo link")
+	}
+	carrierUTXOID = strings.ToLower(strings.TrimSpace(carrierUTXOID))
+	if carrierUTXOID == "" {
+		return fmt.Errorf("carrier_utxo_id is required")
+	}
+	tokenID = strings.TrimSpace(tokenID)
+	if tokenID == "" {
+		return fmt.Errorf("token_id is required")
+	}
+	tokenStandard = strings.TrimSpace(tokenStandard)
+	if tokenStandard != "BSV20" && tokenStandard != "BSV21" {
+		return fmt.Errorf("token_standard must be BSV20 or BSV21, got %s", tokenStandard)
+	}
+	quantityText = strings.TrimSpace(quantityText)
+	if quantityText == "" {
+		return fmt.Errorf("quantity_text is required")
+	}
+	direction = strings.ToUpper(strings.TrimSpace(direction))
+	if direction != "IN" && direction != "OUT" {
+		return fmt.Errorf("direction must be IN or OUT, got %s", direction)
+	}
+	now := time.Now().Unix()
+	occurredAt := occurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+	var walletID, flowAssetKind, flowTokenID string
+	if err := db.QueryRow(`SELECT wallet_id, asset_kind, token_id FROM fact_chain_asset_flows WHERE id=?`, carrierFlowID).Scan(&walletID, &flowAssetKind, &flowTokenID); err != nil {
+		if err == sql.ErrNoRows {
+			return fmt.Errorf("carrier_flow_id %d not found in fact_chain_asset_flows", carrierFlowID)
+		}
+		return fmt.Errorf("lookup wallet_id for carrier_flow_id %d: %w", carrierFlowID, err)
+	}
+	if flowAssetKind != tokenStandard {
+		return fmt.Errorf("token_standard mismatch: carrier_flow_id %d has asset_kind %s, but input token_standard is %s", carrierFlowID, flowAssetKind, tokenStandard)
+	}
+	if flowTokenID != tokenID {
+		return fmt.Errorf("token_id mismatch: carrier_flow_id %d has token_id %s, but input token_id is %s", carrierFlowID, flowTokenID, tokenID)
+	}
+	var txid, voutStr string
+	var vout uint32
+	parts := strings.Split(carrierUTXOID, ":")
+	if len(parts) >= 2 {
+		txid = parts[0]
+		voutStr = parts[1]
+		fmt.Sscanf(voutStr, "%d", &vout)
+	} else {
+		return fmt.Errorf("invalid carrier_utxo_id format: %s, expected txid:vout", carrierUTXOID)
+	}
+	linkID := fmt.Sprintf("toklink_cons_%d_%s_%s", carrierFlowID, tokenID, direction)
+	_, err := db.Exec(
+		`INSERT INTO fact_token_utxo_links(
+			link_id,wallet_id,token_id,token_standard,carrier_flow_id,carrier_utxo_id,quantity_text,direction,txid,vout,
+			occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(link_id) DO UPDATE SET
+			token_id=COALESCE(excluded.token_id, fact_token_utxo_links.token_id),
+			token_standard=COALESCE(excluded.token_standard, fact_token_utxo_links.token_standard),
+			quantity_text=excluded.quantity_text,
+			direction=excluded.direction,
+			updated_at_unix=excluded.updated_at_unix,
+			payload_json=excluded.payload_json`,
+		linkID,
+		walletID,
+		tokenID,
+		tokenStandard,
+		carrierFlowID,
+		carrierUTXOID,
+		quantityText,
+		direction,
+		txid,
+		vout,
+		occurredAt,
+		now,
+		"consumption_link",
+		"",
+		"{}",
+	)
+	return err
+}
+
+// dbGetTokenFlowInByUTXO 查询 Token 流入记录
+func dbGetTokenFlowInByUTXO(db sqlConn, utxoID, tokenID string) (int64, string, error) {
+	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+	tokenID = strings.TrimSpace(tokenID)
+	if utxoID == "" || tokenID == "" {
+		return 0, "", fmt.Errorf("utxo_id and token_id are required")
+	}
+	var id int64
+	var quantityText string
+	err := db.QueryRow(
+		`SELECT id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' AND token_id=? LIMIT 1`,
+		utxoID, tokenID,
+	).Scan(&id, &quantityText)
+	if err != nil {
+		return 0, "", err
+	}
+	return id, "confirmed", nil
 }
 
 // ==================== Step 15: 结算周期辅助函数 ====================
@@ -758,8 +1125,7 @@ type spendableSourceFlow struct {
 
 // dbLoadWalletAssetBalanceFact 按 wallet_id + asset_kind + token_id 聚合 fact 余额
 // 设计说明：
-// - 余额 = fact_chain_asset_flows(IN) - fact_asset_consumptions(used)
-// - BSV 用 amount_satoshi/used_satoshi，BSV20/BSV21 当前只返回总和
+// - 余额 = fact_chain_asset_flows(IN) - fact_bsv_consumptions(used)
 func dbLoadWalletAssetBalanceFact(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
 	if store == nil {
 		return walletAssetBalance{}, fmt.Errorf("client db is nil")
@@ -791,7 +1157,7 @@ func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind strin
 
 	err = db.QueryRow(
 		`SELECT COALESCE(SUM(c.used_satoshi),0)
-		 FROM fact_asset_consumptions c
+		 FROM fact_bsv_consumptions c
 		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
 		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'`,
 		walletID, assetKind, tokenID,
@@ -855,7 +1221,7 @@ func dbLoadAllWalletAssetBalancesFactDB(db *sql.DB, walletID string) ([]walletAs
 	// 再汇总每个 (asset_kind, token_id) 的 used 总额
 	rows2, err := db.Query(
 		`SELECT f.asset_kind, f.token_id, COALESCE(SUM(c.used_satoshi),0)
-		 FROM fact_asset_consumptions c
+		 FROM fact_bsv_consumptions c
 		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
 		 WHERE f.wallet_id=? AND f.direction='IN'
 		 GROUP BY f.asset_kind, f.token_id`,
@@ -930,7 +1296,7 @@ func dbListSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string,
 		 LEFT JOIN fact_chain_asset_flows f ON w.utxo_id=f.utxo_id AND f.direction='IN'
 		 LEFT JOIN (
 			SELECT c.source_flow_id, SUM(c.used_satoshi) AS total_used
-			FROM fact_asset_consumptions c
+			FROM fact_bsv_consumptions c
 			GROUP BY c.source_flow_id
 		 ) used_agg ON f.id=used_agg.source_flow_id
 		 WHERE w.wallet_id=? AND w.state='unspent' AND w.allocation_class='plain_bsv'
@@ -1067,7 +1433,7 @@ func dbListTokenSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind st
 		 JOIN wallet_utxo w ON f.utxo_id=w.utxo_id
 		 LEFT JOIN (
 			SELECT c.source_flow_id, COALESCE(GROUP_CONCAT(c.used_quantity_text,','),'') AS total_used_text
-			FROM fact_asset_consumptions c
+			FROM fact_token_consumptions c
 			WHERE c.used_quantity_text != ''
 			GROUP BY c.source_flow_id
 		 ) used_agg ON f.id=used_agg.source_flow_id
@@ -1135,7 +1501,7 @@ func dbLoadTokenBalanceFactDB(db *sql.DB, walletID string, assetKind string, tok
 
 	err = db.QueryRow(
 		`SELECT COALESCE(GROUP_CONCAT(c.used_quantity_text,','),'')
-		 FROM fact_asset_consumptions c
+		 FROM fact_token_consumptions c
 		 JOIN fact_chain_asset_flows f ON c.source_flow_id=f.id
 		 WHERE f.wallet_id=? AND f.asset_kind=? AND f.token_id=? AND f.direction='IN'`,
 		walletID, assetKind, tokenID,
@@ -1159,11 +1525,11 @@ func dbAppendTokenConsumptionForChainPayment(ctx context.Context, store *clientD
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return dbAppendTokenConsumptionForChainPaymentDB(db, chainPaymentID, utxoID, usedQuantityText, occurredAtUnix)
+		return dbAppendTokenConsumptionForChainPaymentByUTXO(db, chainPaymentID, utxoID, usedQuantityText, occurredAtUnix)
 	})
 }
 
-func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64, utxoID string, usedQuantityText string, occurredAtUnix int64) error {
+func dbAppendTokenConsumptionForChainPaymentByUTXO(db sqlConn, chainPaymentID int64, utxoID string, usedQuantityText string, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1175,15 +1541,6 @@ func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64,
 		return fmt.Errorf("utxo_id is required")
 	}
 
-	// 查找源流入记录
-	sourceFlowID, err := dbGetAssetFlowInByUTXO(db, utxoID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			// 没有 source flow，跳过
-			return nil
-		}
-		return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
-	}
 	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
 	if err != nil {
 		return fmt.Errorf("lookup settlement cycle for chain payment %d: %w", chainPaymentID, err)
@@ -1192,22 +1549,32 @@ func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64,
 		return fmt.Errorf("settlement cycle missing for chain payment %d", chainPaymentID)
 	}
 
-	// 幂等检查
-	var n int
-	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM fact_asset_consumptions WHERE source_flow_id=? AND chain_payment_id=?`,
-		sourceFlowID, chainPaymentID,
-	).Scan(&n); err != nil {
-		return err
+	var assetKind, tokenID, quantityText, walletID string
+	var sourceFlowID int64
+	err = db.QueryRow(
+		`SELECT id, wallet_id, asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' LIMIT 1`,
+		utxoID,
+	).Scan(&sourceFlowID, &walletID, &assetKind, &tokenID, &quantityText)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return fmt.Errorf("lookup source flow for utxo %s: %w", utxoID, err)
 	}
-	if n > 0 {
-		// Step 13：命中幂等，记录 info 日志便于排障
-		obs.Info("bitcast-client", "token_consumption_idempotent_skip", map[string]any{
-			"utxo_id":          utxoID,
-			"chain_payment_id": chainPaymentID,
-			"source_flow_id":   sourceFlowID,
-		})
-		return nil
+	if sourceFlowID <= 0 {
+		return fmt.Errorf("source_flow_id is invalid for utxo %s", utxoID)
+	}
+
+	tokenStandard := strings.TrimSpace(assetKind)
+	if tokenStandard != "BSV20" && tokenStandard != "BSV21" {
+		return fmt.Errorf("asset_kind must be BSV20 or BSV21 for token consumption, got %s for utxo %s", assetKind, utxoID)
+	}
+	usedQty := strings.TrimSpace(usedQuantityText)
+	if usedQty == "" {
+		usedQty = quantityText
+	}
+	if usedQty == "" {
+		return fmt.Errorf("used_quantity_text is required for token consumption, utxo %s", utxoID)
 	}
 
 	now := time.Now().Unix()
@@ -1216,20 +1583,39 @@ func dbAppendTokenConsumptionForChainPaymentDB(db sqlConn, chainPaymentID int64,
 		occurredAt = now
 	}
 
+	consumptionID := fmt.Sprintf("tok_cons_pay_%d_%s", chainPaymentID, utxoID)
 	_, err = db.Exec(
-		`INSERT INTO fact_asset_consumptions(
-			source_flow_id,chain_payment_id,pool_allocation_id,settlement_cycle_id,used_satoshi,used_quantity_text,
-			occurred_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO fact_token_consumptions(
+			consumption_id,source_flow_id,source_utxo_id,token_id,token_standard,chain_payment_id,pool_allocation_id,settlement_cycle_id,state,used_quantity_text,
+			occurred_at_unix,confirmed_at_unix,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(consumption_id) DO UPDATE SET
+			used_quantity_text=excluded.used_quantity_text,
+			state=CASE
+				WHEN fact_token_consumptions.state='confirmed' AND excluded.state='pending' THEN fact_token_consumptions.state
+				ELSE excluded.state
+			END`,
+		consumptionID,
 		sourceFlowID,
+		utxoID,
+		tokenID,
+		tokenStandard,
 		chainPaymentID,
 		nil,
 		settlementCycleID,
-		0,
-		strings.TrimSpace(usedQuantityText),
+		"confirmed",
+		usedQty,
+		occurredAt,
 		occurredAt,
 		"token consumed by chain payment",
 		"{}",
 	)
-	return err
+	if err != nil {
+		return fmt.Errorf("append token consumption for utxo %s: %w", utxoID, err)
+	}
+
+	if err := dbAppendTokenUTXOLinkIfAbsentForConsumption(db, sourceFlowID, utxoID, tokenID, tokenStandard, usedQty, "OUT", occurredAt); err != nil {
+		return fmt.Errorf("append token utxo link for utxo %s: %w", utxoID, err)
+	}
+	return nil
 }

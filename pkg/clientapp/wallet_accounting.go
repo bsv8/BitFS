@@ -326,14 +326,28 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		}
 	}
 
-	// Step 4 出项关联：对 input UTXO 写入 fact_asset_consumptions
-	// 设计说明：
-	// - 只处理 input 方向的 UTXO，按 utxo_id 查 source_flow_id
-	// - unknown UTXO 没有 source flow，跳过不产生消耗记录
-	// - 幂等：同一 source_flow_id + chain_payment_id 不会重复写
-	if err := dbAppendAssetConsumptionsForChainPayment(db, chainPaymentID, buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now), now); err != nil {
-		obs.Error("bitcast-client", "wallet_accounting_asset_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
-		return fmt.Errorf("append asset consumptions for chain payment failed: %w", err)
+	// Step 4 出项关联：对 input UTXO 按资产类型分流写入新消费表
+	// B组改造：
+	// - BSV 消耗写入 fact_bsv_consumptions
+	// - Token 消耗写入 fact_token_consumptions + fact_token_utxo_links
+	// - 不再写入旧表 fact_asset_consumptions
+	utxoFacts := buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now)
+	bsvFacts, tokenFacts, err := splitUTXOFactsByAssetKind(db, utxoFacts)
+	if err != nil {
+		obs.Error("bitcast-client", "wallet_accounting_split_utxo_facts_failed", map[string]any{"error": err.Error(), "txid": txid})
+		return fmt.Errorf("split utxo facts by asset kind failed: %w", err)
+	}
+	if len(bsvFacts) > 0 {
+		if err := dbAppendBSVConsumptionsForChainPayment(db, chainPaymentID, bsvFacts, now); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_bsv_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
+			return fmt.Errorf("append BSV consumptions for chain payment failed: %w", err)
+		}
+	}
+	if len(tokenFacts) > 0 {
+		if err := dbAppendTokenConsumptionsForChainPayment(db, chainPaymentID, tokenFacts, now); err != nil {
+			obs.Error("bitcast-client", "wallet_accounting_token_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
+			return fmt.Errorf("append token consumptions for chain payment failed: %w", err)
+		}
 	}
 
 	for _, e := range in.ProcessEvents {
@@ -394,4 +408,42 @@ func buildChainPaymentUTXOLinksFromFacts(facts []chainPaymentUTXOFact, now int64
 		})
 	}
 	return out
+}
+
+// splitUTXOFactsByAssetKind 按资产类型分流 UTXO facts
+// B组改造：查询 fact_chain_asset_flows 获取 asset_kind，分成 BSV 和 Token 两组
+func splitUTXOFactsByAssetKind(db sqlConn, facts []chainPaymentUTXOLinkEntry) ([]chainPaymentUTXOLinkEntry, []chainPaymentUTXOLinkEntry, error) {
+	bsvFacts := make([]chainPaymentUTXOLinkEntry, 0)
+	tokenFacts := make([]chainPaymentUTXOLinkEntry, 0)
+	for _, fact := range facts {
+		ioSide := strings.TrimSpace(fact.IOSide)
+		if ioSide != "input" {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+		if utxoID == "" {
+			continue
+		}
+		var assetKind, tokenID, quantityText string
+		err := db.QueryRow(
+			`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' LIMIT 1`,
+			utxoID,
+		).Scan(&assetKind, &tokenID, &quantityText)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return nil, nil, fmt.Errorf("lookup asset kind for utxo %s: %w", utxoID, err)
+		}
+		fact.AssetKind = assetKind
+		fact.TokenID = tokenID
+		fact.QuantityText = quantityText
+		if assetKind == "BSV" {
+			bsvFacts = append(bsvFacts, fact)
+		} else if assetKind == "BSV20" || assetKind == "BSV21" {
+			fact.TokenStandard = assetKind
+			tokenFacts = append(tokenFacts, fact)
+		}
+	}
+	return bsvFacts, tokenFacts, nil
 }
