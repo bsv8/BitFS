@@ -50,20 +50,20 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
 	}
-	for _, col := range []string{"pool_session_id", "pool_session_event_id", "chain_payment_id", "cycle_id"} {
+	for _, col := range []string{"source_type", "source_id", "cycle_id"} {
 		if _, ok := cycleCols[col]; !ok {
 			t.Fatalf("missing column %s on fact_settlement_cycles", col)
 		}
 	}
-	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "pool_session_id"); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles pool_session_id notnull failed: %v", err)
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "source_type"); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles source_type notnull failed: %v", err)
 	} else if !notNull {
-		t.Fatal("fact_settlement_cycles.pool_session_id should be NOT NULL")
+		t.Fatal("fact_settlement_cycles.source_type should be NOT NULL")
 	}
-	if hasIndex, err := tableHasIndex(db, "fact_settlement_cycles", "idx_fact_settlement_cycles_pool_session"); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles pool_session index failed: %v", err)
+	if hasIndex, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"source_type", "source_id"}); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles unique index failed: %v", err)
 	} else if !hasIndex {
-		t.Fatal("fact_settlement_cycles should keep index on pool_session_id")
+		t.Fatal("fact_settlement_cycles should keep unique index on source_type/source_id")
 	}
 
 	// 第六次迭代：只测试主口径字段
@@ -132,22 +132,53 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 		SourceID:   "1",
 	})
 	if err == nil {
-		t.Fatal("expected dbListFinanceBusinesses to reject historical source_type")
+		t.Fatal("expected dbListFinanceBusinesses to reject non-settlement_cycle source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, chain_bsv or chain_token") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
 	_, err = dbListFinanceProcessEvents(context.Background(), store, financeProcessEventFilter{
 		Limit:      10,
-		SourceType: "fee_pool",
+		SourceType: "pool_allocation",
 		SourceID:   "1",
 	})
 	if err == nil {
-		t.Fatal("expected dbListFinanceProcessEvents to reject historical source_type")
+		t.Fatal("expected dbListFinanceProcessEvents to reject non-settlement_cycle source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, chain_bsv or chain_token") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestNormalizeFinanceQuerySourceAllowsChainWalletTypes 验证查询层显式接受 chain_bsv / chain_token。
+func TestNormalizeFinanceQuerySourceAllowsChainWalletTypes(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
+
+	sourceType, sourceID, err := normalizeFinanceQuerySource(context.Background(), store, "chain_bsv", "tx_bsv_1")
+	if err != nil {
+		t.Fatalf("normalize chain_bsv failed: %v", err)
+	}
+	if sourceType != "chain_bsv" || sourceID != "tx_bsv_1" {
+		t.Fatalf("unexpected chain_bsv normalize result: %s %s", sourceType, sourceID)
+	}
+
+	sourceType, sourceID, err = normalizeFinanceQuerySource(context.Background(), store, "chain_token", "tx_token_1")
+	if err != nil {
+		t.Fatalf("normalize chain_token failed: %v", err)
+	}
+	if sourceType != "chain_token" || sourceID != "tx_token_1" {
+		t.Fatalf("unexpected chain_token normalize result: %s %s", sourceType, sourceID)
+	}
+
+	if _, _, err := normalizeFinanceQuerySource(context.Background(), store, "chain_payment", "tx_legacy_1"); err == nil {
+		t.Fatal("expected historical source_type chain_payment to be rejected")
+	}
+	if _, _, err := normalizeFinanceQuerySource(context.Background(), store, "pool_session", "sess_legacy_1"); err == nil {
+		t.Fatal("expected historical source_type pool_session to be rejected")
 	}
 }
 

@@ -236,12 +236,12 @@ func TestAppendAssetConsumptionForChainPayment_PowerIdempotent(t *testing.T) {
 			CreatedAtUnix:  1700000010,
 		},
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoFacts, 1700000010); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoFacts, 1700000010); err != nil {
 		t.Fatalf("first consumption: %v", err)
 	}
 
 	// 第二次写入（幂等）
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoFacts, 1700000010); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoFacts, 1700000010); err != nil {
 		t.Fatalf("second consumption (idempotent): %v", err)
 	}
 
@@ -276,26 +276,17 @@ func TestAppendAssetConsumptionForPoolAllocation_PowerIdempotent(t *testing.T) {
 	}
 
 	// 写入 fact_pool_session_events
-	allocRes, err := db.Exec(`INSERT INTO fact_pool_session_events(
+	if _, err := db.Exec(`INSERT INTO fact_pool_session_events(
 		allocation_id, pool_session_id, allocation_no, allocation_kind, sequence_num, payee_amount_after,
 		payer_amount_after, txid, tx_hex, created_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		"alloc_001", "sess_001", 1, "payment", 1, 700,
 		300, "atx001", "hex001", 1700000020,
-	)
-	if err != nil {
+	); err != nil {
 		t.Fatalf("insert pool allocation: %v", err)
 	}
-	allocDBID, err := allocRes.LastInsertId()
-	if err != nil {
-		t.Fatalf("get allocation id: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO fact_settlement_cycles(
-		cycle_id,channel,state,pool_session_id,pool_session_event_id,gross_amount_satoshi,gate_fee_satoshi,
-		net_amount_satoshi,cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"cycle_pool_001", "pool", "confirmed", "sess_001", allocDBID, 700, 0, 700, 1, 1700000020, 1700000020, "pool cycle", "{}",
-	); err != nil {
+	allocID := "alloc_001"
+	if err := dbUpsertSettlementCycle(db, "cycle_pool_001", "pool_session", "sess_001", "confirmed", 700, 0, 700, 1, 1700000020, "pool cycle", map[string]any{"pool_allocation_id": allocID}); err != nil {
 		t.Fatalf("seed pool settlement cycle failed: %v", err)
 	}
 
@@ -343,12 +334,12 @@ func TestAppendAssetConsumptionForPoolAllocation_PowerIdempotent(t *testing.T) {
 			CreatedAtUnix:  1700000020,
 		},
 	}
-	if err := dbAppendBSVConsumptionsForPoolAllocation(db, allocDBID, utxoFacts, 1700000020); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByPoolAllocationID(t, db, allocID), utxoFacts, 1700000020); err != nil {
 		t.Fatalf("first consumption: %v", err)
 	}
 
 	// 第二次写入（幂等）
-	if err := dbAppendBSVConsumptionsForPoolAllocation(db, allocDBID, utxoFacts, 1700000020); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByPoolAllocationID(t, db, allocID), utxoFacts, 1700000020); err != nil {
 		t.Fatalf("second consumption (idempotent): %v", err)
 	}
 
@@ -401,31 +392,34 @@ func TestAppendAssetConsumption_MutualExclusion(t *testing.T) {
 		t.Fatalf("append flow: %v", err)
 	}
 
-	// 同时传 chain_payment_id 和 pool_allocation_id 应该报错
+	// 新模型里必须先给 settlement_cycle_id，旧的来源互斥口径已经删掉。
+	if err := dbUpsertSettlementCycle(db, "cycle_mutual_001", "pool_session", "sess_mutual_001", "confirmed", 1000, 0, 1000, 1, 1700000030, "mutual test", map[string]any{"flow_id": flowDBID}); err != nil {
+		t.Fatalf("seed settlement cycle: %v", err)
+	}
+	consCycleID, err := dbGetSettlementCycleBySource(db, "pool_session", "sess_mutual_001")
+	if err != nil {
+		t.Fatalf("resolve settlement cycle: %v", err)
+	}
 	consEntry := bsvConsumptionEntry{
-		SourceFlowID:     flowDBID,
-		ChainPaymentID:   1,
-		PoolAllocationID: 1,
-		UsedSatoshi:      1000,
-		OccurredAtUnix:   1700000030,
+		SourceFlowID:      flowDBID,
+		SettlementCycleID: consCycleID,
+		UsedSatoshi:       1000,
+		OccurredAtUnix:    1700000030,
 	}
 
-	// 传 payment 类型，但 pool_allocation_id 非零
+	// 不给 settlement_cycle_id，直接报新模型的必填错误
+	consEntry.SettlementCycleID = 0
 	err = dbAppendBSVConsumptionIfAbsentDB(db, consEntry, "payment")
 	if err == nil {
-		t.Fatalf("expected error for mutual exclusion violation, got nil")
+		t.Fatalf("expected error for missing settlement cycle, got nil")
 	}
-	if !strings.Contains(err.Error(), "must be NULL") {
-		t.Fatalf("expected 'must be NULL' error, got: %v", err)
+	if !strings.Contains(err.Error(), "settlement_cycle_id is required") {
+		t.Fatalf("expected settlement cycle error, got: %v", err)
 	}
 
-	// 传 allocation 类型，但 chain_payment_id 非零
-	err = dbAppendBSVConsumptionIfAbsentDB(db, consEntry, "allocation")
-	if err == nil {
-		t.Fatalf("expected error for mutual exclusion violation, got nil")
-	}
-	if !strings.Contains(err.Error(), "must be NULL") {
-		t.Fatalf("expected 'must be NULL' error, got: %v", err)
+	consEntry.SettlementCycleID = consCycleID
+	if err := dbAppendBSVConsumptionIfAbsentDB(db, consEntry, "payment"); err != nil {
+		t.Fatalf("expected new model write to pass, got: %v", err)
 	}
 }
 
@@ -659,13 +653,13 @@ func TestChainPaymentConsumption_MultipleUTXO(t *testing.T) {
 	}
 
 	// 调用批量消耗写入
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoLinks, now); err != nil {
 		t.Fatalf("append consumptions: %v", err)
 	}
 
 	// 验证：两条消耗记录，都指向同一个 chain_payment_id
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE chain_payment_id=?`, paymentID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID)).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions: %v", err)
 	}
 	if consCount != 2 {
@@ -674,7 +668,7 @@ func TestChainPaymentConsumption_MultipleUTXO(t *testing.T) {
 
 	// 验证每个 source_flow_id 都正确
 	var flowIDs []int64
-	rows, err := db.Query(`SELECT source_flow_id FROM fact_bsv_consumptions WHERE chain_payment_id=? ORDER BY source_flow_id`, paymentID)
+	rows, err := db.Query(`SELECT source_flow_id FROM fact_bsv_consumptions WHERE settlement_cycle_id=? ORDER BY source_flow_id`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID))
 	if err != nil {
 		t.Fatalf("query source_flow_ids: %v", err)
 	}
@@ -767,20 +761,20 @@ func TestChainPaymentConsumption_UnknownUTXOQueued(t *testing.T) {
 	}
 
 	// 调用批量消耗写入
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoLinks, now); err != nil {
 		t.Fatalf("append consumptions: %v", err)
 	}
 
 	// 验证：会留下 2 条消耗记录，其中 unknown 先挂 pending
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE chain_payment_id=?`, paymentID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID)).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions: %v", err)
 	}
 	if consCount != 2 {
 		t.Fatalf("expected 2 consumptions, got %d", consCount)
 	}
 	var pendingCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE chain_payment_id=? AND state='pending'`, paymentID).Scan(&pendingCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=? AND state='pending'`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID)).Scan(&pendingCount); err != nil {
 		t.Fatalf("count pending consumptions: %v", err)
 	}
 	if pendingCount != 1 {
@@ -850,26 +844,26 @@ func TestChainPaymentConsumption_Idempotent(t *testing.T) {
 	}
 
 	// 第一次写入
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoLinks, now); err != nil {
 		t.Fatalf("first consumption: %v", err)
 	}
 
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE chain_payment_id=?`, paymentID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID)).Scan(&consCount); err != nil {
 		t.Fatalf("count after first: %v", err)
 	}
 	if consCount != 1 {
 		t.Fatalf("expected 1 consumption after first, got %d", consCount)
 	}
 	var chainCycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE chain_payment_id=?`, paymentID).Scan(&chainCycleCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, "tx_idem_pay").Scan(&chainCycleCount); err != nil {
 		t.Fatalf("count chain settlement cycles failed: %v", err)
 	}
 	if chainCycleCount != 1 {
 		t.Fatalf("expected 1 chain settlement cycle, got %d", chainCycleCount)
 	}
 	var chainCycleID int64
-	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_bsv_consumptions WHERE chain_payment_id=? LIMIT 1`, paymentID).Scan(&chainCycleID); err != nil {
+	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_bsv_consumptions WHERE settlement_cycle_id=? LIMIT 1`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID)).Scan(&chainCycleID); err != nil {
 		t.Fatalf("query chain settlement_cycle_id failed: %v", err)
 	}
 	if chainCycleID <= 0 {
@@ -877,11 +871,11 @@ func TestChainPaymentConsumption_Idempotent(t *testing.T) {
 	}
 
 	// 第二次写入（幂等）
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoLinks, now); err != nil {
 		t.Fatalf("second consumption (idempotent): %v", err)
 	}
 
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE chain_payment_id=?`, paymentID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, paymentID)).Scan(&consCount); err != nil {
 		t.Fatalf("count after second: %v", err)
 	}
 	if consCount != 1 {
@@ -969,11 +963,6 @@ func TestPoolAllocationConsumption_MultipleUTXO(t *testing.T) {
 	}
 
 	// 获取 allocation 的自增 id
-	allocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, "poolalloc_"+allocInput.SessionID+"_"+allocInput.AllocationKind+"_1")
-	if err != nil {
-		t.Fatalf("get allocation db id: %v", err)
-	}
-
 	// 验证：业务层池账写入成功
 	var bizAllocCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, "poolalloc_"+allocInput.SessionID+"_"+allocInput.AllocationKind+"_1").Scan(&bizAllocCount); err != nil {
@@ -983,8 +972,12 @@ func TestPoolAllocationConsumption_MultipleUTXO(t *testing.T) {
 		t.Fatalf("expected 1 biz pool allocation, got %d", bizAllocCount)
 	}
 
+	poolCycleID, err := dbGetSettlementCycleBySource(db, "pool_session", "sess_pool_test")
+	if err != nil {
+		t.Fatalf("resolve pool settlement cycle failed: %v", err)
+	}
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, allocDBID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, poolCycleID).Scan(&consCount); err != nil {
 		t.Fatalf("count legacy consumptions: %v", err)
 	}
 	if consCount != 0 {
@@ -1152,11 +1145,6 @@ func TestPoolAllocationAccounting_RuntimePath(t *testing.T) {
 
 	// 验证 open allocation 已进入业务层池账
 	openAllocID := "poolalloc_sess_runtime_open_1"
-	openAllocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, openAllocID)
-	if err != nil {
-		t.Fatalf("get open allocation db id: %v", err)
-	}
-
 	var openBizAllocCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, openAllocID).Scan(&openBizAllocCount); err != nil {
 		t.Fatalf("count open biz allocations: %v", err)
@@ -1166,7 +1154,7 @@ func TestPoolAllocationAccounting_RuntimePath(t *testing.T) {
 	}
 
 	var openConsCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, openAllocDBID).Scan(&openConsCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByPoolAllocationID(t, db, openAllocID)).Scan(&openConsCount); err != nil {
 		t.Fatalf("count open legacy consumptions: %v", err)
 	}
 	if openConsCount != 0 {
@@ -1183,11 +1171,6 @@ func TestPoolAllocationAccounting_RuntimePath(t *testing.T) {
 
 	// 验证 pay allocation 进入业务层池账
 	payAllocID := "poolalloc_sess_runtime_pay_2"
-	payAllocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, payAllocID)
-	if err != nil {
-		t.Fatalf("get pay allocation db id: %v", err)
-	}
-
 	var payBizAllocCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE allocation_id=?`, payAllocID).Scan(&payBizAllocCount); err != nil {
 		t.Fatalf("count pay biz allocations: %v", err)
@@ -1197,7 +1180,7 @@ func TestPoolAllocationAccounting_RuntimePath(t *testing.T) {
 	}
 
 	var payConsCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, payAllocDBID).Scan(&payConsCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByPoolAllocationID(t, db, payAllocID)).Scan(&payConsCount); err != nil {
 		t.Fatalf("count pay legacy consumptions: %v", err)
 	}
 	if payConsCount != 0 {
@@ -1260,13 +1243,8 @@ func TestPoolAllocationCreatesSettlementCycleWithoutUTXOFacts(t *testing.T) {
 	}
 
 	allocID := "poolalloc_sess_cycle_only_pay_1"
-	allocDBID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
-	if err != nil {
-		t.Fatalf("get pool allocation db id failed: %v", err)
-	}
-
 	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE pool_session_event_id=?`, allocDBID).Scan(&cycleCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='pool_session' AND source_id=?`, "sess_cycle_only").Scan(&cycleCount); err != nil {
 		t.Fatalf("count settlement cycles failed: %v", err)
 	}
 	if cycleCount != 1 {
@@ -1274,7 +1252,7 @@ func TestPoolAllocationCreatesSettlementCycleWithoutUTXOFacts(t *testing.T) {
 	}
 
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE pool_allocation_id=?`, allocDBID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByPoolAllocationID(t, db, allocID)).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions failed: %v", err)
 	}
 	if consCount != 0 {
@@ -1392,7 +1370,7 @@ func TestFactBalance_AfterConsumption(t *testing.T) {
 	utxoLinks := []chainPaymentUTXOLinkEntry{
 		{ChainPaymentID: paymentID, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 10000, CreatedAtUnix: now},
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoLinks, now); err != nil {
 		t.Fatalf("append consumption: %v", err)
 	}
 
@@ -1533,7 +1511,7 @@ func TestSpendableSourceFlows_Basic(t *testing.T) {
 	utxoLinks := []chainPaymentUTXOLinkEntry{
 		{ChainPaymentID: paymentID, UTXOID: utxoIDs[0], IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 5000, CreatedAtUnix: now},
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, paymentID, utxoLinks, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, paymentID), utxoLinks, now); err != nil {
 		t.Fatalf("append consumption: %v", err)
 	}
 
@@ -1608,7 +1586,7 @@ func TestFactBalance_MultiConsumption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert pay1: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, pay1, []chainPaymentUTXOLinkEntry{
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, pay1), []chainPaymentUTXOLinkEntry{
 		{ChainPaymentID: pay1, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 3000, CreatedAtUnix: now},
 	}, now); err != nil {
 		t.Fatalf("append cons 1: %v", err)
@@ -1628,7 +1606,7 @@ func TestFactBalance_MultiConsumption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert pay2: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, pay2, []chainPaymentUTXOLinkEntry{
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, pay2), []chainPaymentUTXOLinkEntry{
 		{ChainPaymentID: pay2, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 4000, CreatedAtUnix: now},
 	}, now); err != nil {
 		t.Fatalf("append cons 2: %v", err)
@@ -1823,7 +1801,7 @@ func TestSelectSourceFlows_PartialConsumed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert chain payment: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, payID, []chainPaymentUTXOLinkEntry{
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), []chainPaymentUTXOLinkEntry{
 		{ChainPaymentID: payID, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 6000, CreatedAtUnix: now},
 	}, now); err != nil {
 		t.Fatalf("append consumption: %v", err)
@@ -1917,7 +1895,7 @@ func TestListEligiblePlainBSVWalletUTXOsFact_UsesFactSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert chain payment: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, payID, []chainPaymentUTXOLinkEntry{
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), []chainPaymentUTXOLinkEntry{
 		{ChainPaymentID: payID, UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 3000, CreatedAtUnix: now},
 	}, now); err != nil {
 		t.Fatalf("append consumption: %v", err)
@@ -2090,13 +2068,13 @@ func TestTokenConsumptionWrite(t *testing.T) {
 	}
 
 	// 写入 token 消耗
-	if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, payID, utxoID, "500", now); err != nil {
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), utxoID, "500", now); err != nil {
 		t.Fatalf("append token consumption: %v", err)
 	}
 
 	// 验证消耗记录
 	var usedText string
-	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&usedText); err != nil {
+	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_token_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, payID)).Scan(&usedText); err != nil {
 		t.Fatalf("query used_quantity_text: %v", err)
 	}
 	if usedText != "500" {
@@ -2104,12 +2082,12 @@ func TestTokenConsumptionWrite(t *testing.T) {
 	}
 
 	// 幂等检查：重复写入不报错
-	if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, payID, utxoID, "500", now); err != nil {
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), utxoID, "500", now); err != nil {
 		t.Fatalf("second token consumption (idempotent): %v", err)
 	}
 
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, payID)).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions: %v", err)
 	}
 	if consCount != 1 {
@@ -2267,23 +2245,23 @@ func TestTokenConsumptionIdempotent(t *testing.T) {
 	}
 
 	// 第一次写入 token 消耗
-	if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, payID, utxoID, "3000", now); err != nil {
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), utxoID, "3000", now); err != nil {
 		t.Fatalf("first token consumption: %v", err)
 	}
 
 	// 重试：第二次写入（应幂等跳过）
-	if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, payID, utxoID, "3000", now); err != nil {
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), utxoID, "3000", now); err != nil {
 		t.Fatalf("second token consumption (idempotent): %v", err)
 	}
 
 	// 重试：第三次写入（应幂等跳过）
-	if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, payID, utxoID, "3000", now); err != nil {
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, mustSettlementCycleIDByChainPaymentID(t, db, payID), utxoID, "3000", now); err != nil {
 		t.Fatalf("third token consumption (idempotent): %v", err)
 	}
 
 	// 验证只有一条消耗记录
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, payID)).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions: %v", err)
 	}
 	if consCount != 1 {
@@ -2291,7 +2269,7 @@ func TestTokenConsumptionIdempotent(t *testing.T) {
 	}
 
 	var usedText string
-	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&usedText); err != nil {
+	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_token_consumptions WHERE settlement_cycle_id=?`, mustSettlementCycleIDByChainPaymentID(t, db, payID)).Scan(&usedText); err != nil {
 		t.Fatalf("query used_quantity_text: %v", err)
 	}
 	if usedText != "3000" {
@@ -2352,16 +2330,10 @@ func TestTokenBalance_WithUsedReturnsRemaining(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upsert chain payment: %v", err)
 	}
-	payCycleID, err := dbGetSettlementCycleByChainPayment(db, payID)
-	if err != nil {
-		t.Fatalf("lookup settlement cycle: %v", err)
-	}
+	payCycleID := mustSettlementCycleIDByChainPaymentID(t, db, payID)
 
 	// 种消耗记录（3000）
-	if _, err := db.Exec(`INSERT INTO fact_token_consumptions(source_flow_id,source_utxo_id,token_id,token_standard,chain_payment_id,pool_allocation_id,settlement_cycle_id,state,used_quantity_text,occurred_at_unix,confirmed_at_unix,note,payload_json)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		1, "utxo_token_used:0", tokenID, "BSV21", payID, nil, payCycleID, "confirmed", "3000", now, now, "token send", "{}",
-	); err != nil {
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, payCycleID, "utxo_token_used:0", "3000", now); err != nil {
 		t.Fatalf("seed consumption: %v", err)
 	}
 
@@ -2472,23 +2444,23 @@ func TestTokenConsumptionWrite_AfterSend(t *testing.T) {
 	txHex := "010000000100000000000000000000000000000000000000000000000000000000000000000000000000ffffffff0101000000000000001976a914000000000000000000000000000000000000000088ac00000000"
 	txID := "tx_send_cons_broadcast"
 
-	// 直接使用 appendTokenConsumptionAfterChainPayment 测试（绕过 tx hex 解析）
+	// 直接使用 appendTokenConsumptionAfterBroadcast 测试（绕过 tx hex 解析）
 	tokenUTXOIDs := map[string]string{
 		utxoID: quantityText,
 	}
-	if err := appendTokenConsumptionAfterChainPayment(ctx, store, txHex, txID, tokenUTXOIDs, now); err != nil {
+	if err := appendTokenConsumptionAfterBroadcast(ctx, store, txHex, txID, tokenUTXOIDs, now); err != nil {
 		t.Fatalf("first append consumption: %v", err)
 	}
 
-	// 验证 chain_payment 已写入
-	var payID int64
-	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txID).Scan(&payID); err != nil {
-		t.Fatalf("query chain_payment: %v", err)
+	// 验证 token 发送已经落到 chain_token 结算周期
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_token", txID)
+	if err != nil {
+		t.Fatalf("query chain_token settlement cycle: %v", err)
 	}
 
 	// 验证 consumption 已写入
 	var consCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions: %v", err)
 	}
 	if consCount != 1 {
@@ -2496,7 +2468,7 @@ func TestTokenConsumptionWrite_AfterSend(t *testing.T) {
 	}
 
 	var usedText string
-	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&usedText); err != nil {
+	if err := db.QueryRow(`SELECT used_quantity_text FROM fact_token_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&usedText); err != nil {
 		t.Fatalf("query used_quantity_text: %v", err)
 	}
 	if usedText != quantityText {
@@ -2504,15 +2476,123 @@ func TestTokenConsumptionWrite_AfterSend(t *testing.T) {
 	}
 
 	// 第二次调用（模拟重试）：应幂等跳过
-	if err := appendTokenConsumptionAfterChainPayment(ctx, store, txHex, txID, tokenUTXOIDs, now); err != nil {
+	if err := appendTokenConsumptionAfterBroadcast(ctx, store, txHex, txID, tokenUTXOIDs, now); err != nil {
 		t.Fatalf("second append consumption (idempotent): %v", err)
 	}
 
 	// 验证只有一条 consumption
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE chain_payment_id=?`, payID).Scan(&consCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&consCount); err != nil {
 		t.Fatalf("count consumptions after retry: %v", err)
 	}
 	if consCount != 1 {
 		t.Fatalf("expected 1 consumption after retry (idempotent), got %d", consCount)
+	}
+}
+
+// TestChainTokenLine_NoBSVConsumptionWrite 验证 token 线只写 token 消耗，不回写 BSV 消耗。
+func TestChainTokenLine_NoBSVConsumptionWrite(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	now := time.Now().Unix()
+	txid := "tx_chain_token_line_1"
+	utxoID := "tx_chain_token_line_input:0"
+
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_line_1", "chain_token", txid, "confirmed", 0, 0, 0, 0, now, "token line test", map[string]any{"kind": "token"}); err != nil {
+		t.Fatalf("seed settlement cycle failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_token", txid)
+	if err != nil {
+		t.Fatalf("lookup token cycle failed: %v", err)
+	}
+	if _, err := dbAppendAssetFlowInIfAbsent(context.Background(), newClientDB(db, nil), chainAssetFlowEntry{
+		FlowID:         "flow_chain_token_line_1",
+		WalletID:       "wallet_chain_token_line_1",
+		Address:        "addr_chain_token_line_1",
+		Direction:      "IN",
+		AssetKind:      "BSV21",
+		TokenID:        "token_chain_token_line_1",
+		UTXOID:         utxoID,
+		TxID:           "tx_chain_token_line_input",
+		Vout:           0,
+		AmountSatoshi:  1,
+		QuantityText:   "2500",
+		OccurredAtUnix: now,
+		EvidenceSource: "WOC",
+		Note:           "token line test",
+		Payload:        map[string]any{"kind": "token"},
+	}); err != nil {
+		t.Fatalf("seed token flow failed: %v", err)
+	}
+
+	if err := dbAppendTokenConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
+		{
+			UTXOID:        utxoID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AmountSatoshi: 1,
+			AssetKind:     "BSV21",
+			TokenID:       "token_chain_token_line_1",
+			TokenStandard: "BSV21",
+			QuantityText:  "2500",
+		},
+	}, now); err != nil {
+		t.Fatalf("append token consumption failed: %v", err)
+	}
+
+	var tokenCount, bsvCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&tokenCount); err != nil {
+		t.Fatalf("count token consumptions failed: %v", err)
+	}
+	if tokenCount != 1 {
+		t.Fatalf("expected 1 token consumption, got %d", tokenCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&bsvCount); err != nil {
+		t.Fatalf("count bsv consumptions failed: %v", err)
+	}
+	if bsvCount != 0 {
+		t.Fatalf("expected no BSV consumption on chain_token line, got %d", bsvCount)
+	}
+}
+
+// TestChainBSVLine_NoTokenConsumptionWrite 验证 BSV 线只写 BSV 消耗，不回写 token 消耗。
+func TestChainBSVLine_NoTokenConsumptionWrite(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	txid := "tx_chain_bsv_line_1"
+	utxoID := "tx_chain_bsv_line_input:0"
+
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_line_1", "chain_bsv", txid, "confirmed", 1000, 0, -1000, 0, time.Now().Unix(), "bsv line test", map[string]any{"kind": "bsv"}); err != nil {
+		t.Fatalf("seed settlement cycle failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid)
+	if err != nil {
+		t.Fatalf("lookup bsv cycle failed: %v", err)
+	}
+
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
+		{
+			UTXOID:        utxoID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AmountSatoshi: 1000,
+		},
+	}, time.Now().Unix()); err != nil {
+		t.Fatalf("append bsv consumption failed: %v", err)
+	}
+
+	var tokenCount, bsvCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&bsvCount); err != nil {
+		t.Fatalf("count bsv consumptions failed: %v", err)
+	}
+	if bsvCount != 1 {
+		t.Fatalf("expected 1 BSV consumption, got %d", bsvCount)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&tokenCount); err != nil {
+		t.Fatalf("count token consumptions failed: %v", err)
+	}
+	if tokenCount != 0 {
+		t.Fatalf("expected no token consumption on chain_bsv line, got %d", tokenCount)
 	}
 }

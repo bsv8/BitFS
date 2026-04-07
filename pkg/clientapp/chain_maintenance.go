@@ -2,6 +2,7 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -1395,13 +1396,13 @@ func walletAddressLockScriptHex(address string) (string, error) {
 
 // walletScriptHexMatchesAddressControl 判断一个输出脚本是否仍然受当前钱包地址控制。
 // 设计说明：
-// - 现在钱包不能只认“纯 p2pkh 输出”，因为 1sat token / ordinal 的承载输出通常是“协议前缀 + 钱包 p2pkh 后缀”；
-// - 对当前底座来说，我们关心的是“这个输出最终是不是仍然锁给本钱包”，而不是它前面叠了什么协议壳；
+// - 钱包只认“最终是否仍由本钱包控制”，不再把协议壳当成独立来源；
+// - token 两层语义里，carrier 仍然是普通 BSV 输出，只是它同时承载 token 数量；
 // - 因此这里接受两类脚本：
 //  1. 纯钱包 p2pkh；
 //  2. 以钱包 p2pkh 作为后缀的组合脚本；
 //
-// - 这样本地投影、链同步、pending local broadcast 叠加三条链才能对 token change 使用同一判断口径。
+// - 这样本地投影、链同步、pending local broadcast 三条链才能对 token change 使用同一判断口径。
 func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHex string) bool {
 	outputScriptHex = strings.TrimSpace(strings.ToLower(outputScriptHex))
 	walletScriptHex = strings.TrimSpace(strings.ToLower(walletScriptHex))
@@ -1414,14 +1415,14 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 	return strings.HasSuffix(outputScriptHex, walletScriptHex)
 }
 
-func buildWalletChainAccountingInputFromTxDetail(db sqlConn, address string, detail whatsonchain.TxDetail) (walletChainAccountingInput, bool, error) {
+func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, detail whatsonchain.TxDetail) ([]walletChainAccountingInput, error) {
 	txid := strings.ToLower(strings.TrimSpace(detail.TxID))
 	if txid == "" {
-		return walletChainAccountingInput{}, false, nil
+		return nil, nil
 	}
 	scriptHex, err := walletAddressLockScriptHex(address)
 	if err != nil {
-		return walletChainAccountingInput{}, false, err
+		return nil, err
 	}
 
 	inputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vin))
@@ -1435,7 +1436,7 @@ func buildWalletChainAccountingInputFromTxDetail(db sqlConn, address string, det
 		utxoID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
 		amount, ok, err := dbWalletUTXOValueConn(db, utxoID)
 		if err != nil {
-			return walletChainAccountingInput{}, false, err
+			return nil, err
 		}
 		if !ok {
 			continue
@@ -1475,7 +1476,12 @@ func buildWalletChainAccountingInputFromTxDetail(db sqlConn, address string, det
 	}
 
 	if !hasWalletInput && !hasWalletOutput {
-		return walletChainAccountingInput{}, false, nil
+		return nil, nil
+	}
+
+	tokenFacts, err := collectTokenUTXOLinkFacts(db, inputFacts)
+	if err != nil {
+		return nil, err
 	}
 
 	category := "REPAYMENT"
@@ -1486,19 +1492,88 @@ func buildWalletChainAccountingInputFromTxDetail(db sqlConn, address string, det
 		category = "THIRD_PARTY"
 	}
 
-	return walletChainAccountingInput{
-		TxID:            txid,
-		Category:        category,
-		WalletInputSat:  walletInputSat,
-		WalletOutputSat: walletOutputSat,
-		NetSat:          walletOutputSat - walletInputSat,
-		Payload: map[string]any{
-			"txid":           txid,
-			"wallet_address": strings.TrimSpace(address),
-			"source":         "wallet_chain_sync",
-		},
-		UTXOFacts: append(inputFacts, outputFacts...),
-	}, true, nil
+	payload := map[string]any{
+		"txid":           txid,
+		"wallet_address": strings.TrimSpace(address),
+		"source":         "wallet_chain_sync",
+	}
+	out := make([]walletChainAccountingInput, 0, 2)
+	if len(inputFacts) > 0 || len(outputFacts) > 0 {
+		out = append(out, walletChainAccountingInput{
+			SourceType:      "chain_bsv",
+			SourceID:        txid,
+			TxID:            txid,
+			Category:        category,
+			WalletInputSat:  walletInputSat,
+			WalletOutputSat: walletOutputSat,
+			NetSat:          walletOutputSat - walletInputSat,
+			Payload:         payload,
+			UTXOFacts:       append(append([]chainPaymentUTXOFact{}, outputFacts...), inputFacts...),
+		})
+	}
+	if len(tokenFacts) > 0 {
+		out = append(out, walletChainAccountingInput{
+			SourceType:      "chain_token",
+			SourceID:        txid,
+			TxID:            txid,
+			Category:        category,
+			WalletInputSat:  0,
+			WalletOutputSat: 0,
+			NetSat:          0,
+			Payload:         payload,
+			UTXOFacts:       inputFacts,
+		})
+	}
+	return out, nil
+}
+
+// collectTokenUTXOLinkFacts 只收 token carrier 对应的输入事实。
+// 设计说明：
+// - chain_bsv 线已经直接吃全部真实输入
+// - 这里仅为 chain_token 线收 token carrier 的数量事实
+func collectTokenUTXOLinkFacts(db sqlConn, facts []chainPaymentUTXOFact) ([]chainPaymentUTXOLinkEntry, error) {
+	out := make([]chainPaymentUTXOLinkEntry, 0)
+	for _, fact := range facts {
+		if strings.TrimSpace(fact.IOSide) != "input" {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+		if utxoID == "" {
+			continue
+		}
+		var assetKind, tokenID, quantityText string
+		err := db.QueryRow(
+			`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' LIMIT 1`,
+			utxoID,
+		).Scan(&assetKind, &tokenID, &quantityText)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				continue
+			}
+			return nil, fmt.Errorf("lookup token carrier for utxo %s: %w", utxoID, err)
+		}
+		if assetKind != "BSV20" && assetKind != "BSV21" {
+			continue
+		}
+		quantityText = strings.TrimSpace(quantityText)
+		if quantityText == "" {
+			return nil, fmt.Errorf("token quantity is required for token carrier utxo %s", utxoID)
+		}
+		out = append(out, chainPaymentUTXOLinkEntry{
+			UTXOID:        utxoID,
+			IOSide:        fact.IOSide,
+			UTXORole:      fact.UTXORole,
+			AmountSatoshi: fact.AmountSatoshi,
+			AssetKind:     assetKind,
+			TokenID:       tokenID,
+			TokenStandard: assetKind,
+			QuantityText:  quantityText,
+			Note:          fact.Note,
+			Payload:       fact.Payload,
+			CreatedAtUnix: time.Now().Unix(),
+		})
+	}
+	return out, nil
 }
 
 func matchWalletOutput(txid string, out whatsonchain.TxOutput, scriptHex string) (string, uint64, bool) {

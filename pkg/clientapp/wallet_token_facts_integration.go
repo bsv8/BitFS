@@ -170,33 +170,25 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 	return []walletTokenPreviewCandidate{}, nil
 }
 
-// appendTokenConsumptionAfterChainPayment token 发送成功后写入 fact 消耗记录
+// appendTokenConsumptionAfterBroadcast token 发送成功后写入 fact 消耗记录
 // 设计说明：
-// - 先为 token send tx 写入 chain_payment 事实，再逐条写 token 消耗
-// - 幂等：同一 source_flow_id + chain_payment_id 不会重复写
-func appendTokenConsumptionAfterChainPayment(ctx context.Context, store *clientDB, txHex string, txID string, tokenUTXOIDs map[string]string, occurredAtUnix int64) error {
+// - 先为 token send tx 写入 settlement_cycle 事实，再逐条写 token 消耗
+// - 幂等：同一 source_flow_id + settlement_cycle_id 不会重复写
+func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, txHex string, txID string, tokenUTXOIDs map[string]string, occurredAtUnix int64) error {
 	return store.Do(ctx, func(db *sql.DB) error {
-		// 先写入 chain_payment 事实（token 发送也需要链上记录）
-		chainPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-			TxID:                txID,
-			PaymentSubType:      "token_send",
-			Status:              "confirmed",
-			WalletInputSatoshi:  0,
-			WalletOutputSatoshi: 0,
-			NetAmountSatoshi:    0,
-			BlockHeight:         0,
-			OccurredAtUnix:      occurredAtUnix,
-			FromPartyID:         "wallet:self",
-			ToPartyID:           "external:unknown",
-			Payload:             map[string]any{"type": "token_send", "token_count": len(tokenUTXOIDs)},
-		})
+		cycleID := fmt.Sprintf("cycle_chain_token_%s", txID)
+		if err := dbUpsertSettlementCycle(db, cycleID, "chain_token", txID, "confirmed",
+			0, 0, 0, 0, occurredAtUnix, "token send broadcast", map[string]any{"type": "token_send", "token_count": len(tokenUTXOIDs), "tx_hex": txHex}); err != nil {
+			return fmt.Errorf("upsert settlement cycle for token send: %w", err)
+		}
+		settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_token", txID)
 		if err != nil {
-			return fmt.Errorf("upsert chain_payment for token send: %w", err)
+			return fmt.Errorf("resolve settlement cycle for token send: %w", err)
 		}
 
 		// 逐条写 token 消耗
 		for utxoID, quantityText := range tokenUTXOIDs {
-			if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, chainPaymentID, utxoID, quantityText, occurredAtUnix); err != nil {
+			if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, settlementCycleID, utxoID, quantityText, occurredAtUnix); err != nil {
 				return fmt.Errorf("append token consumption for utxo %s: %w", utxoID, err)
 			}
 		}
@@ -222,17 +214,20 @@ func appendTokenConsumptionFromTxHex(ctx context.Context, store *clientDB, txHex
 
 		// 查找该 UTXO 是否有 token 资产记录
 		qty, err := dbGetUTXOTokenQuantity(ctx, store, utxoID)
-		if err != nil || qty == "" {
+		if err != nil {
+			return fmt.Errorf("lookup token quantity for utxo %s: %w", utxoID, err)
+		}
+		if qty == "" {
 			continue
 		}
 		tokenUTXOIDs[utxoID] = qty
 	}
 
 	if len(tokenUTXOIDs) == 0 {
-		return nil
+		return fmt.Errorf("no token carrier inputs found in txid %s", strings.ToLower(strings.TrimSpace(txID)))
 	}
 
-	return appendTokenConsumptionAfterChainPayment(ctx, store, txHex, txID, tokenUTXOIDs, time.Now().Unix())
+	return appendTokenConsumptionAfterBroadcast(ctx, store, txHex, txID, tokenUTXOIDs, time.Now().Unix())
 }
 
 // dbGetUTXOTokenQuantity 查询 UTXO 上的 token quantity_text

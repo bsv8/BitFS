@@ -46,27 +46,20 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv flow failed: %v", err)
 	}
-	bsvPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-		TxID:                "sum_bsv_pay",
-		PaymentSubType:      "direct_payment",
-		Status:              "confirmed",
-		WalletInputSatoshi:  600,
-		WalletOutputSatoshi: 0,
-		NetAmountSatoshi:    -600,
-		BlockHeight:         100,
-		OccurredAtUnix:      now,
-	})
-	if err != nil {
-		t.Fatalf("seed bsv payment failed: %v", err)
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_sum_bsv_pay", "chain_bsv", "sum_bsv_pay", "confirmed", 600, 0, -600, 0, now, "summary test", map[string]any{"kind": "bsv"}); err != nil {
+		t.Fatalf("seed bsv settlement cycle failed: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForChainPayment(db, bsvPaymentID, []chainPaymentUTXOLinkEntry{
+	bsvCycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", "sum_bsv_pay")
+	if err != nil {
+		t.Fatalf("lookup bsv settlement cycle failed: %v", err)
+	}
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, bsvCycleID, []chainPaymentUTXOLinkEntry{
 		{
-			ChainPaymentID: bsvPaymentID,
-			UTXOID:         bsvUTXOID,
-			IOSide:         "input",
-			UTXORole:       "wallet_input",
-			AmountSatoshi:  600,
-			CreatedAtUnix:  now,
+			UTXOID:        bsvUTXOID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AmountSatoshi: 600,
+			CreatedAtUnix: now,
 		},
 	}, now); err != nil {
 		t.Fatalf("append bsv consumption failed: %v", err)
@@ -99,20 +92,14 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed token flow failed: %v", err)
 	}
-	tokenPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-		TxID:                "sum_token_pay",
-		PaymentSubType:      "token_send",
-		Status:              "confirmed",
-		WalletInputSatoshi:  0,
-		WalletOutputSatoshi: 0,
-		NetAmountSatoshi:    0,
-		BlockHeight:         100,
-		OccurredAtUnix:      now,
-	})
-	if err != nil {
-		t.Fatalf("seed token payment failed: %v", err)
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_sum_token_pay", "chain_token", "sum_token_pay", "confirmed", 0, 0, 0, 0, now, "summary test", map[string]any{"kind": "token"}); err != nil {
+		t.Fatalf("seed token settlement cycle failed: %v", err)
 	}
-	if err := dbAppendTokenConsumptionForChainPaymentByUTXO(db, tokenPaymentID, tokenUTXOID, "2500", now); err != nil {
+	tokenCycleID, err := dbGetSettlementCycleBySource(db, "chain_token", "sum_token_pay")
+	if err != nil {
+		t.Fatalf("lookup token settlement cycle failed: %v", err)
+	}
+	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, tokenCycleID, tokenUTXOID, "2500", now); err != nil {
 		t.Fatalf("append token consumption failed: %v", err)
 	}
 

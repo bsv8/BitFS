@@ -14,7 +14,6 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 const walletTokenContentType = "application/bsv-20"
@@ -165,12 +164,13 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 		finalTxID = localTxID
 	}
 	if err := applyLocalBroadcastWalletTx(r.Context(), s.store, s.rt, txHex, "wallet_token_send_submit"); err != nil {
-		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed: %w", err)
+		recordWalletTokenSendRetryTask(s.rt, finalTxID, "local_broadcast_projection", err, txHex)
+		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed for txid %s: %w", finalTxID, err)
 	}
 	// Step 8：token 发送成功后写入 fact 消耗记录
 	if err := appendTokenConsumptionFromTxHex(r.Context(), s.store, txHex, finalTxID); err != nil {
-		// 消耗写入失败不影响发送成功（记录日志即可）
-		obs.Error("bitcast-client", "wallet_token_consumption_write_failed", map[string]any{"error": err.Error(), "txid": finalTxID})
+		recordWalletTokenSendRetryTask(s.rt, finalTxID, "fact_write", err, txHex)
+		return walletAssetActionSubmitResp{}, fmt.Errorf("append token consumption failed for txid %s: %w", finalTxID, err)
 	}
 	return walletAssetActionSubmitResp{
 		Ok:      true,
@@ -178,6 +178,44 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 		Message: walletBSV21SubmitMessage(parsed),
 		TxID:    finalTxID,
 	}, nil
+}
+
+// recordWalletTokenSendRetryTask 记录 token 发送失败后的重试任务痕迹。
+// 设计说明：
+// - 广播后事实写失败不能只告警，必须留下能被运维追踪的重试记录；
+// - 当前不新增数据库迁移，所以先落到 orchestrator 日志；
+// - 这不是“继续成功”的旁路，而是明确的失败后补救痕迹。
+func recordWalletTokenSendRetryTask(rt *Runtime, txid string, stage string, cause error, txHex string) {
+	if rt == nil {
+		return
+	}
+	txid = strings.ToLower(strings.TrimSpace(txid))
+	stage = strings.TrimSpace(stage)
+	errText := ""
+	if cause != nil {
+		errText = strings.TrimSpace(cause.Error())
+	}
+	entry := orchestratorLogEntry{
+		EventType:      orchestratorEventTaskRetry,
+		Source:         "wallet_token_send",
+		AggregateKey:   "tx:" + txid,
+		IdempotencyKey: "wallet_token_send_retry:" + txid,
+		CommandType:    "wallet.token_send.submit",
+		TaskStatus:     "retry_scheduled",
+		ErrorMessage:   errText,
+		Payload: map[string]any{
+			"txid":   txid,
+			"stage":  stage,
+			"tx_hex": strings.TrimSpace(txHex),
+		},
+	}
+	if rt.orch != nil {
+		rt.orch.logEvent(entry)
+		return
+	}
+	if rt.store != nil {
+		dbAppendOrchestratorLog(context.Background(), rt.store, entry)
+	}
 }
 
 // prepareWalletTokenSend 负责把 bsv21 tokens.send 收口成“可签名交易”。
@@ -203,6 +241,9 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	candidates, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
+	}
+	if len(candidates) == 0 {
+		return preparedWalletTokenSend{}, fmt.Errorf("no token carrier inputs found for token send")
 	}
 	assetSymbol := ""
 	if len(candidates) > 0 {

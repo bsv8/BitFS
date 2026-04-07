@@ -239,7 +239,7 @@ func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (se
 		sourceType = "settlement_cycle"
 	}
 	if sourceID == "" {
-		return settlementCycleSourceResolution{SourceType: "settlement_cycle"}, nil
+		return settlementCycleSourceResolution{SourceType: sourceType}, nil
 	}
 	var (
 		cycleID int64
@@ -251,45 +251,28 @@ func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (se
 		if err != nil || cycleID <= 0 {
 			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
 		}
-	case "pool_session":
-		cycleID, err = dbGetSettlementCycleByPoolSessionIDDB(db, sourceID)
+	case "chain_bsv", "chain_token":
+		cycleID, err = dbGetSettlementCycleBySource(db, sourceType, sourceID)
 		if err != nil {
 			return settlementCycleSourceResolution{}, err
 		}
 	default:
-		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle or pool_session")
+		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle, chain_bsv or chain_token")
 	}
 	state, err := dbGetSettlementCycleStateByIDDB(db, cycleID)
 	if err != nil {
 		return settlementCycleSourceResolution{}, err
 	}
 	return settlementCycleSourceResolution{
-		SourceType:           "settlement_cycle",
-		SourceID:             fmt.Sprintf("%d", cycleID),
+		SourceType:           sourceType,
+		SourceID:             sourceID,
 		SettlementCycleID:    cycleID,
 		SettlementCycleState: state,
 	}, nil
 }
 
 func dbGetSettlementCycleByPoolSessionIDDB(db sqlConn, poolSessionID string) (int64, error) {
-	if db == nil {
-		return 0, fmt.Errorf("db is nil")
-	}
-	poolSessionID = strings.TrimSpace(poolSessionID)
-	if poolSessionID == "" {
-		return 0, fmt.Errorf("pool_session_id is required")
-	}
-	var id int64
-	if err := db.QueryRow(
-		`SELECT id FROM fact_settlement_cycles WHERE pool_session_id=? ORDER BY id DESC LIMIT 1`,
-		poolSessionID,
-	).Scan(&id); err != nil {
-		if err == sql.ErrNoRows {
-			return 0, fmt.Errorf("settlement cycle not found for pool session %s", poolSessionID)
-		}
-		return 0, err
-	}
-	return id, nil
+	return dbGetSettlementCycleBySource(db, "pool_session", poolSessionID)
 }
 
 func resolvePoolAllocationSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {
@@ -298,16 +281,17 @@ func resolvePoolAllocationSourceToSettlementCycleDB(db *sql.DB, sourceID string)
 		return 0, fmt.Errorf("source_id is required")
 	}
 	if allocID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && allocID > 0 {
-		return dbGetSettlementCycleByPoolEvent(db, allocID)
+		var poolSessionID string
+		if err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
+			return 0, err
+		}
+		return dbGetSettlementCycleBySource(db, "pool_session", poolSessionID)
 	}
-	var poolAllocID int64
-	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolAllocID); err != nil {
+	var poolSessionID string
+	if err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
 		return 0, err
 	}
-	if poolAllocID <= 0 {
-		return 0, fmt.Errorf("pool allocation id is required")
-	}
-	return dbGetSettlementCycleByPoolEvent(db, poolAllocID)
+	return dbGetSettlementCycleBySource(db, "pool_session", poolSessionID)
 }
 
 func resolveChainPaymentSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {
@@ -315,14 +299,21 @@ func resolveChainPaymentSourceToSettlementCycleDB(db *sql.DB, sourceID string) (
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
+	for _, sourceType := range []string{"chain_bsv", "chain_token"} {
+		if cycleID, err := dbGetSettlementCycleBySource(db, sourceType, strings.ToLower(sourceID)); err == nil {
+			return cycleID, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+	}
 	if paymentID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && paymentID > 0 {
-		return dbGetSettlementCycleByChainPayment(db, paymentID)
+		var txid string
+		if err := db.QueryRow(`SELECT txid FROM fact_chain_payments WHERE id=?`, paymentID).Scan(&txid); err != nil {
+			return 0, err
+		}
+		return dbGetSettlementCycleBySource(db, "chain_bsv", txid)
 	}
-	var paymentID int64
-	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, strings.ToLower(sourceID)).Scan(&paymentID); err != nil {
-		return 0, err
-	}
-	return dbGetSettlementCycleByChainPayment(db, paymentID)
+	return 0, sql.ErrNoRows
 }
 
 func resolveWalletChainSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {
@@ -330,11 +321,14 @@ func resolveWalletChainSourceToSettlementCycleDB(db *sql.DB, sourceID string) (i
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	var paymentID int64
-	if err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, strings.ToLower(sourceID)).Scan(&paymentID); err != nil {
-		return 0, err
+	for _, sourceType := range []string{"chain_bsv", "chain_token"} {
+		if cycleID, err := dbGetSettlementCycleBySource(db, sourceType, strings.ToLower(sourceID)); err == nil {
+			return cycleID, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
 	}
-	return dbGetSettlementCycleByChainPayment(db, paymentID)
+	return 0, sql.ErrNoRows
 }
 
 func dbGetSettlementCycleStateByIDDB(db *sql.DB, id int64) (string, error) {
@@ -406,24 +400,8 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		}
 
 		if f.BusinessID != "" {
-			where += " AND business_id=?"
+			where += " AND sb.business_id=?"
 			args = append(args, f.BusinessID)
-		}
-		if f.SourceType != "" {
-			where += " AND source_type=?"
-			args = append(args, f.SourceType)
-		}
-		if f.SourceID != "" {
-			where += " AND source_id=?"
-			args = append(args, f.SourceID)
-		}
-		if f.AccountingScene != "" {
-			where += " AND accounting_scene=?"
-			args = append(args, f.AccountingScene)
-		}
-		if f.AccountingSubtype != "" {
-			where += " AND accounting_subtype=?"
-			args = append(args, f.AccountingSubtype)
 		}
 		if f.SourceType != "" {
 			where += " AND sb.source_type=?"
@@ -433,21 +411,29 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			where += " AND sb.source_id=?"
 			args = append(args, f.SourceID)
 		}
+		if f.AccountingScene != "" {
+			where += " AND sb.accounting_scene=?"
+			args = append(args, f.AccountingScene)
+		}
+		if f.AccountingSubtype != "" {
+			where += " AND sb.accounting_subtype=?"
+			args = append(args, f.AccountingSubtype)
+		}
 		if f.Status != "" {
-			where += " AND status=?"
+			where += " AND sb.status=?"
 			args = append(args, f.Status)
 		}
 		if f.FromPartyID != "" {
-			where += " AND from_party_id=?"
+			where += " AND sb.from_party_id=?"
 			args = append(args, f.FromPartyID)
 		}
 		if f.ToPartyID != "" {
-			where += " AND to_party_id=?"
+			where += " AND sb.to_party_id=?"
 			args = append(args, f.ToPartyID)
 		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (business_id LIKE ? OR sb.note LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
+			where += " AND (sb.business_id LIKE ? OR sb.note LIKE ? OR sb.idempotency_key LIKE ? OR sb.source_type LIKE ? OR sb.source_id LIKE ? OR sb.accounting_scene LIKE ? OR sb.accounting_subtype LIKE ?)"
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeBusinessPage
@@ -536,24 +522,8 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			args = append(args, settlementState)
 		}
 		if f.ProcessID != "" {
-			where += " AND process_id=?"
+			where += " AND pe.process_id=?"
 			args = append(args, f.ProcessID)
-		}
-		if f.SourceType != "" {
-			where += " AND source_type=?"
-			args = append(args, f.SourceType)
-		}
-		if f.SourceID != "" {
-			where += " AND source_id=?"
-			args = append(args, f.SourceID)
-		}
-		if f.AccountingScene != "" {
-			where += " AND accounting_scene=?"
-			args = append(args, f.AccountingScene)
-		}
-		if f.AccountingSubtype != "" {
-			where += " AND accounting_subtype=?"
-			args = append(args, f.AccountingSubtype)
 		}
 		if f.SourceType != "" {
 			where += " AND pe.source_type=?"
@@ -563,17 +533,25 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			where += " AND pe.source_id=?"
 			args = append(args, f.SourceID)
 		}
+		if f.AccountingScene != "" {
+			where += " AND pe.accounting_scene=?"
+			args = append(args, f.AccountingScene)
+		}
+		if f.AccountingSubtype != "" {
+			where += " AND pe.accounting_subtype=?"
+			args = append(args, f.AccountingSubtype)
+		}
 		if f.EventType != "" {
-			where += " AND event_type=?"
+			where += " AND pe.event_type=?"
 			args = append(args, f.EventType)
 		}
 		if f.Status != "" {
-			where += " AND status=?"
+			where += " AND pe.status=?"
 			args = append(args, f.Status)
 		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (process_id LIKE ? OR note LIKE ? OR idempotency_key LIKE ? OR source_type LIKE ? OR source_id LIKE ? OR accounting_scene LIKE ? OR accounting_subtype LIKE ?)"
+			where += " AND (pe.process_id LIKE ? OR pe.note LIKE ? OR pe.idempotency_key LIKE ? OR pe.source_type LIKE ? OR pe.source_id LIKE ? OR pe.accounting_scene LIKE ? OR pe.accounting_subtype LIKE ?)"
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeProcessEventPage

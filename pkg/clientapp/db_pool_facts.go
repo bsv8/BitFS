@@ -361,10 +361,9 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 		return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
 	}
 	// 结算周期必须先落地；这是写账本的锚点，业务层只认这个主键。
-	cycleID := fmt.Sprintf("cycle_pool_%d", poolAllocID)
+	cycleID := fmt.Sprintf("cycle_pool_session_%s", sessionID)
 	if err := dbUpsertSettlementCycle(tx,
-		cycleID, "pool", "confirmed",
-		poolAllocID, 0,
+		cycleID, "pool_session", sessionID, "confirmed",
 		0, 0, 0,
 		0, createdAt, "auto-created from pool allocation", map[string]any{},
 	); err != nil {

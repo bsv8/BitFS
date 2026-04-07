@@ -177,20 +177,23 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		// 写入 chain accounting（与原 reconcileWalletUTXOSet 行为一致）
 		accountedTxIDs := map[string]struct{}{}
 		recordWalletChainTx := func(detail whatsonchain.TxDetail) error {
-			input, ok, err := buildWalletChainAccountingInputFromTxDetail(tx, address, detail)
+			inputs, err := buildWalletChainAccountingInputsFromTxDetail(tx, address, detail)
 			if err != nil {
 				return err
 			}
-			if !ok {
+			if len(inputs) == 0 {
 				return nil
 			}
-			if _, seen := accountedTxIDs[input.TxID]; seen {
-				return nil
+			for _, input := range inputs {
+				key := input.SourceType + ":" + input.SourceID
+				if _, seen := accountedTxIDs[key]; seen {
+					continue
+				}
+				if err := recordWalletChainAccountingConn(tx, input); err != nil {
+					return err
+				}
+				accountedTxIDs[key] = struct{}{}
 			}
-			if err := recordWalletChainAccountingConn(tx, input); err != nil {
-				return err
-			}
-			accountedTxIDs[input.TxID] = struct{}{}
 			return nil
 		}
 		for _, hist := range history {

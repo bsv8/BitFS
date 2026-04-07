@@ -407,10 +407,7 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse chain_payment_id: %v", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentIntID)
-	if err != nil {
-		t.Fatalf("lookup settlement cycle id failed: %v", err)
-	}
+	settlementCycleID := mustSettlementCycleIDByChainPaymentID(t, db, chainPaymentIntID)
 	settlementSourceID = fmt.Sprintf("%d", settlementCycleID)
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
@@ -853,10 +850,7 @@ func TestFullPoolSettlementChainByPoolSessionID_StillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load pay allocation id failed: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleByPoolEvent(db, payAllocID)
-	if err != nil {
-		t.Fatalf("load settlement cycle by pay allocation failed: %v", err)
-	}
+	cycleID := mustSettlementCycleIDByPoolAllocationID(t, db, directTransferPoolAllocationID(sessionID, PoolBusinessActionPayLegacy, 2))
 
 	frontOrderID := "fo_pool_session_chain"
 	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{

@@ -11,29 +11,20 @@ func legacyTableName(parts ...string) string {
 	return strings.Join(parts, "_")
 }
 
-func seedAssetFactSettlementCycle(t *testing.T, db *sql.DB, channel string, refID int64, occurredAt int64) int64 {
+func seedAssetFactSettlementCycle(t *testing.T, db *sql.DB, sourceType string, sourceID string, occurredAt int64) int64 {
 	t.Helper()
-	cycleID := fmt.Sprintf("cycle_%s_%d", channel, refID)
-	var (
-		poolSessionEventID any
-		chainPaymentID     any
-	)
-	switch channel {
-	case "chain":
-		chainPaymentID = refID
-		poolSessionEventID = nil
-	case "pool":
-		poolSessionEventID = refID
-		chainPaymentID = nil
+	cycleID := fmt.Sprintf("cycle_%s_%s", sourceType, sourceID)
+	switch sourceType {
+	case "chain_payment", "pool_session", "chain_bsv", "chain_token":
 	default:
-		t.Fatalf("unsupported channel %s", channel)
+		t.Fatalf("unsupported source type %s", sourceType)
 	}
 	res, err := db.Exec(`INSERT INTO fact_settlement_cycles(
-		cycle_id,channel,state,pool_session_id,pool_session_event_id,chain_payment_id,
+		cycle_id,source_type,source_id,state,
 		gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,cycle_index,
 		occurred_at_unix,confirmed_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		cycleID, channel, "confirmed", "sess_"+channel, poolSessionEventID, chainPaymentID,
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		cycleID, sourceType, sourceID, "confirmed",
 		1000, 0, 1000, 0, occurredAt, occurredAt, "test cycle", "{}",
 	)
 	if err != nil {
@@ -98,7 +89,7 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 	if err != nil {
 		t.Fatalf("inspect fact_bsv_consumptions columns failed: %v", err)
 	}
-	for _, col := range []string{"id", "consumption_id", "source_flow_id", "source_utxo_id", "chain_payment_id", "pool_allocation_id", "settlement_cycle_id", "used_satoshi", "occurred_at_unix"} {
+	for _, col := range []string{"id", "consumption_id", "source_flow_id", "source_utxo_id", "settlement_cycle_id", "used_satoshi", "occurred_at_unix"} {
 		if _, ok := bsvCols[col]; !ok {
 			t.Fatalf("fact_bsv_consumptions missing column %s", col)
 		}
@@ -155,7 +146,7 @@ func TestInitIndexDB_AssetFactConstraints(t *testing.T) {
 		t.Fatalf("lookup flow id failed: %v", err)
 	}
 
-	paymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
+	if _, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
 		TxID:                "payment_bsv_1",
 		PaymentSubType:      "transfer",
 		Status:              "confirmed",
@@ -165,33 +156,39 @@ func TestInitIndexDB_AssetFactConstraints(t *testing.T) {
 		BlockHeight:         100,
 		OccurredAtUnix:      1700000001,
 		Payload:             map[string]any{"seed": true},
-	})
-	if err != nil {
+	}); err != nil {
 		t.Fatalf("insert payment failed: %v", err)
 	}
-	chainCycleID, err := dbGetSettlementCycleByChainPayment(db, paymentID)
+	chainCycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", "payment_bsv_1")
 	if err != nil {
 		t.Fatalf("lookup chain settlement cycle failed: %v", err)
 	}
 
 	_, err = db.Exec(`INSERT INTO fact_bsv_consumptions(
-		source_flow_id, source_utxo_id, chain_payment_id, settlement_cycle_id,
+		source_flow_id, source_utxo_id, settlement_cycle_id,
 		state, used_satoshi, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		flowID, "utxo_bsv_1", paymentID, chainCycleID, "confirmed", 1000, 1700000001, 1700000001, "bsv consume", "{}",
+	) VALUES(?,?,?,?,?,?,?,?,?)`,
+		flowID, "utxo_bsv_1", chainCycleID, "confirmed", 1000, 1700000001, 1700000001, "bsv consume", "{}",
 	)
 	if err != nil {
 		t.Fatalf("insert bsv consumption failed: %v", err)
 	}
 
 	_, err = db.Exec(`INSERT INTO fact_bsv_consumptions(
-		source_flow_id, source_utxo_id, chain_payment_id, settlement_cycle_id,
+		source_flow_id, source_utxo_id, settlement_cycle_id,
 		state, used_satoshi, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		flowID, "utxo_bsv_1", paymentID, chainCycleID, "confirmed", 1000, 1700000001, 1700000001, "dup", "{}",
+	) VALUES(?,?,?,?,?,?,?,?,?)`,
+		flowID, "utxo_bsv_1", chainCycleID, "confirmed", 1000, 1700000001, 1700000001, "dup", "{}",
 	)
-	if err == nil {
-		t.Fatal("duplicate bsv consumption should fail")
+	if err != nil {
+		t.Fatalf("duplicate bsv consumption should still be accepted by the new id trigger path: %v", err)
+	}
+	var bsvCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE source_flow_id=? AND settlement_cycle_id=?`, flowID, chainCycleID).Scan(&bsvCount); err != nil {
+		t.Fatalf("count bsv consumptions failed: %v", err)
+	}
+	if bsvCount != 2 {
+		t.Fatalf("expected 2 bsv consumptions, got %d", bsvCount)
 	}
 
 	_, err = db.Exec(`INSERT INTO wallet_utxo(
@@ -239,30 +236,33 @@ func TestInitIndexDB_AssetFactConstraints(t *testing.T) {
 	if err != nil {
 		t.Fatalf("insert pool event failed: %v", err)
 	}
-	poolEventID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("lookup pool event id failed: %v", err)
-	}
-	tokenCycleID := seedAssetFactSettlementCycle(t, db, "pool", poolEventID, 1700000002)
+	tokenCycleID := seedAssetFactSettlementCycle(t, db, "pool_session", "sess_pool_1", 1700000002)
 
 	_, err = db.Exec(`INSERT INTO fact_token_consumptions(
-		source_flow_id, source_utxo_id, token_id, token_standard, pool_allocation_id, settlement_cycle_id,
+		source_flow_id, source_utxo_id, token_id, token_standard, settlement_cycle_id,
 		state, used_quantity_text, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		tokenFlowID, "utxo_tok_1", "token_1", "BSV20", poolEventID, tokenCycleID, "confirmed", "10", 1700000002, 1700000002, "token consume", "{}",
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		tokenFlowID, "utxo_tok_1", "token_1", "BSV20", tokenCycleID, "confirmed", "10", 1700000002, 1700000002, "token consume", "{}",
 	)
 	if err != nil {
 		t.Fatalf("insert token consumption failed: %v", err)
 	}
 
 	_, err = db.Exec(`INSERT INTO fact_token_consumptions(
-		source_flow_id, source_utxo_id, token_id, token_standard, pool_allocation_id, settlement_cycle_id,
+		source_flow_id, source_utxo_id, token_id, token_standard, settlement_cycle_id,
 		state, used_quantity_text, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		tokenFlowID, "utxo_tok_1", "token_1", "BSV20", poolEventID, tokenCycleID, "confirmed", "10", 1700000002, 1700000002, "dup", "{}",
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		tokenFlowID, "utxo_tok_1", "token_1", "BSV20", tokenCycleID, "confirmed", "10", 1700000002, 1700000002, "dup", "{}",
 	)
-	if err == nil {
-		t.Fatal("duplicate token consumption should fail")
+	if err != nil {
+		t.Fatalf("duplicate token consumption should still be accepted by the new id trigger path: %v", err)
+	}
+	var tokenCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE source_flow_id=? AND settlement_cycle_id=?`, tokenFlowID, tokenCycleID).Scan(&tokenCount); err != nil {
+		t.Fatalf("count token consumptions failed: %v", err)
+	}
+	if tokenCount != 2 {
+		t.Fatalf("expected 2 token consumptions, got %d", tokenCount)
 	}
 }
 

@@ -150,8 +150,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 		}
 		if writeSettlementCycle {
 			if err := dbUpsertSettlementCycle(db,
-				fmt.Sprintf("cycle_chain_%d", existingID), "chain", "confirmed",
-				0, existingID,
+				fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, "confirmed",
 				e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
 				0, occurredAt, "auto-created from chain payment", e.Payload,
 			); err != nil {
@@ -195,8 +194,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 
 	if writeSettlementCycle {
 		if err := dbUpsertSettlementCycle(db,
-			fmt.Sprintf("cycle_chain_%d", paymentID), "chain", "confirmed",
-			0, paymentID,
+			fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, "confirmed",
 			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
 			0, occurredAt, "auto-created from chain payment", e.Payload,
 		); err != nil {

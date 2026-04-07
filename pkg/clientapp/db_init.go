@@ -810,14 +810,12 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// 设计说明：
 		// - 记录 BSV 本币的消耗事实
 		// - 必须挂载到 settlement_cycle_id
-		// - chain_payment_id 与 pool_allocation_id 二选一
+		// - 不再直接绑定 chain_payment_id / pool_allocation_id
 		`CREATE TABLE IF NOT EXISTS fact_bsv_consumptions(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			consumption_id TEXT NOT NULL DEFAULT '',
 			source_flow_id INTEGER,
 			source_utxo_id TEXT NOT NULL DEFAULT '',
-			chain_payment_id INTEGER,
-			pool_allocation_id INTEGER,
 			settlement_cycle_id INTEGER NOT NULL,
 			state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','reverted')),
 			used_satoshi INTEGER NOT NULL CHECK(used_satoshi>0),
@@ -826,10 +824,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
-			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
-			FOREIGN KEY(pool_allocation_id) REFERENCES fact_pool_session_events(id),
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
-			CHECK((chain_payment_id IS NOT NULL) <> (pool_allocation_id IS NOT NULL))
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id)
 		)`,
 		`CREATE TRIGGER IF NOT EXISTS trg_fact_bsv_consumptions_fill_id
 			AFTER INSERT ON fact_bsv_consumptions
@@ -844,11 +839,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_bsv_consumptions_id ON fact_bsv_consumptions(consumption_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_source ON fact_bsv_consumptions(source_flow_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_source_utxo ON fact_bsv_consumptions(source_utxo_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_payment ON fact_bsv_consumptions(chain_payment_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_allocation ON fact_bsv_consumptions(pool_allocation_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_cycle ON fact_bsv_consumptions(settlement_cycle_id, id DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_bsv_consumptions_flow_payment ON fact_bsv_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_bsv_consumptions_flow_allocation ON fact_bsv_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL`,
 
 		// fact_token_consumptions: Token消耗事实表（A组硬切换新增）
 		// 设计说明：
@@ -862,8 +853,6 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			source_utxo_id TEXT NOT NULL DEFAULT '',
 			token_id TEXT NOT NULL,
 			token_standard TEXT NOT NULL CHECK(token_standard IN ('BSV20','BSV21')),
-			chain_payment_id INTEGER,
-			pool_allocation_id INTEGER,
 			settlement_cycle_id INTEGER NOT NULL,
 			state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','reverted')),
 			used_quantity_text TEXT NOT NULL CHECK(length(trim(used_quantity_text))>0),
@@ -872,10 +861,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
-			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
-			FOREIGN KEY(pool_allocation_id) REFERENCES fact_pool_session_events(id),
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
-			CHECK((chain_payment_id IS NOT NULL) <> (pool_allocation_id IS NOT NULL))
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id)
 		)`,
 		`CREATE TRIGGER IF NOT EXISTS trg_fact_token_consumptions_fill_id
 			AFTER INSERT ON fact_token_consumptions
@@ -890,11 +876,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_token_consumptions_id ON fact_token_consumptions(consumption_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_source ON fact_token_consumptions(source_flow_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_token ON fact_token_consumptions(token_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_payment ON fact_token_consumptions(chain_payment_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_allocation ON fact_token_consumptions(pool_allocation_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_cycle ON fact_token_consumptions(settlement_cycle_id, id DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_token_consumptions_flow_payment ON fact_token_consumptions(source_flow_id, chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_token_consumptions_flow_allocation ON fact_token_consumptions(source_flow_id, pool_allocation_id) WHERE pool_allocation_id IS NOT NULL`,
 
 		// fact_token_utxo_links: Token数量与载体UTXO映射表（A组硬切换新增）
 		// 设计说明：
@@ -945,17 +927,15 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 
 		// Step 15: 统一结算锚点 — fact_settlement_cycles
 		// 设计说明：
-		// - 把 chain_payment 和 pool_allocation 两类结算入口统一到一个周期结算事实层
-		// - pool 内部多次划拨不增加支付笔数，只对应一条周期结算
-		// - CHECK 约束：pool_session_event_id 和 chain_payment_id 二选一
+		// - 把 chain_payment / pool_session / wallet chain/token 统一到一个周期结算事实层
+		// - 只保留 source_type/source_id 作为来源锚点
+		// - source_type/source_id 做唯一约束，禁止再靠旧事件列兜底
 		`CREATE TABLE IF NOT EXISTS fact_settlement_cycles(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			cycle_id TEXT NOT NULL UNIQUE,
-			channel TEXT NOT NULL CHECK(channel IN ('pool','chain')),
+			source_type TEXT NOT NULL CHECK(source_type IN ('chain_payment','pool_session','chain_bsv','chain_token')),
+			source_id TEXT NOT NULL,
 			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
-			pool_session_id TEXT NOT NULL DEFAULT '',
-			pool_session_event_id INTEGER,
-			chain_payment_id INTEGER,
 			gross_amount_satoshi INTEGER NOT NULL DEFAULT 0,
 			gate_fee_satoshi INTEGER NOT NULL DEFAULT 0,
 			net_amount_satoshi INTEGER NOT NULL DEFAULT 0,
@@ -964,20 +944,9 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(pool_session_event_id) REFERENCES fact_pool_session_events(id),
-			FOREIGN KEY(chain_payment_id) REFERENCES fact_chain_payments(id),
-			CHECK(
-				(pool_session_event_id IS NOT NULL AND chain_payment_id IS NULL) OR
-				(pool_session_event_id IS NULL AND chain_payment_id IS NOT NULL)
-			)
+			UNIQUE(source_type, source_id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_channel_state ON fact_settlement_cycles(channel, state, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_session ON fact_settlement_cycles(pool_session_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id, id DESC)`,
-		// Step 15: 唯一约束 — 同一 pool/chain 入口只对应一条 cycle
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id) WHERE pool_session_event_id IS NOT NULL`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id) WHERE chain_payment_id IS NOT NULL`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_source_state ON fact_settlement_cycles(source_type, state, occurred_at_unix DESC)`,
 
 		// Step 9: WOC 证据驱动 token IN 入账 - 待确认队列表
 		// 设计说明：
@@ -3658,80 +3627,3 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 
 // rawJSONPayload 用于标记原始 JSON 字符串类型
 type rawJSONPayload string
-
-// ensureSettlementCyclesSchema 只负责当前结算周期表的补齐。
-// 设计说明：
-// - 只维护 fact_settlement_cycles 本身的结构和索引；
-// - 回填只面向当前主表 fact_chain_payments 和 fact_pool_session_events；
-// - 不再碰任何旧消耗表。
-func ensureSettlementCyclesSchema(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-
-	var hasPoolSessionColumn int
-	err := db.QueryRow(`SELECT COUNT(1) FROM pragma_table_info('fact_settlement_cycles') WHERE name='pool_session_id'`).Scan(&hasPoolSessionColumn)
-	if err != nil {
-		return fmt.Errorf("check pool_session_id column: %w", err)
-	}
-	if hasPoolSessionColumn == 0 {
-		if _, err := db.Exec(`ALTER TABLE fact_settlement_cycles ADD COLUMN pool_session_id TEXT NOT NULL DEFAULT ''`); err != nil {
-			return fmt.Errorf("add pool_session_id column: %w", err)
-		}
-	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_pool_session ON fact_settlement_cycles(pool_session_id, id DESC)`); err != nil {
-		return fmt.Errorf("create pool_session index: %w", err)
-	}
-	poolEventCols, err := tableColumns(db, "fact_pool_session_events")
-	if err != nil {
-		return fmt.Errorf("inspect fact_pool_session_events: %w", err)
-	}
-	poolSessionExpr := "''"
-	if _, ok := poolEventCols["pool_session_id"]; ok {
-		poolSessionExpr = "COALESCE(pool_session_id, '')"
-	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_pool_event ON fact_settlement_cycles(pool_session_event_id) WHERE pool_session_event_id IS NOT NULL`); err != nil {
-		return fmt.Errorf("create unique pool_event index: %w", err)
-	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_settlement_cycles_chain_payment ON fact_settlement_cycles(chain_payment_id) WHERE chain_payment_id IS NOT NULL`); err != nil {
-		return fmt.Errorf("create unique chain_payment index: %w", err)
-	}
-
-	// 回填步骤都必须独立幂等，不能因为库里已经有部分 cycle 就提前停掉。
-	// 回填 chain 结算（幂等：INSERT OR IGNORE 按 cycle_id 唯一键）
-	_, err = db.Exec(`
-		INSERT OR IGNORE INTO fact_settlement_cycles(
-			cycle_id, channel, state, pool_session_id, chain_payment_id,
-			gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
-			cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
-		)
-		SELECT 'cycle_chain_' || id, 'chain', 'confirmed', '', id,
-			wallet_input_satoshi, 0, net_amount_satoshi,
-			0, occurred_at_unix, occurred_at_unix,
-			'backfilled from fact_chain_payments', payload_json
-		FROM fact_chain_payments
-	`)
-	if err != nil {
-		return fmt.Errorf("backfill chain cycles: %w", err)
-	}
-
-	// 仅用于历史回填：pool 结算（每个 pool_session_event 对应一条 settlement_cycle）
-	_, err = db.Exec(`
-		INSERT OR IGNORE INTO fact_settlement_cycles(
-			cycle_id, channel, state, pool_session_id, pool_session_event_id,
-			gross_amount_satoshi, gate_fee_satoshi, net_amount_satoshi,
-			cycle_index, occurred_at_unix, confirmed_at_unix, note, payload_json
-		)
-		SELECT 'cycle_pool_' || id, 'pool', 'confirmed', ` + poolSessionExpr + `, id,
-			amount_satoshi, 0, amount_satoshi,
-			cycle_index, created_at_unix, created_at_unix,
-			'backfilled from fact_pool_session_events', payload_json
-		FROM fact_pool_session_events
-		WHERE event_kind = '` + PoolFactEventKindPoolEvent + `'
-	`)
-	if err != nil {
-		return fmt.Errorf("backfill pool cycles: %w", err)
-	}
-
-	return nil
-}

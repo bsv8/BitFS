@@ -63,7 +63,7 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		},
 		{
 			table: "fact_settlement_cycles",
-			cols:  []string{"id", "cycle_id", "channel", "pool_session_id", "pool_session_event_id", "chain_payment_id"},
+			cols:  []string{"id", "cycle_id", "source_type", "source_id", "state", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi"},
 		},
 	} {
 		cols, err := tableColumns(db, check.table)

@@ -88,10 +88,12 @@ type chainPaymentUTXOFact struct {
 
 // walletChainAccountingInput 是钱包链事实写入的显式输入。
 // 设计说明：
-//   - 交易汇总字段继续保留，用于 fact_chain_payments / settle_tx_breakdown
+//   - 交易汇总字段继续保留，用于 settlement_cycle / settle_tx_breakdown
 //   - UTXO 明细必须由上游显式传入，不能从 payload 临时猜
 //   - ProcessEvents 允许在同一笔事务里一并落库
 type walletChainAccountingInput struct {
+	SourceType      string
+	SourceID        string
 	TxID            string
 	Category        string
 	WalletInputSat  int64
@@ -171,9 +173,32 @@ func walletChainAccountingRoleAllowed(role string) bool {
 	}
 }
 
+// validateWalletFactSource 统一校验钱包事实来源口径。
+// 设计说明：
+// - 钱包写入口不再补默认来源；
+// - 调用方必须显式传入 source_type/source_id；
+// - 这里统一返回小写、去空格后的规范值，后续只做直写。
+func validateWalletFactSource(sourceType string, sourceID string) (string, string, error) {
+	walletSourceType := strings.ToLower(strings.TrimSpace(sourceType))
+	walletSourceID := strings.TrimSpace(sourceID)
+	if walletSourceType == "" || walletSourceID == "" {
+		return "", "", fmt.Errorf("source_type and source_id are required")
+	}
+	switch walletSourceType {
+	case "chain_bsv", "chain_token":
+		return walletSourceType, walletSourceID, nil
+	default:
+		return "", "", fmt.Errorf("source_type must be chain_bsv or chain_token, got %s", walletSourceType)
+	}
+}
+
 func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
+	}
+	walletSourceType, walletSourceID, err := validateWalletFactSource(in.SourceType, in.SourceID)
+	if err != nil {
+		return err
 	}
 	txid := strings.ToLower(strings.TrimSpace(in.TxID))
 	if txid == "" {
@@ -181,7 +206,6 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	}
 
 	paymentSubType := "unknown"
-	status := "confirmed"
 	fromParty := "wallet:self"
 	toParty := "wallet:self"
 	externalIn := int64(0)
@@ -231,31 +255,21 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	}
 	now := time.Now().Unix()
 
-	chainPaymentID, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-		TxID:                txid,
-		PaymentSubType:      paymentSubType,
-		Status:              status,
-		WalletInputSatoshi:  in.WalletInputSat,
-		WalletOutputSatoshi: in.WalletOutputSat,
-		NetAmountSatoshi:    in.NetSat,
-		BlockHeight:         0,
-		OccurredAtUnix:      now,
-		FromPartyID:         fromParty,
-		ToPartyID:           toParty,
-		Payload:             in.Payload,
-	})
-	if err != nil {
-		obs.Error("bitcast-client", "wallet_accounting_chain_payment_failed", map[string]any{"error": err.Error(), "txid": txid})
-		return fmt.Errorf("upsert chain_payment failed: %w", err)
+	// 来源已经由上层显式给定，这里只落对应来源的事实。
+	utxoFacts := buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now)
+	cycleID := fmt.Sprintf("cycle_%s_%s", walletSourceType, walletSourceID)
+	if err := dbUpsertSettlementCycle(db, cycleID, walletSourceType, walletSourceID, "confirmed", in.WalletInputSat, 0, in.NetSat, 0, now, "wallet chain sync", in.Payload); err != nil {
+		obs.Error("bitcast-client", "wallet_accounting_settlement_cycle_failed", map[string]any{"error": err.Error(), "txid": txid, "source_type": walletSourceType})
+		return fmt.Errorf("upsert settlement cycle failed: %w", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, chainPaymentID)
+	settlementCycleID, err := dbGetSettlementCycleBySource(db, walletSourceType, walletSourceID)
 	if err != nil {
-		return fmt.Errorf("resolve settlement cycle for chain payment %d: %w", chainPaymentID, err)
+		return fmt.Errorf("resolve settlement cycle for wallet chain %s: %w", walletSourceType, err)
 	}
 
 	// 这里开始只写 settlement_cycle 口径。
-	// 说明：钱包/费用池的财务结果已经收口到结算周期，历史来源只用于回填，不再参与新写入。
-	businessID := "biz_wallet_chain_" + txid
+	// 说明：钱包同步只保留结算周期 + BSV/Token 事实，不再回落 chain payment。
+	businessID := "biz_wallet_chain_" + walletSourceType + "_" + txid
 
 	if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 		BusinessID:        businessID,
@@ -326,24 +340,25 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		}
 	}
 
-	// Step 4 出项关联：对 input UTXO 按资产类型分流写入新消费表
-	// B组改造：
-	// - BSV 消耗写入 fact_bsv_consumptions
-	// - Token 消耗写入 fact_token_consumptions + fact_token_utxo_links
-	utxoFacts := buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now)
-	bsvFacts, tokenFacts, err := splitUTXOFactsByAssetKind(db, utxoFacts)
-	if err != nil {
-		obs.Error("bitcast-client", "wallet_accounting_split_utxo_facts_failed", map[string]any{"error": err.Error(), "txid": txid})
-		return fmt.Errorf("split utxo facts by asset kind failed: %w", err)
-	}
-	if len(bsvFacts) > 0 {
-		if err := dbAppendBSVConsumptionsForChainPayment(db, chainPaymentID, bsvFacts, now); err != nil {
+	// Step 4 出项关联：按显式来源只写对应的消耗口径。
+	// 说明：
+	// - chain_bsv 记真实 UTXO 本币流，包括 token carrier 的 1sat UTXO
+	// - chain_token 只记 token 数量流
+	if walletSourceType == "chain_bsv" && len(utxoFacts) > 0 {
+		if err := dbAppendBSVConsumptionsForSettlementCycle(db, settlementCycleID, utxoFacts, now); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_bsv_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
 			return fmt.Errorf("append BSV consumptions for chain payment failed: %w", err)
 		}
 	}
-	if len(tokenFacts) > 0 {
-		if err := dbAppendTokenConsumptionsForChainPayment(db, chainPaymentID, tokenFacts, now); err != nil {
+	if walletSourceType == "chain_token" && len(utxoFacts) > 0 {
+		tokenFacts, err := collectTokenUTXOLinkFacts(db, in.UTXOFacts)
+		if err != nil {
+			return fmt.Errorf("collect token carrier facts failed: %w", err)
+		}
+		if len(tokenFacts) == 0 {
+			return fmt.Errorf("chain_token source %s requires token carrier facts", txid)
+		}
+		if err := dbAppendTokenConsumptionsForSettlementCycle(db, settlementCycleID, tokenFacts, now); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_token_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
 			return fmt.Errorf("append token consumptions for chain payment failed: %w", err)
 		}
@@ -407,42 +422,4 @@ func buildChainPaymentUTXOLinksFromFacts(facts []chainPaymentUTXOFact, now int64
 		})
 	}
 	return out
-}
-
-// splitUTXOFactsByAssetKind 按资产类型分流 UTXO facts
-// B组改造：查询 fact_chain_asset_flows 获取 asset_kind，分成 BSV 和 Token 两组
-func splitUTXOFactsByAssetKind(db sqlConn, facts []chainPaymentUTXOLinkEntry) ([]chainPaymentUTXOLinkEntry, []chainPaymentUTXOLinkEntry, error) {
-	bsvFacts := make([]chainPaymentUTXOLinkEntry, 0)
-	tokenFacts := make([]chainPaymentUTXOLinkEntry, 0)
-	for _, fact := range facts {
-		ioSide := strings.TrimSpace(fact.IOSide)
-		if ioSide != "input" {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-		if utxoID == "" {
-			continue
-		}
-		var assetKind, tokenID, quantityText string
-		err := db.QueryRow(
-			`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' LIMIT 1`,
-			utxoID,
-		).Scan(&assetKind, &tokenID, &quantityText)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
-			return nil, nil, fmt.Errorf("lookup asset kind for utxo %s: %w", utxoID, err)
-		}
-		fact.AssetKind = assetKind
-		fact.TokenID = tokenID
-		fact.QuantityText = quantityText
-		if assetKind == "BSV" {
-			bsvFacts = append(bsvFacts, fact)
-		} else if assetKind == "BSV20" || assetKind == "BSV21" {
-			fact.TokenStandard = assetKind
-			tokenFacts = append(tokenFacts, fact)
-		}
-	}
-	return bsvFacts, tokenFacts, nil
 }

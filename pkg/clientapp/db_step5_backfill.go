@@ -104,7 +104,7 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				continue
 			}
 
-			settlementCycleID, err := dbGetSettlementCycleByChainPayment(db, cp.ID)
+			settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(db, cp.TxID)
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for chain payment %d: %v", cp.ID, err))
 				continue
@@ -452,7 +452,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				completed = false
 			}
 
-			settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, payAlloc.ID)
+			settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(db, fmt.Sprintf("%d", payAlloc.ID))
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for pool allocation %d: %v", payAlloc.ID, err))
 				completed = false

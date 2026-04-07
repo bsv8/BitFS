@@ -1048,13 +1048,12 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(in.SessionID), "open", 1)
-		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
-		if err != nil {
+		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, sourceID)
+		settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(db, allocID)
 		if err != nil {
-			return fmt.Errorf("resolve settlement cycle for pool allocation %d: %w", sourceID, err)
+			return fmt.Errorf("resolve settlement cycle for pool allocation %s: %w", allocID, err)
 		}
 		lockScript := strings.TrimSpace(in.ClientLockScript)
 		var grossInput, changeBack, lockAmount int64
@@ -1197,13 +1196,12 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
-		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
-		if err != nil {
+		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, sourceID)
+		settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(db, allocID)
 		if err != nil {
-			return fmt.Errorf("resolve settlement cycle for pool allocation %d: %w", sourceID, err)
+			return fmt.Errorf("resolve settlement cycle for pool allocation %s: %w", allocID, err)
 		}
 
 		// 过程事件：记录 pay 财务动作，供审计/对账/调试使用
@@ -1277,13 +1275,12 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		// 第二阶段整改：close 继续有自己的 settle_businesses，但定性为过程型财务对象
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "close", sequence)
-		sourceID, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID)
-		if err != nil {
+		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleByPoolEvent(db, sourceID)
+		settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(db, allocID)
 		if err != nil {
-			return fmt.Errorf("resolve settlement cycle for pool allocation %d: %w", sourceID, err)
+			return fmt.Errorf("resolve settlement cycle for pool allocation %s: %w", allocID, err)
 		}
 		// 第二阶段整改：close 继续写 settle_businesses，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*

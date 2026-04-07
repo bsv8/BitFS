@@ -105,8 +105,13 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 		t.Fatalf("seed upsert failed: %v", err)
 	}
 
+	var restoredTxID string
+	if err := db.QueryRow(`SELECT txid FROM fact_chain_payments WHERE id=?`, id1).Scan(&restoredTxID); err != nil {
+		t.Fatalf("query chain payment txid failed: %v", err)
+	}
+
 	// 模拟异常老数据：chain_payment 已有，但 settlement_cycle 缺失。
-	if _, err := db.Exec(`DELETE FROM fact_settlement_cycles WHERE chain_payment_id=?`, id1); err != nil {
+	if _, err := db.Exec(`DELETE FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, restoredTxID); err != nil {
 		t.Fatalf("delete settlement cycle failed: %v", err)
 	}
 
@@ -131,7 +136,7 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 	}
 
 	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE chain_payment_id=?`, id1).Scan(&cycleCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, restoredTxID).Scan(&cycleCount); err != nil {
 		t.Fatalf("count settlement cycles failed: %v", err)
 	}
 	if cycleCount != 1 {
@@ -139,10 +144,10 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 	}
 
 	var cycleID string
-	if err := db.QueryRow(`SELECT cycle_id FROM fact_settlement_cycles WHERE chain_payment_id=?`, id1).Scan(&cycleID); err != nil {
+	if err := db.QueryRow(`SELECT cycle_id FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, restoredTxID).Scan(&cycleID); err != nil {
 		t.Fatalf("query settlement cycle failed: %v", err)
 	}
-	wantCycleID := fmt.Sprintf("cycle_chain_%d", id1)
+	wantCycleID := fmt.Sprintf("cycle_chain_payment_%s", txid)
 	if cycleID != wantCycleID {
 		t.Fatalf("expected %s, got %s", wantCycleID, cycleID)
 	}

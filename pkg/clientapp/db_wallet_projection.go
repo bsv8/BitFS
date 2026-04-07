@@ -182,25 +182,51 @@ func dbUpsertWalletLocalBroadcastFactTx(tx *sql.Tx, walletID string, address str
 	if txid == "" || txHex == "" {
 		return fmt.Errorf("local broadcast txid and tx hex are required")
 	}
-	_, err := dbUpsertChainPaymentDB(tx, chainPaymentEntry{
-		TxID:                 txid,
-		PaymentSubType:       "wallet_local_broadcast",
-		Status:               "submitted",
-		WalletInputSatoshi:   0,
-		WalletOutputSatoshi:  0,
-		NetAmountSatoshi:     0,
-		BlockHeight:          0,
-		OccurredAtUnix:       updatedAt,
-		SubmittedAtUnix:      updatedAt,
-		WalletObservedAtUnix: 0,
-		FromPartyID:          strings.TrimSpace(walletID),
-		ToPartyID:            "external:unknown",
-		Payload: map[string]any{
+	if err := dbUpsertSettlementCycle(tx, fmt.Sprintf("cycle_chain_bsv_%s", txid), "chain_bsv", txid, "confirmed", 0, 0, 0, 0, updatedAt, "wallet local broadcast", map[string]any{
+		"tx_hex":    txHex,
+		"wallet_id": strings.TrimSpace(walletID),
+		"address":   strings.TrimSpace(address),
+	}); err != nil {
+		return err
+	}
+	_, err := tx.Exec(
+		`INSERT INTO fact_chain_payments(
+			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
+			block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(txid) DO UPDATE SET
+			payment_subtype=excluded.payment_subtype,
+			status=excluded.status,
+			wallet_input_satoshi=excluded.wallet_input_satoshi,
+			wallet_output_satoshi=excluded.wallet_output_satoshi,
+			net_amount_satoshi=excluded.net_amount_satoshi,
+			block_height=excluded.block_height,
+			occurred_at_unix=excluded.occurred_at_unix,
+			submitted_at_unix=excluded.submitted_at_unix,
+			wallet_observed_at_unix=excluded.wallet_observed_at_unix,
+			from_party_id=excluded.from_party_id,
+			to_party_id=excluded.to_party_id,
+			payload_json=excluded.payload_json,
+			updated_at_unix=excluded.updated_at_unix`,
+		txid,
+		"wallet_local_broadcast",
+		"submitted",
+		int64(0),
+		int64(0),
+		int64(0),
+		int64(0),
+		updatedAt,
+		updatedAt,
+		int64(0),
+		strings.TrimSpace(walletID),
+		"external:unknown",
+		mustJSONString(map[string]any{
 			"tx_hex":    txHex,
 			"wallet_id": strings.TrimSpace(walletID),
 			"address":   strings.TrimSpace(address),
-		},
-	})
+		}),
+		updatedAt,
+	)
 	if err != nil {
 		return err
 	}
