@@ -166,3 +166,75 @@ func TestLoadOrInitConfigFile_CreatesDefaultConfig(t *testing.T) {
 		t.Fatalf("config file should exist: %v", err)
 	}
 }
+
+func TestLoadOrInitConfigFileForMode_TestModeKeepsEmptyPeersOnCreate(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+
+	seed := Config{}
+	seed.BSV.Network = "test"
+	seed.HTTP.Enabled = true
+	seed.FSHTTP.Enabled = true
+	seed.Index.Backend = "sqlite"
+	seed.Storage.WorkspaceDir = "workspace"
+	seed.Storage.DataDir = "data"
+	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
+	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
+
+	res, err := LoadOrInitConfigFileForMode(configPath, seed, StartupModeTest)
+	if err != nil {
+		t.Fatalf("load or init config file in test mode: %v", err)
+	}
+	if !res.Created {
+		t.Fatalf("expected created config file")
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	saved := string(raw)
+	if strings.Contains(saved, "020c7fbbdf69c2bce8431a4fbc8e89ded25fa6bc524eb5988aa7da05923dcaea3e") {
+		t.Fatalf("test mode should not inject default gateway, got:\n%s", saved)
+	}
+	if strings.Contains(saved, "03bbed86936b5b8157dcc5ce9d1cef2be7e0a1185b6e17e3b020a4e413110143f4") {
+		t.Fatalf("test mode should keep config file free of injected peers, got:\n%s", saved)
+	}
+}
+
+func TestLoadOrInitConfigFileForMode_ProductModeBackfillsPeersOnCreate(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+
+	seed := Config{}
+	seed.BSV.Network = "test"
+	seed.HTTP.Enabled = true
+	seed.FSHTTP.Enabled = true
+	seed.Index.Backend = "sqlite"
+	seed.Storage.WorkspaceDir = "workspace"
+	seed.Storage.DataDir = "data"
+	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
+	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
+
+	res, err := LoadOrInitConfigFileForMode(configPath, seed, StartupModeProduct)
+	if err != nil {
+		t.Fatalf("load or init config file in product mode: %v", err)
+	}
+	if !res.Created {
+		t.Fatalf("expected created config file")
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	saved := string(raw)
+	if !strings.Contains(saved, "020c7fbbdf69c2bce8431a4fbc8e89ded25fa6bc524eb5988aa7da05923dcaea3e") {
+		t.Fatalf("product mode should persist gateways, got:\n%s", saved)
+	}
+	if !strings.Contains(saved, "03bbed86936b5b8157dcc5ce9d1cef2be7e0a1185b6e17e3b020a4e413110143f4") {
+		t.Fatalf("product mode should persist arbiters, got:\n%s", saved)
+	}
+}

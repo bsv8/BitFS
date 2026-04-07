@@ -64,12 +64,23 @@ func LoadConfigWithSeed(path string, seed Config) (Config, []byte, error) {
 }
 
 // LoadOrInitConfigFile 保证配置文件存在。
-// - 文件不存在：使用 seed 原样创建；
-// - 文件已存在：直接读取并展开路径，不做默认补齐。
+// 默认按产品模式执行：首次创建时会先补默认值再落盘。
 func LoadOrInitConfigFile(path string, seed Config) (ConfigFileResult, error) {
+	return LoadOrInitConfigFileForMode(path, seed, StartupModeProduct)
+}
+
+// LoadOrInitConfigFileForMode 保证配置文件存在，并按启动模式决定首次创建时是否补默认值。
+// - product：首次创建时先补齐基础网关和仲裁，再写回文件；
+// - test：首次创建时保持 seed 原样，不补默认值；
+// - 已存在文件：只读取并展开路径，不在这里改文件内容。
+func LoadOrInitConfigFileForMode(path string, seed Config, mode StartupMode) (ConfigFileResult, error) {
 	resolved := filepath.Clean(strings.TrimSpace(path))
 	if resolved == "" {
 		return ConfigFileResult{}, fmt.Errorf("config path is empty")
+	}
+	startupMode, err := normalizeStartupMode(mode)
+	if err != nil {
+		return ConfigFileResult{}, err
 	}
 	if st, err := os.Stat(resolved); err == nil {
 		if st.IsDir() {
@@ -85,6 +96,11 @@ func LoadOrInitConfigFile(path string, seed Config) (ConfigFileResult, error) {
 	}
 
 	cfg := seed
+	if startupMode == StartupModeProduct {
+		if err := ApplyConfigDefaultsForMode(&cfg, startupMode); err != nil {
+			return ConfigFileResult{}, err
+		}
+	}
 	if err := normalizeConfigForFile(&cfg, resolved); err != nil {
 		return ConfigFileResult{}, err
 	}
