@@ -59,6 +59,17 @@ const (
 	seedBlockSize       = 65536
 )
 
+// StartupMode 表示本次启动采用的默认补齐策略。
+// 设计约束：
+// - product：按产品启动语义补齐基础网关和仲裁；
+// - test：保留空配置，允许最小化 e2e 环境直接起跑。
+type StartupMode string
+
+const (
+	StartupModeProduct StartupMode = "product"
+	StartupModeTest    StartupMode = "test"
+)
+
 type healthReq struct{}
 type healthResp struct {
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
@@ -360,15 +371,18 @@ type sellerSeed struct {
 }
 
 type sellerCatalog struct {
-	mu    sync.RWMutex
+	mu        sync.RWMutex
 	biz_seeds map[string]sellerSeed
 }
 
 type RunInput struct {
 	ClientID   string
 	ConfigPath string
-	Debug      bool
-	BSV        struct {
+	// StartupMode 控制本次运行是否允许“网关/仲裁为空”。
+	// 默认按产品模式执行；e2e 需要显式切到 test。
+	StartupMode StartupMode
+	Debug       bool
+	BSV         struct {
 		Network string
 	}
 	Network struct {
@@ -556,6 +570,7 @@ func (in *RunInput) applyConfig(cfg Config) {
 	disableHTTPServer := in.DisableHTTPServer
 	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
 	next.ConfigPath = in.ConfigPath
+	next.StartupMode = in.StartupMode
 	next.ObsSink = in.ObsSink
 	next.ActionChain = in.ActionChain
 	next.WalletChain = in.WalletChain
@@ -758,7 +773,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		return nil, fmt.Errorf("ctx is required")
 	}
 	cfg := in.toConfig()
-	if err := ApplyConfigDefaults(&cfg); err != nil {
+	if err := applyConfigDefaultsForMode(&cfg, in.StartupMode); err != nil {
 		return nil, err
 	}
 
@@ -772,7 +787,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		})
 	}
 
-	if err := validateConfig(&cfg); err != nil {
+	if err := validateConfigForMode(&cfg, in.StartupMode); err != nil {
 		if removeObs != nil {
 			removeObs()
 		}
@@ -1163,8 +1178,24 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 }
 
 func ApplyConfigDefaults(cfg *Config) error {
+	return ApplyConfigDefaultsForMode(cfg, StartupModeProduct)
+}
+
+// ApplyConfigDefaultsForMode 根据启动模式补齐配置。
+// 设计说明：
+// - 这里不再让测试态自动补齐基础网关/仲裁；
+// - 产品态继续保留原有缺省注入，少配时自动补。
+func ApplyConfigDefaultsForMode(cfg *Config, mode StartupMode) error {
+	return applyConfigDefaultsForMode(cfg, mode)
+}
+
+func applyConfigDefaultsForMode(cfg *Config, mode StartupMode) error {
 	if cfg == nil {
 		return fmt.Errorf("config is nil")
+	}
+	startupMode, err := normalizeStartupMode(mode)
+	if err != nil {
+		return err
 	}
 	// BSV：仅支持 test/main 两种网络；默认 test。
 	{
@@ -1178,10 +1209,10 @@ func ApplyConfigDefaults(cfg *Config) error {
 	if err != nil {
 		return err
 	}
-	if len(cfg.Network.Gateways) == 0 {
+	if startupMode == StartupModeProduct && len(cfg.Network.Gateways) == 0 {
 		cfg.Network.Gateways = initPeerNodesToPeerNodes(networkDefaults.DefaultGateways)
 	}
-	if len(cfg.Network.Arbiters) == 0 {
+	if startupMode == StartupModeProduct && len(cfg.Network.Arbiters) == 0 {
 		cfg.Network.Arbiters = initPeerNodesToPeerNodes(networkDefaults.DefaultArbiters)
 	}
 	if cfg.Index.Backend == "" {
@@ -1378,6 +1409,16 @@ func ResolveLogConfig(cfg *Config) (string, string) {
 }
 
 func validateConfig(cfg *Config) error {
+	return validateConfigForMode(cfg, StartupModeProduct)
+}
+
+// validateConfigForMode 明确区分“允许为空”和“必须补齐”。
+// product 模式下，空网关/空仲裁都会被拦住；test 模式允许保留最小配置。
+func validateConfigForMode(cfg *Config, mode StartupMode) error {
+	startupMode, err := normalizeStartupMode(mode)
+	if err != nil {
+		return err
+	}
 	n, err := NormalizeBSVNetwork(cfg.BSV.Network)
 	if err != nil {
 		return err
@@ -1395,14 +1436,20 @@ func validateConfig(cfg *Config) error {
 	if overlaps(cfg.Storage.WorkspaceDir, cfg.Storage.DataDir) {
 		return errors.New("workspace_dir and data_dir must not overlap")
 	}
-	// 允许零网关启动，client 会等待 HTTP API 配置
-	if len(cfg.Network.Gateways) > 0 {
+	if len(cfg.Network.Gateways) == 0 {
+		if startupMode == StartupModeProduct {
+			return errors.New("network.gateways is required")
+		}
+	} else {
 		if err := validateNetworkPeers(cfg.Network.Gateways, true); err != nil {
 			return err
 		}
 	}
-	// 允许零仲裁配置（仅用于测试）
-	if len(cfg.Network.Arbiters) > 0 {
+	if len(cfg.Network.Arbiters) == 0 {
+		if startupMode == StartupModeProduct {
+			return errors.New("network.arbiters is required")
+		}
+	} else {
 		if err := validateNetworkPeers(cfg.Network.Arbiters, false); err != nil {
 			return err
 		}
@@ -1451,6 +1498,17 @@ func validateConfig(cfg *Config) error {
 // ValidateConfig 对外提供启动前配置校验，失败即中止启动。
 func ValidateConfig(cfg *Config) error {
 	return validateConfig(cfg)
+}
+
+func normalizeStartupMode(mode StartupMode) (StartupMode, error) {
+	switch strings.ToLower(strings.TrimSpace(string(mode))) {
+	case "", string(StartupModeProduct):
+		return StartupModeProduct, nil
+	case string(StartupModeTest):
+		return StartupModeTest, nil
+	default:
+		return "", fmt.Errorf("unsupported startup mode: %s", strings.TrimSpace(string(mode)))
+	}
 }
 
 func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {

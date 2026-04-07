@@ -96,3 +96,83 @@ func TestApplyConfigDefaults_ExternalAPIProviderDefaultsAndMigration(t *testing.
 		t.Fatalf("external_api.woc.min_interval_ms=%d, want %d", got, want)
 	}
 }
+
+func TestApplyConfigDefaults_TestModeAllowsEmptyPeers(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeTest); err != nil {
+		t.Fatalf("apply defaults in test mode: %v", err)
+	}
+	if len(cfg.Network.Gateways) != 0 {
+		t.Fatalf("test mode should keep gateways empty, got=%d", len(cfg.Network.Gateways))
+	}
+	if len(cfg.Network.Arbiters) != 0 {
+		t.Fatalf("test mode should keep arbiters empty, got=%d", len(cfg.Network.Arbiters))
+	}
+}
+
+func TestApplyConfigDefaults_ProductModeBackfillsPeers(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults in product mode: %v", err)
+	}
+	if len(cfg.Network.Gateways) == 0 {
+		t.Fatalf("product mode should backfill gateways")
+	}
+	if len(cfg.Network.Arbiters) == 0 {
+		t.Fatalf("product mode should backfill arbiters")
+	}
+}
+
+func TestValidateConfig_TestModeAllowsEmptyPeers(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Storage.WorkspaceDir = "workspace"
+	cfg.Storage.DataDir = "data"
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = "data/client-index.sqlite"
+	cfg.HTTP.Enabled = true
+	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
+	cfg.FSHTTP.Enabled = true
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
+	cfg.Live.Publish.BroadcastWindow = 1
+	cfg.Live.Publish.BroadcastIntervalSec = 1
+	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
+	cfg.FSHTTP.MaxConcurrentSessions = 1
+	cfg.Reachability.AnnounceTTLSeconds = 1
+
+	if err := validateConfigForMode(&cfg, StartupModeTest); err != nil {
+		t.Fatalf("validate config in test mode: %v", err)
+	}
+}
+
+func TestValidateConfig_ProductModeRequiresPeers(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Storage.WorkspaceDir = "workspace"
+	cfg.Storage.DataDir = "data"
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = "data/client-index.sqlite"
+	cfg.HTTP.Enabled = true
+	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
+	cfg.FSHTTP.Enabled = true
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
+	cfg.Live.Publish.BroadcastWindow = 1
+	cfg.Live.Publish.BroadcastIntervalSec = 1
+	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
+	cfg.FSHTTP.MaxConcurrentSessions = 1
+	cfg.Reachability.AnnounceTTLSeconds = 1
+
+	if err := validateConfigForMode(&cfg, StartupModeProduct); err == nil {
+		t.Fatalf("product mode should reject empty peers")
+	}
+}

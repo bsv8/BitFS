@@ -7,10 +7,10 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 )
 
-// NetworkInitDefaults 按网络定义“默认补齐阶段使用”的初始化值。
+// NetworkInitDefaults 按网络定义“产品启动补齐阶段使用”的初始化值。
 // 设计约束：
 // - 为了让运维/调参有单一入口，这里对 test/main 都完整列字段（即使当前值相同）；
-// - 业务入口（首启初始化、配置补齐）统一读取此处，避免多处散落常量。
+// - 业务入口在 product 模式下读取此处，test 模式不走这份默认表。
 type NetworkInitDefaults struct {
 	IndexBackend                 string
 	IndexSQLitePath              string

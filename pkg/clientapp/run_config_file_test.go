@@ -66,6 +66,73 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 	}
 }
 
+func TestLoadConfigWithSeed_PreservesEmptyPeers(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+	raw := []byte("bsv:\n  network: test\nnetwork:\n  gateways: []\n  arbiters: []\nstorage:\n  workspace_dir: workspace\n  data_dir: data\nindex:\n  backend: sqlite\n  sqlite_path: data/client-index.sqlite\nhttp:\n  enabled: true\n  listen_addr: 127.0.0.1:18080\nfs_http:\n  enabled: true\n  listen_addr: 127.0.0.1:18090\n")
+	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	seed := Config{}
+	seed.BSV.Network = "test"
+	seed.Storage.WorkspaceDir = "workspace"
+	seed.Storage.DataDir = "data"
+	seed.Index.Backend = "sqlite"
+	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
+	seed.HTTP.Enabled = true
+	seed.HTTP.ListenAddr = "127.0.0.1:18080"
+	seed.FSHTTP.Enabled = true
+	seed.FSHTTP.ListenAddr = "127.0.0.1:18090"
+	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
+
+	loaded, _, err := LoadConfigWithSeed(configPath, seed)
+	if err != nil {
+		t.Fatalf("load config with seed: %v", err)
+	}
+	if len(loaded.Network.Gateways) != 0 {
+		t.Fatalf("expected empty gateways to be preserved, got=%d", len(loaded.Network.Gateways))
+	}
+	if len(loaded.Network.Arbiters) != 0 {
+		t.Fatalf("expected empty arbiters to be preserved, got=%d", len(loaded.Network.Arbiters))
+	}
+}
+
+func TestSaveConfigFile_PreservesEmptyPeers(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Storage.WorkspaceDir = "workspace"
+	cfg.Storage.DataDir = "data"
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
+	cfg.HTTP.Enabled = true
+	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
+	cfg.FSHTTP.Enabled = true
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
+	cfg.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
+
+	if err := SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save config file: %v", err)
+	}
+	loaded, _, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if len(loaded.Network.Gateways) != 0 {
+		t.Fatalf("saved config should keep gateways empty, got=%d", len(loaded.Network.Gateways))
+	}
+	if len(loaded.Network.Arbiters) != 0 {
+		t.Fatalf("saved config should keep arbiters empty, got=%d", len(loaded.Network.Arbiters))
+	}
+}
+
 func TestLoadOrInitConfigFile_CreatesDefaultConfig(t *testing.T) {
 	t.Parallel()
 

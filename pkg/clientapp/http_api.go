@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -168,10 +169,12 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 	if sourceType == "" {
 		return "", sourceID, nil
 	}
-	if sourceType != "settlement_cycle" && sourceType != "pool_session" {
-		return "", "", fmt.Errorf("source_type must be settlement_cycle or pool_session")
+	switch sourceType {
+	case "settlement_cycle", "chain_bsv", "chain_token":
+		return sourceType, sourceID, nil
+	default:
+		return "", "", fmt.Errorf("source_type must be settlement_cycle, chain_bsv or chain_token")
 	}
-	return sourceType, sourceID, nil
 }
 
 type httpAPIServer struct {
@@ -240,6 +243,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/info", s.withAuth(s.handleInfo))
 		mux.HandleFunc(prefix+"/v1/balance", s.withAuth(s.handleBalance))
 		mux.HandleFunc(prefix+"/v1/wallet/summary", s.withAuth(s.handleWalletSummary))
+		mux.HandleFunc(prefix+"/v1/admin/wallet/consistency", s.withAuth(s.handleAdminWalletConsistency))
 		mux.HandleFunc(prefix+"/v1/wallet/sync-once", s.withAuth(s.handleWalletSyncOnce))
 		mux.HandleFunc(prefix+"/v1/wallet/business/preview", s.withAuth(s.handleWalletBusinessPreview))
 		mux.HandleFunc(prefix+"/v1/wallet/business/sign", s.withAuth(s.handleWalletBusinessSign))
@@ -457,6 +461,50 @@ func (s *httpAPIServer) handleBalance(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, http.StatusNotImplemented, map[string]any{
 		"error": "balance endpoint removed (legacy off-chain balance pool)",
+	})
+}
+
+type walletConsistencyQuery struct {
+	TxID string
+}
+
+type walletConsistencyResp struct {
+	Ok          bool                       `json:"ok"`
+	TxID        string                     `json:"txid"`
+	Consistency TokenTxDualLineConsistency `json:"consistency"`
+}
+
+func parseWalletConsistencyQuery(q url.Values) (walletConsistencyQuery, error) {
+	txid := strings.ToLower(strings.TrimSpace(q.Get("txid")))
+	if txid == "" {
+		return walletConsistencyQuery{}, fmt.Errorf("txid is required")
+	}
+	return walletConsistencyQuery{TxID: txid}, nil
+}
+
+func (s *httpAPIServer) handleAdminWalletConsistency(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || httpStore(s) == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	q, err := parseWalletConsistencyQuery(r.URL.Query())
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	consistency, err := CheckTokenTxDualLineConsistency(r.Context(), httpStore(s), q.TxID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, walletConsistencyResp{
+		Ok:          len(consistency.MissingItems) == 0,
+		TxID:        consistency.TxID,
+		Consistency: consistency,
 	})
 }
 
@@ -4877,7 +4925,7 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			applied = append(applied, key)
 		}
 		// 全局校验兜底，避免单字段校验通过但组合非法。
-		if err := validateConfig(&nextCfg); err != nil {
+		if err := validateConfigForMode(&nextCfg, s.rt.runIn.StartupMode); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}

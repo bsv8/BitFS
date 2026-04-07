@@ -46,8 +46,8 @@ func LoadConfig(path string) (Config, []byte, error) {
 	return LoadConfigWithSeed(path, defaultConfigSeed())
 }
 
-// LoadConfigWithSeed 以 seed 作为默认值读取 YAML 配置文件。
-// seed 适合承载目录级默认值，例如首次创建时的网络、路径和开关。
+// LoadConfigWithSeed 以 seed 作为文件层初值读取 YAML 配置文件。
+// 这里不做运行时默认补齐，只负责把文件内容还原出来，再把相对路径展开成运行态路径。
 func LoadConfigWithSeed(path string, seed Config) (Config, []byte, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -57,9 +57,6 @@ func LoadConfigWithSeed(path string, seed Config) (Config, []byte, error) {
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return Config{}, nil, err
 	}
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		return Config{}, nil, err
-	}
 	if err := resolveConfigPathsForRuntime(&cfg, path); err != nil {
 		return Config{}, nil, err
 	}
@@ -67,8 +64,8 @@ func LoadConfigWithSeed(path string, seed Config) (Config, []byte, error) {
 }
 
 // LoadOrInitConfigFile 保证配置文件存在。
-// - 文件不存在：使用 seed 创建；
-// - 文件已存在：直接读取并转为运行态配置。
+// - 文件不存在：使用 seed 原样创建；
+// - 文件已存在：直接读取并展开路径，不做默认补齐。
 func LoadOrInitConfigFile(path string, seed Config) (ConfigFileResult, error) {
 	resolved := filepath.Clean(strings.TrimSpace(path))
 	if resolved == "" {
@@ -88,9 +85,6 @@ func LoadOrInitConfigFile(path string, seed Config) (ConfigFileResult, error) {
 	}
 
 	cfg := seed
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		return ConfigFileResult{}, err
-	}
 	if err := normalizeConfigForFile(&cfg, resolved); err != nil {
 		return ConfigFileResult{}, err
 	}
@@ -104,7 +98,7 @@ func LoadOrInitConfigFile(path string, seed Config) (ConfigFileResult, error) {
 	return ConfigFileResult{Config: loaded, Created: true}, nil
 }
 
-// SaveConfigFile 将运行态配置写回 YAML。
+// SaveConfigFile 将配置原样写回 YAML。
 // 设计约束：
 // - 仅保存业务配置；
 // - 路径优先折叠为 vault 目录下的相对路径，避免把配置写死在机器绝对路径上。

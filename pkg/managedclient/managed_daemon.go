@@ -526,6 +526,7 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	d.overrides.Apply(&runCfg)
 	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
 	runIn.ConfigPath = d.startup.ConfigPath
+	runIn.StartupMode = clientapp.StartupModeProduct
 	runIn.PostWorkspaceBootstrap = d.systemHomepageBootstrapHook()
 	runIn.DisableHTTPServer = true
 	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()

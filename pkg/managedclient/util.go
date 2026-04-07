@@ -100,6 +100,9 @@ func LoadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, 
 		return clientapp.Config{}, false, err
 	}
 	cfg := res.Config
+	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
+		return clientapp.Config{}, false, err
+	}
 	cfg.Index.Backend = "sqlite"
 	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
 		cfg.Index.SQLitePath = filepath.Clean(filepath.Join(filepath.Dir(configPath), "data", "client-index.sqlite"))
