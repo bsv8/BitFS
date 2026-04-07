@@ -1559,8 +1559,8 @@ func TestBusinessRole_StrongConstraint_RejectsInvalid(t *testing.T) {
 	}
 }
 
-// TestBusinessRole_Backfill_ReducesEmptyCount 验证回填减少空值数量
-func TestBusinessRole_Backfill_ReducesEmptyCount(t *testing.T) {
+// TestBusinessRole_WritePath_UsesCurrentRole 验证当前写路径会直接落正确角色
+func TestBusinessRole_WritePath_UsesCurrentRole(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -1593,16 +1593,6 @@ func TestBusinessRole_Backfill_ReducesEmptyCount(t *testing.T) {
 	}
 	if emptyRoleCount != 0 {
 		t.Fatalf("new writes should have business_role set, got %d empty records", emptyRoleCount)
-	}
-
-	// 验证：回填后空值记录不增加
-	emptyCountBefore, _ := CountEmptyBusinessRole(db)
-	if err := backfillFinBusinessRole(db); err != nil {
-		t.Fatalf("backfill failed: %v", err)
-	}
-	emptyCountAfter, _ := CountEmptyBusinessRole(db)
-	if emptyCountAfter > emptyCountBefore {
-		t.Fatalf("backfill should not increase empty role count: before=%d after=%d", emptyCountBefore, emptyCountAfter)
 	}
 }
 

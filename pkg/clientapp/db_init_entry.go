@@ -23,18 +23,20 @@ func ensureClientDBSchema(store *clientDB) error {
 // 设计说明：
 // - 用于测试场景，测试代码直接持有 *sql.DB 而无 actor；
 // - 生产代码应使用 ensureClientDBSchema(store *clientDB)。
-// - 初始化先建基础表，再补齐历史库需要的收口步骤，最后做数据归一化。
+// - 初始化先建基础表，再做当前口径的约束和数据归一化。
 func ensureClientDBSchemaOnDB(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 
-	// 1. 基础表和索引（新库直接建，旧库跳过已存在的表）
+	// 先挡住旧结构，避免在错误地基上继续跑。
+	if err := rejectLegacyClientDBSchema(db); err != nil {
+		return err
+	}
+
+	// 1. 基础表和索引（新库直接建）
 	if err := ensureClientDBBaseSchema(db); err != nil {
 		return fmt.Errorf("base schema: %w", err)
-	}
-	if err := migrateClientDBLegacySchema(db); err != nil {
-		return fmt.Errorf("legacy schema: %w", err)
 	}
 	if err := normalizeClientDBData(db); err != nil {
 		return fmt.Errorf("normalize client db data: %w", err)

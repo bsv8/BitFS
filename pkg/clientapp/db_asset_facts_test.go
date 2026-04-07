@@ -290,7 +290,14 @@ func TestAppendAssetConsumptionForPoolAllocation_PowerIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get allocation id: %v", err)
 	}
-	seedAssetConsumptionPoolCycle(t, db, allocDBID, 1700000020)
+	if _, err := db.Exec(`INSERT INTO fact_settlement_cycles(
+		cycle_id,channel,state,pool_session_id,pool_session_event_id,gross_amount_satoshi,gate_fee_satoshi,
+		net_amount_satoshi,cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"cycle_pool_001", "pool", "confirmed", "sess_001", allocDBID, 700, 0, 700, 1, 1700000020, 1700000020, "pool cycle", "{}",
+	); err != nil {
+		t.Fatalf("seed pool settlement cycle failed: %v", err)
+	}
 
 	// 写入 asset flow
 	flowID := "flow_test_002"

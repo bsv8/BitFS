@@ -1,44 +1,11 @@
 package clientapp
 
-import (
-	"database/sql"
-	"strings"
-	"testing"
-)
+import "testing"
 
-func createLegacyCommandJournalSchemaWithTriggerKeyOnly(t *testing.T, db *sql.DB) {
-	t.Helper()
-
-	_, err := db.Exec(`CREATE TABLE proc_command_journal(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		created_at_unix INTEGER NOT NULL,
-		command_id TEXT NOT NULL,
-		command_type TEXT NOT NULL,
-		gateway_pubkey_hex TEXT NOT NULL,
-		aggregate_id TEXT NOT NULL,
-		requested_by TEXT NOT NULL,
-		requested_at_unix INTEGER NOT NULL,
-		accepted INTEGER NOT NULL,
-		status TEXT NOT NULL,
-		error_code TEXT NOT NULL,
-		error_message TEXT NOT NULL,
-		state_before TEXT NOT NULL,
-		state_after TEXT NOT NULL,
-		duration_ms INTEGER NOT NULL,
-		trigger_key TEXT NOT NULL DEFAULT '',
-		payload_json TEXT NOT NULL,
-		result_json TEXT NOT NULL
-	)`)
-	if err != nil {
-		t.Fatalf("create legacy proc_command_journal failed: %v", err)
-	}
-}
-
-func TestInitIndexDB_EnsuresCommandJournalTriggerKeyIndexWhenColumnExists(t *testing.T) {
+func TestInitIndexDB_CreatesCommandJournalTriggerKeyIndexOnFreshDB(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	createLegacyCommandJournalSchemaWithTriggerKeyOnly(t, db)
 
 	if err := initIndexDB(db); err != nil {
 		t.Fatalf("initIndexDB failed: %v", err)
@@ -49,7 +16,7 @@ func TestInitIndexDB_EnsuresCommandJournalTriggerKeyIndexWhenColumnExists(t *tes
 		t.Fatalf("inspect proc_command_journal columns failed: %v", err)
 	}
 	if _, ok := cols["trigger_key"]; !ok {
-		t.Fatalf("proc_command_journal missing trigger_key after migration")
+		t.Fatalf("proc_command_journal missing trigger_key")
 	}
 
 	hasIndex, err := tableHasIndex(db, "proc_command_journal", "idx_proc_command_journal_trigger_key")
@@ -57,18 +24,7 @@ func TestInitIndexDB_EnsuresCommandJournalTriggerKeyIndexWhenColumnExists(t *tes
 		t.Fatalf("inspect trigger_key index failed: %v", err)
 	}
 	if !hasIndex {
-		t.Fatalf("missing idx_proc_command_journal_trigger_key after migration")
-	}
-
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("second initIndexDB failed: %v", err)
-	}
-	hasIndex, err = tableHasIndex(db, "proc_command_journal", "idx_proc_command_journal_trigger_key")
-	if err != nil {
-		t.Fatalf("inspect trigger_key index after second init failed: %v", err)
-	}
-	if !hasIndex {
-		t.Fatalf("missing idx_proc_command_journal_trigger_key after second init")
+		t.Fatalf("missing idx_proc_command_journal_trigger_key")
 	}
 
 	unique, err := tableHasUniqueIndexOnColumns(db, "proc_command_journal", []string{"command_id"})
@@ -80,11 +36,13 @@ func TestInitIndexDB_EnsuresCommandJournalTriggerKeyIndexWhenColumnExists(t *tes
 	}
 }
 
-func TestInitIndexDB_RejectsDuplicateCommandJournalCommandID(t *testing.T) {
+func TestProcCommandJournalRejectsDuplicateCommandIDOnFreshSchema(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	createLegacyCommandJournalSchemaWithTriggerKeyOnly(t, db)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO proc_command_journal(
 		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -96,15 +54,7 @@ func TestInitIndexDB_RejectsDuplicateCommandJournalCommandID(t *testing.T) {
 		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		1700000002, "dup_cmd", "fee_pool.open", "gw1", "agg-2", "tester", 1700000002, 1, "applied", "", "", "before", "after", 10, "", "{}", "{}",
-	); err != nil {
-		t.Fatalf("insert second proc_command_journal row failed: %v", err)
-	}
-
-	err := initIndexDB(db)
-	if err == nil {
-		t.Fatalf("expected initIndexDB to fail on duplicate command_id")
-	}
-	if got := err.Error(); got == "" || !strings.Contains(got, "duplicate command_id") {
-		t.Fatalf("expected duplicate command_id error, got=%v", err)
+	); err == nil {
+		t.Fatalf("expected duplicate command_id to fail on insert")
 	}
 }

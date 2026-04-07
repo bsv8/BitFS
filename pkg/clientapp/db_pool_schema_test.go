@@ -2,75 +2,11 @@ package clientapp
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 )
 
-func createHistoricalPoolAllocationsSchema(t *testing.T, db *sql.DB) {
-	t.Helper()
-
-	stmts := []string{
-		`CREATE TABLE fact_pool_sessions(
-			pool_session_id TEXT PRIMARY KEY,
-			pool_scheme TEXT NOT NULL,
-			counterparty_pubkey_hex TEXT NOT NULL DEFAULT '',
-			seller_pubkey_hex TEXT NOT NULL DEFAULT '',
-			arbiter_pubkey_hex TEXT NOT NULL DEFAULT '',
-			gateway_pubkey_hex TEXT NOT NULL DEFAULT '',
-			pool_amount_satoshi INTEGER NOT NULL,
-			spend_tx_fee_satoshi INTEGER NOT NULL,
-			fee_rate_sat_byte REAL NOT NULL DEFAULT 0,
-			lock_blocks INTEGER NOT NULL DEFAULT 0,
-			open_base_txid TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`,
-		`CREATE TABLE fact_pool_allocations(
-			allocation_id TEXT PRIMARY KEY,
-			pool_session_id TEXT NOT NULL,
-			allocation_no INTEGER NOT NULL,
-			allocation_kind TEXT NOT NULL,
-			sequence_num INTEGER NOT NULL,
-			payee_amount_after INTEGER NOT NULL,
-			payer_amount_after INTEGER NOT NULL,
-			txid TEXT NOT NULL,
-			tx_hex TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL
-		)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create historical pool schema failed: %v", err)
-		}
-	}
-}
-
-func insertHistoricalPoolAllocation(t *testing.T, db *sql.DB, allocationID, sessionID string, allocationNo int64, kind string, sequenceNum int64, payeeAfter int64, payerAfter int64, txid, txHex string, createdAtUnix int64) {
-	t.Helper()
-
-	if _, err := db.Exec(`INSERT INTO fact_pool_allocations(
-		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		allocationID, sessionID, allocationNo, kind, sequenceNum, payeeAfter, payerAfter, txid, txHex, createdAtUnix,
-	); err != nil {
-		t.Fatalf("insert historical pool allocation failed: %v", err)
-	}
-}
-
-func insertHistoricalPoolSession(t *testing.T, db *sql.DB, sessionID string) {
-	t.Helper()
-
-	if _, err := db.Exec(`INSERT INTO fact_pool_sessions(
-		pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-		pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		sessionID, "2of3", "", "", "", "", int64(0), int64(0), float64(0), int64(0), "", "active", int64(1700000000), int64(1700000000),
-	); err != nil {
-		t.Fatalf("insert historical pool session failed: %v", err)
-	}
-}
-
-func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
+func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -78,7 +14,15 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	for _, table := range []string{"fact_pool_sessions", "fact_pool_session_events", "fact_chain_payments", "settle_tx_utxo_links"} {
+	for _, table := range []string{
+		"biz_pool",
+		"biz_pool_allocations",
+		"fact_pool_sessions",
+		"fact_pool_session_events",
+		"fact_settlement_cycles",
+		"fact_chain_payments",
+		"settle_tx_utxo_links",
+	} {
 		exists, err := hasTable(db, table)
 		if err != nil {
 			t.Fatalf("hasTable %s failed: %v", table, err)
@@ -88,204 +32,69 @@ func TestInitIndexDB_CreatesPoolSchema(t *testing.T) {
 		}
 	}
 
-	for _, tableCheck := range []struct {
+	for _, table := range []string{
+		legacyTableName("fact", "pool", "allocations"),
+		legacyTableName("fact", "tx", "history"),
+	} {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("check legacy table %s failed: %v", table, err)
+		}
+		if exists {
+			t.Fatalf("legacy table %s should not exist", table)
+		}
+	}
+
+	for _, check := range []struct {
 		table string
 		cols  []string
 	}{
 		{
 			table: "biz_pool",
-			cols: []string{
-				"pool_session_id", "pool_scheme", "counterparty_pubkey_hex", "seller_pubkey_hex",
-				"arbiter_pubkey_hex", "gateway_pubkey_hex", "pool_amount_satoshi", "spend_tx_fee_satoshi",
-				"allocated_satoshi", "cycle_fee_satoshi", "available_satoshi", "next_sequence_num",
-				"status", "open_base_txid", "open_allocation_id", "close_allocation_id",
-				"created_at_unix", "updated_at_unix",
-			},
+			cols:  []string{"pool_session_id", "pool_scheme", "pool_amount_satoshi", "spend_tx_fee_satoshi", "allocated_satoshi", "cycle_fee_satoshi", "available_satoshi", "next_sequence_num", "status"},
 		},
 		{
 			table: "biz_pool_allocations",
-			cols: []string{
-				"allocation_id", "pool_session_id", "allocation_no", "allocation_kind", "sequence_num",
-				"payee_amount_after", "payer_amount_after", "txid", "tx_hex", "created_at_unix",
-			},
+			cols:  []string{"allocation_id", "pool_session_id", "allocation_no", "allocation_kind", "sequence_num", "payee_amount_after", "payer_amount_after", "txid", "tx_hex", "created_at_unix"},
+		},
+		{
+			table: "fact_pool_session_events",
+			cols:  []string{"id", "allocation_id", "pool_session_id", "allocation_kind", "event_kind", "sequence_num", "created_at_unix"},
 		},
 		{
 			table: "fact_settlement_cycles",
-			cols: []string{
-				"id", "cycle_id", "channel", "state", "pool_session_id", "pool_session_event_id",
-				"chain_payment_id", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi",
-				"cycle_index", "occurred_at_unix", "confirmed_at_unix", "note", "payload_json",
-			},
+			cols:  []string{"id", "cycle_id", "channel", "pool_session_id", "pool_session_event_id", "chain_payment_id"},
 		},
 	} {
-		cols, err := tableColumns(db, tableCheck.table)
+		cols, err := tableColumns(db, check.table)
 		if err != nil {
-			t.Fatalf("inspect %s columns failed: %v", tableCheck.table, err)
+			t.Fatalf("inspect %s columns failed: %v", check.table, err)
 		}
-		for _, col := range tableCheck.cols {
+		for _, col := range check.cols {
 			if _, ok := cols[col]; !ok {
-				t.Fatalf("%s missing column %s", tableCheck.table, col)
+				t.Fatalf("%s missing column %s", check.table, col)
 			}
 		}
 	}
 
-	allocCols, err := tableColumns(db, "fact_pool_session_events")
-	if err != nil {
-		t.Fatalf("inspect fact_pool_session_events columns failed: %v", err)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool", []string{"pool_session_id"}); err != nil {
+		t.Fatalf("inspect biz_pool unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("biz_pool should keep unique constraint on pool_session_id")
 	}
-	for _, col := range []string{"id", "allocation_id", "pool_session_id", "allocation_no", "allocation_kind", "sequence_num", "payee_amount_after", "payer_amount_after", "txid", "tx_hex", "created_at_unix"} {
-		if _, ok := allocCols[col]; !ok {
-			t.Fatalf("fact_pool_session_events missing column %s", col)
-		}
-	}
-	if notNull, err := tableColumnNotNull(db, "fact_pool_session_events", "allocation_id"); err != nil {
-		t.Fatalf("inspect fact_pool_session_events allocation_id notnull failed: %v", err)
-	} else if !notNull {
-		t.Fatalf("fact_pool_session_events.allocation_id should be NOT NULL")
+	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool_allocations", []string{"pool_session_id", "allocation_kind", "sequence_num"}); err != nil {
+		t.Fatalf("inspect biz_pool_allocations unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("biz_pool_allocations should keep unique constraint on (pool_session_id, allocation_kind, sequence_num)")
 	}
 	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_pool_session_events", []string{"allocation_id"}); err != nil {
 		t.Fatalf("inspect fact_pool_session_events unique constraint failed: %v", err)
 	} else if !unique {
-		t.Fatalf("fact_pool_session_events should keep unique constraint on allocation_id")
-	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool", []string{"pool_session_id"}); err != nil {
-		t.Fatalf("inspect biz_pool unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("biz_pool should keep primary key on pool_session_id")
-	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool_allocations", []string{"pool_session_id", "allocation_kind", "sequence_num"}); err != nil {
-		t.Fatalf("inspect biz_pool_allocations unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("biz_pool_allocations should keep unique constraint on (pool_session_id, allocation_kind, sequence_num)")
-	}
-
-	for _, table := range []string{"fact_chain_payments", "settle_tx_utxo_links"} {
-		cols, err := tableColumns(db, table)
-		if err != nil {
-			t.Fatalf("inspect %s columns failed: %v", table, err)
-		}
-		if _, ok := cols["id"]; !ok {
-			t.Fatalf("%s missing id", table)
-		}
+		t.Fatal("fact_pool_session_events should keep unique constraint on allocation_id")
 	}
 }
 
-func TestInitIndexDB_MigratesHistoricalPoolAllocations(t *testing.T) {
-	t.Parallel()
-
-	db := openSchemaTestDB(t)
-	createHistoricalPoolAllocationsSchema(t, db)
-	insertHistoricalPoolSession(t, db, "sess_b")
-	insertHistoricalPoolSession(t, db, "sess_a")
-	insertHistoricalPoolAllocation(t, db, "alloc_b_2", "sess_b", 2, "pay", 2, 150, 850, "tx_b_2", "hex_b_2", 1700000003)
-	insertHistoricalPoolAllocation(t, db, "alloc_a_2", "sess_a", 2, "pay", 2, 200, 800, "tx_a_2", "hex_a_2", 1700000002)
-	insertHistoricalPoolAllocation(t, db, "alloc_a_1", "sess_a", 1, "open", 1, 0, 1000, "tx_a_1", "hex_a_1", 1700000001)
-
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
-	}
-
-	for _, table := range []string{"biz_pool", "biz_pool_allocations", "fact_settlement_cycles"} {
-		exists, err := hasTable(db, table)
-		if err != nil {
-			t.Fatalf("hasTable %s failed: %v", table, err)
-		}
-		if !exists {
-			t.Fatalf("missing %s table after migration", table)
-		}
-	}
-
-	cols, err := tableColumns(db, "fact_pool_session_events")
-	if err != nil {
-		t.Fatalf("inspect migrated fact_pool_session_events columns failed: %v", err)
-	}
-	if _, ok := cols["id"]; !ok {
-		t.Fatalf("fact_pool_session_events should have id after migration")
-	}
-
-	type row struct {
-		id           int64
-		allocationID string
-		sessionID    string
-		allocationNo int64
-	}
-	rows, err := db.Query(`SELECT id,allocation_id,pool_session_id,allocation_no FROM fact_pool_session_events ORDER BY id ASC`)
-	if err != nil {
-		t.Fatalf("query migrated fact_pool_session_events failed: %v", err)
-	}
-	defer rows.Close()
-
-	got := make([]row, 0, 4)
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.id, &r.allocationID, &r.sessionID, &r.allocationNo); err != nil {
-			t.Fatalf("scan migrated fact_pool_session_events failed: %v", err)
-		}
-		got = append(got, r)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate migrated fact_pool_session_events failed: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("unexpected migrated row count: got=%d want=3", len(got))
-	}
-	wantOrder := []row{
-		{id: 1, allocationID: "alloc_a_1", sessionID: "sess_a", allocationNo: 1},
-		{id: 2, allocationID: "alloc_a_2", sessionID: "sess_a", allocationNo: 2},
-		{id: 3, allocationID: "alloc_b_2", sessionID: "sess_b", allocationNo: 2},
-	}
-	for i := range wantOrder {
-		if got[i] != wantOrder[i] {
-			t.Fatalf("migrated row order mismatch at %d: got=%+v want=%+v", i, got[i], wantOrder[i])
-		}
-	}
-
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_pool_session_events", []string{"allocation_id"}); err != nil {
-		t.Fatalf("inspect allocation_id unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("allocation_id unique constraint should exist after migration")
-	}
-
-	if _, err := db.Exec(`INSERT INTO fact_pool_session_events(
-		allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		"alloc_a_1", "sess_a", 3, "pay", 3, 1, 999, "tx_dup", "hex_dup", 1700000004,
-	); err == nil {
-		t.Fatalf("duplicate allocation_id insert should fail")
-	}
-
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("second initIndexDB failed: %v", err)
-	}
-
-	rows, err = db.Query(`SELECT id,allocation_id,pool_session_id,allocation_no FROM fact_pool_session_events ORDER BY id ASC`)
-	if err != nil {
-		t.Fatalf("query fact_pool_session_events after second init failed: %v", err)
-	}
-	defer rows.Close()
-
-	got = got[:0]
-	for rows.Next() {
-		var r row
-		if err := rows.Scan(&r.id, &r.allocationID, &r.sessionID, &r.allocationNo); err != nil {
-			t.Fatalf("scan fact_pool_session_events after second init failed: %v", err)
-		}
-		got = append(got, r)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate fact_pool_session_events after second init failed: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("row count changed after second init: got=%d want=3", len(got))
-	}
-	for i := range wantOrder {
-		if got[i] != wantOrder[i] {
-			t.Fatalf("row changed after second init at %d: got=%+v want=%+v", i, got[i], wantOrder[i])
-		}
-	}
-}
-
-func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
+func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -293,103 +102,105 @@ func TestInitIndexDB_CreatesPoolSchemaIndexes(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	for _, indexName := range []string{
-		"idx_biz_pool_status_updated",
-		"idx_biz_pool_allocations_session_no",
-		"idx_biz_pool_allocations_session_kind_seq",
-		"uq_fact_pool_session_events_session_kind_seq",
-		"idx_fact_pool_session_events_session_no",
-		"idx_fact_pool_session_events_txid",
-		"idx_fact_settlement_cycles_pool_session",
-		"idx_fact_chain_payments_occurred",
-		"idx_fact_chain_payments_subtype",
-		"idx_fact_chain_payments_status",
-		"idx_settle_tx_utxo_links_business",
-		"idx_settle_tx_utxo_links_utxo",
-		"idx_settle_tx_utxo_links_txid",
-	} {
-		tableName := "fact_pool_session_events"
-		if indexName == "idx_biz_pool_status_updated" {
-			tableName = "biz_pool"
-		}
-		if indexName == "idx_biz_pool_allocations_session_no" || indexName == "idx_biz_pool_allocations_session_kind_seq" {
-			tableName = "biz_pool_allocations"
-		}
-		if indexName == "idx_fact_chain_payments_occurred" || indexName == "idx_fact_chain_payments_subtype" || indexName == "idx_fact_chain_payments_status" {
-			tableName = "fact_chain_payments"
-		}
-		if indexName == "idx_fact_settlement_cycles_pool_session" {
-			tableName = "fact_settlement_cycles"
-		}
-		if indexName == "idx_settle_tx_utxo_links_business" || indexName == "idx_settle_tx_utxo_links_utxo" || indexName == "idx_settle_tx_utxo_links_txid" {
-			tableName = "settle_tx_utxo_links"
-		}
-		hasIndex, err := tableHasIndex(db, tableName, indexName)
-		if err != nil {
-			t.Fatalf("inspect %s failed: %v", indexName, err)
-		}
-		if !hasIndex {
-			t.Fatalf("missing index %s on %s", indexName, tableName)
-		}
+	if err := dbUpsertDirectTransferPoolSessionTx(nil, directTransferPoolSessionFactInput{}); err == nil {
+		t.Fatal("nil tx should be rejected")
 	}
 
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_chain_payments", []string{"txid"}); err != nil {
-		t.Fatalf("inspect fact_chain_payments unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("fact_chain_payments should keep unique constraint on txid")
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin tx failed: %v", err)
 	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool", []string{"pool_session_id"}); err != nil {
-		t.Fatalf("inspect biz_pool unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("biz_pool should keep unique constraint on pool_session_id")
-	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "biz_pool_allocations", []string{"pool_session_id", "allocation_kind", "sequence_num"}); err != nil {
-		t.Fatalf("inspect biz_pool_allocations unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("biz_pool_allocations should keep unique constraint on (pool_session_id, allocation_kind, sequence_num)")
-	}
-	if unique, err := tableHasUniqueIndexOnColumns(db, "settle_tx_utxo_links", []string{"business_id", "txid", "utxo_id", "io_side", "utxo_role"}); err != nil {
-		t.Fatalf("inspect settle_tx_utxo_links unique constraint failed: %v", err)
-	} else if !unique {
-		t.Fatalf("settle_tx_utxo_links should keep unique constraint on (business_id, txid, utxo_id, io_side, utxo_role)")
-	}
+	defer func() { _ = tx.Rollback() }()
 
-	if exists, err := hasTable(db, "fact_chain_payment_utxo_links"); err != nil {
-		t.Fatalf("check historical table absence failed: %v", err)
-	} else if exists {
-		t.Fatal("fact_chain_payment_utxo_links should not exist anymore")
+	if err := dbUpsertDirectTransferPoolSessionTx(tx, directTransferPoolSessionFactInput{
+		SessionID:          "sess_pool_schema_1",
+		PoolScheme:         "2of3",
+		CounterpartyPubHex: "11",
+		SellerPubHex:       "22",
+		ArbiterPubHex:      "33",
+		GatewayPubHex:      "44",
+		PoolAmountSat:      1000,
+		SpendTxFeeSat:      10,
+		FeeRateSatByte:     1,
+		LockBlocks:         10,
+		OpenBaseTxID:       "base_tx_1",
+		Status:             "active",
+	}); err != nil {
+		t.Fatalf("write pool session failed: %v", err)
 	}
-}
-
-func TestInitIndexDB_PoolSchemaIsIdempotent(t *testing.T) {
-	t.Parallel()
-
-	db := openSchemaTestDB(t)
-	createHistoricalPoolAllocationsSchema(t, db)
-	insertHistoricalPoolSession(t, db, "sess_idem")
-	insertHistoricalPoolAllocation(t, db, "alloc_idem_1", "sess_idem", 1, "open", 1, 0, 1000, "tx_idem_1", "hex_idem_1", 1700000101)
-
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("first initIndexDB failed: %v", err)
+	if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+		SessionID:          "sess_pool_schema_1",
+		PoolScheme:         "2of3",
+		CounterpartyPubHex: "11",
+		SellerPubHex:       "22",
+		ArbiterPubHex:      "33",
+		GatewayPubHex:      "44",
+		PoolAmountSat:      1000,
+		SpendTxFeeSat:      10,
+		AllocatedSat:       0,
+		CycleFeeSat:        0,
+		AvailableSat:       990,
+		NextSequenceNum:    1,
+		Status:             "active",
+		OpenBaseTxID:       "base_tx_1",
+		CreatedAtUnix:      1700000100,
+		UpdatedAtUnix:      1700000100,
+	}); err != nil {
+		t.Fatalf("write biz pool snapshot failed: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("second initIndexDB failed: %v", err)
+	if err := dbUpsertDirectTransferBizPoolAllocationTx(tx, directTransferBizPoolAllocationInput{
+		SessionID:        "sess_pool_schema_1",
+		AllocationID:     "alloc_pool_schema_1",
+		AllocationNo:     1,
+		AllocationKind:   "open",
+		SequenceNum:      1,
+		PayeeAmountAfter: 0,
+		PayerAmountAfter: 990,
+		TxID:             "tx_pool_schema_1",
+		TxHex:            "deadbeef",
+		CreatedAtUnix:    1700000100,
+	}); err != nil {
+		t.Fatalf("write biz pool allocation failed: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit tx failed: %v", err)
 	}
 
 	var count int64
-	if err := db.QueryRow(`SELECT COUNT(*) FROM fact_pool_session_events WHERE pool_session_id=?`, "sess_idem").Scan(&count); err != nil {
-		t.Fatalf("count fact_pool_session_events failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool WHERE pool_session_id=?`, "sess_pool_schema_1").Scan(&count); err != nil {
+		t.Fatalf("count biz_pool failed: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("fact_pool_session_events row count changed after repeated init: got=%d want=1", count)
+		t.Fatalf("biz_pool count mismatch: got=%d want=1", count)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM biz_pool_allocations WHERE pool_session_id=?`, "sess_pool_schema_1").Scan(&count); err != nil {
+		t.Fatalf("count biz_pool_allocations failed: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("biz_pool_allocations count mismatch: got=%d want=1", count)
+	}
+}
+
+func TestInitIndexDB_RejectsLegacyPoolSchema(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	legacyName := legacyTableName("fact", "pool", "allocations")
+	if _, err := db.Exec(`CREATE TABLE ` + legacyName + `(
+		allocation_id TEXT PRIMARY KEY
+	)`); err != nil {
+		t.Fatalf("create legacy table failed: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE ` + legacyTableName("fact", "tx", "history") + `(
+		id INTEGER PRIMARY KEY AUTOINCREMENT
+	)`); err != nil {
+		t.Fatalf("create legacy tx table failed: %v", err)
 	}
 
-	var id int64
-	if err := db.QueryRow(`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`, "alloc_idem_1").Scan(&id); err != nil {
-		t.Fatalf("query migrated allocation id failed: %v", err)
-	}
-	if id != 1 {
-		t.Fatalf("unexpected migrated allocation id: got=%d want=1", id)
+	if err := initIndexDB(db); err == nil {
+		t.Fatal("expected initIndexDB to reject legacy pool schema")
+	} else if !strings.Contains(err.Error(), "rebuild DB") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

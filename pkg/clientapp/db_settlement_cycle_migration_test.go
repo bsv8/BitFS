@@ -4,164 +4,87 @@ import (
 	"testing"
 )
 
-// TestEnsureSettlementCyclesSchema_BackfillsPartialCycles 验证迁移不会因为已有部分 cycle 就中断。
-func TestEnsureSettlementCyclesSchema_BackfillsPartialCycles(t *testing.T) {
+func TestEnsureSettlementCyclesSchema_UsesCurrentTablesOnly(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-
-	// 只搭迁移需要的最小老库结构。
-	stmts := []string{
-		`CREATE TABLE fact_settlement_cycles(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			cycle_id TEXT NOT NULL UNIQUE,
-			channel TEXT NOT NULL,
-			state TEXT NOT NULL,
-			pool_session_event_id INTEGER,
-			chain_payment_id INTEGER,
-			gross_amount_satoshi INTEGER NOT NULL DEFAULT 0,
-			gate_fee_satoshi INTEGER NOT NULL DEFAULT 0,
-			net_amount_satoshi INTEGER NOT NULL DEFAULT 0,
-			cycle_index INTEGER NOT NULL DEFAULT 0,
-			occurred_at_unix INTEGER NOT NULL,
-			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
-			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}'
-		)`,
-		`CREATE TABLE fact_chain_payments(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			txid TEXT NOT NULL UNIQUE,
-			payment_subtype TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT '',
-			wallet_input_satoshi INTEGER NOT NULL DEFAULT 0,
-			wallet_output_satoshi INTEGER NOT NULL DEFAULT 0,
-			net_amount_satoshi INTEGER NOT NULL DEFAULT 0,
-			block_height INTEGER NOT NULL DEFAULT 0,
-			occurred_at_unix INTEGER NOT NULL,
-			submitted_at_unix INTEGER NOT NULL DEFAULT 0,
-			wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0,
-			from_party_id TEXT NOT NULL DEFAULT '',
-			to_party_id TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}'
-		)`,
-		`CREATE TABLE fact_pool_session_events(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			event_kind TEXT NOT NULL,
-			amount_satoshi INTEGER NOT NULL DEFAULT 0,
-			cycle_index INTEGER NOT NULL DEFAULT 0,
-			created_at_unix INTEGER NOT NULL,
-			payload_json TEXT NOT NULL DEFAULT '{}'
-		)`,
-		`CREATE TABLE fact_asset_consumptions(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			source_flow_id INTEGER,
-			chain_payment_id INTEGER,
-			pool_allocation_id INTEGER,
-			used_satoshi INTEGER NOT NULL DEFAULT 0,
-			occurred_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}'
-		)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
-			t.Fatalf("create legacy table failed: %v", err)
-		}
+	if err := ensureClientDBBaseSchema(db); err != nil {
+		t.Fatalf("setup base schema failed: %v", err)
 	}
 
-	now := int64(1700000000)
-
-	// 先放一条已存在的 cycle，模拟“库里已经有部分 cycle 数据”。
 	if _, err := db.Exec(`INSERT INTO fact_chain_payments(
-		id,txid,wallet_input_satoshi,net_amount_satoshi,occurred_at_unix,payload_json
-	) VALUES(?,?,?,?,?,?)`, 1, "tx_chain_1", 1000, 900, now, "{}"); err != nil {
+		txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,block_height,
+		occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"tx_chain_cycle_1", "transfer", "confirmed", 1000, 0, 1000, 100, 1700000000, 1700000000, 1700000000, "from", "to", "{}", 1700000000,
+	); err != nil {
 		t.Fatalf("seed chain payment failed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO fact_pool_session_events(
-		id,event_kind,amount_satoshi,cycle_index,created_at_unix,payload_json
-	) VALUES(?,?,?,?,?,?)`, 1, "pool_event", 800, 7, now, "{}"); err != nil {
-		t.Fatalf("seed pool event failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO fact_settlement_cycles(
-		cycle_id,channel,state,chain_payment_id,gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,
-		cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"cycle_chain_1", "chain", "confirmed", 1, 1000, 0, 900, 0, now, now, "seed chain cycle", "{}",
+	if _, err := db.Exec(`INSERT INTO fact_pool_sessions(
+		pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+		pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"sess_pool_cycle_1", "2of3", "", "", "", "", 1000, 0, 0, 0, "", "active", 1700000000, 1700000000,
 	); err != nil {
-		t.Fatalf("seed existing cycle failed: %v", err)
+		t.Fatalf("seed pool session failed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO fact_asset_consumptions(
-		id,chain_payment_id,pool_allocation_id,used_satoshi,occurred_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?)`, 1, 1, nil, 1000, now, "chain consumption", "{}"); err != nil {
-		t.Fatalf("seed chain consumption failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO fact_asset_consumptions(
-		id,chain_payment_id,pool_allocation_id,used_satoshi,occurred_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?)`, 2, nil, 1, 800, now, "pool consumption", "{}"); err != nil {
-		t.Fatalf("seed pool consumption failed: %v", err)
+	if _, err := db.Exec(`INSERT INTO fact_pool_session_events(
+		allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,
+		amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,
+		gateway_pubkey_hex,created_at_unix,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"alloc_pool_cycle_1", "sess_pool_cycle_1", 1, "pay", PoolFactEventKindPoolEvent, 1, "confirmed", "",
+		1000, "pay", "seed", "", 1, 1000, 0, "tx_pool_cycle_1", "hex", "", 1700000000, "{}",
+	); err != nil {
+		t.Fatalf("seed pool event failed: %v", err)
 	}
 
 	if err := ensureSettlementCyclesSchema(db); err != nil {
 		t.Fatalf("ensureSettlementCyclesSchema failed: %v", err)
 	}
 
-	cols, err := tableColumns(db, "fact_asset_consumptions")
+	for _, table := range []string{"fact_chain_payments", "fact_pool_session_events", "fact_settlement_cycles"} {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("hasTable %s failed: %v", table, err)
+		}
+		if !exists {
+			t.Fatalf("missing %s table", table)
+		}
+	}
+	if exists, err := hasTable(db, legacyTableName("fact", "asset", "consumptions")); err != nil {
+		t.Fatalf("check legacy table failed: %v", err)
+	} else if exists {
+		t.Fatal("legacy asset consumption table should not exist")
+	}
+
+	cols, err := tableColumns(db, "fact_settlement_cycles")
 	if err != nil {
-		t.Fatalf("inspect fact_asset_consumptions columns failed: %v", err)
+		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
 	}
-	if _, ok := cols["settlement_cycle_id"]; !ok {
-		t.Fatal("fact_asset_consumptions missing settlement_cycle_id after migration")
+	for _, col := range []string{"id", "cycle_id", "channel", "pool_session_id", "pool_session_event_id", "chain_payment_id"} {
+		if _, ok := cols[col]; !ok {
+			t.Fatalf("fact_settlement_cycles missing column %s", col)
+		}
 	}
-	notNull, err := tableColumnNotNull(db, "fact_asset_consumptions", "settlement_cycle_id")
-	if err != nil {
-		t.Fatalf("inspect settlement_cycle_id nullability failed: %v", err)
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "pool_session_id"); err != nil {
+		t.Fatalf("inspect pool_session_id failed: %v", err)
+	} else if !notNull {
+		t.Fatal("fact_settlement_cycles.pool_session_id should be NOT NULL")
 	}
-	if !notNull {
-		t.Fatal("fact_asset_consumptions.settlement_cycle_id should be NOT NULL after migration")
-	}
-
-	var chainCycleID int64
-	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_asset_consumptions WHERE chain_payment_id=1`).Scan(&chainCycleID); err != nil {
-		t.Fatalf("query chain settlement_cycle_id failed: %v", err)
-	}
-	if chainCycleID <= 0 {
-		t.Fatal("chain consumption settlement_cycle_id should be backfilled")
-	}
-
-	var poolCycleID int64
-	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_asset_consumptions WHERE pool_allocation_id=1`).Scan(&poolCycleID); err != nil {
-		t.Fatalf("query pool settlement_cycle_id failed: %v", err)
-	}
-	if poolCycleID <= 0 {
-		t.Fatal("pool consumption settlement_cycle_id should be backfilled")
-	}
-
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"chain_payment_id"}); err != nil {
-		t.Fatalf("inspect chain unique index failed: %v", err)
-	} else if !unique {
-		t.Fatal("fact_settlement_cycles should keep unique index on chain_payment_id")
+	if hasIndex, err := tableHasIndex(db, "fact_settlement_cycles", "idx_fact_settlement_cycles_pool_session"); err != nil {
+		t.Fatalf("inspect pool session index failed: %v", err)
+	} else if !hasIndex {
+		t.Fatal("fact_settlement_cycles should keep index on pool_session_id")
 	}
 	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"pool_session_event_id"}); err != nil {
 		t.Fatalf("inspect pool unique index failed: %v", err)
 	} else if !unique {
 		t.Fatal("fact_settlement_cycles should keep unique index on pool_session_event_id")
 	}
-
-	cycleCols, err := tableColumns(db, "fact_settlement_cycles")
-	if err != nil {
-		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
-	}
-	if _, ok := cycleCols["pool_session_id"]; !ok {
-		t.Fatal("fact_settlement_cycles missing pool_session_id after migration")
-	}
-	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "pool_session_id"); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles pool_session_id notnull failed: %v", err)
-	} else if !notNull {
-		t.Fatal("fact_settlement_cycles.pool_session_id should be NOT NULL after migration")
-	}
-	if hasIndex, err := tableHasIndex(db, "fact_settlement_cycles", "idx_fact_settlement_cycles_pool_session"); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles pool_session index failed: %v", err)
-	} else if !hasIndex {
-		t.Fatal("fact_settlement_cycles should keep index on pool_session_id")
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"chain_payment_id"}); err != nil {
+		t.Fatalf("inspect chain unique index failed: %v", err)
+	} else if !unique {
+		t.Fatal("fact_settlement_cycles should keep unique index on chain_payment_id")
 	}
 }

@@ -197,23 +197,6 @@ func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, r
 		return LiveFollowStatus{}, fmt.Errorf("task scheduler not initialized")
 	}
 	taskName := liveFollowTaskName(streamID)
-	registered := false
-	if err := scheduler.RegisterOrReplacePeriodicTask(context.Background(), periodicTaskSpec{
-		Name:      taskName,
-		Owner:     "live_follow",
-		Mode:      "dynamic",
-		Interval:  tick,
-		Immediate: true,
-		Run: func(runCtx context.Context, _ string) (map[string]any, error) {
-			return runLiveFollowLoop(runCtx, store, rt, streamID)
-		},
-	}); err != nil {
-		return LiveFollowStatus{}, err
-	}
-	registered = true
-	rt.live.setFollowCancel(streamID, func() {
-		scheduler.CancelTask(taskName)
-	})
 	rt.live.setFollowStatus(streamID, func(st *LiveFollowStatus) {
 		st.StreamURI = rawURI
 		st.StreamID = streamID
@@ -230,17 +213,35 @@ func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, r
 	})
 	st, ok := rt.live.followStatus(streamID)
 	if !ok {
-		if registered {
-			scheduler.CancelTask(taskName)
-		}
 		return LiveFollowStatus{}, fmt.Errorf("follow state missing")
 	}
+	// 先把运行态写进去，再启动后台任务。
+	// 这样可以避免任务的即时执行和这里的收口写入撞在同一个 sqlite 写锁上。
 	if err := dbPersistLiveFollowStatus(ctx, store, st); err != nil {
-		if registered {
-			scheduler.CancelTask(taskName)
+		return LiveFollowStatus{}, err
+	}
+	if err := scheduler.RegisterOrReplacePeriodicTask(context.Background(), periodicTaskSpec{
+		Name:      taskName,
+		Owner:     "live_follow",
+		Mode:      "dynamic",
+		Interval:  tick,
+		Immediate: true,
+		Run: func(runCtx context.Context, _ string) (map[string]any, error) {
+			return runLiveFollowLoop(runCtx, store, rt, streamID)
+		},
+	}); err != nil {
+		rt.live.setFollowStatus(streamID, func(dst *LiveFollowStatus) {
+			dst.Status = "idle"
+			dst.LastError = err.Error()
+		})
+		if current, ok := rt.live.followStatus(streamID); ok {
+			_ = dbPersistLiveFollowStatus(context.Background(), store, current)
 		}
 		return LiveFollowStatus{}, err
 	}
+	rt.live.setFollowCancel(streamID, func() {
+		scheduler.CancelTask(taskName)
+	})
 	return st, nil
 }
 
