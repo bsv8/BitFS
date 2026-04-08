@@ -69,7 +69,7 @@ type VerificationQueueItem struct {
 
 // VerificationReconcileReport 对账报告
 type VerificationReconcileReport struct {
-	// ConfirmedNoFact: verification 已确认但 fact_chain_asset_flows 不存在
+	// ConfirmedNoFact: verification 已确认但 fact_bsv_utxos 不存在
 	ConfirmedNoFact []VerificationReconcileItem `json:"confirmed_no_fact"`
 	// FactNoConfirmation: fact 存在但 verification 仍 pending
 	FactNoConfirmation []VerificationReconcileItem `json:"fact_no_confirmation"`
@@ -251,13 +251,13 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 			Summary: make(map[string]int),
 		}
 
-		// 1. confirmed_* 但 fact_chain_asset_flows 不存在
+		// 1. confirmed_* 但 fact_bsv_utxos 不存在
 		rows1, err := db.Query(`
 			SELECT v.utxo_id, v.wallet_id, v.address, v.status, v.error_message
 			FROM wallet_utxo_token_verification v
-			LEFT JOIN fact_chain_asset_flows f ON v.utxo_id = f.utxo_id AND f.direction = 'IN'
+			LEFT JOIN fact_bsv_utxos f ON v.utxo_id = f.utxo_id
 			WHERE v.status IN ('confirmed_bsv20', 'confirmed_bsv21', 'confirmed_plain_bsv')
-			  AND f.flow_id IS NULL
+			  AND f.utxo_id IS NULL
 		`)
 		if err != nil {
 			return nil, fmt.Errorf("query confirmed without fact: %w", err)
@@ -273,20 +273,22 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 		rows1.Close()
 		report.Summary["confirmed_without_fact"] = len(report.ConfirmedNoFact)
 
-		// 2. fact IN 存在但 verification 仍 pending
+		// 2. fact 存在但 verification 仍 pending
 		// 设计说明：
-		// - 不扫全量 fact_chain_asset_flows，只查 verification 队列范围内的项
-		// - 普通 UTXO 的 fact IN 不经过 verification 队列，不应误报
+		// - 不扫全量 fact 表，只查 verification 队列范围内的项
+		// - 普通 UTXO 的 fact 不经过 verification 队列，不应误报
 		// - 只检查：verification 队列表中存在（或曾经存在）但状态仍 pending 的项
 		// - 用 verification 队列表为驱动，而不是 fact 表
+		// - 硬切版：同时检查 fact_bsv_utxos 和 fact_token_carrier_links
 		rows2, err := db.Query(`
 			SELECT v.utxo_id, v.wallet_id, v.address,
 			       v.status,
-			       COALESCE(f.asset_kind, '') as asset_kind
+			       COALESCE(f.carrier_type, c.carrier_utxo_id) as asset_kind
 			FROM wallet_utxo_token_verification v
-			LEFT JOIN fact_chain_asset_flows f ON v.utxo_id = f.utxo_id AND f.direction = 'IN'
+			LEFT JOIN fact_bsv_utxos f ON v.utxo_id = f.utxo_id
+			LEFT JOIN fact_token_carrier_links c ON v.utxo_id = c.carrier_utxo_id AND c.link_state = 'active'
 			WHERE v.status = 'pending'
-			  AND f.flow_id IS NOT NULL
+			  AND (f.utxo_id IS NOT NULL OR c.carrier_utxo_id IS NOT NULL)
 		`)
 		if err != nil {
 			return nil, fmt.Errorf("query fact without confirmation: %w", err)

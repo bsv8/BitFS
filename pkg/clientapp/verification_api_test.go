@@ -633,8 +633,8 @@ func TestAdminVerificationReconcile_GET_PaginationFields(t *testing.T) {
 	if resp["data_role"] != "primary" {
 		t.Fatalf("expected data_role 'primary', got %v", resp["data_role"])
 	}
-	if resp["source_of_truth"] != "fact_chain_asset_flows" {
-		t.Fatalf("expected source_of_truth 'fact_chain_asset_flows', got %v", resp["source_of_truth"])
+	if resp["source_of_truth"] != "fact_bsv_utxos" {
+		t.Fatalf("expected source_of_truth 'fact_bsv_utxos', got %v", resp["source_of_truth"])
 	}
 }
 
@@ -673,8 +673,8 @@ func TestVerificationAPI_SourceOfTruth(t *testing.T) {
 
 		var resp map[string]any
 		_ = json.Unmarshal(w.Body.Bytes(), &resp)
-		if resp["source_of_truth"] != "fact_chain_asset_flows" {
-			t.Fatalf("%s: expected source_of_truth 'fact_chain_asset_flows', got %v", ep, resp["source_of_truth"])
+		if resp["source_of_truth"] != "fact_bsv_utxos" {
+			t.Fatalf("%s: expected source_of_truth 'fact_bsv_utxos', got %v", ep, resp["source_of_truth"])
 		}
 	}
 }
@@ -745,8 +745,8 @@ func TestVerificationResponseHelper_FieldsConsistent(t *testing.T) {
 	if resp["data_role"] != "primary" {
 		t.Fatalf("expected data_role 'primary', got %v", resp["data_role"])
 	}
-	if resp["source_of_truth"] != "fact_chain_asset_flows" {
-		t.Fatalf("expected source_of_truth 'fact_chain_asset_flows', got %v", resp["source_of_truth"])
+	if resp["source_of_truth"] != "fact_bsv_utxos" {
+		t.Fatalf("expected source_of_truth 'fact_bsv_utxos', got %v", resp["source_of_truth"])
 	}
 	if resp["test_key"] != "test_value" {
 		t.Fatalf("expected test_key 'test_value', got %v", resp["test_key"])

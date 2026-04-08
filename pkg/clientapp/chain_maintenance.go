@@ -1555,7 +1555,7 @@ func collectTokenUTXOLinkFacts(db sqlConn, facts []chainPaymentUTXOFact) ([]chai
 		}
 		var assetKind, tokenID, quantityText string
 		err := db.QueryRow(
-			`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' LIMIT 1`,
+			`SELECT l.token_standard, l.token_id, l.quantity_text FROM fact_token_lots l JOIN fact_token_carrier_links c ON l.lot_id=c.lot_id WHERE c.carrier_utxo_id=? AND c.link_state='active' LIMIT 1`,
 			utxoID,
 		).Scan(&assetKind, &tokenID, &quantityText)
 		if err != nil {

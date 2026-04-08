@@ -1444,11 +1444,11 @@ func TestRecordWalletChainAccounting_Idempotent(t *testing.T) {
 	if cycleCount != 1 {
 		t.Fatalf("expected 1 chain_bsv cycle, got %d", cycleCount)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions c JOIN fact_settlement_cycles s ON s.id=c.settlement_cycle_id WHERE s.source_type='chain_bsv' AND s.source_id=?`, txid).Scan(&bsvCount); err != nil {
-		t.Fatalf("count bsv consumptions failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id IN (SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?)`, txid).Scan(&bsvCount); err != nil {
+		t.Fatalf("count bsv settlement records failed: %v", err)
 	}
 	if bsvCount != 1 {
-		t.Fatalf("expected 1 bsv consumption, got %d", bsvCount)
+		t.Fatalf("expected 1 bsv settlement record, got %d", bsvCount)
 	}
 	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=?`, walletChainBusinessID("chain_bsv", txid), txid).Scan(&linkCount); err != nil {
 		t.Fatalf("count settle_tx_utxo_links failed: %v", err)
@@ -1464,23 +1464,20 @@ func TestWalletChainAccounting_DualLineReplay_NoDuplicateConsumption(t *testing.
 	db := newWalletAccountingTestDB(t)
 	txid := "tx_chain_dual_replay_1"
 	inputUTXO := txid + ":0"
-	tokenID := "token_dual_replay_1"
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 1)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "flow_in_" + inputUTXO,
-		WalletID:       walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
-		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
 		TxID:           txid,
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: time.Now().Unix(),
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("seed token carrier flow failed: %v", err)
 	}
@@ -1563,11 +1560,11 @@ func TestWalletChainAccounting_DualLineReplay_NoDuplicateConsumption(t *testing.
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleCount); err != nil {
 		t.Fatalf("count token cycle failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions c JOIN fact_settlement_cycles s ON s.id=c.settlement_cycle_id WHERE s.source_type='chain_bsv' AND s.source_id=?`, txid).Scan(&bsvConsumptionCount); err != nil {
-		t.Fatalf("count bsv consumption failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id IN (SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?)`, txid).Scan(&bsvConsumptionCount); err != nil {
+		t.Fatalf("count bsv settlement records failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions c JOIN fact_settlement_cycles s ON s.id=c.settlement_cycle_id WHERE s.source_type='chain_token' AND s.source_id=?`, txid).Scan(&tokenConsumptionCount); err != nil {
-		t.Fatalf("count token consumption failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id IN (SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?)`, txid).Scan(&tokenConsumptionCount); err != nil {
+		t.Fatalf("count token settlement records failed: %v", err)
 	}
 	if bsvCycleCount != 1 || tokenCycleCount != 1 || bsvConsumptionCount != 1 || tokenConsumptionCount != 1 {
 		t.Fatalf("unexpected replay counts: bsv_cycle=%d token_cycle=%d bsv_cons=%d token_cons=%d", bsvCycleCount, tokenCycleCount, bsvConsumptionCount, tokenConsumptionCount)
@@ -1585,19 +1582,17 @@ func TestWalletChainAccounting_ConcurrentReplay_NoDoubleWrite(t *testing.T) {
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 1)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "flow_in_" + inputUTXO,
-		WalletID:       walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
-		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        "token_dual_replay_concurrent_1",
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
 		TxID:           txid,
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: time.Now().Unix(),
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("seed token carrier flow failed: %v", err)
 	}
@@ -1660,11 +1655,11 @@ func TestWalletChainAccounting_ConcurrentReplay_NoDoubleWrite(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleCount); err != nil {
 		t.Fatalf("count token cycle failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions c JOIN fact_settlement_cycles s ON s.id=c.settlement_cycle_id WHERE s.source_type='chain_bsv' AND s.source_id=?`, txid).Scan(&bsvConsumptionCount); err != nil {
-		t.Fatalf("count bsv consumption failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id IN (SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?)`, txid).Scan(&bsvConsumptionCount); err != nil {
+		t.Fatalf("count bsv settlement records failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions c JOIN fact_settlement_cycles s ON s.id=c.settlement_cycle_id WHERE s.source_type='chain_token' AND s.source_id=?`, txid).Scan(&tokenConsumptionCount); err != nil {
-		t.Fatalf("count token consumption failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id IN (SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?)`, txid).Scan(&tokenConsumptionCount); err != nil {
+		t.Fatalf("count token settlement records failed: %v", err)
 	}
 	if bsvCycleCount != 1 || tokenCycleCount != 1 || bsvConsumptionCount != 1 || tokenConsumptionCount != 1 {
 		t.Fatalf("unexpected concurrent counts: bsv_cycle=%d token_cycle=%d bsv_cons=%d token_cons=%d", bsvCycleCount, tokenCycleCount, bsvConsumptionCount, tokenConsumptionCount)
@@ -1823,25 +1818,50 @@ func TestBuildWalletChainAccountingInputsFromTxDetail_DualLineWhenTokenCarrierEx
 	prevTxID := "tx_token_carrier_prev_1"
 	txid := "tx_token_carrier_dual_1"
 	inputUTXO := prevTxID + ":0"
-	tokenID := "token_dual_001"
 
 	seedWalletUTXO(t, db, inputUTXO, prevTxID, 0, 1)
 
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "flow_in_" + inputUTXO,
-		WalletID:       walletIDByAddress(address),
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	now := time.Now().Unix()
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletIDByAddress(address),
+		Address:        address,
 		TxID:           prevTxID,
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: time.Now().Unix(),
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
 	}); err != nil {
 		t.Fatalf("seed token carrier flow failed: %v", err)
+	}
+	// 写入 token lot 和 carrier link（使 collectTokenUTXOLinkFacts 能找到 token 输入）
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            "lot_dual_" + prevTxID,
+		OwnerPubkeyHex:   walletIDByAddress(address),
+		TokenID:          "token_dual_001",
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         prevTxID,
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "link_dual_" + prevTxID,
+		LotID:          "lot_dual_" + prevTxID,
+		CarrierUTXOID:  inputUTXO,
+		OwnerPubkeyHex: walletIDByAddress(address),
+		LinkState:      "active",
+		BindTxid:       prevTxID,
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
 	inputs, err := buildWalletChainAccountingInputsFromTxDetail(db, address, whatsonchain.TxDetail{
@@ -1897,25 +1917,50 @@ func TestCheckTokenTxDualLineConsistency_AllPresent(t *testing.T) {
 	prevTxID := "tx_token_carrier_prev_1"
 	txid := "tx_token_carrier_dual_1"
 	inputUTXO := prevTxID + ":0"
-	tokenID := "token_dual_001"
 
 	seedWalletUTXO(t, db, inputUTXO, prevTxID, 0, 1)
 
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "flow_in_" + inputUTXO,
-		WalletID:       walletIDByAddress(address),
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletIDByAddress(address),
+		Address:        address,
 		TxID:           prevTxID,
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: time.Now().Unix(),
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("seed token carrier flow failed: %v", err)
+	}
+	// 写入 token lot 和 carrier link（使 collectTokenUTXOLinkFacts 能找到 token 输入）
+	now := time.Now().Unix()
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            "lot_all_present_" + prevTxID,
+		OwnerPubkeyHex:   walletIDByAddress(address),
+		TokenID:          "token_all_present_001",
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         prevTxID,
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "link_all_present_" + prevTxID,
+		LotID:          "lot_all_present_" + prevTxID,
+		CarrierUTXOID:  inputUTXO,
+		OwnerPubkeyHex: walletIDByAddress(address),
+		LinkState:      "active",
+		BindTxid:       prevTxID,
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
 	inputs, err := buildWalletChainAccountingInputsFromTxDetail(db, address, whatsonchain.TxDetail{
@@ -1966,31 +2011,31 @@ func TestCheckTokenTxDualLineConsistency_AllPresent(t *testing.T) {
 	}
 
 	var bsvCount, tokenCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, bsvCycleID).Scan(&bsvCount); err != nil {
-		t.Fatalf("count chain_bsv consumptions failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id=?`, bsvCycleID).Scan(&bsvCount); err != nil {
+		t.Fatalf("count chain_bsv settlement records failed: %v", err)
 	}
 	if bsvCount != 1 {
-		t.Fatalf("expected 1 BSV consumption on chain_bsv, got %d", bsvCount)
+		t.Fatalf("expected 1 BSV settlement record on chain_bsv, got %d", bsvCount)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, tokenCycleID).Scan(&tokenCount); err != nil {
-		t.Fatalf("count chain_token consumptions failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&tokenCount); err != nil {
+		t.Fatalf("count chain_token settlement records failed: %v", err)
 	}
 	if tokenCount != 1 {
-		t.Fatalf("expected 1 token consumption on chain_token, got %d", tokenCount)
+		t.Fatalf("expected 1 token settlement record on chain_token, got %d", tokenCount)
 	}
 
 	var chainBsvTokenCount, chainTokenBsvCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, bsvCycleID).Scan(&chainBsvTokenCount); err != nil {
-		t.Fatalf("count chain_bsv token consumptions failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, bsvCycleID).Scan(&chainBsvTokenCount); err != nil {
+		t.Fatalf("count chain_bsv token settlement records failed: %v", err)
 	}
 	if chainBsvTokenCount != 0 {
-		t.Fatalf("expected no token consumption on chain_bsv, got %d", chainBsvTokenCount)
+		t.Fatalf("expected no token settlement record on chain_bsv, got %d", chainBsvTokenCount)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, tokenCycleID).Scan(&chainTokenBsvCount); err != nil {
-		t.Fatalf("count chain_token bsv consumptions failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id=?`, tokenCycleID).Scan(&chainTokenBsvCount); err != nil {
+		t.Fatalf("count chain_token bsv settlement records failed: %v", err)
 	}
 	if chainTokenBsvCount != 0 {
-		t.Fatalf("expected no BSV consumption on chain_token, got %d", chainTokenBsvCount)
+		t.Fatalf("expected no BSV settlement record on chain_token, got %d", chainTokenBsvCount)
 	}
 
 	consistency, err := CheckTokenTxDualLineConsistency(context.Background(), newClientDB(db, nil), txid)
@@ -2061,13 +2106,23 @@ func TestCollectTokenUTXOLinkFacts_RequireQuantityText(t *testing.T) {
 	utxoID := "tx_token_quantity_missing:0"
 
 	seedWalletUTXO(t, db, utxoID, "tx_token_quantity_missing", 0, 1)
-	if _, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_token_quantity_missing", walletID, address, "IN", "BSV21", "token_missing_qty", utxoID,
-		"tx_token_quantity_missing", 0, int64(1), "", time.Now().Unix(), time.Now().Unix(), "WOC", "token carrier", "{}",
+	lotID := "lot_token_quantity_missing"
+	now := time.Now().Unix()
+	// 插入 token lot（缺少 quantity_text）
+	if _, err := db.Exec(`INSERT INTO fact_token_lots(
+		lot_id,owner_pubkey_hex,token_id,token_standard,quantity_text,used_quantity_text,lot_state,mint_txid,last_spend_txid,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		lotID, walletID, "token_missing_qty", "BSV21", "", "0", "unspent", "tx_token_quantity_missing", "", now, now, "token lot", "{}",
 	); err != nil {
-		t.Fatalf("seed token carrier flow failed: %v", err)
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	// 插入 carrier link 绑定 lot 到 UTXO
+	if _, err := db.Exec(`INSERT INTO fact_token_carrier_links(
+		link_id,lot_id,carrier_utxo_id,owner_pubkey_hex,link_state,bind_txid,unbind_txid,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"link_token_quantity_missing", lotID, utxoID, walletID, "active", "tx_token_quantity_missing", "", now, now, "carrier link", "{}",
+	); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
 	_, err := collectTokenUTXOLinkFacts(db, []chainPaymentUTXOFact{
@@ -2190,7 +2245,6 @@ func TestCheckTokenTxDualLineConsistency_MissingCarrierFact(t *testing.T) {
 	ctx := context.Background()
 	txid := "tx_chain_missing_carrier_fact_1"
 	tokenUTXOID := txid + ":0"
-	tokenID := "token_missing_carrier_fact_1"
 
 	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_bsv", txid, "confirmed", 1000, 0, -100, 0, time.Now().Unix(), "missing carrier fact", nil); err != nil {
 		t.Fatalf("seed chain_bsv cycle failed: %v", err)
@@ -2198,23 +2252,57 @@ func TestCheckTokenTxDualLineConsistency_MissingCarrierFact(t *testing.T) {
 	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_"+txid, "chain_token", txid, "confirmed", 0, 0, 0, 0, time.Now().Unix(), "missing carrier fact", nil); err != nil {
 		t.Fatalf("seed chain_token cycle failed: %v", err)
 	}
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "flow_in_" + tokenUTXOID,
-		WalletID:       "wallet_missing_carrier_fact",
-		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	now := time.Now().Unix()
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         tokenUTXOID,
+		OwnerPubkeyHex: "wallet_missing_carrier_fact",
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
 		TxID:           txid,
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: time.Now().Unix(),
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
 	}); err != nil {
 		t.Fatalf("seed token flow failed: %v", err)
 	}
-	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, mustSettlementCycleIDBySource(t, db, "chain_token", txid), tokenUTXOID, "1000", time.Now().Unix()); err != nil {
+	// 写入 token lot 和 carrier link（使 token 消耗能关联到 lot）
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            "lot_missing_carrier_" + txid,
+		OwnerPubkeyHex:   "wallet_missing_carrier_fact",
+		TokenID:          "token_missing_001",
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         txid,
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "link_missing_carrier_" + txid,
+		LotID:          "lot_missing_carrier_" + txid,
+		CarrierUTXOID:  tokenUTXOID,
+		OwnerPubkeyHex: "wallet_missing_carrier_fact",
+		LinkState:      "active",
+		BindTxid:       txid,
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
+	}
+	if err := dbAppendTokenConsumptionsForSettlementCycle(db, mustSettlementCycleIDBySource(t, db, "chain_token", txid), []chainPaymentUTXOLinkEntry{
+		{
+			UTXOID:       tokenUTXOID,
+			IOSide:       "input",
+			AssetKind:    "BSV21",
+			TokenID:      "token_missing_001",
+			QuantityText: "100",
+		},
+	}, now); err != nil {
 		t.Fatalf("seed token consumption failed: %v", err)
 	}
 

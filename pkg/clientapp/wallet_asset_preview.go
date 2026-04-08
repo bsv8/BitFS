@@ -162,7 +162,7 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 
 func previewWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string, amountText string, toAddress string) (walletAssetActionPreview, error) {
 	requested, _ := parseDecimalText(amountText)
-	// fact_chain_asset_flows 为唯一 token 选源口径
+	// fact_token_lots 为唯一 token 选源口径
 	candidates, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return walletAssetActionPreview{}, err

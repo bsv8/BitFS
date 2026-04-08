@@ -1615,6 +1615,10 @@ func applySQLitePragmas(db *sql.DB) error {
 	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return fmt.Errorf("sqlite pragma journal_mode: %w", err)
 	}
+	// 启用外键约束（硬切版 schema 依赖外键约束）
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+		return fmt.Errorf("sqlite pragma foreign_keys: %w", err)
+	}
 	return nil
 }
 

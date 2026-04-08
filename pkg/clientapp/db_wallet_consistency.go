@@ -39,7 +39,7 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, txid).Scan(&bsvCycleID); err == nil {
 			out.HasChainBSVCycle = true
 			var count int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
+			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
 			if count > 0 {
@@ -53,7 +53,7 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleID); err == nil {
 			out.HasChainTokenCycle = true
 			var count int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
+			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
 			if count > 0 {

@@ -180,46 +180,85 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 }
 
 // unionAllQuery 构建三张 fact 表的 UNION ALL 统一视图
-// 设计说明：
+// 设计说明（硬切版）：
 // - 列顺序必须一致：id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, asset_kind, token_id, token_standard, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id
-// - visit_id 保留字段，不参与过滤（fact 表未保留该上下文）
+// - 只从新 schema 表查询：fact_bsv_utxos, fact_token_lots
 func unionAllQuery() string {
 	return `
-		SELECT id, occurred_at_unix AS created_at_unix, flow_id, 'chain_asset' AS flow_type,
-			utxo_id AS ref_id, 'confirmed' AS stage, direction, asset_kind AS purpose,
-			COALESCE(asset_kind, '') AS asset_kind, COALESCE(token_id, '') AS token_id,
-			CASE WHEN asset_kind IN ('BSV20', 'BSV21') THEN asset_kind ELSE '' END AS token_standard,
-			amount_satoshi, 0 AS used_satoshi, 0 AS returned_satoshi,
-			txid AS related_txid, COALESCE(note, '') AS note,
-			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
-		FROM fact_chain_asset_flows
-		UNION ALL
-		SELECT id, occurred_at_unix AS created_at_unix, txid AS flow_id, 'chain_payment' AS flow_type,
-			txid AS ref_id, status AS stage,
-			CASE WHEN net_amount_satoshi > 0 THEN 'IN' ELSE 'OUT' END AS direction,
-			payment_subtype AS purpose,
-			'BSV' AS asset_kind, '' AS token_id, '' AS token_standard,
-			net_amount_satoshi AS amount_satoshi,
-			CASE WHEN net_amount_satoshi < 0 THEN -net_amount_satoshi ELSE 0 END AS used_satoshi,
+		-- BSV UTXO 流入（unspent 状态的入账）
+		SELECT 
+			rowid as id, 
+			created_at_unix, 
+			utxo_id AS flow_id, 
+			'chain_bsv_in' AS flow_type,
+			utxo_id AS ref_id, 
+			'confirmed' AS stage, 
+			'IN' AS direction, 
+			carrier_type AS purpose,
+			'BSV' AS asset_kind, 
+			'' AS token_id, 
+			'' AS token_standard,
+			value_satoshi AS amount_satoshi, 
+			0 AS used_satoshi, 
 			0 AS returned_satoshi,
-			txid AS related_txid, '' AS note,
-			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
-		FROM fact_chain_payments
+			txid AS related_txid, 
+			COALESCE(note, '') AS note,
+			COALESCE(payload_json, '{}') AS payload, 
+			'' AS visit_id
+		FROM fact_bsv_utxos
+		WHERE utxo_state = 'unspent'
 		UNION ALL
-		SELECT id, created_at_unix, allocation_id AS flow_id, '` + PoolFactEventKindPoolEvent + `' AS flow_type,
-			pool_session_id AS ref_id, event_kind AS stage, direction, purpose,
-			'BSV' AS asset_kind, '' AS token_id, '' AS token_standard,
-			amount_satoshi, 0 AS used_satoshi, 0 AS returned_satoshi,
-			COALESCE(txid, '') AS related_txid, COALESCE(note, '') AS note,
-			COALESCE(payload_json, '{}') AS payload, '' AS visit_id
-		FROM fact_pool_session_events
-		WHERE event_kind = '` + PoolFactEventKindTxHistory + `'
+		-- BSV UTXO 流出（spent 状态的花费）
+		SELECT 
+			rowid as id, 
+			spent_at_unix AS created_at_unix, 
+			utxo_id AS flow_id, 
+			'chain_bsv_out' AS flow_type,
+			utxo_id AS ref_id, 
+			'confirmed' AS stage, 
+			'OUT' AS direction, 
+			carrier_type AS purpose,
+			'BSV' AS asset_kind, 
+			'' AS token_id, 
+			'' AS token_standard,
+			value_satoshi AS amount_satoshi, 
+			value_satoshi AS used_satoshi, 
+			0 AS returned_satoshi,
+			spent_by_txid AS related_txid, 
+			COALESCE(note, '') AS note,
+			COALESCE(payload_json, '{}') AS payload, 
+			'' AS visit_id
+		FROM fact_bsv_utxos
+		WHERE utxo_state = 'spent' AND spent_at_unix > 0
+		UNION ALL
+		-- Token Lot 流入
+		SELECT 
+			rowid as id, 
+			created_at_unix, 
+			lot_id AS flow_id, 
+			'chain_token_in' AS flow_type,
+			lot_id AS ref_id, 
+			'confirmed' AS stage, 
+			'IN' AS direction, 
+			token_standard AS purpose,
+			token_standard AS asset_kind, 
+			token_id, 
+			token_standard,
+			0 AS amount_satoshi, 
+			0 AS used_satoshi, 
+			0 AS returned_satoshi,
+			mint_txid AS related_txid, 
+			COALESCE(note, '') AS note,
+			COALESCE(payload_json, '{}') AS payload, 
+			'' AS visit_id
+		FROM fact_token_lots
+		WHERE lot_state IN ('unspent', 'spent')
 	`
 }
 
 // dbGetWalletFundFlowItem 从 fact_* 事实表获取单条资金流水详情
-// 设计说明：flow_type 必填，用于精确定位，避免 id 跨表冲突
-func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, id int64, flowType string) (walletFundFlowItem, error) {
+// 设计说明：flow_type 必填，用于精确定位；使用 refID（文本）替代 id（int64）
+func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string, flowType string) (walletFundFlowItem, error) {
 	if store == nil {
 		return walletFundFlowItem{}, fmt.Errorf("client db is nil")
 	}
@@ -228,7 +267,7 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, id int64, flo
 		var src unionSource
 
 		// flow_type 已由 API 层校验，直接查询
-		err := queryUnionSourceByID(db, id, flowType, &src)
+		err := queryUnionSourceByRefID(db, refID, flowType, &src)
 		if err != nil {
 			return walletFundFlowItem{}, err
 		}
@@ -255,38 +294,35 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, id int64, flo
 	})
 }
 
-// queryUnionSourceByID 按 flow_type 路由查询单条记录
-func queryUnionSourceByID(db *sql.DB, id int64, flowType string, src *unionSource) error {
+// queryUnionSourceByRefID 按 flow_type 和 ref_id 路由查询单条记录
+// 设计说明（硬切版）：
+// - 只支持新 schema 的 flow_type：chain_bsv_in, chain_bsv_out, chain_token_in
+// - 从 fact_bsv_utxos 和 fact_token_lots 查询
+// - 使用 ref_id（文本）替代 id（int64），因为新表使用 utxo_id/lot_id 作为主键
+func queryUnionSourceByRefID(db *sql.DB, refID string, flowType string, src *unionSource) error {
 	var err error
 	switch flowType {
-	case "chain_asset":
+	case "chain_bsv_in":
 		err = db.QueryRow(`
-			SELECT id, occurred_at_unix, flow_id, 'chain_asset', utxo_id, 'confirmed', direction, asset_kind,
-				COALESCE(asset_kind, ''), COALESCE(token_id, ''),
-				CASE WHEN asset_kind IN ('BSV20', 'BSV21') THEN asset_kind ELSE '' END,
-				amount_satoshi, 0, 0, txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
-			FROM fact_chain_asset_flows WHERE id=?`, id).
+			SELECT rowid, created_at_unix, utxo_id, 'chain_bsv_in', utxo_id, 'confirmed', 'IN', carrier_type,
+				'BSV', '', '', value_satoshi, 0, 0, txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
+			FROM fact_bsv_utxos WHERE utxo_id=? AND utxo_state='unspent'`, refID).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
-	case "chain_payment":
+	case "chain_bsv_out":
 		err = db.QueryRow(`
-			SELECT id, occurred_at_unix, txid, 'chain_payment', txid, status,
-				CASE WHEN net_amount_satoshi > 0 THEN 'IN' ELSE 'OUT' END,
-				payment_subtype, 'BSV', '', '',
-				net_amount_satoshi,
-				CASE WHEN net_amount_satoshi < 0 THEN -net_amount_satoshi ELSE 0 END,
-				0, txid, '', COALESCE(payload_json,'{}'), ''
-			FROM fact_chain_payments WHERE id=?`, id).
+			SELECT rowid, spent_at_unix, utxo_id, 'chain_bsv_out', utxo_id, 'confirmed', 'OUT', carrier_type,
+				'BSV', '', '', value_satoshi, value_satoshi, 0, spent_by_txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
+			FROM fact_bsv_utxos WHERE utxo_id=? AND utxo_state='spent'`, refID).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
-	case PoolFactEventKindPoolEvent:
+	case "chain_token_in":
 		err = db.QueryRow(`
-			SELECT id, created_at_unix, allocation_id, '`+PoolFactEventKindPoolEvent+`', pool_session_id, event_kind,
-				direction, purpose, 'BSV', '', '', amount_satoshi, 0, 0,
-				COALESCE(txid,''), COALESCE(note,''), COALESCE(payload_json,'{}'), ''
-			FROM fact_pool_session_events WHERE id=? AND event_kind=?`, id, PoolFactEventKindTxHistory).
+			SELECT rowid, created_at_unix, lot_id, 'chain_token_in', lot_id, 'confirmed', 'IN', token_standard,
+				token_standard, token_id, token_standard, 0, 0, 0, mint_txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
+			FROM fact_token_lots WHERE lot_id=?`, refID).
 			Scan(&src.ID, &src.CreatedAtUnix, &src.FlowID, &src.FlowType, &src.RefID, &src.Stage,
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)

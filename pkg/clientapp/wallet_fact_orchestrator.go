@@ -316,13 +316,12 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 	return changes, nil
 }
 
-// ApplyConfirmedUTXOChanges 将已确认 UTXO 变化写入 fact_chain_asset_flows
-// ApplyConfirmedUTXOChanges 将已确认 UTXO 变化写入 fact_chain_asset_flows
-// 设计说明：
+// ApplyConfirmedUTXOChanges 将已确认 UTXO 变化写入 fact_bsv_utxos
+// 设计说明（硬切版）：
 // - 只写入 confirmed + unspent + plain_bsv 的 UTXO
 // - 幂等写入，重复触发不会重复写入
 // - 这是 fact 层的唯一写入入口
-// - wallet/address 信息来自 changes 内部，无需外部传入
+// - 改为写入新表 fact_bsv_utxos，不再写 fact_chain_asset_flows
 func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []confirmedUTXOChange, updatedAt int64) error {
 	if store == nil {
 		return fmt.Errorf("store is nil")
@@ -332,30 +331,31 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		for _, change := range changes {
-			entry := chainAssetFlowEntry{
-				FlowID:        "flow_in_" + change.UTXOID,
-				WalletID:      change.WalletID,
-				Address:       change.Address,
-				Direction:     "IN",
-				AssetKind:     "BSV",
-				TokenID:       "",
-				UTXOID:        change.UTXOID,
-				TxID:          change.TxID,
-				Vout:          change.Vout,
-				AmountSatoshi: int64(change.Value),
-				QuantityText:  "",
-				OccurredAtUnix: func() int64 {
+			// 从 wallet_id 提取 owner_pubkey_hex（去掉 "wallet:" 前缀）
+			ownerPubkeyHex := strings.ToLower(strings.TrimSpace(change.WalletID))
+			ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
+			
+			entry := bsvUTXOEntry{
+				UTXOID:         change.UTXOID,
+				OwnerPubkeyHex: ownerPubkeyHex,
+				Address:        change.Address,
+				TxID:           change.TxID,
+				Vout:           change.Vout,
+				ValueSatoshi:   int64(change.Value),
+				UTXOState:      "unspent",
+				CarrierType:    "plain_bsv",
+				CreatedAtUnix: func() int64 {
 					if change.CreatedAtUnix > 0 {
 						return change.CreatedAtUnix
 					}
 					return updatedAt
 				}(),
-				EvidenceSource: "WOC",
-				Note:           "plain_bsv utxo detected by chain sync",
-				Payload:        map[string]any{"allocation_class": change.AllocationClass},
+				UpdatedAtUnix: updatedAt,
+				Note:          "plain_bsv utxo detected by chain sync",
+				Payload:       map[string]any{"allocation_class": change.AllocationClass},
 			}
-			if _, err := dbAppendAssetFlowIfAbsentDB(db, entry, "IN"); err != nil {
-				return fmt.Errorf("append asset flow for utxo %s: %w", change.UTXOID, err)
+			if err := dbUpsertBSVUTXODB(db, entry); err != nil {
+				return fmt.Errorf("upsert bsv utxo for %s: %w", change.UTXOID, err)
 			}
 		}
 		return nil

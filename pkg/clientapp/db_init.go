@@ -768,162 +768,129 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quote_arbiters_quote_arbiter ON biz_demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quote_arbiters_arbiter ON biz_demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
 
-		// fact_chain_asset_flows: 资产事实主表（支持 IN/OUT 事实）
+		// ============================================================
+		// 新资产账本表（硬切版）
 		// 设计说明：
-		// - 记录链上资产流入流出的事实，作为余额计算的可信来源
-		// - evidence_source 目前只认 'WOC'（BSV20/BSV21 证据来源）
-		// - unknown 资产不入此表，保持口径纯净
-		// - 找零不单独建逻辑，由后续 UTXO 流转再次入表
-		`CREATE TABLE IF NOT EXISTS fact_chain_asset_flows(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			flow_id TEXT NOT NULL UNIQUE,
-			wallet_id TEXT NOT NULL,
+		// - 新三表：fact_bsv_utxos（本币UTXO事实）、fact_token_lots（Token数量事实）、fact_token_carrier_links（Token与载体绑定）
+		// - 新增 fact_settlement_records（结算消耗记录）、fact_settlement_cycles（结算周期锚点）
+		// - 余额事实统一从新表计算，不依赖 direction IN/OUT 模式
+		// ============================================================
+
+		// fact_bsv_utxos: 本币UTXO事实表（硬切新增）
+		// 设计说明：
+		// - 记录钱包拥有的本币UTXO状态（unspent/spent）
+		// - carrier_type 区分：plain_bsv（纯本币）、token_carrier（token载体1sat）、fee_change（费用找零）、unknown（待确认）
+		// - 余额计算：owner_pubkey_hex + utxo_state='unspent' 聚合
+		`CREATE TABLE IF NOT EXISTS fact_bsv_utxos(
+			utxo_id TEXT PRIMARY KEY,
+			owner_pubkey_hex TEXT NOT NULL,
 			address TEXT NOT NULL,
-			direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
-			asset_kind TEXT NOT NULL CHECK(asset_kind IN ('BSV','BSV20','BSV21')),
-			token_id TEXT NOT NULL DEFAULT '',
-			utxo_id TEXT NOT NULL,
 			txid TEXT NOT NULL,
 			vout INTEGER NOT NULL,
-			amount_satoshi INTEGER NOT NULL,
-			quantity_text TEXT NOT NULL DEFAULT '',
-			occurred_at_unix INTEGER NOT NULL,
+			value_satoshi INTEGER NOT NULL CHECK(value_satoshi>0),
+			utxo_state TEXT NOT NULL CHECK(utxo_state IN ('unspent','spent')),
+			carrier_type TEXT NOT NULL CHECK(carrier_type IN ('plain_bsv','token_carrier','fee_change','unknown')),
+			spent_by_txid TEXT NOT NULL DEFAULT '',
+			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			evidence_source TEXT NOT NULL DEFAULT 'WOC',
+			spent_at_unix INTEGER NOT NULL DEFAULT 0,
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			UNIQUE(wallet_id, utxo_id, direction),
-			FOREIGN KEY(utxo_id) REFERENCES wallet_utxo(utxo_id)
+			UNIQUE(txid, vout)
 		)`,
+		// fact_bsv_utxos 索引
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_utxos_owner_state ON fact_bsv_utxos(owner_pubkey_hex, utxo_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_utxos_owner_carrier_state ON fact_bsv_utxos(owner_pubkey_hex, carrier_type, utxo_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_utxos_txid_vout ON fact_bsv_utxos(txid, vout)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_utxos_spent_by ON fact_bsv_utxos(spent_by_txid, spent_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_utxos_created ON fact_bsv_utxos(created_at_unix DESC)`,
 
-		// ============================================================
-		// 以下三张新表（fact_bsv_consumptions / fact_token_consumptions / fact_token_utxo_links）
-		// 是 A 组硬切换迁移后的新写入目标。
+		// fact_token_lots: Token数量事实表（硬切新增）
 		// 设计说明：
-		// - 新表按资产类型拆分：BSV 本币、Token（BSV20/BSV21）
-		// - Token 表增加 token_id/token_standard/used_quantity_text 字段
-		// - 全部挂载 settlement_cycle_id，与 fact_settlement_cycles 形成结算周期关联
-		// - 约束完整：外键、唯一键、CHECK 约束全部生效
-		// ============================================================
-
-		// fact_bsv_consumptions: 本币消耗事实表（A组硬切换新增）
-		// 设计说明：
-		// - 记录 BSV 本币的消耗事实
-		// - 必须挂载到 settlement_cycle_id
-		// - 不再直接绑定 chain_payment_id / pool_allocation_id
-		`CREATE TABLE IF NOT EXISTS fact_bsv_consumptions(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			consumption_id TEXT NOT NULL DEFAULT '',
-			source_flow_id INTEGER,
-			source_utxo_id TEXT NOT NULL DEFAULT '',
-			settlement_cycle_id INTEGER NOT NULL,
-			state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','reverted')),
-			used_satoshi INTEGER NOT NULL CHECK(used_satoshi>0),
-			occurred_at_unix INTEGER NOT NULL,
-			confirmed_at_unix INTEGER,
-			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id)
-		)`,
-		`CREATE TRIGGER IF NOT EXISTS trg_fact_bsv_consumptions_fill_id
-			AFTER INSERT ON fact_bsv_consumptions
-			FOR EACH ROW
-			WHEN trim(NEW.consumption_id) = ''
-			BEGIN
-				UPDATE fact_bsv_consumptions
-				SET consumption_id = 'bsvcons_' || NEW.id
-				WHERE id = NEW.id;
-			END`,
-		// fact_bsv_consumptions 索引
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_bsv_consumptions_id ON fact_bsv_consumptions(consumption_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_source ON fact_bsv_consumptions(source_flow_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_source_utxo ON fact_bsv_consumptions(source_utxo_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_bsv_consumptions_cycle ON fact_bsv_consumptions(settlement_cycle_id, id DESC)`,
-
-		// fact_token_consumptions: Token消耗事实表（A组硬切换新增）
-		// 设计说明：
-		// - 记录 Token（BSV20/BSV21）的消耗事实
-		// - 增加 token_id/token_standard/used_quantity_text 字段
-		// - used_quantity_text 为十进制字符串，记录 token 数量
-		`CREATE TABLE IF NOT EXISTS fact_token_consumptions(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			consumption_id TEXT NOT NULL DEFAULT '',
-			source_flow_id INTEGER,
-			source_utxo_id TEXT NOT NULL DEFAULT '',
+		// - 记录 Token 数量层的流入/消耗/剩余
+		// - quantity_text 为十进制字符串，记录入账数量
+		// - used_quantity_text 累计消耗数量（十进制字符串）
+		// - lot_state: unspent（未消耗）、spent（已消耗完）、locked（锁定中）
+		`CREATE TABLE IF NOT EXISTS fact_token_lots(
+			lot_id TEXT PRIMARY KEY,
+			owner_pubkey_hex TEXT NOT NULL,
 			token_id TEXT NOT NULL,
 			token_standard TEXT NOT NULL CHECK(token_standard IN ('BSV20','BSV21')),
-			settlement_cycle_id INTEGER NOT NULL,
-			state TEXT NOT NULL DEFAULT 'pending' CHECK(state IN ('pending','confirmed','reverted')),
-			used_quantity_text TEXT NOT NULL CHECK(length(trim(used_quantity_text))>0),
-			occurred_at_unix INTEGER NOT NULL,
-			confirmed_at_unix INTEGER,
+			quantity_text TEXT NOT NULL,
+			used_quantity_text TEXT NOT NULL DEFAULT '0',
+			lot_state TEXT NOT NULL CHECK(lot_state IN ('unspent','spent','locked')),
+			mint_txid TEXT NOT NULL DEFAULT '',
+			last_spend_txid TEXT NOT NULL DEFAULT '',
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
 			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(source_flow_id) REFERENCES fact_chain_asset_flows(id),
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id)
+			payload_json TEXT NOT NULL DEFAULT '{}'
 		)`,
-		`CREATE TRIGGER IF NOT EXISTS trg_fact_token_consumptions_fill_id
-			AFTER INSERT ON fact_token_consumptions
-			FOR EACH ROW
-			WHEN trim(NEW.consumption_id) = ''
-			BEGIN
-				UPDATE fact_token_consumptions
-				SET consumption_id = 'tokcons_' || NEW.id
-				WHERE id = NEW.id;
-			END`,
-		// fact_token_consumptions 索引
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_token_consumptions_id ON fact_token_consumptions(consumption_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_source ON fact_token_consumptions(source_flow_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_token ON fact_token_consumptions(token_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_consumptions_cycle ON fact_token_consumptions(settlement_cycle_id, id DESC)`,
+		// fact_token_lots 索引
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_lots_owner_token_state ON fact_token_lots(owner_pubkey_hex, token_standard, token_id, lot_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_lots_owner_state ON fact_token_lots(owner_pubkey_hex, lot_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_lots_token ON fact_token_lots(token_standard, token_id, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_lots_mint_txid ON fact_token_lots(mint_txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_lots_last_spend_txid ON fact_token_lots(last_spend_txid)`,
 
-		// fact_token_utxo_links: Token数量与载体UTXO映射表（A组硬切换新增）
+		// fact_token_carrier_links: Token与1sat载体绑定表（硬切新增）
 		// 设计说明：
-		// - 记录 Token 数量与其载体 UTXO 的映射关系
-		// - carrier_flow_id 指向 fact_chain_asset_flows.id（载体UTXO的流入事实）
-		// - quantity_text 为十进制字符串，记录该 UTXO 承载的 token 数量
-		`CREATE TABLE IF NOT EXISTS fact_token_utxo_links(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			link_id TEXT NOT NULL DEFAULT '',
-			wallet_id TEXT NOT NULL,
-			token_id TEXT NOT NULL,
-			token_standard TEXT NOT NULL CHECK(token_standard IN ('BSV20','BSV21')),
-			carrier_flow_id INTEGER NOT NULL,
+		// - 记录 Token lot 与其 1sat 载体 UTXO 的绑定关系
+		// - link_state: active（有效绑定）、released（已释放）、moved（已迁移）
+		// - 同一 lot 同一时刻只能有一个 active 绑定（UNIQUE约束）
+		`CREATE TABLE IF NOT EXISTS fact_token_carrier_links(
+			link_id TEXT PRIMARY KEY,
+			lot_id TEXT NOT NULL,
 			carrier_utxo_id TEXT NOT NULL,
-			quantity_text TEXT NOT NULL CHECK(length(trim(quantity_text))>0),
-			direction TEXT NOT NULL CHECK(direction IN ('IN','OUT')),
-			txid TEXT NOT NULL,
-			vout INTEGER NOT NULL CHECK(vout>=0),
-			occurred_at_unix INTEGER NOT NULL,
+			owner_pubkey_hex TEXT NOT NULL,
+			link_state TEXT NOT NULL CHECK(link_state IN ('active','released','moved')),
+			bind_txid TEXT NOT NULL DEFAULT '',
+			unbind_txid TEXT NOT NULL DEFAULT '',
+			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			evidence_source TEXT NOT NULL DEFAULT '',
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(carrier_flow_id) REFERENCES fact_chain_asset_flows(id),
-			UNIQUE(link_id)
+			UNIQUE(lot_id, link_state),
+			UNIQUE(carrier_utxo_id, link_state),
+			FOREIGN KEY(lot_id) REFERENCES fact_token_lots(lot_id) ON DELETE CASCADE,
+			FOREIGN KEY(carrier_utxo_id) REFERENCES fact_bsv_utxos(utxo_id) ON DELETE CASCADE
 		)`,
-		`CREATE TRIGGER IF NOT EXISTS trg_fact_token_utxo_links_fill_id
-			AFTER INSERT ON fact_token_utxo_links
-			FOR EACH ROW
-			WHEN trim(NEW.link_id) = ''
-			BEGIN
-				UPDATE fact_token_utxo_links
-				SET link_id = 'toklink_' || NEW.id
-				WHERE id = NEW.id;
-			END`,
-		// fact_token_utxo_links 索引
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_token_utxo_links_carrier ON fact_token_utxo_links(carrier_flow_id)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_token_utxo_links_token_utxo_dir ON fact_token_utxo_links(token_id, carrier_utxo_id, direction)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_utxo_links_wallet ON fact_token_utxo_links(wallet_id, token_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_utxo_links_token ON fact_token_utxo_links(token_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_token_utxo_links_occurred ON fact_token_utxo_links(occurred_at_unix DESC, id DESC)`,
+		// fact_token_carrier_links 索引
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_carrier_links_owner_state ON fact_token_carrier_links(owner_pubkey_hex, link_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_carrier_links_lot_state ON fact_token_carrier_links(lot_id, link_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_carrier_links_carrier_state ON fact_token_carrier_links(carrier_utxo_id, link_state, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_carrier_links_bind_txid ON fact_token_carrier_links(bind_txid)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_token_carrier_links_unbind_txid ON fact_token_carrier_links(unbind_txid)`,
 
-		// fact_chain_asset_flows 索引
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_wallet_asset ON fact_chain_asset_flows(wallet_id, asset_kind, token_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_wallet_direction ON fact_chain_asset_flows(wallet_id, direction, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_txid_vout ON fact_chain_asset_flows(txid, vout, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_asset_flows_occurred ON fact_chain_asset_flows(occurred_at_unix DESC, id DESC)`,
+		// fact_settlement_records: 结算消耗记录表（硬切新增）
+		// 设计说明：
+		// - 记录每次结算周期中的资产消耗详情
+		// - asset_type: BSV（本币）、TOKEN（token数量）
+		// - source_utxo_id: 本币消耗来源（fact_bsv_utxos.utxo_id）
+		// - source_lot_id: token消耗来源（fact_token_lots.lot_id）
+		`CREATE TABLE IF NOT EXISTS fact_settlement_records(
+			record_id TEXT PRIMARY KEY,
+			settlement_cycle_id INTEGER NOT NULL,
+			asset_type TEXT NOT NULL CHECK(asset_type IN ('BSV','TOKEN')),
+			owner_pubkey_hex TEXT NOT NULL,
+			source_utxo_id TEXT NOT NULL DEFAULT '',
+			source_lot_id TEXT NOT NULL DEFAULT '',
+			used_satoshi INTEGER NOT NULL DEFAULT 0,
+			used_quantity_text TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL CHECK(state IN ('pending','confirmed','reverted')),
+			occurred_at_unix INTEGER NOT NULL,
+			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
+			UNIQUE(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id)
+		)`,
+		// fact_settlement_records 索引
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_cycle_asset ON fact_settlement_records(settlement_cycle_id, asset_type, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_owner_state ON fact_settlement_records(owner_pubkey_hex, state, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_source_utxo ON fact_settlement_records(source_utxo_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_source_lot ON fact_settlement_records(source_lot_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_state_time ON fact_settlement_records(state, occurred_at_unix DESC)`,
 
 		// Step 15: 统一结算锚点 — fact_settlement_cycles
 		// 设计说明：
@@ -3335,6 +3302,10 @@ func rejectLegacyClientDBSchema(db *sql.DB) error {
 		strings.Join([]string{"fact", "asset", "consumptions"}, "_"),
 		strings.Join([]string{"fact", "pool", "allocations"}, "_"),
 		strings.Join([]string{"fact", "tx", "history"}, "_"),
+		strings.Join([]string{"fact", "chain", "asset", "flows"}, "_"),
+		strings.Join([]string{"fact", "bsv", "consumptions"}, "_"),
+		strings.Join([]string{"fact", "token", "consumptions"}, "_"),
+		strings.Join([]string{"fact", "token", "utxo", "links"}, "_"),
 	}
 	for _, table := range legacyTables {
 		exists, err := hasRealTable(db, table)

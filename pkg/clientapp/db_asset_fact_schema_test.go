@@ -49,6 +49,8 @@ func assertTableMissing(t *testing.T, db *sql.DB, parts ...string) {
 	}
 }
 
+// TestInitIndexDB_CreatesCurrentAssetFactSchema 验证新的资产事实表结构
+// 新五表：fact_bsv_utxos, fact_token_lots, fact_token_carrier_links, fact_settlement_records, fact_settlement_cycles
 func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 	t.Parallel()
 
@@ -57,11 +59,12 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
+	// 验证新五表存在
 	for _, table := range []string{
-		"fact_chain_asset_flows",
-		"fact_bsv_consumptions",
-		"fact_token_consumptions",
-		"fact_token_utxo_links",
+		"fact_bsv_utxos",
+		"fact_token_lots",
+		"fact_token_carrier_links",
+		"fact_settlement_records",
 		"fact_settlement_cycles",
 	} {
 		exists, err := hasTable(db, table)
@@ -73,45 +76,101 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 		}
 	}
 
-	assertTableMissing(t, db, "fact", "asset", "consumptions")
-
-	flowCols, err := tableColumns(db, "fact_chain_asset_flows")
-	if err != nil {
-		t.Fatalf("inspect fact_chain_asset_flows columns failed: %v", err)
-	}
-	for _, col := range []string{"id", "flow_id", "wallet_id", "direction", "asset_kind", "utxo_id", "txid", "vout", "amount_satoshi", "occurred_at_unix", "updated_at_unix"} {
-		if _, ok := flowCols[col]; !ok {
-			t.Fatalf("fact_chain_asset_flows missing column %s", col)
+	// 验证旧表不存在
+	for _, table := range []string{
+		"fact_chain_asset_flows",
+		"fact_bsv_consumptions",
+		"fact_token_consumptions",
+		"fact_token_utxo_links",
+	} {
+		exists, err := hasTable(db, table)
+		if err != nil {
+			t.Fatalf("check legacy table %s failed: %v", table, err)
+		}
+		if exists {
+			t.Fatalf("legacy table %s should not exist", table)
 		}
 	}
 
-	bsvCols, err := tableColumns(db, "fact_bsv_consumptions")
+	// 验证 fact_bsv_utxos 列结构
+	bsvUtxoCols, err := tableColumns(db, "fact_bsv_utxos")
 	if err != nil {
-		t.Fatalf("inspect fact_bsv_consumptions columns failed: %v", err)
+		t.Fatalf("inspect fact_bsv_utxos columns failed: %v", err)
 	}
-	for _, col := range []string{"id", "consumption_id", "source_flow_id", "source_utxo_id", "settlement_cycle_id", "used_satoshi", "occurred_at_unix"} {
-		if _, ok := bsvCols[col]; !ok {
-			t.Fatalf("fact_bsv_consumptions missing column %s", col)
+	for _, col := range []string{
+		"utxo_id", "owner_pubkey_hex", "address", "txid", "vout",
+		"value_satoshi", "utxo_state", "carrier_type", "spent_by_txid",
+		"created_at_unix", "updated_at_unix", "spent_at_unix", "note", "payload_json",
+	} {
+		if _, ok := bsvUtxoCols[col]; !ok {
+			t.Fatalf("fact_bsv_utxos missing column %s", col)
 		}
 	}
-	if notNull, err := tableColumnNotNull(db, "fact_bsv_consumptions", "settlement_cycle_id"); err != nil {
-		t.Fatalf("inspect fact_bsv_consumptions settlement_cycle_id failed: %v", err)
-	} else if !notNull {
-		t.Fatal("fact_bsv_consumptions.settlement_cycle_id should be NOT NULL")
+
+	// 验证 fact_token_lots 列结构
+	tokenLotCols, err := tableColumns(db, "fact_token_lots")
+	if err != nil {
+		t.Fatalf("inspect fact_token_lots columns failed: %v", err)
+	}
+	for _, col := range []string{
+		"lot_id", "owner_pubkey_hex", "token_id", "token_standard",
+		"quantity_text", "used_quantity_text", "lot_state",
+		"mint_txid", "last_spend_txid", "created_at_unix", "updated_at_unix",
+		"note", "payload_json",
+	} {
+		if _, ok := tokenLotCols[col]; !ok {
+			t.Fatalf("fact_token_lots missing column %s", col)
+		}
 	}
 
-	tokenCols, err := tableColumns(db, "fact_token_consumptions")
+	// 验证 fact_token_carrier_links 列结构
+	carrierLinkCols, err := tableColumns(db, "fact_token_carrier_links")
 	if err != nil {
-		t.Fatalf("inspect fact_token_consumptions columns failed: %v", err)
+		t.Fatalf("inspect fact_token_carrier_links columns failed: %v", err)
 	}
-	for _, col := range []string{"id", "consumption_id", "source_flow_id", "token_id", "token_standard", "settlement_cycle_id", "used_quantity_text"} {
-		if _, ok := tokenCols[col]; !ok {
-			t.Fatalf("fact_token_consumptions missing column %s", col)
+	for _, col := range []string{
+		"link_id", "lot_id", "carrier_utxo_id", "owner_pubkey_hex",
+		"link_state", "bind_txid", "unbind_txid",
+		"created_at_unix", "updated_at_unix", "note", "payload_json",
+	} {
+		if _, ok := carrierLinkCols[col]; !ok {
+			t.Fatalf("fact_token_carrier_links missing column %s", col)
+		}
+	}
+
+	// 验证 fact_settlement_records 列结构
+	settlementRecordCols, err := tableColumns(db, "fact_settlement_records")
+	if err != nil {
+		t.Fatalf("inspect fact_settlement_records columns failed: %v", err)
+	}
+	for _, col := range []string{
+		"record_id", "settlement_cycle_id", "asset_type", "owner_pubkey_hex",
+		"source_utxo_id", "source_lot_id", "used_satoshi", "used_quantity_text",
+		"state", "occurred_at_unix", "confirmed_at_unix", "note", "payload_json",
+	} {
+		if _, ok := settlementRecordCols[col]; !ok {
+			t.Fatalf("fact_settlement_records missing column %s", col)
+		}
+	}
+
+	// 验证 fact_settlement_cycles 列结构
+	cycleCols, err := tableColumns(db, "fact_settlement_cycles")
+	if err != nil {
+		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
+	}
+	for _, col := range []string{
+		"id", "cycle_id", "source_type", "source_id", "state",
+		"gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi", "cycle_index",
+		"occurred_at_unix", "confirmed_at_unix", "note", "payload_json",
+	} {
+		if _, ok := cycleCols[col]; !ok {
+			t.Fatalf("fact_settlement_cycles missing column %s", col)
 		}
 	}
 }
 
-func TestInitIndexDB_AssetFactConstraints(t *testing.T) {
+// TestInitIndexDB_AssetFactIndexesAndConstraints 验证新资产事实表的索引和约束
+func TestInitIndexDB_AssetFactIndexesAndConstraints(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -119,150 +178,369 @@ func TestInitIndexDB_AssetFactConstraints(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	_, err := db.Exec(`INSERT INTO wallet_utxo(
-		utxo_id, wallet_id, address, txid, vout, value_satoshi, state,
-		allocation_class, allocation_reason, created_txid, spent_txid,
-		created_at_unix, updated_at_unix, spent_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"utxo_bsv_1", "wallet_1", "addr1", "tx1", 0, 1000, "confirmed",
-		"plain_bsv", "", "tx1", "", 1700000000, 1700000000, 0,
-	)
-	if err != nil {
-		t.Fatalf("insert wallet_utxo failed: %v", err)
+	// 验证 fact_bsv_utxos 唯一约束 (txid, vout)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_bsv_utxos", []string{"txid", "vout"}); err != nil {
+		t.Fatalf("inspect fact_bsv_utxos unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("fact_bsv_utxos should have unique constraint on (txid, vout)")
 	}
 
-	res, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id, wallet_id, address, direction, asset_kind, utxo_id, txid, vout,
-		amount_satoshi, occurred_at_unix, updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_bsv_1", "wallet_1", "addr1", "IN", "BSV", "utxo_bsv_1", "tx1", 0,
-		1000, 1700000000, 1700000000,
-	)
-	if err != nil {
-		t.Fatalf("insert flow failed: %v", err)
+	// 验证 fact_token_carrier_links 唯一约束 (lot_id, link_state) 和 (carrier_utxo_id, link_state)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_token_carrier_links", []string{"lot_id", "link_state"}); err != nil {
+		t.Fatalf("inspect fact_token_carrier_links unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("fact_token_carrier_links should have unique constraint on (lot_id, link_state)")
 	}
-	flowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("lookup flow id failed: %v", err)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_token_carrier_links", []string{"carrier_utxo_id", "link_state"}); err != nil {
+		t.Fatalf("inspect fact_token_carrier_links unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("fact_token_carrier_links should have unique constraint on (carrier_utxo_id, link_state)")
 	}
 
-	if _, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-		TxID:                "payment_bsv_1",
-		PaymentSubType:      "transfer",
-		Status:              "confirmed",
-		WalletInputSatoshi:  1000,
-		WalletOutputSatoshi: 0,
-		NetAmountSatoshi:    1000,
-		BlockHeight:         100,
-		OccurredAtUnix:      1700000001,
-		Payload:             map[string]any{"seed": true},
-	}); err != nil {
-		t.Fatalf("insert payment failed: %v", err)
-	}
-	chainCycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", "payment_bsv_1")
-	if err != nil {
-		t.Fatalf("lookup chain settlement cycle failed: %v", err)
+	// 验证 fact_settlement_records 唯一约束 (settlement_cycle_id, asset_type, source_utxo_id, source_lot_id)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_records", []string{"settlement_cycle_id", "asset_type", "source_utxo_id", "source_lot_id"}); err != nil {
+		t.Fatalf("inspect fact_settlement_records unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("fact_settlement_records should have unique constraint on (settlement_cycle_id, asset_type, source_utxo_id, source_lot_id)")
 	}
 
-	_, err = db.Exec(`INSERT INTO fact_bsv_consumptions(
-		source_flow_id, source_utxo_id, settlement_cycle_id,
-		state, used_satoshi, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?)`,
-		flowID, "utxo_bsv_1", chainCycleID, "confirmed", 1000, 1700000001, 1700000001, "bsv consume", "{}",
-	)
-	if err != nil {
-		t.Fatalf("insert bsv consumption failed: %v", err)
+	// 验证 fact_settlement_cycles 唯一约束 (source_type, source_id)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"source_type", "source_id"}); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("fact_settlement_cycles should have unique constraint on (source_type, source_id)")
 	}
 
-	_, err = db.Exec(`INSERT INTO fact_bsv_consumptions(
-		source_flow_id, source_utxo_id, settlement_cycle_id,
-		state, used_satoshi, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?)`,
-		flowID, "utxo_bsv_1", chainCycleID, "confirmed", 1000, 1700000001, 1700000001, "dup", "{}",
-	)
-	if err != nil {
-		t.Fatalf("duplicate bsv consumption should still be accepted by the new id trigger path: %v", err)
-	}
-	var bsvCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_consumptions WHERE source_flow_id=? AND settlement_cycle_id=?`, flowID, chainCycleID).Scan(&bsvCount); err != nil {
-		t.Fatalf("count bsv consumptions failed: %v", err)
-	}
-	if bsvCount != 2 {
-		t.Fatalf("expected 2 bsv consumptions, got %d", bsvCount)
+	// 验证 fact_settlement_records 外键约束
+	if hasFK, err := tableHasForeignKey(db, "fact_settlement_records", "settlement_cycle_id", "fact_settlement_cycles", "id"); err != nil {
+		t.Fatalf("inspect fact_settlement_records foreign key failed: %v", err)
+	} else if !hasFK {
+		t.Fatal("fact_settlement_records should have foreign key on settlement_cycle_id referencing fact_settlement_cycles.id")
 	}
 
-	_, err = db.Exec(`INSERT INTO wallet_utxo(
-		utxo_id, wallet_id, address, txid, vout, value_satoshi, state,
-		allocation_class, allocation_reason, created_txid, spent_txid,
-		created_at_unix, updated_at_unix, spent_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"utxo_tok_1", "wallet_2", "addr2", "tx2", 0, 1, "confirmed",
-		"unknown", "", "tx2", "", 1700000002, 1700000002, 0,
-	)
-	if err != nil {
-		t.Fatalf("insert token utxo failed: %v", err)
+	// 验证 NOT NULL 约束
+	if notNull, err := tableColumnNotNull(db, "fact_bsv_utxos", "owner_pubkey_hex"); err != nil {
+		t.Fatalf("inspect fact_bsv_utxos owner_pubkey_hex failed: %v", err)
+	} else if !notNull {
+		t.Fatal("fact_bsv_utxos.owner_pubkey_hex should be NOT NULL")
 	}
-	res, err = db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id, wallet_id, address, direction, asset_kind, utxo_id, txid, vout,
-		amount_satoshi, occurred_at_unix, updated_at_unix, token_id, quantity_text
+
+	if notNull, err := tableColumnNotNull(db, "fact_token_lots", "token_standard"); err != nil {
+		t.Fatalf("inspect fact_token_lots token_standard failed: %v", err)
+	} else if !notNull {
+		t.Fatal("fact_token_lots.token_standard should be NOT NULL")
+	}
+
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "source_type"); err != nil {
+		t.Fatalf("inspect fact_settlement_cycles source_type failed: %v", err)
+	} else if !notNull {
+		t.Fatal("fact_settlement_cycles.source_type should be NOT NULL")
+	}
+}
+
+// TestInitIndexDB_AssetFactWriteOperations 验证新资产事实表的写入操作
+func TestInitIndexDB_AssetFactWriteOperations(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	// 插入 fact_bsv_utxos 测试数据
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
+		utxo_state, carrier_type, spent_by_txid, created_at_unix, updated_at_unix, note, payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_tok_1", "wallet_2", "addr2", "IN", "BSV20", "utxo_tok_1", "tx2", 0,
-		1, 1700000002, 1700000002, "token_1", "10",
+		"utxo_bsv_1", "pubkey_hex_1", "addr1", "tx_bsv_1", 0, 1000,
+		"unspent", "plain_bsv", "", 1700000000, 1700000000, "test bsv utxo", "{}",
 	)
 	if err != nil {
-		t.Fatalf("insert token flow failed: %v", err)
-	}
-	tokenFlowID, err := res.LastInsertId()
-	if err != nil {
-		t.Fatalf("lookup token flow id failed: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO fact_pool_sessions(
-		pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-		pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"sess_pool_1", "2of3", "", "", "", "", 1000, 0, 0, 0, "", "active", 1700000002, 1700000002,
-	); err != nil {
-		t.Fatalf("insert pool session failed: %v", err)
-	}
-	res, err = db.Exec(`INSERT INTO fact_pool_session_events(
-		allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,
-		amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,
-		gateway_pubkey_hex,created_at_unix,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"alloc_tok_1", "sess_pool_1", 1, "pay", PoolFactEventKindPoolEvent, 1, "confirmed", "",
-		1000, "pay", "token allocation", "", 0, 1000, 0, "tx_tok_1", "hex_tok_1",
-		"", 1700000002, "{}",
-	)
-	if err != nil {
-		t.Fatalf("insert pool event failed: %v", err)
-	}
-	tokenCycleID := seedAssetFactSettlementCycle(t, db, "pool_session", "sess_pool_1", 1700000002)
-
-	_, err = db.Exec(`INSERT INTO fact_token_consumptions(
-		source_flow_id, source_utxo_id, token_id, token_standard, settlement_cycle_id,
-		state, used_quantity_text, occurred_at_unix, confirmed_at_unix, note, payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		tokenFlowID, "utxo_tok_1", "token_1", "BSV20", tokenCycleID, "confirmed", "10", 1700000002, 1700000002, "token consume", "{}",
-	)
-	if err != nil {
-		t.Fatalf("insert token consumption failed: %v", err)
+		t.Fatalf("insert fact_bsv_utxos failed: %v", err)
 	}
 
-	_, err = db.Exec(`INSERT INTO fact_token_consumptions(
-		source_flow_id, source_utxo_id, token_id, token_standard, settlement_cycle_id,
-		state, used_quantity_text, occurred_at_unix, confirmed_at_unix, note, payload_json
+	// 验证插入成功
+	var bsvUtxoCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos WHERE utxo_id=?`, "utxo_bsv_1").Scan(&bsvUtxoCount); err != nil {
+		t.Fatalf("count fact_bsv_utxos failed: %v", err)
+	}
+	if bsvUtxoCount != 1 {
+		t.Fatalf("expected 1 fact_bsv_utxos, got %d", bsvUtxoCount)
+	}
+
+	// 验证唯一约束：重复 (txid, vout) 应该失败
+	_, err = db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
+		utxo_state, carrier_type, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"utxo_bsv_2", "pubkey_hex_2", "addr2", "tx_bsv_1", 0, 2000,
+		"unspent", "plain_bsv", 1700000001, 1700000001,
+	)
+	if err == nil {
+		t.Fatal("expected duplicate (txid, vout) insert to fail")
+	}
+
+	// 插入 fact_token_lots 测试数据
+	_, err = db.Exec(`INSERT INTO fact_token_lots(
+		lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text,
+		used_quantity_text, lot_state, mint_txid, created_at_unix, updated_at_unix, note
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		tokenFlowID, "utxo_tok_1", "token_1", "BSV20", tokenCycleID, "confirmed", "10", 1700000002, 1700000002, "dup", "{}",
+		"lot_token_1", "pubkey_hex_1", "token_1", "BSV20", "1000",
+		"0", "unspent", "mint_tx_1", 1700000000, 1700000000, "test token lot",
 	)
 	if err != nil {
-		t.Fatalf("duplicate token consumption should still be accepted by the new id trigger path: %v", err)
+		t.Fatalf("insert fact_token_lots failed: %v", err)
 	}
-	var tokenCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE source_flow_id=? AND settlement_cycle_id=?`, tokenFlowID, tokenCycleID).Scan(&tokenCount); err != nil {
-		t.Fatalf("count token consumptions failed: %v", err)
+
+	var tokenLotCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_lots WHERE lot_id=?`, "lot_token_1").Scan(&tokenLotCount); err != nil {
+		t.Fatalf("count fact_token_lots failed: %v", err)
 	}
-	if tokenCount != 2 {
-		t.Fatalf("expected 2 token consumptions, got %d", tokenCount)
+	if tokenLotCount != 1 {
+		t.Fatalf("expected 1 fact_token_lots, got %d", tokenLotCount)
+	}
+
+	// 插入 fact_token_carrier_links 测试数据
+	_, err = db.Exec(`INSERT INTO fact_token_carrier_links(
+		link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state,
+		bind_txid, created_at_unix, updated_at_unix, note
+	) VALUES(?,?,?,?,?,?,?,?,?)`,
+		"link_1", "lot_token_1", "utxo_bsv_1", "pubkey_hex_1", "active",
+		"bind_tx_1", 1700000000, 1700000000, "test carrier link",
+	)
+	if err != nil {
+		t.Fatalf("insert fact_token_carrier_links failed: %v", err)
+	}
+
+	var linkCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_carrier_links WHERE link_id=?`, "link_1").Scan(&linkCount); err != nil {
+		t.Fatalf("count fact_token_carrier_links failed: %v", err)
+	}
+	if linkCount != 1 {
+		t.Fatalf("expected 1 fact_token_carrier_links, got %d", linkCount)
+	}
+
+	// 创建结算周期
+	cycleID := seedAssetFactSettlementCycle(t, db, "chain_payment", "payment_1", 1700000000)
+
+	// 插入 fact_settlement_records 测试数据
+	_, err = db.Exec(`INSERT INTO fact_settlement_records(
+		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		source_utxo_id, used_satoshi, state, occurred_at_unix, note
+	) VALUES(?,?,?,?,?,?,?,?,?)`,
+		"record_bsv_1", cycleID, "BSV", "pubkey_hex_1",
+		"utxo_bsv_1", 1000, "confirmed", 1700000000, "test settlement record",
+	)
+	if err != nil {
+		t.Fatalf("insert fact_settlement_records failed: %v", err)
+	}
+
+	var recordCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE record_id=?`, "record_bsv_1").Scan(&recordCount); err != nil {
+		t.Fatalf("count fact_settlement_records failed: %v", err)
+	}
+	if recordCount != 1 {
+		t.Fatalf("expected 1 fact_settlement_records, got %d", recordCount)
+	}
+
+	// 验证外键约束：非法 settlement_cycle_id 应该失败
+	_, err = db.Exec(`INSERT INTO fact_settlement_records(
+		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		source_utxo_id, used_satoshi, state, occurred_at_unix
+	) VALUES(?,?,?,?,?,?,?,?)`,
+		"record_invalid", 99999, "BSV", "pubkey_hex_1",
+		"utxo_bsv_1", 1000, "confirmed", 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid settlement_cycle_id insert to fail due to foreign key constraint")
+	}
+}
+
+// TestInitIndexDB_AssetFactCheckConstraints 验证 CHECK 约束
+func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	// 测试 fact_bsv_utxos.utxo_state CHECK 约束
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
+		utxo_state, carrier_type, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"utxo_check_1", "pubkey_hex_1", "addr1", "tx_check_1", 0, 1000,
+		"invalid_state", "plain_bsv", 1700000000, 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid utxo_state to fail CHECK constraint")
+	}
+
+	// 测试 fact_bsv_utxos.carrier_type CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
+		utxo_state, carrier_type, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"utxo_check_2", "pubkey_hex_1", "addr1", "tx_check_2", 0, 1000,
+		"unspent", "invalid_carrier", 1700000000, 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid carrier_type to fail CHECK constraint")
+	}
+
+	// 测试 fact_token_lots.token_standard CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_token_lots(
+		lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text,
+		lot_state, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?)`,
+		"lot_check_1", "pubkey_hex_1", "token_1", "INVALID_STD", "1000",
+		"unspent", 1700000000, 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid token_standard to fail CHECK constraint")
+	}
+
+	// 测试 fact_token_lots.lot_state CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_token_lots(
+		lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text,
+		lot_state, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?)`,
+		"lot_check_2", "pubkey_hex_1", "token_1", "BSV20", "1000",
+		"invalid_state", 1700000000, 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid lot_state to fail CHECK constraint")
+	}
+
+	// 测试 fact_token_carrier_links.link_state CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_token_carrier_links(
+		link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state,
+		created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?)`,
+		"link_check_1", "lot_check_1", "utxo_check_1", "pubkey_hex_1", "invalid_state",
+		1700000000, 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid link_state to fail CHECK constraint")
+	}
+
+	// 测试 fact_settlement_records.asset_type CHECK 约束
+	cycleID := seedAssetFactSettlementCycle(t, db, "chain_payment", "payment_check_1", 1700000000)
+	_, err = db.Exec(`INSERT INTO fact_settlement_records(
+		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		state, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		"record_check_1", cycleID, "INVALID_ASSET", "pubkey_hex_1",
+		"confirmed", 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid asset_type to fail CHECK constraint")
+	}
+
+	// 测试 fact_settlement_records.state CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_settlement_records(
+		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		state, occurred_at_unix
+	) VALUES(?,?,?,?,?,?)`,
+		"record_check_2", cycleID, "BSV", "pubkey_hex_1",
+		"invalid_state", 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid state to fail CHECK constraint")
+	}
+
+	// 测试 fact_settlement_cycles.source_type CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_settlement_cycles(
+		cycle_id, source_type, source_id, state, occurred_at_unix
+	) VALUES(?,?,?,?,?)`,
+		"cycle_check_1", "invalid_source", "source_1", "confirmed", 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid source_type to fail CHECK constraint")
+	}
+
+	// 测试 fact_settlement_cycles.state CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_settlement_cycles(
+		cycle_id, source_type, source_id, state, occurred_at_unix
+	) VALUES(?,?,?,?,?)`,
+		"cycle_check_2", "chain_payment", "source_2", "invalid_state", 1700000000,
+	)
+	if err == nil {
+		t.Fatal("expected invalid state to fail CHECK constraint")
+	}
+}
+
+// TestInitIndexDB_AssetFactUpdateOperations 验证更新操作
+func TestInitIndexDB_AssetFactUpdateOperations(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+
+	// 插入测试数据
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
+		utxo_state, carrier_type, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"utxo_update_1", "pubkey_hex_1", "addr1", "tx_update_1", 0, 1000,
+		"unspent", "plain_bsv", 1700000000, 1700000000,
+	)
+	if err != nil {
+		t.Fatalf("insert test data failed: %v", err)
+	}
+
+	// 更新 utxo_state 为 spent
+	_, err = db.Exec(`UPDATE fact_bsv_utxos SET 
+		utxo_state=?, spent_by_txid=?, spent_at_unix=?, updated_at_unix=? 
+		WHERE utxo_id=?`,
+		"spent", "spend_tx_1", 1700000100, 1700000100, "utxo_update_1",
+	)
+	if err != nil {
+		t.Fatalf("update fact_bsv_utxos failed: %v", err)
+	}
+
+	// 验证更新
+	var utxoState, spentByTxid string
+	var spentAtUnix int64
+	if err := db.QueryRow(`SELECT utxo_state, spent_by_txid, spent_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, "utxo_update_1").
+		Scan(&utxoState, &spentByTxid, &spentAtUnix); err != nil {
+		t.Fatalf("query updated fact_bsv_utxos failed: %v", err)
+	}
+	if utxoState != "spent" || spentByTxid != "spend_tx_1" || spentAtUnix != 1700000100 {
+		t.Fatalf("unexpected update result: state=%s, spent_by=%s, spent_at=%d", utxoState, spentByTxid, spentAtUnix)
+	}
+
+	// 插入 token lot 并更新 used_quantity_text
+	_, err = db.Exec(`INSERT INTO fact_token_lots(
+		lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text,
+		used_quantity_text, lot_state, created_at_unix, updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?)`,
+		"lot_update_1", "pubkey_hex_1", "token_1", "BSV20", "1000",
+		"0", "unspent", 1700000000, 1700000000,
+	)
+	if err != nil {
+		t.Fatalf("insert token lot failed: %v", err)
+	}
+
+	_, err = db.Exec(`UPDATE fact_token_lots SET 
+		used_quantity_text=?, lot_state=?, last_spend_txid=?, updated_at_unix=? 
+		WHERE lot_id=?`,
+		"500", "spent", "spend_tx_2", 1700000100, "lot_update_1",
+	)
+	if err != nil {
+		t.Fatalf("update fact_token_lots failed: %v", err)
+	}
+
+	var usedQty, lotState string
+	if err := db.QueryRow(`SELECT used_quantity_text, lot_state FROM fact_token_lots WHERE lot_id=?`, "lot_update_1").
+		Scan(&usedQty, &lotState); err != nil {
+		t.Fatalf("query updated fact_token_lots failed: %v", err)
+	}
+	if usedQty != "500" || lotState != "spent" {
+		t.Fatalf("unexpected update result: used_quantity=%s, lot_state=%s", usedQty, lotState)
 	}
 }
 
@@ -279,6 +557,24 @@ func TestInitIndexDB_RejectsLegacyAssetSchema(t *testing.T) {
 
 	if err := initIndexDB(db); err == nil {
 		t.Fatal("expected initIndexDB to reject legacy asset schema")
+	} else if !strings.Contains(err.Error(), "rebuild DB") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestInitIndexDB_RejectsOldAssetFlowTable(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	// 创建旧表 fact_chain_asset_flows
+	if _, err := db.Exec(`CREATE TABLE fact_chain_asset_flows(
+		id INTEGER PRIMARY KEY AUTOINCREMENT
+	)`); err != nil {
+		t.Fatalf("create legacy fact_chain_asset_flows table failed: %v", err)
+	}
+
+	if err := initIndexDB(db); err == nil {
+		t.Fatal("expected initIndexDB to reject legacy fact_chain_asset_flows table")
 	} else if !strings.Contains(err.Error(), "rebuild DB") {
 		t.Fatalf("unexpected error: %v", err)
 	}

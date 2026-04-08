@@ -61,23 +61,26 @@ func TestSyncWalletAndApplyFacts_NormalCase(t *testing.T) {
 		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
 	}
 
-	var flowCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows`).Scan(&flowCount); err != nil {
-		t.Fatalf("count flows: %v", err)
+	var utxoCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos`).Scan(&utxoCount); err != nil {
+		t.Fatalf("count utxos: %v", err)
 	}
-	if flowCount != 1 {
-		t.Fatalf("expected 1 flow, got %d", flowCount)
+	if utxoCount != 1 {
+		t.Fatalf("expected 1 utxo, got %d", utxoCount)
 	}
 
-	var utxoID, direction string
-	if err := db.QueryRow(`SELECT utxo_id, direction FROM fact_chain_asset_flows`).Scan(&utxoID, &direction); err != nil {
-		t.Fatalf("query flow: %v", err)
+	var utxoID, utxoState, carrierType string
+	if err := db.QueryRow(`SELECT utxo_id, utxo_state, carrier_type FROM fact_bsv_utxos`).Scan(&utxoID, &utxoState, &carrierType); err != nil {
+		t.Fatalf("query utxo: %v", err)
 	}
 	if utxoID != confirmedTxID+":0" {
 		t.Fatalf("expected utxo_id %s, got %s", confirmedTxID+":0", utxoID)
 	}
-	if direction != "IN" {
-		t.Fatalf("expected direction IN, got %s", direction)
+	if utxoState != "unspent" {
+		t.Fatalf("expected utxo_state 'unspent', got %s", utxoState)
+	}
+	if carrierType != "plain_bsv" {
+		t.Fatalf("expected carrier_type 'plain_bsv', got %s", carrierType)
 	}
 }
 
@@ -117,9 +120,9 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 		t.Fatalf("SyncWalletAndApplyFacts round-1: %v", err)
 	}
 
-	var flowID1 int64
-	if err := db.QueryRow(`SELECT id FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&flowID1); err != nil {
-		t.Fatalf("query flow after round-1: %v", err)
+	var createdAt1 int64
+	if err := db.QueryRow(`SELECT created_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&createdAt1); err != nil {
+		t.Fatalf("query utxo after round-1: %v", err)
 	}
 
 	// 第二次同步（重复触发）
@@ -127,20 +130,20 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 		t.Fatalf("SyncWalletAndApplyFacts round-2: %v", err)
 	}
 
-	var flowCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows`).Scan(&flowCount); err != nil {
-		t.Fatalf("count flows after round-2: %v", err)
+	var utxoCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos`).Scan(&utxoCount); err != nil {
+		t.Fatalf("count utxos after round-2: %v", err)
 	}
-	if flowCount != 1 {
-		t.Fatalf("expected 1 flow (idempotent), got %d", flowCount)
+	if utxoCount != 1 {
+		t.Fatalf("expected 1 utxo (idempotent), got %d", utxoCount)
 	}
 
-	var flowID2 int64
-	if err := db.QueryRow(`SELECT id FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&flowID2); err != nil {
-		t.Fatalf("query flow after round-2: %v", err)
+	var createdAt2 int64
+	if err := db.QueryRow(`SELECT created_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&createdAt2); err != nil {
+		t.Fatalf("query utxo after round-2: %v", err)
 	}
-	if flowID2 != flowID1 {
-		t.Fatalf("expected same flow id (idempotent), got %d vs %d", flowID2, flowID1)
+	if createdAt2 != createdAt1 {
+		t.Fatalf("expected same created_at (idempotent), got %d vs %d", createdAt2, createdAt1)
 	}
 }
 
@@ -207,11 +210,11 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 
 	// 验证写入成功
 	var count1 int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&count1); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&count1); err != nil {
 		t.Fatalf("count after first write: %v", err)
 	}
 	if count1 != 1 {
-		t.Fatalf("expected 1 flow after first write, got %d", count1)
+		t.Fatalf("expected 1 utxo after first write, got %d", count1)
 	}
 
 	// 步骤3：模拟 fact 层故障 - 关闭数据库连接
@@ -249,11 +252,11 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 
 	// 验证恢复成功
 	var countFinal int
-	if err := db2.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&countFinal); err != nil {
+	if err := db2.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&countFinal); err != nil {
 		t.Fatalf("count after recovery: %v", err)
 	}
 	if countFinal != 1 {
-		t.Fatalf("expected 1 flow after recovery, got %d", countFinal)
+		t.Fatalf("expected 1 utxo after recovery, got %d", countFinal)
 	}
 
 	// 步骤7：验证幂等（再次写入不重复）
@@ -262,10 +265,10 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	}
 
 	var countIdempotent int
-	if err := db2.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows WHERE utxo_id=?`, confirmedTxID+":0").Scan(&countIdempotent); err != nil {
+	if err := db2.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&countIdempotent); err != nil {
 		t.Fatalf("count after idempotent call: %v", err)
 	}
 	if countIdempotent != 1 {
-		t.Fatalf("expected 1 flow after idempotent call, got %d", countIdempotent)
+		t.Fatalf("expected 1 utxo after idempotent call, got %d", countIdempotent)
 	}
 }

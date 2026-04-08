@@ -836,9 +836,10 @@ func (s *httpAPIServer) handleWalletFundFlowDetail(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
+	// 硬切版：使用 ref_id（文本）替代 id（int64），对应 utxo_id 或 lot_id
+	refID := strings.TrimSpace(r.URL.Query().Get("ref_id"))
+	if refID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "ref_id is required"})
 		return
 	}
 	flowType := strings.TrimSpace(r.URL.Query().Get("flow_type"))
@@ -846,7 +847,7 @@ func (s *httpAPIServer) handleWalletFundFlowDetail(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "flow_type is required"})
 		return
 	}
-	it, err := dbGetWalletFundFlowItem(r.Context(), httpStore(s), int64(id), flowType)
+	it, err := dbGetWalletFundFlowItem(r.Context(), httpStore(s), refID, flowType)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
@@ -2743,8 +2744,9 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 		if err := dbUpsertSeedPricingPolicy(store.db, seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
 			return 0, 0, err
 		}
-		var chunkCount uint32
-		if err := store.db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+		// 从种子元数据获取 chunk_count（使用 db 抽象层）
+		chunkCount, err := dbGetSeedChunkCountForPricing(r.Context(), store, seedHash)
+		if err != nil {
 			return 0, 0, err
 		}
 		return req.FloorPriceSatPer64K, req.FloorPriceSatPer64K * uint64(chunkCount), nil
@@ -5204,7 +5206,7 @@ func maskSecretForAdminConfig(raw string) string {
 // - 所有 verification 查询接口必须通过此函数返回，避免漏字段
 func writeVerificationResponse(w http.ResponseWriter, data map[string]any) {
 	data["data_role"] = "primary"
-	data["source_of_truth"] = "fact_chain_asset_flows"
+	data["source_of_truth"] = "fact_token_lots"
 	writeJSON(w, http.StatusOK, data)
 }
 

@@ -17,7 +17,9 @@ import (
 // 设计说明：
 // - 对 wallet_utxo 中 allocation_class='unknown' 且 value_satoshi=1 的 UTXO
 // - 通过 WOC 查询确认其真实资产类型（BSV20/BSV21/BSV）
-// - 确认后更新 allocation_class 并写入 fact_chain_asset_flows
+// - 确认后更新 allocation_class 并写入相应 fact 表：
+//   * BSV UTXO -> fact_bsv_utxos
+//   * Token UTXO -> fact_token_lots + fact_token_carrier_links
 // - 保持幂等：同一 UTXO 不会重复确认，同一 flow 不会重复写入
 
 const (

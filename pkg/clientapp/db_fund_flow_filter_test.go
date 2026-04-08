@@ -15,21 +15,40 @@ func TestWalletFundFlows_MultiDirectionFilter(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	// 插入 fact_chain_asset_flows 测试数据（不同方向）
-	_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
+	// 插入 fact_bsv_utxos 测试数据（不同方向）
+	// OUT 方向：utxo_state='spent'
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix,note,payload_json
 	) VALUES
-		('flow_1', 'wallet1', 'addr1', 'OUT', 'BSV', '', 'utxo_1', 'tx1', 0, 100, '0', 1700000001, 1700000001, 'WOC', '', '{}'),
-		('flow_2', 'wallet1', 'addr2', 'OUT', 'BSV', '', 'utxo_2', 'tx2', 0, 200, '0', 1700000002, 1700000002, 'WOC', '', '{}'),
-		('flow_3', 'wallet1', 'addr3', 'IN', 'BSV', '', 'utxo_3', 'tx3', 0, 50, '0', 1700000003, 1700000003, 'WOC', '', '{}'),
-		('flow_4', 'wallet1', 'addr4', 'OUT', 'BSV20', 'token1', 'utxo_4', 'tx4', 0, 30, '1000', 1700000004, 1700000004, 'WOC', '', '{}'),
-		('flow_5', 'wallet1', 'addr5', 'IN', 'BSV', '', 'utxo_5', 'tx5', 0, 500, '0', 1700000005, 1700000005, 'WOC', '', '{}'),
-		('flow_6', 'wallet1', 'addr6', 'IN', 'BSV21', 'token2', 'utxo_6', 'tx6', 0, 100, '500', 1700000006, 1700000006, 'WOC', '', '{}'),
-		('flow_7', 'wallet1', 'addr7', 'OUT', 'BSV', '', 'utxo_7', 'tx7', 0, 0, '0', 1700000007, 1700000007, 'WOC', '', '{}'),
-		('flow_8', 'wallet1', 'addr8', 'IN', 'BSV', '', 'utxo_8', 'tx8', 0, 0, '0', 1700000008, 1700000008, 'WOC', '', '{}')
+		('utxo_1', 'pubkey1', 'addr1', 'tx1', 0, 100, 'spent', 'plain_bsv', 'spend_tx1', 1700000001, 1700000001, 1700000001, '', '{}'),
+		('utxo_2', 'pubkey1', 'addr2', 'tx2', 0, 200, 'spent', 'plain_bsv', 'spend_tx2', 1700000002, 1700000002, 1700000002, '', '{}'),
+		('utxo_4', 'pubkey1', 'addr4', 'tx4', 0, 30, 'spent', 'token_carrier', 'spend_tx4', 1700000004, 1700000004, 1700000004, '', '{}'),
+		('utxo_7', 'pubkey1', 'addr7', 'tx7', 0, 70, 'spent', 'plain_bsv', 'spend_tx7', 1700000007, 1700000007, 1700000007, '', '{}')
 	`)
 	if err != nil {
-		t.Fatalf("insert fact_chain_asset_flows: %v", err)
+		t.Fatalf("insert fact_bsv_utxos spent: %v", err)
+	}
+
+	// IN 方向：utxo_state='unspent'
+	_, err = db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES
+		('utxo_3', 'pubkey1', 'addr3', 'tx3', 0, 50, 'unspent', 'plain_bsv', 1700000003, 1700000003, '', '{}'),
+		('utxo_5', 'pubkey1', 'addr5', 'tx5', 0, 500, 'unspent', 'plain_bsv', 1700000005, 1700000005, '', '{}'),
+		('utxo_8', 'pubkey1', 'addr8', 'tx8', 0, 80, 'unspent', 'plain_bsv', 1700000008, 1700000008, '', '{}')
+	`)
+	if err != nil {
+		t.Fatalf("insert fact_bsv_utxos unspent: %v", err)
+	}
+
+	// Token IN 方向：lot_state='unspent' 或 'spent'
+	_, err = db.Exec(`INSERT INTO fact_token_lots(
+		lot_id,owner_pubkey_hex,token_id,token_standard,quantity_text,used_quantity_text,lot_state,mint_txid,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES
+		('lot_6', 'pubkey1', 'token2', 'BSV21', '500', '0', 'unspent', 'tx6', 1700000006, 1700000006, '', '{}')
+	`)
+	if err != nil {
+		t.Fatalf("insert fact_token_lots: %v", err)
 	}
 
 	t.Run("single direction out returns only out records", func(t *testing.T) {
@@ -48,7 +67,7 @@ func TestWalletFundFlows_MultiDirectionFilter(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		// OUT 方向：flow_1, flow_2, flow_4, flow_7 = 4 条
+		// OUT 方向：utxo_1, utxo_2, utxo_4, utxo_7 = 4 条 BSV 流出
 		if body.Total != 4 {
 			t.Fatalf("total: got=%d want=4", body.Total)
 		}
@@ -78,7 +97,7 @@ func TestWalletFundFlows_MultiDirectionFilter(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("unmarshal: %v", err)
 		}
-		// OUT + IN = 全部 8 条
+		// OUT 4 条 + IN 4 条 = 8 条
 		if body.Total != 8 {
 			t.Fatalf("total: got=%d want=8", body.Total)
 		}
@@ -160,11 +179,12 @@ func TestWalletFundFlows_DirectionCaseInsensitive(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
+	// 插入 fact_bsv_utxos 测试数据
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix,note,payload_json
 	) VALUES
-		('f1', 'w1', 'a1', 'OUT', 'BSV', '', 'u1', 't1', 0, 100, '0', 1700000001, 1700000001, 'WOC', '', '{}'),
-		('f2', 'w1', 'a2', 'IN', 'BSV', '', 'u2', 't2', 0, 200, '0', 1700000002, 1700000002, 'WOC', '', '{}')
+		('u1', 'pk1', 'a1', 't1', 0, 100, 'spent', 'plain_bsv', 'spend_tx', 1700000001, 1700000001, 1700000001, '', '{}'),
+		('u2', 'pk1', 'a2', 't2', 0, 200, 'unspent', 'plain_bsv', '', 1700000002, 1700000002, 0, '', '{}')
 	`)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
@@ -197,14 +217,23 @@ func TestWalletFundFlows_PaginationStable(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	// 插入 10 条记录
-	for i := 1; i <= 10; i++ {
-		_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-			flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
-		) VALUES(?, 'w1', ?, 'OUT', 'BSV', '', ?, 't?', 0, ?, '0', 1700000000+?, 1700000000+?, 'WOC', '', '{}')`,
-			fmt.Sprintf("pf_%d", i), fmt.Sprintf("a%d", i), fmt.Sprintf("u%d", i), i*10, i, i)
+	// 插入 10 条 BSV UTXO 记录（5个unspent, 5个spent）
+	for i := 1; i <= 5; i++ {
+		_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+			utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,created_at_unix,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("pf_in_%d", i), "pk1", fmt.Sprintf("a%d", i), fmt.Sprintf("t%d", i), 0, int64(i*10), "unspent", "plain_bsv", int64(1700000000+i), int64(1700000000+i))
 		if err != nil {
-			t.Fatalf("insert %d: %v", i, err)
+			t.Fatalf("insert unspent %d: %v", i, err)
+		}
+	}
+	for i := 6; i <= 10; i++ {
+		_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+			utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("pf_out_%d", i), "pk1", fmt.Sprintf("a%d", i), fmt.Sprintf("t%d", i), 0, int64(i*10), "spent", "plain_bsv", fmt.Sprintf("spend_t%d", i), int64(1700000000+i), int64(1700000000+i), int64(1700000100+i))
+		if err != nil {
+			t.Fatalf("insert spent %d: %v", i, err)
 		}
 	}
 
@@ -266,14 +295,24 @@ func TestWalletFundFlows_ExposesAssetKind(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
+	// 插入 BSV UTXO 记录
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,created_at_unix,updated_at_unix,note
 	) VALUES
-		('asset_bsv_1', 'wallet_kind', 'addr_kind', 'IN', 'BSV', '', 'utxo_bsv_1', 'tx_bsv_1', 0, 1234, '', 1700000101, 1700000101, 'WOC', 'bsv in', '{}'),
-		('asset_token_1', 'wallet_kind', 'addr_kind', 'IN', 'BSV21', 'token_kind_1', 'utxo_token_1', 'tx_token_1', 0, 1, '2500', 1700000102, 1700000102, 'WOC', 'token in', '{}')
+		('utxo_bsv_1', 'pk1', 'addr_kind', 'tx_bsv_1', 0, 1234, 'unspent', 'plain_bsv', 1700000101, 1700000101, 'bsv in')
 	`)
 	if err != nil {
-		t.Fatalf("insert asset facts: %v", err)
+		t.Fatalf("insert bsv utxo: %v", err)
+	}
+
+	// 插入 Token Lot 记录
+	_, err = db.Exec(`INSERT INTO fact_token_lots(
+		lot_id,owner_pubkey_hex,token_id,token_standard,quantity_text,used_quantity_text,lot_state,mint_txid,created_at_unix,updated_at_unix,note
+	) VALUES
+		('lot_token_1', 'pk1', 'token_kind_1', 'BSV21', '2500', '0', 'unspent', 'tx_token_1', 1700000102, 1700000102, 'token in')
+	`)
+	if err != nil {
+		t.Fatalf("insert token lot: %v", err)
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows?limit=10", nil)
@@ -308,10 +347,10 @@ func TestWalletFundFlows_ExposesAssetKind(t *testing.T) {
 			TokenStandard string
 		}{item.AssetKind, item.TokenID, item.TokenStandard}
 	}
-	if got := seen["asset_bsv_1"]; got.AssetKind != "BSV" || got.TokenID != "" || got.TokenStandard != "" {
+	if got := seen["utxo_bsv_1"]; got.AssetKind != "BSV" || got.TokenID != "" || got.TokenStandard != "" {
 		t.Fatalf("bsv item mismatch: %+v", got)
 	}
-	if got := seen["asset_token_1"]; got.AssetKind != "BSV21" || got.TokenID != "token_kind_1" || got.TokenStandard != "BSV21" {
+	if got := seen["lot_token_1"]; got.AssetKind != "BSV21" || got.TokenID != "token_kind_1" || got.TokenStandard != "BSV21" {
 		t.Fatalf("token item mismatch: %+v", got)
 	}
 }
@@ -322,8 +361,8 @@ func TestWalletFundFlowDetail_RequiresFlowType(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	// 不传 flow_type → 400
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?id=1", nil)
+	// 不传 flow_type → 400（先传 ref_id，再测 flow_type）
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?ref_id=1", nil)
 	rec := httptest.NewRecorder()
 	srv.handleWalletFundFlowDetail(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -346,14 +385,15 @@ func TestWalletFundFlowDetail_HitsCorrectRecord(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
-	) VALUES('detail_flow_1', 'w1', 'a1', 'OUT', 'BSV', '', 'u1', 'tx_detail1', 0, 999, '0', 1700000001, 1700000001, 'WOC', 'test note', '{}')`)
+	// 插入 BSV UTXO spent 记录（chain_bsv_out）
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix,note
+	) VALUES('detail_utxo_1', 'pk1', 'a1', 'tx_detail1', 0, 999, 'spent', 'plain_bsv', 'spend_tx_detail', 1700000001, 1700000001, 1700000001, 'test note')`)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?id=1&flow_type=chain_asset", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?ref_id=detail_utxo_1&flow_type=chain_bsv_out", nil)
 	rec := httptest.NewRecorder()
 	srv.handleWalletFundFlowDetail(rec, req)
 	if rec.Code != http.StatusOK {
@@ -363,11 +403,11 @@ func TestWalletFundFlowDetail_HitsCorrectRecord(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if body.FlowType != "chain_asset" {
-		t.Fatalf("flow_type: got=%q want=chain_asset", body.FlowType)
+	if body.FlowType != "chain_bsv_out" {
+		t.Fatalf("flow_type: got=%q want=chain_bsv_out", body.FlowType)
 	}
-	if body.RelatedTxID != "tx_detail1" {
-		t.Fatalf("related_txid: got=%q want=tx_detail1", body.RelatedTxID)
+	if body.RelatedTxID != "spend_tx_detail" {
+		t.Fatalf("related_txid: got=%q want=spend_tx_detail", body.RelatedTxID)
 	}
 	if body.AmountSatoshi != 999 {
 		t.Fatalf("amount_satoshi: got=%d want=999", body.AmountSatoshi)
@@ -380,15 +420,16 @@ func TestWalletFundFlowDetail_WrongFlowTypeReturns404(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_, err := db.Exec(`INSERT INTO fact_chain_asset_flows(
-		flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json
-	) VALUES('detail_flow_2', 'w1', 'a2', 'IN', 'BSV', '', 'u2', 'tx_detail2', 0, 100, '0', 1700000002, 1700000002, 'WOC', '', '{}')`)
+	// 插入 BSV UTXO unspent 记录
+	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
+		utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix,note,payload_json
+	) VALUES('detail_utxo_2', 'pk1', 'a2', 'tx_detail2', 0, 100, 'unspent', 'plain_bsv', '', 1700000002, 1700000002, 0, '', '{}')`)
 	if err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// id=1 存在于 chain_asset，但用 chain_payment 查询 → 404
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?id=1&flow_type=chain_payment", nil)
+	// detail_utxo_2 是 unspent（chain_bsv_in），但用 chain_bsv_out 查询 → 404
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?ref_id=detail_utxo_2&flow_type=chain_bsv_out", nil)
 	rec := httptest.NewRecorder()
 	srv.handleWalletFundFlowDetail(rec, req)
 	if rec.Code != http.StatusNotFound {

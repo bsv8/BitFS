@@ -237,7 +237,7 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	if requested.scale != 0 {
 		return preparedWalletTokenSend{}, fmt.Errorf("%s amount_text must be an integer", standard)
 	}
-	// fact_chain_asset_flows 为唯一 token 选源口径
+	// fact_token_lots 为唯一 token 选源口径
 	candidates, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, standard, assetKey)
 	if err != nil {
 		return preparedWalletTokenSend{}, err

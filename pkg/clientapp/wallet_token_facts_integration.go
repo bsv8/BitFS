@@ -69,47 +69,46 @@ func sumDecimalTexts(csv string) (string, error) {
 }
 
 // hasFactTokenHistory 检查钱包是否有该 token 的 fact 历史记录
+// 设计说明（硬切版）：
+// - 改为查询 fact_token_lots 表
 func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) (bool, error) {
-	bal, err := dbLoadTokenBalanceFact(ctx, store, walletID, assetKind, tokenID)
+	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
+	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
+	
+	var count int
+	err := store.Do(ctx, func(db *sql.DB) error {
+		return db.QueryRow(
+			`SELECT COUNT(1) FROM fact_token_lots WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=?`,
+			ownerPubkeyHex, assetKind, tokenID,
+		).Scan(&count)
+	})
 	if err != nil {
 		return false, err
 	}
-	// 有流入或消耗记录即认为有历史
-	return bal.TotalInText != "" || bal.TotalUsedText != "", nil
+	return count > 0, nil
 }
 
 // loadWalletTokenBalance 统一 token 余额读取入口
-// 设计说明：
-// - fact_chain_asset_flows 为唯一口径
+// 设计说明（硬切版）：
+// - 改为查询 fact_token_lots 表
 // - unknown 不参与 fact，不影响余额
 func loadWalletTokenBalance(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) (string, error) {
-	walletID := walletIDByAddress(address)
+	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(address))
 	assetKind := strings.ToUpper(strings.TrimSpace(standard))
 
-	bal, err := dbLoadTokenBalanceFact(ctx, store, walletID, assetKind, assetKey)
+	// 直接计算余额
+	balance, err := dbCalcTokenBalance(ctx, store, ownerPubkeyHex, assetKind, assetKey)
 	if err != nil {
-		return "", fmt.Errorf("load token balance fact: %w", err)
+		return "", fmt.Errorf("calc token balance: %w", err)
 	}
 
-	if bal.TotalInText == "" && bal.TotalUsedText == "" {
-		logTokenBalanceSuccess(ctx, walletID, assetKind, assetKey, "0")
+	if balance == "" || balance == "0" {
+		logTokenBalanceSuccess(ctx, "wallet:"+ownerPubkeyHex, assetKind, assetKey, "0")
 		return "0", nil
 	}
 
-	totalIn, err := sumDecimalTexts(bal.TotalInText)
-	if err != nil {
-		return "", fmt.Errorf("sum total_in: %w", err)
-	}
-	totalUsed, err := sumDecimalTexts(bal.TotalUsedText)
-	if err != nil {
-		return "", fmt.Errorf("sum total_used: %w", err)
-	}
-	remaining, err := subtractTokenDecimalText(totalIn, totalUsed)
-	if err != nil {
-		return "", fmt.Errorf("calc remaining: %w", err)
-	}
-	logTokenBalanceSuccess(ctx, walletID, assetKind, assetKey, remaining)
-	return remaining, nil
+	logTokenBalanceSuccess(ctx, "wallet:"+ownerPubkeyHex, assetKind, assetKey, balance)
+	return balance, nil
 }
 
 // logTokenBalanceSuccess 记录主路径成功日志
@@ -120,65 +119,92 @@ func logTokenBalanceSuccess(ctx context.Context, walletID string, assetKind stri
 		"asset_kind":      assetKind,
 		"token_id":        tokenID,
 		"balance":         balance,
-		"source_of_truth": "fact_chain_asset_flows",
+		"source_of_truth": "fact_token_lots",
 	})
 }
 
 // loadWalletTokenSpendableCandidatesFromFact 从 fact 表加载 token 可花费候选
-// 设计说明：
-// - fact_chain_asset_flows 为唯一口径
-// - fact 查询成功 → 有候选则返回
-// - fact 查询成功且无候选但有历史记录 → 说明已花完，返回空
-// - fact 查询成功且无候选且无历史 → fact 未建账，返回空
-// - fact 查询失败 → 直接报错
+// 设计说明（硬切版）：
+// - 改为查询 fact_token_lots + fact_token_carrier_links
 // - 返回格式统一为 walletTokenPreviewCandidate，方便上层消费
 func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
-	walletID := walletIDByAddress(address)
+	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(address))
 	assetKind := strings.ToUpper(strings.TrimSpace(standard))
 
-	flows, err := dbListTokenSpendableSourceFlows(ctx, store, walletID, assetKind, assetKey)
+	// 查询可花费的 token lots 及其 carrier
+	lots, err := dbListSpendableTokenLots(ctx, store, ownerPubkeyHex, assetKind, assetKey)
 	if err != nil {
-		return nil, fmt.Errorf("list token spendable source flows: %w", err)
+		return nil, fmt.Errorf("list spendable token lots: %w", err)
 	}
-	if len(flows) > 0 {
-		out := make([]walletTokenPreviewCandidate, 0, len(flows))
-		for _, f := range flows {
-			parsedQty, _ := parseDecimalText(f.QuantityText)
-			out = append(out, walletTokenPreviewCandidate{
-				Item: walletTokenOutputItem{
-					UTXOID:       f.UTXOID,
-					TxID:         f.TxID,
-					Vout:         f.Vout,
-					QuantityText: f.QuantityText,
-					AssetKey:     strings.TrimSpace(f.TokenID),
-				},
-				CreatedAtUnix: f.OccurredAtUnix,
-				Quantity:      parsedQty,
-			})
+	
+	if len(lots) == 0 {
+		// 检查是否有历史记录
+		hasHistory, err := hasFactTokenHistory(ctx, store, "wallet:"+ownerPubkeyHex, assetKind, assetKey)
+		if err != nil {
+			return nil, fmt.Errorf("check token fact history: %w", err)
 		}
-		return out, nil
-	}
-
-	hasHistory, err := hasFactTokenHistory(ctx, store, walletID, assetKind, assetKey)
-	if err != nil {
-		return nil, fmt.Errorf("check token fact history: %w", err)
-	}
-	if hasHistory {
+		if hasHistory {
+			return []walletTokenPreviewCandidate{}, nil
+		}
 		return []walletTokenPreviewCandidate{}, nil
 	}
 
-	return []walletTokenPreviewCandidate{}, nil
+	out := make([]walletTokenPreviewCandidate, 0, len(lots))
+	for _, lot := range lots {
+		// 计算剩余数量
+		qtyParsed, _ := parseDecimalText(lot.QuantityText)
+		usedParsed, _ := parseDecimalText(lot.UsedQuantityText)
+		
+		// 对齐精度并计算剩余
+		scale := qtyParsed.scale
+		if usedParsed.scale > scale {
+			scale = usedParsed.scale
+		}
+		qtyVal := new(big.Int).Set(qtyParsed.intValue)
+		usedVal := new(big.Int).Set(usedParsed.intValue)
+		for i := qtyParsed.scale; i < scale; i++ {
+			qtyVal = new(big.Int).Mul(qtyVal, big.NewInt(10))
+		}
+		for i := usedParsed.scale; i < scale; i++ {
+			usedVal = new(big.Int).Mul(usedVal, big.NewInt(10))
+		}
+		remainingVal := new(big.Int).Sub(qtyVal, usedVal)
+		if remainingVal.Sign() <= 0 {
+			continue
+		}
+		remainingText := formatDecimalText(remainingVal, scale)
+		
+		// 查询 carrier UTXO
+		link, err := dbGetActiveCarrierForLot(ctx, store, lot.LotID)
+		if err != nil || link == nil {
+			continue
+		}
+		
+		out = append(out, walletTokenPreviewCandidate{
+			Item: walletTokenOutputItem{
+				UTXOID:       link.CarrierUTXOID,
+				TxID:         "", // 可以从 UTXOID 解析
+				Vout:         0,
+				QuantityText: remainingText,
+				AssetKey:     strings.TrimSpace(lot.TokenID),
+			},
+			CreatedAtUnix: lot.CreatedAtUnix,
+			Quantity:      decimalTextValue{intValue: remainingVal, scale: scale},
+		})
+	}
+	
+	return out, nil
 }
 
 // appendTokenConsumptionAfterBroadcast token 发送成功后写入 fact 消耗记录
-// 设计说明：
-// - 先为 token send tx 写入 settlement_cycle 事实，再逐条写 token 消耗
-// - 幂等：同一 source_flow_id + settlement_cycle_id 不会重复写
-func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, txHex string, txID string, tokenUTXOIDs map[string]string, occurredAtUnix int64) error {
+// 设计说明（硬切版）：
+// - 改为写入 fact_settlement_records 和更新 fact_token_lots
+// - 幂等：同一 lot_id 不会重复消耗
+func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, txHex string, txID string, tokenLotIDs map[string]string, occurredAtUnix int64) error {
 	return store.Do(ctx, func(db *sql.DB) error {
 		cycleID := fmt.Sprintf("cycle_chain_token_%s", txID)
 		if err := dbUpsertSettlementCycle(db, cycleID, "chain_token", txID, "confirmed",
-			0, 0, 0, 0, occurredAtUnix, "token send broadcast", map[string]any{"type": "token_send", "token_count": len(tokenUTXOIDs), "tx_hex": txHex}); err != nil {
+			0, 0, 0, 0, occurredAtUnix, "token send broadcast", map[string]any{"type": "token_send", "token_count": len(tokenLotIDs), "tx_hex": txHex}); err != nil {
 			return fmt.Errorf("upsert settlement cycle for token send: %w", err)
 		}
 		settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_token", txID)
@@ -186,10 +212,74 @@ func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, 
 			return fmt.Errorf("resolve settlement cycle for token send: %w", err)
 		}
 
-		// 逐条写 token 消耗
-		for utxoID, quantityText := range tokenUTXOIDs {
-			if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, settlementCycleID, utxoID, quantityText, occurredAtUnix); err != nil {
-				return fmt.Errorf("append token consumption for utxo %s: %w", utxoID, err)
+		// 逐条写 token 消耗记录
+		for lotID, usedQuantityText := range tokenLotIDs {
+			// 获取 lot 信息
+			lot, err := dbGetTokenLotDB(db, lotID)
+			if err != nil {
+				return fmt.Errorf("get token lot %s: %w", lotID, err)
+			}
+			if lot == nil {
+				return fmt.Errorf("token lot %s not found", lotID)
+			}
+			
+			// 写入结算记录
+			recordID := fmt.Sprintf("rec_%s_%s", txID, lotID)
+			if err := dbAppendSettlementRecordDB(db, settlementRecordEntry{
+				RecordID:          recordID,
+				SettlementCycleID: settlementCycleID,
+				AssetType:         "TOKEN",
+				OwnerPubkeyHex:    lot.OwnerPubkeyHex,
+				SourceLotID:       lotID,
+				UsedQuantityText:  usedQuantityText,
+				State:             "confirmed",
+				OccurredAtUnix:    occurredAtUnix,
+				Note:              "token consumed by send tx",
+				Payload:           map[string]any{"txid": txID},
+			}); err != nil {
+				return fmt.Errorf("append settlement record for lot %s: %w", lotID, err)
+			}
+			
+			// 更新 lot 的 used_quantity_text
+			newUsedQty, err := sumDecimalTexts(lot.UsedQuantityText + "," + usedQuantityText)
+			if err != nil {
+				newUsedQty = usedQuantityText
+			}
+			
+			// 计算是否已花完
+			qtyParsed, _ := parseDecimalText(lot.QuantityText)
+			usedParsed, _ := parseDecimalText(newUsedQty)
+			scale := qtyParsed.scale
+			if usedParsed.scale > scale {
+				scale = usedParsed.scale
+			}
+			qtyVal := new(big.Int).Set(qtyParsed.intValue)
+			usedVal := new(big.Int).Set(usedParsed.intValue)
+			for i := qtyParsed.scale; i < scale; i++ {
+				qtyVal = new(big.Int).Mul(qtyVal, big.NewInt(10))
+			}
+			for i := usedParsed.scale; i < scale; i++ {
+				usedVal = new(big.Int).Mul(usedVal, big.NewInt(10))
+			}
+			
+			lotState := "unspent"
+			if usedVal.Cmp(qtyVal) >= 0 {
+				lotState = "spent"
+			}
+			
+			if err := dbUpsertTokenLotDB(db, tokenLotEntry{
+				LotID:            lotID,
+				OwnerPubkeyHex:   lot.OwnerPubkeyHex,
+				TokenID:          lot.TokenID,
+				TokenStandard:    lot.TokenStandard,
+				QuantityText:     lot.QuantityText,
+				UsedQuantityText: newUsedQty,
+				LotState:         lotState,
+				MintTxid:         lot.MintTxid,
+				LastSpendTxid:    txID,
+				UpdatedAtUnix:    occurredAtUnix,
+			}); err != nil {
+				return fmt.Errorf("update token lot %s: %w", lotID, err)
 			}
 		}
 		return nil
@@ -197,47 +287,107 @@ func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, 
 }
 
 // appendTokenConsumptionFromTxHex 从交易 hex 提取 token 输入并写入消耗记录
-// 设计说明：
-// - 在 token 发送广播成功后调用
-// - 通过解析交易 input 的 UTXO，查找对应的 token quantity_text
+// 设计说明（硬切版）：
+// - 改为从 fact_token_carrier_links 查找 lot
 func appendTokenConsumptionFromTxHex(ctx context.Context, store *clientDB, txHex string, txID string) error {
 	parsed, err := txsdk.NewTransactionFromHex(txHex)
 	if err != nil {
 		return fmt.Errorf("parse tx hex: %w", err)
 	}
 
-	// 收集所有 input UTXO 的 quantity_text
-	tokenUTXOIDs := make(map[string]string)
+	// 收集所有 input UTXO 对应的 lot
+	tokenLotIDs := make(map[string]string)
 	for _, inp := range parsed.Inputs {
 		sourceTxID := strings.ToLower(inp.SourceTXID.String())
 		utxoID := sourceTxID + ":" + fmt.Sprint(inp.SourceTxOutIndex)
 
-		// 查找该 UTXO 是否有 token 资产记录
-		qty, err := dbGetUTXOTokenQuantity(ctx, store, utxoID)
+		// 查找该 UTXO 对应的 lot
+		lotID, err := dbGetLotByCarrierUTXO(ctx, store, utxoID)
 		if err != nil {
-			return fmt.Errorf("lookup token quantity for utxo %s: %w", utxoID, err)
+			return fmt.Errorf("lookup lot for utxo %s: %w", utxoID, err)
 		}
-		if qty == "" {
+		if lotID == "" {
 			continue
 		}
-		tokenUTXOIDs[utxoID] = qty
+		
+		// 获取 lot 的 quantity
+		lot, err := dbGetTokenLot(ctx, store, lotID)
+		if err != nil || lot == nil {
+			continue
+		}
+		
+		// 计算剩余数量
+		qtyParsed, _ := parseDecimalText(lot.QuantityText)
+		usedParsed, _ := parseDecimalText(lot.UsedQuantityText)
+		scale := qtyParsed.scale
+		if usedParsed.scale > scale {
+			scale = usedParsed.scale
+		}
+		qtyVal := new(big.Int).Set(qtyParsed.intValue)
+		usedVal := new(big.Int).Set(usedParsed.intValue)
+		for i := qtyParsed.scale; i < scale; i++ {
+			qtyVal = new(big.Int).Mul(qtyVal, big.NewInt(10))
+		}
+		for i := usedParsed.scale; i < scale; i++ {
+			usedVal = new(big.Int).Mul(usedVal, big.NewInt(10))
+		}
+		remainingVal := new(big.Int).Sub(qtyVal, usedVal)
+		if remainingVal.Sign() <= 0 {
+			continue
+		}
+		remainingText := formatDecimalText(remainingVal, scale)
+		
+		tokenLotIDs[lotID] = remainingText
 	}
 
-	if len(tokenUTXOIDs) == 0 {
+	if len(tokenLotIDs) == 0 {
 		return fmt.Errorf("no token carrier inputs found in txid %s", strings.ToLower(strings.TrimSpace(txID)))
 	}
 
-	return appendTokenConsumptionAfterBroadcast(ctx, store, txHex, txID, tokenUTXOIDs, time.Now().Unix())
+	return appendTokenConsumptionAfterBroadcast(ctx, store, txHex, txID, tokenLotIDs, time.Now().Unix())
 }
 
-// dbGetUTXOTokenQuantity 查询 UTXO 上的 token quantity_text
-// 设计说明：从 fact_chain_asset_flows 查询
+// dbGetLotByCarrierUTXO 根据 carrier UTXO 查询 lot_id
+func dbGetLotByCarrierUTXO(ctx context.Context, store *clientDB, utxoID string) (string, error) {
+	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+		var lotID string
+		err := db.QueryRow(
+			`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
+			utxoID,
+		).Scan(&lotID)
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		return lotID, nil
+	})
+}
+
+// dbGetUTXOTokenQuantity 查询 UTXO 上的 token quantity_text（兼容性函数）
+// 设计说明（硬切版）：
+// - 改为从 fact_token_carrier_links + fact_token_lots 查询
 func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string) (string, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		var qty string
+		// 先查 carrier link 获取 lot_id
+		var lotID string
 		err := db.QueryRow(
-			`SELECT quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN' AND quantity_text<>'' LIMIT 1`,
+			`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
 			utxoID,
+		).Scan(&lotID)
+		if err == sql.ErrNoRows {
+			return "", nil
+		}
+		if err != nil {
+			return "", err
+		}
+		
+		// 再查 lot 获取 quantity
+		var qty string
+		err = db.QueryRow(
+			`SELECT quantity_text FROM fact_token_lots WHERE lot_id=?`,
+			lotID,
 		).Scan(&qty)
 		if err == sql.ErrNoRows {
 			return "", nil

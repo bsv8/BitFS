@@ -11,6 +11,7 @@ import (
 type sqlConn interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	QueryRow(query string, args ...any) *sql.Row
+	Query(query string, args ...any) (*sql.Rows, error)
 }
 
 // chainPaymentEntry fact_chain_payments 写入条目

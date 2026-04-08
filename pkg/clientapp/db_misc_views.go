@@ -146,6 +146,21 @@ func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) 
 	return out, true
 }
 
+// dbGetSeedChunkCountForPricing 返回种子 chunk_count，用于定价接口。
+// 这是 biz_seeds 旧表查询的过渡封装，后续如需迁移到新的文件元数据表，只需修改此函数。
+func dbGetSeedChunkCountForPricing(ctx context.Context, store *clientDB, seedHash string) (uint32, error) {
+	if store == nil {
+		return 0, fmt.Errorf("store is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (uint32, error) {
+		var chunkCount uint32
+		if err := db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+			return 0, err
+		}
+		return chunkCount, nil
+	})
+}
+
 func dbRecommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedHash string) string {
 	if store == nil {
 		return ""

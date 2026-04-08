@@ -21,6 +21,7 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 
 	address := "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"
 	walletID := walletIDByAddress(address)
+	pubkeyHex := walletID // walletID 就是公钥 hex
 
 	// BSV 入账与消耗。
 	bsvUTXOID := "sum_bsv_tx:0"
@@ -32,19 +33,19 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed bsv utxo failed: %v", err)
 	}
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "sum_bsv_flow",
-		WalletID:       walletID,
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV",
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         bsvUTXOID,
+		OwnerPubkeyHex: pubkeyHex,
+		Address:        address,
 		TxID:           "sum_bsv_tx",
 		Vout:           0,
-		AmountSatoshi:  9000,
-		OccurredAtUnix: now,
+		ValueSatoshi:   9000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
 	}); err != nil {
-		t.Fatalf("seed bsv flow failed: %v", err)
+		t.Fatalf("seed bsv utxo fact failed: %v", err)
 	}
 	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_sum_bsv_pay", "chain_bsv", "sum_bsv_pay", "confirmed", 600, 0, -600, 0, now, "summary test", map[string]any{"kind": "bsv"}); err != nil {
 		t.Fatalf("seed bsv settlement cycle failed: %v", err)
@@ -76,21 +77,47 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	); err != nil {
 		t.Fatalf("seed token utxo failed: %v", err)
 	}
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "sum_token_flow",
-		WalletID:       walletID,
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	// 写入 token carrier 的 BSV UTXO（外键约束要求）
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         tokenUTXOID,
+		OwnerPubkeyHex: pubkeyHex,
+		Address:        address,
 		TxID:           "sum_token_tx",
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "2500",
-		OccurredAtUnix: now,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
 	}); err != nil {
-		t.Fatalf("seed token flow failed: %v", err)
+		t.Fatalf("seed token carrier utxo failed: %v", err)
+	}
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            "sum_token_lot_001",
+		OwnerPubkeyHex:   pubkeyHex,
+		TokenID:          tokenID,
+		TokenStandard:    "BSV21",
+		QuantityText:     "2500",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         "sum_token_tx",
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot fact failed: %v", err)
+	}
+	// 写入 carrier link（绑定 lot 到 UTXO）
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "sum_token_link_001",
+		LotID:          "sum_token_lot_001",
+		CarrierUTXOID:  tokenUTXOID,
+		OwnerPubkeyHex: pubkeyHex,
+		LinkState:      "active",
+		BindTxid:       "sum_token_tx",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_sum_token_pay", "chain_token", "sum_token_pay", "confirmed", 0, 0, 0, 0, now, "summary test", map[string]any{"kind": "token"}); err != nil {
 		t.Fatalf("seed token settlement cycle failed: %v", err)
@@ -99,7 +126,19 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup token settlement cycle failed: %v", err)
 	}
-	if err := dbAppendTokenConsumptionForSettlementCycleByUTXO(db, tokenCycleID, tokenUTXOID, "2500", now); err != nil {
+	if err := dbAppendTokenConsumptionsForSettlementCycle(db, tokenCycleID, []chainPaymentUTXOLinkEntry{
+		{
+			UTXOID:        tokenUTXOID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AssetKind:     "BSV21",
+			TokenID:       tokenID,
+			TokenStandard: "BSV21",
+			AmountSatoshi: 1,
+			QuantityText:  "2500",
+			CreatedAtUnix: now,
+		},
+	}, now); err != nil {
 		t.Fatalf("append token consumption failed: %v", err)
 	}
 

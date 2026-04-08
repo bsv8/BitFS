@@ -17,59 +17,72 @@ func TestPreviewWalletTokenSend_SplitsTokenAndBSVUnits(t *testing.T) {
 	now := time.Now().Unix()
 
 	address := "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"
-	walletID := walletIDByAddress(address)
+	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(address))
 	tokenID := "token_preview_001"
 
-	// Token 承载 UTXO。
+	// Token 承载 UTXO（1 sat） - 使用新 API dbUpsertBSVUTXO
 	tokenUTXOID := "preview_token_tx:0"
-	if _, err := db.Exec(`INSERT INTO wallet_utxo(
-		utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		tokenUTXOID, walletID, address, "preview_token_tx", 0, int64(1), "unspent", walletUTXOAllocationProtectedAsset, "",
-		"preview_token_tx", "", now, now, 0,
-	); err != nil {
-		t.Fatalf("seed token utxo failed: %v", err)
-	}
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "preview_token_flow",
-		WalletID:       walletID,
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         tokenUTXOID,
+		OwnerPubkeyHex: ownerPubkeyHex,
+		Address:        address,
 		TxID:           "preview_token_tx",
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: now,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
 	}); err != nil {
-		t.Fatalf("seed token flow failed: %v", err)
+		t.Fatalf("seed token utxo failed: %v", err)
 	}
 
-	// plain BSV 费用 UTXO。
-	bsvUTXOID := "preview_bsv_tx:0"
-	if _, err := db.Exec(`INSERT INTO wallet_utxo(
-		utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		bsvUTXOID, walletID, address, "preview_bsv_tx", 0, int64(5000), "unspent", walletUTXOAllocationPlainBSV, "",
-		"preview_bsv_tx", "", now, now, 0,
-	); err != nil {
-		t.Fatalf("seed bsv utxo failed: %v", err)
+	// Token Lot - 使用新 API dbUpsertTokenLot
+	lotID := "preview_token_lot"
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            lotID,
+		OwnerPubkeyHex:   ownerPubkeyHex,
+		TokenID:          tokenID,
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         "preview_token_tx",
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
 	}
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "preview_bsv_flow",
-		WalletID:       walletID,
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV",
+
+	// Token Carrier Link - 关联 lot 和 UTXO carrier
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "preview_token_link",
+		LotID:          lotID,
+		CarrierUTXOID:  tokenUTXOID,
+		OwnerPubkeyHex: ownerPubkeyHex,
+		LinkState:      "active",
+		BindTxid:       "preview_token_tx",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
+	}
+
+	// plain BSV 费用 UTXO - 使用新 API dbUpsertBSVUTXO
+	bsvUTXOID := "preview_bsv_tx:0"
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         bsvUTXOID,
+		OwnerPubkeyHex: ownerPubkeyHex,
+		Address:        address,
 		TxID:           "preview_bsv_tx",
 		Vout:           0,
-		AmountSatoshi:  5000,
-		OccurredAtUnix: now,
+		ValueSatoshi:   5000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
 	}); err != nil {
-		t.Fatalf("seed bsv flow failed: %v", err)
+		t.Fatalf("seed bsv utxo failed: %v", err)
 	}
 
 	preview, err := previewWalletTokenSend(ctx, store, nil, address, "bsv21", tokenID, "1000", address)

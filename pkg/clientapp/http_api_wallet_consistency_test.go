@@ -25,21 +25,22 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 	inputUTXO := prevTxID + ":0"
 
 	seedWalletUTXO(t, db, inputUTXO, prevTxID, 0, 1)
-	if _, err := dbAppendAssetFlowInIfAbsent(ctx, store, chainAssetFlowEntry{
-		FlowID:         "flow_in_" + inputUTXO,
-		WalletID:       walletID,
-		Address:        address,
-		Direction:      "IN",
-		AssetKind:      "BSV21",
-		TokenID:        tokenID,
+	// 使用新资产事实表 API：写入 token carrier BSV UTXO
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletID,
+		Address:        address,
 		TxID:           prevTxID,
 		Vout:           0,
-		AmountSatoshi:  1,
-		QuantityText:   "1000",
-		OccurredAtUnix: time.Now().Unix(),
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+		Note:           "seed token carrier for " + tokenID,
+		Payload:        map[string]any{"token_id": tokenID, "quantity_text": "1000"},
 	}); err != nil {
-		t.Fatalf("seed token carrier flow failed: %v", err)
+		t.Fatalf("seed token carrier utxo failed: %v", err)
 	}
 
 	addressScript, err := walletAddressLockScriptHex(address)

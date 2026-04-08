@@ -133,19 +133,19 @@ func TestProcessAssetVerificationResult_PlainBSV(t *testing.T) {
 		t.Fatalf("expected class %s, got %s", walletUTXOAllocationPlainBSV, class)
 	}
 
-	// 验证 fact_chain_asset_flows 写入
-	var flowID, assetKind string
-	err = db.QueryRow(`SELECT flow_id, asset_kind FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN'`, "tx1:0").Scan(&flowID, &assetKind)
+	// 验证 fact_bsv_utxos 写入
+	var utxoID, carrierType string
+	err = db.QueryRow(`SELECT utxo_id, carrier_type FROM fact_bsv_utxos WHERE utxo_id=?`, "tx1:0").Scan(&utxoID, &carrierType)
 	if err != nil {
-		t.Fatalf("query asset flow: %v", err)
+		t.Fatalf("query bsv utxo: %v", err)
 	}
 
-	if assetKind != "BSV" {
-		t.Fatalf("expected asset_kind BSV, got %s", assetKind)
+	if carrierType != "plain_bsv" {
+		t.Fatalf("expected carrier_type plain_bsv, got %s", carrierType)
 	}
 
-	if flowID != "flow_in_tx1:0" {
-		t.Fatalf("expected flow_id flow_in_tx1:0, got %s", flowID)
+	if utxoID != "tx1:0" {
+		t.Fatalf("expected utxo_id tx1:0, got %s", utxoID)
 	}
 }
 
@@ -202,15 +202,11 @@ func TestProcessAssetVerificationResult_BSV21Token(t *testing.T) {
 		t.Fatalf("expected class %s, got %s", walletUTXOAllocationProtectedAsset, class)
 	}
 
-	// 验证 fact_chain_asset_flows 写入
-	var assetKind, tokenID, quantityText string
-	err = db.QueryRow(`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN'`, "tx1:0").Scan(&assetKind, &tokenID, &quantityText)
+	// 验证 fact_token_lots 和 fact_token_carrier_links 写入
+	var lotID, tokenID, quantityText string
+	err = db.QueryRow(`SELECT lot_id, token_id, quantity_text FROM fact_token_lots WHERE mint_txid=?`, "tx1").Scan(&lotID, &tokenID, &quantityText)
 	if err != nil {
-		t.Fatalf("query asset flow: %v", err)
-	}
-
-	if assetKind != "BSV21" {
-		t.Fatalf("expected asset_kind BSV21, got %s", assetKind)
+		t.Fatalf("query token lot: %v", err)
 	}
 
 	if tokenID != "token123" {
@@ -219,6 +215,13 @@ func TestProcessAssetVerificationResult_BSV21Token(t *testing.T) {
 
 	if quantityText != "1000" {
 		t.Fatalf("expected quantity_text 1000, got %s", quantityText)
+	}
+
+	// 验证 carrier link 存在
+	var linkID string
+	err = db.QueryRow(`SELECT link_id FROM fact_token_carrier_links WHERE lot_id=? AND carrier_utxo_id=?`, lotID, "tx1:0").Scan(&linkID)
+	if err != nil {
+		t.Fatalf("query token carrier link: %v", err)
 	}
 }
 
@@ -275,15 +278,11 @@ func TestProcessAssetVerificationResult_BSV20Token(t *testing.T) {
 		t.Fatalf("expected class %s, got %s", walletUTXOAllocationProtectedAsset, class)
 	}
 
-	// 验证 fact_chain_asset_flows 写入
-	var assetKind, tokenID, quantityText string
-	err = db.QueryRow(`SELECT asset_kind, token_id, quantity_text FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN'`, "tx1:0").Scan(&assetKind, &tokenID, &quantityText)
+	// 验证 fact_token_lots 和 fact_token_carrier_links 写入
+	var lotID, tokenID, quantityText string
+	err = db.QueryRow(`SELECT lot_id, token_id, quantity_text FROM fact_token_lots WHERE mint_txid=?`, "tx1").Scan(&lotID, &tokenID, &quantityText)
 	if err != nil {
-		t.Fatalf("query asset flow: %v", err)
-	}
-
-	if assetKind != "BSV20" {
-		t.Fatalf("expected asset_kind BSV20, got %s", assetKind)
+		t.Fatalf("query token lot: %v", err)
 	}
 
 	if tokenID != "token456" {
@@ -292,6 +291,13 @@ func TestProcessAssetVerificationResult_BSV20Token(t *testing.T) {
 
 	if quantityText != "5000" {
 		t.Fatalf("expected quantity_text 5000, got %s", quantityText)
+	}
+
+	// 验证 carrier link 存在
+	var linkID string
+	err = db.QueryRow(`SELECT link_id FROM fact_token_carrier_links WHERE lot_id=? AND carrier_utxo_id=?`, lotID, "tx1:0").Scan(&linkID)
+	if err != nil {
+		t.Fatalf("query token carrier link: %v", err)
 	}
 }
 
@@ -336,15 +342,15 @@ func TestProcessAssetVerificationResult_Idempotent(t *testing.T) {
 		t.Fatalf("second process: %v", err)
 	}
 
-	// 验证只写入了一条 flow
+	// 验证只写入了一条 bsv_utxo
 	var count int
-	err = db.QueryRow(`SELECT COUNT(1) FROM fact_chain_asset_flows WHERE utxo_id=? AND direction='IN'`, "tx1:0").Scan(&count)
+	err = db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos WHERE utxo_id=?`, "tx1:0").Scan(&count)
 	if err != nil {
-		t.Fatalf("count flows: %v", err)
+		t.Fatalf("count bsv utxos: %v", err)
 	}
 
 	if count != 1 {
-		t.Fatalf("expected 1 flow, got %d", count)
+		t.Fatalf("expected 1 bsv utxo, got %d", count)
 	}
 }
 
@@ -952,14 +958,24 @@ func TestVerificationReconciliation_FactNoConfirmation(t *testing.T) {
 		t.Fatalf("seed pending: %v", err)
 	}
 
-	// 直接写入 fact（模拟 fact 存在但 verification 仍 pending）
+	// 直接写入 fact_token_lots 和 fact_token_carrier_links（模拟 fact 存在但 verification 仍 pending）
+	ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(walletID, "wallet:"))
+	lotID := "lot_tx_pending_fact_0"
 	_, err = db.Exec(
-		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_in_tx_pending_fact:0", walletID, address, "IN", "BSV21", "token123", "tx_pending_fact:0", "tx_pending_fact", 0, 1, "100", now, now, "WOC", "test", "{}",
+		`INSERT INTO fact_token_lots(lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text, lot_state, mint_txid, created_at_unix, updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		lotID, ownerPubkeyHex, "token123", "BSV21", "100", "0", "unspent", "tx_pending_fact", now, now,
 	)
 	if err != nil {
-		t.Fatalf("seed fact: %v", err)
+		t.Fatalf("seed token lot: %v", err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO fact_token_carrier_links(link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid, created_at_unix, updated_at_unix, note, payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"link_tx_pending_fact_0", lotID, "tx_pending_fact:0", ownerPubkeyHex, "active", "tx_pending_fact", "", now, now, "", "{}",
+	)
+	if err != nil {
+		t.Fatalf("seed token carrier link: %v", err)
 	}
 
 	report, err := dbCheckVerificationReconciliation(context.Background(), store)
@@ -1010,12 +1026,12 @@ func TestVerificationReconciliation_NoFalsePositive(t *testing.T) {
 		t.Fatalf("seed utxo: %v", err)
 	}
 	_, err = db.Exec(
-		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_in_tx_normal:0", walletID, address, "IN", "BSV", "", "tx_normal:0", "tx_normal", 0, 1000, "", now, now, "WOC", "normal", "{}",
+		`INSERT INTO fact_bsv_utxos(utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type, created_at_unix, updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		"tx_normal:0", strings.ToLower(strings.TrimPrefix(walletID, "wallet:")), address, "tx_normal", 0, 1000, "unspent", "plain_bsv", now, now,
 	)
 	if err != nil {
-		t.Fatalf("seed fact: %v", err)
+		t.Fatalf("seed bsv utxo: %v", err)
 	}
 
 	// verification 队列中没有这个 utxo
@@ -1049,14 +1065,24 @@ func TestTokenSpendableSourceFlows_ExcludesUnknown(t *testing.T) {
 		t.Fatalf("seed unknown utxo: %v", err)
 	}
 
-	// 即使有 fact IN 记录，unknown 也不应出现在可花费选源中
+	// 即使有 token fact 记录，unknown 也不应出现在可花费选源中
+	ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(walletID, "wallet:"))
+	lotID := "lot_tx_unknown_0"
 	_, err = db.Exec(
-		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_in_tx_unknown:0", walletID, address, "IN", "BSV21", "token123", "tx_unknown:0", "tx_unknown", 0, 1, "100", now, now, "WOC", "test", "{}",
+		`INSERT INTO fact_token_lots(lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text, lot_state, mint_txid, created_at_unix, updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		lotID, ownerPubkeyHex, "token123", "BSV21", "100", "0", "unspent", "tx_unknown", now, now,
 	)
 	if err != nil {
-		t.Fatalf("seed fact for unknown: %v", err)
+		t.Fatalf("seed token lot for unknown: %v", err)
+	}
+	_, err = db.Exec(
+		`INSERT INTO fact_token_carrier_links(link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid, created_at_unix, updated_at_unix, note, payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"link_tx_unknown_0", lotID, "tx_unknown:0", ownerPubkeyHex, "active", "tx_unknown", "", now, now, "", "{}",
+	)
+	if err != nil {
+		t.Fatalf("seed token carrier link for unknown: %v", err)
 	}
 
 	// 查询可花费选源
@@ -1072,56 +1098,58 @@ func TestTokenSpendableSourceFlows_ExcludesUnknown(t *testing.T) {
 }
 
 // TestTokenBalance_FactEmptyWithHistoryNotFallback 验证 fact 空但有历史，不回退旧路径
+// 使用新表 fact_settlement_records 和 fact_token_lots
 func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetVerificationTestDB(t)
 	address := seedTestAddress(t, db)
 	walletID := walletIDByAddress(address)
+	ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(walletID, "wallet:"))
 	now := time.Now().Unix()
 
-	// 种子一个 fact IN 记录（有历史）
+	// 种子 Token Lot（已消耗完）
+	lotID := "lot_token123_tx_hist_0"
 	_, err := db.Exec(
-		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_in_tx_hist:0", walletID, address, "IN", "BSV21", "token123", "tx_hist:0", "tx_hist", 0, 1, "100", now, now, "WOC", "test", "{}",
+		`INSERT INTO fact_token_lots(lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text, lot_state, mint_txid, created_at_unix, updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		lotID, ownerPubkeyHex, "token123", "BSV21", "100", "100", "spent", "tx_hist", now, now,
 	)
 	if err != nil {
-		t.Fatalf("seed fact: %v", err)
+		t.Fatalf("seed token lot: %v", err)
 	}
-	if _, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-		TxID:                "tx_hist_pay",
-		PaymentSubType:      "external_out",
-		Status:              "confirmed",
-		WalletInputSatoshi:  1,
-		WalletOutputSatoshi: 0,
-		NetAmountSatoshi:    0,
-		BlockHeight:         100,
-		OccurredAtUnix:      now,
-	}); err != nil {
-		t.Fatalf("seed chain payment: %v", err)
+
+	// 种子 settlement cycle
+	cycleID := "cycle_test_hist"
+	err = dbUpsertSettlementCycle(db, cycleID, "chain_payment", "tx_hist_pay", "confirmed",
+		1000, 100, 900, 1, now, "test cycle", nil)
+	if err != nil {
+		t.Fatalf("seed settlement cycle: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_hist_pay")
+
+	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_hist_pay")
 	if err != nil {
 		t.Fatalf("lookup settlement cycle: %v", err)
 	}
-	// 再种一个消耗记录（把 IN 全部消耗掉，导致余额为 0）
+
+	// 种子结算记录（消耗记录）
+	recordID := fmt.Sprintf("rec_token_%d_%s", cycleIDInt, lotID)
 	_, err = db.Exec(
-		`INSERT INTO fact_token_consumptions(source_flow_id,source_utxo_id,token_id,token_standard,settlement_cycle_id,state,used_quantity_text,occurred_at_unix,confirmed_at_unix,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		1, "tx_idem:0", "token123", "BSV21", cycleID, "confirmed", "100", now, now, "test", "{}",
+		`INSERT INTO fact_settlement_records(record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_lot_id, used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		recordID, cycleIDInt, "TOKEN", ownerPubkeyHex, lotID, 0, "100", "confirmed", now, now, "test", "{}",
 	)
 	if err != nil {
-		t.Fatalf("seed consumption: %v", err)
+		t.Fatalf("seed settlement record: %v", err)
 	}
 
-	// 余额应为 0
+	// 余额应为 0（lot 的 quantity_text 等于 used_quantity_text）
 	bal, err := dbLoadTokenBalanceFact(context.Background(), newClientDB(db, nil), walletID, "BSV21", "token123")
 	if err != nil {
 		t.Fatalf("load fact balance: %v", err)
 	}
 
-	// 验证有历史
+	// 验证有历史（lot 已消耗完，余额为 0）
 	totalIn, _ := sumDecimalTexts(bal.TotalInText)
 	totalUsed, _ := sumDecimalTexts(bal.TotalUsedText)
 	remaining, _ := subtractTokenDecimalText(totalIn, totalUsed)
@@ -1130,68 +1158,80 @@ func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 	}
 }
 
-// TestTokenConsumptionIdempotent_DoubleWriteNoDuplicate 验证幂等重复写不产生重复记录
-func TestTokenConsumptionIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
+// TestSettlementRecordIdempotent_DoubleWriteNoDuplicate 验证幂等重复写不产生重复记录
+// 使用新结算记录表 fact_settlement_records
+func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetVerificationTestDB(t)
 	address := seedTestAddress(t, db)
 	walletID := walletIDByAddress(address)
+	ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(walletID, "wallet:"))
 	now := time.Now().Unix()
 
-	// 种子 UTXO
+	// 种子 Token Lot
+	lotID := "lot_token123_tx_idem_0"
 	_, err := db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"tx_idem:0", walletID, address, "tx_idem", 0, 1, "unspent", walletUTXOAllocationProtectedAsset, "token", "tx_idem", "", now, now, 0,
+		`INSERT INTO fact_token_lots(lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text, lot_state, mint_txid, created_at_unix, updated_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		lotID, ownerPubkeyHex, "token123", "BSV21", "100", "0", "unspent", "tx_idem", now, now,
 	)
 	if err != nil {
-		t.Fatalf("seed utxo: %v", err)
-	}
-	// 种子 fact IN
-	_, err = db.Exec(
-		`INSERT INTO fact_chain_asset_flows(flow_id,wallet_id,address,direction,asset_kind,token_id,utxo_id,txid,vout,amount_satoshi,quantity_text,occurred_at_unix,updated_at_unix,evidence_source,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"flow_in_tx_idem:0", walletID, address, "IN", "BSV21", "token123", "tx_idem:0", "tx_idem", 0, 1, "100", now, now, "WOC", "test", "{}",
-	)
-	if err != nil {
-		t.Fatalf("seed fact: %v", err)
+		t.Fatalf("seed token lot: %v", err)
 	}
 
-	// 第一次写消耗
-	if _, err := dbUpsertChainPaymentWithSettlementCycleDB(db, chainPaymentEntry{
-		TxID:                "tx_idem_pay",
-		PaymentSubType:      "external_out",
-		Status:              "confirmed",
-		WalletInputSatoshi:  1,
-		WalletOutputSatoshi: 0,
-		NetAmountSatoshi:    0,
-		BlockHeight:         100,
-		OccurredAtUnix:      now,
-	}); err != nil {
-		t.Fatalf("seed chain payment: %v", err)
+	// 种子 settlement cycle
+	cycleID := "cycle_test_001"
+	err = dbUpsertSettlementCycle(db, cycleID, "chain_payment", "tx_idem_pay", "confirmed",
+		1000, 100, 900, 1, now, "test cycle", nil)
+	if err != nil {
+		t.Fatalf("seed settlement cycle: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_idem_pay")
+
+	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_idem_pay")
 	if err != nil {
 		t.Fatalf("lookup settlement cycle: %v", err)
 	}
-	err = dbAppendTokenConsumptionForSettlementCycleByUTXO(db, cycleID, "tx_idem:0", "50", now)
+
+	// 第一次写入结算记录
+	recordID := fmt.Sprintf("rec_token_%d_%s", cycleIDInt, lotID)
+	err = dbAppendSettlementRecordDB(db, settlementRecordEntry{
+		RecordID:          recordID,
+		SettlementCycleID: cycleIDInt,
+		AssetType:         "TOKEN",
+		OwnerPubkeyHex:    ownerPubkeyHex,
+		SourceLotID:       lotID,
+		UsedQuantityText:  "50",
+		State:             "confirmed",
+		OccurredAtUnix:    now,
+		Note:              "Token consumed by settlement cycle",
+	})
 	if err != nil {
 		t.Fatalf("first write: %v", err)
 	}
 
-	// 第二次写消耗（相同 chain_payment_id，应被幂等跳过）
-	err = dbAppendTokenConsumptionForSettlementCycleByUTXO(db, cycleID, "tx_idem:0", "50", now)
+	// 第二次写入结算记录（相同 record_id，应被幂等跳过）
+	err = dbAppendSettlementRecordDB(db, settlementRecordEntry{
+		RecordID:          recordID,
+		SettlementCycleID: cycleIDInt,
+		AssetType:         "TOKEN",
+		OwnerPubkeyHex:    ownerPubkeyHex,
+		SourceLotID:       lotID,
+		UsedQuantityText:  "50",
+		State:             "confirmed",
+		OccurredAtUnix:    now,
+		Note:              "Token consumed by settlement cycle",
+	})
 	if err != nil {
 		t.Fatalf("second write (idempotent): %v", err)
 	}
 
 	// 验证只有一条消耗记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_token_consumptions WHERE settlement_cycle_id=?`, cycleID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=?`, cycleIDInt).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 1 {
-		t.Fatalf("expected 1 consumption record, got %d", count)
+		t.Fatalf("expected 1 settlement record, got %d", count)
 	}
 }
