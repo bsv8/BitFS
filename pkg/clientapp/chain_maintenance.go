@@ -1427,6 +1427,12 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 	return strings.HasSuffix(outputScriptHex, walletScriptHex)
 }
 
+// buildWalletChainAccountingInputsFromTxDetail 从交易明细构建钱包链记账输入。
+// 硬切换设计：
+//   - 显式统计 external_out_satoshi、wallet_change_satoshi、miner_fee_satoshi
+//   - 分类改为：有钱包输入且有外部输出=对外转账(THIRD_PARTY)
+//   - 不再使用旧逻辑："有输入+有找零就一律 internal_change"
+//   - net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
 func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, detail whatsonchain.TxDetail) ([]walletChainAccountingInput, error) {
 	txid := strings.ToLower(strings.TrimSpace(detail.TxID))
 	if txid == "" {
@@ -1440,9 +1446,11 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 	inputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vin))
 	outputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vout))
 	var walletInputSat int64
-	var walletOutputSat int64
+	var walletChangeSat int64
+	var externalOutSat int64
 	hasWalletInput := false
-	hasWalletOutput := false
+	hasWalletChange := false
+	hasExternalOut := false
 
 	for _, in := range detail.Vin {
 		utxoID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
@@ -1465,29 +1473,33 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 	}
 
 	for _, out := range detail.Vout {
-		if !walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
-			continue
-		}
 		amount := int64(txOutputValueSatoshi(out))
 		if amount <= 0 {
 			continue
 		}
-		hasWalletOutput = true
-		walletOutputSat += amount
-		role := "external_in"
-		if hasWalletInput {
-			role = "wallet_change"
+		if walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
+			// 钱包找零输出
+			hasWalletChange = true
+			walletChangeSat += amount
+			role := "external_in"
+			if hasWalletInput {
+				role = "wallet_change"
+			}
+			outputFacts = append(outputFacts, chainPaymentUTXOFact{
+				UTXOID:        txid + ":" + fmt.Sprint(out.N),
+				IOSide:        "output",
+				UTXORole:      role,
+				AmountSatoshi: amount,
+				Note:          "wallet output by chain sync",
+			})
+		} else {
+			// 外部输出（付给第三方）
+			hasExternalOut = true
+			externalOutSat += amount
 		}
-		outputFacts = append(outputFacts, chainPaymentUTXOFact{
-			UTXOID:        txid + ":" + fmt.Sprint(out.N),
-			IOSide:        "output",
-			UTXORole:      role,
-			AmountSatoshi: amount,
-			Note:          "wallet output by chain sync",
-		})
 	}
 
-	if !hasWalletInput && !hasWalletOutput {
+	if !hasWalletInput && !hasWalletChange {
 		return nil, nil
 	}
 
@@ -1496,11 +1508,27 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 		return nil, err
 	}
 
+	// 矿工费 = 输入 - 找零 - 外部输出（当有输入时）
+	var minerFeeSat int64
+	if hasWalletInput {
+		minerFeeSat = walletInputSat - walletChangeSat - externalOutSat
+		if minerFeeSat < 0 {
+			minerFeeSat = 0
+		}
+	}
+
+	// 分类逻辑（硬切换）：
+	// - 有输入且有外部输出 => THIRD_PARTY (external_out)
+	// - 有输入但无外部输出但有找零 => CHANGE (internal_change)
+	// - 无输入但有输出 => REPAYMENT (external_in)
+	// - 有输入但无任何钱包输出 => THIRD_PARTY (external_out)
 	category := "REPAYMENT"
 	switch {
-	case hasWalletInput && hasWalletOutput:
+	case hasWalletInput && hasExternalOut:
+		category = "THIRD_PARTY"
+	case hasWalletInput && hasWalletChange && !hasExternalOut:
 		category = "CHANGE"
-	case hasWalletInput && !hasWalletOutput:
+	case hasWalletInput && !hasWalletChange && !hasExternalOut:
 		category = "THIRD_PARTY"
 	}
 
@@ -1512,15 +1540,17 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 	out := make([]walletChainAccountingInput, 0, 2)
 	if len(inputFacts) > 0 || len(outputFacts) > 0 {
 		out = append(out, walletChainAccountingInput{
-			SourceType:      "chain_bsv",
-			SourceID:        txid,
-			TxID:            txid,
-			Category:        category,
-			WalletInputSat:  walletInputSat,
-			WalletOutputSat: walletOutputSat,
-			NetSat:          walletOutputSat - walletInputSat,
-			Payload:         payload,
-			UTXOFacts:       append(append([]chainPaymentUTXOFact{}, outputFacts...), inputFacts...),
+			SourceType:       "chain_bsv",
+			SourceID:         txid,
+			TxID:             txid,
+			Category:         category,
+			WalletInputSat:   walletInputSat,
+			WalletOutputSat:  walletChangeSat,
+			ExternalOutSat:   externalOutSat,
+			MinerFeeSat:      minerFeeSat,
+			NetSat:           walletChangeSat - walletInputSat,
+			Payload:          payload,
+			UTXOFacts:        append(append([]chainPaymentUTXOFact{}, outputFacts...), inputFacts...),
 		})
 	}
 	if len(tokenFacts) > 0 {

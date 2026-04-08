@@ -5206,7 +5206,7 @@ func maskSecretForAdminConfig(raw string) string {
 // - 所有 verification 查询接口必须通过此函数返回，避免漏字段
 func writeVerificationResponse(w http.ResponseWriter, data map[string]any) {
 	data["data_role"] = "primary"
-	data["source_of_truth"] = "fact_token_lots"
+	data["source_of_truth"] = "fact_bsv_utxos"
 	writeJSON(w, http.StatusOK, data)
 }
 

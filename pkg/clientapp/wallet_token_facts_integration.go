@@ -74,7 +74,7 @@ func sumDecimalTexts(csv string) (string, error) {
 func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) (bool, error) {
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
-	
+
 	var count int
 	err := store.Do(ctx, func(db *sql.DB) error {
 		return db.QueryRow(
@@ -136,7 +136,7 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 	if err != nil {
 		return nil, fmt.Errorf("list spendable token lots: %w", err)
 	}
-	
+
 	if len(lots) == 0 {
 		// 检查是否有历史记录
 		hasHistory, err := hasFactTokenHistory(ctx, store, "wallet:"+ownerPubkeyHex, assetKind, assetKey)
@@ -154,7 +154,7 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 		// 计算剩余数量
 		qtyParsed, _ := parseDecimalText(lot.QuantityText)
 		usedParsed, _ := parseDecimalText(lot.UsedQuantityText)
-		
+
 		// 对齐精度并计算剩余
 		scale := qtyParsed.scale
 		if usedParsed.scale > scale {
@@ -173,13 +173,13 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 			continue
 		}
 		remainingText := formatDecimalText(remainingVal, scale)
-		
+
 		// 查询 carrier UTXO
 		link, err := dbGetActiveCarrierForLot(ctx, store, lot.LotID)
 		if err != nil || link == nil {
 			continue
 		}
-		
+
 		out = append(out, walletTokenPreviewCandidate{
 			Item: walletTokenOutputItem{
 				UTXOID:       link.CarrierUTXOID,
@@ -192,7 +192,7 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 			Quantity:      decimalTextValue{intValue: remainingVal, scale: scale},
 		})
 	}
-	
+
 	return out, nil
 }
 
@@ -222,7 +222,7 @@ func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, 
 			if lot == nil {
 				return fmt.Errorf("token lot %s not found", lotID)
 			}
-			
+
 			// 写入结算记录
 			recordID := fmt.Sprintf("rec_%s_%s", txID, lotID)
 			if err := dbAppendSettlementRecordDB(db, settlementRecordEntry{
@@ -239,13 +239,13 @@ func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, 
 			}); err != nil {
 				return fmt.Errorf("append settlement record for lot %s: %w", lotID, err)
 			}
-			
+
 			// 更新 lot 的 used_quantity_text
 			newUsedQty, err := sumDecimalTexts(lot.UsedQuantityText + "," + usedQuantityText)
 			if err != nil {
 				newUsedQty = usedQuantityText
 			}
-			
+
 			// 计算是否已花完
 			qtyParsed, _ := parseDecimalText(lot.QuantityText)
 			usedParsed, _ := parseDecimalText(newUsedQty)
@@ -261,12 +261,12 @@ func appendTokenConsumptionAfterBroadcast(ctx context.Context, store *clientDB, 
 			for i := usedParsed.scale; i < scale; i++ {
 				usedVal = new(big.Int).Mul(usedVal, big.NewInt(10))
 			}
-			
+
 			lotState := "unspent"
 			if usedVal.Cmp(qtyVal) >= 0 {
 				lotState = "spent"
 			}
-			
+
 			if err := dbUpsertTokenLotDB(db, tokenLotEntry{
 				LotID:            lotID,
 				OwnerPubkeyHex:   lot.OwnerPubkeyHex,
@@ -309,13 +309,13 @@ func appendTokenConsumptionFromTxHex(ctx context.Context, store *clientDB, txHex
 		if lotID == "" {
 			continue
 		}
-		
+
 		// 获取 lot 的 quantity
 		lot, err := dbGetTokenLot(ctx, store, lotID)
 		if err != nil || lot == nil {
 			continue
 		}
-		
+
 		// 计算剩余数量
 		qtyParsed, _ := parseDecimalText(lot.QuantityText)
 		usedParsed, _ := parseDecimalText(lot.UsedQuantityText)
@@ -336,7 +336,7 @@ func appendTokenConsumptionFromTxHex(ctx context.Context, store *clientDB, txHex
 			continue
 		}
 		remainingText := formatDecimalText(remainingVal, scale)
-		
+
 		tokenLotIDs[lotID] = remainingText
 	}
 
@@ -382,7 +382,7 @@ func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string)
 		if err != nil {
 			return "", err
 		}
-		
+
 		// 再查 lot 获取 quantity
 		var qty string
 		err = db.QueryRow(

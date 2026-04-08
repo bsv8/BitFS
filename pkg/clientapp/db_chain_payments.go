@@ -72,15 +72,32 @@ func dbUpsertChainPaymentWithSettlementCycle(ctx context.Context, store *clientD
 
 // dbUpsertChainPaymentDB 在已打开的 sql.DB 上执行 upsert，只落 fact。
 func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
-	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, false)
+	// 账务主线只认 settlement_cycle，chain_payment 落库后同步补 confirmed cycle。
+	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, true)
 }
 
 // dbUpsertChainPaymentWithSettlementCycleDB 先写 fact，再补 settlement_cycle。
 // 设计说明：
-// - 只有账务路径需要结算周期锚点；
-// - 提交、迁移、投影写入只落 fact，不要把“已提交”误写成“已确认结算”。
+// - 这里已经收口为同一口径：chain_payment 一旦写入，就必须补 confirmed settlement_cycle；
+// - 提交、迁移、投影写入都不能再停在 payment 事实，不然后面会漏扣账。
 func dbUpsertChainPaymentWithSettlementCycleDB(db sqlConn, e chainPaymentEntry) (int64, error) {
 	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, true)
+}
+
+// settlementCycleStateForChainPayment 把 payment 状态收口到 settlement cycle 状态。
+// 设计说明：
+// - confirmed 才直接落 confirmed；
+// - submitted / observed / 空值 先落 pending，等后续确认再升级；
+// - failed 直接记 failed，避免把失败单误算成已确认扣账。
+func settlementCycleStateForChainPayment(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "confirmed":
+		return "confirmed"
+	case "failed":
+		return "failed"
+	default:
+		return "pending"
+	}
 }
 
 func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, writeSettlementCycle bool) (int64, error) {
@@ -150,8 +167,9 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 			return 0, err
 		}
 		if writeSettlementCycle {
+			settlementState := settlementCycleStateForChainPayment(e.Status)
 			if err := dbUpsertSettlementCycle(db,
-				fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, "confirmed",
+				fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, settlementState,
 				e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
 				0, occurredAt, "auto-created from chain payment", e.Payload,
 			); err != nil {
@@ -194,8 +212,9 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 	}
 
 	if writeSettlementCycle {
+		settlementState := settlementCycleStateForChainPayment(e.Status)
 		if err := dbUpsertSettlementCycle(db,
-			fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, "confirmed",
+			fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, settlementState,
 			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
 			0, occurredAt, "auto-created from chain payment", e.Payload,
 		); err != nil {

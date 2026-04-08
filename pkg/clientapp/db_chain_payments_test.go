@@ -68,6 +68,14 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 		t.Fatalf("expected 1 record, got %d", count)
 	}
 
+	var cycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleCount); err != nil {
+		t.Fatalf("count settlement cycles failed: %v", err)
+	}
+	if cycleCount != 1 {
+		t.Fatalf("expected 1 confirmed settlement cycle, got %d", cycleCount)
+	}
+
 	// 验证记录已被更新
 	var walletOut int64
 	if err := db.QueryRow(`SELECT wallet_output_satoshi FROM fact_chain_payments WHERE id=?`, id1).Scan(&walletOut); err != nil {
@@ -217,6 +225,42 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime(t *testing.T) {
 	}
 	if observedAt != 1700002000 {
 		t.Fatalf("wallet_observed_at_unix mismatch: got=%d want=1700002000", observedAt)
+	}
+
+	var cycleState string
+	if err := db.QueryRow(`SELECT state FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, txid).Scan(&cycleState); err != nil {
+		t.Fatalf("query settlement cycle state failed: %v", err)
+	}
+	if cycleState != "pending" {
+		t.Fatalf("expected pending settlement cycle before confirmation, got %s", cycleState)
+	}
+
+	_, err = dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+		TxID:                 txid,
+		PaymentSubType:       "wallet_local_broadcast",
+		Status:               "confirmed",
+		WalletInputSatoshi:   0,
+		WalletOutputSatoshi:  0,
+		NetAmountSatoshi:     0,
+		BlockHeight:          0,
+		OccurredAtUnix:       1700003000,
+		SubmittedAtUnix:      1700003000,
+		WalletObservedAtUnix: 1700003000,
+		FromPartyID:          "wallet:self",
+		ToPartyID:            "external:unknown",
+		Payload:              map[string]any{"test": 3},
+	})
+	if err != nil {
+		t.Fatalf("third upsert failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT state, confirmed_at_unix FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, txid).Scan(&cycleState, &observedAt); err != nil {
+		t.Fatalf("query confirmed settlement cycle failed: %v", err)
+	}
+	if cycleState != "confirmed" {
+		t.Fatalf("expected confirmed settlement cycle after confirmation, got %s", cycleState)
+	}
+	if observedAt != 1700003000 {
+		t.Fatalf("confirmed_at_unix mismatch: got=%d want=1700003000", observedAt)
 	}
 }
 

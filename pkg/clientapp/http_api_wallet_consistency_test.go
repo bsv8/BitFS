@@ -43,6 +43,36 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 		t.Fatalf("seed token carrier utxo failed: %v", err)
 	}
 
+	// 写入 token lot 和 carrier link（使 collectTokenUTXOLinkFacts 能找到 token 输入）
+	now := time.Now().Unix()
+	lotID := "lot_dual_line_" + prevTxID
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            lotID,
+		OwnerPubkeyHex:   walletID,
+		TokenID:          tokenID,
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         prevTxID,
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "link_dual_line_" + prevTxID,
+		LotID:          lotID,
+		CarrierUTXOID:  inputUTXO,
+		OwnerPubkeyHex: walletID,
+		LinkState:      "active",
+		BindTxid:       prevTxID,
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
+	}
+
 	addressScript, err := walletAddressLockScriptHex(address)
 	if err != nil {
 		t.Fatalf("walletAddressLockScriptHex failed: %v", err)
@@ -129,6 +159,20 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 	walletID := walletIDByAddress(address)
 
 	seedWalletUTXO(t, db, txid+":0", txid, 0, 1000)
+	if err := dbUpsertBSVUTXO(context.Background(), store, bsvUTXOEntry{
+		UTXOID:         txid + ":0",
+		OwnerPubkeyHex: walletID,
+		Address:        address,
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   1000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed chain_bsv fact utxo failed: %v", err)
+	}
 	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
 		SourceType:      "chain_bsv",
 		SourceID:        txid,
@@ -136,6 +180,8 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 		Category:        "CHANGE",
 		WalletInputSat:  1000,
 		WalletOutputSat: 900,
+		ExternalOutSat:  0,
+		MinerFeeSat:     100,
 		NetSat:          -100,
 		Payload:         map[string]any{"wallet_id": walletID},
 		UTXOFacts: []chainPaymentUTXOFact{
@@ -165,5 +211,85 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 	}
 	if !body.Consistency.HasChainBSVCycle || !body.Consistency.HasCarrierBSVFact {
 		t.Fatalf("expected bsv line intact, got %+v", body.Consistency)
+	}
+}
+
+func TestCheckConfirmedBSVSpendConsistency_RepairByCycle(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	txid := "tx_wallet_consistency_repair"
+	utxoID := txid + ":0"
+	now := time.Now().Unix()
+
+	seedWalletUTXO(t, db, utxoID, txid, 0, 1200)
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         utxoID,
+		OwnerPubkeyHex: walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   1200,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed bsv utxo failed: %v", err)
+	}
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_bsv", txid, "confirmed", 1200, 0, -1200, 0, now, "consistency repair", nil); err != nil {
+		t.Fatalf("seed settlement cycle failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle failed: %v", err)
+	}
+	if err := dbAppendSettlementRecord(ctx, store, settlementRecordEntry{
+		RecordID:          "rec_repair_" + txid,
+		SettlementCycleID: cycleID,
+		AssetType:         "BSV",
+		OwnerPubkeyHex:    walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		SourceUTXOID:      utxoID,
+		UsedSatoshi:       1200,
+		State:             "confirmed",
+		OccurredAtUnix:    now,
+		Note:              "repair seed",
+	}); err != nil {
+		t.Fatalf("seed settlement record failed: %v", err)
+	}
+
+	check1, err := CheckConfirmedBSVSpendConsistency(ctx, store, txid)
+	if err != nil {
+		t.Fatalf("check consistency failed: %v", err)
+	}
+	if !check1.HasConfirmedCycle || !check1.HasBSVSettlementFact {
+		t.Fatalf("expected confirmed cycle and settlement fact, got %+v", check1)
+	}
+	if check1.HasSpentUTXO {
+		t.Fatalf("expected spent utxo missing before repair, got %+v", check1)
+	}
+	if !check1.Repairable || !containsString(check1.MissingItems, "spent_bsv_utxo") {
+		t.Fatalf("expected repairable missing spent_bsv_utxo, got %+v", check1)
+	}
+
+	if err := RepairConfirmedBSVSpendConsistency(ctx, store, txid); err != nil {
+		t.Fatalf("repair failed: %v", err)
+	}
+	check2, err := CheckConfirmedBSVSpendConsistency(ctx, store, txid)
+	if err != nil {
+		t.Fatalf("recheck consistency failed: %v", err)
+	}
+	if !check2.HasSpentUTXO || len(check2.MissingItems) != 0 {
+		t.Fatalf("expected repaired consistency, got %+v", check2)
+	}
+
+	got, err := dbGetBSVUTXO(ctx, store, utxoID)
+	if err != nil {
+		t.Fatalf("query repaired utxo failed: %v", err)
+	}
+	if got == nil || got.SpentByTxid != txid || got.UTXOState != "spent" {
+		t.Fatalf("expected repaired spent utxo, got %+v", got)
 	}
 }

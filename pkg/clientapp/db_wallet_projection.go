@@ -50,6 +50,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 		if err != nil {
 			return err
 		}
+		inputFacts := make([]chainPaymentUTXOLinkEntry, 0, len(tx.Inputs))
 		for _, in := range tx.Inputs {
 			if in == nil || in.SourceTXID == nil {
 				continue
@@ -57,6 +58,16 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
 			if err := setWalletUTXOSpentTx(dbtx, existing, utxoID, txid, updatedAt); err != nil {
 				return err
+			}
+			if row, ok := existing[strings.ToLower(strings.TrimSpace(utxoID))]; ok {
+				inputFacts = append(inputFacts, chainPaymentUTXOLinkEntry{
+					UTXOID:        utxoID,
+					IOSide:        "input",
+					UTXORole:      "wallet_input",
+					AmountSatoshi: int64(row.Value),
+					CreatedAtUnix: updatedAt,
+					Note:          "wallet local broadcast input",
+				})
 			}
 		}
 		for idx, out := range tx.Outputs {
@@ -74,9 +85,33 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			if err := upsertWalletUTXORowTx(dbtx, existing, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", updatedAt); err != nil {
 				return err
 			}
+			if err := dbUpsertBSVUTXODB(dbtx, bsvUTXOEntry{
+				UTXOID:         utxoID,
+				OwnerPubkeyHex: strings.ToLower(strings.TrimSpace(addr)),
+				Address:        addr,
+				TxID:           txid,
+				Vout:           uint32(idx),
+				ValueSatoshi:   int64(out.Satoshis),
+				UTXOState:      "unspent",
+				CarrierType:    "plain_bsv",
+				CreatedAtUnix:  updatedAt,
+				UpdatedAtUnix:  updatedAt,
+				Note:           "wallet local broadcast output",
+			}); err != nil {
+				return err
+			}
 		}
 		if err := dbUpsertWalletLocalBroadcastFactTx(dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
 			return err
+		}
+		settlementCycleID, err := dbGetSettlementCycleBySource(dbtx, "chain_bsv", txid)
+		if err != nil {
+			return err
+		}
+		if len(inputFacts) > 0 {
+			if err := dbAppendBSVConsumptionsForSettlementCycle(dbtx, settlementCycleID, inputFacts, updatedAt); err != nil {
+				return err
+			}
 		}
 		stats := summarizeWalletUTXOState(existing)
 		if _, err := dbtx.Exec(

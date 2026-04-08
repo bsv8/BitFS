@@ -299,7 +299,7 @@ func resolveChainPaymentSourceToSettlementCycleDB(db *sql.DB, sourceID string) (
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	for _, sourceType := range []string{"chain_bsv", "chain_token"} {
+	for _, sourceType := range []string{"chain_payment", "chain_bsv", "chain_token"} {
 		if cycleID, err := dbGetSettlementCycleBySource(db, sourceType, strings.ToLower(sourceID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -311,7 +311,17 @@ func resolveChainPaymentSourceToSettlementCycleDB(db *sql.DB, sourceID string) (
 		if err := db.QueryRow(`SELECT txid FROM fact_chain_payments WHERE id=?`, paymentID).Scan(&txid); err != nil {
 			return 0, err
 		}
-		return dbGetSettlementCycleBySource(db, "chain_bsv", txid)
+		if cycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", txid); err == nil {
+			return cycleID, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		if cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid); err == nil {
+			return cycleID, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		return dbGetSettlementCycleBySource(db, "chain_token", txid)
 	}
 	return 0, sql.ErrNoRows
 }

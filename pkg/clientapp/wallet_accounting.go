@@ -91,6 +91,8 @@ type chainPaymentUTXOFact struct {
 //   - 交易汇总字段继续保留，用于 settlement_cycle / settle_tx_breakdown
 //   - UTXO 明细必须由上游显式传入，不能从 payload 临时猜
 //   - ProcessEvents 允许在同一笔事务里一并落库
+//   - 硬切换后新增：ExternalOutSat（对外输出）、MinerFeeSat（矿工费）
+//   - net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
 type walletChainAccountingInput struct {
 	SourceType      string
 	SourceID        string
@@ -98,6 +100,8 @@ type walletChainAccountingInput struct {
 	Category        string
 	WalletInputSat  int64
 	WalletOutputSat int64
+	ExternalOutSat  int64 // 对外输出金额（给第三方）
+	MinerFeeSat     int64 // 矿工费
 	NetSat          int64
 	Payload         any
 	UTXOFacts       []chainPaymentUTXOFact
@@ -192,6 +196,11 @@ func validateWalletFactSource(sourceType string, sourceID string) (string, strin
 	}
 }
 
+// recordWalletChainAccountingConn 写入钱包链记账事实。
+// 硬切换设计：
+//   - net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
+//   - 不再从 NetSat 倒推，而是使用显式传入的 ExternalOutSat 和 MinerFeeSat
+//   - 删除旧的兜底推断分支（"有输入+有输出=CHANGE"逻辑已清理）
 func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -213,43 +222,52 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	netIn := int64(0)
 	netOut := int64(0)
 	changeBack := int64(0)
+	minerFee := in.MinerFeeSat
 
 	switch strings.ToUpper(strings.TrimSpace(in.Category)) {
 	case "CHANGE":
+		// 内部找零：无外部输出，矿工费已扣，net_out = 0 + miner_fee
 		paymentSubType = "internal_change"
 		changeBack = in.WalletOutputSat
+		netOut = minerFee
 	case "REPAYMENT":
+		// 纯收款：无输入，有输出（外部给钱包打钱）
 		paymentSubType = "external_in"
-		externalIn = in.NetSat
+		externalIn = in.WalletOutputSat
 		if externalIn < 0 {
 			externalIn = 0
 		}
 		netIn = externalIn
 		fromParty = "external:unknown"
 	case "THIRD_PARTY":
+		// 对外转账：有外部输出，net_out = counterparty_out + miner_fee
 		paymentSubType = "external_out"
-		counterpartyOut = in.WalletInputSat - in.WalletOutputSat
-		if counterpartyOut < 0 {
-			counterpartyOut = -in.NetSat
-		}
+		counterpartyOut = in.ExternalOutSat
 		if counterpartyOut < 0 {
 			counterpartyOut = 0
 		}
-		netOut = counterpartyOut
+		changeBack = in.WalletOutputSat // 找零金额（钱包输出中属于钱包的部分）
+		netOut = counterpartyOut + minerFee
 		toParty = "external:unknown"
 	case "FEE_POOL":
 		paymentSubType = "fee_pool_settle"
 		changeBack = in.WalletOutputSat
+		netOut = minerFee
 	default:
+		// 兜底：按净额方向判断，但优先使用显式值
 		if in.NetSat > 0 {
 			paymentSubType = "external_in"
-			externalIn = in.NetSat
-			netIn = in.NetSat
+			externalIn = in.WalletOutputSat
+			netIn = externalIn
 			fromParty = "external:unknown"
 		} else if in.NetSat < 0 {
 			paymentSubType = "external_out"
-			counterpartyOut = -in.NetSat
-			netOut = -in.NetSat
+			counterpartyOut = in.ExternalOutSat
+			if counterpartyOut < 0 {
+				counterpartyOut = 0
+			}
+			changeBack = in.WalletOutputSat
+			netOut = counterpartyOut + minerFee
 			toParty = "external:unknown"
 		}
 	}
@@ -301,7 +319,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		ChangeBackSatoshi:  changeBack,
 		ExternalInSatoshi:  externalIn,
 		CounterpartyOutSat: counterpartyOut,
-		MinerFeeSatoshi:    0,
+		MinerFeeSatoshi:    minerFee,
 		NetOutSatoshi:      netOut,
 		NetInSatoshi:       netIn,
 		Note:               "wallet chain derived breakdown",

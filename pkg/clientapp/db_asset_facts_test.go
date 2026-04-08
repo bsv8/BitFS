@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -133,6 +134,130 @@ func TestBSVUTXOMarkSpent(t *testing.T) {
 	}
 	if got.SpentAtUnix == 0 {
 		t.Fatal("expected spent_at_unix to be set")
+	}
+}
+
+// TestBSVConsumptionsFromSettlementCycle_IsIdempotent 验证 BSV 扣账只走 settlement_cycle，重复回放不二次扣。
+func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
+	now := time.Now().Unix()
+
+	ownerPubkey := "03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	utxoID := "tx_cycle_spend_001:0"
+	txid := "tx_cycle_spend_001"
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         utxoID,
+		OwnerPubkeyHex: ownerPubkey,
+		Address:        "1CycleSpendAddress",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   7000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed bsv utxo failed: %v", err)
+	}
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_bsv", txid, "confirmed", 7000, 0, -7000, 0, now, "cycle spend test", nil); err != nil {
+		t.Fatalf("seed settlement cycle failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle failed: %v", err)
+	}
+
+	facts := []chainPaymentUTXOLinkEntry{{
+		UTXOID:        utxoID,
+		IOSide:        "input",
+		UTXORole:      "wallet_input",
+		AmountSatoshi: 7000,
+		CreatedAtUnix: now,
+	}}
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, facts, now); err != nil {
+		t.Fatalf("first append bsv consumption failed: %v", err)
+	}
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, facts, now+1); err != nil {
+		t.Fatalf("second append bsv consumption failed: %v", err)
+	}
+
+	got, err := dbGetBSVUTXO(ctx, store, utxoID)
+	if err != nil {
+		t.Fatalf("get bsv utxo failed: %v", err)
+	}
+	if got == nil {
+		t.Fatal("expected utxo, got nil")
+	}
+	if got.UTXOState != "spent" {
+		t.Fatalf("expected spent state, got %s", got.UTXOState)
+	}
+	if got.SpentByTxid != txid {
+		t.Fatalf("expected spent_by_txid %s, got %s", txid, got.SpentByTxid)
+	}
+
+	var recordCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV' AND source_utxo_id=?`, cycleID, utxoID).Scan(&recordCount); err != nil {
+		t.Fatalf("count settlement records failed: %v", err)
+	}
+	if recordCount != 1 {
+		t.Fatalf("expected 1 settlement record, got %d", recordCount)
+	}
+}
+
+// TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID 验证 pool_session 也能反查到 txid 锚点。
+func TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	now := time.Now().Unix()
+	sessionID := "sess_pool_source_txid_001"
+	txid := "pool_source_txid_001"
+
+	if err := dbUpsertSettlementCycle(db, "cycle_pool_session_"+sessionID, "pool_session", sessionID, "confirmed", 0, 0, 0, 0, now, "pool session source txid test", nil); err != nil {
+		t.Fatalf("seed settlement cycle failed: %v", err)
+	}
+	if _, err := db.Exec(`
+		INSERT INTO fact_pool_session_events(
+			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"alloc_pool_source_txid_001",
+		sessionID,
+		1,
+		"pay",
+		PoolFactEventKindPoolEvent,
+		2,
+		"confirmed",
+		"out",
+		300,
+		"pool pay",
+		"pool session source txid test",
+		"msg_pool_source_txid_001",
+		0,
+		300,
+		690,
+		txid,
+		"",
+		"02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		now,
+		"{}",
+	); err != nil {
+		t.Fatalf("seed pool session event failed: %v", err)
+	}
+
+	cycleID, err := dbGetSettlementCycleBySource(db, "pool_session", sessionID)
+	if err != nil {
+		t.Fatalf("lookup settlement cycle failed: %v", err)
+	}
+	gotTxID, err := dbGetSettlementCycleSourceTxID(db, cycleID)
+	if err != nil {
+		t.Fatalf("resolve pool session txid failed: %v", err)
+	}
+	if gotTxID != txid {
+		t.Fatalf("expected txid %s, got %s", txid, gotTxID)
 	}
 }
 
@@ -496,6 +621,20 @@ func TestTokenCarrierLinkBasicCRUD(t *testing.T) {
 	if err := dbUpsertTokenLot(ctx, store, lot); err != nil {
 		t.Fatalf("upsert token lot: %v", err)
 	}
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         carrierUTXOID,
+		OwnerPubkeyHex: ownerPubkey,
+		Address:        "1CarrierAddress001",
+		TxID:           "tx_carrier_001",
+		Vout:           0,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed carrier bsv utxo failed: %v", err)
+	}
 
 	// 写入 Carrier Link
 	link := tokenCarrierLinkEntry{
@@ -583,6 +722,36 @@ func TestTokenCarrierLinkListByOwner(t *testing.T) {
 	for _, lot := range lots {
 		if err := dbUpsertTokenLot(ctx, store, lot); err != nil {
 			t.Fatalf("upsert token lot: %v", err)
+		}
+	}
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            "lot_link_003",
+		OwnerPubkeyHex:   ownerPubkey,
+		TokenID:          "token_link_test",
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         "tx_mint_link_003",
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("upsert token lot lot_link_003 failed: %v", err)
+	}
+	for _, linkUTXO := range []string{"tx_carrier_002:0", "tx_carrier_003:0", "tx_carrier_004:0"} {
+		if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+			UTXOID:         linkUTXO,
+			OwnerPubkeyHex: ownerPubkey,
+			Address:        "1CarrierAddress002",
+			TxID:           strings.Split(linkUTXO, ":")[0],
+			Vout:           0,
+			ValueSatoshi:   1,
+			UTXOState:      "unspent",
+			CarrierType:    "token_carrier",
+			CreatedAtUnix:  now,
+			UpdatedAtUnix:  now,
+		}); err != nil {
+			t.Fatalf("seed carrier bsv utxo %s failed: %v", linkUTXO, err)
 		}
 	}
 

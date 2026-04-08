@@ -1065,6 +1065,7 @@ func TestDirectTransferAccountingIdempotency(t *testing.T) {
 }
 
 // TestRecordWalletChainAccounting_WritesBreakdownWithTxRole 验证 wallet chain 链路写出的 breakdown 带 tx_role
+// 硬切换后验证：MinerFeeSatoshi 从显式字段读取，net_out = counterparty_out + miner_fee
 func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
@@ -1076,6 +1077,8 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 		Category:        "CHANGE",
 		WalletInputSat:  1000,
 		WalletOutputSat: 800,
+		ExternalOutSat:  0,
+		MinerFeeSat:     200,
 		NetSat:          -200,
 		Payload:         map[string]any{"test": true},
 	}); err != nil {
@@ -1091,6 +1094,94 @@ func TestRecordWalletChainAccounting_WritesBreakdownWithTxRole(t *testing.T) {
 	}
 	if txRole != "internal_change" {
 		t.Fatalf("expected tx_role=internal_change, got=%s", txRole)
+	}
+
+	// 硬切换验证：矿工费正确写入，net_out = 0 + miner_fee = 200
+	var minerFee, netOut int64
+	if err := db.QueryRow(
+		`SELECT miner_fee_satoshi, net_out_satoshi FROM settle_tx_breakdown WHERE business_id=? AND txid=?`,
+		walletChainBusinessID("chain_bsv", txid), txid,
+	).Scan(&minerFee, &netOut); err != nil {
+		t.Fatalf("query breakdown miner_fee/net_out failed: %v", err)
+	}
+	if minerFee != 200 {
+		t.Fatalf("expected miner_fee=200, got=%d", minerFee)
+	}
+	if netOut != 200 {
+		t.Fatalf("expected net_out=200 (0+200), got=%d", netOut)
+	}
+}
+
+// TestRecordWalletChainAccounting_ExternalOutWithMinerFee 验证硬切换公式：
+// net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
+// 场景：6 in / 3 external / 2 change / 1 fee => net_out = 3 + 1 = 4
+func TestRecordWalletChainAccounting_ExternalOutWithMinerFee(t *testing.T) {
+	t.Parallel()
+	db := newWalletAccountingTestDB(t)
+	txid := "tx_chain_external_out_1"
+
+	// 6 sat 输入，2 sat 找零，3 sat 给第三方，1 sat 矿工费
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		SourceType:      "chain_bsv",
+		SourceID:        txid,
+		TxID:            txid,
+		Category:        "THIRD_PARTY",
+		WalletInputSat:  6,
+		WalletOutputSat: 2,
+		ExternalOutSat:  3,
+		MinerFeeSat:     1,
+		NetSat:          -4,
+		Payload:         map[string]any{"test": true, "scenario": "6in_3ext_2chg_1fee"},
+	}); err != nil {
+		t.Fatalf("record wallet chain accounting failed: %v", err)
+	}
+
+	// 硬断言 settle_tx_breakdown 各字段
+	var grossInput, changeBack, externalIn, counterpartyOut, minerFee, netOut, netIn int64
+	var txRole string
+	if err := db.QueryRow(
+		`SELECT gross_input_satoshi, change_back_satoshi, external_in_satoshi, counterparty_out_satoshi, miner_fee_satoshi, net_out_satoshi, net_in_satoshi, tx_role 
+		 FROM settle_tx_breakdown WHERE business_id=? AND txid=?`,
+		walletChainBusinessID("chain_bsv", txid), txid,
+	).Scan(&grossInput, &changeBack, &externalIn, &counterpartyOut, &minerFee, &netOut, &netIn, &txRole); err != nil {
+		t.Fatalf("query breakdown failed: %v", err)
+	}
+
+	if grossInput != 6 {
+		t.Fatalf("expected gross_input=6, got=%d", grossInput)
+	}
+	if changeBack != 2 {
+		t.Fatalf("expected change_back=2, got=%d", changeBack)
+	}
+	if externalIn != 0 {
+		t.Fatalf("expected external_in=0, got=%d", externalIn)
+	}
+	if counterpartyOut != 3 {
+		t.Fatalf("expected counterparty_out=3, got=%d", counterpartyOut)
+	}
+	if minerFee != 1 {
+		t.Fatalf("expected miner_fee=1, got=%d", minerFee)
+	}
+	if netOut != 4 {
+		t.Fatalf("expected net_out=4 (3+1), got=%d", netOut)
+	}
+	if netIn != 0 {
+		t.Fatalf("expected net_in=0, got=%d", netIn)
+	}
+	if txRole != "external_out" {
+		t.Fatalf("expected tx_role=external_out, got=%s", txRole)
+	}
+
+	// 验证 fact_settlement_cycles.net_amount_satoshi 与 net_in - net_out 一致 (-4)
+	var cycleNetAmount int64
+	if err := db.QueryRow(
+		`SELECT net_amount_satoshi FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`,
+		txid,
+	).Scan(&cycleNetAmount); err != nil {
+		t.Fatalf("query settlement cycle failed: %v", err)
+	}
+	if cycleNetAmount != -4 {
+		t.Fatalf("expected cycle net_amount=-4, got=%d", cycleNetAmount)
 	}
 }
 
@@ -1314,6 +1405,8 @@ func TestRecordWalletChainAccounting_RepaymentWithoutWalletInputSkipsSettlementC
 func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	t.Parallel()
 	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
 
 	txid := "tx_chain_utxo_link_test"
 	inputUTXO := txid + ":0"
@@ -1322,6 +1415,21 @@ func TestRecordWalletChainAccounting_ChainPaymentUTXOLinks(t *testing.T) {
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 3000)
 	seedWalletUTXO(t, db, changeUTXO, txid, 1, 800)
 	seedWalletUTXO(t, db, counterpartyUTXO, txid, 2, 600)
+	walletID := walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf")
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletID,
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   3000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed bsv utxo fact failed: %v", err)
+	}
 
 	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
 		SourceType:      "chain_bsv",
@@ -1411,11 +1519,28 @@ func TestRecordWalletChainAccounting_Idempotent(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
+	ctx := context.Background()
+	store := newClientDB(db, nil)
 	txid := "tx_chain_idem_1"
 	inputUTXO := txid + ":0"
 	changeUTXO := txid + ":1"
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 3000)
 	seedWalletUTXO(t, db, changeUTXO, txid, 1, 800)
+	walletID := walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf")
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         inputUTXO,
+		OwnerPubkeyHex: walletID,
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   3000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed bsv utxo fact failed: %v", err)
+	}
 
 	in := walletChainAccountingInput{
 		SourceType:      "chain_bsv",
@@ -1467,9 +1592,10 @@ func TestWalletChainAccounting_DualLineReplay_NoDuplicateConsumption(t *testing.
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 1)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
+	walletID := walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf")
 	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
-		OwnerPubkeyHex: walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		OwnerPubkeyHex: walletID,
 		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
 		TxID:           txid,
 		Vout:           0,
@@ -1480,6 +1606,35 @@ func TestWalletChainAccounting_DualLineReplay_NoDuplicateConsumption(t *testing.
 		UpdatedAtUnix:  time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("seed token carrier flow failed: %v", err)
+	}
+	// 写入 token lot 和 carrier link（使 collectTokenUTXOLinkFacts 能找到 token 输入）
+	now := time.Now().Unix()
+	lotID := "lot_dual_replay_" + txid
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            lotID,
+		OwnerPubkeyHex:   walletID,
+		TokenID:          "token_dual_replay_001",
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         txid,
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "link_dual_replay_" + txid,
+		LotID:          lotID,
+		CarrierUTXOID:  inputUTXO,
+		OwnerPubkeyHex: walletID,
+		LinkState:      "active",
+		BindTxid:       txid,
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
 	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
@@ -1582,9 +1737,10 @@ func TestWalletChainAccounting_ConcurrentReplay_NoDoubleWrite(t *testing.T) {
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 1)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
+	walletID := walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf")
 	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         inputUTXO,
-		OwnerPubkeyHex: walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		OwnerPubkeyHex: walletID,
 		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
 		TxID:           txid,
 		Vout:           0,
@@ -1595,6 +1751,35 @@ func TestWalletChainAccounting_ConcurrentReplay_NoDoubleWrite(t *testing.T) {
 		UpdatedAtUnix:  time.Now().Unix(),
 	}); err != nil {
 		t.Fatalf("seed token carrier flow failed: %v", err)
+	}
+	// 写入 token lot 和 carrier link（使 collectTokenUTXOLinkFacts 能找到 token 输入）
+	now := time.Now().Unix()
+	lotID := "lot_dual_replay_concurrent_" + txid
+	if err := dbUpsertTokenLot(ctx, store, tokenLotEntry{
+		LotID:            lotID,
+		OwnerPubkeyHex:   walletID,
+		TokenID:          "token_dual_replay_concurrent_001",
+		TokenStandard:    "BSV21",
+		QuantityText:     "1000",
+		UsedQuantityText: "0",
+		LotState:         "unspent",
+		MintTxid:         txid,
+		CreatedAtUnix:    now,
+		UpdatedAtUnix:    now,
+	}); err != nil {
+		t.Fatalf("seed token lot failed: %v", err)
+	}
+	if err := dbUpsertTokenCarrierLink(ctx, store, tokenCarrierLinkEntry{
+		LinkID:         "link_dual_replay_concurrent_" + txid,
+		LotID:          lotID,
+		CarrierUTXOID:  inputUTXO,
+		OwnerPubkeyHex: walletID,
+		LinkState:      "active",
+		BindTxid:       txid,
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
 	inBsv := walletChainAccountingInput{
@@ -1721,6 +1906,20 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 	prevTxID := "tx_sync_prev_1"
 	txid := "tx_sync_chain_accounting_1"
 	seedWalletUTXO(t, db, prevTxID+":0", prevTxID, 0, 5000)
+	if err := dbUpsertBSVUTXO(context.Background(), store, bsvUTXOEntry{
+		UTXOID:         prevTxID + ":0",
+		OwnerPubkeyHex: walletID,
+		Address:        address,
+		TxID:           prevTxID,
+		Vout:           0,
+		ValueSatoshi:   5000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed sync bsv utxo failed: %v", err)
+	}
 
 	snapshot := liveWalletSnapshot{
 		Live: map[string]poolcore.UTXO{
@@ -2108,6 +2307,20 @@ func TestCollectTokenUTXOLinkFacts_RequireQuantityText(t *testing.T) {
 	seedWalletUTXO(t, db, utxoID, "tx_token_quantity_missing", 0, 1)
 	lotID := "lot_token_quantity_missing"
 	now := time.Now().Unix()
+	if err := dbUpsertBSVUTXO(context.Background(), newClientDB(db, nil), bsvUTXOEntry{
+		UTXOID:         utxoID,
+		OwnerPubkeyHex: walletID,
+		Address:        address,
+		TxID:           "tx_token_quantity_missing",
+		Vout:           0,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier bsv utxo failed: %v", err)
+	}
 	// 插入 token lot（缺少 quantity_text）
 	if _, err := db.Exec(`INSERT INTO fact_token_lots(
 		lot_id,owner_pubkey_hex,token_id,token_standard,quantity_text,used_quantity_text,lot_state,mint_txid,last_spend_txid,created_at_unix,updated_at_unix,note,payload_json
@@ -2206,6 +2419,20 @@ func TestCheckTokenTxDualLineConsistency_MissingOneLine(t *testing.T) {
 	ctx := context.Background()
 
 	txid := "tx_chain_dual_missing_1"
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         txid + ":0",
+		OwnerPubkeyHex: walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   1000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed chain_bsv fact utxo failed: %v", err)
+	}
 	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
 		SourceType:      "chain_bsv",
 		SourceID:        txid,
@@ -2253,6 +2480,20 @@ func TestCheckTokenTxDualLineConsistency_MissingCarrierFact(t *testing.T) {
 		t.Fatalf("seed chain_token cycle failed: %v", err)
 	}
 	now := time.Now().Unix()
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         tokenUTXOID,
+		OwnerPubkeyHex: "wallet_missing_carrier_fact",
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier bsv utxo failed: %v", err)
+	}
 	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 		UTXOID:         tokenUTXOID,
 		OwnerPubkeyHex: "wallet_missing_carrier_fact",
@@ -2331,6 +2572,20 @@ func TestCheckTokenTxDualLineConsistency_MissingTokenQuantityFact(t *testing.T) 
 
 	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_bsv", txid, "confirmed", 1000, 0, -100, 0, time.Now().Unix(), "missing token qty fact", nil); err != nil {
 		t.Fatalf("seed chain_bsv cycle failed: %v", err)
+	}
+	if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+		UTXOID:         txid + ":0",
+		OwnerPubkeyHex: "wallet_missing_token_qty_fact",
+		Address:        "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		TxID:           txid,
+		Vout:           0,
+		ValueSatoshi:   1000,
+		UTXOState:      "unspent",
+		CarrierType:    "plain_bsv",
+		CreatedAtUnix:  time.Now().Unix(),
+		UpdatedAtUnix:  time.Now().Unix(),
+	}); err != nil {
+		t.Fatalf("seed bsv fact utxo failed: %v", err)
 	}
 	if err := dbAppendBSVConsumptionsForSettlementCycle(db, mustSettlementCycleIDBySource(t, db, "chain_bsv", txid), []chainPaymentUTXOLinkEntry{
 		{UTXOID: txid + ":0", IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1000, CreatedAtUnix: time.Now().Unix()},

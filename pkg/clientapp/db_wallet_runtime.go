@@ -108,11 +108,13 @@ func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, addre
 		if address == "" {
 			return []fundalloc.Candidate{}, nil
 		}
-		walletID := walletIDByAddress(address)
-		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,allocation_class,allocation_reason
-			FROM wallet_utxo
-			WHERE wallet_id=? AND address=? AND state='unspent' AND allocation_class=?
-			ORDER BY created_at_unix ASC, value_satoshi ASC, txid ASC, vout ASC`, walletID, address, walletUTXOAllocationPlainBSV)
+		ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(address, "wallet:"))
+		walletID := walletIDByAddress(ownerPubkeyHex)
+		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,carrier_type,note
+			FROM fact_bsv_utxos
+			WHERE (owner_pubkey_hex=? OR owner_pubkey_hex=?)
+			  AND utxo_state='unspent' AND carrier_type='plain_bsv'
+			ORDER BY created_at_unix ASC, value_satoshi ASC, txid ASC, vout ASC`, ownerPubkeyHex, walletID)
 		if err != nil {
 			return nil, err
 		}
@@ -120,15 +122,15 @@ func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, addre
 		out := make([]fundalloc.Candidate, 0, 16)
 		for rows.Next() {
 			var item fundalloc.Candidate
-			var allocationClass string
-			var allocationReason string
-			if err := rows.Scan(&item.ID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.CreatedAtUnix, &allocationClass, &allocationReason); err != nil {
+			var carrierType string
+			var note string
+			if err := rows.Scan(&item.ID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.CreatedAtUnix, &carrierType, &note); err != nil {
 				return nil, err
 			}
 			item.ID = strings.ToLower(strings.TrimSpace(item.ID))
 			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-			item.ProtectionClass = fundalloc.ProtectionClass(normalizeWalletUTXOAllocationClass(allocationClass))
-			item.ProtectionReason = strings.TrimSpace(allocationReason)
+			item.ProtectionClass = fundalloc.ProtectionClass(walletUTXOAllocationPlainBSV)
+			item.ProtectionReason = strings.TrimSpace(note)
 			out = append(out, item)
 		}
 		if err := rows.Err(); err != nil {

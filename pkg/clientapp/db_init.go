@@ -779,6 +779,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// fact_bsv_utxos: 本币UTXO事实表（硬切新增）
 		// 设计说明：
 		// - 记录钱包拥有的本币UTXO状态（unspent/spent）
+		// - 这里只是余额事实，真正扣账只从 settlement_cycle 触发
 		// - carrier_type 区分：plain_bsv（纯本币）、token_carrier（token载体1sat）、fee_change（费用找零）、unknown（待确认）
 		// - 余额计算：owner_pubkey_hex + utxo_state='unspent' 聚合
 		`CREATE TABLE IF NOT EXISTS fact_bsv_utxos(
@@ -865,6 +866,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// fact_settlement_records: 结算消耗记录表（硬切新增）
 		// 设计说明：
 		// - 记录每次结算周期中的资产消耗详情
+		// - 这里只记录 cycle 驱动后的扣账结果，不接受直接旁路写 UTXO
 		// - asset_type: BSV（本币）、TOKEN（token数量）
 		// - source_utxo_id: 本币消耗来源（fact_bsv_utxos.utxo_id）
 		// - source_lot_id: token消耗来源（fact_token_lots.lot_id）
@@ -897,6 +899,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 		// - 把 chain_payment / pool_session / wallet chain/token 统一到一个周期结算事实层
 		// - 只保留 source_type/source_id 作为来源锚点
 		// - source_type/source_id 做唯一约束，禁止再靠旧事件列兜底
+		// - 业务扣账只认 settlement_cycle，不再直接改 fact_bsv_utxos
 		`CREATE TABLE IF NOT EXISTS fact_settlement_cycles(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			cycle_id TEXT NOT NULL UNIQUE,

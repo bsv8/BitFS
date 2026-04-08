@@ -969,6 +969,20 @@ func TestVerificationReconciliation_FactNoConfirmation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed token lot: %v", err)
 	}
+	if err := dbUpsertBSVUTXO(context.Background(), store, bsvUTXOEntry{
+		UTXOID:         "tx_pending_fact:0",
+		OwnerPubkeyHex: ownerPubkeyHex,
+		Address:        address,
+		TxID:           "tx_pending_fact",
+		Vout:           0,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed token carrier bsv utxo: %v", err)
+	}
 	_, err = db.Exec(
 		`INSERT INTO fact_token_carrier_links(link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid, created_at_unix, updated_at_unix, note, payload_json)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
@@ -1075,6 +1089,20 @@ func TestTokenSpendableSourceFlows_ExcludesUnknown(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatalf("seed token lot for unknown: %v", err)
+	}
+	if err := dbUpsertBSVUTXO(context.Background(), newClientDB(db, nil), bsvUTXOEntry{
+		UTXOID:         "tx_unknown:0",
+		OwnerPubkeyHex: ownerPubkeyHex,
+		Address:        address,
+		TxID:           "tx_unknown",
+		Vout:           0,
+		ValueSatoshi:   1,
+		UTXOState:      "unspent",
+		CarrierType:    "token_carrier",
+		CreatedAtUnix:  now,
+		UpdatedAtUnix:  now,
+	}); err != nil {
+		t.Fatalf("seed unknown token carrier bsv utxo: %v", err)
 	}
 	_, err = db.Exec(
 		`INSERT INTO fact_token_carrier_links(link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid, created_at_unix, updated_at_unix, note, payload_json)
