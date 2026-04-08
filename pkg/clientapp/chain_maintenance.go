@@ -1233,6 +1233,18 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainClie
 			Token: token,
 		})
 		if err != nil {
+			// 空白地址在 WOC 上没有任何 confirmed history 时，返回 404 只是“当前没有数据”，不是失败。
+			// 这里直接把它收敛成空结果，避免新空白 key 的首次同步被误判成异常。
+			if isWalletChainEmptyConfirmedHistoryPage(err) {
+				logWalletSyncStepInfo(meta, "wallet_chain_find_oldest_confirmed_height", map[string]any{
+					"confirmed_live_txid_cnt": len(txids),
+					"oldest_confirmed_height": 0,
+					"page_cnt":                pageCount,
+					"empty_range_http_404":    true,
+					"step_duration_ms":        time.Since(stepStart).Milliseconds(),
+				})
+				return 0, nil
+			}
 			logWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_desc", err, map[string]any{
 				"upstream_path":    pagePath,
 				"page_cnt":         pageCount,

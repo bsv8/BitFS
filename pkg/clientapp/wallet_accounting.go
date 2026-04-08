@@ -254,6 +254,12 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		}
 	}
 	now := time.Now().Unix()
+	// 设计约束：
+	// - 纯收款场景（无钱包输入 + REPAYMENT）只更新钱包 UTXO 现场，不生成 settlement cycle；
+	// - settlement cycle 从“发生花费”开始，避免把被动入账误判为已进入结算周期。
+	if strings.EqualFold(strings.TrimSpace(in.Category), "REPAYMENT") && in.WalletInputSat <= 0 {
+		return nil
+	}
 
 	// 来源已经由上层显式给定，这里只落对应来源的事实。
 	utxoFacts := buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now)

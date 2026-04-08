@@ -1140,10 +1140,10 @@ func TestRecordWalletChainAccounting_UsesChainBSVCycle(t *testing.T) {
 		SourceType:      "chain_bsv",
 		SourceID:        txid,
 		TxID:            txid,
-		Category:        "REPAYMENT",
-		WalletInputSat:  0,
+		Category:        "CHANGE",
+		WalletInputSat:  6000,
 		WalletOutputSat: 5000,
-		NetSat:          5000,
+		NetSat:          -1000,
 		Payload:         map[string]any{"test": true},
 	}); err != nil {
 		t.Fatalf("record wallet chain accounting failed: %v", err)
@@ -1190,10 +1190,10 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainBSVCycle(t *testing.T) 
 		SourceType:      "chain_bsv",
 		SourceID:        txid,
 		TxID:            txid,
-		Category:        "REPAYMENT",
-		WalletInputSat:  0,
+		Category:        "CHANGE",
+		WalletInputSat:  6000,
 		WalletOutputSat: 5000,
-		NetSat:          5000,
+		NetSat:          -1000,
 		Payload:         map[string]any{"test": true},
 	}); err != nil {
 		t.Fatalf("record wallet chain accounting failed: %v", err)
@@ -1278,6 +1278,35 @@ func TestRecordWalletChainAccounting_QueryByTxIDUsesChainBSVCycle(t *testing.T) 
 	}
 	if feePoolProcPage.Items[0].SourceType != "settlement_cycle" || feePoolProcPage.Items[0].SourceID != wantSourceID {
 		t.Fatalf("process lookup by settlement_cycle returned wrong source: %+v", feePoolProcPage.Items[0])
+	}
+}
+
+// TestRecordWalletChainAccounting_RepaymentWithoutWalletInputSkipsSettlementCycle
+// 验证：被动收款（无钱包输入）不会写 settlement_cycle。
+func TestRecordWalletChainAccounting_RepaymentWithoutWalletInputSkipsSettlementCycle(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	txid := "tx_chain_receive_skip_cycle_1"
+	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
+		SourceType:      "chain_bsv",
+		SourceID:        txid,
+		TxID:            txid,
+		Category:        "REPAYMENT",
+		WalletInputSat:  0,
+		WalletOutputSat: 5000,
+		NetSat:          5000,
+		Payload:         map[string]any{"test": true},
+	}); err != nil {
+		t.Fatalf("record wallet chain accounting failed: %v", err)
+	}
+
+	var cycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, txid).Scan(&cycleCount); err != nil {
+		t.Fatalf("count settlement cycles failed: %v", err)
+	}
+	if cycleCount != 0 {
+		t.Fatalf("expected 0 chain_bsv cycle for passive repayment, got %d", cycleCount)
 	}
 }
 
