@@ -3,10 +3,16 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
+	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
 func newOrchestratorTestDB(t *testing.T) (*sql.DB, string) {
@@ -124,6 +130,14 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 	if err := db.QueryRow(`SELECT created_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&createdAt1); err != nil {
 		t.Fatalf("query utxo after round-1: %v", err)
 	}
+	var updatedAt1 int64
+	if err := db.QueryRow(`SELECT updated_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&updatedAt1); err != nil {
+		t.Fatalf("query utxo updated_at after round-1: %v", err)
+	}
+	var walletUpdatedAt1 int64
+	if err := db.QueryRow(`SELECT updated_at_unix FROM wallet_utxo WHERE utxo_id=?`, confirmedTxID+":0").Scan(&walletUpdatedAt1); err != nil {
+		t.Fatalf("query wallet_utxo updated_at after round-1: %v", err)
+	}
 
 	// 第二次同步（重复触发）
 	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-2", "", "test", now+1, 10); err != nil {
@@ -144,6 +158,109 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 	}
 	if createdAt2 != createdAt1 {
 		t.Fatalf("expected same created_at (idempotent), got %d vs %d", createdAt2, createdAt1)
+	}
+	var updatedAt2 int64
+	if err := db.QueryRow(`SELECT updated_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, confirmedTxID+":0").Scan(&updatedAt2); err != nil {
+		t.Fatalf("query utxo updated_at after round-2: %v", err)
+	}
+	if updatedAt2 != updatedAt1 {
+		t.Fatalf("expected same updated_at on noop replay, got %d vs %d", updatedAt2, updatedAt1)
+	}
+	var walletUpdatedAt2 int64
+	if err := db.QueryRow(`SELECT updated_at_unix FROM wallet_utxo WHERE utxo_id=?`, confirmedTxID+":0").Scan(&walletUpdatedAt2); err != nil {
+		t.Fatalf("query wallet_utxo updated_at after round-2: %v", err)
+	}
+	if walletUpdatedAt2 != walletUpdatedAt1 {
+		t.Fatalf("expected wallet_utxo updated_at unchanged on noop replay, got %d vs %d", walletUpdatedAt2, walletUpdatedAt1)
+	}
+}
+
+// TestSyncWalletAndApplyFacts_WalletUTXOUpdatedAtMovesOnStateChange 真实变化时更新时间要推进。
+func TestSyncWalletAndApplyFacts_WalletUTXOUpdatedAtMovesOnStateChange(t *testing.T) {
+	t.Parallel()
+
+	db, _ := newOrchestratorTestDB(t)
+	store := newClientDB(db, nil)
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+	now := time.Now().Unix()
+
+	confirmedTxID := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+	snapshot1 := liveWalletSnapshot{
+		Live: map[string]poolcore.UTXO{
+			confirmedTxID + ":0": {TxID: confirmedTxID, Vout: 0, Value: 4000},
+		},
+		ObservedMempoolTxs:    nil,
+		ConfirmedLiveTxIDs:    map[string]struct{}{confirmedTxID: {}},
+		Balance:               4000,
+		Count:                 1,
+		OldestConfirmedHeight: 400,
+	}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 400}
+
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot1, nil, cursor, "round-1", "", "test", now, 10); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts round-1: %v", err)
+	}
+
+	var walletUpdatedAt1 int64
+	if err := db.QueryRow(`SELECT updated_at_unix FROM wallet_utxo WHERE utxo_id=?`, confirmedTxID+":0").Scan(&walletUpdatedAt1); err != nil {
+		t.Fatalf("query wallet_utxo updated_at after round-1: %v", err)
+	}
+	var spentState1 string
+	if err := db.QueryRow(`SELECT state FROM wallet_utxo WHERE utxo_id=?`, confirmedTxID+":0").Scan(&spentState1); err != nil {
+		t.Fatalf("query wallet_utxo state after round-1: %v", err)
+	}
+	if spentState1 != "unspent" {
+		t.Fatalf("expected unspent after round-1, got %s", spentState1)
+	}
+
+	spendTxID := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	snapshot2 := liveWalletSnapshot{
+		Live:                  map[string]poolcore.UTXO{},
+		ObservedMempoolTxs:    nil,
+		ConfirmedLiveTxIDs:    map[string]struct{}{},
+		Balance:               0,
+		Count:                 0,
+		OldestConfirmedHeight: 401,
+	}
+	history := []walletHistoryTxRecord{
+		{
+			TxID:   spendTxID,
+			Height: 401,
+			Tx: whatsonchain.TxDetail{
+				TxID: spendTxID,
+				Vin: []whatsonchain.TxInput{
+					{TxID: confirmedTxID, Vout: 0},
+				},
+			},
+		},
+	}
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot2, history, cursor, "round-2", "", "test", now+1, 10); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts round-2: %v", err)
+	}
+
+	var walletUpdatedAt2 int64
+	var spentState2 string
+	var spentTxID string
+	if err := db.QueryRow(`SELECT updated_at_unix,state,spent_txid FROM wallet_utxo WHERE utxo_id=?`, confirmedTxID+":0").Scan(&walletUpdatedAt2, &spentState2, &spentTxID); err != nil {
+		t.Fatalf("query wallet_utxo after round-2: %v", err)
+	}
+	if spentState2 != "spent" {
+		t.Fatalf("expected spent after round-2, got %s", spentState2)
+	}
+	if spentTxID != spendTxID {
+		t.Fatalf("expected spent_txid %s, got %s", spendTxID, spentTxID)
+	}
+	if walletUpdatedAt2 <= walletUpdatedAt1 {
+		t.Fatalf("expected wallet_utxo updated_at to move forward, got %d vs %d", walletUpdatedAt2, walletUpdatedAt1)
 	}
 }
 
@@ -271,4 +388,160 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	if countIdempotent != 1 {
 		t.Fatalf("expected 1 utxo after idempotent call, got %d", countIdempotent)
 	}
+}
+
+func TestSQLTraceDebugGateAndCallerChain(t *testing.T) {
+	dir := t.TempDir()
+
+	logFile := filepath.Join(dir, "client.log")
+	if mgr, err := initSQLTrace(logFile, false); err != nil {
+		t.Fatalf("initSQLTrace disabled: %v", err)
+	} else if mgr != nil {
+		t.Fatalf("expected nil manager when debug=false")
+	}
+	if got := currentSQLTracePath(); got != "" {
+		t.Fatalf("expected empty trace path when debug=false, got %s", got)
+	}
+	openedFalse, err := sqliteactor.Open(filepath.Join(dir, "disabled.sqlite"), false)
+	if err != nil {
+		t.Fatalf("open disabled db: %v", err)
+	}
+	t.Cleanup(func() {
+		if openedFalse.Actor != nil {
+			_ = openedFalse.Actor.Close()
+		}
+		if openedFalse.DB != nil {
+			_ = openedFalse.DB.Close()
+		}
+	})
+	storeFalse := newClientDB(openedFalse.DB, openedFalse.Actor)
+	if err := storeFalse.Do(context.Background(), func(db *sql.DB) error {
+		_, err := db.Exec(`CREATE TABLE trace_gate(id INTEGER PRIMARY KEY, value TEXT)`)
+		return err
+	}); err != nil {
+		t.Fatalf("disabled trace exec: %v", err)
+	}
+	_ = closeSQLTrace()
+	if _, err := os.Stat(filepath.Join(dir, "sql_trace")); !os.IsNotExist(err) {
+		t.Fatalf("expected no sql_trace directory when debug=false, got err=%v", err)
+	}
+
+	logFile = filepath.Join(dir, "client-debug.log")
+	mgr, err := initSQLTrace(logFile, true)
+	if err != nil {
+		t.Fatalf("initSQLTrace enabled: %v", err)
+	}
+	if mgr == nil {
+		t.Fatalf("expected manager when debug=true")
+	}
+	t.Cleanup(func() { _ = closeSQLTrace() })
+
+	openedTrue, err := sqliteactor.Open(filepath.Join(dir, "enabled.sqlite"), true)
+	if err != nil {
+		t.Fatalf("open enabled db: %v", err)
+	}
+	t.Cleanup(func() {
+		if openedTrue.Actor != nil {
+			_ = openedTrue.Actor.Close()
+		}
+		if openedTrue.DB != nil {
+			_ = openedTrue.DB.Close()
+		}
+	})
+
+	storeTrue := newClientDB(openedTrue.DB, openedTrue.Actor)
+	roundID := "round-trace"
+	trigger := "trigger-trace"
+	if err := runSQLTraceReplay(storeTrue, roundID, trigger); err != nil {
+		t.Fatalf("runSQLTraceReplay: %v", err)
+	}
+	flushSQLTraceRoundSummary(roundID)
+
+	summaryPath := currentSQLTraceSummaryPath()
+	if summaryPath == "" {
+		t.Fatalf("expected summary path when debug=true")
+	}
+	summaryBytes, err := os.ReadFile(summaryPath)
+	if err != nil {
+		t.Fatalf("read summary: %v", err)
+	}
+	var summary struct {
+		RoundID               string `json:"round_id"`
+		TotalSQL              int    `json:"total_sql"`
+		TotalWrite            int    `json:"total_write"`
+		MostCommonCallerChain string `json:"most_common_caller_chain"`
+		RepeatUpdateTop       []struct {
+			SQLFingerprint string   `json:"sql_fingerprint"`
+			Count          int      `json:"count"`
+			Intent         string   `json:"intent"`
+			Stage          string   `json:"stage"`
+			CallerChain    []string `json:"caller_chain"`
+		} `json:"repeat_update_top"`
+	}
+	if err := json.Unmarshal(summaryBytes, &summary); err != nil {
+		t.Fatalf("unmarshal summary: %v", err)
+	}
+	if summary.RoundID != roundID {
+		t.Fatalf("summary round_id mismatch: got=%s want=%s", summary.RoundID, roundID)
+	}
+	if summary.TotalSQL < 4 {
+		t.Fatalf("expected at least 4 sql events, got %d", summary.TotalSQL)
+	}
+	if len(summary.RepeatUpdateTop) == 0 {
+		t.Fatalf("expected repeat_update_top to be populated")
+	}
+	if summary.RepeatUpdateTop[0].Count < 2 {
+		t.Fatalf("expected repeated update count >=2, got %d", summary.RepeatUpdateTop[0].Count)
+	}
+	if len(summary.RepeatUpdateTop[0].CallerChain) == 0 {
+		t.Fatalf("expected repeat update caller chain")
+	}
+	if summary.MostCommonCallerChain == "" {
+		t.Fatalf("expected most_common_caller_chain")
+	}
+	if !strings.Contains(summary.MostCommonCallerChain, "runSQLTraceReplay") {
+		t.Fatalf("expected most common caller chain to include helper, got %s", summary.MostCommonCallerChain)
+	}
+
+	eventsPath := filepath.Join(currentSQLTracePath(), "sql_trace.jsonl")
+	eventsBytes, err := os.ReadFile(eventsPath)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(eventsBytes)), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("expected trace events")
+	}
+	var firstEvent sqliteactor.TraceEvent
+	if err := json.Unmarshal([]byte(lines[0]), &firstEvent); err != nil {
+		t.Fatalf("unmarshal trace event: %v", err)
+	}
+	if firstEvent.RoundID != roundID {
+		t.Fatalf("trace round_id mismatch: got=%s want=%s", firstEvent.RoundID, roundID)
+	}
+	if firstEvent.Trigger != trigger {
+		t.Fatalf("trace trigger mismatch: got=%s want=%s", firstEvent.Trigger, trigger)
+	}
+	if len(firstEvent.CallerChain) == 0 {
+		t.Fatalf("expected caller_chain on trace event")
+	}
+}
+
+func runSQLTraceReplay(store *clientDB, roundID string, trigger string) error {
+	ctx := sqlTraceContextWithMeta(context.Background(), roundID, trigger, "sql_trace_replay", "wallet_fact_orchestrator_test.runSQLTraceReplay")
+	return store.Do(ctx, func(db *sql.DB) error {
+		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS trace_gate(id INTEGER PRIMARY KEY, value TEXT)`); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`INSERT INTO trace_gate(id, value) VALUES(?, ?)`, int64(1), "a"); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE trace_gate SET value=? WHERE id=?`, "b", int64(1)); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE trace_gate SET value=? WHERE id=?`, "c", int64(1)); err != nil {
+			return err
+		}
+		return nil
+	})
 }

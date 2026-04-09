@@ -676,8 +676,10 @@ type Runtime struct {
 	// 分配完成后，基于专属 UTXO 的后续池内操作可并行。
 	walletAllocMu sync.Mutex
 
-	rpcTrace pproto.TraceSink
-	live     *liveRuntime
+	rpcTrace            pproto.TraceSink
+	live                *liveRuntime
+	sqlTraceDir         string
+	sqlTraceSummaryPath string
 
 	// 运行时状态
 	gwManager   *gatewayManager
@@ -768,6 +770,20 @@ func (r *Runtime) SellerEnabled() bool {
 	return r.runIn.Seller.Enabled
 }
 
+func (r *Runtime) SQLTraceDir() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.sqlTraceDir)
+}
+
+func (r *Runtime) SQLTraceSummaryPath() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.sqlTraceSummaryPath)
+}
+
 func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
@@ -809,12 +825,34 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	openedDB, err := sqliteactor.Open(dbPath)
+	var sqlTraceDir string
+	var sqlTraceSummaryPath string
+	var sqlTraceEnabledOnce bool
+	defer func() {
+		if !sqlTraceEnabledOnce {
+			_ = closeSQLTrace()
+		}
+	}()
+	openedDB, err := sqliteactor.Open(dbPath, cfg.Debug)
 	if err != nil {
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
+	}
+	sqlTraceMgr, err := initSQLTrace(cfg.Log.File, cfg.Debug)
+	if err != nil {
+		_ = openedDB.Actor.Close()
+		_ = openedDB.DB.Close()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
+	sqlTraceEnabledOnce = true
+	if sqlTraceMgr != nil {
+		sqlTraceDir = sqlTraceMgr.TracePath()
+		sqlTraceSummaryPath = sqlTraceMgr.SummaryPath()
 	}
 	db := openedDB.DB
 	dbActor := openedDB.Actor
@@ -1031,6 +1069,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		ActionChain:              in.ActionChain,
 		WalletChain:              in.WalletChain,
 		live:                     newLiveRuntime(),
+		sqlTraceDir:              sqlTraceDir,
+		sqlTraceSummaryPath:      sqlTraceSummaryPath,
 		feePools:                 map[string]*feePoolSession{},
 		feePoolPayLocks:          map[string]*sync.Mutex{},
 		triplePool:               map[string]*triplePoolSession{},
@@ -1103,7 +1143,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
 	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt, store)
 	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
-		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, dbActor, h, healthyGWs, workspaceMgr, trace)
+		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, store, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1162,10 +1202,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		if err := dbActor.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if closeTrace != nil {
-			if err := closeTrace(); err != nil && firstErr == nil {
-				firstErr = err
-			}
+		if err := closeSQLTrace(); err != nil && firstErr == nil {
+			firstErr = err
 		}
 		return firstErr
 	}
@@ -1326,7 +1364,7 @@ func ParseConfigTOML(data []byte) (Config, error) {
 	normalized = stripDeprecatedTOMLKeyLines(normalized, map[string]struct{}{
 		"auth_token": {},
 	})
-	// 历史字段迁移：1Sat overlay 资产索引能力已整体下线。
+	// 历史字段迁移：旧资产索引能力已整体下线。
 	// 旧配置文件即使还留着该 section，也不应继续影响当前启动。
 	normalized = stripTOMLSections(normalized, map[string]struct{}{
 		"external_api.asset_index": {},

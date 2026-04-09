@@ -605,6 +605,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		APIBaseURL:     walletChainBaseURL(m.rt.WalletChain),
 		WalletChainTyp: fmt.Sprintf("%T", m.rt.WalletChain),
 	}
+	ctx = sqlTraceContextWithMeta(ctx, meta.RoundID, task.TriggerSource, "chain_utxo_round", "chain_maintenance.executeUTXOTask")
+	defer flushSQLTraceRoundSummary(meta.RoundID)
 	chain, err := getWalletChainStateClient(m.rt)
 	if err != nil {
 		logWalletSyncStepError(meta, "resolve_wallet_chain", err, nil)
@@ -852,6 +854,7 @@ type utxoStateRow struct {
 	CreatedTxID      string
 	SpentTxID        string
 	CreatedAtUnix    int64
+	SpentAtUnix      int64
 }
 
 func walletIDByAddress(address string) string {
@@ -1507,6 +1510,10 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 	if err != nil {
 		return nil, err
 	}
+	if hasBSV21TransferOutput(detail) {
+		// BSV21 转移已经由专用事实入口接管，不再走通用 chain_bsv 账线。
+		return nil, nil
+	}
 
 	// 矿工费 = 输入 - 找零 - 外部输出（当有输入时）
 	var minerFeeSat int64
@@ -1532,41 +1539,55 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 		category = "THIRD_PARTY"
 	}
 
-	payload := map[string]any{
-		"txid":           txid,
-		"wallet_address": strings.TrimSpace(address),
-		"source":         "wallet_chain_sync",
-	}
-	out := make([]walletChainAccountingInput, 0, 2)
+	out := make([]walletChainAccountingInput, 0, 1)
 	if len(inputFacts) > 0 || len(outputFacts) > 0 {
 		out = append(out, walletChainAccountingInput{
-			SourceType:       "chain_bsv",
-			SourceID:         txid,
-			TxID:             txid,
-			Category:         category,
-			WalletInputSat:   walletInputSat,
-			WalletOutputSat:  walletChangeSat,
-			ExternalOutSat:   externalOutSat,
-			MinerFeeSat:      minerFeeSat,
-			NetSat:           walletChangeSat - walletInputSat,
-			Payload:          payload,
-			UTXOFacts:        append(append([]chainPaymentUTXOFact{}, outputFacts...), inputFacts...),
-		})
-	}
-	if len(tokenFacts) > 0 {
-		out = append(out, walletChainAccountingInput{
-			SourceType:      "chain_token",
+			SourceType:      "chain_bsv",
 			SourceID:        txid,
 			TxID:            txid,
 			Category:        category,
-			WalletInputSat:  0,
-			WalletOutputSat: 0,
-			NetSat:          0,
-			Payload:         payload,
-			UTXOFacts:       inputFacts,
+			WalletInputSat:  walletInputSat,
+			WalletOutputSat: walletChangeSat,
+			ExternalOutSat:  externalOutSat,
+			MinerFeeSat:     minerFeeSat,
+			NetSat:          walletChangeSat - walletInputSat,
+			Payload: map[string]any{
+				"txid":               txid,
+				"wallet_address":     strings.TrimSpace(address),
+				"source":             "wallet_chain_sync",
+				"token_match_count":  len(tokenFacts),
+				"token_matched":      len(tokenFacts) > 0,
+				"token_asset_source": "post_settlement_records",
+			},
+			UTXOFacts: append(append([]chainPaymentUTXOFact{}, outputFacts...), inputFacts...),
 		})
 	}
 	return out, nil
+}
+
+// hasBSV21TransferOutput 判断交易里是否包含 BSV21 transfer 输出。
+// 设计说明：
+// - 命中时表示这笔交易应交给 BSV21 专用事实入口，不再重复产出 chain_bsv 账线；
+// - 这里只做轻量识别，不展开资产事实。
+func hasBSV21TransferOutput(detail whatsonchain.TxDetail) bool {
+	for _, out := range detail.Vout {
+		scriptHex := strings.TrimSpace(out.ScriptPubKey.Hex)
+		if scriptHex == "" {
+			continue
+		}
+		lockingScript, err := script.NewFromHex(scriptHex)
+		if err != nil {
+			continue
+		}
+		payload, ok := decodeWalletTokenTransferPayload(lockingScript)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(firstNonEmptyStringField(payload, "op"), "transfer") {
+			return true
+		}
+	}
+	return false
 }
 
 // collectTokenUTXOLinkFacts 只收 token carrier 对应的输入事实。

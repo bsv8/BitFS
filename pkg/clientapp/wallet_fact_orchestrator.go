@@ -40,7 +40,8 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 	}
 	walletID := walletIDByAddress(address)
 
-	// 第一阶段：同步钱包状态，返回变化列表
+	// 第一阶段：同步钱包状态，先算最终态，再统一落库
+	ctx = sqlTraceContextWithMeta(ctx, syncRoundID, trigger, "reconcile_wallet_utxo", "wallet_fact_orchestrator")
 	changes, err := reconcileWalletUTXOSetAndReturnChanges(ctx, store, address, snapshot, history, cursor, syncRoundID, lastError, trigger, updatedAt, durationMS)
 	if err != nil {
 		return fmt.Errorf("sync wallet utxo set: %w", err)
@@ -48,7 +49,7 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 
 	// 第二阶段：写入 fact（幂等，可重试）
 	if len(changes) > 0 {
-		if applyErr := ApplyConfirmedUTXOChanges(ctx, store, changes, updatedAt); applyErr != nil {
+		if applyErr := ApplyConfirmedUTXOChanges(sqlTraceContextWithMeta(ctx, syncRoundID, trigger, "apply_confirmed_utxo_facts", "wallet_fact_orchestrator"), store, changes, updatedAt); applyErr != nil {
 			obs.Error("bitcast-client", "apply_confirmed_utxo_changes_failed", map[string]any{
 				"wallet_id":    walletID,
 				"address":      address,
@@ -81,24 +82,11 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 	walletID := walletIDByAddress(address)
 	var changes []confirmedUTXOChange
 	err := store.Tx(ctx, func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
+		current, err := dbLoadWalletUTXOStateRowsTx(tx, walletID, address)
 		if err != nil {
 			return err
 		}
-		existing := map[string]utxoStateRow{}
-		for rows.Next() {
-			var r utxoStateRow
-			if scanErr := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.AllocationClass, &r.AllocationReason, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix); scanErr != nil {
-				_ = rows.Close()
-				return scanErr
-			}
-			r.AllocationClass = normalizeWalletUTXOAllocationClass(r.AllocationClass)
-			r.AllocationReason = strings.TrimSpace(r.AllocationReason)
-			existing[strings.ToLower(strings.TrimSpace(r.UTXOID))] = r
-		}
-		if err = rows.Close(); err != nil {
-			return err
-		}
+		desired := cloneWalletUTXOStateRows(current)
 		scriptHex, err := walletAddressLockScriptHex(address)
 		if err != nil {
 			return err
@@ -107,16 +95,6 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`UPDATE wallet_utxo SET state='spent',updated_at_unix=?,spent_at_unix=CASE WHEN spent_at_unix>0 THEN spent_at_unix ELSE ? END WHERE wallet_id=? AND address=? AND state<>'spent'`, updatedAt, updatedAt, walletID, address); err != nil {
-			return err
-		}
-		for utxoID, row := range existing {
-			if strings.TrimSpace(strings.ToLower(row.State)) != "spent" {
-				row.State = "spent"
-				existing[utxoID] = row
-			}
-		}
-
 		for _, hist := range history {
 			historyTxID := strings.ToLower(strings.TrimSpace(hist.TxID))
 			for _, out := range hist.Tx.Vout {
@@ -124,18 +102,14 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 				if !ok {
 					continue
 				}
-				if err = upsertWalletUTXORowTx(tx, existing, walletID, address, utxoID, historyTxID, out.N, value, "spent", "", updatedAt); err != nil {
-					return err
-				}
+				_ = applyWalletUTXOUpsertState(desired, walletID, address, utxoID, historyTxID, out.N, value, "spent", "", updatedAt)
 			}
 			for _, in := range hist.Tx.Vin {
 				spentID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
-				if _, ok := existing[spentID]; !ok {
+				if _, ok := desired[spentID]; !ok {
 					continue
 				}
-				if err = setWalletUTXOSpentTx(tx, existing, spentID, historyTxID, updatedAt); err != nil {
-					return err
-				}
+				_ = applyWalletUTXOSpentState(desired, spentID, historyTxID, updatedAt)
 			}
 		}
 
@@ -146,28 +120,22 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 				if !ok {
 					continue
 				}
-				if err = upsertWalletUTXORowTx(tx, existing, walletID, address, utxoID, mempoolTxID, out.N, value, "spent", "", updatedAt); err != nil {
-					return err
-				}
+				_ = applyWalletUTXOUpsertState(desired, walletID, address, utxoID, mempoolTxID, out.N, value, "spent", "", updatedAt)
 			}
 			for _, in := range detail.Vin {
 				spentID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
-				if _, ok := existing[spentID]; !ok {
+				if _, ok := desired[spentID]; !ok {
 					continue
 				}
-				if err = setWalletUTXOSpentTx(tx, existing, spentID, mempoolTxID, updatedAt); err != nil {
-					return err
-				}
+				_ = applyWalletUTXOSpentState(desired, spentID, mempoolTxID, updatedAt)
 			}
 		}
 
 		for utxoID, u := range snapshot.Live {
-			if err = upsertWalletUTXORowTx(tx, existing, walletID, address, utxoID, strings.ToLower(strings.TrimSpace(u.TxID)), u.Vout, u.Value, "unspent", "", updatedAt); err != nil {
-				return err
-			}
+			_ = applyWalletUTXOUpsertState(desired, walletID, address, utxoID, strings.ToLower(strings.TrimSpace(u.TxID)), u.Vout, u.Value, "unspent", "", updatedAt)
 		}
 		observedLocalTxIDs := collectObservedWalletTxIDs(history, snapshot.ObservedMempoolTxs)
-		if err = overlayPendingLocalBroadcastsTx(tx, existing, walletID, address, scriptHex, localBroadcasts, observedLocalTxIDs, updatedAt); err != nil {
+		if err = overlayPendingLocalBroadcastsTx(ctx, desired, walletID, address, scriptHex, localBroadcasts, observedLocalTxIDs, updatedAt); err != nil {
 			return err
 		}
 		if err = markObservedWalletLocalBroadcastTxsTx(tx, observedLocalTxIDs, updatedAt); err != nil {
@@ -207,15 +175,19 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 			}
 		}
 
-		stats := summarizeWalletUTXOState(existing)
+		if err = applyWalletUTXODiffTx(ctx, tx, current, desired, walletID, address, updatedAt); err != nil {
+			return err
+		}
 
-		// 收集 confirmed unspent plain_bsv UTXO 变化
+		stats := summarizeWalletUTXOState(desired)
 		confirmedUTXOSet := make(map[string]struct{}, len(snapshot.Live))
 		for utxoID := range snapshot.Live {
 			confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))] = struct{}{}
 		}
+
+		// 收集 confirmed unspent plain_bsv UTXO 变化
 		changes = make([]confirmedUTXOChange, 0, len(snapshot.Live))
-		for utxoID, row := range existing {
+		for utxoID, row := range desired {
 			if _, confirmed := confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))]; !confirmed {
 				continue
 			}
@@ -237,10 +209,10 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		}
 
 		// 将 unknown UTXO 加入待确认队列
-		for utxoID, row := range existing {
+		for utxoID, row := range desired {
 			if normalizeWalletUTXOAllocationClass(row.AllocationClass) == walletUTXOAllocationUnknown {
 				if _, isConfirmed := confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))]; isConfirmed {
-					if err := enqueueUnknownUTXOToVerification(ctx, store, walletID, address, utxoID, row.TxID, row.Vout, row.Value); err != nil {
+					if err := enqueueUnknownUTXOToVerificationTx(tx, walletID, address, utxoID, row.TxID, row.Vout, row.Value); err != nil {
 						obs.Error("bitcast-client", "enqueue_token_verification_failed", map[string]any{
 							"utxo_id": utxoID,
 							"error":   err.Error(),
@@ -334,7 +306,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 			// 从 wallet_id 提取 owner_pubkey_hex（去掉 "wallet:" 前缀）
 			ownerPubkeyHex := strings.ToLower(strings.TrimSpace(change.WalletID))
 			ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
-			
+
 			entry := bsvUTXOEntry{
 				UTXOID:         change.UTXOID,
 				OwnerPubkeyHex: ownerPubkeyHex,

@@ -36,10 +36,22 @@ func (d *clientDB) Do(ctx context.Context, fn func(*sql.DB) error) error {
 		return fmt.Errorf("client db do func is nil")
 	}
 	if d.actor != nil {
-		return d.actor.Do(ctx, fn)
+		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
+		if !sqlTraceScopeActive(scope) {
+			return d.actor.Do(ctx, fn)
+		}
+		return sqliteactor.DoTrace(ctx, d.actor, scope, fn)
 	}
 	if d.db == nil {
 		return fmt.Errorf("client db raw db is nil")
+	}
+	scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
+	if sqlTraceScopeActive(scope) {
+		var runErr error
+		sqliteactor.WithTraceScope(scope, func() {
+			runErr = fn(d.db)
+		})
+		return runErr
 	}
 	return fn(d.db)
 }
@@ -53,10 +65,23 @@ func clientDBValue[T any](ctx context.Context, d *clientDB, fn func(*sql.DB) (T,
 		return zero, fmt.Errorf("client db value func is nil")
 	}
 	if d.actor != nil {
-		return sqliteactor.DoValue(ctx, d.actor, fn)
+		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
+		if !sqlTraceScopeActive(scope) {
+			return sqliteactor.DoValue(ctx, d.actor, fn)
+		}
+		return sqliteactor.DoValueTrace(ctx, d.actor, scope, fn)
 	}
 	if d.db == nil {
 		return zero, fmt.Errorf("client db raw db is nil")
+	}
+	scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
+	if sqlTraceScopeActive(scope) {
+		var out T
+		var runErr error
+		sqliteactor.WithTraceScope(scope, func() {
+			out, runErr = fn(d.db)
+		})
+		return out, runErr
 	}
 	return fn(d.db)
 }
@@ -69,7 +94,11 @@ func (d *clientDB) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 		return fmt.Errorf("client db tx func is nil")
 	}
 	if d.actor != nil {
-		return d.actor.Tx(ctx, fn)
+		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
+		if !sqlTraceScopeActive(scope) {
+			return d.actor.Tx(ctx, fn)
+		}
+		return sqliteactor.TxTrace(ctx, d.actor, scope, fn)
 	}
 	if d.db == nil {
 		return fmt.Errorf("client db raw db is nil")
@@ -97,7 +126,11 @@ func clientDBTxValue[T any](ctx context.Context, d *clientDB, fn func(*sql.Tx) (
 		return zero, fmt.Errorf("client db tx value func is nil")
 	}
 	if d.actor != nil {
-		return sqliteactor.TxValue(ctx, d.actor, fn)
+		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
+		if !sqlTraceScopeActive(scope) {
+			return sqliteactor.TxValue(ctx, d.actor, fn)
+		}
+		return sqliteactor.TxValueTrace(ctx, d.actor, scope, fn)
 	}
 	if d.db == nil {
 		return zero, fmt.Errorf("client db raw db is nil")
