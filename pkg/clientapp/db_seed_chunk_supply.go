@@ -18,7 +18,7 @@ func dbMergeSeedChunkSupply(ctx context.Context, store *clientDB, seedHash strin
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBTxValue(ctx, store, func(tx *sql.Tx) ([]uint32, error) {
-		existing, err := dbListSeedChunkSupplyTx(tx, seedHash)
+		existing, err := dbListSeedChunkSupplyTx(ctx, tx, seedHash)
 		if err != nil {
 			return nil, err
 		}
