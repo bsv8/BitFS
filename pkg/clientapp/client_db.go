@@ -35,6 +35,9 @@ func (d *clientDB) Do(ctx context.Context, fn func(*sql.DB) error) error {
 	if fn == nil {
 		return fmt.Errorf("client db do func is nil")
 	}
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	if d.actor != nil {
 		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
 		if !sqlTraceScopeActive(scope) {
@@ -65,6 +68,9 @@ func (d *clientDB) ExecContext(ctx context.Context, query string, args ...any) (
 	if d == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
+	if ctx == nil {
+		return nil, fmt.Errorf("ctx is required")
+	}
 	if d.actor != nil {
 		return clientDBValue(ctx, d, func(db *sql.DB) (sql.Result, error) {
 			return dbExecContext(ctx, db, query, args...)
@@ -80,6 +86,9 @@ func (d *clientDB) QueryContext(ctx context.Context, query string, args ...any) 
 	if d == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
+	if ctx == nil {
+		return nil, fmt.Errorf("ctx is required")
+	}
 	if d.actor != nil {
 		return clientDBValue(ctx, d, func(db *sql.DB) (*sql.Rows, error) {
 			return dbQueryContext(ctx, db, query, args...)
@@ -93,6 +102,9 @@ func (d *clientDB) QueryContext(ctx context.Context, query string, args ...any) 
 
 func (d *clientDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	if d == nil {
+		return nil
+	}
+	if ctx == nil {
 		return nil
 	}
 	if d.actor != nil {
@@ -128,6 +140,9 @@ func clientDBValue[T any](ctx context.Context, d *clientDB, fn func(*sql.DB) (T,
 	if fn == nil {
 		return zero, fmt.Errorf("client db value func is nil")
 	}
+	if ctx == nil {
+		return zero, fmt.Errorf("ctx is required")
+	}
 	if d.actor != nil {
 		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
 		if !sqlTraceScopeActive(scope) {
@@ -157,6 +172,9 @@ func (d *clientDB) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	if fn == nil {
 		return fmt.Errorf("client db tx func is nil")
 	}
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	if d.actor != nil {
 		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
 		if !sqlTraceScopeActive(scope) {
@@ -166,9 +184,6 @@ func (d *clientDB) Tx(ctx context.Context, fn func(*sql.Tx) error) error {
 	}
 	if d.db == nil {
 		return fmt.Errorf("client db raw db is nil")
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -189,6 +204,9 @@ func clientDBTxValue[T any](ctx context.Context, d *clientDB, fn func(*sql.Tx) (
 	if fn == nil {
 		return zero, fmt.Errorf("client db tx value func is nil")
 	}
+	if ctx == nil {
+		return zero, fmt.Errorf("ctx is required")
+	}
 	if d.actor != nil {
 		scope := sqlTraceScopeFromContext(ctx, sqlTraceCaptureCallerChain())
 		if !sqlTraceScopeActive(scope) {
@@ -198,9 +216,6 @@ func clientDBTxValue[T any](ctx context.Context, d *clientDB, fn func(*sql.Tx) (
 	}
 	if d.db == nil {
 		return zero, fmt.Errorf("client db raw db is nil")
-	}
-	if ctx == nil {
-		ctx = context.Background()
 	}
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {

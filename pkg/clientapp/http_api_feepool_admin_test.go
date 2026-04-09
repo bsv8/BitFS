@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,7 @@ func TestHandleAdminFeePoolHistory_BasicAvailability(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	srv := &httpAPIServer{db: db}
 
-	_ = dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "cmd-1",
 		CommandType:   "ensure_active",
 		GatewayPeerID: "gw1",
@@ -31,7 +32,7 @@ func TestHandleAdminFeePoolHistory_BasicAvailability(t *testing.T) {
 		Payload:       map[string]any{"x": 1},
 		Result:        map[string]any{"status": "paused"},
 	})
-	_ = dbAppendDomainEvent(nil, newClientDB(db, nil), domainEventEntry{
+	_ = dbAppendDomainEvent(context.Background(), newClientDB(db, nil), domainEventEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		EventName:     "fee_pool_paused_insufficient",
@@ -39,7 +40,7 @@ func TestHandleAdminFeePoolHistory_BasicAvailability(t *testing.T) {
 		StateAfter:    "paused_insufficient",
 		Payload:       map[string]any{"need": 100000, "have": 12345},
 	})
-	_ = dbAppendStateSnapshot(nil, newClientDB(db, nil), stateSnapshotEntry{
+	_ = dbAppendStateSnapshot(context.Background(), newClientDB(db, nil), stateSnapshotEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		State:         "paused_insufficient",
@@ -49,7 +50,7 @@ func TestHandleAdminFeePoolHistory_BasicAvailability(t *testing.T) {
 		LastError:     "not enough balance",
 		Payload:       map[string]any{"source": "test"},
 	})
-	_ = dbAppendObservedGatewayState(nil, newClientDB(db, nil), observedGatewayStateEntry{
+	_ = dbAppendObservedGatewayState(context.Background(), newClientDB(db, nil), observedGatewayStateEntry{
 		GatewayPeerID:  "gw1",
 		SourceRef:      "gw1",
 		ObservedAtUnix: 1700000002,
@@ -59,7 +60,7 @@ func TestHandleAdminFeePoolHistory_BasicAvailability(t *testing.T) {
 		PauseHaveSat:   999999,
 		Payload:        observedGatewayStatePayload{ObservedReason: "wallet_probe", WalletBalanceSatoshi: 999999, Extra: map[string]any{}},
 	})
-	_ = dbAppendEffectLog(nil, newClientDB(db, nil), effectLogEntry{
+	_ = dbAppendEffectLog(context.Background(), newClientDB(db, nil), effectLogEntry{
 		CommandID:     "cmd-1",
 		GatewayPeerID: "gw1",
 		EffectType:    "chain",

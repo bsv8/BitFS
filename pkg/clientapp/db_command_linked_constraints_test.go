@@ -1,6 +1,9 @@
 package clientapp
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestCommandLinkedTablesFinalSchemaHasFkAndIndexes(t *testing.T) {
 	t.Parallel()
@@ -68,7 +71,7 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 		t.Fatalf("enable foreign keys failed: %v", err)
 	}
 	store := newClientDB(db, nil)
-	if err := dbAppendCommandJournal(nil, store, commandJournalEntry{
+	if err := dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "cmd-linked-1",
 		CommandType:   "feepool.open",
 		GatewayPeerID: "gw1",

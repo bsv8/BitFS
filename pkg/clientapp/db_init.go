@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,7 @@ import (
 // ensureClientDBBaseSchema 创建基础表和索引。
 // 只负责 CREATE TABLE IF NOT EXISTS 和 CREATE INDEX IF NOT EXISTS，
 // 不包含任何依赖前置迁移条件的操作。
-func ensureClientDBBaseSchema(db *sql.DB) error {
+func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1052,7 +1053,7 @@ func toUint64(v any) (uint64, bool) {
 // - 第六次迭代新增字段，用于关联 proc_orchestrator_logs.idempotency_key
 // - 旧库通过 ALTER TABLE 补齐，新库在基础 schema 中已包含
 // - 迁移必须幂等：列存在时也要补索引，避免老库只补了一半
-func ensureCommandJournalTriggerKey(db *sql.DB) error {
+func ensureCommandJournalTriggerKey(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1061,7 +1062,7 @@ func ensureCommandJournalTriggerKey(db *sql.DB) error {
 		return fmt.Errorf("inspect proc_command_journal: %w", err)
 	}
 	if _, ok := cols["trigger_key"]; !ok {
-		if _, err := ExecContext(ctx, db, `ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
+			if _, err := ExecContext(ctx, db, `ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add trigger_key column: %w", err)
 		}
 	}
@@ -1077,37 +1078,37 @@ func ensureCommandJournalTriggerKey(db *sql.DB) error {
 // - proc_command_journal.command_id 本身语义唯一，所以用 UNIQUE 承接 proc_gateway_events 的 FK；
 // - 对于不能确认归属的旧 proc_gateway_events，直接删除，不伪造关系；
 // - 如果历史 proc_command_journal 里已经出现重复 command_id，直接停下并返回清理信息。
-func ensureGatewayEventAndCommandJournalConstraints(db *sql.DB) error {
+func ensureGatewayEventAndCommandJournalConstraints(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	dups, err := commandJournalDuplicateCommandIDs(db)
+	dups, err := commandJournalDuplicateCommandIDs(ctx, db)
 	if err != nil {
 		return fmt.Errorf("audit proc_command_journal duplicates: %w", err)
 	}
 	if len(dups) > 0 {
 		return fmt.Errorf("proc_command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
 	}
-	if err := cleanupLegacyCommandJournalCommandIDRows(db); err != nil {
+	if err := cleanupLegacyCommandJournalCommandIDRows(ctx, db); err != nil {
 		return fmt.Errorf("cleanup proc_command_journal: %w", err)
 	}
-	if err := cleanupLegacyGatewayEventCommandIDRows(db); err != nil {
+	if err := cleanupLegacyGatewayEventCommandIDRows(ctx, db); err != nil {
 		return fmt.Errorf("cleanup proc_gateway_events: %w", err)
 	}
-	if err := ensureCommandJournalCommandIDUnique(db); err != nil {
+	if err := ensureCommandJournalCommandIDUnique(ctx, db); err != nil {
 		return fmt.Errorf("proc_command_journal unique: %w", err)
 	}
-	if err := ensureGatewayEventsCommandIDForeignKey(db); err != nil {
+	if err := ensureGatewayEventsCommandIDForeignKey(ctx, db); err != nil {
 		return fmt.Errorf("proc_gateway_events fk: %w", err)
 	}
-	if err := ensureGatewayEventsIndexes(db); err != nil {
+	if err := ensureGatewayEventsIndexes(ctx, db); err != nil {
 		return fmt.Errorf("proc_gateway_events index: %w", err)
 	}
 	return nil
 }
 
 // cleanupLegacyCommandJournalCommandIDRows 清掉历史上 proc_command_journal 里不该留下的 command_id 空值。
-func cleanupLegacyCommandJournalCommandIDRows(db *sql.DB) error {
+func cleanupLegacyCommandJournalCommandIDRows(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1120,7 +1121,7 @@ func cleanupLegacyCommandJournalCommandIDRows(db *sql.DB) error {
 // - command_id 为空的行直接删除；
 // - command_id 找不到父命令的行也直接删除；
 // - 这一步是收紧约束前的真实清理，不做伪造回填。
-func cleanupLegacyGatewayEventCommandIDRows(db *sql.DB) error {
+func cleanupLegacyGatewayEventCommandIDRows(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1146,7 +1147,7 @@ func cleanupLegacyGatewayEventCommandIDRows(db *sql.DB) error {
 }
 
 // commandJournalDuplicateCommandIDs 列出 proc_command_journal 中重复的 command_id，供迁移前审计使用。
-func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
+func commandJournalDuplicateCommandIDs(ctx context.Context, db *sql.DB) ([]string, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
@@ -1182,11 +1183,11 @@ func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
 // 设计说明：
 // - 先做重复审计，发现重复就直接返回，不硬上约束；
 // - 不再重建整张表，直接补唯一索引；这样更稳，也不会在单连接测试里自锁。
-func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
+func ensureCommandJournalCommandIDUnique(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	dups, err := commandJournalDuplicateCommandIDs(db)
+	dups, err := commandJournalDuplicateCommandIDs(ctx, db)
 	if err != nil {
 		return err
 	}
@@ -1196,11 +1197,11 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 	if _, err := ExecContext(ctx, db, `CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
 		return err
 	}
-	return ensureCommandJournalIndexes(db)
+	return ensureCommandJournalIndexes(ctx, db)
 }
 
 // ensureGatewayEventsCommandIDForeignKey 让 proc_gateway_events.command_id 变成 NOT NULL + 物理外键。
-func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
+func ensureGatewayEventsCommandIDForeignKey(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1208,7 +1209,7 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 	if err != nil {
 		return fmt.Errorf("inspect proc_gateway_events command_id not null: %w", err)
 	}
-	hasFK, err := tableHasForeignKey(db, "proc_gateway_events", "command_id", "proc_command_journal", "command_id")
+	hasFK, err := tableHasForeignKeyCtx(ctx, db, "proc_gateway_events", "command_id", "proc_command_journal", "command_id")
 	if err != nil {
 		return fmt.Errorf("inspect proc_gateway_events foreign key: %w", err)
 	}
@@ -1278,11 +1279,11 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	return ensureGatewayEventsIndexes(db)
+	return ensureGatewayEventsIndexes(ctx, db)
 }
 
 // ensureGatewayEventsIndexes 保证 proc_gateway_events 的查询索引都还在。
-func ensureGatewayEventsIndexes(db *sql.DB) error {
+func ensureGatewayEventsIndexes(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1296,7 +1297,7 @@ func ensureGatewayEventsIndexes(db *sql.DB) error {
 }
 
 // ensureCommandJournalIndexes 保证 proc_command_journal 的查询索引都还在。
-func ensureCommandJournalIndexes(db *sql.DB) error {
+func ensureCommandJournalIndexes(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1318,7 +1319,7 @@ func ensureCommandJournalIndexes(db *sql.DB) error {
 }
 
 // tableHasForeignKey 检查表是否已经有指定外键。
-func tableHasForeignKey(db *sql.DB, table, fromColumn, parentTable, parentColumn string) (bool, error) {
+func tableHasForeignKeyCtx(ctx context.Context, db *sql.DB, table, fromColumn, parentTable, parentColumn string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
@@ -1353,11 +1354,11 @@ func tableHasForeignKey(db *sql.DB, table, fromColumn, parentTable, parentColumn
 }
 
 // ensureGatewayEventsCommandID 兼容旧名字，避免外层注释误导。
-func ensureGatewayEventsCommandID(db *sql.DB) error {
+func ensureGatewayEventsCommandID(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	return ensureGatewayEventAndCommandJournalConstraints(db)
+	return ensureGatewayEventAndCommandJournalConstraints(ctx, db)
 }
 
 type commandLinkedTableAuditReport struct {
@@ -1381,30 +1382,30 @@ func (r commandLinkedTableAuditReport) String() string {
 // - 空值、空白值、孤儿行都直接删，不补假命令；
 // - 只在约束缺失时重建，避免新库重复折腾；
 // - 重建后统一补回查询索引，保持读取口径不变。
-func ensureCommandLinkedTableConstraints(db *sql.DB) error {
+func ensureCommandLinkedTableConstraints(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	for _, table := range []string{"proc_domain_events", "proc_state_snapshots", "proc_effect_logs"} {
-		report, err := auditCommandLinkedTableRows(db, table)
+		report, err := auditCommandLinkedTableRows(ctx, db, table)
 		if err != nil {
 			return fmt.Errorf("audit %s: %w", table, err)
 		}
 		if report.DirtyRows() > 0 {
-			if err := cleanupLegacyCommandLinkedRows(db, table); err != nil {
+			if err := cleanupLegacyCommandLinkedRows(ctx, db, table); err != nil {
 				return fmt.Errorf("cleanup %s: %w", table, err)
 			}
 		}
-		needsRebuild, err := commandLinkedTableNeedsRebuild(db, table)
+		needsRebuild, err := commandLinkedTableNeedsRebuild(ctx, db, table)
 		if err != nil {
 			return fmt.Errorf("inspect %s constraints: %w", table, err)
 		}
 		if needsRebuild {
-			if err := rebuildCommandLinkedTable(db, table); err != nil {
+			if err := rebuildCommandLinkedTable(ctx, db, table); err != nil {
 				return fmt.Errorf("rebuild %s: %w", table, err)
 			}
 		}
-		if err := ensureCommandLinkedTableIndexes(db, table); err != nil {
+		if err := ensureCommandLinkedTableIndexes(ctx, db, table); err != nil {
 			return fmt.Errorf("indexes %s: %w", table, err)
 		}
 	}
@@ -1412,7 +1413,7 @@ func ensureCommandLinkedTableConstraints(db *sql.DB) error {
 }
 
 // auditCommandLinkedTableRows 先把命令链表里的脏数据看清楚，再决定清理和重建。
-func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAuditReport, error) {
+func auditCommandLinkedTableRows(ctx context.Context, db *sql.DB, table string) (commandLinkedTableAuditReport, error) {
 	report := commandLinkedTableAuditReport{Table: strings.TrimSpace(table)}
 	if db == nil {
 		return report, fmt.Errorf("db is nil")
@@ -1444,21 +1445,21 @@ func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAu
 }
 
 // cleanupLegacyDomainEventCommandRows 删除 proc_domain_events 里不该进入硬约束的旧行。
-func cleanupLegacyDomainEventCommandRows(db *sql.DB) error {
-	return cleanupLegacyCommandLinkedRows(db, "proc_domain_events")
+func cleanupLegacyDomainEventCommandRows(ctx context.Context, db *sql.DB) error {
+	return cleanupLegacyCommandLinkedRows(ctx, db, "proc_domain_events")
 }
 
 // cleanupLegacyStateSnapshotCommandRows 删除 proc_state_snapshots 里不该进入硬约束的旧行。
-func cleanupLegacyStateSnapshotCommandRows(db *sql.DB) error {
-	return cleanupLegacyCommandLinkedRows(db, "proc_state_snapshots")
+func cleanupLegacyStateSnapshotCommandRows(ctx context.Context, db *sql.DB) error {
+	return cleanupLegacyCommandLinkedRows(ctx, db, "proc_state_snapshots")
 }
 
 // cleanupLegacyEffectLogCommandRows 删除 proc_effect_logs 里不该进入硬约束的旧行。
-func cleanupLegacyEffectLogCommandRows(db *sql.DB) error {
-	return cleanupLegacyCommandLinkedRows(db, "proc_effect_logs")
+func cleanupLegacyEffectLogCommandRows(ctx context.Context, db *sql.DB) error {
+	return cleanupLegacyCommandLinkedRows(ctx, db, "proc_effect_logs")
 }
 
-func cleanupLegacyCommandLinkedRows(db *sql.DB, table string) error {
+func cleanupLegacyCommandLinkedRows(ctx context.Context, db *sql.DB, table string) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1486,7 +1487,7 @@ func isCommandLinkedTable(table string) bool {
 	}
 }
 
-func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
+func commandLinkedTableNeedsRebuild(ctx context.Context, db *sql.DB, table string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
@@ -1497,11 +1498,11 @@ func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("inspect %s command_id not null: %w", table, err)
 	}
-	hasFK, err := tableHasForeignKey(db, table, "command_id", "proc_command_journal", "command_id")
+	hasFK, err := tableHasForeignKeyCtx(ctx, db, table, "command_id", "proc_command_journal", "command_id")
 	if err != nil {
 		return false, fmt.Errorf("inspect %s foreign key: %w", table, err)
 	}
-	hasCheck, err := tableHasCreateSQLContains(db, table, "CHECK(trim(command_id) <> '')")
+	hasCheck, err := tableHasCreateSQLContainsCtx(ctx, db, table, "CHECK(trim(command_id) <> '')")
 	if err != nil {
 		return false, fmt.Errorf("inspect %s check constraint: %w", table, err)
 	}
@@ -1511,7 +1512,7 @@ func commandLinkedTableNeedsRebuild(db *sql.DB, table string) (bool, error) {
 	return false, nil
 }
 
-func rebuildCommandLinkedTable(db *sql.DB, table string) error {
+func rebuildCommandLinkedTable(ctx context.Context, db *sql.DB, table string) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1668,7 +1669,7 @@ func commandLinkedTableSpec(table string) (commandLinkedTableRebuildSpec, bool) 
 	}
 }
 
-func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
+func ensureCommandLinkedTableIndexes(ctx context.Context, db *sql.DB, table string) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1712,7 +1713,7 @@ func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
 	return nil
 }
 
-func tableHasCreateSQLContains(db *sql.DB, table, snippet string) (bool, error) {
+func tableHasCreateSQLContainsCtx(ctx context.Context, db *sql.DB, table, snippet string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
@@ -1739,7 +1740,7 @@ func normalizeSQLWhitespace(in string) string {
 // - 新库直接建表；
 // - 老库只补列和索引，不回头删旧结构；
 // - pool_session_id 先作为查询维度保存，后续写路径再补齐真实值。
-func ensureBizPoolSchema(db *sql.DB) error {
+func ensureBizPoolSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1809,7 +1810,7 @@ func bizPoolSchemaStmts() []string {
 // - 新库由 CREATE TABLE 直接带上新列；
 // - 老库靠这里补列，避免启动时因缺列失败；
 // - 这一批只铺轨，不改任何写入和读取逻辑。
-func ensureFinAccountingSchema(db *sql.DB) error {
+func ensureFinAccountingSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1848,7 +1849,7 @@ func ensureFinAccountingSchema(db *sql.DB) error {
 
 // ensureFinAccountingIndexes 只创建 finance 新口径查询所需的索引。
 // 说明：要放在列补齐之后执行，老库迁移时不能提前碰还不存在的列。
-func ensureFinAccountingIndexes(db *sql.DB) error {
+func ensureFinAccountingIndexes(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1871,7 +1872,7 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 }
 
 // normalizeClientDBData 只做当前口径需要的轻量归一化，不做历史迁移。
-func normalizeClientDBData(db *sql.DB) error {
+func normalizeClientDBData(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1903,7 +1904,7 @@ func normalizeClientDBData(db *sql.DB) error {
 	}
 
 	// 公钥格式统一化为压缩公钥 hex
-	if err := normalizeClientPubKeyColumns(db); err != nil {
+	if err := normalizeClientPubKeyColumns(ctx, db); err != nil {
 		return fmt.Errorf("pubkey columns: %w", err)
 	}
 
@@ -1912,7 +1913,7 @@ func normalizeClientDBData(db *sql.DB) error {
 
 // ==================== 以下是当前结构辅助函数实现 ====================
 
-func ensureDemandQuoteCurrentSchema(db *sql.DB) error {
+func ensureDemandQuoteCurrentSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1928,21 +1929,21 @@ func ensureDemandQuoteCurrentSchema(db *sql.DB) error {
 		return nil
 	}
 
-	quotesNeedFK, err := demandQuoteTableMissingFK(db, "biz_demand_quotes", "demand_id", "biz_demands", "demand_id")
+	quotesNeedFK, err := demandQuoteTableMissingFK(ctx, db, "biz_demand_quotes", "demand_id", "biz_demands", "demand_id")
 	if err != nil {
 		return fmt.Errorf("inspect biz_demand_quotes foreign keys: %w", err)
 	}
-	arbitersNeedFK, err := demandQuoteTableMissingFK(db, "biz_demand_quote_arbiters", "quote_id", "biz_demand_quotes", "id")
+	arbitersNeedFK, err := demandQuoteTableMissingFK(ctx, db, "biz_demand_quote_arbiters", "quote_id", "biz_demand_quotes", "id")
 	if err != nil {
 		return fmt.Errorf("inspect biz_demand_quote_arbiters foreign keys: %w", err)
 	}
 	if !quotesNeedFK && !arbitersNeedFK {
 		return nil
 	}
-	return rebuildDemandQuoteFKTables(db, quotesNeedFK, arbitersNeedFK)
+	return rebuildDemandQuoteFKTables(ctx, db, quotesNeedFK, arbitersNeedFK)
 }
 
-func ensureDemandQuoteIndexes(db *sql.DB) error {
+func ensureDemandQuoteIndexes(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -1960,11 +1961,11 @@ func ensureDemandQuoteIndexes(db *sql.DB) error {
 	return nil
 }
 
-func rebuildDemandQuoteFKTables(db *sql.DB, rebuildQuotes bool, rebuildArbiters bool) error {
+func rebuildDemandQuoteFKTables(ctx context.Context, db *sql.DB, rebuildQuotes bool, rebuildArbiters bool) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if err := demandQuoteRejectOrphanRows(db); err != nil {
+		if err := demandQuoteRejectOrphanRows(ctx, db); err != nil {
 		return err
 	}
 
@@ -1981,13 +1982,13 @@ func rebuildDemandQuoteFKTables(db *sql.DB, rebuildQuotes bool, rebuildArbiters 
 	}
 
 	if rebuildQuotes {
-		if err := rebuildDemandQuotesTableTx(tx); err != nil {
+		if err := rebuildDemandQuotesTableTx(ctx, tx); err != nil {
 			rollback()
 			return err
 		}
 	}
 	if rebuildArbiters {
-		if err := rebuildDemandQuoteArbitersTableTx(tx); err != nil {
+		if err := rebuildDemandQuoteArbitersTableTx(ctx, tx); err != nil {
 			rollback()
 			return err
 		}
@@ -1996,13 +1997,13 @@ func rebuildDemandQuoteFKTables(db *sql.DB, rebuildQuotes bool, rebuildArbiters 
 		rollback()
 		return err
 	}
-	if err := ensureDemandQuoteIndexes(db); err != nil {
+	if err := ensureDemandQuoteIndexes(ctx, db); err != nil {
 		return err
 	}
 	return nil
 }
 
-func demandQuoteRejectOrphanRows(db *sql.DB) error {
+func demandQuoteRejectOrphanRows(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -2040,7 +2041,7 @@ func demandQuoteRejectOrphanRows(db *sql.DB) error {
 	return nil
 }
 
-func rebuildDemandQuotesTableTx(tx *sql.Tx) error {
+func rebuildDemandQuotesTableTx(ctx context.Context, tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -2081,7 +2082,7 @@ func rebuildDemandQuotesTableTx(tx *sql.Tx) error {
 	return nil
 }
 
-func rebuildDemandQuoteArbitersTableTx(tx *sql.Tx) error {
+func rebuildDemandQuoteArbitersTableTx(ctx context.Context, tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -2113,7 +2114,7 @@ func rebuildDemandQuoteArbitersTableTx(tx *sql.Tx) error {
 	return nil
 }
 
-func demandQuoteTableMissingFK(db *sql.DB, table string, fromColumn string, parentTable string, parentColumn string) (bool, error) {
+func demandQuoteTableMissingFK(ctx context.Context, db *sql.DB, table string, fromColumn string, parentTable string, parentColumn string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
@@ -2170,24 +2171,24 @@ func normalizePubHexList(in []string) ([]string, error) {
 // - 这里不做列级兼容补丁，直接按新模型重建；
 // - 老表里的历史数据会一次性搬走，再删除；
 // - 这样后续业务代码只面对唯一真相。
-func ensureWorkspaceStorageSchema(db *sql.DB) error {
+func ensureWorkspaceStorageSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if err := ensureWorkspaceStorageBaseTables(db); err != nil {
+	if err := ensureWorkspaceStorageBaseTables(ctx, db); err != nil {
 		return err
 	}
-	legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, err := legacyWorkspaceStoragePresent(db)
+	legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, err := legacyWorkspaceStoragePresent(ctx, db)
 	if err != nil {
 		return err
 	}
 	if !legacyWorkspaces && !legacyFiles && !legacySeeds && !legacySupply && !legacyPolicy {
 		return nil
 	}
-	return migrateWorkspaceStorageLegacy(db)
+	return migrateWorkspaceStorageLegacy(ctx, db)
 }
 
-func ensureWorkspaceStorageBaseTables(db *sql.DB) error {
+func ensureWorkspaceStorageBaseTables(ctx context.Context, db *sql.DB) error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS biz_workspaces(
 			workspace_path TEXT PRIMARY KEY,
@@ -2235,7 +2236,7 @@ func ensureWorkspaceStorageBaseTables(db *sql.DB) error {
 	return nil
 }
 
-func legacyWorkspaceStoragePresent(db *sql.DB) (bool, bool, bool, bool, bool, error) {
+func legacyWorkspaceStoragePresent(ctx context.Context, db *sql.DB) (bool, bool, bool, bool, bool, error) {
 	legacyWorkspaces := false
 	legacyFiles := false
 	legacySeeds := false
@@ -2296,7 +2297,7 @@ func legacyWorkspaceStoragePresent(db *sql.DB) (bool, bool, bool, bool, bool, er
 	return legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, nil
 }
 
-func migrateWorkspaceStorageLegacy(db *sql.DB) error {
+func migrateWorkspaceStorageLegacy(ctx context.Context, db *sql.DB) error {
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -2376,23 +2377,23 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if err := migrateWorkspaceRowsLegacy(tx); err != nil {
+	if err := migrateWorkspaceRowsLegacy(ctx, tx); err != nil {
 		rollback()
 		return err
 	}
-	if err := migrateWorkspaceFileRowsLegacy(tx); err != nil {
+	if err := migrateWorkspaceFileRowsLegacy(ctx, tx); err != nil {
 		rollback()
 		return err
 	}
-	if err := migrateSeedRowsLegacy(tx); err != nil {
+	if err := migrateSeedRowsLegacy(ctx, tx); err != nil {
 		rollback()
 		return err
 	}
-	if err := migrateSeedChunkSupplyLegacy(tx); err != nil {
+	if err := migrateSeedChunkSupplyLegacy(ctx, tx); err != nil {
 		rollback()
 		return err
 	}
-	if err := migrateSeedPricingPolicyLegacy(tx); err != nil {
+	if err := migrateSeedPricingPolicyLegacy(ctx, tx); err != nil {
 		rollback()
 		return err
 	}
@@ -2459,8 +2460,8 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 	return nil
 }
 
-func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "biz_workspaces")
+func migrateWorkspaceRowsLegacy(ctx context.Context, tx *sql.Tx) error {
+	cols, err := tableColumnsTx(ctx, tx, "biz_workspaces")
 	if err != nil {
 		return err
 	}
@@ -2498,8 +2499,8 @@ func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
 	return rows.Err()
 }
 
-func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "biz_workspace_files")
+func migrateWorkspaceFileRowsLegacy(ctx context.Context, tx *sql.Tx) error {
+	cols, err := tableColumnsTx(ctx, tx, "biz_workspace_files")
 	if err != nil {
 		return err
 	}
@@ -2517,7 +2518,7 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 		return err
 	}
 	defer rows.Close()
-	workspaceRoots, err := legacyWorkspaceRoots(tx)
+	workspaceRoots, err := legacyWorkspaceRoots(ctx, tx)
 	if err != nil {
 		return err
 	}
@@ -2538,8 +2539,8 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 	return rows.Err()
 }
 
-func migrateSeedRowsLegacy(tx *sql.Tx) error {
-	cols, err := tableColumnsTx(tx, "biz_seeds")
+func migrateSeedRowsLegacy(ctx context.Context, tx *sql.Tx) error {
+	cols, err := tableColumnsTx(ctx, tx, "biz_seeds")
 	if err != nil {
 		return err
 	}
@@ -2580,11 +2581,11 @@ func migrateSeedRowsLegacy(tx *sql.Tx) error {
 // - 旧库有 seed_available_chunks 时，只信旧表记录；
 // - 某个 seed 在旧表里没有记录，就迁空；
 // - 只有旧库没有 seed_available_chunks 时，才按 chunk_count 补全。
-func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
+func migrateSeedChunkSupplyLegacy(ctx context.Context, tx *sql.Tx) error {
 	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_chunk_supply_new`); err != nil {
 		return err
 	}
-	haveLegacySupply := hasTableValue(tx, "seed_available_chunks")
+	haveLegacySupply := hasTableValue(ctx, tx, "seed_available_chunks")
 	rows, err := QueryContext(ctx, tx, `SELECT seed_hash,chunk_count FROM biz_seeds_new`)
 	if err != nil {
 		return err
@@ -2638,11 +2639,11 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 	return rows.Err()
 }
 
-func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
+func migrateSeedPricingPolicyLegacy(ctx context.Context, tx *sql.Tx) error {
 	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_pricing_policy_new`); err != nil {
 		return err
 	}
-	if !hasTableValue(tx, "seed_price_state") {
+	if !hasTableValue(ctx, tx, "seed_price_state") {
 		return nil
 	}
 	now := time.Now().Unix()
@@ -2694,7 +2695,7 @@ func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
 	return seedRows.Err()
 }
 
-func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
+func legacyWorkspaceRoots(ctx context.Context, tx *sql.Tx) ([]string, error) {
 	rows, err := QueryContext(ctx, tx, `SELECT workspace_path FROM biz_workspaces`)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -2732,7 +2733,7 @@ func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
 	return out, nil
 }
 
-func tableColumnsTx(tx *sql.Tx, table string) (map[string]struct{}, error) {
+func tableColumnsTx(ctx context.Context, tx *sql.Tx, table string) (map[string]struct{}, error) {
 	rows, err := QueryContext(ctx, tx, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return nil, err
@@ -2763,14 +2764,14 @@ func containsAny(cols map[string]struct{}, names ...string) bool {
 	return false
 }
 
-func hasTableValue(tx *sql.Tx, table string) bool {
+func hasTableValue(ctx context.Context, tx *sql.Tx, table string) bool {
 	var one int
 	err := QueryRowContext(ctx, tx, `SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&one)
 	return err == nil
 }
 
 // ensureFileDownloadsSchema 处理 proc_file_downloads 表的历史列迁移
-func ensureFileDownloadsSchema(db *sql.DB) error {
+func ensureFileDownloadsSchema(ctx context.Context, db *sql.DB) error {
 	rows, err := QueryContext(ctx, db, `PRAGMA table_info(proc_file_downloads)`)
 	if err != nil {
 		return err
@@ -2802,7 +2803,7 @@ func ensureFileDownloadsSchema(db *sql.DB) error {
 }
 
 // ensureLiveFollowsSchema 处理 proc_live_follows 表的历史列迁移
-func ensureLiveFollowsSchema(db *sql.DB) error {
+func ensureLiveFollowsSchema(ctx context.Context, db *sql.DB) error {
 	rows, err := QueryContext(ctx, db, `PRAGMA table_info(proc_live_follows)`)
 	if err != nil {
 		return err
@@ -2834,7 +2835,7 @@ func ensureLiveFollowsSchema(db *sql.DB) error {
 }
 
 // ensureWalletUTXOSchema 处理 wallet_utxo 表的历史列迁移和表结构重构
-func ensureWalletUTXOSchema(db *sql.DB) error {
+func ensureWalletUTXOSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -2945,7 +2946,7 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 	return nil
 }
 
-func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
+func migrateWalletLocalBroadcastFacts(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -3025,7 +3026,7 @@ func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
 			"wallet_id": strings.TrimSpace(row.WalletID),
 			"address":   strings.TrimSpace(row.Address),
 		}
-		if _, err := dbUpsertChainPaymentDB(tx, chainPaymentEntry{
+		if _, err := dbUpsertChainPaymentDB(ctx, tx, chainPaymentEntry{
 			TxID:                 row.TxID,
 			PaymentSubType:       "wallet_local_broadcast",
 			Status:               status,
@@ -3056,7 +3057,7 @@ func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
 	return nil
 }
 
-func ensureFactChainPaymentTimingSchema(db *sql.DB) error {
+func ensureFactChainPaymentTimingSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -3081,7 +3082,7 @@ func ensureFactChainPaymentTimingSchema(db *sql.DB) error {
 }
 
 // ensureWalletUTXOSyncStateSchema 处理 wallet_utxo_sync_state 表的历史列迁移
-func ensureWalletUTXOSyncStateSchema(db *sql.DB) error {
+func ensureWalletUTXOSyncStateSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -3121,7 +3122,7 @@ func ensureWalletUTXOSyncStateSchema(db *sql.DB) error {
 }
 
 // normalizeClientPubKeyColumns 把历史库里的旧格式公钥统一迁移为压缩公钥 hex（02/03）
-func normalizeClientPubKeyColumns(db *sql.DB) error {
+func normalizeClientPubKeyColumns(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -3160,7 +3161,7 @@ func normalizeClientPubKeyColumns(db *sql.DB) error {
 }
 
 func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bool) error {
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("SELECT rowid,%s FROM %s", strings.TrimSpace(column), strings.TrimSpace(table)))
+	rows, err := db.Query(fmt.Sprintf("SELECT rowid,%s FROM %s", strings.TrimSpace(column), strings.TrimSpace(table)))
 	if err != nil {
 		return err
 	}
@@ -3186,7 +3187,7 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 		if strings.EqualFold(raw, norm) {
 			continue
 		}
-		_, err = ExecContext(ctx, db, 
+		_, err = db.Exec(
 			fmt.Sprintf("UPDATE %s SET %s=? WHERE rowid=?", strings.TrimSpace(table), strings.TrimSpace(column)),
 			norm,
 			rowID,
@@ -3196,7 +3197,7 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 		}
 		// 处理唯一键冲突：同一业务行已存在新格式时，删除旧格式重复行
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
-			if _, delErr := ExecContext(ctx, db, fmt.Sprintf("DELETE FROM %s WHERE rowid=?", strings.TrimSpace(table)), rowID); delErr != nil {
+			if _, delErr := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rowid=?", strings.TrimSpace(table)), rowID); delErr != nil {
 				return delErr
 			}
 			continue
@@ -3207,7 +3208,7 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 }
 
 // cleanupLegacyCyclePayFinanceRows 清理不应存在于财务主表的 cycle_pay 过程事件
-func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
+func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -3287,7 +3288,7 @@ func hasTable(db *sql.DB, name string) (bool, error) {
 
 func hasRealTable(db *sql.DB, name string) (bool, error) {
 	var one int
-	err := QueryRowContext(ctx, db, `SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
+	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -3297,7 +3298,7 @@ func hasRealTable(db *sql.DB, name string) (bool, error) {
 	return true, nil
 }
 
-func rejectLegacyClientDBSchema(db *sql.DB) error {
+func rejectLegacyClientDBSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -3324,7 +3325,7 @@ func rejectLegacyClientDBSchema(db *sql.DB) error {
 
 func hasSchemaObject(db *sql.DB, name string) (bool, error) {
 	var one int
-	err := QueryRowContext(ctx, db, `SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
+	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -3336,7 +3337,7 @@ func hasSchemaObject(db *sql.DB, name string) (bool, error) {
 
 // isFinTxBreakdownFinalized 判断第二轮收口是否已经完成。
 // 说明：只要仍然能看到旧表、可空 tx_role、缺少唯一约束或缺少关键索引，就不能跳过。
-func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
+func isFinTxBreakdownFinalized(ctx context.Context, db *sql.DB) (bool, error) {
 	hasBreakdown, err := hasTable(db, "settle_tx_breakdown")
 	if err != nil {
 		return false, err
@@ -3396,7 +3397,7 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 
 // tableColumns 获取表的所有列名
 func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return nil, err
 	}
@@ -3420,7 +3421,7 @@ func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 
 // tableColumnNotNull 检查指定列是否存在且为 NOT NULL。
 func tableColumnNotNull(db *sql.DB, table, column string) (bool, error) {
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -3448,7 +3449,7 @@ func tableColumnNotNull(db *sql.DB, table, column string) (bool, error) {
 
 // tableHasIndex 检查指定表是否存在给定索引名。
 func tableHasIndex(db *sql.DB, table, indexName string) (bool, error) {
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -3476,7 +3477,7 @@ func tableHasIndex(db *sql.DB, table, indexName string) (bool, error) {
 // tableHasUniqueIndexOnColumns 检查指定表是否已经有目标唯一约束。
 // 这里接受 SQLite 的隐式唯一索引和显式唯一索引，只看列组合是否一致。
 func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (bool, error) {
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -3534,7 +3535,7 @@ func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (b
 
 // tableIndexColumns 读取单个索引覆盖的列顺序。
 func tableIndexColumns(db *sql.DB, indexName string) ([]string, error) {
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA index_info(%s)", strings.TrimSpace(indexName)))
+	rows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%s)", strings.TrimSpace(indexName)))
 	if err != nil {
 		return nil, err
 	}
@@ -3583,7 +3584,7 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 		return "close_final", nil
 	case strings.HasPrefix(bid, "biz_wallet_chain_"):
 		var accountingSubtype string
-		if err := QueryRowContext(ctx, db, `SELECT accounting_subtype FROM settle_businesses WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
+		if err := db.QueryRow(`SELECT accounting_subtype FROM settle_businesses WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
 			return "", fmt.Errorf("cannot infer tx_role for (%s,%s): business record not found", bid, txid)
 		}
 		switch accountingSubtype {

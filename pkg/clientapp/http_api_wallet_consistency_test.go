@@ -77,7 +77,7 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 	if err != nil {
 		t.Fatalf("walletAddressLockScriptHex failed: %v", err)
 	}
-	inputs, err := buildWalletChainAccountingInputsFromTxDetail(db, address, whatsonchain.TxDetail{
+	inputs, err := buildWalletChainAccountingInputsFromTxDetail(context.Background(), db, address, whatsonchain.TxDetail{
 		TxID: txid,
 		Vin: []whatsonchain.TxInput{
 			{TxID: prevTxID, Vout: 0},

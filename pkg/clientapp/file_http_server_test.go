@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -340,7 +341,7 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
 	cfg.FSHTTP.MaxConcurrentSessions = 4
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
-	srv := newFileHTTPServer(&Runtime{}, cfg, newClientDB(db, nil), &workspaceManager{cfg: cfg, db: db})
+	srv := newFileHTTPServer(&Runtime{}, cfg, newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
 	seedHash := strings.Repeat("a", 64)
 	return srv, seedHash, cfg.Storage.WorkspaceDir
 }
@@ -362,8 +363,63 @@ func upsertWorkspaceFileForSeedAt(t *testing.T, store *clientDB, seedHash, path 
 	if err != nil {
 		return err
 	}
+	if _, err := store.db.Exec(`INSERT OR IGNORE INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, workspacePath, 1, 0, time.Now().Unix()); err != nil {
+		return err
+	}
+	seedFilePath := filepath.Join(filepath.Dir(path), seedHash+".seed")
+	if _, err := store.db.Exec(`INSERT OR IGNORE INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, 1, size, seedFilePath, "", ""); err != nil {
+		return err
+	}
 	_, err = store.db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)
 		ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
 		workspacePath, filepath.ToSlash(filePath), seedHash, 0)
 	return err
+}
+
+func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
+	t.Parallel()
+
+	db, err := sql.Open("sqlite", ":memory:")
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := applySQLitePragmas(db); err != nil {
+		t.Fatalf("sqlite pragmas: %v", err)
+	}
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("init db: %v", err)
+	}
+
+	cfg := &Config{}
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	srv := newFileHTTPServer(&Runtime{}, cfg, newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.StartOnListener(ln)
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.srv == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("file http server did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown file http server: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("file http server start returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("file http server did not stop")
+	}
 }

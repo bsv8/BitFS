@@ -321,12 +321,22 @@ func TestStep4_DownloadSettlementSummary(t *testing.T) {
 		t.Fatalf("expected pending_count 1, got %d", summary2.Summary.PendingCount)
 	}
 
-	// 验证 pool_allocation 完整链路
-	if summary2.Businesses[0].PoolAllocation == nil {
+	// 验证 pool_allocation 完整链路，按 business_id 找，不依赖返回顺序。
+	var seller1Summary *BusinessSettlementView
+	for i := range summary2.Businesses {
+		if summary2.Businesses[i].Business.BusinessID == sellers[0].businessID {
+			seller1Summary = &summary2.Businesses[i]
+			break
+		}
+	}
+	if seller1Summary == nil {
+		t.Fatal("expected seller1 summary to exist")
+	}
+	if seller1Summary.PoolAllocation == nil {
 		t.Fatal("expected pool_allocation not nil for seller1")
 	}
-	if summary2.Businesses[0].PoolAllocation.TxID != "tx_download_seller1" {
-		t.Fatalf("expected pool_allocation txid tx_download_seller1, got %s", summary2.Businesses[0].PoolAllocation.TxID)
+	if seller1Summary.PoolAllocation.TxID != "tx_download_seller1" {
+		t.Fatalf("expected pool_allocation txid tx_download_seller1, got %s", seller1Summary.PoolAllocation.TxID)
 	}
 
 	// 6. 把 seller3 也设为 settled，验证整体变为 settled

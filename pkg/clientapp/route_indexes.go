@@ -19,7 +19,7 @@ func upsertPublishedRouteIndex(db *sql.DB, route string, seedHash string) (int64
 		return 0, fmt.Errorf("seed_hash is required")
 	}
 	now := time.Now().Unix()
-	if _, err := ExecContext(ctx, db, 
+	if _, err := db.Exec(
 		`INSERT INTO proc_published_route_indexes(route,seed_hash,updated_at_unix)
 		 VALUES(?,?,?)
 		 ON CONFLICT(route) DO UPDATE SET seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
@@ -38,7 +38,7 @@ func buildRouteIndexManifest(db *sql.DB, route string) ([]byte, error) {
 	}
 	normalizedRoute := normalizeResolveRoute(route)
 	var manifest routeIndexManifest
-	if err := QueryRowContext(ctx, db, 
+	if err := db.QueryRow(
 		`SELECT p.route,p.seed_hash,COALESCE(s.recommended_file_name,''),COALESCE(s.mime_hint,''),COALESCE(s.file_size,0),p.updated_at_unix
 		   FROM proc_published_route_indexes p
 		   JOIN biz_seeds s ON s.seed_hash=p.seed_hash

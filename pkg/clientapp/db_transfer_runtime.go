@@ -75,13 +75,6 @@ func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID
 	})
 }
 
-func dbLoadDirectTransferPoolRowTx(tx *sql.Tx, sessionID string) (directTransferPoolRow, error) {
-	if tx == nil {
-		return directTransferPoolRow{}, fmt.Errorf("tx is nil")
-	}
-	return loadDirectTransferPoolRowDB(context.Background(), tx, sessionID)
-}
-
 func loadDirectTransferPoolRowDB(ctx context.Context, queryer interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, sessionID string) (directTransferPoolRow, error) {
@@ -116,7 +109,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 				return fmt.Errorf("transfer pool is closed")
 			}
 		}
-		if _, err := ExecContext(ctx, tx, 
+		if _, err := ExecContext(ctx, tx,
 			`INSERT INTO proc_direct_transfer_pools(
 				session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 				pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
@@ -143,7 +136,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		); err != nil {
 			return err
 		}
-		if err := dbUpsertDirectTransferPoolSessionTx(tx, directTransferPoolSessionFactInput{
+		if err := dbUpsertDirectTransferPoolSessionTx(ctx, tx, directTransferPoolSessionFactInput{
 			SessionID:          sessionID,
 			PoolScheme:         "2of3",
 			CounterpartyPubHex: sellerPubHex,
@@ -160,7 +153,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		}); err != nil {
 			return err
 		}
-		if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(ctx, tx, directTransferBizPoolSnapshotInput{
 			SessionID:          sessionID,
 			PoolScheme:         "2of3",
 			CounterpartyPubHex: sellerPubHex,
@@ -185,7 +178,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		if err != nil {
 			return fmt.Errorf("extract utxo facts from open tx: %w", err)
 		}
-		return dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
+		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, directTransferPoolAllocationFactInput{
 			SessionID:        sessionID,
 			AllocationKind:   "open",
 			SequenceNum:      req.Sequence,
@@ -212,7 +205,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
 			return fmt.Errorf("transfer pool is closed")
 		}
-		if _, err := ExecContext(ctx, tx, 
+		if _, err := ExecContext(ctx, tx,
 			`UPDATE proc_direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
 			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID,
 		); err != nil {
@@ -222,7 +215,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		if err != nil {
 			return err
 		}
-		if err := dbUpsertDirectTransferPoolSessionTx(tx, directTransferPoolSessionFactInput{
+		if err := dbUpsertDirectTransferPoolSessionTx(ctx, tx, directTransferPoolSessionFactInput{
 			SessionID:          sessionID,
 			PoolScheme:         "2of3",
 			CounterpartyPubHex: row.SellerPubHex,
@@ -239,11 +232,11 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		}); err != nil {
 			return err
 		}
-		openAllocationID, err := dbGetPoolAllocationIDByKindTx(tx, sessionID, PoolBusinessActionOpen)
+		openAllocationID, err := dbGetPoolAllocationIDByKindTx(ctx, tx, sessionID, PoolBusinessActionOpen)
 		if err != nil {
 			return fmt.Errorf("load open allocation id: %w", err)
 		}
-		if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(ctx, tx, directTransferBizPoolSnapshotInput{
 			SessionID:          sessionID,
 			PoolScheme:         "2of3",
 			CounterpartyPubHex: row.SellerPubHex,
@@ -268,7 +261,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		if err != nil {
 			return fmt.Errorf("extract utxo facts from pay tx: %w", err)
 		}
-		return dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
+		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, directTransferPoolAllocationFactInput{
 			SessionID:        sessionID,
 			AllocationKind:   "pay",
 			SequenceNum:      sequence,
@@ -300,7 +293,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		if err != nil {
 			return err
 		}
-		if err := dbUpsertDirectTransferPoolSessionTx(tx, directTransferPoolSessionFactInput{
+		if err := dbUpsertDirectTransferPoolSessionTx(ctx, tx, directTransferPoolSessionFactInput{
 			SessionID:          sessionID,
 			PoolScheme:         "2of3",
 			CounterpartyPubHex: row.SellerPubHex,
@@ -317,11 +310,11 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		}); err != nil {
 			return err
 		}
-		openAllocationID, err := dbGetPoolAllocationIDByKindTx(tx, sessionID, PoolBusinessActionOpen)
+		openAllocationID, err := dbGetPoolAllocationIDByKindTx(ctx, tx, sessionID, PoolBusinessActionOpen)
 		if err != nil {
 			return fmt.Errorf("load open allocation id: %w", err)
 		}
-		if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(ctx, tx, directTransferBizPoolSnapshotInput{
 			SessionID:          sessionID,
 			PoolScheme:         "2of3",
 			CounterpartyPubHex: row.SellerPubHex,
@@ -347,7 +340,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		if err != nil {
 			return fmt.Errorf("extract utxo facts from closing tx: %w", err)
 		}
-		return dbUpsertDirectTransferPoolAllocationTx(tx, directTransferPoolAllocationFactInput{
+		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, directTransferPoolAllocationFactInput{
 			SessionID:        sessionID,
 			AllocationKind:   "close",
 			SequenceNum:      sequence,
@@ -387,7 +380,7 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			filePath      string
 			chunkCount    uint32
 		}
-		if err := QueryRowContext(ctx, db, 
+		if err := QueryRowContext(ctx, db,
 			`SELECT s.chunk_count FROM biz_seeds s WHERE s.seed_hash=?`,
 			strings.ToLower(strings.TrimSpace(seedHash)),
 		).Scan(&out.chunkCount); err != nil {

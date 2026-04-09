@@ -201,7 +201,7 @@ func validateWalletFactSource(sourceType string, sourceID string) (string, strin
 //   - net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
 //   - 不再从 NetSat 倒推，而是使用显式传入的 ExternalOutSat 和 MinerFeeSat
 //   - 删除旧的兜底推断分支（"有输入+有输出=CHANGE"逻辑已清理）
-func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) error {
+func recordWalletChainAccountingConnCtx(ctx context.Context, db sqlConn, in walletChainAccountingInput) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -282,11 +282,11 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	// 来源已经由上层显式给定，这里只落对应来源的事实。
 	utxoFacts := buildChainPaymentUTXOLinksFromFacts(in.UTXOFacts, now)
 	cycleID := fmt.Sprintf("cycle_%s_%s", walletSourceType, walletSourceID)
-	if err := dbUpsertSettlementCycle(db, cycleID, walletSourceType, walletSourceID, "confirmed", in.WalletInputSat, 0, in.NetSat, 0, now, "wallet chain sync", in.Payload); err != nil {
+	if err := dbUpsertSettlementCycleCtx(ctx, db, cycleID, walletSourceType, walletSourceID, "confirmed", in.WalletInputSat, 0, in.NetSat, 0, now, "wallet chain sync", in.Payload); err != nil {
 		obs.Error("bitcast-client", "wallet_accounting_settlement_cycle_failed", map[string]any{"error": err.Error(), "txid": txid, "source_type": walletSourceType})
 		return fmt.Errorf("upsert settlement cycle failed: %w", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleBySource(db, walletSourceType, walletSourceID)
+	settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, walletSourceType, walletSourceID)
 	if err != nil {
 		return fmt.Errorf("resolve settlement cycle for wallet chain %s: %w", walletSourceType, err)
 	}
@@ -342,7 +342,7 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		if !walletChainAccountingRoleAllowed(utxoRole) {
 			continue
 		}
-		exists, err := dbWalletUTXOExistsConn(db, utxoID)
+		exists, err := dbWalletUTXOExistsConn(ctx, db, utxoID)
 		if err != nil {
 			return fmt.Errorf("check wallet_utxo existence failed: %w", err)
 		}
@@ -370,30 +370,30 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	// - 如果同一笔交易里也能识别出 token carrier，那么 token 资产事实在这里顺着同一条主账展开；
 	// - chain_token 仍保留给少数只看 token 数量流的旧输入，但新 BSV21 主链已经不再单独产出这条输入。
 	if walletSourceType == "chain_bsv" && len(utxoFacts) > 0 {
-		if err := dbAppendBSVConsumptionsForSettlementCycle(db, settlementCycleID, utxoFacts, now); err != nil {
+		if err := dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, db, settlementCycleID, utxoFacts, now); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_bsv_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
 			return fmt.Errorf("append BSV consumptions for chain payment failed: %w", err)
 		}
-		tokenFacts, err := collectTokenUTXOLinkFacts(db, in.UTXOFacts)
+		tokenFacts, err := collectTokenUTXOLinkFacts(ctx, db, in.UTXOFacts)
 		if err != nil {
 			return fmt.Errorf("collect token carrier facts failed: %w", err)
 		}
 		if len(tokenFacts) > 0 {
-			if err := dbAppendTokenConsumptionsForSettlementCycle(db, settlementCycleID, tokenFacts, now); err != nil {
+			if err := dbAppendTokenConsumptionsForSettlementCycleCtx(ctx, db, settlementCycleID, tokenFacts, now); err != nil {
 				obs.Error("bitcast-client", "wallet_accounting_token_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
 				return fmt.Errorf("append token consumptions for chain payment failed: %w", err)
 			}
 		}
 	}
 	if walletSourceType == "chain_token" && len(utxoFacts) > 0 {
-		tokenFacts, err := collectTokenUTXOLinkFacts(db, in.UTXOFacts)
+		tokenFacts, err := collectTokenUTXOLinkFacts(ctx, db, in.UTXOFacts)
 		if err != nil {
 			return fmt.Errorf("collect token carrier facts failed: %w", err)
 		}
 		if len(tokenFacts) == 0 {
 			return fmt.Errorf("chain_token source %s requires token carrier facts", txid)
 		}
-		if err := dbAppendTokenConsumptionsForSettlementCycle(db, settlementCycleID, tokenFacts, now); err != nil {
+		if err := dbAppendTokenConsumptionsForSettlementCycleCtx(ctx, db, settlementCycleID, tokenFacts, now); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_token_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
 			return fmt.Errorf("append token consumptions for chain payment failed: %w", err)
 		}
@@ -412,12 +412,15 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 	return nil
 }
 
-func recordWalletChainAccounting(db *sql.DB, in walletChainAccountingInput) error {
+func recordWalletChainAccountingCtx(ctx context.Context, db *sql.DB, in walletChainAccountingInput) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	// 先把事实放进同一笔事务里，避免主表成功但 link 或财务表缺一块。
-	tx, err := db.BeginTx(context.Background(), nil)
+	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin wallet chain accounting tx failed: %w", err)
 	}
@@ -430,7 +433,7 @@ func recordWalletChainAccounting(db *sql.DB, in walletChainAccountingInput) erro
 	}()
 
 	// 先写链上支付事实主表，再补关系和财务表，全部在同一笔事务里。
-	if err := recordWalletChainAccountingConn(tx, in); err != nil {
+	if err := recordWalletChainAccountingConnCtx(ctx, tx, in); err != nil {
 		return err
 	}
 

@@ -1,6 +1,9 @@
 package clientapp
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 func TestDbAppendCommandChainRejectsBlankCommandID(t *testing.T) {
 	t.Parallel()
@@ -8,14 +11,14 @@ func TestDbAppendCommandChainRejectsBlankCommandID(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	store := newClientDB(db, nil)
 
-	if err := dbAppendCommandJournal(nil, store, commandJournalEntry{
+	if err := dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "   ",
 		CommandType:   "ensure_active",
 		GatewayPeerID: "gw1",
 	}); err == nil {
 		t.Fatalf("expected blank command_id command journal write to be rejected")
 	}
-	if err := dbAppendDomainEvent(nil, store, domainEventEntry{
+	if err := dbAppendDomainEvent(context.Background(), store, domainEventEntry{
 		CommandID:     "   ",
 		GatewayPeerID: "gw1",
 		EventName:     "fee_pool_paused_insufficient",
@@ -24,14 +27,14 @@ func TestDbAppendCommandChainRejectsBlankCommandID(t *testing.T) {
 	}); err == nil {
 		t.Fatalf("expected blank command_id domain event write to be rejected")
 	}
-	if err := dbAppendStateSnapshot(nil, store, stateSnapshotEntry{
+	if err := dbAppendStateSnapshot(context.Background(), store, stateSnapshotEntry{
 		CommandID:     "   ",
 		GatewayPeerID: "gw1",
 		State:         "paused_insufficient",
 	}); err == nil {
 		t.Fatalf("expected blank command_id state snapshot write to be rejected")
 	}
-	if err := dbAppendEffectLog(nil, store, effectLogEntry{
+	if err := dbAppendEffectLog(context.Background(), store, effectLogEntry{
 		CommandID:     "   ",
 		GatewayPeerID: "gw1",
 		EffectType:    "chain",

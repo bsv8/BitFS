@@ -64,7 +64,7 @@ func TestObservedGatewayStateWriteAndQuery(t *testing.T) {
 
 	db := newWalletAPITestDB(t)
 	store := newClientDB(db, nil)
-	_ = dbAppendObservedGatewayState(nil, store, observedGatewayStateEntry{
+	_ = dbAppendObservedGatewayState(context.Background(), store, observedGatewayStateEntry{
 		GatewayPeerID:  "gw1",
 		SourceRef:      "gw1",
 		ObservedAtUnix: 1700000101,
@@ -76,7 +76,7 @@ func TestObservedGatewayStateWriteAndQuery(t *testing.T) {
 		Payload:        observedGatewayStatePayload{ObservedReason: "wallet_probe", WalletBalanceSatoshi: 999999, Extra: map[string]any{}},
 	})
 
-	page, err := dbListObservedGatewayStates(nil, store, observedGatewayStateFilter{
+	page, err := dbListObservedGatewayStates(context.Background(), store, observedGatewayStateFilter{
 		Limit:         10,
 		Offset:        0,
 		GatewayPeerID: "gw1",
@@ -174,7 +174,7 @@ func TestObservedGatewayStateResumeChainWritesBeforeAndAfter(t *testing.T) {
 
 	k.tryResumePausedGateway(context.Background(), peer.AddrInfo{ID: gwHost.ID(), Addrs: gwHost.Addrs()})
 
-	page, err := dbListObservedGatewayStates(nil, newClientDB(db, nil), observedGatewayStateFilter{
+	page, err := dbListObservedGatewayStates(context.Background(), newClientDB(db, nil), observedGatewayStateFilter{
 		Limit:         10,
 		Offset:        0,
 		GatewayPeerID: gwPubHex,

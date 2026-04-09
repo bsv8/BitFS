@@ -74,7 +74,7 @@ type directTransferBizPoolAllocationInput struct {
 	CreatedAtUnix    int64
 }
 
-func dbUpsertDirectTransferBizPoolSnapshotTx(tx *sql.Tx, in directTransferBizPoolSnapshotInput) error {
+func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx *sql.Tx, in directTransferBizPoolSnapshotInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -149,7 +149,7 @@ func dbUpsertDirectTransferBizPoolSnapshotTx(tx *sql.Tx, in directTransferBizPoo
 	return err
 }
 
-func dbUpsertDirectTransferBizPoolAllocationTx(tx *sql.Tx, in directTransferBizPoolAllocationInput) error {
+func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx *sql.Tx, in directTransferBizPoolAllocationInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -205,7 +205,7 @@ func dbUpsertDirectTransferBizPoolAllocationTx(tx *sql.Tx, in directTransferBizP
 	return err
 }
 
-func dbUpsertDirectTransferPoolSessionTx(tx *sql.Tx, in directTransferPoolSessionFactInput) error {
+func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in directTransferPoolSessionFactInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -266,7 +266,7 @@ func dbUpsertDirectTransferPoolSessionTx(tx *sql.Tx, in directTransferPoolSessio
 	return err
 }
 
-func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAllocationFactInput) error {
+func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *sql.Tx, in directTransferPoolAllocationFactInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -306,13 +306,13 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 		createdAt = now
 	}
 	var allocationNo int64
-	if err := QueryRowContext(ctx, tx, 
+	if err := QueryRowContext(ctx, tx,
 		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind=?`,
 		sessionID, PoolFactEventKindPoolEvent,
 	).Scan(&allocationNo); err != nil {
 		return err
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`INSERT INTO fact_pool_session_events(
 			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -353,16 +353,16 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 		return err
 	}
 	// 旧 fact 事件只保留兼容锚点，真正的池账写入走 dbApplyDirectTransferBizPoolAccountingTx。
-	if err := dbApplyDirectTransferBizPoolAccountingTx(tx, in, allocationNo); err != nil {
+	if err := dbApplyDirectTransferBizPoolAccountingTx(ctx, tx, in, allocationNo); err != nil {
 		return err
 	}
-	poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(tx, allocID)
+	poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(ctx, tx, allocID)
 	if err != nil {
 		return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
 	}
 	// 结算周期必须先落地；这是写账本的锚点，业务层只认这个主键。
 	cycleID := fmt.Sprintf("cycle_pool_session_%s", sessionID)
-	if err := dbUpsertSettlementCycle(tx,
+	if err := dbUpsertSettlementCycleCtx(ctx, tx,
 		cycleID, "pool_session", sessionID, "confirmed",
 		0, 0, 0,
 		0, createdAt, "auto-created from pool allocation", map[string]any{},
@@ -377,7 +377,7 @@ func dbUpsertDirectTransferPoolSession(ctx context.Context, store *clientDB, in 
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Tx(ctx, func(tx *sql.Tx) error {
-		return dbUpsertDirectTransferPoolSessionTx(tx, in)
+		return dbUpsertDirectTransferPoolSessionTx(ctx, tx, in)
 	})
 }
 
@@ -386,7 +386,7 @@ func dbUpsertDirectTransferPoolAllocation(ctx context.Context, store *clientDB, 
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Tx(ctx, func(tx *sql.Tx) error {
-		return dbUpsertDirectTransferPoolAllocationTx(tx, in)
+		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, in)
 	})
 }
 
@@ -423,7 +423,7 @@ func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int
 		return 0, fmt.Errorf("allocation_id is required")
 	}
 	var id int64
-	err := QueryRowContext(ctx, db, 
+	err := db.QueryRow(
 		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
@@ -446,7 +446,7 @@ func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, a
 
 // dbGetPoolAllocationIDByAllocationIDTx 在事务内按 allocation_id 查自增 id
 // 用于财务写入时在同一事务内获取主键
-func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int64, error) {
+func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx *sql.Tx, allocationID string) (int64, error) {
 	if tx == nil {
 		return 0, fmt.Errorf("tx is nil")
 	}
@@ -455,7 +455,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 		return 0, fmt.Errorf("allocation_id is required")
 	}
 	var id int64
-	err := QueryRowContext(ctx, tx, 
+	err := QueryRowContext(ctx, tx,
 		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
@@ -469,7 +469,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 // 设计说明：
 // - snapshot 更新需要稳定地拿到 open allocation id；
 // - 不能拿当前 sequence 反推，否则重放时会漂。
-func dbGetPoolAllocationIDByKindTx(tx *sql.Tx, sessionID string, allocationKind string) (string, error) {
+func dbGetPoolAllocationIDByKindTx(ctx context.Context, tx *sql.Tx, sessionID string, allocationKind string) (string, error) {
 	if tx == nil {
 		return "", fmt.Errorf("tx is nil")
 	}
@@ -482,7 +482,7 @@ func dbGetPoolAllocationIDByKindTx(tx *sql.Tx, sessionID string, allocationKind 
 		return "", fmt.Errorf("allocation_kind is required")
 	}
 	var allocationID string
-	err := QueryRowContext(ctx, tx, 
+	err := QueryRowContext(ctx, tx,
 		`SELECT allocation_id FROM fact_pool_session_events
 		 WHERE pool_session_id=? AND event_kind=? AND allocation_kind=?
 		 ORDER BY allocation_no ASC LIMIT 1`,

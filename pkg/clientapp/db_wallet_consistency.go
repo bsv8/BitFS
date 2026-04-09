@@ -199,6 +199,6 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		if len(facts) == 0 {
 			return fmt.Errorf("no bsv settlement records found for txid=%s", txid)
 		}
-		return dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, facts, time.Now().Unix())
+		return dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, db, cycleID, facts, time.Now().Unix())
 	})
 }

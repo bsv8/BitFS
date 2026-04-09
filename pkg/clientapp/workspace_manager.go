@@ -12,6 +12,7 @@ import (
 )
 
 type workspaceManager struct {
+	ctx     context.Context
 	cfg     *Config
 	db      *sql.DB
 	store   *clientDB
@@ -50,7 +51,10 @@ func (m *workspaceManager) EnsureDefaultWorkspace() error {
 	if store == nil {
 		return fmt.Errorf("workspace manager not initialized")
 	}
-	return dbEnsureDefaultWorkspace(context.Background(), store, m.cfg.Storage.WorkspaceDir)
+	if m.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	return dbEnsureDefaultWorkspace(m.ctx, store, m.cfg.Storage.WorkspaceDir)
 }
 
 func (m *workspaceManager) List() ([]workspaceItem, error) {
@@ -58,7 +62,10 @@ func (m *workspaceManager) List() ([]workspaceItem, error) {
 	if store == nil {
 		return nil, fmt.Errorf("workspace manager not initialized")
 	}
-	return dbListWorkspaces(context.Background(), store)
+	if m.ctx == nil {
+		return nil, fmt.Errorf("ctx is required")
+	}
+	return dbListWorkspaces(m.ctx, store)
 }
 
 func (m *workspaceManager) Add(path string, maxBytes uint64) (workspaceItem, error) {
@@ -77,7 +84,10 @@ func (m *workspaceManager) Add(path string, maxBytes uint64) (workspaceItem, err
 	if !st.IsDir() {
 		return workspaceItem{}, fmt.Errorf("workspace path is not directory")
 	}
-	return dbAddWorkspace(context.Background(), store, abs, maxBytes)
+	if m.ctx == nil {
+		return workspaceItem{}, fmt.Errorf("ctx is required")
+	}
+	return dbAddWorkspace(m.ctx, store, abs, maxBytes)
 }
 
 func (m *workspaceManager) DeleteByPath(workspacePath string) error {
@@ -88,7 +98,10 @@ func (m *workspaceManager) DeleteByPath(workspacePath string) error {
 	if strings.TrimSpace(workspacePath) == "" {
 		return fmt.Errorf("workspace path is required")
 	}
-	return dbDeleteWorkspaceByPath(context.Background(), store, workspacePath)
+	if m.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	return dbDeleteWorkspaceByPath(m.ctx, store, workspacePath)
 }
 
 func (m *workspaceManager) UpdateByPath(workspacePath string, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
@@ -102,7 +115,10 @@ func (m *workspaceManager) UpdateByPath(workspacePath string, maxBytes *uint64, 
 	if maxBytes == nil && enabled == nil {
 		return workspaceItem{}, fmt.Errorf("no fields to update")
 	}
-	return dbUpdateWorkspaceByPath(context.Background(), store, workspacePath, maxBytes, enabled)
+	if m.ctx == nil {
+		return workspaceItem{}, fmt.Errorf("ctx is required")
+	}
+	return dbUpdateWorkspaceByPath(m.ctx, store, workspacePath, maxBytes, enabled)
 }
 
 func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (string, error) {
@@ -143,7 +159,7 @@ func (m *workspaceManager) selectOutputPath(relDir string, fileName string, file
 			continue
 		}
 		if it.MaxBytes > 0 {
-			used, _ := dbWorkspaceUsedBytes(context.Background(), workspaceStore(m), it.WorkspacePath)
+			used, _ := dbWorkspaceUsedBytes(m.ctx, workspaceStore(m), it.WorkspacePath)
 			if used+fileSize > it.MaxBytes {
 				continue
 			}
@@ -254,7 +270,7 @@ func (m *workspaceManager) listLiveCacheStreams() ([]liveCacheStreamStat, uint64
 	if err != nil {
 		return nil, 0, err
 	}
-	rows, err := dbListLiveCacheFiles(context.Background(), workspaceStore(m))
+	rows, err := dbListLiveCacheFiles(m.ctx, workspaceStore(m))
 	if err != nil {
 		return nil, 0, err
 	}
@@ -321,11 +337,11 @@ func (m *workspaceManager) deleteLiveStreamCache(st liveCacheStreamStat) error {
 			return err
 		}
 	}
-	return dbDeleteLiveStreamCacheRows(context.Background(), workspaceStore(m), st.StreamID)
+	return dbDeleteLiveStreamCacheRows(m.ctx, workspaceStore(m), st.StreamID)
 }
 
 func (m *workspaceManager) cleanupOrphanSeedState() error {
-	return dbCleanupOrphanSeedState(context.Background(), workspaceStore(m))
+	return dbCleanupOrphanSeedState(m.ctx, workspaceStore(m))
 }
 
 func containsString(items []string, want string) bool {
@@ -382,7 +398,7 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		return sellerSeed{}, err
 	}
 
-	if err := dbUpsertDownloadedFile(context.Background(), workspaceStore(m), abs, seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, true); err != nil {
+	if err := dbUpsertDownloadedFile(m.ctx, workspaceStore(m), abs, seedHash, seedPath, meta.ChunkCount, meta.FileSize, recommendedName, mimeHint, true); err != nil {
 		return sellerSeed{}, err
 	}
 	available := normalizeChunkIndexes(p.AvailableChunkIndexes, meta.ChunkCount)
@@ -393,7 +409,7 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		}
 		available = contiguousChunkIndexes(haveCount)
 	}
-	if err := dbReplaceSeedChunkSupply(context.Background(), workspaceStore(m), seedHash, available); err != nil {
+	if err := dbReplaceSeedChunkSupply(m.ctx, workspaceStore(m), seedHash, available); err != nil {
 		return sellerSeed{}, err
 	}
 	seed := sellerSeed{

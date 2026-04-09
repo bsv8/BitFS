@@ -406,7 +406,7 @@ func sanitizeTraceFilePart(s string) string {
 
 func sqlTraceContextWithMeta(ctx context.Context, roundID, trigger, intent, stage string) context.Context {
 	if ctx == nil {
-		ctx = context.Background()
+		return nil
 	}
 	if roundID != "" {
 		ctx = context.WithValue(ctx, sqlTraceContextRoundIDKey, roundID)
@@ -428,7 +428,7 @@ func sqlTraceScopeFromContext(ctx context.Context, callerChain []string) sqlitea
 		return sqliteactor.TraceScope{}
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		return sqliteactor.TraceScope{}
 	}
 	scope := sqliteactor.TraceScope{
 		RoundID: strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey))),

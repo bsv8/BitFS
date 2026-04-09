@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"strconv"
@@ -28,4 +29,19 @@ func newWalletAPITestDB(t *testing.T) *sql.DB {
 
 func itoa64(v int64) string {
 	return strconv.FormatInt(v, 10)
+}
+
+func newTestWorkspaceManager(ctx context.Context, cfg *Config, db *sql.DB) *workspaceManager {
+	return &workspaceManager{
+		ctx:     ctx,
+		cfg:     cfg,
+		db:      db,
+		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
+	}
+}
+
+func newTestTaskScheduler(ctx context.Context, store *clientDB) *taskScheduler {
+	s := newTaskScheduler(store, "bitcast-client")
+	s.ctx = ctx
+	return s
 }

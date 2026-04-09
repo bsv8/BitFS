@@ -48,7 +48,7 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		t.Fatalf("save cfg: %v", err)
 	}
 
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	rt.runIn.ConfigPath = configPath
 	srv := &httpAPIServer{
 		rt:  rt,
@@ -129,7 +129,7 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	store := newClientDB(db, nil)
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	scheduler := ensureRuntimeTaskScheduler(rt, store)
 	if scheduler == nil {
 		t.Fatalf("scheduler not initialized")
@@ -259,7 +259,7 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
@@ -315,7 +315,7 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/runs?status=failed&mode=dynamic", nil)
 	rec := httptest.NewRecorder()
@@ -358,7 +358,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	_ = dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "ck_1",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",
@@ -372,7 +372,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		Payload:       map[string]any{"trigger": "manual"},
 		Result:        map[string]any{"seed_count": 1},
 	})
-	_ = dbAppendCommandJournal(nil, newClientDB(db, nil), commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "fp_1",
 		CommandType:   "fee_pool_internal_only",
 		GatewayPeerID: "gw",
@@ -395,7 +395,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10&offset=0", nil)
@@ -464,7 +464,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		t.Fatalf("init db: %v", err)
 	}
 
-	dbAppendOrchestratorLog(nil, newClientDB(db, nil), orchestratorLogEntry{
+	dbAppendOrchestratorLog(context.Background(), newClientDB(db, nil), orchestratorLogEntry{
 		EventType:      "signal_received",
 		Source:         "workspace_worker",
 		SignalType:     "workspace.tick",
@@ -477,7 +477,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		QueueLength:    1,
 		Payload:        map[string]any{"trigger": "periodic_tick"},
 	})
-	dbAppendOrchestratorLog(nil, newClientDB(db, nil), orchestratorLogEntry{
+	dbAppendOrchestratorLog(context.Background(), newClientDB(db, nil), orchestratorLogEntry{
 		EventType:      "task_dispatch_result",
 		Source:         "orchestrator",
 		SignalType:     "workspace.tick",
@@ -499,7 +499,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs?event_type=signal_received&limit=10&offset=0", nil)
@@ -601,7 +601,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if err := SaveConfigFile(configPath, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	rt.runIn.ConfigPath = configPath
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
@@ -752,8 +752,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subCfg.Storage.WorkspaceDir = t.TempDir()
 	subCfg.Storage.DataDir = t.TempDir()
 
-	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), live: newLiveRuntime()}
+	pubRT := &Runtime{ctx: context.Background(), Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
+	subRT := &Runtime{ctx: context.Background(), Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), live: newLiveRuntime()}
 	pubStore := newClientDB(db, nil)
 	subStore := newClientDB(db, nil)
 	pubRT.kernel = newClientKernel(pubRT, pubStore)
@@ -870,11 +870,11 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	workspace := &workspaceManager{cfg: &cfg, db: db, catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}}}
+	workspace := newTestWorkspaceManager(context.Background(), &cfg, db)
 	if err := workspace.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	rt := &Runtime{Host: h, runIn: NewRunInputFromConfig(cfg, ""), Workspace: workspace, live: newLiveRuntime()}
+	rt := &Runtime{ctx: context.Background(), Host: h, runIn: NewRunInputFromConfig(cfg, ""), Workspace: workspace, live: newLiveRuntime()}
 	registerLiveHandlers(newClientDB(db, nil), rt)
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, workspace: workspace}
 
@@ -977,15 +977,15 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	subCfg.Storage.WorkspaceDir = t.TempDir()
 	subCfg.Storage.DataDir = t.TempDir()
 	streamID := strings.Repeat("ab", 32)
-	subWorkspace := &workspaceManager{cfg: &subCfg, db: db}
+	subWorkspace := newTestWorkspaceManager(context.Background(), &subCfg, db)
 	if err := subWorkspace.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
 
 	pubStore := newClientDB(db, nil)
 	subStore := newClientDB(db, nil)
-	pubRT := &Runtime{Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
-	subRT := &Runtime{Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), Workspace: subWorkspace, live: newLiveRuntime()}
+	pubRT := &Runtime{ctx: context.Background(), Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
+	subRT := &Runtime{ctx: context.Background(), Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), Workspace: subWorkspace, live: newLiveRuntime()}
 	subRT.kernel = newClientKernel(subRT, subStore)
 	registerLiveHandlers(nil, pubRT)
 	registerLiveHandlers(subStore, subRT)
@@ -1061,9 +1061,17 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	}
 
 	subRT.live = newLiveRuntime()
-	loaded, err := TriggerLiveFollowStatus(newClientDB(db, nil), subRT, streamID)
-	if err != nil {
-		t.Fatalf("load persisted follow status failed: %v", err)
+	var loaded LiveFollowStatus
+	deadline = time.Now().Add(3 * time.Second)
+	for {
+		loaded, err = TriggerLiveFollowStatus(newClientDB(db, nil), subRT, streamID)
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "database is locked") || time.Now().After(deadline) {
+			t.Fatalf("load persisted follow status failed: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	if loaded.HaveSegmentIndex != st.HaveSegmentIndex {
 		t.Fatalf("persisted have_segment_index mismatch: got=%d want=%d", loaded.HaveSegmentIndex, st.HaveSegmentIndex)
@@ -1098,7 +1106,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	now := time.Now().Unix()
 
 	// 插入一条 orchestrator 发起的命令（带 trigger_key）
-	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "orch_cmd_1",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw1",
@@ -1115,7 +1123,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	})
 
 	// 插入一条直接命令（trigger_key 为空）
-	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "direct_cmd_1",
 		CommandType:   clientKernelCommandDirectDownloadCore,
 		GatewayPeerID: "direct",
@@ -1139,7 +1147,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
 	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
 
 	// 测试 1：按匹配的 trigger_key 过滤，应该查到 orchestrator 命令
@@ -1209,7 +1217,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 
 	// 测试 4：client-kernel 命令列表中，直接命令的 trigger_key 必须是空字符串
 	// 先插入一条带 trigger_key 的 client-kernel 命令
-	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "ck_with_trigger",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",

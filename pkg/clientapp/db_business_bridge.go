@@ -124,7 +124,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		now := time.Now().Unix()
 
 		// 1. 确保 front_order 存在
-		if err := dbUpsertFrontOrderTx(tx, frontOrderEntry{
+		if err := dbUpsertFrontOrderTx(ctx, tx, frontOrderEntry{
 			FrontOrderID:     in.FrontOrderID,
 			FrontType:        in.FrontType,
 			FrontSubtype:     in.FrontSubtype,
@@ -148,7 +148,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		// 第七阶段整改：BusinessRole 由调用方显式传入，桥接器不猜业务分类
 		// 桥接器只负责落链，不负责做业务类型裁判
 		idempotencyKey := "bridge:" + in.BusinessID
-		if err := dbAppendFinBusinessTx(tx, finBusinessEntry{
+		if err := dbAppendFinBusinessTx(ctx, tx, finBusinessEntry{
 			BusinessID:        in.BusinessID,
 			BusinessRole:      in.BusinessRole, // 调用方显式传入
 			SourceType:        in.SourceType,
@@ -172,7 +172,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 
 		// 3. 创建 business_trigger（支持一前台单多条 business）
 		// 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
-		if err := dbAppendBusinessTriggerTx(tx, businessTriggerEntry{
+		if err := dbAppendBusinessTriggerTx(ctx, tx, businessTriggerEntry{
 			TriggerID:      triggerID,
 			BusinessID:     in.BusinessID,
 			TriggerType:    in.TriggerType,
@@ -191,7 +191,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		}
 
 		// 4. 创建 business_settlement(status='pending')
-		if err := dbUpsertBusinessSettlementTx(tx, businessSettlementEntry{
+		if err := dbUpsertBusinessSettlementTx(ctx, tx, businessSettlementEntry{
 			SettlementID:     in.SettlementID,
 			BusinessID:       in.BusinessID,
 			SettlementMethod: string(in.SettlementMethod),
@@ -222,7 +222,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 }
 
 // dbUpsertFrontOrderTx 事务内插入或更新前台业务单
-func dbUpsertFrontOrderTx(tx *sql.Tx, e frontOrderEntry) error {
+func dbUpsertFrontOrderTx(ctx context.Context, tx *sql.Tx, e frontOrderEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -236,7 +236,7 @@ func dbUpsertFrontOrderTx(tx *sql.Tx, e frontOrderEntry) error {
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = e.CreatedAtUnix
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`INSERT INTO biz_front_orders(
 			front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?)
@@ -266,7 +266,7 @@ func dbUpsertFrontOrderTx(tx *sql.Tx, e frontOrderEntry) error {
 }
 
 // dbAppendFinBusinessTx 事务内插入或更新业务
-func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
+func dbAppendFinBusinessTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -289,7 +289,7 @@ func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.BusinessID
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`INSERT INTO settle_businesses(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
@@ -322,7 +322,7 @@ func dbAppendFinBusinessTx(tx *sql.Tx, e finBusinessEntry) error {
 // dbAppendBusinessTriggerTx 事务内插入业务触发桥接记录
 // 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
 // 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
-func dbAppendBusinessTriggerTx(tx *sql.Tx, e businessTriggerEntry) error {
+func dbAppendBusinessTriggerTx(ctx context.Context, tx *sql.Tx, e businessTriggerEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -337,7 +337,7 @@ func dbAppendBusinessTriggerTx(tx *sql.Tx, e businessTriggerEntry) error {
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`INSERT INTO biz_business_triggers(
 			trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?)
@@ -359,7 +359,7 @@ func dbAppendBusinessTriggerTx(tx *sql.Tx, e businessTriggerEntry) error {
 
 // dbUpsertBusinessSettlementTx 事务内插入或更新业务结算出口
 // 校验：settlement_method 只允许 'pool' 或 'chain'
-func dbUpsertBusinessSettlementTx(tx *sql.Tx, e businessSettlementEntry) error {
+func dbUpsertBusinessSettlementTx(ctx context.Context, tx *sql.Tx, e businessSettlementEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}

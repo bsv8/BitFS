@@ -177,6 +177,7 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 }
 
 type httpAPIServer struct {
+	ctx       context.Context
 	rt        *Runtime
 	cfg       *Config
 	db        *sql.DB
@@ -221,6 +222,7 @@ type fileGetJob struct {
 
 func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, store *clientDB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
 	return &httpAPIServer{
+		ctx:       rt.ctx,
 		rt:        rt,
 		cfg:       cfg,
 		db:        db,
@@ -735,11 +737,11 @@ func dbLoadSchedulerTaskSnapshot(ctx context.Context, store *clientDB, taskName 
 		return schedulerTaskSnapshot{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (schedulerTaskSnapshot, error) {
-		return loadSchedulerTaskSnapshot(db, taskName)
+		return loadSchedulerTaskSnapshot(ctx, db, taskName)
 	})
 }
 
-func loadSchedulerTaskSnapshot(db *sql.DB, taskName string) (schedulerTaskSnapshot, error) {
+func loadSchedulerTaskSnapshot(ctx context.Context, db *sql.DB, taskName string) (schedulerTaskSnapshot, error) {
 	if db == nil {
 		return schedulerTaskSnapshot{}, fmt.Errorf("db is nil")
 	}
@@ -2355,7 +2357,11 @@ func (s *httpAPIServer) handleGetFileStart(w http.ResponseWriter, r *http.Reques
 		StartedAtUnix: time.Now().Unix(),
 		Steps:         make([]fileGetStep, 0, 16),
 	}
-	jobCtx, cancel := context.WithCancel(context.Background())
+	if s.ctx == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "runtime ctx is required"})
+		return
+	}
+	jobCtx, cancel := context.WithCancel(s.ctx)
 	job.cancel = cancel
 	s.jobsMu.Lock()
 	s.getJobs[job.ID] = job
@@ -3112,7 +3118,7 @@ func (s *httpAPIServer) currentLivePublishWindow(streamID string) ([]LiveSegment
 		last := recent[len(recent)-1]
 		return recent, &last, nil
 	}
-	rows, err := dbListLiveWorkspaceEntries(context.Background(), httpStore(s), "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%", false)
+	rows, err := dbListLiveWorkspaceEntries(s.ctx, httpStore(s), "%"+string(filepath.Separator)+"live"+string(filepath.Separator)+streamID+string(filepath.Separator)+"%", false)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -3877,7 +3883,7 @@ func (s *httpAPIServer) refreshHealthyArbiters(ctx context.Context) {
 		return
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		return
 	}
 	cfgArbs := s.rt.runIn.Network.Arbiters
 	infos := make([]peer.AddrInfo, 0, len(cfgArbs))
@@ -4253,7 +4259,7 @@ func (s *httpAPIServer) queryLiveStreamStats() ([]adminLiveStreamStat, error) {
 	if s == nil || httpStore(s) == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
-	rows, err := dbListLiveStreamStats(context.Background(), httpStore(s))
+	rows, err := dbListLiveStreamStats(s.ctx, httpStore(s))
 	if err != nil {
 		return nil, err
 	}
@@ -4405,8 +4411,8 @@ func (s *httpAPIServer) buildAdminStaticTree(abs string, rel string, depth int, 
 			}
 		} else {
 			node.Type = "file"
-			node.SeedHash, _ = dbGetWorkspaceFileSeedHash(context.Background(), httpStore(s), full)
-			if price, err := dbGetStaticFilePrice(context.Background(), httpStore(s), full); err == nil {
+			node.SeedHash, _ = dbGetWorkspaceFileSeedHash(s.ctx, httpStore(s), full)
+			if price, err := dbGetStaticFilePrice(s.ctx, httpStore(s), full); err == nil {
 				node.FloorPriceSatPer64K = price.FloorPriceSatPer64K
 				node.ResaleDiscountBPS = price.ResaleDiscountBPS
 				node.PriceUpdatedAtUnix = price.UpdatedAtUnix
@@ -4794,7 +4800,7 @@ func resolveStaticPath(root, input string) (string, string, error) {
 }
 
 func (s *httpAPIServer) rewriteStaticPricePaths(fromAbs, toAbs string) error {
-	return dbRewriteStaticPricePaths(context.Background(), httpStore(s), fromAbs, toAbs)
+	return dbRewriteStaticPricePaths(s.ctx, httpStore(s), fromAbs, toAbs)
 }
 
 type adminConfigValueType string

@@ -13,11 +13,11 @@ import (
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
-func loadWalletLocalBroadcastTxsTx(tx *sql.Tx, walletID string, address string) ([]walletLocalBroadcastRow, error) {
+func loadWalletLocalBroadcastTxsTx(ctx context.Context, tx *sql.Tx, walletID string, address string) ([]walletLocalBroadcastRow, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
-	rows, err := QueryContext(ctx, tx, 
+	rows, err := QueryContext(ctx, tx,
 		`SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
 		 FROM fact_chain_payments
 		 WHERE from_party_id=? AND payment_subtype='wallet_local_broadcast' AND submitted_at_unix>0
@@ -345,7 +345,7 @@ func orderWalletLocalBroadcastRows(rows []walletLocalBroadcastRow) ([]walletLoca
 	return out, nil
 }
 
-func markObservedWalletLocalBroadcastTxsTx(tx *sql.Tx, observedTxIDs map[string]struct{}, updatedAt int64) error {
+func markObservedWalletLocalBroadcastTxsTx(ctx context.Context, tx *sql.Tx, observedTxIDs map[string]struct{}, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -366,7 +366,7 @@ func markObservedWalletLocalBroadcastTxsTx(tx *sql.Tx, observedTxIDs map[string]
 	if len(holders) == 0 {
 		return nil
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`UPDATE fact_chain_payments
 		 SET wallet_observed_at_unix=CASE WHEN wallet_observed_at_unix>0 THEN wallet_observed_at_unix ELSE ? END,
 		     updated_at_unix=?

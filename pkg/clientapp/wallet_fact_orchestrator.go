@@ -91,7 +91,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		if err != nil {
 			return err
 		}
-		localBroadcasts, err := loadWalletLocalBroadcastTxsTx(tx, walletID, address)
+		localBroadcasts, err := loadWalletLocalBroadcastTxsTx(ctx, tx, walletID, address)
 		if err != nil {
 			return err
 		}
@@ -138,14 +138,14 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		if err = overlayPendingLocalBroadcastsTx(ctx, desired, walletID, address, scriptHex, localBroadcasts, observedLocalTxIDs, updatedAt); err != nil {
 			return err
 		}
-		if err = markObservedWalletLocalBroadcastTxsTx(tx, observedLocalTxIDs, updatedAt); err != nil {
+		if err = markObservedWalletLocalBroadcastTxsTx(ctx, tx, observedLocalTxIDs, updatedAt); err != nil {
 			return err
 		}
 
 		// 写入 chain accounting（与原 reconcileWalletUTXOSet 行为一致）
 		accountedTxIDs := map[string]struct{}{}
 		recordWalletChainTx := func(detail whatsonchain.TxDetail) error {
-			inputs, err := buildWalletChainAccountingInputsFromTxDetail(tx, address, detail)
+			inputs, err := buildWalletChainAccountingInputsFromTxDetail(ctx, tx, address, detail)
 			if err != nil {
 				return err
 			}
@@ -157,7 +157,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 				if _, seen := accountedTxIDs[key]; seen {
 					continue
 				}
-				if err := recordWalletChainAccountingConn(tx, input); err != nil {
+				if err := recordWalletChainAccountingConnCtx(ctx, tx, input); err != nil {
 					return err
 				}
 				accountedTxIDs[key] = struct{}{}
@@ -335,7 +335,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 				Note:          "plain_bsv utxo detected by chain sync",
 				Payload:       map[string]any{"allocation_class": change.AllocationClass},
 			}
-			if err := dbUpsertBSVUTXODB(db, entry); err != nil {
+			if err := dbUpsertBSVUTXODB(ctx, db, entry); err != nil {
 				return fmt.Errorf("upsert bsv utxo for %s: %w", change.UTXOID, err)
 			}
 		}

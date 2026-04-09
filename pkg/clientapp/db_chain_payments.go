@@ -12,6 +12,9 @@ type sqlConn interface {
 	Exec(query string, args ...any) (sql.Result, error)
 	QueryRow(query string, args ...any) *sql.Row
 	Query(query string, args ...any) (*sql.Rows, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 // chainPaymentEntry fact_chain_payments 写入条目
@@ -56,7 +59,7 @@ func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEn
 		return 0, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return dbUpsertChainPaymentDB(db, e)
+		return dbUpsertChainPaymentDB(ctx, db, e)
 	})
 }
 
@@ -66,22 +69,22 @@ func dbUpsertChainPaymentWithSettlementCycle(ctx context.Context, store *clientD
 		return 0, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return dbUpsertChainPaymentWithSettlementCycleDB(db, e)
+		return dbUpsertChainPaymentWithSettlementCycleDB(ctx, db, e)
 	})
 }
 
 // dbUpsertChainPaymentDB 在已打开的 sql.DB 上执行 upsert，只落 fact。
-func dbUpsertChainPaymentDB(db sqlConn, e chainPaymentEntry) (int64, error) {
+func dbUpsertChainPaymentDB(ctx context.Context, db sqlConn, e chainPaymentEntry) (int64, error) {
 	// 账务主线只认 settlement_cycle，chain_payment 落库后同步补 confirmed cycle。
-	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, true)
+	return dbUpsertChainPaymentDBWithSettlementCycle(ctx, db, e, true)
 }
 
 // dbUpsertChainPaymentWithSettlementCycleDB 先写 fact，再补 settlement_cycle。
 // 设计说明：
 // - 这里已经收口为同一口径：chain_payment 一旦写入，就必须补 confirmed settlement_cycle；
 // - 提交、迁移、投影写入都不能再停在 payment 事实，不然后面会漏扣账。
-func dbUpsertChainPaymentWithSettlementCycleDB(db sqlConn, e chainPaymentEntry) (int64, error) {
-	return dbUpsertChainPaymentDBWithSettlementCycle(db, e, true)
+func dbUpsertChainPaymentWithSettlementCycleDB(ctx context.Context, db sqlConn, e chainPaymentEntry) (int64, error) {
+	return dbUpsertChainPaymentDBWithSettlementCycle(ctx, db, e, true)
 }
 
 // settlementCycleStateForChainPayment 把 payment 状态收口到 settlement cycle 状态。
@@ -100,7 +103,7 @@ func settlementCycleStateForChainPayment(status string) string {
 	}
 }
 
-func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, writeSettlementCycle bool) (int64, error) {
+func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, e chainPaymentEntry, writeSettlementCycle bool) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -168,7 +171,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 		}
 		if writeSettlementCycle {
 			settlementState := settlementCycleStateForChainPayment(e.Status)
-			if err := dbUpsertSettlementCycle(db,
+			if err := dbUpsertSettlementCycleCtx(ctx, db,
 				fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, settlementState,
 				e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
 				0, occurredAt, "auto-created from chain payment", e.Payload,
@@ -213,7 +216,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 
 	if writeSettlementCycle {
 		settlementState := settlementCycleStateForChainPayment(e.Status)
-		if err := dbUpsertSettlementCycle(db,
+		if err := dbUpsertSettlementCycleCtx(ctx, db,
 			fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, settlementState,
 			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
 			0, occurredAt, "auto-created from chain payment", e.Payload,
@@ -262,7 +265,7 @@ func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool
 	})
 }
 
-func dbWalletUTXOExistsConn(db sqlConn, utxoID string) (bool, error) {
+func dbWalletUTXOExistsConn(ctx context.Context, db sqlConn, utxoID string) (bool, error) {
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
@@ -281,7 +284,7 @@ func dbWalletUTXOExistsConn(db sqlConn, utxoID string) (bool, error) {
 	return true, nil
 }
 
-func dbWalletUTXOValueConn(db sqlConn, utxoID string) (int64, bool, error) {
+func dbWalletUTXOValueConn(ctx context.Context, db sqlConn, utxoID string) (int64, bool, error) {
 	if db == nil {
 		return 0, false, fmt.Errorf("db is nil")
 	}

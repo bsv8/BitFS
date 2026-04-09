@@ -48,6 +48,10 @@ func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
 	cfg.Reachability.AutoAnnounceEnabled = &autoAnnounceEnabled
 	cfg.HTTP.ListenAddr = "127.0.0.1:0"
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	// 这条回归只盯 SQL trace 初始化，不需要把 HTTP/FSHTTP 一起拉起来，
+	// 否则整包并跑时容易把收尾卡在无关的监听线程上。
+	cfg.HTTP.Enabled = false
+	cfg.FSHTTP.Enabled = false
 	cfg.Storage.MinFreeBytes = 1
 
 	runIn := NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)

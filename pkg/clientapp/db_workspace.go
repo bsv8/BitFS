@@ -263,19 +263,19 @@ func dbCleanupOrphanSeedState(ctx context.Context, store *clientDB) error {
 }
 
 func dbCleanupOrphanSeedStateTx(tx *sql.Tx) error {
-	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM biz_workspace_files)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM biz_workspace_files)`); err != nil {
 		return err
 	}
-	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_pricing_policy WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_pricing_policy WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
-	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_chunk_supply WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM biz_seed_chunk_supply WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
-	if _, err := ExecContext(ctx, tx, `DELETE FROM proc_file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM proc_file_downloads WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
-	if _, err := ExecContext(ctx, tx, `DELETE FROM proc_file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
+	if _, err := tx.Exec(`DELETE FROM proc_file_download_chunks WHERE seed_hash NOT IN (SELECT seed_hash FROM biz_seeds)`); err != nil {
 		return err
 	}
 	return nil
@@ -298,17 +298,7 @@ func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string
 		if !ok {
 			return fmt.Errorf("output path is outside registered biz_workspaces")
 		}
-		if _, err := ExecContext(ctx, db, 
-			`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
-			 VALUES(?,?,?,?)
-			 ON CONFLICT(workspace_path,file_path) DO UPDATE SET
-			 seed_hash=excluded.seed_hash,
-			 seed_locked=excluded.seed_locked`,
-			resolved.WorkspacePath, resolved.FilePath, seedHash, lockedValue,
-		); err != nil {
-			return err
-		}
-		_, err = ExecContext(ctx, db, 
+		_, err = ExecContext(ctx, db,
 			`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
 			 VALUES(?,?,?,?,?,?)
 			 ON CONFLICT(seed_hash) DO UPDATE SET
@@ -319,6 +309,19 @@ func dbUpsertDownloadedFile(ctx context.Context, store *clientDB, absPath string
 			 mime_hint=excluded.mime_hint`,
 			seedHash, chunkCount, fullFileSize, seedPath, recommendedName, mimeHint,
 		)
+		if err != nil {
+			return err
+		}
+		if _, err := ExecContext(ctx, db,
+			`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
+			 VALUES(?,?,?,?)
+			 ON CONFLICT(workspace_path,file_path) DO UPDATE SET
+			 seed_hash=excluded.seed_hash,
+			 seed_locked=excluded.seed_locked`,
+			resolved.WorkspacePath, resolved.FilePath, seedHash, lockedValue,
+		); err != nil {
+			return err
+		}
 		return err
 	})
 }
@@ -327,7 +330,7 @@ func dbListWorkspaceRoots(db *sql.DB) ([]string, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
-	rows, err := QueryContext(ctx, db, `SELECT workspace_path FROM biz_workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
+	rows, err := db.Query(`SELECT workspace_path FROM biz_workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
 	if err != nil {
 		return nil, err
 	}
@@ -443,7 +446,7 @@ func dbListWorkspaceSeeds(ctx context.Context, store *clientDB, limit int, offse
 func dbLoadWorkspaceByPath(db *sql.DB, absPath string) (workspaceItem, error) {
 	var out workspaceItem
 	var enabled int64
-	err := QueryRowContext(ctx, db, `SELECT workspace_path,max_bytes,enabled,created_at_unix FROM biz_workspaces WHERE workspace_path=?`, absPath).
+	err := db.QueryRow(`SELECT workspace_path,max_bytes,enabled,created_at_unix FROM biz_workspaces WHERE workspace_path=?`, absPath).
 		Scan(&out.WorkspacePath, &out.MaxBytes, &enabled, &out.CreatedAtUnix)
 	if err != nil {
 		return workspaceItem{}, err

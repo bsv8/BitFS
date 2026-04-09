@@ -92,7 +92,7 @@ func (s *httpAPIServer) handleGetFileContent(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if path, _, ok := findCompleteLocalFileBySeedHash(s.store, seedHash); ok {
-		serveSeedContentFile(w, r, path, mimeHintBySeedHash(s.store, seedHash))
+		serveSeedContentFile(w, r, path, mimeHintBySeedHash(r.Context(), s.store, seedHash))
 		return
 	}
 	items, quotes, err := s.planStaticSeedResources(r.Context(), []string{seedHash}, r.URL.Query().Get("gateway_pubkey_hex"))

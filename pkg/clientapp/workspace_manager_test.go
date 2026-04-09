@@ -57,11 +57,7 @@ func TestWorkspaceAddSyncAndDeleteCleanup(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 
-	mgr := &workspaceManager{
-		cfg:     &cfg,
-		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
-	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
@@ -165,11 +161,7 @@ func TestRegisterPartialFileKeepSeedOnRescan(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	mgr := &workspaceManager{
-		cfg:     &cfg,
-		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
-	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
@@ -263,11 +255,7 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	mgr := &workspaceManager{
-		cfg:     &cfg,
-		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
-	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
 	wsItem, err := mgr.Add(ws, 100)
 	if err != nil {
 		t.Fatalf("add workspace: %v", err)
@@ -298,17 +286,17 @@ func TestEnforceLiveCacheLimit_DeleteWholeOldStream(t *testing.T) {
 	if err := os.WriteFile(newPath, []byte(strings.Repeat("n", 30)), 0o644); err != nil {
 		t.Fatalf("write new seg: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamOld, "000000.seg"), strings.Repeat("c", 64), 0); err != nil {
-		t.Fatalf("insert old workspace file: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamNew, "000000.seg"), strings.Repeat("d", 64), 0); err != nil {
-		t.Fatalf("insert new workspace file: %v", err)
-	}
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("c", 64), 1, 60, filepath.Join(dataDir, "biz_seeds", "c.bse"), "", ""); err != nil {
 		t.Fatalf("insert old seed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, strings.Repeat("d", 64), 1, 30, filepath.Join(dataDir, "biz_seeds", "d.bse"), "", ""); err != nil {
 		t.Fatalf("insert new seed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamOld, "000000.seg"), strings.Repeat("c", 64), 0); err != nil {
+		t.Fatalf("insert old workspace file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, ws, filepath.Join("live", streamNew, "000000.seg"), strings.Repeat("d", 64), 0); err != nil {
+		t.Fatalf("insert new workspace file: %v", err)
 	}
 
 	if err := mgr.EnforceLiveCacheLimit(40); err != nil {

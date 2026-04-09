@@ -188,7 +188,7 @@ func GetFullPoolSettlementChainByPoolSessionID(ctx context.Context, store *clien
 	}
 	out.PoolSession = &poolSession
 
-	cycleID, err := dbGetSettlementCycleByPoolSessionIDDB(store.db, poolSessionID)
+	cycleID, err := dbGetSettlementCycleByPoolSessionIDDB(ctx, store.db, poolSessionID)
 	if err != nil {
 		return out, fmt.Errorf("find settlement cycle: %w", err)
 	}

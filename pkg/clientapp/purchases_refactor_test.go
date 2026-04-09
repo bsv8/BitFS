@@ -92,6 +92,9 @@ func TestPurchaseWritesAndSummary(t *testing.T) {
 		ObjectHash:    "8899aabbccddeeff00112233445566778899aabbccddeeff0011223344556677",
 		AmountSatoshi: 33,
 	}
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, seedDone.DemandID, "seed_purchase", time.Now().Unix()); err != nil {
+		t.Fatalf("insert demand: %v", err)
+	}
 
 	if err := dbAppendPurchaseDone(ctx, store, seedDone); err != nil {
 		t.Fatalf("append seed purchase: %v", err)
@@ -321,11 +324,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		t.Fatalf("apply defaults: %v", err)
 	}
 
-	mgr := &workspaceManager{
-		cfg:     &cfg,
-		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
-	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure workspace: %v", err)
 	}

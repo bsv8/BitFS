@@ -60,7 +60,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			}
 			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
 			_ = applyWalletUTXOSpentState(desired, utxoID, txid, updatedAt)
-			if err := markBSVUTXOSpentConn(dbtx, utxoID, txid, updatedAt); err != nil {
+			if err := markBSVUTXOSpentConn(ctx, dbtx, utxoID, txid, updatedAt); err != nil {
 				return err
 			}
 			if row, ok := desired[strings.ToLower(strings.TrimSpace(utxoID))]; ok {
@@ -87,7 +87,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			}
 			utxoID := txid + ":" + fmt.Sprint(idx)
 			_ = applyWalletUTXOUpsertState(desired, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", updatedAt)
-			if err := dbUpsertBSVUTXODB(dbtx, bsvUTXOEntry{
+			if err := dbUpsertBSVUTXODB(ctx, dbtx, bsvUTXOEntry{
 				UTXOID:         utxoID,
 				OwnerPubkeyHex: strings.ToLower(strings.TrimSpace(addr)),
 				Address:        addr,
@@ -103,16 +103,16 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 				return err
 			}
 		}
-		if err := dbUpsertWalletLocalBroadcastFactTx(dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
+		if err := dbUpsertWalletLocalBroadcastFactTx(ctx, dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
 			return err
 		}
 		if strings.TrimSpace(trigger) == "peer_call_chain_tx" {
-			settlementCycleID, err := dbGetSettlementCycleBySource(dbtx, "chain_bsv", txid)
+			settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, dbtx, "chain_bsv", txid)
 			if err != nil {
 				return err
 			}
 			if len(inputFacts) > 0 {
-				if err := dbAppendBSVConsumptionsForSettlementCycle(dbtx, settlementCycleID, inputFacts, updatedAt); err != nil {
+			if err := dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, dbtx, settlementCycleID, inputFacts, updatedAt); err != nil {
 					return err
 				}
 			}
@@ -178,7 +178,7 @@ func dbLoadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (m
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
-	rows, err := QueryContext(ctx, tx, `SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
+	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 	return stats
 }
 
-func dbUpsertWalletLocalBroadcastFactTx(tx *sql.Tx, walletID string, address string, txid string, txHex string, updatedAt int64) error {
+func dbUpsertWalletLocalBroadcastFactTx(ctx context.Context, tx *sql.Tx, walletID string, address string, txid string, txHex string, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -232,7 +232,7 @@ func dbUpsertWalletLocalBroadcastFactTx(tx *sql.Tx, walletID string, address str
 	if txid == "" || txHex == "" {
 		return fmt.Errorf("local broadcast txid and tx hex are required")
 	}
-	if err := dbUpsertSettlementCycle(tx, fmt.Sprintf("cycle_chain_bsv_%s", txid), "chain_bsv", txid, "confirmed", 0, 0, 0, 0, updatedAt, "wallet local broadcast", map[string]any{
+	if err := dbUpsertSettlementCycleCtx(ctx, tx, fmt.Sprintf("cycle_chain_bsv_%s", txid), "chain_bsv", txid, "confirmed", 0, 0, 0, 0, updatedAt, "wallet local broadcast", map[string]any{
 		"tx_hex":    txHex,
 		"wallet_id": strings.TrimSpace(walletID),
 		"address":   strings.TrimSpace(address),
@@ -340,7 +340,7 @@ func dbLoadWalletUTXOAggregateTx(tx *sql.Tx, address string) (walletUTXOAggregat
 		return walletUTXOAggregateStats{}, fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	rows, err := QueryContext(ctx, tx, 
+	rows, err := tx.Query(
 		`SELECT allocation_class,COUNT(1),COALESCE(SUM(value_satoshi),0)
 		 FROM wallet_utxo
 		 WHERE wallet_id=? AND address=? AND state='unspent'
@@ -390,7 +390,7 @@ func dbUpdateWalletUTXOSyncStateStatsTx(tx *sql.Tx, address string, stats wallet
 		return fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	res, err := ExecContext(ctx, tx, 
+	res, err := tx.Exec(
 		`UPDATE wallet_utxo_sync_state
 		 SET wallet_id=?,
 		     utxo_count=?,
@@ -425,7 +425,7 @@ func dbUpdateWalletUTXOSyncStateStatsTx(tx *sql.Tx, address string, stats wallet
 	if affected > 0 {
 		return nil
 	}
-	_, err = ExecContext(ctx, tx, 
+	_, err = tx.Exec(
 		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		address,

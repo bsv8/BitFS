@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"strings"
 	"testing"
@@ -102,7 +103,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	if err := dbUpsertDirectTransferPoolSessionTx(nil, directTransferPoolSessionFactInput{}); err == nil {
+	if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), nil, directTransferPoolSessionFactInput{}); err == nil {
 		t.Fatal("nil tx should be rejected")
 	}
 
@@ -112,7 +113,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	if err := dbUpsertDirectTransferPoolSessionTx(tx, directTransferPoolSessionFactInput{
+	if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), tx, directTransferPoolSessionFactInput{
 		SessionID:          "sess_pool_schema_1",
 		PoolScheme:         "2of3",
 		CounterpartyPubHex: "11",
@@ -128,7 +129,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write pool session failed: %v", err)
 	}
-	if err := dbUpsertDirectTransferBizPoolSnapshotTx(tx, directTransferBizPoolSnapshotInput{
+	if err := dbUpsertDirectTransferBizPoolSnapshotTx(context.Background(), tx, directTransferBizPoolSnapshotInput{
 		SessionID:          "sess_pool_schema_1",
 		PoolScheme:         "2of3",
 		CounterpartyPubHex: "11",
@@ -148,7 +149,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write biz pool snapshot failed: %v", err)
 	}
-	if err := dbUpsertDirectTransferBizPoolAllocationTx(tx, directTransferBizPoolAllocationInput{
+	if err := dbUpsertDirectTransferBizPoolAllocationTx(context.Background(), tx, directTransferBizPoolAllocationInput{
 		SessionID:        "sess_pool_schema_1",
 		AllocationID:     "alloc_pool_schema_1",
 		AllocationNo:     1,

@@ -1,9 +1,13 @@
 package clientapp
 
 import (
+	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestWithAuth_PassThrough(t *testing.T) {
@@ -49,5 +53,43 @@ func TestWithAuth_InjectVisitMeta(t *testing.T) {
 	h(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+}
+
+func TestHTTPAPIServer_StartAndShutdown(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "client-index.sqlite"))
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
+	srv := newHTTPAPIServer(rt, &cfg, db, newClientDB(db, nil), nil, nil, nil, nil)
+
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Start()
+	}()
+	deadline := time.Now().Add(3 * time.Second)
+	for srv.srv == nil {
+		if time.Now().After(deadline) {
+			t.Fatal("http api server did not start")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := srv.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown http api server: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("http api server start returned error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("http api server did not stop")
 	}
 }

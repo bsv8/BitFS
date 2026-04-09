@@ -53,6 +53,7 @@ type periodicTaskRuntime struct {
 type taskScheduler struct {
 	service string
 	store   *clientDB
+	ctx     context.Context
 
 	mu       sync.RWMutex
 	tasks    map[string]*periodicTaskRuntime
@@ -80,6 +81,9 @@ func ensureRuntimeTaskScheduler(rt *Runtime, store *clientDB) *taskScheduler {
 	defer rt.taskSchedMu.Unlock()
 	if rt.taskSched == nil {
 		rt.taskSched = newTaskScheduler(store, "bitcast-client")
+	}
+	if rt.taskSched.ctx == nil {
+		rt.taskSched.ctx = rt.ctx
 	}
 	return rt.taskSched
 }
@@ -396,12 +400,15 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 	if s == nil || rt == nil {
 		return nil
 	}
+	if s.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	now := time.Now().Unix()
 	spec := rt.spec
 	if strings.TrimSpace(status) == "" {
 		status = "active"
 	}
-	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		intervalSeconds := int64(spec.Interval / time.Second)
 		createdAtUnix := int64(now)
 		closedAtUnix := int64(closedAt)
@@ -412,7 +419,7 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 		runCount := int64(0)
 		successCount := int64(0)
 		failureCount := int64(0)
-		_, err := ExecContext(ctx, db, 
+		_, err := ExecContext(s.ctx, db, 
 			`INSERT INTO proc_scheduler_tasks(
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
@@ -454,11 +461,14 @@ func (s *taskScheduler) markTaskStopped(name string) error {
 	if s == nil {
 		return nil
 	}
+	if s.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	now := time.Now().Unix()
-	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		closedAtUnix := int64(now)
 		updatedAtUnix := int64(now)
-		_, err := ExecContext(ctx, db, 
+		_, err := ExecContext(s.ctx, db, 
 			`UPDATE proc_scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
 			closedAtUnix, updatedAtUnix, strings.TrimSpace(name),
 		)
@@ -470,9 +480,12 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 	if s == nil {
 		return nil
 	}
-	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+	if s.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		updatedAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(ctx, db, 
+		_, err := ExecContext(s.ctx, db, 
 			`UPDATE proc_scheduler_tasks SET
 				last_trigger=?,
 				last_started_at_unix=?,
@@ -493,6 +506,9 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	if s == nil {
 		return nil
 	}
+	if s.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	incSuccess := 0
 	incFailure := 0
 	if success {
@@ -500,9 +516,9 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	} else {
 		incFailure = 1
 	}
-	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		updatedAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(ctx, db, 
+		_, err := ExecContext(s.ctx, db, 
 			`UPDATE proc_scheduler_tasks SET
 				last_ended_at_unix=?,
 				last_duration_ms=?,
@@ -531,9 +547,12 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 	if s == nil {
 		return nil
 	}
-	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+	if s.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		createdAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(ctx, db, 
+		_, err := ExecContext(s.ctx, db, 
 			`INSERT INTO proc_scheduler_task_runs(
 				task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
@@ -580,6 +599,9 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	if s == nil || len(names) == 0 {
 		return nil
 	}
+	if s.ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
 	filtered := make([]string, 0, len(names))
 	args := make([]any, 0, len(names)+2)
 	for _, name := range names {
@@ -598,8 +620,8 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(filtered)), ",")
 	args = append([]any{startupUnix, startupUnix}, args...)
-	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
-		_, err := ExecContext(ctx, db, 
+	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+		_, err := ExecContext(s.ctx, db, 
 			`UPDATE proc_scheduler_tasks SET
 				status='stopped',
 				updated_at_unix=?,

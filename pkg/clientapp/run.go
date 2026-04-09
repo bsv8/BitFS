@@ -643,6 +643,7 @@ func (in RunInput) toConfig() Config {
 
 type Runtime struct {
 	Host host.Host
+	ctx  context.Context
 	// DB              *sql.DB
 	// DBActor         *sqliteactor.Actor
 	store           *clientDB
@@ -866,14 +867,14 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	// - BitFS 正式运行时的 sqlite 从这里开始统一进入单 owner 模型；
 	// - 初始化阶段仍有一些旧 helper 直接吃 `*sql.DB`，所以当前同时保留 `db` 和 `dbActor`；
 	// - 但运行期并发最重的路径必须优先走 actor，避免再长出新的直连写库逻辑。
-	if err := ensureClientDBSchema(store); err != nil {
+	if err := ensureClientDBSchema(ctx, store); err != nil {
 		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	if err := dbSyncSystemSeedPricingPolicies(db, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
+	if err := dbSyncSystemSeedPricingPolicies(ctx, db, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
 		_ = dbActor.Close()
 		if removeObs != nil {
 			removeObs()
@@ -883,6 +884,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 
 	catalog := &sellerCatalog{biz_seeds: map[string]sellerSeed{}}
 	workspaceMgr := &workspaceManager{
+		ctx:     ctx,
 		cfg:     &cfg,
 		db:      db,
 		store:   store,
@@ -1060,6 +1062,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	})
 	rt := &Runtime{
 		Host: h,
+		ctx:  ctx,
 		// DB:                       db,
 		// DBActor:                  dbActor,
 		store:                    store,
@@ -1083,6 +1086,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	rtCtx, rtCancel := context.WithCancel(ctx)
 	rt.bgCancel = rtCancel
 	rt.taskSched = newTaskScheduler(store, "bitcast-client")
+	rt.taskSched.ctx = rtCtx
 	rt.kernel = newClientKernel(rt, store)
 	rt.orch = newOrchestrator(rt, store)
 	registerLiveHandlers(store, rt)
@@ -1189,10 +1193,14 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			rt.chainMaint.Wait()
 		}
 		if rt.HTTP != nil {
-			_ = rt.HTTP.Shutdown(context.Background())
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(rtCtx), 5*time.Second)
+			_ = rt.HTTP.Shutdown(shutdownCtx)
+			cancel()
 		}
 		if rt.FSHTTP != nil {
-			_ = rt.FSHTTP.Shutdown(context.Background())
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(rtCtx), 5*time.Second)
+			_ = rt.FSHTTP.Shutdown(shutdownCtx)
+			cancel()
 		}
 		wg.Wait()
 		if removeObs != nil {
@@ -1653,11 +1661,11 @@ func applySQLitePragmas(db *sql.DB) error {
 	// - 运行时正式入口统一走 infra/sqliteactor.Open；
 	// - 这里保留给直接 sql.Open("sqlite", ...) 的测试库做最小 WAL 初始化；
 	// - 不再在这里叠加 busy_timeout 之类并发补丁，避免测试口径和正式口径分裂。
-	if _, err := ExecContext(ctx, db, `PRAGMA journal_mode=WAL`); err != nil {
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
 		return fmt.Errorf("sqlite pragma journal_mode: %w", err)
 	}
 	// 启用外键约束（硬切版 schema 依赖外键约束）
-	if _, err := ExecContext(ctx, db, `PRAGMA foreign_keys=ON`); err != nil {
+	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		return fmt.Errorf("sqlite pragma foreign_keys: %w", err)
 	}
 	return nil
@@ -2032,18 +2040,18 @@ func sanitizeMIMEHint(raw string) string {
 	return mediaType
 }
 
-func recommendedFileNameBySeedHash(store *clientDB, seedHash string) string {
+func recommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedHash string) string {
 	if store == nil {
 		return ""
 	}
-	return dbRecommendedFileNameBySeedHash(context.Background(), store, seedHash)
+	return dbRecommendedFileNameBySeedHash(ctx, store, seedHash)
 }
 
-func mimeHintBySeedHash(store *clientDB, seedHash string) string {
+func mimeHintBySeedHash(ctx context.Context, store *clientDB, seedHash string) string {
 	if store == nil {
 		return ""
 	}
-	return dbMimeHintBySeedHash(context.Background(), store, seedHash)
+	return dbMimeHintBySeedHash(ctx, store, seedHash)
 }
 
 func configuredArbiterPubHexes(cfg Config) []string {

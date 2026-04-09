@@ -34,6 +34,9 @@ func TestDemandQuoteCurrentSchema(t *testing.T) {
 	store := newClientDB(db, nil)
 
 	seller := "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_overwrite", "seed_overwrite", 1700000001); err != nil {
+		t.Fatalf("insert demand: %v", err)
+	}
 	quoteReq := directQuoteSubmitReq{
 		DemandID:            "dmd_overwrite",
 		SellerPeerID:        seller,

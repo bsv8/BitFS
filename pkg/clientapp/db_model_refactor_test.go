@@ -36,6 +36,9 @@ func TestDownloadedFileUpsertDoesNotTouchSeedPricingPolicy(t *testing.T) {
 
 	abs := filepath.Join(wsRoot, "downloads", "sample.bin")
 	seedHash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, int64(1), int64(256), filepath.Join(base, "seed", "sample.bse"), "", ""); err != nil {
+		t.Fatalf("insert seed: %v", err)
+	}
 	if err := dbUpsertDownloadedFile(context.Background(), newClientDB(db, nil), abs, seedHash, filepath.Join(base, "seed", "sample.bse"), 4, 256, "sample.bin", "application/octet-stream", true); err != nil {
 		t.Fatalf("upsert downloaded file: %v", err)
 	}

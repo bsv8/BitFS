@@ -266,7 +266,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 	now := time.Now().Unix()
 
 	return store.Tx(ctx, func(dbtx *sql.Tx) error {
-		lots, consumedText, err := collectBSV21TokenSendLotsForTx(dbtx, parsed, walletScriptHex)
+		lots, consumedText, err := collectBSV21TokenSendLotsForTx(ctx, dbtx, parsed, walletScriptHex)
 		if err != nil {
 			return err
 		}
@@ -278,7 +278,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		}
 
 		cycleID := fmt.Sprintf("cycle_chain_token_%s", txID)
-		if err := dbUpsertSettlementCycle(dbtx, cycleID, "chain_token", txID, "confirmed", 0, 0, 0, 0, now, "bsv21 send broadcast", map[string]any{
+		if err := dbUpsertSettlementCycleCtx(ctx, dbtx, cycleID, "chain_token", txID, "confirmed", 0, 0, 0, 0, now, "bsv21 send broadcast", map[string]any{
 			"txid":            txID,
 			"wallet_id":       walletID,
 			"wallet_address":  walletAddr,
@@ -289,7 +289,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		}); err != nil {
 			return fmt.Errorf("upsert settlement cycle for token send: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleBySource(dbtx, "chain_token", txID)
+		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, dbtx, "chain_token", txID)
 		if err != nil {
 			return fmt.Errorf("resolve settlement cycle for token send: %w", err)
 		}
@@ -318,7 +318,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 
 		for _, lot := range lots {
 			recordID := fmt.Sprintf("rec_token_%d_%s", settlementCycleID, lot.Lot.LotID)
-			if err := dbAppendSettlementRecordDB(dbtx, settlementRecordEntry{
+			if err := dbAppendSettlementRecordDB(ctx, dbtx, settlementRecordEntry{
 				RecordID:          recordID,
 				SettlementCycleID: settlementCycleID,
 				AssetType:         "TOKEN",
@@ -346,7 +346,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			if compareDecimalText(newUsedQty, lot.Lot.QuantityText) >= 0 {
 				lotState = "spent"
 			}
-			if err := dbUpsertTokenLotDB(dbtx, tokenLotEntry{
+			if err := dbUpsertTokenLotDB(ctx, dbtx, tokenLotEntry{
 				LotID:            lot.Lot.LotID,
 				OwnerPubkeyHex:   lot.Lot.OwnerPubkeyHex,
 				TokenID:          lot.Lot.TokenID,
@@ -364,7 +364,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			}
 		}
 
-		bsvFacts, err := collectBSVInputFactsForTx(dbtx, parsed)
+		bsvFacts, err := collectBSVInputFactsForTx(ctx, dbtx, parsed)
 		if err != nil {
 			return err
 		}
@@ -372,7 +372,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			return fmt.Errorf("no wallet input facts found for txid %s", txID)
 		}
 		for _, fact := range bsvFacts {
-			if err := dbMarkBSVUTXOSpentDB(dbtx, fact.UTXOID, txID); err != nil {
+			if err := dbMarkBSVUTXOSpentDB(ctx, dbtx, fact.UTXOID, txID); err != nil {
 				return fmt.Errorf("mark bsv utxo spent for token send failed: %w", err)
 			}
 		}
@@ -387,7 +387,7 @@ type bsv21TokenSendLotPlan struct {
 	UsedText      string
 }
 
-func collectBSV21TokenSendLotsForTx(db sqlConn, tx *txsdk.Transaction, walletScriptHex string) ([]bsv21TokenSendLotPlan, string, error) {
+func collectBSV21TokenSendLotsForTx(ctx context.Context, db sqlConn, tx *txsdk.Transaction, walletScriptHex string) ([]bsv21TokenSendLotPlan, string, error) {
 	if db == nil {
 		return nil, "", fmt.Errorf("db is nil")
 	}
@@ -400,14 +400,14 @@ func collectBSV21TokenSendLotsForTx(db sqlConn, tx *txsdk.Transaction, walletScr
 			continue
 		}
 		utxoID := strings.ToLower(strings.TrimSpace(inp.SourceTXID.String())) + ":" + fmt.Sprint(inp.SourceTxOutIndex)
-		lotID, err := dbGetLotByCarrierUTXOConn(db, utxoID)
+		lotID, err := dbGetLotByCarrierUTXOConn(ctx, db, utxoID)
 		if err != nil {
 			return nil, "", fmt.Errorf("lookup lot for utxo %s: %w", utxoID, err)
 		}
 		if lotID == "" {
 			continue
 		}
-		lot, err := dbGetTokenLotDB(db, lotID)
+		lot, err := dbGetTokenLotDB(ctx, db, lotID)
 		if err != nil {
 			return nil, "", fmt.Errorf("get token lot %s: %w", lotID, err)
 		}
@@ -496,7 +496,7 @@ func collectBSV21TokenSendConsumedText(tx *txsdk.Transaction, walletScriptHex st
 	return total, nil
 }
 
-func collectBSVInputFactsForTx(db sqlConn, tx *txsdk.Transaction) ([]chainPaymentUTXOLinkEntry, error) {
+func collectBSVInputFactsForTx(ctx context.Context, db sqlConn, tx *txsdk.Transaction) ([]chainPaymentUTXOLinkEntry, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
@@ -509,7 +509,7 @@ func collectBSVInputFactsForTx(db sqlConn, tx *txsdk.Transaction) ([]chainPaymen
 			continue
 		}
 		utxoID := strings.ToLower(strings.TrimSpace(inp.SourceTXID.String())) + ":" + fmt.Sprint(inp.SourceTxOutIndex)
-		value, ok, err := dbWalletUTXOValueConn(db, utxoID)
+		value, ok, err := dbWalletUTXOValueConn(ctx, db, utxoID)
 		if err != nil {
 			return nil, fmt.Errorf("lookup wallet input value for %s failed: %w", utxoID, err)
 		}
@@ -530,7 +530,7 @@ func collectBSVInputFactsForTx(db sqlConn, tx *txsdk.Transaction) ([]chainPaymen
 
 // dbGetLotByCarrierUTXO 根据 carrier UTXO 查询 lot_id。
 // 设计说明：只给本文件的 token send 结算入口使用，避免把 lot 查询再散到业务层。
-func dbGetLotByCarrierUTXOConn(db sqlConn, utxoID string) (string, error) {
+func dbGetLotByCarrierUTXOConn(ctx context.Context, db sqlConn, utxoID string) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}

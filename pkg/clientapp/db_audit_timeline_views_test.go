@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestAuditTimelineGatewayAndCommandOrdering(t *testing.T) {
 		1700000000, "gw1", "cmd-1", 1700000000, "fee_pool_reconciled", "active", "active", "", 0, 0, "", `{"source_command_id":"cmd-1"}`,
 	)
 
-	gatewayPage, err := dbListGatewayAuditTimeline(nil, store, AuditTimelineFilter{
+	gatewayPage, err := dbListGatewayAuditTimeline(context.Background(), store, AuditTimelineFilter{
 		Limit:            50,
 		Offset:           0,
 		GatewayPubkeyHex: "gw1",
@@ -94,7 +95,7 @@ func TestAuditTimelineGatewayAndCommandOrdering(t *testing.T) {
 		t.Fatalf("command payload should be valid json: %s", string(gatewayPage.Items[0].Payload))
 	}
 
-	commandPage, err := dbListCommandAuditTimeline(nil, store, AuditTimelineFilter{
+	commandPage, err := dbListCommandAuditTimeline(context.Background(), store, AuditTimelineFilter{
 		Limit:     50,
 		Offset:    0,
 		CommandID: "cmd-1",

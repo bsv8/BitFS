@@ -267,7 +267,7 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 		var src unionSource
 
 		// flow_type 已由 API 层校验，直接查询
-		err := queryUnionSourceByRefID(db, refID, flowType, &src)
+		err := queryUnionSourceByRefID(ctx, db, refID, flowType, &src)
 		if err != nil {
 			return walletFundFlowItem{}, err
 		}
@@ -299,7 +299,7 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 // - 只支持新 schema 的 flow_type：chain_bsv_in, chain_bsv_out, chain_token_in
 // - 从 fact_bsv_utxos 和 fact_token_lots 查询
 // - 使用 ref_id（文本）替代 id（int64），因为新表使用 utxo_id/lot_id 作为主键
-func queryUnionSourceByRefID(db *sql.DB, refID string, flowType string, src *unionSource) error {
+func queryUnionSourceByRefID(ctx context.Context, db *sql.DB, refID string, flowType string, src *unionSource) error {
 	var err error
 	switch flowType {
 	case "chain_bsv_in":

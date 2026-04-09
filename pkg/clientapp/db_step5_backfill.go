@@ -104,7 +104,7 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				continue
 			}
 
-			settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(db, cp.TxID)
+			settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(ctx, db, cp.TxID)
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for chain payment %d: %v", cp.ID, err))
 				continue
@@ -192,7 +192,7 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 //   - 为每个 session 创建完整的主链：front_order -> trigger -> business -> settlement
 //   - settlement 指向那条 pay allocation 的 id
 //   - 同步回填 biz_pool / biz_pool_allocations，作为新业务快照
-func backfillBizPoolFacts(db *sql.DB) error {
+func backfillBizPoolFacts(ctx context.Context, db *sql.DB) error {
 	sessions, err := QueryContext(ctx, db, `
 		SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 		       pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
@@ -363,7 +363,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
-		if err := backfillBizPoolFacts(db); err != nil {
+		if err := backfillBizPoolFacts(ctx, db); err != nil {
 			result.Errors = append(result.Errors, fmt.Sprintf("backfill biz pool facts: %v", err))
 		}
 		// 查询每个 pool_session 的第一次 pay allocation
@@ -452,7 +452,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				completed = false
 			}
 
-			settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(db, fmt.Sprintf("%d", payAlloc.ID))
+			settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(ctx, db, fmt.Sprintf("%d", payAlloc.ID))
 			if err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for pool allocation %d: %v", payAlloc.ID, err))
 				completed = false

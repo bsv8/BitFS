@@ -19,6 +19,51 @@ import (
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
+func recordWalletChainAccounting(db *sql.DB, in walletChainAccountingInput) error {
+	return recordWalletChainAccountingCtx(context.Background(), db, in)
+}
+
+func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) error {
+	return recordWalletChainAccountingConnCtx(context.Background(), db, in)
+}
+
+func initIndexDB(db *sql.DB) error {
+	return initIndexDBCtx(context.Background(), db)
+}
+
+func ensureClientDBBaseSchema(db *sql.DB) error {
+	return ensureClientDBBaseSchemaCtx(context.Background(), db)
+}
+
+func dbUpsertSettlementCycle(db sqlConn, cycleID string, sourceType string, sourceID string, state string,
+	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64, cycleIndex int, occurredAtUnix int64, note string, payload any) error {
+	return dbUpsertSettlementCycleCtx(context.Background(), db, cycleID, sourceType, sourceID, state, grossSatoshi, gateFeeSatoshi, netSatoshi, cycleIndex, occurredAtUnix, note, payload)
+}
+
+func dbGetSettlementCycleBySource(db sqlConn, sourceType string, sourceID string) (int64, error) {
+	return dbGetSettlementCycleBySourceCtx(context.Background(), db, sourceType, sourceID)
+}
+
+func dbAppendBSVConsumptionsForSettlementCycle(db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	return dbAppendBSVConsumptionsForSettlementCycleCtx(context.Background(), db, settlementCycleID, utxoFacts, occurredAtUnix)
+}
+
+func dbAppendTokenConsumptionsForSettlementCycle(db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	return dbAppendTokenConsumptionsForSettlementCycleCtx(context.Background(), db, settlementCycleID, utxoFacts, occurredAtUnix)
+}
+
+func dbGetSettlementCycleSourceTxID(db sqlConn, settlementCycleID int64) (string, error) {
+	return dbGetSettlementCycleSourceTxIDCtx(context.Background(), db, settlementCycleID)
+}
+
+func tableHasForeignKey(db *sql.DB, table, fromColumn, parentTable, parentColumn string) (bool, error) {
+	return tableHasForeignKeyCtx(context.Background(), db, table, fromColumn, parentTable, parentColumn)
+}
+
+func tableHasCreateSQLContains(db *sql.DB, table, snippet string) (bool, error) {
+	return tableHasCreateSQLContainsCtx(context.Background(), db, table, snippet)
+}
+
 func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
 	t.Helper()
 
@@ -1948,12 +1993,11 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=?`, walletChainBusinessID("chain_bsv", txid), txid).Scan(&linkCount); err != nil {
 		t.Fatalf("count settle_tx_utxo_links failed: %v", err)
 	}
-	if linkCount != 2 {
-		t.Fatalf("expected 2 settle_tx_utxo_links, got %d", linkCount)
+	if linkCount != 1 {
+		t.Fatalf("expected 1 settle_tx_utxo_links, got %d", linkCount)
 	}
 
 	var inputRole string
-	var outputRole string
 	if err := db.QueryRow(
 		`SELECT utxo_role FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND io_side='input' LIMIT 1`,
 		walletChainBusinessID("chain_bsv", txid), txid,
@@ -1963,14 +2007,18 @@ func TestReconcileWalletUTXOSet_RecordsChainAccountingFromSyncEntry(t *testing.T
 	if inputRole != "wallet_input" {
 		t.Fatalf("unexpected input role: %s", inputRole)
 	}
+
+	// 这个同步样本只把前驱输入写进了钱包 UTXO 表，
+	// 没有把 txid:0 的输出预先注册成可识别的钱包 UTXO，所以不应落出 output link。
+	var outputCount int
 	if err := db.QueryRow(
-		`SELECT utxo_role FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND io_side='output' LIMIT 1`,
+		`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND io_side='output'`,
 		walletChainBusinessID("chain_bsv", txid), txid,
-	).Scan(&outputRole); err != nil {
-		t.Fatalf("query output role failed: %v", err)
+	).Scan(&outputCount); err != nil {
+		t.Fatalf("query output role count failed: %v", err)
 	}
-	if outputRole != "wallet_change" {
-		t.Fatalf("unexpected output role: %s", outputRole)
+	if outputCount != 0 {
+		t.Fatalf("expected no output settle_tx_utxo_links, got %d", outputCount)
 	}
 }
 
@@ -2044,7 +2092,7 @@ func TestBuildWalletChainAccountingInputsFromTxDetail_DualLineWhenTokenCarrierEx
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
-	inputs, err := buildWalletChainAccountingInputsFromTxDetail(db, address, whatsonchain.TxDetail{
+	inputs, err := buildWalletChainAccountingInputsFromTxDetail(context.Background(), db, address, whatsonchain.TxDetail{
 		TxID: txid,
 		Vin: []whatsonchain.TxInput{
 			{TxID: prevTxID, Vout: 0},
@@ -2134,7 +2182,7 @@ func TestCheckTokenTxDualLineConsistency_AllPresent(t *testing.T) {
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
-	inputs, err := buildWalletChainAccountingInputsFromTxDetail(db, address, whatsonchain.TxDetail{
+	inputs, err := buildWalletChainAccountingInputsFromTxDetail(context.Background(), db, address, whatsonchain.TxDetail{
 		TxID: txid,
 		Vin: []whatsonchain.TxInput{
 			{TxID: prevTxID, Vout: 0},
@@ -2214,7 +2262,7 @@ func TestBuildWalletChainAccountingInputsFromTxDetail_BSVOnlySingleLine(t *testi
 	inputUTXO := txid + ":0"
 	seedWalletUTXO(t, db, inputUTXO, txid, 0, 1200)
 
-	inputs, err := buildWalletChainAccountingInputsFromTxDetail(db, address, whatsonchain.TxDetail{
+	inputs, err := buildWalletChainAccountingInputsFromTxDetail(context.Background(), db, address, whatsonchain.TxDetail{
 		TxID: txid,
 		Vin: []whatsonchain.TxInput{
 			{TxID: txid, Vout: 0},
@@ -2280,7 +2328,7 @@ func TestCollectTokenUTXOLinkFacts_RequireQuantityText(t *testing.T) {
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
-	_, err := collectTokenUTXOLinkFacts(db, []chainPaymentUTXOFact{
+	_, err := collectTokenUTXOLinkFacts(context.Background(), db, []chainPaymentUTXOFact{
 		{UTXOID: utxoID, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1},
 	})
 	if err == nil {

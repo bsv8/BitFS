@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"bytes"
 	"encoding/json"
 	"mime/multipart"
@@ -39,11 +40,7 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	mgr := &workspaceManager{
-		cfg:     &cfg,
-		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
-	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
@@ -133,13 +130,28 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	}
 
 	db := newWalletAPITestDB(t)
+	if _, err := db.Exec(`INSERT INTO biz_workspaces(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, ws, 1, 0, time.Now().Unix()); err != nil {
+		t.Fatalf("insert workspace: %v", err)
+	}
+	seedHash := strings.Repeat("cd", 32)
+	seedPath := filepath.Join(base, "data", "biz_seeds", seedHash+".seed")
+	if err := os.MkdirAll(filepath.Dir(seedPath), 0o755); err != nil {
+		t.Fatalf("mkdir seed dir: %v", err)
+	}
+	if err := os.WriteFile(seedPath, []byte("seed"), 0o644); err != nil {
+		t.Fatalf("write seed file: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+		seedHash, 1, 4, seedPath, "", ""); err != nil {
+		t.Fatalf("insert biz_seeds: %v", err)
+	}
 	if _, err := db.Exec(`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`,
-		ws, filepath.Join("live", streamID, "000001.seg"), strings.Repeat("cd", 32), 0); err != nil {
+		ws, filepath.Join("live", streamID, "000001.seg"), seedHash, 0); err != nil {
 		t.Fatalf("insert workspace file: %v", err)
 	}
 	cfg := Config{}
 	cfg.Storage.WorkspaceDir = ws
-	srv := &httpAPIServer{db: db, cfg: &cfg}
+	srv := &httpAPIServer{ctx: context.Background(), db: db, cfg: &cfg}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/live/streams", nil)
 	listRec := httptest.NewRecorder()
@@ -308,11 +320,7 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	if err := initDataDirs(&cfg); err != nil {
 		t.Fatalf("init data dirs: %v", err)
 	}
-	mgr := &workspaceManager{
-		cfg:     &cfg,
-		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
-	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}

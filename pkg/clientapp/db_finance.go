@@ -191,7 +191,7 @@ func resolvePoolAllocationSourceToSettlementCycle(ctx context.Context, store *cl
 		return 0, fmt.Errorf("source_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return resolvePoolAllocationSourceToSettlementCycleDB(db, sourceID)
+		return resolvePoolAllocationSourceToSettlementCycleDB(ctx, db, sourceID)
 	})
 }
 
@@ -201,7 +201,7 @@ func resolveChainPaymentSourceToSettlementCycle(ctx context.Context, store *clie
 		return 0, fmt.Errorf("source_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return resolveChainPaymentSourceToSettlementCycleDB(db, sourceID)
+		return resolveChainPaymentSourceToSettlementCycleDB(ctx, db, sourceID)
 	})
 }
 
@@ -210,7 +210,7 @@ func dbGetSettlementCycleStateByID(ctx context.Context, store *clientDB, id int6
 		return "", fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		return dbGetSettlementCycleStateByIDDB(db, id)
+		return dbGetSettlementCycleStateByIDDB(ctx, db, id)
 	})
 }
 
@@ -229,7 +229,7 @@ func normalizeSettlementStateFilter(state string) (string, error) {
 }
 
 // 财务查询只认 settlement_cycle；这里把空输入收口到主口径。
-func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
+func resolveSettlementCycleSourceDB(ctx context.Context, db *sql.DB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceType == "" && sourceID == "" {
@@ -252,14 +252,14 @@ func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (se
 			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
 		}
 	case "chain_bsv", "chain_token":
-		cycleID, err = dbGetSettlementCycleBySource(db, sourceType, sourceID)
+		cycleID, err = dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, sourceID)
 		if err != nil {
 			return settlementCycleSourceResolution{}, err
 		}
 	default:
 		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle, chain_bsv or chain_token")
 	}
-	state, err := dbGetSettlementCycleStateByIDDB(db, cycleID)
+	state, err := dbGetSettlementCycleStateByIDDB(ctx, db, cycleID)
 	if err != nil {
 		return settlementCycleSourceResolution{}, err
 	}
@@ -271,36 +271,36 @@ func resolveSettlementCycleSourceDB(db *sql.DB, sourceType, sourceID string) (se
 	}, nil
 }
 
-func dbGetSettlementCycleByPoolSessionIDDB(db sqlConn, poolSessionID string) (int64, error) {
-	return dbGetSettlementCycleBySource(db, "pool_session", poolSessionID)
+func dbGetSettlementCycleByPoolSessionIDDB(ctx context.Context, db sqlConn, poolSessionID string) (int64, error) {
+	return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
 }
 
-func resolvePoolAllocationSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {
+func resolvePoolAllocationSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
 	if allocID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && allocID > 0 {
 		var poolSessionID string
-		if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
+				return 0, err
+			}
+			return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
+		}
+		var poolSessionID string
+		if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
 			return 0, err
 		}
-		return dbGetSettlementCycleBySource(db, "pool_session", poolSessionID)
+		return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
 	}
-	var poolSessionID string
-	if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
-		return 0, err
-	}
-	return dbGetSettlementCycleBySource(db, "pool_session", poolSessionID)
-}
 
-func resolveChainPaymentSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {
+func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
 	for _, sourceType := range []string{"chain_payment", "chain_bsv", "chain_token"} {
-		if cycleID, err := dbGetSettlementCycleBySource(db, sourceType, strings.ToLower(sourceID)); err == nil {
+		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.ToLower(sourceID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
@@ -311,28 +311,28 @@ func resolveChainPaymentSourceToSettlementCycleDB(db *sql.DB, sourceID string) (
 		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_chain_payments WHERE id=?`, paymentID).Scan(&txid); err != nil {
 			return 0, err
 		}
-		if cycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", txid); err == nil {
+			if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_payment", txid); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-		if cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid); err == nil {
+			if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_bsv", txid); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-		return dbGetSettlementCycleBySource(db, "chain_token", txid)
+			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_token", txid)
 	}
 	return 0, sql.ErrNoRows
 }
 
-func resolveWalletChainSourceToSettlementCycleDB(db *sql.DB, sourceID string) (int64, error) {
+func resolveWalletChainSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
 	for _, sourceType := range []string{"chain_bsv", "chain_token"} {
-		if cycleID, err := dbGetSettlementCycleBySource(db, sourceType, strings.ToLower(sourceID)); err == nil {
+		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.ToLower(sourceID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
@@ -341,7 +341,7 @@ func resolveWalletChainSourceToSettlementCycleDB(db *sql.DB, sourceID string) (i
 	return 0, sql.ErrNoRows
 }
 
-func dbGetSettlementCycleStateByIDDB(db *sql.DB, id int64) (string, error) {
+func dbGetSettlementCycleStateByIDDB(ctx context.Context, db *sql.DB, id int64) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
@@ -384,7 +384,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			return financeBusinessPage{}, err
 		}
 		if f.SourceType != "" || f.SourceID != "" {
-			resolved, err := resolveSettlementCycleSourceDB(db, f.SourceType, f.SourceID)
+			resolved, err := resolveSettlementCycleSourceDB(ctx, db, f.SourceType, f.SourceID)
 			if err != nil {
 				return financeBusinessPage{}, err
 			}
@@ -516,7 +516,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			return financeProcessEventPage{}, err
 		}
 		if f.SourceType != "" || f.SourceID != "" {
-			resolved, err := resolveSettlementCycleSourceDB(db, f.SourceType, f.SourceID)
+			resolved, err := resolveSettlementCycleSourceDB(ctx, db, f.SourceType, f.SourceID)
 			if err != nil {
 				return financeProcessEventPage{}, err
 			}

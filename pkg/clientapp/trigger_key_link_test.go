@@ -312,7 +312,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	now := time.Now().Unix()
 
 	// 插入一条带 trigger_key 的 orchestrator 命令
-	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "orch_cmd_http",
 		CommandType:   clientKernelCommandFeePoolMaintain,
 		GatewayPeerID: "gw1",
@@ -329,7 +329,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	})
 
 	// 插入一条不带 trigger_key 的直接命令
-	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "direct_cmd_http",
 		CommandType:   clientKernelCommandDirectDownloadCore,
 		GatewayPeerID: "direct",
@@ -426,7 +426,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 
 	// 测试 4：client-kernel 接口同样支持 trigger_key 过滤
 	// 先插入一条 client-kernel 类型的命令（带 trigger_key）
-	_ = dbAppendCommandJournal(nil, store, commandJournalEntry{
+	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "ck_with_trigger",
 		CommandType:   clientKernelCommandWorkspaceSync,
 		GatewayPeerID: "workspace",

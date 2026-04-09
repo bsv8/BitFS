@@ -255,7 +255,7 @@ func dbBindStaticPriceToSeed2(ctx context.Context, store *clientDB, path string,
 		return "", 0, 0, false, err
 	}
 	var chunkCount uint32
-	if err := store.QueryRowContext(ctx, db, `SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+	if err := QueryRowContext(ctx, store.db, `SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 		return "", 0, 0, false, err
 	}
 	seedPrice := floor * uint64(chunkCount)

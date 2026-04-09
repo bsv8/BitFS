@@ -10,6 +10,7 @@ func TestTaskSchedulerShutdownWaitsForRunningTask(t *testing.T) {
 	t.Parallel()
 
 	scheduler := newTaskScheduler(nil, "bitcast-client")
+	scheduler.ctx = context.Background()
 	parentCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -80,7 +81,7 @@ func TestTaskSchedulerWritesProfileAndRunRows(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 	store := newClientDB(db, nil)
-	scheduler := newTaskScheduler(store, "bitcast-client")
+	scheduler := newTestTaskScheduler(context.Background(), store)
 
 	runDone := make(chan struct{})
 	if err := scheduler.RegisterPeriodicTask(context.Background(), periodicTaskSpec{

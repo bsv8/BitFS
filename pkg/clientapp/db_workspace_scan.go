@@ -128,14 +128,6 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				recommendedName := sanitizeRecommendedFileName(filepath.Base(abs))
 				mimeHint := sanitizeMIMEHint(guessContentType(abs, nil))
 				if _, err := ExecContext(ctx, tx, 
-					`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
-					 VALUES(?,?,?,?)
-					 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
-					workspace, fileRel, seedHash, 0,
-				); err != nil {
-					return err
-				}
-				if _, err := ExecContext(ctx, tx, 
 					`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
 					 VALUES(?,?,?,?,?,?)
 					 ON CONFLICT(seed_hash) DO UPDATE SET
@@ -148,7 +140,15 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				); err != nil {
 					return err
 				}
-				if err := dbReplaceSeedChunkSupplyTx(tx, seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
+				if _, err := ExecContext(ctx, tx,
+					`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
+					 VALUES(?,?,?,?)
+					 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
+					workspace, fileRel, seedHash, 0,
+				); err != nil {
+					return err
+				}
+				if err := dbReplaceSeedChunkSupplyTx(ctx, tx, seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
 					return err
 				}
 				if err := dbUpsertSeedPricingPolicyTx(tx, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, "system", now); err != nil {

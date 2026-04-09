@@ -94,11 +94,11 @@ func dbUpsertBSVUTXO(ctx context.Context, store *clientDB, e bsvUTXOEntry) error
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return dbUpsertBSVUTXODB(db, e)
+		return dbUpsertBSVUTXODB(ctx, db, e)
 	})
 }
 
-func dbUpsertBSVUTXODB(db sqlConn, e bsvUTXOEntry) error {
+func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -256,15 +256,15 @@ func dbMarkBSVUTXOSpent(ctx context.Context, store *clientDB, utxoID string, spe
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return markBSVUTXOSpentConn(db, utxoID, spentByTxid, time.Now().Unix())
+		return markBSVUTXOSpentConn(ctx, db, utxoID, spentByTxid, time.Now().Unix())
 	})
 }
 
-func dbMarkBSVUTXOSpentDB(db sqlConn, utxoID string, spentByTxid string) error {
-	return markBSVUTXOSpentConn(db, utxoID, spentByTxid, time.Now().Unix())
+func dbMarkBSVUTXOSpentDB(ctx context.Context, db sqlConn, utxoID string, spentByTxid string) error {
+	return markBSVUTXOSpentConn(ctx, db, utxoID, spentByTxid, time.Now().Unix())
 }
 
-func markBSVUTXOSpentConn(db sqlConn, utxoID string, spentByTxid string, updatedAt int64) error {
+func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentByTxid string, updatedAt int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -296,11 +296,11 @@ func dbGetBSVUTXO(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXO
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (*bsvUTXOEntry, error) {
-		return dbGetBSVUTXODB(db, utxoID)
+		return dbGetBSVUTXODB(ctx, db, utxoID)
 	})
 }
 
-func dbGetBSVUTXODB(db sqlConn, utxoID string) (*bsvUTXOEntry, error) {
+func dbGetBSVUTXODB(ctx context.Context, db sqlConn, utxoID string) (*bsvUTXOEntry, error) {
 	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
 	if utxoID == "" {
 		return nil, fmt.Errorf("utxo_id is required")
@@ -333,11 +333,11 @@ func dbListSpendableBSVUTXOs(ctx context.Context, store *clientDB, ownerPubkeyHe
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]bsvUTXOEntry, error) {
-		return dbListSpendableBSVUTXOsDB(db, ownerPubkeyHex)
+		return dbListSpendableBSVUTXOsDB(ctx, db, ownerPubkeyHex)
 	})
 }
 
-func dbListSpendableBSVUTXOsDB(db *sql.DB, ownerPubkeyHex string) ([]bsvUTXOEntry, error) {
+func dbListSpendableBSVUTXOsDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string) ([]bsvUTXOEntry, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
@@ -378,13 +378,13 @@ func dbCalcBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex strin
 	var confirmed, total uint64
 	err := store.Do(ctx, func(db *sql.DB) error {
 		var err error
-		confirmed, total, err = dbCalcBSVBalanceDB(db, ownerPubkeyHex)
+		confirmed, total, err = dbCalcBSVBalanceDB(ctx, db, ownerPubkeyHex)
 		return err
 	})
 	return confirmed, total, err
 }
 
-func dbCalcBSVBalanceDB(db *sql.DB, ownerPubkeyHex string) (uint64, uint64, error) {
+func dbCalcBSVBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string) (uint64, uint64, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return 0, 0, fmt.Errorf("owner_pubkey_hex is required")
@@ -423,11 +423,11 @@ func dbUpsertTokenLot(ctx context.Context, store *clientDB, e tokenLotEntry) err
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return dbUpsertTokenLotDB(db, e)
+		return dbUpsertTokenLotDB(ctx, db, e)
 	})
 }
 
-func dbUpsertTokenLotDB(db sqlConn, e tokenLotEntry) error {
+func dbUpsertTokenLotDB(ctx context.Context, db sqlConn, e tokenLotEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -497,11 +497,11 @@ func dbGetTokenLot(ctx context.Context, store *clientDB, lotID string) (*tokenLo
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (*tokenLotEntry, error) {
-		return dbGetTokenLotDB(db, lotID)
+		return dbGetTokenLotDB(ctx, db, lotID)
 	})
 }
 
-func dbGetTokenLotDB(db sqlConn, lotID string) (*tokenLotEntry, error) {
+func dbGetTokenLotDB(ctx context.Context, db sqlConn, lotID string) (*tokenLotEntry, error) {
 	lotID = strings.TrimSpace(lotID)
 	if lotID == "" {
 		return nil, fmt.Errorf("lot_id is required")
@@ -531,11 +531,11 @@ func dbListSpendableTokenLots(ctx context.Context, store *clientDB, ownerPubkeyH
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]tokenLotEntry, error) {
-		return dbListSpendableTokenLotsDB(db, ownerPubkeyHex, tokenStandard, tokenID)
+		return dbListSpendableTokenLotsDB(ctx, db, ownerPubkeyHex, tokenStandard, tokenID)
 	})
 }
 
-func dbListSpendableTokenLotsDB(db *sql.DB, ownerPubkeyHex string, tokenStandard string, tokenID string) ([]tokenLotEntry, error) {
+func dbListSpendableTokenLotsDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string, tokenStandard string, tokenID string) ([]tokenLotEntry, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
@@ -583,11 +583,11 @@ func dbCalcTokenBalance(ctx context.Context, store *clientDB, ownerPubkeyHex str
 		return "", fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		return dbCalcTokenBalanceDB(db, ownerPubkeyHex, tokenStandard, tokenID)
+		return dbCalcTokenBalanceDB(ctx, db, ownerPubkeyHex, tokenStandard, tokenID)
 	})
 }
 
-func dbCalcTokenBalanceDB(db *sql.DB, ownerPubkeyHex string, tokenStandard string, tokenID string) (string, error) {
+func dbCalcTokenBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string, tokenStandard string, tokenID string) (string, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return "", fmt.Errorf("owner_pubkey_hex is required")
@@ -673,11 +673,11 @@ func dbUpsertTokenCarrierLink(ctx context.Context, store *clientDB, e tokenCarri
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return dbUpsertTokenCarrierLinkDB(db, e)
+		return dbUpsertTokenCarrierLinkDB(ctx, db, e)
 	})
 }
 
-func dbUpsertTokenCarrierLinkDB(db sqlConn, e tokenCarrierLinkEntry) error {
+func dbUpsertTokenCarrierLinkDB(ctx context.Context, db sqlConn, e tokenCarrierLinkEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -740,11 +740,11 @@ func dbGetActiveCarrierForLot(ctx context.Context, store *clientDB, lotID string
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (*tokenCarrierLinkEntry, error) {
-		return dbGetActiveCarrierForLotDB(db, lotID)
+		return dbGetActiveCarrierForLotDB(ctx, db, lotID)
 	})
 }
 
-func dbGetActiveCarrierForLotDB(db sqlConn, lotID string) (*tokenCarrierLinkEntry, error) {
+func dbGetActiveCarrierForLotDB(ctx context.Context, db sqlConn, lotID string) (*tokenCarrierLinkEntry, error) {
 	lotID = strings.TrimSpace(lotID)
 	if lotID == "" {
 		return nil, fmt.Errorf("lot_id is required")
@@ -773,11 +773,11 @@ func dbListActiveCarrierLinksByOwner(ctx context.Context, store *clientDB, owner
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]tokenCarrierLinkEntry, error) {
-		return dbListActiveCarrierLinksByOwnerDB(db, ownerPubkeyHex)
+		return dbListActiveCarrierLinksByOwnerDB(ctx, db, ownerPubkeyHex)
 	})
 }
 
-func dbListActiveCarrierLinksByOwnerDB(db sqlConn, ownerPubkeyHex string) ([]tokenCarrierLinkEntry, error) {
+func dbListActiveCarrierLinksByOwnerDB(ctx context.Context, db sqlConn, ownerPubkeyHex string) ([]tokenCarrierLinkEntry, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
@@ -816,11 +816,11 @@ func dbAppendSettlementRecord(ctx context.Context, store *clientDB, e settlement
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return dbAppendSettlementRecordDB(db, e)
+		return dbAppendSettlementRecordDB(ctx, db, e)
 	})
 }
 
-func dbAppendSettlementRecordDB(db sqlConn, e settlementRecordEntry) error {
+func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRecordEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -896,11 +896,11 @@ func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settle
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]settlementRecordEntry, error) {
-		return dbListSettlementRecordsByCycleDB(db, settlementCycleID)
+		return dbListSettlementRecordsByCycleDB(ctx, db, settlementCycleID)
 	})
 }
 
-func dbListSettlementRecordsByCycleDB(db sqlConn, settlementCycleID int64) ([]settlementRecordEntry, error) {
+func dbListSettlementRecordsByCycleDB(ctx context.Context, db sqlConn, settlementCycleID int64) ([]settlementRecordEntry, error) {
 	if settlementCycleID <= 0 {
 		return nil, fmt.Errorf("settlement_cycle_id is required")
 	}
@@ -944,12 +944,12 @@ func dbSelectBSVUTXOsForTarget(ctx context.Context, store *clientDB, ownerPubkey
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]selectedBSVUTXO, error) {
-		return dbSelectBSVUTXOsForTargetDB(db, ownerPubkeyHex, target)
+		return dbSelectBSVUTXOsForTargetDB(ctx, db, ownerPubkeyHex, target)
 	})
 }
 
-func dbSelectBSVUTXOsForTargetDB(db *sql.DB, ownerPubkeyHex string, target uint64) ([]selectedBSVUTXO, error) {
-	utxos, err := dbListSpendableBSVUTXOsDB(db, ownerPubkeyHex)
+func dbSelectBSVUTXOsForTargetDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string, target uint64) ([]selectedBSVUTXO, error) {
+	utxos, err := dbListSpendableBSVUTXOsDB(ctx, db, ownerPubkeyHex)
 	if err != nil {
 		return nil, fmt.Errorf("list spendable utxos: %w", err)
 	}
@@ -1010,17 +1010,17 @@ func dbLoadWalletBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex
 		return walletBSVBalance{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (walletBSVBalance, error) {
-		return dbLoadWalletBSVBalanceDB(db, ownerPubkeyHex)
+		return dbLoadWalletBSVBalanceDB(ctx, db, ownerPubkeyHex)
 	})
 }
 
-func dbLoadWalletBSVBalanceDB(db *sql.DB, ownerPubkeyHex string) (walletBSVBalance, error) {
+func dbLoadWalletBSVBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string) (walletBSVBalance, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return walletBSVBalance{}, fmt.Errorf("owner_pubkey_hex is required")
 	}
 
-	confirmed, total, err := dbCalcBSVBalanceDB(db, ownerPubkeyHex)
+	confirmed, total, err := dbCalcBSVBalanceDB(ctx, db, ownerPubkeyHex)
 	if err != nil {
 		return walletBSVBalance{}, err
 	}
@@ -1049,11 +1049,11 @@ func dbLoadAllWalletTokenBalances(ctx context.Context, store *clientDB, ownerPub
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletTokenBalance, error) {
-		return dbLoadAllWalletTokenBalancesDB(db, ownerPubkeyHex)
+		return dbLoadAllWalletTokenBalancesDB(ctx, db, ownerPubkeyHex)
 	})
 }
 
-func dbLoadAllWalletTokenBalancesDB(db *sql.DB, ownerPubkeyHex string) ([]walletTokenBalance, error) {
+func dbLoadAllWalletTokenBalancesDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string) ([]walletTokenBalance, error) {
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
@@ -1088,7 +1088,7 @@ func dbLoadAllWalletTokenBalancesDB(db *sql.DB, ownerPubkeyHex string) ([]wallet
 
 	out := make([]walletTokenBalance, 0, len(tokens))
 	for _, t := range tokens {
-		balance, err := dbCalcTokenBalanceDB(db, ownerPubkeyHex, t.Standard, t.ID)
+		balance, err := dbCalcTokenBalanceDB(ctx, db, ownerPubkeyHex, t.Standard, t.ID)
 		if err != nil {
 			continue
 		}
@@ -1149,11 +1149,11 @@ func dbListSpendableSourceFlows(ctx context.Context, store *clientDB, walletID s
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]spendableSourceFlow, error) {
-		return dbListSpendableSourceFlowsDB(db, walletID, assetKind, tokenID)
+		return dbListSpendableSourceFlowsDB(ctx, db, walletID, assetKind, tokenID)
 	})
 }
 
-func dbListSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
+func dbListSpendableSourceFlowsDB(ctx context.Context, db *sql.DB, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
 	// walletID 实际上是 owner_pubkey_hex 或可以从中提取
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	if ownerPubkeyHex == "" {
@@ -1214,12 +1214,12 @@ func dbSelectSourceFlowsForTarget(ctx context.Context, store *clientDB, walletID
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]selectedSourceFlow, error) {
-		return dbSelectSourceFlowsForTargetDB(db, walletID, assetKind, tokenID, target)
+		return dbSelectSourceFlowsForTargetDB(ctx, db, walletID, assetKind, tokenID, target)
 	})
 }
 
-func dbSelectSourceFlowsForTargetDB(db *sql.DB, walletID string, assetKind string, tokenID string, target uint64) ([]selectedSourceFlow, error) {
-	flows, err := dbListSpendableSourceFlowsDB(db, walletID, assetKind, tokenID)
+func dbSelectSourceFlowsForTargetDB(ctx context.Context, db *sql.DB, walletID string, assetKind string, tokenID string, target uint64) ([]selectedSourceFlow, error) {
+	flows, err := dbListSpendableSourceFlowsDB(ctx, db, walletID, assetKind, tokenID)
 	if err != nil {
 		return nil, fmt.Errorf("list spendable flows: %w", err)
 	}
@@ -1277,11 +1277,11 @@ func dbListTokenSpendableSourceFlows(ctx context.Context, store *clientDB, walle
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]tokenSourceFlow, error) {
-		return dbListTokenSpendableSourceFlowsDB(db, walletID, assetKind, tokenID)
+		return dbListTokenSpendableSourceFlowsDB(ctx, db, walletID, assetKind, tokenID)
 	})
 }
 
-func dbListTokenSpendableSourceFlowsDB(db *sql.DB, walletID string, assetKind string, tokenID string) ([]tokenSourceFlow, error) {
+func dbListTokenSpendableSourceFlowsDB(ctx context.Context, db *sql.DB, walletID string, assetKind string, tokenID string) ([]tokenSourceFlow, error) {
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("wallet_id is required")
@@ -1355,11 +1355,11 @@ func dbLoadTokenBalanceFact(ctx context.Context, store *clientDB, walletID strin
 		return tokenBalanceResult{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (tokenBalanceResult, error) {
-		return dbLoadTokenBalanceFactDB(db, walletID, assetKind, tokenID)
+		return dbLoadTokenBalanceFactDB(ctx, db, walletID, assetKind, tokenID)
 	})
 }
 
-func dbLoadTokenBalanceFactDB(db *sql.DB, walletID string, assetKind string, tokenID string) (tokenBalanceResult, error) {
+func dbLoadTokenBalanceFactDB(ctx context.Context, db *sql.DB, walletID string, assetKind string, tokenID string) (tokenBalanceResult, error) {
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	if ownerPubkeyHex == "" {
 		return tokenBalanceResult{}, fmt.Errorf("wallet_id is required")
@@ -1424,11 +1424,11 @@ func dbLoadWalletAssetBalanceFact(ctx context.Context, store *clientDB, walletID
 		return walletAssetBalance{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (walletAssetBalance, error) {
-		return dbLoadWalletAssetBalanceFactDB(db, walletID, assetKind, tokenID)
+		return dbLoadWalletAssetBalanceFactDB(ctx, db, walletID, assetKind, tokenID)
 	})
 }
 
-func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
+func dbLoadWalletAssetBalanceFactDB(ctx context.Context, db *sql.DB, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
 
@@ -1445,7 +1445,7 @@ func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind strin
 
 	if assetKind == "BSV" {
 		// 查询本币余额
-		confirmed, _, err := dbCalcBSVBalanceDB(db, ownerPubkeyHex)
+		confirmed, _, err := dbCalcBSVBalanceDB(ctx, db, ownerPubkeyHex)
 		if err != nil {
 			return result, err
 		}
@@ -1453,7 +1453,7 @@ func dbLoadWalletAssetBalanceFactDB(db *sql.DB, walletID string, assetKind strin
 		result.Remaining = int64(confirmed)
 	} else {
 		// 查询 token 余额
-		balance, err := dbCalcTokenBalanceDB(db, ownerPubkeyHex, assetKind, tokenID)
+		balance, err := dbCalcTokenBalanceDB(ctx, db, ownerPubkeyHex, assetKind, tokenID)
 		if err != nil {
 			return result, err
 		}
@@ -1525,7 +1525,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 
 		return store.Do(ctx, func(db *sql.DB) error {
 			// 0. 先写入载体 UTXO，carrier link 依赖它做外键约束。
-			if err := dbUpsertBSVUTXODB(db, bsvUTXOEntry{
+			if err := dbUpsertBSVUTXODB(ctx, db, bsvUTXOEntry{
 				UTXOID:         p.UTXOID,
 				OwnerPubkeyHex: ownerPubkeyHex,
 				Address:        p.Address,
@@ -1542,7 +1542,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 				return fmt.Errorf("upsert token carrier utxo: %w", err)
 			}
 			// 1. 写入 Token Lot
-			if err := dbUpsertTokenLotDB(db, tokenLotEntry{
+			if err := dbUpsertTokenLotDB(ctx, db, tokenLotEntry{
 				LotID:            lotID,
 				OwnerPubkeyHex:   ownerPubkeyHex,
 				TokenID:          p.TokenID,
@@ -1560,7 +1560,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 			}
 
 			// 2. 写入 Carrier Link（绑定 Lot 到 UTXO）
-			if err := dbUpsertTokenCarrierLinkDB(db, tokenCarrierLinkEntry{
+			if err := dbUpsertTokenCarrierLinkDB(ctx, db, tokenCarrierLinkEntry{
 				LinkID:         linkID,
 				LotID:          lotID,
 				CarrierUTXOID:  p.UTXOID,
@@ -1583,7 +1583,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 // ========== Settlement Cycle 函数（硬切版保留） ==========
 
 // dbUpsertSettlementCycle 幂等写入结算周期
-func dbUpsertSettlementCycle(db sqlConn, cycleID string, sourceType string, sourceID string, state string,
+func dbUpsertSettlementCycleCtx(ctx context.Context, db sqlConn, cycleID string, sourceType string, sourceID string, state string,
 	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
 	cycleIndex int, occurredAtUnix int64, note string, payload any) error {
 	if db == nil {
@@ -1651,7 +1651,7 @@ func dbUpsertSettlementCycle(db sqlConn, cycleID string, sourceType string, sour
 }
 
 // dbGetSettlementCycleBySource 通过 source_type/source_id 查找 settlement_cycle_id
-func dbGetSettlementCycleBySource(db sqlConn, sourceType string, sourceID string) (int64, error) {
+func dbGetSettlementCycleBySourceCtx(ctx context.Context, db sqlConn, sourceType string, sourceID string) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -1674,7 +1674,7 @@ func dbGetSettlementCycleBySource(db sqlConn, sourceType string, sourceID string
 // - chain_payment / chain_bsv / chain_token 直接把 source_id 当作来源 txid；
 // - pool_session 走会话内最新 pool event 的 txid 锚点；
 // - 其他 source_type 不允许拿来驱动 BSV 扣账。
-func dbGetSettlementCycleSourceTxID(db sqlConn, settlementCycleID int64) (string, error) {
+func dbGetSettlementCycleSourceTxIDCtx(ctx context.Context, db sqlConn, settlementCycleID int64) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
@@ -1725,14 +1725,14 @@ func dbGetSettlementCycleSourceTxID(db sqlConn, settlementCycleID int64) (string
 // ========== 消耗记录函数（硬切版） ==========
 
 // dbAppendBSVConsumptionsForSettlementCycle 写入 BSV 消耗记录
-func dbAppendBSVConsumptionsForSettlementCycle(db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	if settlementCycleID <= 0 {
 		return fmt.Errorf("settlement_cycle_id is required")
 	}
-	spentByTxid, err := dbGetSettlementCycleSourceTxID(db, settlementCycleID)
+	spentByTxid, err := dbGetSettlementCycleSourceTxIDCtx(ctx, db, settlementCycleID)
 	if err != nil {
 		return fmt.Errorf("resolve settlement cycle txid failed: %w", err)
 	}
@@ -1804,14 +1804,14 @@ func dbAppendBSVConsumptionsForSettlementCycle(db sqlConn, settlementCycleID int
 }
 
 // dbAppendTokenConsumptionsForSettlementCycle 写入 Token 消耗记录
-func dbAppendTokenConsumptionsForSettlementCycle(db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+func dbAppendTokenConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	if settlementCycleID <= 0 {
 		return fmt.Errorf("settlement_cycle_id is required")
 	}
-	spentByTxid, err := dbGetSettlementCycleSourceTxID(db, settlementCycleID)
+	spentByTxid, err := dbGetSettlementCycleSourceTxIDCtx(ctx, db, settlementCycleID)
 	if err != nil {
 		return fmt.Errorf("resolve settlement cycle txid failed: %w", err)
 	}

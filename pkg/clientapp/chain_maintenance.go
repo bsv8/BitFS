@@ -1436,7 +1436,7 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 //   - 分类改为：有钱包输入且有外部输出=对外转账(THIRD_PARTY)
 //   - 不再使用旧逻辑："有输入+有找零就一律 internal_change"
 //   - net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
-func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, detail whatsonchain.TxDetail) ([]walletChainAccountingInput, error) {
+func buildWalletChainAccountingInputsFromTxDetail(ctx context.Context, db sqlConn, address string, detail whatsonchain.TxDetail) ([]walletChainAccountingInput, error) {
 	txid := strings.ToLower(strings.TrimSpace(detail.TxID))
 	if txid == "" {
 		return nil, nil
@@ -1457,7 +1457,7 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 
 	for _, in := range detail.Vin {
 		utxoID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
-		amount, ok, err := dbWalletUTXOValueConn(db, utxoID)
+	amount, ok, err := dbWalletUTXOValueConn(ctx, db, utxoID)
 		if err != nil {
 			return nil, err
 		}
@@ -1506,7 +1506,7 @@ func buildWalletChainAccountingInputsFromTxDetail(db sqlConn, address string, de
 		return nil, nil
 	}
 
-	tokenFacts, err := collectTokenUTXOLinkFacts(db, inputFacts)
+	tokenFacts, err := collectTokenUTXOLinkFacts(ctx, db, inputFacts)
 	if err != nil {
 		return nil, err
 	}
@@ -1594,7 +1594,7 @@ func hasBSV21TransferOutput(detail whatsonchain.TxDetail) bool {
 // 设计说明：
 // - chain_bsv 线已经直接吃全部真实输入
 // - 这里仅为 chain_token 线收 token carrier 的数量事实
-func collectTokenUTXOLinkFacts(db sqlConn, facts []chainPaymentUTXOFact) ([]chainPaymentUTXOLinkEntry, error) {
+func collectTokenUTXOLinkFacts(ctx context.Context, db sqlConn, facts []chainPaymentUTXOFact) ([]chainPaymentUTXOLinkEntry, error) {
 	out := make([]chainPaymentUTXOLinkEntry, 0)
 	for _, fact := range facts {
 		if strings.TrimSpace(fact.IOSide) != "input" {
