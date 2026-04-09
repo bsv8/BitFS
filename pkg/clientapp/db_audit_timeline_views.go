@@ -133,7 +133,7 @@ func dbListCommandAuditTimeline(ctx context.Context, store *clientDB, f AuditTim
 }
 
 func appendGatewayAuditTimelineFromCommandJournal(db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 		 FROM proc_command_journal WHERE gateway_pubkey_hex=?`,
 		gatewayPubkeyHex,
@@ -156,7 +156,7 @@ func appendGatewayAuditTimelineFromCommandJournal(db *sql.DB, gatewayPubkeyHex s
 }
 
 func appendGatewayAuditTimelineFromGatewayEvents(db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
 		 FROM proc_gateway_events WHERE gateway_pubkey_hex=?`,
 		gatewayPubkeyHex,
@@ -179,7 +179,7 @@ func appendGatewayAuditTimelineFromGatewayEvents(db *sql.DB, gatewayPubkeyHex st
 }
 
 func appendGatewayAuditTimelineFromDomainEvents(db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 		 FROM proc_domain_events WHERE gateway_pubkey_hex=?`,
 		gatewayPubkeyHex,
@@ -202,7 +202,7 @@ func appendGatewayAuditTimelineFromDomainEvents(db *sql.DB, gatewayPubkeyHex str
 }
 
 func appendGatewayAuditTimelineFromStateSnapshots(db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 		 FROM proc_state_snapshots WHERE gateway_pubkey_hex=?`,
 		gatewayPubkeyHex,
@@ -225,7 +225,7 @@ func appendGatewayAuditTimelineFromStateSnapshots(db *sql.DB, gatewayPubkeyHex s
 }
 
 func appendGatewayAuditTimelineFromEffectLogs(db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 		 FROM proc_effect_logs WHERE gateway_pubkey_hex=?`,
 		gatewayPubkeyHex,
@@ -248,7 +248,7 @@ func appendGatewayAuditTimelineFromEffectLogs(db *sql.DB, gatewayPubkeyHex strin
 }
 
 func appendGatewayAuditTimelineFromObservedStates(db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 		 FROM proc_observed_gateway_states WHERE gateway_pubkey_hex=?`,
 		gatewayPubkeyHex,
@@ -271,7 +271,7 @@ func appendGatewayAuditTimelineFromObservedStates(db *sql.DB, gatewayPubkeyHex s
 }
 
 func appendCommandAuditTimelineFromCommandJournal(db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 		 FROM proc_command_journal WHERE command_id=?`,
 		commandID,
@@ -294,7 +294,7 @@ func appendCommandAuditTimelineFromCommandJournal(db *sql.DB, commandID string, 
 }
 
 func appendCommandAuditTimelineFromGatewayEvents(db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
 		 FROM proc_gateway_events WHERE command_id=?`,
 		commandID,
@@ -317,7 +317,7 @@ func appendCommandAuditTimelineFromGatewayEvents(db *sql.DB, commandID string, i
 }
 
 func appendCommandAuditTimelineFromDomainEvents(db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 		 FROM proc_domain_events WHERE command_id=?`,
 		commandID,
@@ -340,7 +340,7 @@ func appendCommandAuditTimelineFromDomainEvents(db *sql.DB, commandID string, it
 }
 
 func appendCommandAuditTimelineFromStateSnapshots(db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 		 FROM proc_state_snapshots WHERE command_id=?`,
 		commandID,
@@ -363,7 +363,7 @@ func appendCommandAuditTimelineFromStateSnapshots(db *sql.DB, commandID string, 
 }
 
 func appendCommandAuditTimelineFromEffectLogs(db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := db.Query(
+	rows, err := QueryContext(ctx, db, 
 		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 		 FROM proc_effect_logs WHERE command_id=?`,
 		commandID,
@@ -386,7 +386,7 @@ func appendCommandAuditTimelineFromEffectLogs(db *sql.DB, commandID string, item
 }
 
 func loadCommandAuditTimelineRoot(db *sql.DB, commandID string) (int64, string, error) {
-	row := db.QueryRow(`SELECT created_at_unix,gateway_pubkey_hex FROM proc_command_journal WHERE command_id=? ORDER BY id ASC LIMIT 1`, commandID)
+	row := QueryRowContext(ctx, db, `SELECT created_at_unix,gateway_pubkey_hex FROM proc_command_journal WHERE command_id=? ORDER BY id ASC LIMIT 1`, commandID)
 	var createdAtUnix int64
 	var gatewayPubkeyHex string
 	if err := row.Scan(&createdAtUnix, &gatewayPubkeyHex); err != nil {

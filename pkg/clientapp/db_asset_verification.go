@@ -73,7 +73,7 @@ func enqueueUnknownUTXOToVerificationTx(tx *sql.Tx, walletID string, address str
 }
 
 type verificationSQLExec interface {
-	Exec(query string, args ...any) (sql.Result, error)
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
 }
 
 func enqueueUnknownUTXOToVerificationSQL(exec verificationSQLExec, walletID string, address string, utxoID string, txid string, vout uint32, value uint64) error {
@@ -81,7 +81,7 @@ func enqueueUnknownUTXOToVerificationSQL(exec verificationSQLExec, walletID stri
 		return fmt.Errorf("verification sql exec is nil")
 	}
 	now := time.Now().Unix()
-	_, err := exec.Exec(
+	_, err := ExecContext(context.Background(), exec, 
 		`INSERT OR IGNORE INTO wallet_utxo_token_verification(
 			utxo_id,wallet_id,address,txid,vout,value_satoshi,status,woc_response_json,
 			last_check_at_unix,next_retry_at_unix,retry_count,error_message,updated_at_unix
@@ -111,7 +111,7 @@ func dbListPendingVerificationItems(ctx context.Context, store *clientDB, limit 
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]unknownUTXORow, error) {
 		now := time.Now().Unix()
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,0
 			 FROM wallet_utxo_token_verification
 			 WHERE status='pending' AND next_retry_at_unix <= ?
@@ -151,14 +151,14 @@ func dbUpdateUTXOAllocationClass(ctx context.Context, store *clientDB, utxoID st
 		}
 		var currentClass string
 		var currentReason string
-		err := db.QueryRow(`SELECT allocation_class, allocation_reason FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&currentClass, &currentReason)
+		err := QueryRowContext(ctx, db, `SELECT allocation_class, allocation_reason FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&currentClass, &currentReason)
 		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
 		if err == nil && normalizeWalletUTXOAllocationClass(currentClass) == newClass && strings.TrimSpace(currentReason) == strings.TrimSpace(reason) {
 			return nil
 		}
-		_, execErr := db.Exec(
+		_, execErr := ExecContext(ctx, db, 
 			`UPDATE wallet_utxo 
 			 SET allocation_class=?, allocation_reason=?, updated_at_unix=?
 			 WHERE utxo_id=?`,
@@ -474,7 +474,7 @@ func updateVerificationQueueSuccess(ctx context.Context, store *clientDB, utxoID
 				wocJSON = string(b)
 			}
 		}
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`UPDATE wallet_utxo_token_verification
 			 SET status=?, woc_response_json=?, last_check_at_unix=?, next_retry_at_unix=?, retry_count=?, error_message=?, updated_at_unix=?
 			 WHERE utxo_id=?`,
@@ -491,13 +491,13 @@ func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID stri
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		var retryCount int
-		err := db.QueryRow(`SELECT retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, utxoID).Scan(&retryCount)
+		err := QueryRowContext(ctx, db, `SELECT retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, utxoID).Scan(&retryCount)
 		if err != nil {
 			return err
 		}
 		retryCount++
 		nextRetry := time.Now().Unix() + int64(math.Min(float64(assetVerificationBaseDelay*int(math.Pow(2, float64(retryCount)))), float64(assetVerificationMaxDelay)))
-		_, err = db.Exec(
+		_, err = ExecContext(ctx, db, 
 			`UPDATE wallet_utxo_token_verification SET retry_count=?, next_retry_at_unix=?, last_check_at_unix=?, error_message=?, updated_at_unix=? WHERE utxo_id=?`,
 			int64(retryCount), nextRetry, time.Now().Unix(), errMsg, time.Now().Unix(), utxoID,
 		)

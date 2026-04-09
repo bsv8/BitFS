@@ -45,7 +45,7 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 		now := time.Now().Unix()
 		// tx_history 仍是兼容事实事件，写入口径统一收口到常量。
 		allocationID := fmt.Sprintf("txhist_%s_%d_%d_%d", strings.TrimSpace(e.GatewayPeerID), now, e.SequenceNum, e.CycleIndex)
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO fact_pool_session_events(
 				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -118,7 +118,7 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 		if finishedAtUnix <= 0 {
 			finishedAtUnix = now
 		}
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO biz_purchases(
 					demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
 				) VALUES(?,?,?,?,?,?,?,?,?,?)`,
@@ -164,7 +164,7 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 		if strings.TrimSpace(e.Action) == "" {
 			e.Action = "unknown"
 		}
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_gateway_events(created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
 			e.GatewayPeerID,
@@ -189,7 +189,7 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 		return
 	}
 	_ = store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_orchestrator_logs(
 				created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -235,7 +235,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		// trigger_key 是来源链路键，不是命令主键
 		// - orchestrator 发起时，trigger_key = orchestrator.idempotency_key
 		// - 非 orchestrator 发起时，trigger_key = ''
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_command_journal(
 				created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -275,7 +275,7 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 		return err
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
 			commandID,
@@ -303,7 +303,7 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 		return err
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_state_snapshots(
 				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?)`,
@@ -347,7 +347,7 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 		if observedAtUnix <= 0 {
 			observedAtUnix = time.Now().Unix()
 		}
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_observed_gateway_states(
 				created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -382,7 +382,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 		return err
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO proc_effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
 			commandID,
@@ -427,7 +427,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 			 VALUES(?,?,?,?,?,?,?,?)`,
 			strings.TrimSpace(table),
 		)
-		if _, err := db.Exec(
+		if _, err := ExecContext(ctx, db, 
 			stmt,
 			e.TriggeredAtUnix,
 			e.StartedAtUnix,
@@ -455,7 +455,7 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 		table,
 		table,
 	)
-	if _, err := db.Exec(stmt, int64(keep)); err != nil {
+	if _, err := ExecContext(ctx, db, stmt, int64(keep)); err != nil {
 		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 	}
 }
@@ -499,7 +499,7 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.BusinessID
 	}
-	_, err := db.Exec(
+	_, err := ExecContext(ctx, db, 
 		`INSERT INTO settle_businesses(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
@@ -552,7 +552,7 @@ func dbAppendFinTxBreakdownIfAbsent(db sqlConn, e finTxBreakdownEntry) error {
 		return fmt.Errorf("tx_role is required for settle_tx_breakdown")
 	}
 	var existingRole sql.NullString
-	err := db.QueryRow(`SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
+	err := QueryRowContext(ctx, db, `SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
 	if err == nil {
 		if existingRole.Valid && existingRole.String == e.TxRole {
 			return nil
@@ -573,7 +573,7 @@ func dbAppendFinTxUTXOLinkIfAbsent(db sqlConn, e finTxUTXOLinkEntry) error {
 		return fmt.Errorf("db is nil")
 	}
 	var n int
-	if err := db.QueryRow(
+	if err := QueryRowContext(ctx, db, 
 		`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
 		strings.TrimSpace(e.BusinessID),
 		strings.ToLower(strings.TrimSpace(e.TxID)),
@@ -596,7 +596,7 @@ func dbAppendFinTxBreakdown(db sqlConn, e finTxBreakdownEntry) error {
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
-	_, err := db.Exec(
+	_, err := ExecContext(ctx, db, 
 		`INSERT INTO settle_tx_breakdown(
 			business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -624,7 +624,7 @@ func dbAppendFinTxUTXOLink(db sqlConn, e finTxUTXOLinkEntry) error {
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
-	_, err := db.Exec(
+	_, err := ExecContext(ctx, db, 
 		`INSERT INTO settle_tx_utxo_links(business_id,txid,utxo_id,io_side,utxo_role,amount_satoshi,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
 		strings.TrimSpace(e.BusinessID),
 		strings.ToLower(strings.TrimSpace(e.TxID)),
@@ -646,7 +646,7 @@ func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string, e finTxUTXOLink
 	}
 	// 第二轮规则：UTXO 明细必须挂到一条已成立的 TX 财务事实上
 	var existingRole sql.NullString
-	err := db.QueryRow(`SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
+	err := QueryRowContext(ctx, db, `SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("settle_tx_breakdown missing for (%s,%s) before appending utxo link", e.BusinessID, e.TxID)
@@ -695,7 +695,7 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	if e.SourceID == "" {
 		return fmt.Errorf("source_id is required")
 	}
-	_, err := db.Exec(
+	_, err := ExecContext(ctx, db, 
 		`INSERT INTO settle_process_events(process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(idempotency_key) DO UPDATE SET
@@ -766,7 +766,7 @@ func dbApplyDirectTransferBizPoolAccountingTx(tx *sql.Tx, in directTransferPoolA
 	}
 
 	var existingStatus string
-	if err := tx.QueryRow(`SELECT status FROM biz_pool WHERE pool_session_id=?`, sessionID).Scan(&existingStatus); err == nil {
+	if err := QueryRowContext(ctx, tx, `SELECT status FROM biz_pool WHERE pool_session_id=?`, sessionID).Scan(&existingStatus); err == nil {
 		existingStatus = strings.ToLower(strings.TrimSpace(existingStatus))
 		if existingStatus == "closed" && kind != PoolBusinessActionClose {
 			return fmt.Errorf("pool session %s is closed", sessionID)
@@ -786,7 +786,7 @@ func dbApplyDirectTransferBizPoolAccountingTx(tx *sql.Tx, in directTransferPoolA
 		CreatedAtUnix      int64
 		UpdatedAtUnix      int64
 	}
-	if err := tx.QueryRow(`
+	if err := QueryRowContext(ctx, tx, `
 		SELECT pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 		       pool_amount_satoshi,spend_tx_fee_satoshi,status,open_base_txid,created_at_unix,updated_at_unix
 		  FROM fact_pool_sessions

@@ -22,7 +22,7 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 			return map[string]utxoStateRow{}, fmt.Errorf("wallet address is empty")
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=?
 			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
@@ -77,7 +77,7 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=? AND state='unspent' AND utxo_id IN (` + strings.Join(placeholders, ",") + `)
 			ORDER BY created_at_unix ASC, utxo_id ASC`
-		rows, err := db.Query(query, args...)
+		rows, err := QueryContext(ctx, db, query, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -110,7 +110,7 @@ func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, addre
 		}
 		ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(address, "wallet:"))
 		walletID := walletIDByAddress(ownerPubkeyHex)
-		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,carrier_type,note
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,carrier_type,note
 			FROM fact_bsv_utxos
 			WHERE (owner_pubkey_hex=? OR owner_pubkey_hex=?)
 			  AND utxo_state='unspent' AND carrier_type='plain_bsv'
@@ -153,7 +153,7 @@ func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address
 			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,allocation_class,allocation_reason
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,allocation_class,allocation_reason
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=? AND state='unspent'
 			ORDER BY created_at_unix ASC, value_satoshi ASC, txid ASC, vout ASC`, walletID, address)
@@ -187,7 +187,7 @@ func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address
 			return []walletUTXOBasicRow{}, nil
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,allocation_class,allocation_reason,created_at_unix
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,allocation_class,allocation_reason,created_at_unix
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=? AND state='unspent' AND value_satoshi=1
 			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
@@ -221,7 +221,7 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 		if walletID == "" || address == "" {
 			return []walletLocalBroadcastRow{}, nil
 		}
-		rows, err := db.Query(`SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
+		rows, err := QueryContext(ctx, db, `SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
 			FROM fact_chain_payments
 			WHERE from_party_id=? AND payment_subtype='wallet_local_broadcast'
 			ORDER BY submitted_at_unix ASC, updated_at_unix ASC, txid ASC`, walletID)
@@ -254,11 +254,11 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 func dbResolveWalletAddress(ctx context.Context, store *clientDB) (string, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var address string
-		err := db.QueryRow(`SELECT address FROM wallet_utxo_sync_state ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
+		err := QueryRowContext(ctx, db, `SELECT address FROM wallet_utxo_sync_state ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
 		if err == nil && strings.TrimSpace(address) != "" {
 			return strings.TrimSpace(address), nil
 		}
-		err = db.QueryRow(`SELECT address FROM wallet_utxo ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
+		err = QueryRowContext(ctx, db, `SELECT address FROM wallet_utxo ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
 		if err != nil {
 			return "", err
 		}

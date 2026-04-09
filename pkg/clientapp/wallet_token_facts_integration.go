@@ -79,7 +79,7 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 
 	var count int
 	err := store.Do(ctx, func(db *sql.DB) error {
-		return db.QueryRow(
+		return QueryRowContext(ctx, db, 
 			`SELECT COUNT(1) FROM fact_token_lots WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=?`,
 			ownerPubkeyHex, assetKind, tokenID,
 		).Scan(&count)
@@ -539,7 +539,7 @@ func dbGetLotByCarrierUTXOConn(db sqlConn, utxoID string) (string, error) {
 		return "", nil
 	}
 	var lotID string
-	err := db.QueryRow(
+	err := QueryRowContext(ctx, db, 
 		`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
 		utxoID,
 	).Scan(&lotID)
@@ -563,7 +563,7 @@ func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string)
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		// 先查 carrier link 获取 lot_id
 		var lotID string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
 			utxoID,
 		).Scan(&lotID)
@@ -576,7 +576,7 @@ func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string)
 
 		// 再查 lot 获取 quantity
 		var qty string
-		err = db.QueryRow(
+		err = QueryRowContext(ctx, db, 
 			`SELECT quantity_text FROM fact_token_lots WHERE lot_id=?`,
 			lotID,
 		).Scan(&qty)

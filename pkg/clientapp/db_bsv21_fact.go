@@ -70,7 +70,7 @@ func upsertFactBSV21Create(ctx context.Context, store *clientDB, item factBSV21C
 		item.PayloadJSON = "{}"
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(`INSERT INTO fact_bsv21(
+		_, err := ExecContext(ctx, db, `INSERT INTO fact_bsv21(
 			token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(token_id) DO UPDATE SET
@@ -126,7 +126,7 @@ func appendFactBSV21Event(ctx context.Context, store *clientDB, item factBSV21Ev
 		item.PayloadJSON = "{}"
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(`INSERT INTO fact_bsv21_events(
+		_, err := ExecContext(ctx, db, `INSERT INTO fact_bsv21_events(
 			token_id,event_kind,event_at_unix,txid,note,payload_json
 		) VALUES(?,?,?,?,?,?)`,
 			item.TokenID,
@@ -147,7 +147,7 @@ func getFactBSV21ByTokenID(ctx context.Context, store *clientDB, tokenID string)
 			return factBSV21CreateItem{}, fmt.Errorf("token_id is required")
 		}
 		var item factBSV21CreateItem
-		err := db.QueryRow(`SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
+		err := QueryRowContext(ctx, db, `SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
 			FROM fact_bsv21
 			WHERE token_id=?`, tokenID).Scan(
 			&item.TokenID,

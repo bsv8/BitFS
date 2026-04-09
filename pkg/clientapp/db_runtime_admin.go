@@ -239,10 +239,10 @@ func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestrator
 		eventIDExpr := "CASE WHEN TRIM(idempotency_key)<>'' THEN idempotency_key ELSE '" + singleStepOrchestratorEventPrefix + "' || CAST(id AS TEXT) END"
 		countSQL := "SELECT COUNT(1) FROM (SELECT " + eventIDExpr + " AS event_id FROM proc_orchestrator_logs WHERE 1=1" + where + " GROUP BY 1)"
 		var out orchestratorLogPage
-		if err := db.QueryRow(countSQL, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&out.Total); err != nil {
 			return orchestratorLogPage{}, err
 		}
-		rows, err := db.Query(`WITH grouped AS (
+		rows, err := QueryContext(ctx, db, `WITH grouped AS (
 			SELECT
 				`+eventIDExpr+` AS event_id,
 				MIN(created_at_unix) AS started_at_unix,
@@ -298,12 +298,12 @@ func dbGetOrchestratorLogDetail(ctx context.Context, store *clientDB, eventID st
 			if perr != nil || id <= 0 {
 				return orchestratorLogDetail{}, fmt.Errorf("invalid event_id")
 			}
-			rows, err = db.Query(
+			rows, err = QueryContext(ctx, db, 
 				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 				FROM proc_orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
 			)
 		} else {
-			rows, err = db.Query(
+			rows, err = QueryContext(ctx, db, 
 				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 				FROM proc_orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
 			)
@@ -403,10 +403,10 @@ func dbListSchedulerTasks(ctx context.Context, store *clientDB, f schedulerTaskF
 			return schedulerTaskPage{}, fmt.Errorf("invalid order_by")
 		}
 		var out schedulerTaskPage
-		if err := db.QueryRow(`SELECT COUNT(1) FROM proc_scheduler_tasks`).Scan(&out.EnabledTaskCount); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM proc_scheduler_tasks`).Scan(&out.EnabledTaskCount); err != nil {
 			return schedulerTaskPage{}, err
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
@@ -505,10 +505,10 @@ func dbListSchedulerRuns(ctx context.Context, store *clientDB, f schedulerRunFil
 			whereSQL = " WHERE " + strings.Join(where, " AND ")
 		}
 		var out schedulerRunPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM proc_scheduler_task_runs"+whereSQL, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_scheduler_task_runs"+whereSQL, args...).Scan(&out.Total); err != nil {
 			return schedulerRunPage{}, err
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT id,task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
 			 FROM proc_scheduler_task_runs`+whereSQL+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -566,10 +566,10 @@ func dbListChainWorkerLogsByTable(ctx context.Context, store *clientDB, table st
 			args = append(args, f.Status)
 		}
 		var out chainWorkerLogPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM "+table+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM "+table+where, args...).Scan(&out.Total); err != nil {
 			return chainWorkerLogPage{}, err
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT id,triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json
 			 FROM `+table+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -624,10 +624,10 @@ func dbListWalletUTXOs(ctx context.Context, store *clientDB, f walletUTXOFilter)
 			args = append(args, like, like, like, like, like)
 		}
 		var out walletUTXOPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM wallet_utxo WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM wallet_utxo WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return walletUTXOPage{}, err
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 			 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -660,7 +660,7 @@ func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walle
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOItem, error) {
 		var item walletUTXOItem
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 			 FROM wallet_utxo WHERE utxo_id=?`,
 			utxoID,

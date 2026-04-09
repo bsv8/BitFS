@@ -132,13 +132,13 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 
 		// 计数查询
 		countSQL := `SELECT COUNT(1) FROM (` + unionAllQuery() + `) AS unified WHERE 1=1` + where
-		if err := db.QueryRow(countSQL, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&out.Total); err != nil {
 			return walletFundFlowPage{}, err
 		}
 
 		// 明细查询：全局排序 + 分页
 		detailSQL := `SELECT id, created_at_unix, flow_id, flow_type, ref_id, stage, direction, purpose, asset_kind, token_id, token_standard, amount_satoshi, used_satoshi, returned_satoshi, related_txid, note, payload, visit_id FROM (` + unionAllQuery() + `) AS unified WHERE 1=1` + where + ` ORDER BY created_at_unix DESC, flow_type, id DESC LIMIT ? OFFSET ?`
-		rows, err := db.Query(detailSQL, append(args, f.Limit, f.Offset)...)
+		rows, err := QueryContext(ctx, db, detailSQL, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return walletFundFlowPage{}, err
 		}
@@ -303,7 +303,7 @@ func queryUnionSourceByRefID(db *sql.DB, refID string, flowType string, src *uni
 	var err error
 	switch flowType {
 	case "chain_bsv_in":
-		err = db.QueryRow(`
+		err = QueryRowContext(ctx, db, `
 			SELECT rowid, created_at_unix, utxo_id, 'chain_bsv_in', utxo_id, 'confirmed', 'IN', carrier_type,
 				'BSV', '', '', value_satoshi, 0, 0, txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_bsv_utxos WHERE utxo_id=? AND utxo_state='unspent'`, refID).
@@ -311,7 +311,7 @@ func queryUnionSourceByRefID(db *sql.DB, refID string, flowType string, src *uni
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	case "chain_bsv_out":
-		err = db.QueryRow(`
+		err = QueryRowContext(ctx, db, `
 			SELECT rowid, spent_at_unix, utxo_id, 'chain_bsv_out', utxo_id, 'confirmed', 'OUT', carrier_type,
 				'BSV', '', '', value_satoshi, value_satoshi, 0, spent_by_txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_bsv_utxos WHERE utxo_id=? AND utxo_state='spent'`, refID).
@@ -319,7 +319,7 @@ func queryUnionSourceByRefID(db *sql.DB, refID string, flowType string, src *uni
 				&src.Direction, &src.Purpose, &src.AssetKind, &src.TokenID, &src.TokenStandard, &src.AmountSatoshi, &src.UsedSatoshi, &src.ReturnedSatoshi,
 				&src.RelatedTxID, &src.Note, &src.Payload, &src.VisitID)
 	case "chain_token_in":
-		err = db.QueryRow(`
+		err = QueryRowContext(ctx, db, `
 			SELECT rowid, created_at_unix, lot_id, 'chain_token_in', lot_id, 'confirmed', 'IN', token_standard,
 				token_standard, token_id, token_standard, 0, 0, 0, mint_txid, COALESCE(note,''), COALESCE(payload_json,'{}'), ''
 			FROM fact_token_lots WHERE lot_id=?`, refID).

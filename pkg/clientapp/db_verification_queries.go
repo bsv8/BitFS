@@ -96,7 +96,7 @@ func dbGetVerificationQueueSummary(ctx context.Context, store *clientDB) (*Verif
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (*VerificationQueueSummary, error) {
 		var summary VerificationQueueSummary
-		row := db.QueryRow(`
+		row := QueryRowContext(ctx, db, `
 			SELECT
 				COUNT(1),
 				COUNT(CASE WHEN status='pending' THEN 1 END),
@@ -131,7 +131,7 @@ func dbListFailedVerificationItems(ctx context.Context, store *clientDB, limit i
 		if includePending {
 			statusClause = "status IN ('pending', 'failed')"
 		}
-		rows, err := db.Query(`
+		rows, err := QueryContext(ctx, db, `
 			SELECT utxo_id, wallet_id, address, txid, vout, value_satoshi,
 			       error_message, retry_count, next_retry_at_unix,
 			       last_check_at_unix, updated_at_unix
@@ -216,7 +216,7 @@ func dbListVerificationItems(ctx context.Context, store *clientDB, f verificatio
 		`, whereSQL, orderBy)
 		args = append(args, f.Limit)
 
-		rows, err := db.Query(query, args...)
+		rows, err := QueryContext(ctx, db, query, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -252,7 +252,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 		}
 
 		// 1. confirmed_* 但 fact_bsv_utxos 不存在
-		rows1, err := db.Query(`
+		rows1, err := QueryContext(ctx, db, `
 			SELECT v.utxo_id, v.wallet_id, v.address, v.status, v.error_message
 			FROM wallet_utxo_token_verification v
 			LEFT JOIN fact_bsv_utxos f ON v.utxo_id = f.utxo_id
@@ -280,7 +280,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 		// - 只检查：verification 队列表中存在（或曾经存在）但状态仍 pending 的项
 		// - 用 verification 队列表为驱动，而不是 fact 表
 		// - 硬切版：同时检查 fact_bsv_utxos 和 fact_token_carrier_links
-		rows2, err := db.Query(`
+		rows2, err := QueryContext(ctx, db, `
 			SELECT v.utxo_id, v.wallet_id, v.address,
 			       v.status,
 			       COALESCE(f.carrier_type, c.carrier_utxo_id) as asset_kind
@@ -324,7 +324,7 @@ func dbResetVerificationToPending(ctx context.Context, store *clientDB, utxoID s
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		now := time.Now().Unix()
-		res, err := db.Exec(`
+		res, err := ExecContext(ctx, db, `
 			UPDATE wallet_utxo_token_verification
 			SET status='pending', retry_count=0, error_message='',
 			    next_retry_at_unix=?, updated_at_unix=?
@@ -380,7 +380,7 @@ func dbBatchRetryFailed(ctx context.Context, store *clientDB, walletID string, a
 		// args 必须先放 SET 的两个 now，再放 WHERE 的参数
 		fullArgs := append([]any{now, now}, args...)
 
-		res, err := db.Exec(query, fullArgs...)
+		res, err := ExecContext(ctx, db, query, fullArgs...)
 		if err != nil {
 			return err
 		}
@@ -406,7 +406,7 @@ func dbAutoFailExhaustedRetries(ctx context.Context, store *clientDB) (int, erro
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int, error) {
 		now := time.Now().Unix()
-		res, err := db.Exec(`
+		res, err := ExecContext(ctx, db, `
 			UPDATE wallet_utxo_token_verification
 			SET status='failed', error_message='max retries exceeded',
 			    updated_at_unix=?

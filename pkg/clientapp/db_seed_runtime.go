@@ -27,7 +27,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		var out result
 		var unitPrice uint64
 		var policyFound bool
-		if err := db.QueryRow(
+		if err := QueryRowContext(ctx, db, 
 			`SELECT floor_unit_price_sat_per_64k
 			   FROM biz_seed_pricing_policy
 			  WHERE seed_hash=?`,
@@ -39,7 +39,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		}
 
 		var seed sellerSeed
-		if err := db.QueryRow(
+		if err := QueryRowContext(ctx, db, 
 			`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
 			   FROM biz_seeds
 			  WHERE seed_hash=?`,

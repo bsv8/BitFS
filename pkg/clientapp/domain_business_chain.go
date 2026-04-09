@@ -116,7 +116,7 @@ func finalizeDomainRegisterSettlement(
 	}
 
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`UPDATE settle_business_settlements SET status=?, target_id=?, error_message=?, updated_at_unix=strftime('%s','now') WHERE settlement_id=?`,
 			status,
 			targetID,

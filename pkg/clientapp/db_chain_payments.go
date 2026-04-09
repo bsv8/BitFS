@@ -120,9 +120,9 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 	var existingID int64
 	var existingSubmittedAt int64
 	var existingWalletObservedAt int64
-	err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&existingID)
+	err := QueryRowContext(ctx, db, `SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&existingID)
 	if err == nil {
-		if err := db.QueryRow(`SELECT submitted_at_unix,wallet_observed_at_unix FROM fact_chain_payments WHERE id=?`, existingID).Scan(&existingSubmittedAt, &existingWalletObservedAt); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT submitted_at_unix,wallet_observed_at_unix FROM fact_chain_payments WHERE id=?`, existingID).Scan(&existingSubmittedAt, &existingWalletObservedAt); err != nil {
 			return 0, err
 		}
 		if submittedAt < existingSubmittedAt {
@@ -132,7 +132,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 			walletObservedAt = existingWalletObservedAt
 		}
 		// 存在则更新
-		_, err = db.Exec(
+		_, err = ExecContext(ctx, db, 
 			`UPDATE fact_chain_payments SET
 				payment_subtype=?,
 				status=?,
@@ -183,7 +183,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(db sqlConn, e chainPaymentEntry, 
 	}
 
 	// 不存在则插入
-	res, err := db.Exec(
+	res, err := ExecContext(ctx, db, 
 		`INSERT INTO fact_chain_payments(
 			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
 			block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
@@ -236,7 +236,7 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 			return 0, fmt.Errorf("txid is required")
 		}
 		var id int64
-		err := db.QueryRow(`SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&id)
+		err := QueryRowContext(ctx, db, `SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&id)
 		if err != nil {
 			return 0, err
 		}
@@ -251,7 +251,7 @@ func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
 		var exists int
-		err := db.QueryRow(`SELECT 1 FROM fact_chain_payments WHERE id=?`, id).Scan(&exists)
+		err := QueryRowContext(ctx, db, `SELECT 1 FROM fact_chain_payments WHERE id=?`, id).Scan(&exists)
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
@@ -271,7 +271,7 @@ func dbWalletUTXOExistsConn(db sqlConn, utxoID string) (bool, error) {
 		return false, fmt.Errorf("utxo_id is required")
 	}
 	var one int
-	err := db.QueryRow(`SELECT 1 FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&one)
+	err := QueryRowContext(ctx, db, `SELECT 1 FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&one)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
@@ -290,7 +290,7 @@ func dbWalletUTXOValueConn(db sqlConn, utxoID string) (int64, bool, error) {
 		return 0, false, fmt.Errorf("utxo_id is required")
 	}
 	var value int64
-	err := db.QueryRow(`SELECT value_satoshi FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&value)
+	err := QueryRowContext(ctx, db, `SELECT value_satoshi FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&value)
 	if err == sql.ErrNoRows {
 		return 0, false, nil
 	}

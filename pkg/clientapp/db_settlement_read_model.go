@@ -228,7 +228,7 @@ func GetSettlementByChainPaymentID(ctx context.Context, store *clientDB, chainPa
 	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 			 FROM settle_business_settlements WHERE settlement_method='chain' AND target_id=?`,
 			fmt.Sprintf("%d", chainPaymentID),

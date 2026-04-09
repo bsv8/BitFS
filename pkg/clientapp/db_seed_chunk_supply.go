@@ -23,7 +23,7 @@ func dbMergeSeedChunkSupply(ctx context.Context, store *clientDB, seedHash strin
 			return nil, err
 		}
 		merged := normalizeChunkIndexes(append(existing, incoming...), chunkCount)
-		if err := dbReplaceSeedChunkSupplyTx(tx, seedHash, merged); err != nil {
+		if err := dbReplaceSeedChunkSupplyTx(ctx, tx, seedHash, merged); err != nil {
 			return nil, err
 		}
 		return merged, nil
@@ -35,23 +35,23 @@ func dbReplaceSeedChunkSupply(ctx context.Context, store *clientDB, seedHash str
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Tx(ctx, func(tx *sql.Tx) error {
-		return dbReplaceSeedChunkSupplyTx(tx, seedHash, availableChunkIndexes)
+		return dbReplaceSeedChunkSupplyTx(ctx, tx, seedHash, availableChunkIndexes)
 	})
 }
 
 func dbListSeedChunkSupply(ctx context.Context, store *clientDB, seedHash string) ([]uint32, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]uint32, error) {
-		return dbListSeedChunkSupplyQuery(db, seedHash)
+		return dbListSeedChunkSupplyQuery(ctx, db, seedHash)
 	})
 }
 
 func dbIsSeedChunkAvailable(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) (bool, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
-		return dbIsSeedChunkAvailableQuery(db, seedHash, chunkIndex)
+		return dbIsSeedChunkAvailableQuery(ctx, db, seedHash, chunkIndex)
 	})
 }
 
-func dbReplaceSeedChunkSupplyTx(tx *sql.Tx, seedHash string, indexes []uint32) error {
+func dbReplaceSeedChunkSupplyTx(ctx context.Context, tx *sql.Tx, seedHash string, indexes []uint32) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -60,26 +60,21 @@ func dbReplaceSeedChunkSupplyTx(tx *sql.Tx, seedHash string, indexes []uint32) e
 		return fmt.Errorf("seed_hash required")
 	}
 	indexes = normalizeChunkIndexes(indexes, 0)
-	if _, err := tx.Exec(`DELETE FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash); err != nil {
+	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_chunk_supply WHERE seed_hash=?`, seedHash); err != nil {
 		return err
 	}
 	if len(indexes) == 0 {
 		return nil
 	}
-	stmt, err := tx.Prepare(`INSERT INTO biz_seed_chunk_supply(seed_hash,chunk_index) VALUES(?,?)`)
-	if err != nil {
-		return err
-	}
-	defer stmt.Close()
 	for _, idx := range indexes {
-		if _, err := stmt.Exec(seedHash, idx); err != nil {
+		if _, err := ExecContext(ctx, tx, `INSERT INTO biz_seed_chunk_supply(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func dbListSeedChunkSupplyTx(tx *sql.Tx, seedHash string) ([]uint32, error) {
+func dbListSeedChunkSupplyTx(ctx context.Context, tx *sql.Tx, seedHash string) ([]uint32, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
@@ -87,13 +82,13 @@ func dbListSeedChunkSupplyTx(tx *sql.Tx, seedHash string) ([]uint32, error) {
 	if seedHash == "" {
 		return nil, fmt.Errorf("seed_hash required")
 	}
-	return dbListSeedChunkSupplyQuery(tx, seedHash)
+	return dbListSeedChunkSupplyQuery(ctx, tx, seedHash)
 }
 
-func dbListSeedChunkSupplyQuery(queryer interface {
-	Query(string, ...any) (*sql.Rows, error)
+func dbListSeedChunkSupplyQuery(ctx context.Context, queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, seedHash string) ([]uint32, error) {
-	rows, err := queryer.Query(`SELECT chunk_index FROM biz_seed_chunk_supply WHERE seed_hash=? ORDER BY chunk_index ASC`, normalizeSeedHashHex(seedHash))
+	rows, err := QueryContext(ctx, queryer, `SELECT chunk_index FROM biz_seed_chunk_supply WHERE seed_hash=? ORDER BY chunk_index ASC`, normalizeSeedHashHex(seedHash))
 	if err != nil {
 		return nil, err
 	}
@@ -109,15 +104,15 @@ func dbListSeedChunkSupplyQuery(queryer interface {
 	return out, rows.Err()
 }
 
-func dbIsSeedChunkAvailableQuery(queryer interface {
-	QueryRow(string, ...any) *sql.Row
+func dbIsSeedChunkAvailableQuery(ctx context.Context, queryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, seedHash string, chunkIndex uint32) (bool, error) {
 	seedHash = normalizeSeedHashHex(seedHash)
 	if seedHash == "" {
 		return false, fmt.Errorf("seed_hash required")
 	}
 	var one int
-	err := queryer.QueryRow(`SELECT 1 FROM biz_seed_chunk_supply WHERE seed_hash=? AND chunk_index=? LIMIT 1`, seedHash, chunkIndex).Scan(&one)
+	err := QueryRowContext(ctx, queryer, `SELECT 1 FROM biz_seed_chunk_supply WHERE seed_hash=? AND chunk_index=? LIMIT 1`, seedHash, chunkIndex).Scan(&one)
 	if err == nil {
 		return true, nil
 	}

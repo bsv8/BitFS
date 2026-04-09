@@ -17,7 +17,7 @@ func loadWalletLocalBroadcastTxsTx(tx *sql.Tx, walletID string, address string) 
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
-	rows, err := tx.Query(
+	rows, err := QueryContext(ctx, tx, 
 		`SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
 		 FROM fact_chain_payments
 		 WHERE from_party_id=? AND payment_subtype='wallet_local_broadcast' AND submitted_at_unix>0
@@ -209,7 +209,7 @@ func applyWalletUTXODiffTx(ctx context.Context, tx *sql.Tx, current map[string]u
 			updateScope.Intent = "wallet_utxo_upsert_update"
 			var writeErr error
 			sqliteactor.WithTraceScope(updateScope, func() {
-				_, writeErr = tx.Exec(
+				_, writeErr = ExecContext(ctx, tx, 
 					`UPDATE wallet_utxo
 					 SET txid=?,vout=?,value_satoshi=?,state=?,allocation_class=?,allocation_reason=?,created_txid=?,spent_txid=?,updated_at_unix=?,spent_at_unix=?
 					 WHERE utxo_id=? AND wallet_id=? AND address=?`,
@@ -230,7 +230,7 @@ func applyWalletUTXODiffTx(ctx context.Context, tx *sql.Tx, current map[string]u
 		insertScope.Intent = "wallet_utxo_upsert_insert"
 		var writeErr error
 		sqliteactor.WithTraceScope(insertScope, func() {
-			_, writeErr = tx.Exec(
+			_, writeErr = ExecContext(ctx, tx, 
 				`INSERT INTO wallet_utxo(
 					utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -366,7 +366,7 @@ func markObservedWalletLocalBroadcastTxsTx(tx *sql.Tx, observedTxIDs map[string]
 	if len(holders) == 0 {
 		return nil
 	}
-	_, err := tx.Exec(
+	_, err := ExecContext(ctx, tx, 
 		`UPDATE fact_chain_payments
 		 SET wallet_observed_at_unix=CASE WHEN wallet_observed_at_unix>0 THEN wallet_observed_at_unix ELSE ? END,
 		     updated_at_unix=?

@@ -183,10 +183,10 @@ func dbListDemandQuotes(ctx context.Context, store *clientDB, f demandQuoteFilte
 			args = append(args, f.SellerPubHex)
 		}
 		var out demandQuotePage
-		if err := db.QueryRow("SELECT COUNT(1) FROM biz_demand_quotes WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM biz_demand_quotes WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return demandQuotePage{}, err
 		}
-		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := QueryContext(ctx, db, `SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return demandQuotePage{}, err
 		}
@@ -214,7 +214,7 @@ func dbGetDemandQuoteItem(ctx context.Context, store *clientDB, id int64) (deman
 		return demandQuoteItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (demandQuoteItem, error) {
-		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE id=?`, id)
+		row := QueryRowContext(ctx, db, `SELECT id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix FROM biz_demand_quotes WHERE id=?`, id)
 		it, err := scanDemandQuoteItem(row)
 		if err != nil {
 			return demandQuoteItem{}, err
@@ -248,7 +248,7 @@ func hydrateDemandQuoteArbiters(ctx context.Context, db *sql.DB, items []demandQ
 		args = append(args, id)
 	}
 	query := `SELECT quote_id,arbiter_pub_hex FROM biz_demand_quote_arbiters WHERE quote_id IN (` + strings.Join(placeholders, ",") + `) ORDER BY quote_id ASC, id ASC`
-	rows, err := db.QueryContext(ctx, query, args...)
+	rows, err := QueryContext(ctx, db, query, args...)
 	if err != nil {
 		return err
 	}
@@ -302,10 +302,10 @@ func dbListDirectTransferPoolsDebug(ctx context.Context, store *clientDB, f dire
 			args = append(args, f.ArbiterPubHex)
 		}
 		var out directTransferPoolPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM proc_direct_transfer_pools WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_direct_transfer_pools WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return directTransferPoolPage{}, err
 		}
-		rows, err := db.Query(`SELECT
+		rows, err := QueryContext(ctx, db, `SELECT
 			session_id,deal_id,
 			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
@@ -338,7 +338,7 @@ func dbGetDirectTransferPoolItemDebug(ctx context.Context, store *clientDB, sess
 		return directTransferPoolItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (directTransferPoolItem, error) {
-		row := db.QueryRow(`SELECT
+		row := QueryRowContext(ctx, db, `SELECT
 			session_id,deal_id,
 			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
@@ -373,10 +373,10 @@ func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (pu
 			args = append(args, strings.ToLower(strings.TrimSpace(f.Status)))
 		}
 		var out purchasePage
-		if err := db.QueryRow("SELECT COUNT(1) FROM biz_purchases WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM biz_purchases WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return purchasePage{}, err
 		}
-		rows, err := db.Query(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
+		rows, err := QueryContext(ctx, db, `SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
 			FROM biz_purchases WHERE 1=1`+where+` ORDER BY created_at_unix DESC,id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return purchasePage{}, err
@@ -402,7 +402,7 @@ func dbGetPurchaseItem(ctx context.Context, store *clientDB, id int64) (purchase
 		return purchaseItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (purchaseItem, error) {
-		row := db.QueryRow(`SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix FROM biz_purchases WHERE id=?`, id)
+		row := QueryRowContext(ctx, db, `SELECT id,demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix FROM biz_purchases WHERE id=?`, id)
 		var it purchaseItem
 		if err := row.Scan(&it.ID, &it.DemandID, &it.SellerPubHex, &it.ArbiterPubHex, &it.ChunkIndex, &it.ObjectHash, &it.AmountSatoshi, &it.Status, &it.ErrorMessage, &it.CreatedAtUnix, &it.FinishedAtUnix); err != nil {
 			return purchaseItem{}, err
@@ -424,7 +424,7 @@ func dbSummarizeDemandPurchases(ctx context.Context, store *clientDB, demandID s
 	return clientDBValue(ctx, store, func(db *sql.DB) (purchaseDemandSummary, error) {
 		var out purchaseDemandSummary
 		out.DemandID = demandID
-		err := db.QueryRow(`
+		err := QueryRowContext(ctx, db, `
 			SELECT
 				COALESCE(SUM(CASE WHEN status='done' AND chunk_index=0 THEN 1 ELSE 0 END),0),
 				COALESCE(SUM(CASE WHEN status='done' AND chunk_index>=1 THEN 1 ELSE 0 END),0),
@@ -463,10 +463,10 @@ func dbListTxHistory(ctx context.Context, store *clientDB, f txHistoryFilter) (t
 			args = append(args, like, like, like)
 		}
 		var out txHistoryPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind=? AND 1=1"+where, append([]any{PoolFactEventKindTxHistory}, args...)...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind=? AND 1=1"+where, append([]any{PoolFactEventKindTxHistory}, args...)...).Scan(&out.Total); err != nil {
 			return txHistoryPage{}, err
 		}
-		rows, err := db.Query("SELECT id,created_at_unix,gateway_pubkey_hex,event_kind,direction,amount_satoshi,purpose,note,pool_session_id,msg_id,sequence_num,cycle_index,payload_json FROM fact_pool_session_events WHERE event_kind=? AND 1=1"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", append([]any{PoolFactEventKindTxHistory}, append(args, f.Limit, f.Offset)...)...)
+		rows, err := QueryContext(ctx, db, "SELECT id,created_at_unix,gateway_pubkey_hex,event_kind,direction,amount_satoshi,purpose,note,pool_session_id,msg_id,sequence_num,cycle_index,payload_json FROM fact_pool_session_events WHERE event_kind=? AND 1=1"+where+" ORDER BY id DESC LIMIT ? OFFSET ?", append([]any{PoolFactEventKindTxHistory}, append(args, f.Limit, f.Offset)...)...)
 		if err != nil {
 			return txHistoryPage{}, err
 		}
@@ -491,7 +491,7 @@ func dbGetTxHistoryItem(ctx context.Context, store *clientDB, id int64) (txHisto
 		return txHistoryItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (txHistoryItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,event_kind,direction,amount_satoshi,purpose,note,pool_session_id,msg_id,sequence_num,cycle_index,payload_json FROM fact_pool_session_events WHERE id=? AND event_kind=?`, id, PoolFactEventKindTxHistory)
+		row := QueryRowContext(ctx, db, `SELECT id,created_at_unix,gateway_pubkey_hex,event_kind,direction,amount_satoshi,purpose,note,pool_session_id,msg_id,sequence_num,cycle_index,payload_json FROM fact_pool_session_events WHERE id=? AND event_kind=?`, id, PoolFactEventKindTxHistory)
 		return scanTxHistoryItem(row)
 	})
 }
@@ -516,10 +516,10 @@ func dbListGatewayEvents(ctx context.Context, store *clientDB, f gatewayEventFil
 			args = append(args, f.Action)
 		}
 		var out gatewayEventPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM proc_gateway_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_gateway_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return gatewayEventPage{}, err
 		}
-		rows, err := db.Query(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM proc_gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
+		rows, err := QueryContext(ctx, db, `SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM proc_gateway_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
 		if err != nil {
 			return gatewayEventPage{}, err
 		}
@@ -544,7 +544,7 @@ func dbGetGatewayEventItem(ctx context.Context, store *clientDB, id int64) (gate
 		return gatewayEventItem{}, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (gatewayEventItem, error) {
-		row := db.QueryRow(`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM proc_gateway_events WHERE id=?`, id)
+		row := QueryRowContext(ctx, db, `SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json FROM proc_gateway_events WHERE id=?`, id)
 		return scanGatewayEventItem(row)
 	})
 }

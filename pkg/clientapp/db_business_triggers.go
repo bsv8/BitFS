@@ -72,7 +72,7 @@ func dbAppendBusinessTrigger(ctx context.Context, store *clientDB, e businessTri
 		e.CreatedAtUnix = time.Now().Unix()
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO biz_business_triggers(
 				trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
 			) VALUES(?,?,?,?,?,?,?,?)
@@ -105,7 +105,7 @@ func dbGetBusinessTrigger(ctx context.Context, store *clientDB, triggerID string
 	return clientDBValue(ctx, store, func(db *sql.DB) (businessTriggerItem, error) {
 		var item businessTriggerItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
 			 FROM biz_business_triggers WHERE trigger_id=?`,
 			triggerID,
@@ -166,13 +166,13 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, f businessTrig
 			args = append(args, f.TriggerRole)
 		}
 		var out businessTriggerPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM biz_business_triggers WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM biz_business_triggers WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return businessTriggerPage{}, err
 		}
 		if f.Limit <= 0 {
 			f.Limit = 20
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
 			 FROM biz_business_triggers WHERE 1=1`+where+` ORDER BY created_at_unix DESC,trigger_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -212,7 +212,7 @@ func dbListBusinessesByTrigger(ctx context.Context, store *clientDB, triggerType
 		return nil, fmt.Errorf("trigger_type and trigger_id_value are required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]string, error) {
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT DISTINCT business_id FROM biz_business_triggers 
 			 WHERE trigger_type=? AND trigger_id_value=? 
 			 ORDER BY created_at_unix DESC`,

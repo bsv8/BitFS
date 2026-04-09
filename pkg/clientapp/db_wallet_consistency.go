@@ -51,10 +51,10 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 	return clientDBValue(ctx, store, func(db *sql.DB) (TokenTxDualLineConsistency, error) {
 		out := TokenTxDualLineConsistency{TxID: txid}
 		var bsvCycleID int64
-		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, txid).Scan(&bsvCycleID); err == nil {
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, txid).Scan(&bsvCycleID); err == nil {
 			out.HasChainBSVCycle = true
 			var count int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
 			if count > 0 {
@@ -66,7 +66,7 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 
 		if out.HasChainBSVCycle {
 			var count int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
 			if count > 0 {
@@ -75,10 +75,10 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 		}
 
 		var tokenCycleID int64
-		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleID); err == nil {
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleID); err == nil {
 			out.HasChainTokenCycle = true
 			var count int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
 			if count > 0 {
@@ -116,16 +116,16 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	return clientDBValue(ctx, store, func(db *sql.DB) (ConfirmedBSVSpendConsistency, error) {
 		out := ConfirmedBSVSpendConsistency{TxID: txid}
 		var cycleID int64
-		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleID); err == nil {
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleID); err == nil {
 			out.HasConfirmedCycle = true
 			var count int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV'`, cycleID).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV'`, cycleID).Scan(&count); err != nil {
 				return ConfirmedBSVSpendConsistency{}, err
 			}
 			if count > 0 {
 				out.HasBSVSettlementFact = true
 			}
-			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_bsv_utxos WHERE spent_by_txid=? AND utxo_state='spent'`, txid).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE spent_by_txid=? AND utxo_state='spent'`, txid).Scan(&count); err != nil {
 				return ConfirmedBSVSpendConsistency{}, err
 			}
 			if count > 0 {
@@ -164,13 +164,13 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		var cycleID int64
-		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleID); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleID); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("confirmed settlement cycle not found for txid=%s", txid)
 			}
 			return err
 		}
-		rows, err := db.Query(`SELECT source_utxo_id, used_satoshi
+		rows, err := QueryContext(ctx, db, `SELECT source_utxo_id, used_satoshi
 			FROM fact_settlement_records
 			WHERE settlement_cycle_id=? AND asset_type='BSV' AND state='confirmed' AND source_utxo_id<>''`,
 			cycleID)

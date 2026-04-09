@@ -93,7 +93,7 @@ func dbUpsertBusinessSettlement(ctx context.Context, store *clientDB, e business
 		e.UpdatedAtUnix = now
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO settle_business_settlements(
 				settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -132,7 +132,7 @@ func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID 
 	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 			 FROM settle_business_settlements WHERE settlement_id=?`,
 			settlementID,
@@ -161,7 +161,7 @@ func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, b
 	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 			 FROM settle_business_settlements WHERE business_id=?`,
 			businessID,
@@ -224,13 +224,13 @@ func dbListBusinessSettlements(ctx context.Context, store *clientDB, f businessS
 			args = append(args, f.TargetID)
 		}
 		var out businessSettlementPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM settle_business_settlements WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM settle_business_settlements WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return businessSettlementPage{}, err
 		}
 		if f.Limit <= 0 {
 			f.Limit = 20
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 			 FROM settle_business_settlements WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,settlement_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -270,7 +270,7 @@ func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, sett
 		return fmt.Errorf("settlement_id is required")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`UPDATE settle_business_settlements SET status=?, error_message=?, updated_at_unix=? WHERE settlement_id=?`,
 			strings.TrimSpace(status),
 			strings.TrimSpace(errorMessage),
@@ -291,7 +291,7 @@ func dbUpdateBusinessSettlementStatusByBusinessID(ctx context.Context, store *cl
 		return fmt.Errorf("business_id is required")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`UPDATE settle_business_settlements SET status=?, error_message=?, updated_at_unix=? WHERE business_id=?`,
 			strings.TrimSpace(status),
 			strings.TrimSpace(errorMessage),
@@ -312,7 +312,7 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 		return fmt.Errorf("settlement_id is required")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`UPDATE settle_business_settlements SET target_type=?, target_id=?, error_message='', updated_at_unix=? WHERE settlement_id=?`,
 			strings.TrimSpace(targetType),
 			strings.TrimSpace(targetID),
@@ -358,7 +358,7 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 		for _, bizID := range businessIDs {
 			var item financeBusinessItem
 			var payload string
-			err := db.QueryRow(
+			err := QueryRowContext(ctx, db, 
 				`SELECT business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 				 FROM settle_businesses WHERE business_id=?`,
 				bizID,
@@ -398,7 +398,7 @@ func dbGetLatestBusinessBySettlementCycleID(ctx context.Context, store *clientDB
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessItem, error) {
 		var out financeBusinessItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM settle_businesses
 			 WHERE source_type='settlement_cycle' AND source_id=?
@@ -482,7 +482,7 @@ func GetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (ChainP
 	return clientDBValue(ctx, store, func(db *sql.DB) (ChainPaymentItem, error) {
 		var item ChainPaymentItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
 					block_height,occurred_at_unix,from_party_id,to_party_id,updated_at_unix,payload_json
 			 FROM fact_chain_payments WHERE id=?`,
@@ -623,7 +623,7 @@ func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (Pool
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (PoolAllocationItem, error) {
 		var item PoolAllocationItem
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 			 FROM fact_pool_session_events WHERE id=?`,
@@ -651,7 +651,7 @@ func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID stri
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (PoolSessionItem, error) {
 		var item PoolSessionItem
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 					gateway_pubkey_hex,pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,
 					open_base_txid,status,created_at_unix,updated_at_unix
@@ -679,7 +679,7 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 		return nil, fmt.Errorf("pool_session_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]PoolAllocationItem, error) {
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 			 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind=? ORDER BY allocation_no DESC`,
@@ -765,7 +765,7 @@ func GetSettlementByPoolAllocationID(ctx context.Context, store *clientDB, poolA
 	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
 			 FROM settle_business_settlements WHERE settlement_method='pool' AND target_id=?`,
 			fmt.Sprintf("%d", poolAllocationID),

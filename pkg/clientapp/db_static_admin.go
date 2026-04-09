@@ -39,7 +39,7 @@ func dbGetSeedFilePathByHash(ctx context.Context, store *clientDB, seedHash stri
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedFilePath string
-		err := db.QueryRow(`SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedFilePath)
+		err := QueryRowContext(ctx, db, `SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedFilePath)
 		if err != nil {
 			return "", err
 		}
@@ -54,7 +54,7 @@ func dbListLiveWorkspaceEntries(ctx context.Context, store *clientDB, pattern st
 	needle := strings.Trim(pattern, "%")
 	needle = strings.ReplaceAll(needle, "/", string(filepath.Separator))
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]liveWorkspaceEntry, error) {
-		rows, err := db.Query(`SELECT workspace_path,file_path,seed_hash FROM biz_workspace_files ORDER BY workspace_path ASC,file_path ASC`)
+		rows, err := QueryContext(ctx, db, `SELECT workspace_path,file_path,seed_hash FROM biz_workspace_files ORDER BY workspace_path ASC,file_path ASC`)
 		if err != nil {
 			return nil, err
 		}
@@ -99,10 +99,10 @@ func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, prefi
 	}
 	return clientDBTxValue(ctx, store, func(tx *sql.Tx) (int64, error) {
 		var before int64
-		if err := tx.QueryRow(`SELECT COUNT(1) FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+streamID+"/%").Scan(&before); err != nil {
+		if err := QueryRowContext(ctx, tx, `SELECT COUNT(1) FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+streamID+"/%").Scan(&before); err != nil {
 			return 0, err
 		}
-		if _, err := tx.Exec(`DELETE FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+streamID+"/%"); err != nil {
+		if _, err := ExecContext(ctx, tx, `DELETE FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+streamID+"/%"); err != nil {
 			return 0, err
 		}
 		return before, nil
@@ -188,7 +188,7 @@ func dbGetWorkspaceFileSeedHash(ctx context.Context, store *clientDB, path strin
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		var seedHash string
-		err := db.QueryRow(`SELECT seed_hash FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, resolved.WorkspacePath, resolved.FilePath).Scan(&seedHash)
+		err := QueryRowContext(ctx, db, `SELECT seed_hash FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, resolved.WorkspacePath, resolved.FilePath).Scan(&seedHash)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return "", nil
@@ -209,7 +209,7 @@ func dbGetStaticFilePrice(ctx context.Context, store *clientDB, path string) (st
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (staticFilePriceRecord, error) {
 		var out staticFilePriceRecord
-		err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k,resale_discount_bps,updated_at_unix FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash).
+		err := QueryRowContext(ctx, db, `SELECT floor_unit_price_sat_per_64k,resale_discount_bps,updated_at_unix FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash).
 			Scan(&out.FloorPriceSatPer64K, &out.ResaleDiscountBPS, &out.UpdatedAtUnix)
 		if err != nil {
 			if err == sql.ErrNoRows {
@@ -255,7 +255,7 @@ func dbBindStaticPriceToSeed2(ctx context.Context, store *clientDB, path string,
 		return "", 0, 0, false, err
 	}
 	var chunkCount uint32
-	if err := store.db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+	if err := store.QueryRowContext(ctx, db, `SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 		return "", 0, 0, false, err
 	}
 	seedPrice := floor * uint64(chunkCount)

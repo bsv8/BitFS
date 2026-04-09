@@ -77,7 +77,7 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 		e.UpdatedAtUnix = now
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`INSERT INTO biz_front_orders(
 				front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
@@ -119,7 +119,7 @@ func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) 
 	return clientDBValue(ctx, store, func(db *sql.DB) (frontOrderItem, error) {
 		var item frontOrderItem
 		var payload string
-		err := db.QueryRow(
+		err := QueryRowContext(ctx, db, 
 			`SELECT front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 			 FROM biz_front_orders WHERE front_order_id=?`,
 			frontOrderID,
@@ -173,13 +173,13 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 			args = append(args, f.Status)
 		}
 		var out frontOrderPage
-		if err := db.QueryRow("SELECT COUNT(1) FROM biz_front_orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM biz_front_orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return frontOrderPage{}, err
 		}
 		if f.Limit <= 0 {
 			f.Limit = 20
 		}
-		rows, err := db.Query(
+		rows, err := QueryContext(ctx, db, 
 			`SELECT front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 			 FROM biz_front_orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,front_order_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -219,7 +219,7 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 		return fmt.Errorf("front_order_id is required")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := db.Exec(
+		_, err := ExecContext(ctx, db, 
 			`UPDATE biz_front_orders SET status=?, updated_at_unix=? WHERE front_order_id=?`,
 			strings.TrimSpace(status),
 			time.Now().Unix(),

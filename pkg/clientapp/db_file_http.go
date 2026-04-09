@@ -48,7 +48,7 @@ func dbGetFileDownloadState(ctx context.Context, store *clientDB, seedHash strin
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
-		err := db.QueryRow(`SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,updated_at_unix FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
+		err := QueryRowContext(ctx, db, `SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,updated_at_unix FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
 			Scan(&out.FilePath, &out.FileSize, &out.ChunkCount, &out.Completed, &out.PaidSats, &out.Status, &out.DemandID, &out.LastError, &out.StatusJSON, &out.UpdatedAtUnix)
 		if err != nil {
 			return fileDownloadStateRow{}, err
@@ -63,7 +63,7 @@ func dbGetFileDownloadStateNoUpdated(ctx context.Context, store *clientDB, seedH
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
-		err := db.QueryRow(`SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
+		err := QueryRowContext(ctx, db, `SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
 			Scan(&out.FilePath, &out.FileSize, &out.ChunkCount, &out.Completed, &out.PaidSats, &out.Status, &out.DemandID, &out.LastError, &out.StatusJSON)
 		if err != nil {
 			return fileDownloadStateRow{}, err
@@ -78,7 +78,7 @@ func dbEnsureFileDownloadQueued(ctx context.Context, store *clientDB, seedHash s
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		now := time.Now().Unix()
-		_, err := db.Exec(`INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 			seedHash, partPath, 0, 0, 0, 0, "queued", "", "", statusJSON, now, now)
 		return err
 	})
@@ -89,7 +89,7 @@ func dbListFileDownloadChunks(ctx context.Context, store *clientDB, seedHash str
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]fileDownloadChunkRow, error) {
-		rows, err := db.Query(`SELECT chunk_index,status FROM proc_file_download_chunks WHERE seed_hash=?`, seedHash)
+		rows, err := QueryContext(ctx, db, `SELECT chunk_index,status FROM proc_file_download_chunks WHERE seed_hash=?`, seedHash)
 		if err != nil {
 			return nil, err
 		}
@@ -115,7 +115,7 @@ func dbUpsertFileDownloadState(ctx context.Context, store *clientDB, seedHash st
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		now := time.Now().Unix()
-		_, err := db.Exec(`INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix)
+		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 			ON CONFLICT(seed_hash) DO UPDATE SET
 				file_path=excluded.file_path,
@@ -139,7 +139,7 @@ func dbUpsertFileDownloadChunkDone(ctx context.Context, store *clientDB, seedHas
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		now := time.Now().Unix()
-		_, err := db.Exec(`INSERT INTO proc_file_download_chunks(seed_hash,chunk_index,status,seller_pubkey_hex,price_sats,updated_at_unix)
+		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_download_chunks(seed_hash,chunk_index,status,seller_pubkey_hex,price_sats,updated_at_unix)
 			VALUES(?,?,?,?,?,?)
 			ON CONFLICT(seed_hash,chunk_index) DO UPDATE SET
 				status=excluded.status,
@@ -162,7 +162,7 @@ func dbFindLatestWorkspaceFileBySeedHash(ctx context.Context, store *clientDB, s
 	out, err := clientDBValue(ctx, store, func(db *sql.DB) (result, error) {
 		var out result
 		var workspacePath, filePath string
-		if err := db.QueryRow(`SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
 			return out, err
 		}
 		out.path = workspacePathJoin(workspacePath, filePath)

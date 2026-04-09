@@ -73,7 +73,7 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 
 	err := store.Do(ctx, func(db *sql.DB) error {
 		// 查询所有 domain 类型的 settlements
-		rows, err := db.Query(`
+		rows, err := QueryContext(ctx, db, `
 			SELECT bs.settlement_id, bs.business_id, bs.status, bs.target_id,
 			       fb.source_type, fb.source_id
 			FROM settle_business_settlements bs
@@ -111,7 +111,7 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 			var txid string
 			var cpFound bool
 			if chainPaymentID > 0 {
-				err := db.QueryRow(`SELECT txid FROM fact_chain_payments WHERE id=?`, chainPaymentID).Scan(&txid)
+				err := QueryRowContext(ctx, db, `SELECT txid FROM fact_chain_payments WHERE id=?`, chainPaymentID).Scan(&txid)
 				if err == nil {
 					cpFound = true
 				}
@@ -162,7 +162,7 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 
 	err := store.Do(ctx, func(db *sql.DB) error {
 		// 查询所有 pool 类型的 settlements
-		rows, err := db.Query(`
+		rows, err := QueryContext(ctx, db, `
 			SELECT bs.settlement_id, bs.business_id, bs.status, bs.target_id
 			FROM settle_business_settlements bs
 			WHERE bs.settlement_method = 'pool'
@@ -195,7 +195,7 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 			var paFound bool
 			var poolSessionID string
 			if poolAllocID > 0 {
-				err := db.QueryRow(`SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, poolAllocID).Scan(&poolSessionID)
+				err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, poolAllocID).Scan(&poolSessionID)
 				if err == nil {
 					paFound = true
 				}
@@ -204,7 +204,7 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 			// 检查旧 proc_direct_transfer_pools 状态
 			var oldPoolStatus string
 			if poolSessionID != "" {
-				_ = db.QueryRow(`SELECT status FROM proc_direct_transfer_pools WHERE session_id=?`, poolSessionID).Scan(&oldPoolStatus)
+				_ = QueryRowContext(ctx, db, `SELECT status FROM proc_direct_transfer_pools WHERE session_id=?`, poolSessionID).Scan(&oldPoolStatus)
 			}
 
 			consistent := true
@@ -292,7 +292,7 @@ func CheckNewModelDominance(ctx context.Context, store *clientDB) (*DominanceChe
 		// 这里只检查数据层面：所有 "已完成" 的业务都应该有 settlement
 
 		// 2. 检查 biz_purchases 表中 status='done' 但 settlement 缺失的记录
-		rows, err := db.Query(`
+		rows, err := QueryContext(ctx, db, `
 			SELECT p.id, p.demand_id, p.seller_pub_hex, p.status
 			FROM biz_purchases p
 			WHERE p.status = 'done'

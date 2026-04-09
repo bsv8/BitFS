@@ -56,6 +56,70 @@ func (d *clientDB) Do(ctx context.Context, fn func(*sql.DB) error) error {
 	return fn(d.db)
 }
 
+// ExecContext / QueryContext / QueryRowContext 统一给运行时代码做 SQL 收口。
+// 设计说明：
+// - 新代码尽量不要直接碰 *sql.DB / *sql.Tx 的方法；
+// - 这里保留同名能力，方便把业务代码从裸调用搬到统一 helper；
+// - Query/QueryRow 这类会泄露生命周期的结果，调用方仍然必须在同一闭包里完成 Scan/Close。
+func (d *clientDB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	if d == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	if d.actor != nil {
+		return clientDBValue(ctx, d, func(db *sql.DB) (sql.Result, error) {
+			return dbExecContext(ctx, db, query, args...)
+		})
+	}
+	if d.db == nil {
+		return nil, fmt.Errorf("client db raw db is nil")
+	}
+	return dbExecContext(ctx, d.db, query, args...)
+}
+
+func (d *clientDB) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
+	if d == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	if d.actor != nil {
+		return clientDBValue(ctx, d, func(db *sql.DB) (*sql.Rows, error) {
+			return dbQueryContext(ctx, db, query, args...)
+		})
+	}
+	if d.db == nil {
+		return nil, fmt.Errorf("client db raw db is nil")
+	}
+	return dbQueryContext(ctx, d.db, query, args...)
+}
+
+func (d *clientDB) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
+	if d == nil {
+		return nil
+	}
+	if d.actor != nil {
+		row, err := clientDBValue(ctx, d, func(db *sql.DB) (*sql.Row, error) {
+			return dbQueryRowContext(ctx, db, query, args...), nil
+		})
+		if err != nil {
+			return nil
+		}
+		return row
+	}
+	if d.db == nil {
+		return nil
+	}
+	return dbQueryRowContext(ctx, d.db, query, args...)
+}
+
+func (d *clientDB) InTx(ctx context.Context, fn func(*sql.Tx) error) error {
+	if d == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	if fn == nil {
+		return fmt.Errorf("client db tx func is nil")
+	}
+	return d.Tx(ctx, fn)
+}
+
 func clientDBValue[T any](ctx context.Context, d *clientDB, fn func(*sql.DB) (T, error)) (T, error) {
 	var zero T
 	if d == nil {

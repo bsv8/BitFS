@@ -103,7 +103,7 @@ func dbUpsertDirectTransferBizPoolSnapshotTx(tx *sql.Tx, in directTransferBizPoo
 	if nextSeq == 0 {
 		nextSeq = 1
 	}
-	_, err := tx.Exec(
+	_, err := ExecContext(ctx, tx, 
 		`INSERT INTO biz_pool(
 			pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 			pool_amount_satoshi,spend_tx_fee_satoshi,allocated_satoshi,cycle_fee_satoshi,available_satoshi,next_sequence_num,
@@ -178,7 +178,7 @@ func dbUpsertDirectTransferBizPoolAllocationTx(tx *sql.Tx, in directTransferBizP
 	if createdAt <= 0 {
 		createdAt = now
 	}
-	_, err := tx.Exec(
+	_, err := ExecContext(ctx, tx, 
 		`INSERT INTO biz_pool_allocations(
 			allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -230,7 +230,7 @@ func dbUpsertDirectTransferPoolSessionTx(tx *sql.Tx, in directTransferPoolSessio
 	if status == "" {
 		status = "active"
 	}
-	_, err := tx.Exec(
+	_, err := ExecContext(ctx, tx, 
 		`INSERT INTO fact_pool_sessions(
 			pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 			pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
@@ -306,13 +306,13 @@ func dbUpsertDirectTransferPoolAllocationTx(tx *sql.Tx, in directTransferPoolAll
 		createdAt = now
 	}
 	var allocationNo int64
-	if err := tx.QueryRow(
+	if err := QueryRowContext(ctx, tx, 
 		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind=?`,
 		sessionID, PoolFactEventKindPoolEvent,
 	).Scan(&allocationNo); err != nil {
 		return err
 	}
-	_, err := tx.Exec(
+	_, err := ExecContext(ctx, tx, 
 		`INSERT INTO fact_pool_session_events(
 			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -423,7 +423,7 @@ func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int
 		return 0, fmt.Errorf("allocation_id is required")
 	}
 	var id int64
-	err := db.QueryRow(
+	err := QueryRowContext(ctx, db, 
 		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
@@ -455,7 +455,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(tx *sql.Tx, allocationID string) (int
 		return 0, fmt.Errorf("allocation_id is required")
 	}
 	var id int64
-	err := tx.QueryRow(
+	err := QueryRowContext(ctx, tx, 
 		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
 		allocationID,
 	).Scan(&id)
@@ -482,7 +482,7 @@ func dbGetPoolAllocationIDByKindTx(tx *sql.Tx, sessionID string, allocationKind 
 		return "", fmt.Errorf("allocation_kind is required")
 	}
 	var allocationID string
-	err := tx.QueryRow(
+	err := QueryRowContext(ctx, tx, 
 		`SELECT allocation_id FROM fact_pool_session_events
 		 WHERE pool_session_id=? AND event_kind=? AND allocation_kind=?
 		 ORDER BY allocation_no ASC LIMIT 1`,

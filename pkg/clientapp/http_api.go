@@ -749,7 +749,7 @@ func loadSchedulerTaskSnapshot(db *sql.DB, taskName string) (schedulerTaskSnapsh
 	}
 	var out schedulerTaskSnapshot
 	var inFlightInt int
-	err := db.QueryRow(
+	err := QueryRowContext(ctx, db, 
 		`SELECT task_name,status,last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight
 		 FROM proc_scheduler_tasks WHERE task_name=?`,
 		taskName,

@@ -943,7 +943,7 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 	}...)
 
 	for _, s := range stmts {
-		if _, err := db.Exec(s); err != nil {
+		if _, err := ExecContext(ctx, db, s); err != nil {
 			return fmt.Errorf("exec schema stmt: %w", err)
 		}
 	}
@@ -1061,11 +1061,11 @@ func ensureCommandJournalTriggerKey(db *sql.DB) error {
 		return fmt.Errorf("inspect proc_command_journal: %w", err)
 	}
 	if _, ok := cols["trigger_key"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add trigger_key column: %w", err)
 		}
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`); err != nil {
 		return fmt.Errorf("create trigger_key index: %w", err)
 	}
 	return nil
@@ -1111,7 +1111,7 @@ func cleanupLegacyCommandJournalCommandIDRows(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	_, err := db.Exec(`DELETE FROM proc_command_journal WHERE trim(coalesce(command_id, '')) = ''`)
+	_, err := ExecContext(ctx, db, `DELETE FROM proc_command_journal WHERE trim(coalesce(command_id, '')) = ''`)
 	return err
 }
 
@@ -1129,11 +1129,11 @@ func cleanupLegacyGatewayEventCommandIDRows(db *sql.DB) error {
 		return fmt.Errorf("inspect proc_gateway_events: %w", err)
 	}
 	if _, ok := cols["command_id"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE proc_gateway_events ADD COLUMN command_id TEXT`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE proc_gateway_events ADD COLUMN command_id TEXT`); err != nil {
 			return err
 		}
 	}
-	_, err = db.Exec(`
+	_, err = ExecContext(ctx, db, `
 		DELETE FROM proc_gateway_events
 		WHERE trim(coalesce(command_id, '')) = ''
 		   OR NOT EXISTS(
@@ -1150,7 +1150,7 @@ func commandJournalDuplicateCommandIDs(db *sql.DB) ([]string, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
-	rows, err := db.Query(`
+	rows, err := QueryContext(ctx, db, `
 		SELECT command_id, COUNT(1)
 		FROM proc_command_journal
 		WHERE trim(coalesce(command_id, '')) <> ''
@@ -1193,7 +1193,7 @@ func ensureCommandJournalCommandIDUnique(db *sql.DB) error {
 	if len(dups) > 0 {
 		return fmt.Errorf("proc_command_journal has duplicate command_id values: %s", strings.Join(dups, ", "))
 	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
 		return err
 	}
 	return ensureCommandJournalIndexes(db)
@@ -1223,19 +1223,19 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=OFF`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS proc_gateway_events_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS proc_gateway_events_fk_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE proc_gateway_events RENAME TO proc_gateway_events_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE proc_gateway_events RENAME TO proc_gateway_events_fk_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE proc_gateway_events(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE proc_gateway_events(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		created_at_unix INTEGER NOT NULL,
 		gateway_pubkey_hex TEXT NOT NULL,
@@ -1251,7 +1251,7 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO proc_gateway_events(
+	if _, err := ExecContext(ctx, tx, `INSERT INTO proc_gateway_events(
 		id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
 	) SELECT
 		id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
@@ -1266,11 +1266,11 @@ func ensureGatewayEventsCommandIDForeignKey(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE proc_gateway_events_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE proc_gateway_events_fk_rebuild`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=ON`); err != nil {
 		rollback()
 		return err
 	}
@@ -1286,10 +1286,10 @@ func ensureGatewayEventsIndexes(db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_created_at ON proc_gateway_events(created_at_unix DESC)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_created_at ON proc_gateway_events(created_at_unix DESC)`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_cmd_id ON proc_gateway_events(command_id)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_proc_gateway_events_cmd_id ON proc_gateway_events(command_id)`); err != nil {
 		return err
 	}
 	return nil
@@ -1307,11 +1307,11 @@ func ensureCommandJournalIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_proc_command_journal_trigger_key ON proc_command_journal(trigger_key, id DESC)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := ExecContext(ctx, db, stmt); err != nil {
 			return err
 		}
 	}
-	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE UNIQUE INDEX IF NOT EXISTS uq_proc_command_journal_command_id ON proc_command_journal(command_id)`); err != nil {
 		return err
 	}
 	return nil
@@ -1322,7 +1322,7 @@ func tableHasForeignKey(db *sql.DB, table, fromColumn, parentTable, parentColumn
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
-	rows, err := db.Query(fmt.Sprintf("PRAGMA foreign_key_list(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA foreign_key_list(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -1427,7 +1427,7 @@ func auditCommandLinkedTableRows(db *sql.DB, table string) (commandLinkedTableAu
 	if !hasTable {
 		return report, nil
 	}
-	row := db.QueryRow(fmt.Sprintf(`
+	row := QueryRowContext(ctx, db, fmt.Sprintf(`
 		SELECT
 			COALESCE(SUM(CASE WHEN command_id IS NULL THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN command_id IS NOT NULL AND trim(command_id) = '' THEN 1 ELSE 0 END), 0),
@@ -1465,7 +1465,7 @@ func cleanupLegacyCommandLinkedRows(db *sql.DB, table string) error {
 	if !isCommandLinkedTable(strings.TrimSpace(table)) {
 		return fmt.Errorf("unsupported table: %s", table)
 	}
-	_, err := db.Exec(fmt.Sprintf(`
+	_, err := ExecContext(ctx, db, fmt.Sprintf(`
 		DELETE FROM %s
 		WHERE command_id IS NULL
 		   OR trim(command_id) = ''
@@ -1530,32 +1530,32 @@ func rebuildCommandLinkedTable(db *sql.DB, table string) error {
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=OFF`); err != nil {
 		rollback()
 		return err
 	}
 	tempTable := table + "_command_fk_rebuild"
-	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tempTable)); err != nil {
+	if _, err := ExecContext(ctx, tx, fmt.Sprintf(`DROP TABLE IF EXISTS %s`, tempTable)); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, table, tempTable)); err != nil {
+	if _, err := ExecContext(ctx, tx, fmt.Sprintf(`ALTER TABLE %s RENAME TO %s`, table, tempTable)); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(spec.CreateSQL); err != nil {
+	if _, err := ExecContext(ctx, tx, spec.CreateSQL); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(spec.InsertSQL(tempTable)); err != nil {
+	if _, err := ExecContext(ctx, tx, spec.InsertSQL(tempTable)); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(fmt.Sprintf(`DROP TABLE %s`, tempTable)); err != nil {
+	if _, err := ExecContext(ctx, tx, fmt.Sprintf(`DROP TABLE %s`, tempTable)); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=ON`); err != nil {
 		rollback()
 		return err
 	}
@@ -1680,7 +1680,7 @@ func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
 			`CREATE INDEX IF NOT EXISTS idx_proc_domain_events_gateway ON proc_domain_events(gateway_pubkey_hex, id DESC)`,
 		}
 		for _, stmt := range stmts {
-			if _, err := db.Exec(stmt); err != nil {
+			if _, err := ExecContext(ctx, db, stmt); err != nil {
 				return err
 			}
 		}
@@ -1691,7 +1691,7 @@ func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
 			`CREATE INDEX IF NOT EXISTS idx_proc_state_snapshots_gateway ON proc_state_snapshots(gateway_pubkey_hex, id DESC)`,
 		}
 		for _, stmt := range stmts {
-			if _, err := db.Exec(stmt); err != nil {
+			if _, err := ExecContext(ctx, db, stmt); err != nil {
 				return err
 			}
 		}
@@ -1702,7 +1702,7 @@ func ensureCommandLinkedTableIndexes(db *sql.DB, table string) error {
 			`CREATE INDEX IF NOT EXISTS idx_proc_effect_logs_gateway ON proc_effect_logs(gateway_pubkey_hex, id DESC)`,
 		}
 		for _, stmt := range stmts {
-			if _, err := db.Exec(stmt); err != nil {
+			if _, err := ExecContext(ctx, db, stmt); err != nil {
 				return err
 			}
 		}
@@ -1717,7 +1717,7 @@ func tableHasCreateSQLContains(db *sql.DB, table, snippet string) (bool, error) 
 		return false, fmt.Errorf("db is nil")
 	}
 	var sqlText sql.NullString
-	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&sqlText)
+	err := QueryRowContext(ctx, db, `SELECT sql FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&sqlText)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -1746,7 +1746,7 @@ func ensureBizPoolSchema(db *sql.DB) error {
 
 	stmts := bizPoolSchemaStmts()
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := ExecContext(ctx, db, stmt); err != nil {
 			return err
 		}
 	}
@@ -1756,7 +1756,7 @@ func ensureBizPoolSchema(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_biz_pool_allocations_session_kind_seq ON biz_pool_allocations(pool_session_id, allocation_kind, sequence_num)`,
 	}
 	for _, stmt := range indexStmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := ExecContext(ctx, db, stmt); err != nil {
 			return err
 		}
 	}
@@ -1839,7 +1839,7 @@ func ensureFinAccountingSchema(db *sql.DB) error {
 		if _, ok := cols[strings.ToLower(m.col)]; ok {
 			continue
 		}
-		if _, err := db.Exec(m.stmt); err != nil {
+		if _, err := ExecContext(ctx, db, m.stmt); err != nil {
 			return fmt.Errorf("add %s.%s: %w", m.table, m.col, err)
 		}
 	}
@@ -1863,7 +1863,7 @@ func ensureFinAccountingIndexes(db *sql.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := ExecContext(ctx, db, stmt); err != nil {
 			return err
 		}
 	}
@@ -1877,7 +1877,7 @@ func normalizeClientDBData(db *sql.DB) error {
 	}
 
 	// 这里只保留当前口径必需的轻量约束，避免把旧库收口逻辑继续留在初始化里。
-	if _, err := db.Exec(`
+	if _, err := ExecContext(ctx, db, `
 		CREATE TRIGGER IF NOT EXISTS chk_settle_businesses_role_insert
 		BEFORE INSERT ON settle_businesses
 		BEGIN
@@ -1889,7 +1889,7 @@ func normalizeClientDBData(db *sql.DB) error {
 	`); err != nil {
 		return fmt.Errorf("create business_role insert check trigger: %w", err)
 	}
-	if _, err := db.Exec(`
+	if _, err := ExecContext(ctx, db, `
 		CREATE TRIGGER IF NOT EXISTS chk_settle_businesses_role_update
 		BEFORE UPDATE ON settle_businesses
 		BEGIN
@@ -1953,7 +1953,7 @@ func ensureDemandQuoteIndexes(db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quote_arbiters_arbiter ON biz_demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := ExecContext(ctx, db, stmt); err != nil {
 			return err
 		}
 	}
@@ -1975,7 +1975,7 @@ func rebuildDemandQuoteFKTables(db *sql.DB, rebuildQuotes bool, rebuildArbiters 
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=OFF`); err != nil {
 		rollback()
 		return err
 	}
@@ -2011,7 +2011,7 @@ func demandQuoteRejectOrphanRows(db *sql.DB) error {
 	} else if has {
 		var quoteID int64
 		var demandID string
-		err := db.QueryRow(`SELECT id,demand_id FROM biz_demand_quotes
+		err := QueryRowContext(ctx, db, `SELECT id,demand_id FROM biz_demand_quotes
 			WHERE NOT EXISTS(SELECT 1 FROM biz_demands WHERE biz_demands.demand_id = biz_demand_quotes.demand_id)
 			ORDER BY id ASC LIMIT 1`).Scan(&quoteID, &demandID)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -2027,7 +2027,7 @@ func demandQuoteRejectOrphanRows(db *sql.DB) error {
 		var id int64
 		var quoteID int64
 		var arbiterPubHex string
-		err := db.QueryRow(`SELECT id,quote_id,arbiter_pub_hex FROM biz_demand_quote_arbiters
+		err := QueryRowContext(ctx, db, `SELECT id,quote_id,arbiter_pub_hex FROM biz_demand_quote_arbiters
 			WHERE NOT EXISTS(SELECT 1 FROM biz_demand_quotes WHERE biz_demand_quotes.id = biz_demand_quote_arbiters.quote_id)
 			ORDER BY id ASC LIMIT 1`).Scan(&id, &quoteID, &arbiterPubHex)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -2044,13 +2044,13 @@ func rebuildDemandQuotesTableTx(tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_demand_quotes_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_demand_quotes_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_demand_quotes RENAME TO biz_demand_quotes_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_demand_quotes RENAME TO biz_demand_quotes_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_demand_quotes(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_demand_quotes(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		demand_id TEXT NOT NULL,
 		seller_pub_hex TEXT NOT NULL,
@@ -2068,14 +2068,14 @@ func rebuildDemandQuotesTableTx(tx *sql.Tx) error {
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO biz_demand_quotes(
+	if _, err := ExecContext(ctx, tx, `INSERT INTO biz_demand_quotes(
 			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		) SELECT
 			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
 		FROM biz_demand_quotes_fk_rebuild ORDER BY id ASC`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE biz_demand_quotes_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE biz_demand_quotes_fk_rebuild`); err != nil {
 		return err
 	}
 	return nil
@@ -2085,13 +2085,13 @@ func rebuildDemandQuoteArbitersTableTx(tx *sql.Tx) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_demand_quote_arbiters_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_demand_quote_arbiters_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_demand_quote_arbiters RENAME TO biz_demand_quote_arbiters_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_demand_quote_arbiters RENAME TO biz_demand_quote_arbiters_fk_rebuild`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_demand_quote_arbiters(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_demand_quote_arbiters(
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		quote_id INTEGER NOT NULL,
 		arbiter_pub_hex TEXT NOT NULL,
@@ -2100,14 +2100,14 @@ func rebuildDemandQuoteArbitersTableTx(tx *sql.Tx) error {
 	)`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO biz_demand_quote_arbiters(
+	if _, err := ExecContext(ctx, tx, `INSERT INTO biz_demand_quote_arbiters(
 			id,quote_id,arbiter_pub_hex
 		) SELECT
 			id,quote_id,arbiter_pub_hex
 		FROM biz_demand_quote_arbiters_fk_rebuild ORDER BY id ASC`); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE biz_demand_quote_arbiters_fk_rebuild`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE biz_demand_quote_arbiters_fk_rebuild`); err != nil {
 		return err
 	}
 	return nil
@@ -2117,7 +2117,7 @@ func demandQuoteTableMissingFK(db *sql.DB, table string, fromColumn string, pare
 	if db == nil {
 		return false, fmt.Errorf("db is nil")
 	}
-	rows, err := db.Query(fmt.Sprintf("PRAGMA foreign_key_list(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA foreign_key_list(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -2228,7 +2228,7 @@ func ensureWorkspaceStorageBaseTables(db *sql.DB) error {
 		)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if _, err := ExecContext(ctx, db, stmt); err != nil {
 			return err
 		}
 	}
@@ -2304,31 +2304,31 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=OFF`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspaces_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspaces_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspace_files_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspace_files_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seeds_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seeds_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_chunk_supply_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_chunk_supply_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_pricing_policy_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_pricing_policy_new`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_workspaces_new(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_workspaces_new(
 			workspace_path TEXT PRIMARY KEY,
 			enabled INTEGER NOT NULL,
 			max_bytes INTEGER NOT NULL,
@@ -2337,7 +2337,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_workspace_files_new(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_workspace_files_new(
 			workspace_path TEXT NOT NULL,
 			file_path TEXT NOT NULL,
 			seed_hash TEXT NOT NULL,
@@ -2347,7 +2347,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_seeds_new(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_seeds_new(
 			seed_hash TEXT PRIMARY KEY,
 			chunk_count INTEGER NOT NULL,
 			file_size INTEGER NOT NULL,
@@ -2358,7 +2358,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_seed_chunk_supply_new(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_seed_chunk_supply_new(
 			seed_hash TEXT NOT NULL,
 			chunk_index INTEGER NOT NULL,
 			PRIMARY KEY(seed_hash,chunk_index)
@@ -2366,7 +2366,7 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`CREATE TABLE biz_seed_pricing_policy_new(
+	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_seed_pricing_policy_new(
 			seed_hash TEXT PRIMARY KEY,
 			floor_unit_price_sat_per_64k INTEGER NOT NULL,
 			resale_discount_bps INTEGER NOT NULL,
@@ -2396,59 +2396,59 @@ func migrateWorkspaceStorageLegacy(db *sql.DB) error {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspace_files`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspace_files`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_workspaces`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspaces`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seeds`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seeds`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_chunk_supply`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_chunk_supply`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS biz_seed_pricing_policy`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_pricing_policy`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_available_chunks`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS seed_available_chunks`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS seed_price_state`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS seed_price_state`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`DROP TABLE IF EXISTS static_file_prices`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS static_file_prices`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_workspaces_new RENAME TO biz_workspaces`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_workspaces_new RENAME TO biz_workspaces`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_workspace_files_new RENAME TO biz_workspace_files`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_workspace_files_new RENAME TO biz_workspace_files`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_seeds_new RENAME TO biz_seeds`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_seeds_new RENAME TO biz_seeds`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_seed_chunk_supply_new RENAME TO biz_seed_chunk_supply`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_seed_chunk_supply_new RENAME TO biz_seed_chunk_supply`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`ALTER TABLE biz_seed_pricing_policy_new RENAME TO biz_seed_pricing_policy`); err != nil {
+	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_seed_pricing_policy_new RENAME TO biz_seed_pricing_policy`); err != nil {
 		rollback()
 		return err
 	}
-	if _, err := tx.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=ON`); err != nil {
 		rollback()
 		return err
 	}
@@ -2468,10 +2468,10 @@ func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
 		return nil
 	}
 	if _, ok := cols["workspace_path"]; ok && !containsAny(cols, "id", "path", "updated_at_unix") {
-		_, err = tx.Exec(`INSERT OR IGNORE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) SELECT workspace_path,enabled,max_bytes,created_at_unix FROM biz_workspaces`)
+		_, err = ExecContext(ctx, tx, `INSERT OR IGNORE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) SELECT workspace_path,enabled,max_bytes,created_at_unix FROM biz_workspaces`)
 		return err
 	}
-	rows, err := tx.Query(`SELECT path,max_bytes,enabled,created_at_unix FROM biz_workspaces`)
+	rows, err := QueryContext(ctx, tx, `SELECT path,max_bytes,enabled,created_at_unix FROM biz_workspaces`)
 	if err != nil {
 		return err
 	}
@@ -2491,7 +2491,7 @@ func migrateWorkspaceRowsLegacy(tx *sql.Tx) error {
 		if created <= 0 {
 			created = 1
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, abs, enabled, maxBytes, created); err != nil {
+		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, abs, enabled, maxBytes, created); err != nil {
 			return err
 		}
 	}
@@ -2508,11 +2508,11 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 	}
 	if _, ok := cols["workspace_path"]; ok {
 		if _, ok2 := cols["file_path"]; ok2 && !containsAny(cols, "path", "file_size", "mtime_unix", "updated_at_unix") {
-			_, err = tx.Exec(`INSERT OR IGNORE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) SELECT workspace_path,file_path,lower(trim(seed_hash)),COALESCE(seed_locked,0) FROM biz_workspace_files`)
+			_, err = ExecContext(ctx, tx, `INSERT OR IGNORE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) SELECT workspace_path,file_path,lower(trim(seed_hash)),COALESCE(seed_locked,0) FROM biz_workspace_files`)
 			return err
 		}
 	}
-	rows, err := tx.Query(`SELECT path,seed_hash,COALESCE(seed_locked,0) FROM biz_workspace_files`)
+	rows, err := QueryContext(ctx, tx, `SELECT path,seed_hash,COALESCE(seed_locked,0) FROM biz_workspace_files`)
 	if err != nil {
 		return err
 	}
@@ -2531,7 +2531,7 @@ func migrateWorkspaceFileRowsLegacy(tx *sql.Tx) error {
 		if !ok {
 			continue
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, resolved.WorkspacePath, resolved.FilePath, normalizeSeedHashHex(seedHash), locked); err != nil {
+		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, resolved.WorkspacePath, resolved.FilePath, normalizeSeedHashHex(seedHash), locked); err != nil {
 			return err
 		}
 	}
@@ -2546,7 +2546,7 @@ func migrateSeedRowsLegacy(tx *sql.Tx) error {
 	if len(cols) == 0 {
 		return nil
 	}
-	rows, err := tx.Query(`SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint FROM biz_seeds`)
+	rows, err := QueryContext(ctx, tx, `SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint FROM biz_seeds`)
 	if err != nil {
 		return err
 	}
@@ -2569,7 +2569,7 @@ func migrateSeedRowsLegacy(tx *sql.Tx) error {
 		if fileSize < 0 {
 			fileSize = 0
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seeds_new(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, chunkCount, fileSize, strings.TrimSpace(seedPath), sanitizeRecommendedFileName(recommendedName), sanitizeMIMEHint(mimeHint)); err != nil {
+		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seeds_new(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, chunkCount, fileSize, strings.TrimSpace(seedPath), sanitizeRecommendedFileName(recommendedName), sanitizeMIMEHint(mimeHint)); err != nil {
 			return err
 		}
 	}
@@ -2581,11 +2581,11 @@ func migrateSeedRowsLegacy(tx *sql.Tx) error {
 // - 某个 seed 在旧表里没有记录，就迁空；
 // - 只有旧库没有 seed_available_chunks 时，才按 chunk_count 补全。
 func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
-	if _, err := tx.Exec(`DELETE FROM biz_seed_chunk_supply_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_chunk_supply_new`); err != nil {
 		return err
 	}
 	haveLegacySupply := hasTableValue(tx, "seed_available_chunks")
-	rows, err := tx.Query(`SELECT seed_hash,chunk_count FROM biz_seeds_new`)
+	rows, err := QueryContext(ctx, tx, `SELECT seed_hash,chunk_count FROM biz_seeds_new`)
 	if err != nil {
 		return err
 	}
@@ -2601,7 +2601,7 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 			continue
 		}
 		if haveLegacySupply {
-			supplyRows, err := tx.Query(`SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
+			supplyRows, err := QueryContext(ctx, tx, `SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
 			if err != nil {
 				return err
 			}
@@ -2614,7 +2614,7 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 				if idx < 0 {
 					continue
 				}
-				if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, uint32(idx)); err != nil {
+				if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, uint32(idx)); err != nil {
 					_ = supplyRows.Close()
 					return err
 				}
@@ -2630,7 +2630,7 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 			chunkCount = 0
 		}
 		for _, idx := range contiguousChunkIndexes(uint32(chunkCount)) {
-			if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
+			if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
 				return err
 			}
 		}
@@ -2639,14 +2639,14 @@ func migrateSeedChunkSupplyLegacy(tx *sql.Tx) error {
 }
 
 func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
-	if _, err := tx.Exec(`DELETE FROM biz_seed_pricing_policy_new`); err != nil {
+	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_pricing_policy_new`); err != nil {
 		return err
 	}
 	if !hasTableValue(tx, "seed_price_state") {
 		return nil
 	}
 	now := time.Now().Unix()
-	seedRows, err := tx.Query(`SELECT seed_hash FROM biz_seeds_new`)
+	seedRows, err := QueryContext(ctx, tx, `SELECT seed_hash FROM biz_seeds_new`)
 	if err != nil {
 		return err
 	}
@@ -2666,7 +2666,7 @@ func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
 		var lastBuy sql.NullInt64
 		var floorInt sql.NullInt64
 		var resaleInt sql.NullInt64
-		if err := tx.QueryRow(`SELECT last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&lastBuy, &floorInt, &resaleInt); err != nil {
+		if err := QueryRowContext(ctx, tx, `SELECT last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&lastBuy, &floorInt, &resaleInt); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				continue
 			}
@@ -2687,7 +2687,7 @@ func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
 		if resale > 10000 {
 			resale = 10000
 		}
-		if _, err := tx.Exec(`INSERT OR REPLACE INTO biz_seed_pricing_policy_new(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, seedHash, floor, resale, source, now); err != nil {
+		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seed_pricing_policy_new(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, seedHash, floor, resale, source, now); err != nil {
 			return err
 		}
 	}
@@ -2695,7 +2695,7 @@ func migrateSeedPricingPolicyLegacy(tx *sql.Tx) error {
 }
 
 func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
-	rows, err := tx.Query(`SELECT workspace_path FROM biz_workspaces`)
+	rows, err := QueryContext(ctx, tx, `SELECT workspace_path FROM biz_workspaces`)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -2714,7 +2714,7 @@ func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
 		}
 	}
 	if len(out) == 0 {
-		rows, err = tx.Query(`SELECT path FROM biz_workspaces`)
+		rows, err = QueryContext(ctx, tx, `SELECT path FROM biz_workspaces`)
 		if err != nil {
 			return nil, err
 		}
@@ -2733,7 +2733,7 @@ func legacyWorkspaceRoots(tx *sql.Tx) ([]string, error) {
 }
 
 func tableColumnsTx(tx *sql.Tx, table string) (map[string]struct{}, error) {
-	rows, err := tx.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, tx, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return nil, err
 	}
@@ -2765,13 +2765,13 @@ func containsAny(cols map[string]struct{}, names ...string) bool {
 
 func hasTableValue(tx *sql.Tx, table string) bool {
 	var one int
-	err := tx.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&one)
+	err := QueryRowContext(ctx, tx, `SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&one)
 	return err == nil
 }
 
 // ensureFileDownloadsSchema 处理 proc_file_downloads 表的历史列迁移
 func ensureFileDownloadsSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(proc_file_downloads)`)
+	rows, err := QueryContext(ctx, db, `PRAGMA table_info(proc_file_downloads)`)
 	if err != nil {
 		return err
 	}
@@ -2797,13 +2797,13 @@ func ensureFileDownloadsSchema(db *sql.DB) error {
 	if hasStatusJSON {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE proc_file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
+	_, err = ExecContext(ctx, db, `ALTER TABLE proc_file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
 	return err
 }
 
 // ensureLiveFollowsSchema 处理 proc_live_follows 表的历史列迁移
 func ensureLiveFollowsSchema(db *sql.DB) error {
-	rows, err := db.Query(`PRAGMA table_info(proc_live_follows)`)
+	rows, err := QueryContext(ctx, db, `PRAGMA table_info(proc_live_follows)`)
 	if err != nil {
 		return err
 	}
@@ -2829,7 +2829,7 @@ func ensureLiveFollowsSchema(db *sql.DB) error {
 	if hasLastQuoteSellerPubKey {
 		return nil
 	}
-	_, err = db.Exec(`ALTER TABLE proc_live_follows ADD COLUMN last_quote_seller_pubkey_hex TEXT NOT NULL DEFAULT ''`)
+	_, err = ExecContext(ctx, db, `ALTER TABLE proc_live_follows ADD COLUMN last_quote_seller_pubkey_hex TEXT NOT NULL DEFAULT ''`)
 	return err
 }
 
@@ -2859,10 +2859,10 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 			}
 		}()
 
-		if _, err = tx.Exec(`ALTER TABLE wallet_utxo RENAME TO wallet_utxo_legacy_v2`); err != nil {
+		if _, err = ExecContext(ctx, tx, `ALTER TABLE wallet_utxo RENAME TO wallet_utxo_legacy_v2`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`CREATE TABLE wallet_utxo(
+		if _, err = ExecContext(ctx, tx, `CREATE TABLE wallet_utxo(
 			utxo_id TEXT PRIMARY KEY,
 			wallet_id TEXT NOT NULL,
 			address TEXT NOT NULL,
@@ -2880,7 +2880,7 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 		)`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(
+		if _, err = ExecContext(ctx, tx, 
 			`INSERT INTO wallet_utxo(
 				utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 			)
@@ -2893,22 +2893,22 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 		); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`DROP TABLE wallet_utxo_legacy_v2`); err != nil {
+		if _, err = ExecContext(ctx, tx, `DROP TABLE wallet_utxo_legacy_v2`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`DROP INDEX IF EXISTS idx_wallet_utxo_origin`); err != nil {
+		if _, err = ExecContext(ctx, tx, `DROP INDEX IF EXISTS idx_wallet_utxo_origin`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`); err != nil {
+		if _, err = ExecContext(ctx, tx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`); err != nil {
+		if _, err = ExecContext(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
+		if _, err = ExecContext(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
 			return err
 		}
-		if _, err = tx.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`); err != nil {
+		if _, err = ExecContext(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`); err != nil {
 			return err
 		}
 		if err = tx.Commit(); err != nil {
@@ -2922,24 +2922,24 @@ func ensureWalletUTXOSchema(db *sql.DB) error {
 		return err
 	}
 	if _, ok := cols["allocation_class"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE wallet_utxo ADD COLUMN allocation_class TEXT NOT NULL DEFAULT 'plain_bsv'`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE wallet_utxo ADD COLUMN allocation_class TEXT NOT NULL DEFAULT 'plain_bsv'`); err != nil {
 			return err
 		}
 	}
 	if _, ok := cols["allocation_reason"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE wallet_utxo ADD COLUMN allocation_reason TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE wallet_utxo ADD COLUMN allocation_reason TEXT NOT NULL DEFAULT ''`); err != nil {
 			return err
 		}
 	}
 
 	// 数据修复
-	if _, err := db.Exec(`UPDATE wallet_utxo SET allocation_class=CASE WHEN value_satoshi=1 THEN 'unknown' ELSE 'plain_bsv' END WHERE trim(allocation_class)=''`); err != nil {
+	if _, err := ExecContext(ctx, db, `UPDATE wallet_utxo SET allocation_class=CASE WHEN value_satoshi=1 THEN 'unknown' ELSE 'plain_bsv' END WHERE trim(allocation_class)=''`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`UPDATE wallet_utxo SET allocation_reason='awaiting external token evidence' WHERE state='unspent' AND value_satoshi=1 AND allocation_class='unknown' AND trim(allocation_reason)=''`); err != nil {
+	if _, err := ExecContext(ctx, db, `UPDATE wallet_utxo SET allocation_reason='awaiting external token evidence' WHERE state='unspent' AND value_satoshi=1 AND allocation_class='unknown' AND trim(allocation_reason)=''`); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
 		return err
 	}
 	return nil
@@ -2987,7 +2987,7 @@ func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
 	rollback := func() {
 		_ = tx.Rollback()
 	}
-	rows, err := tx.Query(fmt.Sprintf(`SELECT txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,%s FROM %s`, observedCol, legacyTableName))
+	rows, err := QueryContext(ctx, tx, fmt.Sprintf(`SELECT txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,%s FROM %s`, observedCol, legacyTableName))
 	if err != nil {
 		rollback()
 		return err
@@ -3045,7 +3045,7 @@ func migrateWalletLocalBroadcastFacts(db *sql.DB) error {
 		}
 	}
 
-	if _, err := tx.Exec(`DROP TABLE ` + legacyTableName); err != nil {
+	if _, err := ExecContext(ctx, tx, `DROP TABLE ` + legacyTableName); err != nil {
 		rollback()
 		return err
 	}
@@ -3068,12 +3068,12 @@ func ensureFactChainPaymentTimingSchema(db *sql.DB) error {
 		return nil
 	}
 	if _, ok := cols["submitted_at_unix"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE fact_chain_payments ADD COLUMN submitted_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE fact_chain_payments ADD COLUMN submitted_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}
 	if _, ok := cols["wallet_observed_at_unix"]; !ok {
-		if _, err := db.Exec(`ALTER TABLE fact_chain_payments ADD COLUMN wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE fact_chain_payments ADD COLUMN wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
 			return err
 		}
 	}
@@ -3112,7 +3112,7 @@ func ensureWalletUTXOSyncStateSchema(db *sql.DB) error {
 
 	for _, m := range migrations {
 		if _, ok := cols[m.col]; !ok {
-			if _, err := db.Exec(m.stmt); err != nil {
+			if _, err := ExecContext(ctx, db, m.stmt); err != nil {
 				return err
 			}
 		}
@@ -3160,7 +3160,7 @@ func normalizeClientPubKeyColumns(db *sql.DB) error {
 }
 
 func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bool) error {
-	rows, err := db.Query(fmt.Sprintf("SELECT rowid,%s FROM %s", strings.TrimSpace(column), strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("SELECT rowid,%s FROM %s", strings.TrimSpace(column), strings.TrimSpace(table)))
 	if err != nil {
 		return err
 	}
@@ -3186,7 +3186,7 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 		if strings.EqualFold(raw, norm) {
 			continue
 		}
-		_, err = db.Exec(
+		_, err = ExecContext(ctx, db, 
 			fmt.Sprintf("UPDATE %s SET %s=? WHERE rowid=?", strings.TrimSpace(table), strings.TrimSpace(column)),
 			norm,
 			rowID,
@@ -3196,7 +3196,7 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 		}
 		// 处理唯一键冲突：同一业务行已存在新格式时，删除旧格式重复行
 		if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
-			if _, delErr := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rowid=?", strings.TrimSpace(table)), rowID); delErr != nil {
+			if _, delErr := ExecContext(ctx, db, fmt.Sprintf("DELETE FROM %s WHERE rowid=?", strings.TrimSpace(table)), rowID); delErr != nil {
 				return delErr
 			}
 			continue
@@ -3240,7 +3240,7 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 		}
 	}()
 
-	if _, err = tx.Exec(
+	if _, err = ExecContext(ctx, tx, 
 		`DELETE FROM settle_tx_breakdown
 		 WHERE business_id IN (
 			 SELECT business_id FROM settle_businesses
@@ -3249,7 +3249,7 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(
+	if _, err = ExecContext(ctx, tx, 
 		`DELETE FROM settle_tx_utxo_links
 		 WHERE business_id IN (
 			 SELECT business_id FROM settle_businesses
@@ -3260,7 +3260,7 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 	}
 	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑
 	if legacyExists {
-		if _, err = tx.Exec(
+		if _, err = ExecContext(ctx, tx, 
 			`DELETE FROM settle_biz_utxo_links
 			 WHERE business_id IN (
 				 SELECT business_id FROM settle_businesses
@@ -3270,7 +3270,7 @@ func cleanupLegacyCyclePayFinanceRows(db *sql.DB) error {
 			return err
 		}
 	}
-	if _, err = tx.Exec(`DELETE FROM settle_businesses WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
+	if _, err = ExecContext(ctx, tx, `DELETE FROM settle_businesses WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
 		return err
 	}
 
@@ -3287,7 +3287,7 @@ func hasTable(db *sql.DB, name string) (bool, error) {
 
 func hasRealTable(db *sql.DB, name string) (bool, error) {
 	var one int
-	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
+	err := QueryRowContext(ctx, db, `SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -3324,7 +3324,7 @@ func rejectLegacyClientDBSchema(db *sql.DB) error {
 
 func hasSchemaObject(db *sql.DB, name string) (bool, error) {
 	var one int
-	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
+	err := QueryRowContext(ctx, db, `SELECT 1 FROM sqlite_master WHERE type IN ('table','view') AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
@@ -3396,7 +3396,7 @@ func isFinTxBreakdownFinalized(db *sql.DB) (bool, error) {
 
 // tableColumns 获取表的所有列名
 func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return nil, err
 	}
@@ -3420,7 +3420,7 @@ func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
 
 // tableColumnNotNull 检查指定列是否存在且为 NOT NULL。
 func tableColumnNotNull(db *sql.DB, table, column string) (bool, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -3448,7 +3448,7 @@ func tableColumnNotNull(db *sql.DB, table, column string) (bool, error) {
 
 // tableHasIndex 检查指定表是否存在给定索引名。
 func tableHasIndex(db *sql.DB, table, indexName string) (bool, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -3476,7 +3476,7 @@ func tableHasIndex(db *sql.DB, table, indexName string) (bool, error) {
 // tableHasUniqueIndexOnColumns 检查指定表是否已经有目标唯一约束。
 // 这里接受 SQLite 的隐式唯一索引和显式唯一索引，只看列组合是否一致。
 func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (bool, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA index_list(%s)", strings.TrimSpace(table)))
 	if err != nil {
 		return false, err
 	}
@@ -3534,7 +3534,7 @@ func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (b
 
 // tableIndexColumns 读取单个索引覆盖的列顺序。
 func tableIndexColumns(db *sql.DB, indexName string) ([]string, error) {
-	rows, err := db.Query(fmt.Sprintf("PRAGMA index_info(%s)", strings.TrimSpace(indexName)))
+	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA index_info(%s)", strings.TrimSpace(indexName)))
 	if err != nil {
 		return nil, err
 	}
@@ -3583,7 +3583,7 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 		return "close_final", nil
 	case strings.HasPrefix(bid, "biz_wallet_chain_"):
 		var accountingSubtype string
-		if err := db.QueryRow(`SELECT accounting_subtype FROM settle_businesses WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT accounting_subtype FROM settle_businesses WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
 			return "", fmt.Errorf("cannot infer tx_role for (%s,%s): business record not found", bid, txid)
 		}
 		switch accountingSubtype {

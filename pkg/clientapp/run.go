@@ -1653,11 +1653,11 @@ func applySQLitePragmas(db *sql.DB) error {
 	// - 运行时正式入口统一走 infra/sqliteactor.Open；
 	// - 这里保留给直接 sql.Open("sqlite", ...) 的测试库做最小 WAL 初始化；
 	// - 不再在这里叠加 busy_timeout 之类并发补丁，避免测试口径和正式口径分裂。
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
+	if _, err := ExecContext(ctx, db, `PRAGMA journal_mode=WAL`); err != nil {
 		return fmt.Errorf("sqlite pragma journal_mode: %w", err)
 	}
 	// 启用外键约束（硬切版 schema 依赖外键约束）
-	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
+	if _, err := ExecContext(ctx, db, `PRAGMA foreign_keys=ON`); err != nil {
 		return fmt.Errorf("sqlite pragma foreign_keys: %w", err)
 	}
 	return nil

@@ -32,7 +32,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 		}
 		existing := map[string]existingRef{}
 
-		rowsExists, err := tx.Query(`SELECT workspace_path,file_path,seed_hash,seed_locked FROM biz_workspace_files`)
+		rowsExists, err := QueryContext(ctx, tx, `SELECT workspace_path,file_path,seed_hash,seed_locked FROM biz_workspace_files`)
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 					return err
 				}
 				if ref, ok := existing[key]; ok && ref.Locked && ref.SeedHash != "" {
-					if _, err := tx.Exec(
+					if _, err := ExecContext(ctx, tx, 
 						`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
 						 VALUES(?,?,?,?)
 						 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
@@ -97,7 +97,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 					var chunkCount uint32
 					var recommendedName, mimeHint string
 					var unitPrice uint64
-					if err := tx.QueryRow(`SELECT chunk_count,recommended_file_name,mime_hint FROM biz_seeds WHERE seed_hash=?`, ref.SeedHash).
+					if err := QueryRowContext(ctx, tx, `SELECT chunk_count,recommended_file_name,mime_hint FROM biz_seeds WHERE seed_hash=?`, ref.SeedHash).
 						Scan(&chunkCount, &recommendedName, &mimeHint); err == nil {
 						policy, err := dbLoadSeedPricingPolicyTx(tx, ref.SeedHash)
 						if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -127,7 +127,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				}
 				recommendedName := sanitizeRecommendedFileName(filepath.Base(abs))
 				mimeHint := sanitizeMIMEHint(guessContentType(abs, nil))
-				if _, err := tx.Exec(
+				if _, err := ExecContext(ctx, tx, 
 					`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
 					 VALUES(?,?,?,?)
 					 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
@@ -135,7 +135,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				); err != nil {
 					return err
 				}
-				if _, err := tx.Exec(
+				if _, err := ExecContext(ctx, tx, 
 					`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
 					 VALUES(?,?,?,?,?,?)
 					 ON CONFLICT(seed_hash) DO UPDATE SET
@@ -169,7 +169,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 			}
 		}
 
-		rows, err := tx.Query(`SELECT workspace_path,file_path FROM biz_workspace_files`)
+		rows, err := QueryContext(ctx, tx, `SELECT workspace_path,file_path FROM biz_workspace_files`)
 		if err != nil {
 			return err
 		}
@@ -182,7 +182,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 			if _, ok := seen[workspacePath+"\x00"+filePath]; ok {
 				continue
 			}
-			if _, err := tx.Exec(`DELETE FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, workspacePath, filePath); err != nil {
+			if _, err := ExecContext(ctx, tx, `DELETE FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, workspacePath, filePath); err != nil {
 				return err
 			}
 		}
@@ -190,7 +190,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 			return err
 		}
 
-		orphanRows, err := tx.Query(`SELECT seed_hash,seed_file_path FROM biz_seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM biz_workspace_files)`)
+		orphanRows, err := QueryContext(ctx, tx, `SELECT seed_hash,seed_file_path FROM biz_seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM biz_workspace_files)`)
 		if err != nil {
 			return err
 		}
@@ -201,7 +201,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				return err
 			}
 			_ = os.Remove(seedPath)
-			if _, err := tx.Exec(`DELETE FROM biz_seeds WHERE seed_hash=?`, seedHash); err != nil {
+			if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seeds WHERE seed_hash=?`, seedHash); err != nil {
 				return err
 			}
 			delete(catalog, seedHash)

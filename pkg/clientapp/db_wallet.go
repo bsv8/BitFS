@@ -43,7 +43,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		// 统计本币UTXO数量和金额
 		var utxoCount int64
 		var totalUnspent int64
-		if err := db.QueryRow(`
+		if err := QueryRowContext(ctx, db, `
 			SELECT COUNT(1), COALESCE(SUM(value_satoshi),0) 
 			FROM fact_bsv_utxos WHERE utxo_state='unspent'`).Scan(&utxoCount, &totalUnspent); err != nil {
 			return walletSummaryCounters{}, err
@@ -53,7 +53,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		
 		// BSV 已花费金额（从结算记录统计实际消耗，而非 spent UTXO 总额）
 		var totalSpent int64
-		if err := db.QueryRow(`
+		if err := QueryRowContext(ctx, db, `
 			SELECT COALESCE(SUM(used_satoshi),0) 
 			FROM fact_settlement_records 
 			WHERE asset_type='BSV' AND state='confirmed'`).Scan(&totalSpent); err != nil {
@@ -63,7 +63,7 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		out.BSVUsedSatoshi = totalSpent
 		
 		// Token 消耗统计（从 fact_token_lots 计算 used_quantity）
-		rows, err := db.Query(`
+		rows, err := QueryContext(ctx, db, `
 			SELECT token_standard, token_id, quantity_text, used_quantity_text
 			FROM fact_token_lots
 			WHERE lot_state IN ('unspent', 'spent') AND used_quantity_text != '0'`)
@@ -103,15 +103,15 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 		out.TotalReturned = 0 // 已废弃
 		
 		// 交易历史统计
-		if err := db.QueryRow(`SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind=?`, PoolFactEventKindTxHistory).Scan(&out.TxCount); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind=?`, PoolFactEventKindTxHistory).Scan(&out.TxCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
 		// 购买统计
-		if err := db.QueryRow(`SELECT COUNT(1) FROM biz_purchases WHERE status='done'`).Scan(&out.PurchaseCount); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM biz_purchases WHERE status='done'`).Scan(&out.PurchaseCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
 		// 网关事件统计
-		if err := db.QueryRow(`SELECT COUNT(1) FROM proc_gateway_events`).Scan(&out.GatewayEventCount); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM proc_gateway_events`).Scan(&out.GatewayEventCount); err != nil {
 			return walletSummaryCounters{}, err
 		}
 		return out, nil

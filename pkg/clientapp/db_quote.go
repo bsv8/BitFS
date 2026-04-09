@@ -19,7 +19,7 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 		return nil, fmt.Errorf("demand_id required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]LiveQuoteItem, error) {
-		rows, err := db.Query(`SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM biz_live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+		rows, err := QueryContext(ctx, db, `SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM biz_live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 		if err != nil {
 			return nil, err
 		}
@@ -56,7 +56,7 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 		if err != nil {
 			return err
 		}
-		_, err = db.Exec(`INSERT INTO biz_live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
+		_, err = ExecContext(ctx, db, `INSERT INTO biz_live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
 			VALUES(?,?,?,?,?,?,?)
 			ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
 				stream_id=excluded.stream_id,
