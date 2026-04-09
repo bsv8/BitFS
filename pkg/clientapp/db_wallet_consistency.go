@@ -8,13 +8,12 @@ import (
 	"time"
 )
 
-// TokenTxDualLineConsistency 是 token 交易双线一致性检查结果。
+// TokenTxDualLineConsistency 是 token 交易一致性检查结果。
 // 设计说明：
 // - 这里只做核对，不补账；
-// - 结果同时给出两条线和两类事实的命中情况，方便 API / e2e / 运维统一读口径。
+// - 结果只看显式业务 settlement 和钱包事实，不再把 chain_bsv 主线当成 token 业务锚点。
 type TokenTxDualLineConsistency struct {
 	TxID                 string   `json:"txid"`
-	HasChainBSVCycle     bool     `json:"has_chain_bsv_cycle"`
 	HasChainTokenCycle   bool     `json:"has_chain_token_cycle"`
 	HasCarrierBSVFact    bool     `json:"has_carrier_bsv_fact"`
 	HasTokenQuantityFact bool     `json:"has_token_quantity_fact"`
@@ -37,9 +36,8 @@ type ConfirmedBSVSpendConsistency struct {
 
 // CheckTokenTxDualLineConsistency 检查 token tx 的主线是否齐全。
 // 设计说明：
-// - 现在 BSV21 主链只要求一条 settlement_cycle 主线；
-// - token 数量事实可以挂在 chain_bsv 主线上，也可以由旧的 chain_token 线提供；
-// - 这里保留旧名字，只是为了兼容调用点，语义已经收口到“单主线 + 资产事实”。
+// - 现在只认显式的 chain_token settlement；
+// - carrier BSV 事实和 token 数量事实从钱包事实里核对，不再借 chain_bsv cycle 做锚点。
 func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid string) (TokenTxDualLineConsistency, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
@@ -50,34 +48,17 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (TokenTxDualLineConsistency, error) {
 		out := TokenTxDualLineConsistency{TxID: txid}
-		var bsvCycleID int64
-		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, txid).Scan(&bsvCycleID); err == nil {
-			out.HasChainBSVCycle = true
-			var count int
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='BSV' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
-				return TokenTxDualLineConsistency{}, err
-			}
-			if count > 0 {
-				out.HasCarrierBSVFact = true
-			}
-		} else if err != sql.ErrNoRows {
+		var count int
+		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE spent_by_txid=? AND utxo_state='spent'`, txid).Scan(&count); err != nil {
 			return TokenTxDualLineConsistency{}, err
 		}
-
-		if out.HasChainBSVCycle {
-			var count int
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
-				return TokenTxDualLineConsistency{}, err
-			}
-			if count > 0 {
-				out.HasTokenQuantityFact = true
-			}
+		if count > 0 {
+			out.HasCarrierBSVFact = true
 		}
 
 		var tokenCycleID int64
 		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleID); err == nil {
 			out.HasChainTokenCycle = true
-			var count int
 			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
@@ -88,10 +69,7 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 			return TokenTxDualLineConsistency{}, err
 		}
 
-		if !out.HasChainBSVCycle {
-			out.MissingItems = append(out.MissingItems, "chain_bsv_cycle")
-		}
-		if !out.HasChainTokenCycle && !out.HasTokenQuantityFact {
+		if !out.HasChainTokenCycle {
 			out.MissingItems = append(out.MissingItems, "chain_token_cycle")
 		}
 		if !out.HasCarrierBSVFact {

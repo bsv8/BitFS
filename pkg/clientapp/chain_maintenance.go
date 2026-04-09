@@ -1430,144 +1430,21 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 	return strings.HasSuffix(outputScriptHex, walletScriptHex)
 }
 
-// buildWalletChainAccountingInputsFromTxDetail 从交易明细构建钱包链记账输入。
-// 硬切换设计：
-//   - 显式统计 external_out_satoshi、wallet_change_satoshi、miner_fee_satoshi
-//   - 分类改为：有钱包输入且有外部输出=对外转账(THIRD_PARTY)
-//   - 不再使用旧逻辑："有输入+有找零就一律 internal_change"
-//   - net_out_satoshi = counterparty_out_satoshi + miner_fee_satoshi
+// buildWalletChainAccountingInputsFromTxDetail 已退场。
+// 设计说明：
+// - 钱包同步只负责观察和事实回填，不再从这里产出 chain_bsv settlement 输入；
+// - 需要入 settlement 的业务，必须走自己的显式入口。
 func buildWalletChainAccountingInputsFromTxDetail(ctx context.Context, db sqlConn, address string, detail whatsonchain.TxDetail) ([]walletChainAccountingInput, error) {
-	txid := strings.ToLower(strings.TrimSpace(detail.TxID))
-	if txid == "" {
-		return nil, nil
-	}
-	scriptHex, err := walletAddressLockScriptHex(address)
-	if err != nil {
-		return nil, err
-	}
-
-	inputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vin))
-	outputFacts := make([]chainPaymentUTXOFact, 0, len(detail.Vout))
-	var walletInputSat int64
-	var walletChangeSat int64
-	var externalOutSat int64
-	hasWalletInput := false
-	hasWalletChange := false
-	hasExternalOut := false
-
-	for _, in := range detail.Vin {
-		utxoID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
-	amount, ok, err := dbWalletUTXOValueConn(ctx, db, utxoID)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			continue
-		}
-		hasWalletInput = true
-		walletInputSat += amount
-		inputFacts = append(inputFacts, chainPaymentUTXOFact{
-			UTXOID:        utxoID,
-			IOSide:        "input",
-			UTXORole:      "wallet_input",
-			AmountSatoshi: amount,
-			Note:          "wallet input by chain sync",
-		})
-	}
-
-	for _, out := range detail.Vout {
-		amount := int64(txOutputValueSatoshi(out))
-		if amount <= 0 {
-			continue
-		}
-		if walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
-			// 钱包找零输出
-			hasWalletChange = true
-			walletChangeSat += amount
-			role := "external_in"
-			if hasWalletInput {
-				role = "wallet_change"
-			}
-			outputFacts = append(outputFacts, chainPaymentUTXOFact{
-				UTXOID:        txid + ":" + fmt.Sprint(out.N),
-				IOSide:        "output",
-				UTXORole:      role,
-				AmountSatoshi: amount,
-				Note:          "wallet output by chain sync",
-			})
-		} else {
-			// 外部输出（付给第三方）
-			hasExternalOut = true
-			externalOutSat += amount
-		}
-	}
-
-	if !hasWalletInput && !hasWalletChange {
-		return nil, nil
-	}
-
-	tokenFacts, err := collectTokenUTXOLinkFacts(ctx, db, inputFacts)
-	if err != nil {
-		return nil, err
-	}
-	if hasBSV21TransferOutput(detail) {
-		// BSV21 转移已经由专用事实入口接管，不再走通用 chain_bsv 账线。
-		return nil, nil
-	}
-
-	// 矿工费 = 输入 - 找零 - 外部输出（当有输入时）
-	var minerFeeSat int64
-	if hasWalletInput {
-		minerFeeSat = walletInputSat - walletChangeSat - externalOutSat
-		if minerFeeSat < 0 {
-			minerFeeSat = 0
-		}
-	}
-
-	// 分类逻辑（硬切换）：
-	// - 有输入且有外部输出 => THIRD_PARTY (external_out)
-	// - 有输入但无外部输出但有找零 => CHANGE (internal_change)
-	// - 无输入但有输出 => REPAYMENT (external_in)
-	// - 有输入但无任何钱包输出 => THIRD_PARTY (external_out)
-	category := "REPAYMENT"
-	switch {
-	case hasWalletInput && hasExternalOut:
-		category = "THIRD_PARTY"
-	case hasWalletInput && hasWalletChange && !hasExternalOut:
-		category = "CHANGE"
-	case hasWalletInput && !hasWalletChange && !hasExternalOut:
-		category = "THIRD_PARTY"
-	}
-
-	out := make([]walletChainAccountingInput, 0, 1)
-	if len(inputFacts) > 0 || len(outputFacts) > 0 {
-		out = append(out, walletChainAccountingInput{
-			SourceType:      "chain_bsv",
-			SourceID:        txid,
-			TxID:            txid,
-			Category:        category,
-			WalletInputSat:  walletInputSat,
-			WalletOutputSat: walletChangeSat,
-			ExternalOutSat:  externalOutSat,
-			MinerFeeSat:     minerFeeSat,
-			NetSat:          walletChangeSat - walletInputSat,
-			Payload: map[string]any{
-				"txid":               txid,
-				"wallet_address":     strings.TrimSpace(address),
-				"source":             "wallet_chain_sync",
-				"token_match_count":  len(tokenFacts),
-				"token_matched":      len(tokenFacts) > 0,
-				"token_asset_source": "post_settlement_records",
-			},
-			UTXOFacts: append(append([]chainPaymentUTXOFact{}, outputFacts...), inputFacts...),
-		})
-	}
-	return out, nil
+	_ = ctx
+	_ = db
+	_ = address
+	_ = detail
+	return nil, nil
 }
 
 // hasBSV21TransferOutput 判断交易里是否包含 BSV21 transfer 输出。
 // 设计说明：
-// - 命中时表示这笔交易应交给 BSV21 专用事实入口，不再重复产出 chain_bsv 账线；
+// - 命中时表示这笔交易应交给 BSV21 专用事实入口，不再走钱包同步辅助层；
 // - 这里只做轻量识别，不展开资产事实。
 func hasBSV21TransferOutput(detail whatsonchain.TxDetail) bool {
 	for _, out := range detail.Vout {
@@ -1592,8 +1469,8 @@ func hasBSV21TransferOutput(detail whatsonchain.TxDetail) bool {
 
 // collectTokenUTXOLinkFacts 只收 token carrier 对应的输入事实。
 // 设计说明：
-// - chain_bsv 线已经直接吃全部真实输入
-// - 这里仅为 chain_token 线收 token carrier 的数量事实
+// - 钱包同步不再产出 chain_bsv 主线；
+// - 这里仅为显式 token 业务入口收 token carrier 的数量事实。
 func collectTokenUTXOLinkFacts(ctx context.Context, db sqlConn, facts []chainPaymentUTXOFact) ([]chainPaymentUTXOLinkEntry, error) {
 	out := make([]chainPaymentUTXOLinkEntry, 0)
 	for _, fact := range facts {
@@ -1605,7 +1482,7 @@ func collectTokenUTXOLinkFacts(ctx context.Context, db sqlConn, facts []chainPay
 			continue
 		}
 		var assetKind, tokenID, quantityText string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT l.token_standard, l.token_id, l.quantity_text FROM fact_token_lots l JOIN fact_token_carrier_links c ON l.lot_id=c.lot_id WHERE c.carrier_utxo_id=? AND c.link_state='active' LIMIT 1`,
 			utxoID,
 		).Scan(&assetKind, &tokenID, &quantityText)

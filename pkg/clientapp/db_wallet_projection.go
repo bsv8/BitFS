@@ -15,6 +15,7 @@ import (
 // dbApplyLocalBroadcastWalletProjection 只负责把本地广播交易写回钱包视图。
 // 设计说明：
 // - 业务层只传交易和显式 store，这里统一处理钱包 UTXO 回填；
+// - 本地广播只是钱包运行态，不是结算事实；这里不允许补任何 settlement cycle；
 // - 这样 local broadcast 这条链路就不会再散落 sql 细节。
 func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB, rt *Runtime, tx *txsdk.Transaction, trigger string) error {
 	if store == nil {
@@ -53,7 +54,6 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			return err
 		}
 		desired := cloneWalletUTXOStateRows(current)
-		inputFacts := make([]chainPaymentUTXOLinkEntry, 0, len(tx.Inputs))
 		for _, in := range tx.Inputs {
 			if in == nil || in.SourceTXID == nil {
 				continue
@@ -62,16 +62,6 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			_ = applyWalletUTXOSpentState(desired, utxoID, txid, updatedAt)
 			if err := markBSVUTXOSpentConn(ctx, dbtx, utxoID, txid, updatedAt); err != nil {
 				return err
-			}
-			if row, ok := desired[strings.ToLower(strings.TrimSpace(utxoID))]; ok {
-				inputFacts = append(inputFacts, chainPaymentUTXOLinkEntry{
-					UTXOID:        utxoID,
-					IOSide:        "input",
-					UTXORole:      "wallet_input",
-					AmountSatoshi: int64(row.Value),
-					CreatedAtUnix: updatedAt,
-					Note:          "wallet local broadcast input",
-				})
 			}
 		}
 		for idx, out := range tx.Outputs {
@@ -103,19 +93,8 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 				return err
 			}
 		}
-		if err := dbUpsertWalletLocalBroadcastFactTx(ctx, dbtx, walletID, addr, txid, txHex, updatedAt); err != nil {
+		if err := dbUpsertWalletLocalBroadcastStoreTx(ctx, dbtx, walletID, addr, txid, txHex, 0, updatedAt); err != nil {
 			return err
-		}
-		if strings.TrimSpace(trigger) == "peer_call_chain_tx" {
-			settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, dbtx, "chain_bsv", txid)
-			if err != nil {
-				return err
-			}
-			if len(inputFacts) > 0 {
-			if err := dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, dbtx, settlementCycleID, inputFacts, updatedAt); err != nil {
-					return err
-				}
-			}
 		}
 		if err := applyWalletUTXODiffTx(ctx, dbtx, current, desired, walletID, addr, updatedAt); err != nil {
 			return err
@@ -223,7 +202,7 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 	return stats
 }
 
-func dbUpsertWalletLocalBroadcastFactTx(ctx context.Context, tx *sql.Tx, walletID string, address string, txid string, txHex string, updatedAt int64) error {
+func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, tx *sql.Tx, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -232,50 +211,26 @@ func dbUpsertWalletLocalBroadcastFactTx(ctx context.Context, tx *sql.Tx, walletI
 	if txid == "" || txHex == "" {
 		return fmt.Errorf("local broadcast txid and tx hex are required")
 	}
-	if err := dbUpsertSettlementCycleCtx(ctx, tx, fmt.Sprintf("cycle_chain_bsv_%s", txid), "chain_bsv", txid, "confirmed", 0, 0, 0, 0, updatedAt, "wallet local broadcast", map[string]any{
-		"tx_hex":    txHex,
-		"wallet_id": strings.TrimSpace(walletID),
-		"address":   strings.TrimSpace(address),
-	}); err != nil {
-		return err
+	if observedAtUnix < 0 {
+		observedAtUnix = 0
 	}
-	_, err := ExecContext(ctx, tx, 
-		`INSERT INTO fact_chain_payments(
-			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
-			block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+	_, err := ExecContext(ctx, tx,
+		`INSERT INTO wallet_local_broadcast_txs(
+			txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,observed_at_unix
+		) VALUES(?,?,?,?,?,?,?)
 		ON CONFLICT(txid) DO UPDATE SET
-			payment_subtype=excluded.payment_subtype,
-			status=excluded.status,
-			wallet_input_satoshi=excluded.wallet_input_satoshi,
-			wallet_output_satoshi=excluded.wallet_output_satoshi,
-			net_amount_satoshi=excluded.net_amount_satoshi,
-			block_height=excluded.block_height,
-			occurred_at_unix=excluded.occurred_at_unix,
-			submitted_at_unix=excluded.submitted_at_unix,
-			wallet_observed_at_unix=excluded.wallet_observed_at_unix,
-			from_party_id=excluded.from_party_id,
-			to_party_id=excluded.to_party_id,
-			payload_json=excluded.payload_json,
+			observed_at_unix=CASE
+				WHEN excluded.observed_at_unix > wallet_local_broadcast_txs.observed_at_unix THEN excluded.observed_at_unix
+				ELSE wallet_local_broadcast_txs.observed_at_unix
+			END,
 			updated_at_unix=excluded.updated_at_unix`,
 		txid,
-		"wallet_local_broadcast",
-		"submitted",
-		int64(0),
-		int64(0),
-		int64(0),
-		int64(0),
-		updatedAt,
-		updatedAt,
-		int64(0),
 		strings.TrimSpace(walletID),
-		"external:unknown",
-		mustJSONString(map[string]any{
-			"tx_hex":    txHex,
-			"wallet_id": strings.TrimSpace(walletID),
-			"address":   strings.TrimSpace(address),
-		}),
+		strings.TrimSpace(address),
+		txHex,
 		updatedAt,
+		updatedAt,
+		observedAtUnix,
 	)
 	if err != nil {
 		return err

@@ -134,7 +134,7 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected dbListFinanceBusinesses to reject non-settlement_cycle source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, chain_bsv or chain_token") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_cycle or chain_token") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected dbListFinanceProcessEvents to reject non-settlement_cycle source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, chain_bsv or chain_token") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_cycle or chain_token") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

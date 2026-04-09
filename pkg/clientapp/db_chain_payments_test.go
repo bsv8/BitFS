@@ -161,8 +161,8 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 	}
 }
 
-// TestDbUpsertChainPayment_PreservesSubmitAndObservedTime 验证两时间字段只增不减。
-func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime(t *testing.T) {
+// TestDbUpsertChainPayment_PreservesSubmitAndObservedTime_QuotePay 验证真实支付事实的两时间字段只增不减。
+func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime_QuotePay(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -173,18 +173,18 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime(t *testing.T) {
 
 	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                 txid,
-		PaymentSubType:       "wallet_local_broadcast",
+		PaymentSubType:       "quote_pay",
 		Status:               "submitted",
-		WalletInputSatoshi:   0,
-		WalletOutputSatoshi:  0,
-		NetAmountSatoshi:     0,
+		WalletInputSatoshi:   1200,
+		WalletOutputSatoshi:  900,
+		NetAmountSatoshi:     -300,
 		BlockHeight:          0,
 		OccurredAtUnix:       1700001000,
 		SubmittedAtUnix:      1700001000,
 		WalletObservedAtUnix: 0,
-		FromPartyID:          "wallet:self",
-		ToPartyID:            "external:unknown",
-		Payload:              map[string]any{"test": 1},
+		FromPartyID:          "wallet:buyer",
+		ToPartyID:            "wallet:seller",
+		Payload:              map[string]any{"quote_id": "q_1", "pay_id": "p_1"},
 	})
 	if err != nil {
 		t.Fatalf("first upsert failed: %v", err)
@@ -195,18 +195,18 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime(t *testing.T) {
 
 	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                 txid,
-		PaymentSubType:       "wallet_local_broadcast",
+		PaymentSubType:       "quote_pay",
 		Status:               "observed",
-		WalletInputSatoshi:   0,
-		WalletOutputSatoshi:  0,
-		NetAmountSatoshi:     0,
+		WalletInputSatoshi:   1200,
+		WalletOutputSatoshi:  900,
+		NetAmountSatoshi:     -300,
 		BlockHeight:          0,
 		OccurredAtUnix:       1700000500,
 		SubmittedAtUnix:      1700000500,
 		WalletObservedAtUnix: 1700002000,
-		FromPartyID:          "wallet:self",
-		ToPartyID:            "external:unknown",
-		Payload:              map[string]any{"test": 2},
+		FromPartyID:          "wallet:buyer",
+		ToPartyID:            "wallet:seller",
+		Payload:              map[string]any{"quote_id": "q_1", "pay_id": "p_1", "round": 2},
 	})
 	if err != nil {
 		t.Fatalf("second upsert failed: %v", err)
@@ -237,18 +237,18 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime(t *testing.T) {
 
 	_, err = dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                 txid,
-		PaymentSubType:       "wallet_local_broadcast",
+		PaymentSubType:       "quote_pay",
 		Status:               "confirmed",
-		WalletInputSatoshi:   0,
-		WalletOutputSatoshi:  0,
-		NetAmountSatoshi:     0,
+		WalletInputSatoshi:   1200,
+		WalletOutputSatoshi:  900,
+		NetAmountSatoshi:     -300,
 		BlockHeight:          0,
 		OccurredAtUnix:       1700003000,
 		SubmittedAtUnix:      1700003000,
 		WalletObservedAtUnix: 1700003000,
-		FromPartyID:          "wallet:self",
-		ToPartyID:            "external:unknown",
-		Payload:              map[string]any{"test": 3},
+		FromPartyID:          "wallet:buyer",
+		ToPartyID:            "wallet:seller",
+		Payload:              map[string]any{"quote_id": "q_1", "pay_id": "p_1", "round": 3},
 	})
 	if err != nil {
 		t.Fatalf("third upsert failed: %v", err)

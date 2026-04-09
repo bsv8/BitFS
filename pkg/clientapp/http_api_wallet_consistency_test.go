@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
 func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string) {
@@ -73,29 +71,22 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
-	addressScript, err := walletAddressLockScriptHex(address)
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_"+txid, "chain_token", txid, "confirmed", 0, 0, 0, 0, now, "dual line consistency", map[string]any{"kind": "token"}); err != nil {
+		t.Fatalf("seed chain_token cycle failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_token", txid)
 	if err != nil {
-		t.Fatalf("walletAddressLockScriptHex failed: %v", err)
+		t.Fatalf("lookup chain_token cycle failed: %v", err)
 	}
-	inputs, err := buildWalletChainAccountingInputsFromTxDetail(context.Background(), db, address, whatsonchain.TxDetail{
-		TxID: txid,
-		Vin: []whatsonchain.TxInput{
-			{TxID: prevTxID, Vout: 0},
-		},
-		Vout: []whatsonchain.TxOutput{
-			{N: 0, ValueSatoshi: 1, ScriptPubKey: whatsonchain.ScriptPubKey{Hex: addressScript}},
-		},
-	})
-	if err != nil {
-		t.Fatalf("build wallet chain inputs failed: %v", err)
+	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
+		{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1, CreatedAtUnix: now},
+	}, now); err != nil {
+		t.Fatalf("seed carrier bsv fact failed: %v", err)
 	}
-	if len(inputs) != 1 {
-		t.Fatalf("expected 1 chain input, got %d", len(inputs))
-	}
-	for i := range inputs {
-		if err := recordWalletChainAccounting(db, inputs[i]); err != nil {
-			t.Fatalf("record wallet chain accounting failed: %v", err)
-		}
+	if err := dbAppendTokenConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
+		{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1, QuantityText: "1000", AssetKind: "BSV21", TokenID: tokenID, TokenStandard: "BSV21", CreatedAtUnix: now},
+	}, now); err != nil {
+		t.Fatalf("seed token quantity fact failed: %v", err)
 	}
 }
 
@@ -124,11 +115,8 @@ func TestHandleAdminWalletConsistency_OK(t *testing.T) {
 	if body.TxID != txid {
 		t.Fatalf("unexpected txid: got=%s want=%s", body.TxID, txid)
 	}
-	if !body.Consistency.HasChainBSVCycle || !body.Consistency.HasCarrierBSVFact || !body.Consistency.HasTokenQuantityFact {
+	if !body.Consistency.HasChainTokenCycle || !body.Consistency.HasCarrierBSVFact || !body.Consistency.HasTokenQuantityFact {
 		t.Fatalf("unexpected consistency: %+v", body.Consistency)
-	}
-	if body.Consistency.HasChainTokenCycle {
-		t.Fatalf("expected no separate chain_token cycle: %+v", body.Consistency)
 	}
 	if len(body.Consistency.MissingItems) != 0 {
 		t.Fatalf("expected no missing items, got %+v", body.Consistency.MissingItems)
@@ -174,24 +162,10 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 		CreatedAtUnix:  time.Now().Unix(),
 		UpdatedAtUnix:  time.Now().Unix(),
 	}); err != nil {
-		t.Fatalf("seed chain_bsv fact utxo failed: %v", err)
+		t.Fatalf("seed chain_token fact utxo failed: %v", err)
 	}
-	if err := recordWalletChainAccounting(db, walletChainAccountingInput{
-		SourceType:      "chain_bsv",
-		SourceID:        txid,
-		TxID:            txid,
-		Category:        "CHANGE",
-		WalletInputSat:  1000,
-		WalletOutputSat: 900,
-		ExternalOutSat:  0,
-		MinerFeeSat:     100,
-		NetSat:          -100,
-		Payload:         map[string]any{"wallet_id": walletID},
-		UTXOFacts: []chainPaymentUTXOFact{
-			{UTXOID: txid + ":0", IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1000, Note: "carrier"},
-		},
-	}); err != nil {
-		t.Fatalf("seed chain_bsv failed: %v", err)
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_"+txid, "chain_token", txid, "confirmed", 0, 0, 0, 0, time.Now().Unix(), "consistency missing", nil); err != nil {
+		t.Fatalf("seed chain_token cycle failed: %v", err)
 	}
 
 	srv := &httpAPIServer{store: store}
@@ -209,11 +183,11 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 	if body.Ok {
 		t.Fatalf("expected ok=false, got %+v", body)
 	}
-	if !containsString(body.Consistency.MissingItems, "chain_token_cycle") || !containsString(body.Consistency.MissingItems, "token_quantity_fact") {
+	if !containsString(body.Consistency.MissingItems, "carrier_bsv_fact") || !containsString(body.Consistency.MissingItems, "token_quantity_fact") {
 		t.Fatalf("unexpected missing items: %+v", body.Consistency.MissingItems)
 	}
-	if !body.Consistency.HasChainBSVCycle || !body.Consistency.HasCarrierBSVFact {
-		t.Fatalf("expected bsv line intact, got %+v", body.Consistency)
+	if !body.Consistency.HasChainTokenCycle {
+		t.Fatalf("expected chain_token line intact, got %+v", body.Consistency)
 	}
 }
 

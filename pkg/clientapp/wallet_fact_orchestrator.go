@@ -142,7 +142,8 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 			return err
 		}
 
-		// 写入 chain accounting（与原 reconcileWalletUTXOSet 行为一致）
+		// 只把显式业务输入送入 chain accounting。
+		// 钱包同步观察本身不再产出 chain_bsv settlement。
 		accountedTxIDs := map[string]struct{}{}
 		recordWalletChainTx := func(detail whatsonchain.TxDetail) error {
 			inputs, err := buildWalletChainAccountingInputsFromTxDetail(ctx, tx, address, detail)
@@ -231,7 +232,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		unknownUTXOCount := int64(stats.UnknownUTXOCount)
 		unknownBalanceSatoshi := int64(stats.UnknownBalanceSatoshi)
 		lastDurationMS := int64(durationMS)
-		if _, err = ExecContext(ctx, tx, 
+		if _, err = ExecContext(ctx, tx,
 			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(address) DO UPDATE SET
@@ -274,7 +275,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		); err != nil {
 			return err
 		}
-		if _, err = ExecContext(ctx, tx, 
+		if _, err = ExecContext(ctx, tx,
 			`INSERT INTO wallet_utxo_sync_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
 			 VALUES(?,?,?,?,?,?,?,?)
 			 ON CONFLICT(address) DO UPDATE SET

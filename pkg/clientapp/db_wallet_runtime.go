@@ -221,10 +221,10 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 		if walletID == "" || address == "" {
 			return []walletLocalBroadcastRow{}, nil
 		}
-		rows, err := QueryContext(ctx, db, `SELECT txid,payload_json,submitted_at_unix,wallet_observed_at_unix,updated_at_unix
-			FROM fact_chain_payments
-			WHERE from_party_id=? AND payment_subtype='wallet_local_broadcast'
-			ORDER BY submitted_at_unix ASC, updated_at_unix ASC, txid ASC`, walletID)
+		rows, err := QueryContext(ctx, db, `SELECT txid,tx_hex,created_at_unix,observed_at_unix,updated_at_unix
+			FROM wallet_local_broadcast_txs
+			WHERE wallet_id=? AND address=?
+			ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`, walletID, address)
 		if err != nil {
 			return nil, err
 		}
@@ -232,16 +232,14 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 		out := make([]walletLocalBroadcastRow, 0, 8)
 		for rows.Next() {
 			var item walletLocalBroadcastRow
-			var payloadJSON string
-			if err := rows.Scan(&item.TxID, &payloadJSON, &item.CreatedAtUnix, &item.ObservedAtUnix, &item.UpdatedAtUnix); err != nil {
+			if err := rows.Scan(&item.TxID, &item.TxHex, &item.CreatedAtUnix, &item.ObservedAtUnix, &item.UpdatedAtUnix); err != nil {
 				return nil, err
 			}
 			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-			txHex, err := factChainPaymentPayloadTxHex(payloadJSON)
-			if err != nil {
-				return nil, err
+			item.TxHex = strings.ToLower(strings.TrimSpace(item.TxHex))
+			if item.TxHex == "" {
+				return nil, fmt.Errorf("wallet local broadcast tx_hex is empty for txid=%s", item.TxID)
 			}
-			item.TxHex = txHex
 			out = append(out, item)
 		}
 		if err := rows.Err(); err != nil {

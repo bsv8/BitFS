@@ -231,6 +231,15 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL,
 			UNIQUE(txid)
 		)`,
+		`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
+			txid TEXT PRIMARY KEY,
+			wallet_id TEXT NOT NULL,
+			address TEXT NOT NULL,
+			tx_hex TEXT NOT NULL,
+			created_at_unix INTEGER NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			observed_at_unix INTEGER NOT NULL DEFAULT 0
+		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='` + PoolFactEventKindPoolEvent + `'`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_scheme_status ON fact_pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_counterparty ON fact_pool_sessions(counterparty_pubkey_hex,status)`,
@@ -238,6 +247,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_kind_seq ON fact_pool_session_events(pool_session_id,event_kind,sequence_num)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_txid ON fact_pool_session_events(txid)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_created ON fact_pool_session_events(created_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_txs_wallet_observed ON wallet_local_broadcast_txs(wallet_id, observed_at_unix, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_occurred ON fact_chain_payments(occurred_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_subtype ON fact_chain_payments(payment_subtype, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_status ON fact_chain_payments(status, occurred_at_unix DESC)`,
@@ -1062,7 +1072,7 @@ func ensureCommandJournalTriggerKey(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("inspect proc_command_journal: %w", err)
 	}
 	if _, ok := cols["trigger_key"]; !ok {
-			if _, err := ExecContext(ctx, db, `ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
+		if _, err := ExecContext(ctx, db, `ALTER TABLE proc_command_journal ADD COLUMN trigger_key TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("add trigger_key column: %w", err)
 		}
 	}
@@ -1965,7 +1975,7 @@ func rebuildDemandQuoteFKTables(ctx context.Context, db *sql.DB, rebuildQuotes b
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-		if err := demandQuoteRejectOrphanRows(ctx, db); err != nil {
+	if err := demandQuoteRejectOrphanRows(ctx, db); err != nil {
 		return err
 	}
 
@@ -2881,7 +2891,7 @@ func ensureWalletUTXOSchema(ctx context.Context, db *sql.DB) error {
 		)`); err != nil {
 			return err
 		}
-		if _, err = ExecContext(ctx, tx, 
+		if _, err = ExecContext(ctx, tx,
 			`INSERT INTO wallet_utxo(
 				utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
 			)
@@ -2941,117 +2951,6 @@ func ensureWalletUTXOSchema(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
-		return err
-	}
-	return nil
-}
-
-func migrateWalletLocalBroadcastFacts(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	legacyTableName := strings.Join([]string{"wallet", "local", "broadcast", "txs"}, "_")
-	exists, err := hasTable(db, legacyTableName)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return nil
-	}
-
-	cols, err := tableColumns(db, legacyTableName)
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-	observedCol := "observed_at_unix"
-	if _, ok := cols["observed_at_unix"]; !ok {
-		observedCol = "0"
-	}
-
-	type legacyWalletLocalBroadcastRow struct {
-		TxID           string
-		WalletID       string
-		Address        string
-		TxHex          string
-		CreatedAtUnix  int64
-		UpdatedAtUnix  int64
-		ObservedAtUnix int64
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func() {
-		_ = tx.Rollback()
-	}
-	rows, err := QueryContext(ctx, tx, fmt.Sprintf(`SELECT txid,wallet_id,address,tx_hex,created_at_unix,updated_at_unix,%s FROM %s`, observedCol, legacyTableName))
-	if err != nil {
-		rollback()
-		return err
-	}
-	defer rows.Close()
-
-	legacyRows := make([]legacyWalletLocalBroadcastRow, 0, 32)
-	for rows.Next() {
-		var row legacyWalletLocalBroadcastRow
-		if scanErr := rows.Scan(&row.TxID, &row.WalletID, &row.Address, &row.TxHex, &row.CreatedAtUnix, &row.UpdatedAtUnix, &row.ObservedAtUnix); scanErr != nil {
-			rollback()
-			return scanErr
-		}
-		legacyRows = append(legacyRows, row)
-	}
-	if err := rows.Err(); err != nil {
-		rollback()
-		return err
-	}
-
-	for _, row := range legacyRows {
-		submittedAt := row.CreatedAtUnix
-		if submittedAt <= 0 {
-			submittedAt = row.UpdatedAtUnix
-		}
-		if submittedAt <= 0 {
-			submittedAt = time.Now().Unix()
-		}
-		status := "submitted"
-		if row.ObservedAtUnix > 0 {
-			status = "observed"
-		}
-		payload := map[string]any{
-			"tx_hex":    strings.ToLower(strings.TrimSpace(row.TxHex)),
-			"wallet_id": strings.TrimSpace(row.WalletID),
-			"address":   strings.TrimSpace(row.Address),
-		}
-		if _, err := dbUpsertChainPaymentDB(ctx, tx, chainPaymentEntry{
-			TxID:                 row.TxID,
-			PaymentSubType:       "wallet_local_broadcast",
-			Status:               status,
-			WalletInputSatoshi:   0,
-			WalletOutputSatoshi:  0,
-			NetAmountSatoshi:     0,
-			BlockHeight:          0,
-			OccurredAtUnix:       submittedAt,
-			SubmittedAtUnix:      submittedAt,
-			WalletObservedAtUnix: row.ObservedAtUnix,
-			FromPartyID:          strings.TrimSpace(row.WalletID),
-			ToPartyID:            "external:unknown",
-			Payload:              payload,
-		}); err != nil {
-			rollback()
-			return fmt.Errorf("migrate legacy wallet broadcast txid=%s: %w", strings.TrimSpace(row.TxID), err)
-		}
-	}
-
-	if _, err := ExecContext(ctx, tx, `DROP TABLE ` + legacyTableName); err != nil {
-		rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		rollback()
 		return err
 	}
 	return nil
@@ -3241,7 +3140,7 @@ func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 		}
 	}()
 
-	if _, err = ExecContext(ctx, tx, 
+	if _, err = ExecContext(ctx, tx,
 		`DELETE FROM settle_tx_breakdown
 		 WHERE business_id IN (
 			 SELECT business_id FROM settle_businesses
@@ -3250,7 +3149,7 @@ func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 	); err != nil {
 		return err
 	}
-	if _, err = ExecContext(ctx, tx, 
+	if _, err = ExecContext(ctx, tx,
 		`DELETE FROM settle_tx_utxo_links
 		 WHERE business_id IN (
 			 SELECT business_id FROM settle_businesses
@@ -3261,7 +3160,7 @@ func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 	}
 	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑
 	if legacyExists {
-		if _, err = ExecContext(ctx, tx, 
+		if _, err = ExecContext(ctx, tx,
 			`DELETE FROM settle_biz_utxo_links
 			 WHERE business_id IN (
 				 SELECT business_id FROM settle_businesses

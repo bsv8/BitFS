@@ -251,13 +251,13 @@ func resolveSettlementCycleSourceDB(ctx context.Context, db *sql.DB, sourceType,
 		if err != nil || cycleID <= 0 {
 			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
 		}
-	case "chain_bsv", "chain_token":
+	case "chain_token":
 		cycleID, err = dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, sourceID)
 		if err != nil {
 			return settlementCycleSourceResolution{}, err
 		}
 	default:
-		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle, chain_bsv or chain_token")
+		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle or chain_token")
 	}
 	state, err := dbGetSettlementCycleStateByIDDB(ctx, db, cycleID)
 	if err != nil {
@@ -282,24 +282,24 @@ func resolvePoolAllocationSourceToSettlementCycleDB(ctx context.Context, db *sql
 	}
 	if allocID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && allocID > 0 {
 		var poolSessionID string
-			if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
-				return 0, err
-			}
-			return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
-		}
-		var poolSessionID string
-		if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
 			return 0, err
 		}
 		return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
 	}
+	var poolSessionID string
+	if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
+		return 0, err
+	}
+	return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
+}
 
 func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	for _, sourceType := range []string{"chain_payment", "chain_bsv", "chain_token"} {
+	for _, sourceType := range []string{"chain_payment", "chain_token"} {
 		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.ToLower(sourceID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -311,17 +311,12 @@ func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.D
 		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_chain_payments WHERE id=?`, paymentID).Scan(&txid); err != nil {
 			return 0, err
 		}
-			if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_payment", txid); err == nil {
+		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_payment", txid); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-			if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_bsv", txid); err == nil {
-			return cycleID, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return 0, err
-		}
-			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_token", txid)
+		return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_token", txid)
 	}
 	return 0, sql.ErrNoRows
 }
@@ -331,7 +326,7 @@ func resolveWalletChainSourceToSettlementCycleDB(ctx context.Context, db *sql.DB
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	for _, sourceType := range []string{"chain_bsv", "chain_token"} {
+	for _, sourceType := range []string{"chain_token"} {
 		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.ToLower(sourceID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
@@ -447,7 +442,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeBusinessPage
-		if err := QueryRowContext(ctx, db, 
+		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
 			   FROM settle_businesses sb
 			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
@@ -455,7 +450,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			args...).Scan(&out.Total); err != nil {
 			return financeBusinessPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
 			 FROM settle_businesses sb
 			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
@@ -491,7 +486,7 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessItem, error) {
 		var out financeBusinessItem
 		var payload string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
 			 FROM settle_businesses sb
 			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
@@ -565,7 +560,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeProcessEventPage
-		if err := QueryRowContext(ctx, db, 
+		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
 			   FROM settle_process_events pe
 			   JOIN fact_settlement_cycles sc ON sc.id = CAST(pe.source_id AS INTEGER)
@@ -573,7 +568,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			args...).Scan(&out.Total); err != nil {
 			return financeProcessEventPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
 			 FROM settle_process_events pe
 			 JOIN fact_settlement_cycles sc ON sc.id = CAST(pe.source_id AS INTEGER)
@@ -608,7 +603,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeProcessEventItem, error) {
 		var out financeProcessEventItem
 		var payload string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
 			 FROM settle_process_events pe
 			 JOIN fact_settlement_cycles sc ON sc.id = CAST(pe.source_id AS INTEGER)
@@ -762,7 +757,7 @@ func dbListFinanceBreakdowns(ctx context.Context, store *clientDB, f financeBrea
 			args = append(args, settlementState)
 		}
 		var out financeBreakdownPage
-		if err := QueryRowContext(ctx, db, 
+		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
 			   FROM settle_tx_breakdown b
 			   JOIN settle_businesses sb ON sb.business_id = b.business_id
@@ -771,7 +766,7 @@ func dbListFinanceBreakdowns(ctx context.Context, store *clientDB, f financeBrea
 			args...).Scan(&out.Total); err != nil {
 			return financeBreakdownPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT b.id,b.business_id,b.txid,b.tx_role,b.gross_input_satoshi,b.change_back_satoshi,b.external_in_satoshi,b.counterparty_out_satoshi,b.miner_fee_satoshi,b.net_out_satoshi,b.net_in_satoshi,b.created_at_unix,b.note,b.payload_json
 			 FROM settle_tx_breakdown b
 			 JOIN settle_businesses sb ON sb.business_id = b.business_id
@@ -810,7 +805,7 @@ func dbGetFinanceBreakdown(ctx context.Context, store *clientDB, id int64) (fina
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeBreakdownItem, error) {
 		var out financeBreakdownItem
 		var payload string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT b.id,b.business_id,b.txid,b.tx_role,b.gross_input_satoshi,b.change_back_satoshi,b.external_in_satoshi,b.counterparty_out_satoshi,b.miner_fee_satoshi,b.net_out_satoshi,b.net_in_satoshi,b.created_at_unix,b.note,b.payload_json
 			 FROM settle_tx_breakdown b
 			 JOIN settle_businesses sb ON sb.business_id = b.business_id
@@ -874,7 +869,7 @@ func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOL
 			args = append(args, settlementState)
 		}
 		var out financeUTXOLinkPage
-		if err := QueryRowContext(ctx, db, 
+		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
 			   FROM settle_tx_utxo_links l
 			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
@@ -885,7 +880,7 @@ func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOL
 		).Scan(&out.Total); err != nil {
 			return financeUTXOLinkPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
 			   FROM settle_tx_utxo_links l
 			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
@@ -922,7 +917,7 @@ func dbGetFinanceUTXOLink(ctx context.Context, store *clientDB, id int64) (finan
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeUTXOLinkItem, error) {
 		var out financeUTXOLinkItem
 		var payload string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
 			   FROM settle_tx_utxo_links l
 			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid

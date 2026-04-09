@@ -22,6 +22,7 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		"fact_pool_session_events",
 		"fact_settlement_cycles",
 		"fact_chain_payments",
+		"wallet_local_broadcast_txs",
 		"settle_tx_utxo_links",
 	} {
 		exists, err := hasTable(db, table)
@@ -66,6 +67,10 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 			table: "fact_settlement_cycles",
 			cols:  []string{"id", "cycle_id", "source_type", "source_id", "state", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi"},
 		},
+		{
+			table: "wallet_local_broadcast_txs",
+			cols:  []string{"txid", "wallet_id", "address", "tx_hex", "created_at_unix", "updated_at_unix", "observed_at_unix"},
+		},
 	} {
 		cols, err := tableColumns(db, check.table)
 		if err != nil {
@@ -92,6 +97,11 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		t.Fatalf("inspect fact_pool_session_events unique constraint failed: %v", err)
 	} else if !unique {
 		t.Fatal("fact_pool_session_events should keep unique constraint on allocation_id")
+	}
+	if ok, err := tableHasIndex(db, "wallet_local_broadcast_txs", "idx_wallet_local_broadcast_txs_wallet_observed"); err != nil {
+		t.Fatalf("inspect wallet_local_broadcast_txs index failed: %v", err)
+	} else if !ok {
+		t.Fatal("wallet_local_broadcast_txs should keep wallet/observed index")
 	}
 }
 
