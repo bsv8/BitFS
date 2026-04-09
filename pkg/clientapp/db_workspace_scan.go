@@ -50,7 +50,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 			return err
 		}
 
-		biz_workspaces, err := listEnabledWorkspacePaths(tx, cfg.Storage.WorkspaceDir)
+		biz_workspaces, err := listEnabledWorkspacePaths(ctx, tx, cfg.Storage.WorkspaceDir)
 		if err != nil {
 			return err
 		}
@@ -219,13 +219,13 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 	return catalog, nil
 }
 
-func listEnabledWorkspacePaths(queryer interface {
-	Query(string, ...any) (*sql.Rows, error)
+func listEnabledWorkspacePaths(ctx context.Context, queryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
 }, fallback string) ([]string, error) {
 	if queryer == nil {
 		return nil, fmt.Errorf("db is nil")
 	}
-	rows, err := queryer.Query(`SELECT workspace_path FROM biz_workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
+	rows, err := QueryContext(ctx, queryer, `SELECT workspace_path FROM biz_workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
 	if err != nil {
 		return nil, err
 	}

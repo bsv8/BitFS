@@ -129,7 +129,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 		protectedBalanceSatoshi := int64(stats.ProtectedBalanceSatoshi)
 		unknownUTXOCount := int64(stats.UnknownUTXOCount)
 		unknownBalanceSatoshi := int64(stats.UnknownBalanceSatoshi)
-		if _, err := dbtx.Exec(
+		if _, err := ExecContext(ctx, dbtx,
 			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 			 ON CONFLICT(address) DO UPDATE SET
