@@ -244,7 +244,6 @@ func TestSettlementCycleWriteGuard_NoSharedEntryDirectCalls(t *testing.T) {
 	t.Parallel()
 
 	files := []string{
-		"wallet_accounting.go",
 		"db_process_writes.go",
 		"db_init.go",
 	}

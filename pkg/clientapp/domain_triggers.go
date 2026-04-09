@@ -523,12 +523,27 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, store *clientDB, r
 		}
 		out.RegisterTxID = parsed.TxID().String()
 	}
-	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, registerTxRaw, "domain_register_submit"); err != nil {
+	if err := recordDomainRegisterAccountingAfterBroadcast(ctx, store, rt, registerTxRaw, out.RegisterTxID, resolverPubkeyHex); err != nil {
 		return out, err
 	}
 	out.Ok = true
 	out.Code = "OK"
 	return out, nil
+}
+
+// recordDomainRegisterAccountingAfterBroadcast 域名注册提交成功后的收口动作。
+// 设计说明：
+// - 先把已广播交易投影回本地钱包事实；
+// - 再把链支付账一次写完，避免 finalize 还去追旧的事后补账；
+// - 这里是 domain register 专用的提交即入账边界，不再给别的入口偷用。
+func recordDomainRegisterAccountingAfterBroadcast(ctx context.Context, store *clientDB, rt *Runtime, registerTxRaw []byte, registerTxID string, resolverPubkeyHex string) error {
+	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, registerTxRaw, "domain_register_submit"); err != nil {
+		return err
+	}
+	if err := recordChainPaymentAccountingAfterBroadcast(ctx, store, rt, hex.EncodeToString(registerTxRaw), registerTxID, "domain_register", "domain_register_submit", "client:self", "resolver:"+strings.ToLower(strings.TrimSpace(resolverPubkeyHex))); err != nil {
+		return err
+	}
+	return nil
 }
 
 // TriggerDomainSetTarget 通过 domain 系统更新域名指向。

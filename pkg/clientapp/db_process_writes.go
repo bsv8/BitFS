@@ -382,7 +382,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 		return err
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := ExecContext(ctx, db, 
+		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
 			commandID,
@@ -489,7 +489,7 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	switch e.SourceType {
 	case "":
 		return fmt.Errorf("source_type is required")
-	case "fee_pool", "pool_allocation", "chain_payment", "wallet_chain":
+	case "fee_pool", "pool_allocation", "chain_payment":
 		return fmt.Errorf("source_type must be settlement_cycle")
 	}
 	if e.SourceID == "" {
@@ -689,7 +689,7 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	switch e.SourceType {
 	case "":
 		return fmt.Errorf("source_type is required")
-	case "fee_pool", "pool_allocation", "chain_payment", "wallet_chain":
+	case "fee_pool", "pool_allocation", "chain_payment":
 		return fmt.Errorf("source_type must be settlement_cycle")
 	}
 	if e.SourceID == "" {
@@ -897,7 +897,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		if baseTxHex != "" {
 			t, err := transaction.NewTransactionFromHex(baseTxHex)
 			if err != nil {
-				obs.Error("bitcast-client", "wallet_accounting_parse_base_tx_failed", map[string]any{"error": err.Error(), "base_txid": baseTxID})
+				obs.Error("bitcast-client", "fee_pool_open_parse_base_tx_failed", map[string]any{"error": err.Error(), "base_txid": baseTxID})
 			} else {
 				for _, input := range t.Inputs {
 					if input.SourceTxOutput() != nil {
@@ -959,7 +959,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		// 这里直接按 chain_payment 反查 settlement_cycle，别再把旧 fee_pool 口径塞回写入口。
 		settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(ctx, db, strings.TrimSpace(in.SpendTxID))
 		if err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error("bitcast-client", "fee_pool_open_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
@@ -978,7 +978,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 				"base_txid":  baseTxID,
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error("bitcast-client", "fee_pool_open_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
@@ -997,7 +997,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 				"formula": "net_out = counterparty_out + miner_fee",
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error("bitcast-client", "fee_pool_open_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 		}
 	})
 }
@@ -1008,7 +1008,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 		// 这里直接按 chain_payment 反查 settlement_cycle，保证写入和查询走同一条路。
 		settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(ctx, db, strings.TrimSpace(spendTxID))
 		if err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			obs.Error("bitcast-client", "fee_pool_cycle_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 			return
 		}
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
@@ -1027,7 +1027,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 				"financial_affected": false,
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			obs.Error("bitcast-client", "fee_pool_cycle_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 		}
 	})
 }
@@ -1133,7 +1133,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				"process_type":  "pool_open", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
+			obs.Error("bitcast-client", "direct_pool_open_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
@@ -1152,7 +1152,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				"allocation_id": allocID, // 保留业务键在 payload 中
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			obs.Error("bitcast-client", "direct_pool_open_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return err
 		}
 		// 第二阶段：tx_breakdown 挂正式的 business_id
@@ -1170,7 +1170,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			Note:               "direct open lock gross_input-change_back",
 			Payload:            map[string]any{"session_id": strings.TrimSpace(in.SessionID)},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			obs.Error("bitcast-client", "direct_pool_open_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return err
 		}
 		return nil
@@ -1220,7 +1220,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 				"business_id":   downloadBusinessID, // 指向正式下载 business
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+			obs.Error("bitcast-client", "direct_pool_pay_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 			return err
 		}
 
@@ -1239,7 +1239,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 			Note:               "offchain chunk pay",
 			Payload:            map[string]any{"sequence": sequence},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+			obs.Error("bitcast-client", "direct_pool_pay_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 			return err
 		}
 		return nil
@@ -1264,7 +1264,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		if txHex != "" {
 			t, err := transaction.NewTransactionFromHex(txHex)
 			if err != nil {
-				obs.Error("bitcast-client", "wallet_accounting_parse_final_tx_failed", map[string]any{"error": err.Error(), "final_txid": finalTxID})
+				obs.Error("bitcast-client", "direct_pool_close_parse_final_tx_failed", map[string]any{"error": err.Error(), "final_txid": finalTxID})
 			} else {
 				parsedFinalTx = t
 				if finalTxID == "" {
@@ -1302,7 +1302,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				"process_type":          "pool_close", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
+			obs.Error("bitcast-client", "direct_pool_close_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
 			return err
 		}
 		// 过程事件继续使用统一的过程追踪 id
@@ -1321,7 +1321,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				"allocation_id":         allocID, // 保留业务键在 payload 中
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			obs.Error("bitcast-client", "direct_pool_close_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 			return err
 		}
 		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
@@ -1339,7 +1339,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			Note:               "pool settle return",
 			Payload:            map[string]any{"session_id": strings.TrimSpace(sessionID)},
 		}); err != nil {
-			obs.Error("bitcast-client", "wallet_accounting_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			obs.Error("bitcast-client", "direct_pool_close_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 			return err
 		}
 		if parsedFinalTx == nil {

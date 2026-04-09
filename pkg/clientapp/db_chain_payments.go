@@ -3,9 +3,12 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"strings"
 	"time"
+
+	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 type sqlConn interface {
@@ -18,7 +21,7 @@ type sqlConn interface {
 }
 
 // chainPaymentEntry fact_chain_payments 写入条目
-// 设计说明：为 wallet_chain 财务来源切换提供事实层支持，后续写入都靠事实表主键收口。
+// 设计说明：链支付事实只走显式业务提交入口，后续写入都靠事实表主键收口。
 type chainPaymentEntry struct {
 	TxID                 string
 	PaymentSubType       string
@@ -135,7 +138,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 			walletObservedAt = existingWalletObservedAt
 		}
 		// 存在则更新
-		_, err = ExecContext(ctx, db, 
+		_, err = ExecContext(ctx, db,
 			`UPDATE fact_chain_payments SET
 				payment_subtype=?,
 				status=?,
@@ -186,7 +189,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 	}
 
 	// 不存在则插入
-	res, err := ExecContext(ctx, db, 
+	res, err := ExecContext(ctx, db,
 		`INSERT INTO fact_chain_payments(
 			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
 			block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
@@ -301,4 +304,225 @@ func dbWalletUTXOValueConn(ctx context.Context, db sqlConn, utxoID string) (int6
 		return 0, false, err
 	}
 	return value, true, nil
+}
+
+// recordChainPaymentAccountingAfterBroadcast 业务提交成功后，一次写完链支付已知财务内容。
+// 设计说明：
+// - 这里不等钱包同步，不走旧的事后回写；
+// - 只接受已经广播成功的真实交易；
+// - 输入金额来自 wallet_utxo，输出角色来自交易本身。
+func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clientDB, rt *Runtime, txHex string, txID string, paymentSubType string, processSubType string, fromPartyID string, toPartyID string) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	if rt == nil {
+		return fmt.Errorf("runtime not initialized")
+	}
+	txHex = strings.ToLower(strings.TrimSpace(txHex))
+	txID = strings.ToLower(strings.TrimSpace(txID))
+	if txHex == "" {
+		return fmt.Errorf("tx_hex is required")
+	}
+	if txID == "" {
+		return fmt.Errorf("txid is required")
+	}
+	walletAddr, err := clientWalletAddress(rt)
+	if err != nil {
+		return err
+	}
+	walletAddr = strings.TrimSpace(walletAddr)
+	if walletAddr == "" {
+		return fmt.Errorf("wallet address is empty")
+	}
+	walletScriptHex, err := walletAddressLockScriptHex(walletAddr)
+	if err != nil {
+		return err
+	}
+	parsed, err := txsdk.NewTransactionFromHex(txHex)
+	if err != nil {
+		return fmt.Errorf("parse tx hex: %w", err)
+	}
+	now := time.Now().Unix()
+	return store.Tx(ctx, func(tx *sql.Tx) error {
+		inputFacts, grossInput, err := collectWalletInputTxLinkFactsTx(ctx, tx, parsed, "biz_chain_payment_"+txID, txID, "chain_payment input")
+		if err != nil {
+			return err
+		}
+		if len(inputFacts) == 0 {
+			return fmt.Errorf("no wallet input facts found for txid %s", txID)
+		}
+		changeBack := int64(0)
+		counterpartyOut := int64(0)
+		outputFacts := make([]finTxUTXOLinkEntry, 0, len(parsed.Outputs))
+		for idx, out := range parsed.Outputs {
+			if out == nil {
+				continue
+			}
+			amount := int64(out.Satoshis)
+			if amount <= 0 {
+				continue
+			}
+			utxoID := txID + ":" + fmt.Sprint(idx)
+			outScriptHex := strings.ToLower(strings.TrimSpace(hex.EncodeToString(out.LockingScript.Bytes())))
+			if outScriptHex != "" && walletScriptHexMatchesAddressControl(outScriptHex, walletScriptHex) {
+				changeBack += amount
+				outputFacts = append(outputFacts, finTxUTXOLinkEntry{
+					BusinessID:    "biz_chain_payment_" + txID,
+					TxID:          txID,
+					UTXOID:        utxoID,
+					IOSide:        "output",
+					UTXORole:      "wallet_change",
+					AmountSatoshi: amount,
+					CreatedAtUnix: now,
+					Note:          "chain payment change output",
+				})
+				continue
+			}
+			counterpartyOut += amount
+			outputFacts = append(outputFacts, finTxUTXOLinkEntry{
+				BusinessID:    "biz_chain_payment_" + txID,
+				TxID:          txID,
+				UTXOID:        utxoID,
+				IOSide:        "output",
+				UTXORole:      "counterparty_out",
+				AmountSatoshi: amount,
+				CreatedAtUnix: now,
+				Note:          "chain payment external output",
+			})
+		}
+		minerFee := grossInput - changeBack - counterpartyOut
+		if minerFee < 0 {
+			minerFee = 0
+		}
+		netAmount := changeBack - grossInput
+		if _, err := dbUpsertChainPaymentDBWithSettlementCycle(ctx, tx, chainPaymentEntry{
+			TxID:                 txID,
+			PaymentSubType:       paymentSubType,
+			Status:               "confirmed",
+			WalletInputSatoshi:   grossInput,
+			WalletOutputSatoshi:  changeBack,
+			NetAmountSatoshi:     netAmount,
+			OccurredAtUnix:       now,
+			SubmittedAtUnix:      now,
+			WalletObservedAtUnix: now,
+			FromPartyID:          strings.TrimSpace(fromPartyID),
+			ToPartyID:            strings.TrimSpace(toPartyID),
+			Payload: map[string]any{
+				"txid":            txID,
+				"payment_subtype": paymentSubType,
+				"process_subtype": processSubType,
+			},
+		}, true); err != nil {
+			return fmt.Errorf("upsert chain payment failed: %w", err)
+		}
+		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, tx, "chain_payment", txID)
+		if err != nil {
+			return fmt.Errorf("resolve settlement cycle for chain payment: %w", err)
+		}
+		businessID := "biz_chain_payment_" + txID
+		if err := dbAppendSettlementCycleFinBusiness(tx, settlementCycleID, finBusinessEntry{
+			BusinessID:        businessID,
+			BusinessRole:      "process",
+			AccountingScene:   "peer_call",
+			AccountingSubType: strings.TrimSpace(processSubType),
+			FromPartyID:       strings.TrimSpace(fromPartyID),
+			ToPartyID:         strings.TrimSpace(toPartyID),
+			Status:            "posted",
+			OccurredAtUnix:    now,
+			IdempotencyKey:    "chain_payment:" + txID,
+			Note:              "chain payment broadcast accounting",
+			Payload: map[string]any{
+				"txid":            txID,
+				"payment_subtype": paymentSubType,
+				"process_subtype": processSubType,
+			},
+		}); err != nil {
+			return fmt.Errorf("append settle_businesses failed: %w", err)
+		}
+		if err := dbAppendFinTxBreakdownIfAbsent(tx, finTxBreakdownEntry{
+			BusinessID:         businessID,
+			TxID:               txID,
+			TxRole:             strings.TrimSpace(processSubType),
+			GrossInputSatoshi:  grossInput,
+			ChangeBackSatoshi:  changeBack,
+			ExternalInSatoshi:  0,
+			CounterpartyOutSat: counterpartyOut,
+			MinerFeeSatoshi:    minerFee,
+			NetOutSatoshi:      counterpartyOut + minerFee,
+			NetInSatoshi:       0,
+			CreatedAtUnix:      now,
+			Note:               "chain payment tx breakdown",
+			Payload: map[string]any{
+				"txid":            txID,
+				"payment_subtype": paymentSubType,
+			},
+		}); err != nil {
+			return fmt.Errorf("append settle_tx_breakdown failed: %w", err)
+		}
+		for _, fact := range inputFacts {
+			if err := dbAppendFinTxUTXOLinkIfAbsent(tx, fact); err != nil {
+				return fmt.Errorf("append input utxo link failed: %w", err)
+			}
+		}
+		for _, fact := range outputFacts {
+			if err := dbAppendFinTxUTXOLinkIfAbsent(tx, fact); err != nil {
+				return fmt.Errorf("append output utxo link failed: %w", err)
+			}
+		}
+		if err := dbAppendSettlementCycleFinProcessEvent(tx, settlementCycleID, finProcessEventEntry{
+			ProcessID:         "proc_chain_payment_" + txID,
+			AccountingScene:   "peer_call",
+			AccountingSubType: strings.TrimSpace(processSubType),
+			EventType:         "accounting",
+			Status:            "applied",
+			OccurredAtUnix:    now,
+			IdempotencyKey:    "chain_payment_event:" + txID,
+			Note:              "chain payment accounting event",
+			Payload: map[string]any{
+				"txid":            txID,
+				"payment_subtype": paymentSubType,
+				"process_subtype": processSubType,
+			},
+		}); err != nil {
+			return fmt.Errorf("append settle_process_events failed: %w", err)
+		}
+		return nil
+	})
+}
+
+func collectWalletInputTxLinkFactsTx(ctx context.Context, db sqlConn, tx *txsdk.Transaction, businessID string, txID string, note string) ([]finTxUTXOLinkEntry, int64, error) {
+	if db == nil {
+		return nil, 0, fmt.Errorf("db is nil")
+	}
+	if tx == nil {
+		return nil, 0, fmt.Errorf("tx is nil")
+	}
+	out := make([]finTxUTXOLinkEntry, 0, len(tx.Inputs))
+	var gross int64
+	now := time.Now().Unix()
+	for _, inp := range tx.Inputs {
+		if inp == nil || inp.SourceTXID == nil {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(inp.SourceTXID.String())) + ":" + fmt.Sprint(inp.SourceTxOutIndex)
+		value, ok, err := dbWalletUTXOValueConn(ctx, db, utxoID)
+		if err != nil {
+			return nil, 0, fmt.Errorf("lookup wallet input value for %s failed: %w", utxoID, err)
+		}
+		if !ok {
+			return nil, 0, fmt.Errorf("wallet input value missing for %s", utxoID)
+		}
+		gross += value
+		out = append(out, finTxUTXOLinkEntry{
+			BusinessID:    businessID,
+			TxID:          txID,
+			UTXOID:        utxoID,
+			IOSide:        "input",
+			UTXORole:      "wallet_input",
+			AmountSatoshi: value,
+			CreatedAtUnix: now,
+			Note:          note,
+		})
+	}
+	return out, gross, nil
 }

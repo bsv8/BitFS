@@ -321,21 +321,6 @@ func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.D
 	return 0, sql.ErrNoRows
 }
 
-func resolveWalletChainSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
-	sourceID = strings.TrimSpace(sourceID)
-	if sourceID == "" {
-		return 0, fmt.Errorf("source_id is required")
-	}
-	for _, sourceType := range []string{"chain_token"} {
-		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.ToLower(sourceID)); err == nil {
-			return cycleID, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return 0, err
-		}
-	}
-	return 0, sql.ErrNoRows
-}
-
 func dbGetSettlementCycleStateByIDDB(ctx context.Context, db *sql.DB, id int64) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")

@@ -1,6 +1,14 @@
 package clientapp
 
-import "testing"
+import (
+	"context"
+	"encoding/hex"
+	"fmt"
+	"strings"
+	"testing"
+
+	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+)
 
 func TestApplyDomainRegisterSubmitResultFailureClearsOkAndUppercasesCode(t *testing.T) {
 	t.Parallel()
@@ -77,5 +85,63 @@ func TestApplyDomainRegisterSubmitResultSuccessMarksOk(t *testing.T) {
 	}
 	if got.ExpireAtUnix != 123 {
 		t.Fatalf("expire_at mismatch: got=%d want=123", got.ExpireAtUnix)
+	}
+}
+
+func TestRecordDomainRegisterAccountingAfterBroadcast_WritesChainPaymentFacts(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
+	ctx := context.Background()
+	rt := &Runtime{
+		runIn: RunInput{
+			EffectivePrivKeyHex: strings.Repeat("4", 64),
+		},
+	}
+	rt.runIn.BSV.Network = "test"
+
+	txHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+	registerTxRaw, err := hex.DecodeString(txHex)
+	if err != nil {
+		t.Fatalf("decode tx hex failed: %v", err)
+	}
+	parsed, err := txsdk.NewTransactionFromHex(txHex)
+	if err != nil {
+		t.Fatalf("parse tx hex failed: %v", err)
+	}
+	for _, input := range parsed.Inputs {
+		if input == nil || input.SourceTXID == nil {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
+		if _, err := db.Exec(`INSERT INTO wallet_utxo(
+			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			utxoID, "wallet1", "addr1", strings.ToLower(strings.TrimSpace(input.SourceTXID.String())), int64(input.SourceTxOutIndex), 1000, "confirmed", "plain_bsv", "",
+			strings.ToLower(strings.TrimSpace(input.SourceTXID.String())), "", 1700000001, 1700000001, 0,
+		); err != nil {
+			t.Fatalf("seed wallet_utxo failed: %v", err)
+		}
+	}
+
+	if err := recordDomainRegisterAccountingAfterBroadcast(ctx, store, rt, registerTxRaw, parsed.TxID().String(), "02resolverpubkey0000000000000000000000000000000000000000000000000000"); err != nil {
+		t.Fatalf("record domain register accounting failed: %v", err)
+	}
+
+	var paymentCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, strings.ToLower(parsed.TxID().String())).Scan(&paymentCount); err != nil {
+		t.Fatalf("query fact_chain_payments failed: %v", err)
+	}
+	if paymentCount != 1 {
+		t.Fatalf("expected 1 fact_chain_payments row, got %d", paymentCount)
+	}
+
+	var cycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, strings.ToLower(parsed.TxID().String())).Scan(&cycleCount); err != nil {
+		t.Fatalf("query fact_settlement_cycles failed: %v", err)
+	}
+	if cycleCount != 1 {
+		t.Fatalf("expected 1 settlement cycle, got %d", cycleCount)
 	}
 }

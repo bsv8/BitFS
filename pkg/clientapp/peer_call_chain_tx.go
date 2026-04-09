@@ -165,6 +165,9 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *client
 	}, out.ServiceReceipt); err != nil {
 		return ncall.CallResp{}, err
 	}
+	if err := recordChainPaymentAccountingAfterBroadcast(ctx, store, rt, hex.EncodeToString(built.RawTx), built.TxID, "quote_pay", "quote_pay", "wallet:self", "external:unknown"); err != nil {
+		return ncall.CallResp{}, err
+	}
 	return out, nil
 }
 

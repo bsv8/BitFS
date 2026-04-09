@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -611,15 +610,15 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if err != nil {
 		logWalletSyncStepError(meta, "resolve_wallet_chain", err, nil)
 		return map[string]any{
-			"task_type":         chainTaskUTXO,
-			"sync_round_id":     meta.RoundID,
-			"wallet_chain_type": meta.WalletChainTyp,
-			"api_base_url":      meta.APIBaseURL,
+			"task_type":     chainTaskUTXO,
+			"sync_round_id": meta.RoundID,
+			"chain_type":    meta.WalletChainTyp,
+			"api_base_url":  meta.APIBaseURL,
 		}, err
 	}
 	logWalletSyncStepInfo(meta, "resolve_wallet_chain", map[string]any{
-		"wallet_chain_type": meta.WalletChainTyp,
-		"api_base_url":      meta.APIBaseURL,
+		"chain_type":   meta.WalletChainTyp,
+		"api_base_url": meta.APIBaseURL,
 	})
 	addr, err := clientWalletAddress(m.rt)
 	if err != nil {
@@ -639,10 +638,10 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	tipPath := walletChainTipUpstreamPath()
 	tip, err := m.rt.WalletChain.GetChainInfo(ctx)
 	if err != nil {
-		wrappedErr := wrapWalletSyncStepError(meta, "wallet_chain_get_tip", tipPath, err)
+		wrappedErr := wrapWalletSyncStepError(meta, "chain_get_tip", tipPath, err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
 		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
-		logWalletSyncStepError(meta, "wallet_chain_get_tip", err, map[string]any{
+		logWalletSyncStepError(meta, "chain_get_tip", err, map[string]any{
 			"upstream_path":    tipPath,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
@@ -652,7 +651,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"sync_round_id": meta.RoundID,
 		}, err
 	}
-	logWalletSyncStepInfo(meta, "wallet_chain_get_tip", map[string]any{
+	logWalletSyncStepInfo(meta, "chain_get_tip", map[string]any{
 		"upstream_path":    tipPath,
 		"tip_height":       tip,
 		"step_duration_ms": time.Since(stepStart).Milliseconds(),
@@ -807,17 +806,17 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"total_duration_ms": durationMS,
 	})
 	return map[string]any{
-		"task_type":         chainTaskUTXO,
-		"address":           addr,
-		"utxo_count":        snapshot.Count,
-		"balance_satoshi":   snapshot.Balance,
-		"history_tx_cnt":    len(history),
-		"cursor_height":     nextCursor.NextConfirmedHeight,
-		"anchor_height":     nextCursor.AnchorHeight,
-		"tip_height":        tip,
-		"sync_round_id":     meta.RoundID,
-		"api_base_url":      meta.APIBaseURL,
-		"wallet_chain_type": meta.WalletChainTyp,
+		"task_type":       chainTaskUTXO,
+		"address":         addr,
+		"utxo_count":      snapshot.Count,
+		"balance_satoshi": snapshot.Balance,
+		"history_tx_cnt":  len(history),
+		"cursor_height":   nextCursor.NextConfirmedHeight,
+		"anchor_height":   nextCursor.AnchorHeight,
+		"tip_height":      tip,
+		"sync_round_id":   meta.RoundID,
+		"api_base_url":    meta.APIBaseURL,
+		"chain_type":      meta.WalletChainTyp,
 	}, nil
 }
 
@@ -927,7 +926,7 @@ func logWalletSyncStep(level string, meta walletSyncRoundMeta, step string, fiel
 	payload["address"] = strings.TrimSpace(meta.Address)
 	payload["trigger_source"] = strings.TrimSpace(meta.TriggerSource)
 	payload["api_base_url"] = strings.TrimSpace(meta.APIBaseURL)
-	payload["wallet_chain_type"] = strings.TrimSpace(meta.WalletChainTyp)
+	payload["chain_type"] = strings.TrimSpace(meta.WalletChainTyp)
 	payload["step"] = strings.TrimSpace(step)
 	if payload["started_at_unix"] == nil && meta.StartedAtUnix > 0 {
 		payload["started_at_unix"] = meta.StartedAtUnix
@@ -1060,13 +1059,13 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 	utxoPath := walletChainUTXOsUpstreamPath(address)
 	confirmedUTXOs, err := chain.GetAddressConfirmedUnspent(ctx, address)
 	if err != nil {
-		logWalletSyncStepError(meta, "wallet_chain_get_utxos", err, map[string]any{
+		logWalletSyncStepError(meta, "chain_get_utxos", err, map[string]any{
 			"upstream_path":    utxoPath,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
-		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "wallet_chain_get_utxos", utxoPath, err)
+		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_utxos", utxoPath, err)
 	}
-	logWalletSyncStepInfo(meta, "wallet_chain_get_utxos", map[string]any{
+	logWalletSyncStepInfo(meta, "chain_get_utxos", map[string]any{
 		"upstream_path":      utxoPath,
 		"confirmed_utxo_cnt": len(confirmedUTXOs),
 		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
@@ -1083,13 +1082,13 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 	unconfirmedPath := walletChainUnconfirmedHistoryUpstreamPath(address)
 	unconfirmedTxIDs, err := chain.GetAddressUnconfirmedHistory(ctx, address)
 	if err != nil {
-		logWalletSyncStepError(meta, "wallet_chain_get_unconfirmed_history", err, map[string]any{
+		logWalletSyncStepError(meta, "chain_get_unconfirmed_history", err, map[string]any{
 			"upstream_path":    unconfirmedPath,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
-		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "wallet_chain_get_unconfirmed_history", unconfirmedPath, err)
+		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_unconfirmed_history", unconfirmedPath, err)
 	}
-	logWalletSyncStepInfo(meta, "wallet_chain_get_unconfirmed_history", map[string]any{
+	logWalletSyncStepInfo(meta, "chain_get_unconfirmed_history", map[string]any{
 		"upstream_path":      unconfirmedPath,
 		"unconfirmed_tx_cnt": len(unconfirmedTxIDs),
 		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
@@ -1153,14 +1152,14 @@ func loadOrderedTxDetails(ctx context.Context, chain walletChainClient, txids []
 		txPath := walletChainTxDetailUpstreamPath(txid)
 		detail, err := chain.GetTxHash(ctx, txid)
 		if err != nil {
-			logWalletSyncStepError(meta, "wallet_chain_get_tx_detail", err, map[string]any{
+			logWalletSyncStepError(meta, "chain_get_tx_detail", err, map[string]any{
 				"upstream_path":    txPath,
 				"txid":             txid,
 				"step_duration_ms": time.Since(stepStart).Milliseconds(),
 			})
-			return nil, wrapWalletSyncStepError(meta, "wallet_chain_get_tx_detail", txPath, err)
+			return nil, wrapWalletSyncStepError(meta, "chain_get_tx_detail", txPath, err)
 		}
-		logWalletSyncStepInfo(meta, "wallet_chain_get_tx_detail", map[string]any{
+		logWalletSyncStepInfo(meta, "chain_get_tx_detail", map[string]any{
 			"upstream_path":    txPath,
 			"txid":             txid,
 			"vin_cnt":          len(detail.Vin),
@@ -1209,7 +1208,7 @@ func loadOrderedTxDetails(ctx context.Context, chain walletChainClient, txids []
 
 func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainClient, address string, txids map[string]struct{}, meta walletSyncRoundMeta) (int64, error) {
 	if len(txids) == 0 {
-		logWalletSyncStepInfo(meta, "wallet_chain_find_oldest_confirmed_height", map[string]any{
+		logWalletSyncStepInfo(meta, "chain_find_oldest_confirmed_height", map[string]any{
 			"confirmed_live_txid_cnt": 0,
 			"oldest_confirmed_height": 0,
 			"page_cnt":                0,
@@ -1239,7 +1238,7 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainClie
 			// 空白地址在 WOC 上没有任何 confirmed history 时，返回 404 只是“当前没有数据”，不是失败。
 			// 这里直接把它收敛成空结果，避免新空白 key 的首次同步被误判成异常。
 			if isWalletChainEmptyConfirmedHistoryPage(err) {
-				logWalletSyncStepInfo(meta, "wallet_chain_find_oldest_confirmed_height", map[string]any{
+				logWalletSyncStepInfo(meta, "chain_find_oldest_confirmed_height", map[string]any{
 					"confirmed_live_txid_cnt": len(txids),
 					"oldest_confirmed_height": 0,
 					"page_cnt":                pageCount,
@@ -1248,12 +1247,12 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainClie
 				})
 				return 0, nil
 			}
-			logWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_desc", err, map[string]any{
+			logWalletSyncStepError(meta, "chain_get_confirmed_history_desc", err, map[string]any{
 				"upstream_path":    pagePath,
 				"page_cnt":         pageCount,
 				"step_duration_ms": time.Since(stepStart).Milliseconds(),
 			})
-			return 0, wrapWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_desc", pagePath, err)
+			return 0, wrapWalletSyncStepError(meta, "chain_get_confirmed_history_desc", pagePath, err)
 		}
 		pageCount++
 		for _, item := range page.Items {
@@ -1267,7 +1266,7 @@ func findOldestCurrentConfirmedHeight(ctx context.Context, chain walletChainClie
 			}
 		}
 		if len(remaining) == 0 || strings.TrimSpace(page.NextPageToken) == "" {
-			logWalletSyncStepInfo(meta, "wallet_chain_find_oldest_confirmed_height", map[string]any{
+			logWalletSyncStepInfo(meta, "chain_find_oldest_confirmed_height", map[string]any{
 				"confirmed_live_txid_cnt": len(txids),
 				"oldest_confirmed_height": oldest,
 				"page_cnt":                pageCount,
@@ -1322,7 +1321,7 @@ func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, 
 				next.NextConfirmedHeight = int64(tip) + 1
 				next.NextPageToken = ""
 				next.LastError = ""
-				logWalletSyncStepInfo(meta, "wallet_chain_collect_confirmed_history", map[string]any{
+				logWalletSyncStepInfo(meta, "chain_collect_confirmed_history", map[string]any{
 					"history_tx_cnt":        len(out),
 					"start_height":          startHeight,
 					"next_confirmed_height": next.NextConfirmedHeight,
@@ -1333,13 +1332,13 @@ func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, 
 				})
 				return out, next, nil
 			}
-			logWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_asc", err, map[string]any{
+			logWalletSyncStepError(meta, "chain_get_confirmed_history_asc", err, map[string]any{
 				"upstream_path":    pagePath,
 				"start_height":     startHeight,
 				"page_cnt":         pageCount,
 				"step_duration_ms": time.Since(stepStart).Milliseconds(),
 			})
-			return nil, next, wrapWalletSyncStepError(meta, "wallet_chain_get_confirmed_history_asc", pagePath, err)
+			return nil, next, wrapWalletSyncStepError(meta, "chain_get_confirmed_history_asc", pagePath, err)
 		}
 		pageCount++
 		for _, item := range page.Items {
@@ -1355,14 +1354,14 @@ func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, 
 			txPath := walletChainTxDetailUpstreamPath(txid)
 			detail, err := chain.GetTxHash(ctx, txid)
 			if err != nil {
-				logWalletSyncStepError(meta, "wallet_chain_get_tx_detail_for_history", err, map[string]any{
+				logWalletSyncStepError(meta, "chain_get_tx_detail_for_history", err, map[string]any{
 					"upstream_path":    txPath,
 					"txid":             txid,
 					"step_duration_ms": time.Since(txStepStart).Milliseconds(),
 				})
-				return nil, next, wrapWalletSyncStepError(meta, "wallet_chain_get_tx_detail_for_history", txPath, err)
+				return nil, next, wrapWalletSyncStepError(meta, "chain_get_tx_detail_for_history", txPath, err)
 			}
-			logWalletSyncStepInfo(meta, "wallet_chain_get_tx_detail_for_history", map[string]any{
+			logWalletSyncStepInfo(meta, "chain_get_tx_detail_for_history", map[string]any{
 				"upstream_path":    txPath,
 				"txid":             txid,
 				"height":           item.Height,
@@ -1385,7 +1384,7 @@ func collectConfirmedHistoryRange(ctx context.Context, chain walletChainClient, 
 		next.NextConfirmedHeight = int64(tip) + 1
 		next.NextPageToken = ""
 		next.LastError = ""
-		logWalletSyncStepInfo(meta, "wallet_chain_collect_confirmed_history", map[string]any{
+		logWalletSyncStepInfo(meta, "chain_collect_confirmed_history", map[string]any{
 			"history_tx_cnt":        len(out),
 			"start_height":          startHeight,
 			"next_confirmed_height": next.NextConfirmedHeight,
@@ -1430,18 +1429,6 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 	return strings.HasSuffix(outputScriptHex, walletScriptHex)
 }
 
-// buildWalletChainAccountingInputsFromTxDetail 已退场。
-// 设计说明：
-// - 钱包同步只负责观察和事实回填，不再从这里产出 chain_bsv settlement 输入；
-// - 需要入 settlement 的业务，必须走自己的显式入口。
-func buildWalletChainAccountingInputsFromTxDetail(ctx context.Context, db sqlConn, address string, detail whatsonchain.TxDetail) ([]walletChainAccountingInput, error) {
-	_ = ctx
-	_ = db
-	_ = address
-	_ = detail
-	return nil, nil
-}
-
 // hasBSV21TransferOutput 判断交易里是否包含 BSV21 transfer 输出。
 // 设计说明：
 // - 命中时表示这笔交易应交给 BSV21 专用事实入口，不再走钱包同步辅助层；
@@ -1465,55 +1452,6 @@ func hasBSV21TransferOutput(detail whatsonchain.TxDetail) bool {
 		}
 	}
 	return false
-}
-
-// collectTokenUTXOLinkFacts 只收 token carrier 对应的输入事实。
-// 设计说明：
-// - 钱包同步不再产出 chain_bsv 主线；
-// - 这里仅为显式 token 业务入口收 token carrier 的数量事实。
-func collectTokenUTXOLinkFacts(ctx context.Context, db sqlConn, facts []chainPaymentUTXOFact) ([]chainPaymentUTXOLinkEntry, error) {
-	out := make([]chainPaymentUTXOLinkEntry, 0)
-	for _, fact := range facts {
-		if strings.TrimSpace(fact.IOSide) != "input" {
-			continue
-		}
-		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
-		if utxoID == "" {
-			continue
-		}
-		var assetKind, tokenID, quantityText string
-		err := QueryRowContext(ctx, db,
-			`SELECT l.token_standard, l.token_id, l.quantity_text FROM fact_token_lots l JOIN fact_token_carrier_links c ON l.lot_id=c.lot_id WHERE c.carrier_utxo_id=? AND c.link_state='active' LIMIT 1`,
-			utxoID,
-		).Scan(&assetKind, &tokenID, &quantityText)
-		if err != nil {
-			if err == sql.ErrNoRows {
-				continue
-			}
-			return nil, fmt.Errorf("lookup token carrier for utxo %s: %w", utxoID, err)
-		}
-		if assetKind != "BSV20" && assetKind != "BSV21" {
-			continue
-		}
-		quantityText = strings.TrimSpace(quantityText)
-		if quantityText == "" {
-			return nil, fmt.Errorf("token quantity is required for token carrier utxo %s", utxoID)
-		}
-		out = append(out, chainPaymentUTXOLinkEntry{
-			UTXOID:        utxoID,
-			IOSide:        fact.IOSide,
-			UTXORole:      fact.UTXORole,
-			AmountSatoshi: fact.AmountSatoshi,
-			AssetKind:     assetKind,
-			TokenID:       tokenID,
-			TokenStandard: assetKind,
-			QuantityText:  quantityText,
-			Note:          fact.Note,
-			Payload:       fact.Payload,
-			CreatedAtUnix: time.Now().Unix(),
-		})
-	}
-	return out, nil
 }
 
 func matchWalletOutput(txid string, out whatsonchain.TxOutput, scriptHex string) (string, uint64, bool) {

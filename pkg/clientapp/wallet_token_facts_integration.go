@@ -79,7 +79,7 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 
 	var count int
 	err := store.Do(ctx, func(db *sql.DB) error {
-		return QueryRowContext(ctx, db, 
+		return QueryRowContext(ctx, db,
 			`SELECT COUNT(1) FROM fact_token_lots WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=?`,
 			ownerPubkeyHex, assetKind, tokenID,
 		).Scan(&count)
@@ -371,10 +371,120 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		if len(bsvFacts) == 0 {
 			return fmt.Errorf("no wallet input facts found for txid %s", txID)
 		}
+		businessID := walletBSV21SendBusinessID(txID)
+		var grossInputSat int64
+		inputLinks := make([]finTxUTXOLinkEntry, 0, len(bsvFacts))
 		for _, fact := range bsvFacts {
+			grossInputSat += fact.AmountSatoshi
+			inputLinks = append(inputLinks, finTxUTXOLinkEntry{
+				BusinessID:    businessID,
+				TxID:          txID,
+				UTXOID:        fact.UTXOID,
+				IOSide:        fact.IOSide,
+				UTXORole:      fact.UTXORole,
+				AmountSatoshi: fact.AmountSatoshi,
+				CreatedAtUnix: now,
+				Note:          fact.Note,
+				Payload:       fact.Payload,
+			})
 			if err := dbMarkBSVUTXOSpentDB(ctx, dbtx, fact.UTXOID, txID); err != nil {
 				return fmt.Errorf("mark bsv utxo spent for token send failed: %w", err)
 			}
+		}
+		changeBackSat := int64(0)
+		counterpartyOutSat := int64(0)
+		outputLinks := make([]finTxUTXOLinkEntry, 0, len(parsed.Outputs))
+		for idx, out := range parsed.Outputs {
+			if out == nil || out.LockingScript == nil {
+				continue
+			}
+			amount := int64(out.Satoshis)
+			if amount <= 0 {
+				continue
+			}
+			scriptHex := hex.EncodeToString(out.LockingScript.Bytes())
+			utxoID := txID + ":" + fmt.Sprint(idx)
+			if walletScriptHexMatchesAddressControl(scriptHex, walletScriptHex) {
+				changeBackSat += amount
+				outputLinks = append(outputLinks, finTxUTXOLinkEntry{
+					BusinessID:    businessID,
+					TxID:          txID,
+					UTXOID:        utxoID,
+					IOSide:        "output",
+					UTXORole:      "wallet_change",
+					AmountSatoshi: amount,
+					CreatedAtUnix: now,
+					Note:          "bsv21 token send change output",
+				})
+				continue
+			}
+			payload, ok := decodeWalletTokenTransferPayload(out.LockingScript)
+			if !ok || !strings.EqualFold(strings.TrimSpace(firstNonEmptyStringField(payload, "op")), "transfer") {
+				continue
+			}
+			counterpartyOutSat += amount
+			outputLinks = append(outputLinks, finTxUTXOLinkEntry{
+				BusinessID:    businessID,
+				TxID:          txID,
+				UTXOID:        utxoID,
+				IOSide:        "output",
+				UTXORole:      "counterparty_out",
+				AmountSatoshi: amount,
+				CreatedAtUnix: now,
+				Note:          "bsv21 token send carrier output",
+			})
+		}
+		minerFeeSat := grossInputSat - changeBackSat - counterpartyOutSat
+		if minerFeeSat < 0 {
+			minerFeeSat = 0
+		}
+		if err := dbAppendFinTxBreakdownIfAbsent(dbtx, finTxBreakdownEntry{
+			BusinessID:         businessID,
+			TxID:               txID,
+			TxRole:             "bsv21_send",
+			GrossInputSatoshi:  grossInputSat,
+			ChangeBackSatoshi:  changeBackSat,
+			ExternalInSatoshi:  0,
+			CounterpartyOutSat: counterpartyOutSat,
+			MinerFeeSatoshi:    minerFeeSat,
+			NetOutSatoshi:      counterpartyOutSat + minerFeeSat,
+			NetInSatoshi:       0,
+			CreatedAtUnix:      now,
+			Note:               "bsv21 token send accounting",
+			Payload: map[string]any{
+				"txid":            txID,
+				"token_lot_count": len(lots),
+				"token_send_text": consumedText,
+			},
+		}); err != nil {
+			return fmt.Errorf("append settle_tx_breakdown failed: %w", err)
+		}
+		for _, fact := range inputLinks {
+			if err := dbAppendFinTxUTXOLinkIfAbsent(dbtx, fact); err != nil {
+				return fmt.Errorf("append input utxo link failed: %w", err)
+			}
+		}
+		for _, fact := range outputLinks {
+			if err := dbAppendFinTxUTXOLinkIfAbsent(dbtx, fact); err != nil {
+				return fmt.Errorf("append output utxo link failed: %w", err)
+			}
+		}
+		if err := dbAppendSettlementCycleFinProcessEvent(dbtx, settlementCycleID, finProcessEventEntry{
+			ProcessID:         "proc_wallet_bsv21_send_" + txID,
+			AccountingScene:   "wallet_transfer",
+			AccountingSubType: "bsv21_send",
+			EventType:         "accounting",
+			Status:            "applied",
+			OccurredAtUnix:    now,
+			IdempotencyKey:    "wallet_bsv21_send_event:" + txID,
+			Note:              "bsv21 token send accounting event",
+			Payload: map[string]any{
+				"txid":            txID,
+				"token_lot_count": len(lots),
+				"token_send_text": consumedText,
+			},
+		}); err != nil {
+			return fmt.Errorf("append settle_process_events failed: %w", err)
 		}
 		return nil
 	})
@@ -539,7 +649,7 @@ func dbGetLotByCarrierUTXOConn(ctx context.Context, db sqlConn, utxoID string) (
 		return "", nil
 	}
 	var lotID string
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
 		utxoID,
 	).Scan(&lotID)
@@ -563,7 +673,7 @@ func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string)
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
 		// 先查 carrier link 获取 lot_id
 		var lotID string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
 			utxoID,
 		).Scan(&lotID)
@@ -576,7 +686,7 @@ func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string)
 
 		// 再查 lot 获取 quantity
 		var qty string
-		err = QueryRowContext(ctx, db, 
+		err = QueryRowContext(ctx, db,
 			`SELECT quantity_text FROM fact_token_lots WHERE lot_id=?`,
 			lotID,
 		).Scan(&qty)

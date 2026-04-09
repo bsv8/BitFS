@@ -3,7 +3,10 @@ package clientapp
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
+
+	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 )
 
 // TestDbUpsertChainPayment_Idempotent 验证 fact_chain_payments upsert 幂等性
@@ -434,5 +437,93 @@ func TestDbGetPoolAllocationIDByAllocationID(t *testing.T) {
 	_, err = dbGetPoolAllocationIDByAllocationID(ctx, store, "nonexistent_alloc")
 	if err == nil {
 		t.Fatal("expected error for nonexistent allocation_id")
+	}
+}
+
+func TestRecordChainPaymentAccountingAfterBroadcast_WritesBusinessFacts(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
+	ctx := context.Background()
+	rt := &Runtime{
+		runIn: RunInput{
+			EffectivePrivKeyHex: strings.Repeat("4", 64),
+		},
+	}
+	rt.runIn.BSV.Network = "test"
+
+	txHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
+	txID := "tx_chain_payment_facts_001"
+	parsed, err := txsdk.NewTransactionFromHex(txHex)
+	if err != nil {
+		t.Fatalf("parse tx hex failed: %v", err)
+	}
+	for _, input := range parsed.Inputs {
+		if input == nil || input.SourceTXID == nil {
+			continue
+		}
+		inputUTXO := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
+		if _, err := db.Exec(`INSERT INTO wallet_utxo(
+			utxo_id, wallet_id, address, txid, vout, value_satoshi, state, allocation_class, allocation_reason,
+			created_txid, spent_txid, created_at_unix, updated_at_unix, spent_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			inputUTXO, "wallet1", "addr1", strings.ToLower(strings.TrimSpace(input.SourceTXID.String())), int64(input.SourceTxOutIndex), 1000, "confirmed", "plain_bsv", "",
+			strings.ToLower(strings.TrimSpace(input.SourceTXID.String())), "", 1700000001, 1700000001, 0,
+		); err != nil {
+			t.Fatalf("seed wallet_utxo failed: %v", err)
+		}
+	}
+
+	if err := recordChainPaymentAccountingAfterBroadcast(ctx, store, rt, txHex, txID, "quote_pay", "quote_pay", "wallet:self", "external:unknown"); err != nil {
+		t.Fatalf("record chain payment accounting failed: %v", err)
+	}
+
+	var paymentCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, txID).Scan(&paymentCount); err != nil {
+		t.Fatalf("query fact_chain_payments failed: %v", err)
+	}
+	if paymentCount != 1 {
+		t.Fatalf("expected 1 fact_chain_payments row, got %d", paymentCount)
+	}
+
+	var cycleCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, txID).Scan(&cycleCount); err != nil {
+		t.Fatalf("query fact_settlement_cycles failed: %v", err)
+	}
+	if cycleCount != 1 {
+		t.Fatalf("expected 1 settlement cycle, got %d", cycleCount)
+	}
+
+	var businessCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_chain_payment_"+txID).Scan(&businessCount); err != nil {
+		t.Fatalf("query settle_businesses failed: %v", err)
+	}
+	if businessCount != 1 {
+		t.Fatalf("expected 1 settle_businesses row, got %d", businessCount)
+	}
+
+	var breakdownCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, "biz_chain_payment_"+txID, txID).Scan(&breakdownCount); err != nil {
+		t.Fatalf("query settle_tx_breakdown failed: %v", err)
+	}
+	if breakdownCount != 1 {
+		t.Fatalf("expected 1 settle_tx_breakdown row, got %d", breakdownCount)
+	}
+
+	var linkCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=?`, "biz_chain_payment_"+txID, txID).Scan(&linkCount); err != nil {
+		t.Fatalf("query settle_tx_utxo_links failed: %v", err)
+	}
+	if linkCount < 1 {
+		t.Fatalf("expected settle_tx_utxo_links rows, got %d", linkCount)
+	}
+
+	var processCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_process_events WHERE process_id=?`, "proc_chain_payment_"+txID).Scan(&processCount); err != nil {
+		t.Fatalf("query settle_process_events failed: %v", err)
+	}
+	if processCount != 1 {
+		t.Fatalf("expected 1 settle_process_events row, got %d", processCount)
 	}
 }

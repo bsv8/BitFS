@@ -3481,19 +3481,6 @@ func inferFinTxBreakdownTxRole(db *sql.DB, bid, txid string) (string, error) {
 		return "pay", nil
 	case strings.HasPrefix(bid, "biz_c2c_close_"):
 		return "close_final", nil
-	case strings.HasPrefix(bid, "biz_wallet_chain_"):
-		var accountingSubtype string
-		if err := db.QueryRow(`SELECT accounting_subtype FROM settle_businesses WHERE business_id=?`, bid).Scan(&accountingSubtype); err != nil {
-			return "", fmt.Errorf("cannot infer tx_role for (%s,%s): business record not found", bid, txid)
-		}
-		switch accountingSubtype {
-		case "send":
-			return "send", nil
-		case "receive":
-			return "receive", nil
-		default:
-			return "wallet_chain", nil
-		}
 	default:
 		return "", fmt.Errorf("cannot infer tx_role for (%s,%s): unknown business type", bid, txid)
 	}

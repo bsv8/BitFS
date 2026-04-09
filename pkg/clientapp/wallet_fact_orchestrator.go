@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
 // confirmedUTXOChange 已确认 UTXO 变化（来自同步层，供 fact 层消费）
@@ -140,40 +139,6 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		}
 		if err = markObservedWalletLocalBroadcastTxsTx(ctx, tx, observedLocalTxIDs, updatedAt); err != nil {
 			return err
-		}
-
-		// 只把显式业务输入送入 chain accounting。
-		// 钱包同步观察本身不再产出 chain_bsv settlement。
-		accountedTxIDs := map[string]struct{}{}
-		recordWalletChainTx := func(detail whatsonchain.TxDetail) error {
-			inputs, err := buildWalletChainAccountingInputsFromTxDetail(ctx, tx, address, detail)
-			if err != nil {
-				return err
-			}
-			if len(inputs) == 0 {
-				return nil
-			}
-			for _, input := range inputs {
-				key := input.SourceType + ":" + input.SourceID
-				if _, seen := accountedTxIDs[key]; seen {
-					continue
-				}
-				if err := recordWalletChainAccountingConnCtx(ctx, tx, input); err != nil {
-					return err
-				}
-				accountedTxIDs[key] = struct{}{}
-			}
-			return nil
-		}
-		for _, hist := range history {
-			if err := recordWalletChainTx(hist.Tx); err != nil {
-				return err
-			}
-		}
-		for _, detail := range snapshot.ObservedMempoolTxs {
-			if err := recordWalletChainTx(detail); err != nil {
-				return err
-			}
 		}
 
 		if err = applyWalletUTXODiffTx(ctx, tx, current, desired, walletID, address, updatedAt); err != nil {
