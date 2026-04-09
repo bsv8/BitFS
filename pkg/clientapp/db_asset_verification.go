@@ -86,8 +86,8 @@ func enqueueUnknownUTXOToVerificationSQL(exec verificationSQLExec, walletID stri
 			utxo_id,wallet_id,address,txid,vout,value_satoshi,status,woc_response_json,
 			last_check_at_unix,next_retry_at_unix,retry_count,error_message,updated_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		utxoID, walletID, address, txid, vout, value, "pending", "{}",
-		0, now, 0, "", now,
+		utxoID, walletID, address, txid, int64(vout), int64(value), "pending", "{}",
+		int64(0), now, int64(0), "", now,
 	)
 	return err
 }
@@ -117,7 +117,7 @@ func dbListPendingVerificationItems(ctx context.Context, store *clientDB, limit 
 			 WHERE status='pending' AND next_retry_at_unix <= ?
 			 ORDER BY next_retry_at_unix ASC, retry_count ASC
 			 LIMIT ?`,
-			now, limit,
+			now, int64(limit),
 		)
 		if err != nil {
 			return nil, err
@@ -478,7 +478,7 @@ func updateVerificationQueueSuccess(ctx context.Context, store *clientDB, utxoID
 			`UPDATE wallet_utxo_token_verification
 			 SET status=?, woc_response_json=?, last_check_at_unix=?, next_retry_at_unix=?, retry_count=?, error_message=?, updated_at_unix=?
 			 WHERE utxo_id=?`,
-			status, wocJSON, now, now+86400*30, 0, "", now, utxoID,
+			status, wocJSON, now, now+int64(86400*30), int64(0), "", now, utxoID,
 		)
 		return err
 	})
@@ -499,7 +499,7 @@ func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID stri
 		nextRetry := time.Now().Unix() + int64(math.Min(float64(assetVerificationBaseDelay*int(math.Pow(2, float64(retryCount)))), float64(assetVerificationMaxDelay)))
 		_, err = db.Exec(
 			`UPDATE wallet_utxo_token_verification SET retry_count=?, next_retry_at_unix=?, last_check_at_unix=?, error_message=?, updated_at_unix=? WHERE utxo_id=?`,
-			retryCount, nextRetry, time.Now().Unix(), errMsg, time.Now().Unix(), utxoID,
+			int64(retryCount), nextRetry, time.Now().Unix(), errMsg, time.Now().Unix(), utxoID,
 		)
 		return err
 	})

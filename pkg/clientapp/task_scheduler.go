@@ -402,6 +402,16 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 		status = "active"
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		intervalSeconds := int64(spec.Interval / time.Second)
+		createdAtUnix := int64(now)
+		closedAtUnix := int64(closedAt)
+		lastStartedAtUnix := int64(0)
+		lastEndedAtUnix := int64(0)
+		lastDurationMS := int64(0)
+		inFlight := int64(0)
+		runCount := int64(0)
+		successCount := int64(0)
+		failureCount := int64(0)
 		_, err := db.Exec(
 			`INSERT INTO proc_scheduler_tasks(
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
@@ -420,19 +430,19 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 			strings.TrimSpace(spec.Owner),
 			strings.TrimSpace(spec.Mode),
 			strings.TrimSpace(status),
-			int64(spec.Interval/time.Second),
-			now,
-			now,
-			closedAt,
+			intervalSeconds,
+			createdAtUnix,
+			createdAtUnix,
+			closedAtUnix,
 			"",
-			0,
-			0,
-			0,
+			lastStartedAtUnix,
+			lastEndedAtUnix,
+			lastDurationMS,
 			"",
-			0,
-			0,
-			0,
-			0,
+			inFlight,
+			runCount,
+			successCount,
+			failureCount,
 			"{}",
 			mustJSONTask(map[string]any{"immediate": spec.Immediate, "timeout_ms": spec.Timeout.Milliseconds()}),
 		)
@@ -446,9 +456,11 @@ func (s *taskScheduler) markTaskStopped(name string) error {
 	}
 	now := time.Now().Unix()
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		closedAtUnix := int64(now)
+		updatedAtUnix := int64(now)
 		_, err := db.Exec(
 			`UPDATE proc_scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
-			now, now, strings.TrimSpace(name),
+			closedAtUnix, updatedAtUnix, strings.TrimSpace(name),
 		)
 		return err
 	})
@@ -459,6 +471,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 		return nil
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		updatedAtUnix := int64(time.Now().Unix())
 		_, err := db.Exec(
 			`UPDATE proc_scheduler_tasks SET
 				last_trigger=?,
@@ -469,7 +482,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 			WHERE task_name=?`,
 			strings.TrimSpace(trigger),
 			startedAt,
-			time.Now().Unix(),
+			updatedAtUnix,
 			strings.TrimSpace(name),
 		)
 		return err
@@ -488,6 +501,7 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 		incFailure = 1
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		updatedAtUnix := int64(time.Now().Unix())
 		_, err := db.Exec(
 			`UPDATE proc_scheduler_tasks SET
 				last_ended_at_unix=?,
@@ -504,9 +518,9 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 			durationMS,
 			strings.TrimSpace(errMsg),
 			mustJSONTask(summary),
-			incSuccess,
-			incFailure,
-			time.Now().Unix(),
+			int64(incSuccess),
+			int64(incFailure),
+			updatedAtUnix,
 			strings.TrimSpace(name),
 		)
 		return err
@@ -518,6 +532,7 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 		return nil
 	}
 	return schedulerDBDo(s, context.Background(), func(db *sql.DB) error {
+		createdAtUnix := int64(time.Now().Unix())
 		_, err := db.Exec(
 			`INSERT INTO proc_scheduler_task_runs(
 				task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
@@ -532,7 +547,7 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 			strings.TrimSpace(status),
 			strings.TrimSpace(errMsg),
 			mustJSONTask(summary),
-			time.Now().Unix(),
+			createdAtUnix,
 		)
 		return err
 	})

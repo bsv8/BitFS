@@ -64,19 +64,19 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 				payload_json=excluded.payload_json`,
 			allocationID,
 			"",
-			0,
+			int64(0),
 			PoolFactEventKindTxHistory,
 			PoolFactEventKindTxHistory,
-			e.SequenceNum,
+			int64(e.SequenceNum),
 			"confirmed",
 			e.Direction,
 			e.AmountSatoshi,
 			e.Purpose,
 			e.Note,
 			e.MsgID,
-			e.CycleIndex,
-			0,
-			0,
+			int64(e.CycleIndex),
+			int64(0),
+			int64(0),
 			e.PoolID,
 			"",
 			e.GatewayPeerID,
@@ -120,14 +120,14 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 		}
 		_, err := db.Exec(
 			`INSERT INTO biz_purchases(
-				demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+					demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
+				) VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			strings.TrimSpace(e.DemandID),
 			strings.ToLower(strings.TrimSpace(e.SellerPubHex)),
 			strings.ToLower(strings.TrimSpace(e.ArbiterPubHex)),
-			e.ChunkIndex,
+			int64(e.ChunkIndex),
 			strings.ToLower(strings.TrimSpace(e.ObjectHash)),
-			e.AmountSatoshi,
+			int64(e.AmountSatoshi),
 			"done",
 			"",
 			createdAtUnix,
@@ -171,7 +171,7 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 			commandID,
 			e.Action,
 			e.MsgID,
-			e.SequenceNum,
+			int64(e.SequenceNum),
 			e.PoolID,
 			e.AmountSatoshi,
 			mustJSONString(e.Payload),
@@ -202,8 +202,8 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 			strings.TrimSpace(e.CommandType),
 			strings.TrimSpace(e.GatewayPeerID),
 			strings.TrimSpace(e.TaskStatus),
-			e.RetryCount,
-			e.QueueLength,
+			int64(e.RetryCount),
+			int64(e.QueueLength),
 			strings.TrimSpace(e.ErrorMessage),
 			mustJSON(e.Payload),
 		)
@@ -246,7 +246,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 			strings.TrimSpace(e.AggregateID),
 			strings.TrimSpace(e.RequestedBy),
 			e.RequestedAt,
-			accepted,
+			int64(accepted),
 			strings.TrimSpace(e.Status),
 			strings.TrimSpace(e.ErrorCode),
 			strings.TrimSpace(e.ErrorMessage),
@@ -312,8 +312,8 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 			strings.TrimSpace(e.GatewayPeerID),
 			strings.TrimSpace(e.State),
 			strings.TrimSpace(e.PauseReason),
-			e.PauseNeedSat,
-			e.PauseHaveSat,
+			int64(e.PauseNeedSat),
+			int64(e.PauseHaveSat),
 			strings.TrimSpace(e.LastError),
 			mustJSON(e.Payload),
 		)
@@ -359,8 +359,8 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 			strings.TrimSpace(e.StateBefore),
 			strings.TrimSpace(e.StateAfter),
 			strings.TrimSpace(e.PauseReason),
-			e.PauseNeedSat,
-			e.PauseHaveSat,
+			int64(e.PauseNeedSat),
+			int64(e.PauseHaveSat),
 			strings.TrimSpace(e.LastError),
 			mustJSON(e.Payload),
 		)
@@ -455,7 +455,7 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 		table,
 		table,
 	)
-	if _, err := db.Exec(stmt, keep); err != nil {
+	if _, err := db.Exec(stmt, int64(keep)); err != nil {
 		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 	}
 }

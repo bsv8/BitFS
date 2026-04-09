@@ -90,6 +90,48 @@ func TestSyncWalletAndApplyFacts_NormalCase(t *testing.T) {
 	}
 }
 
+func TestSyncWalletAndApplyFacts_WritesSyncStateWithoutSQLiteTypeError(t *testing.T) {
+	t.Parallel()
+
+	db, _ := newOrchestratorTestDB(t)
+	store := newClientDB(db, nil)
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
+	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+
+	txid := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+	snapshot := liveWalletSnapshot{
+		Live: map[string]poolcore.UTXO{
+			txid + ":0": {TxID: txid, Vout: 0, Value: 123},
+		},
+		ConfirmedLiveTxIDs:    map[string]struct{}{txid: {}},
+		Balance:               123,
+		Count:                 1,
+		OldestConfirmedHeight: 1,
+	}
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 1}
+
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-sqlite", "", "periodic_tick", time.Now().Unix(), 1); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
+	}
+
+	var utxoCount int64
+	var balanceSatoshi int64
+	if err := db.QueryRow(`SELECT utxo_count,balance_satoshi FROM wallet_utxo_sync_state WHERE address=?`, address).Scan(&utxoCount, &balanceSatoshi); err != nil {
+		t.Fatalf("load wallet_utxo_sync_state failed: %v", err)
+	}
+	if utxoCount != 1 || balanceSatoshi != 123 {
+		t.Fatalf("wallet_utxo_sync_state mismatch: utxo=%d balance=%d", utxoCount, balanceSatoshi)
+	}
+}
+
 // TestSyncWalletAndApplyFacts_Idempotent 重复触发：fact 不重复写入
 func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 	t.Parallel()

@@ -45,6 +45,47 @@ func TestDbListPendingVerificationItems(t *testing.T) {
 	}
 }
 
+func TestVerificationQueue_WritesAndListsWithoutSQLiteTypeError(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetVerificationTestDB(t)
+	store := newClientDB(db, nil)
+	address := seedTestAddress(t, db)
+	walletID := walletIDByAddress(address)
+
+	if err := enqueueUnknownUTXOToVerification(context.Background(), store, walletID, address, "txq:0", "txq", 0, 1); err != nil {
+		t.Fatalf("enqueue unknown utxo failed: %v", err)
+	}
+
+	rows, err := dbListPendingVerificationItems(context.Background(), store, 10)
+	if err != nil {
+		t.Fatalf("list pending verification items failed: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 pending item, got %d", len(rows))
+	}
+	if rows[0].UTXOID != "txq:0" {
+		t.Fatalf("expected utxo_id txq:0, got %s", rows[0].UTXOID)
+	}
+
+	if err := updateVerificationQueueSuccess(context.Background(), store, "txq:0", "confirmed_plain_bsv", &wocTokenEvidence{IsToken: false}); err != nil {
+		t.Fatalf("update verification success failed: %v", err)
+	}
+
+	var status string
+	var lastCheckAt int64
+	var retryCount int64
+	if err := db.QueryRow(`SELECT status,last_check_at_unix,retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, "txq:0").Scan(&status, &lastCheckAt, &retryCount); err != nil {
+		t.Fatalf("load verification row failed: %v", err)
+	}
+	if status != "confirmed_plain_bsv" {
+		t.Fatalf("status mismatch: got=%s", status)
+	}
+	if lastCheckAt <= 0 || retryCount != 0 {
+		t.Fatalf("unexpected verification row values: last_check_at=%d retry_count=%d", lastCheckAt, retryCount)
+	}
+}
+
 func TestDbUpdateUTXOAllocationClass(t *testing.T) {
 	t.Parallel()
 

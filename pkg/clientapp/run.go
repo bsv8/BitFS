@@ -825,6 +825,11 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, err
 	}
+	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
+	// 设计说明：
+	// - 日志路径只认这一份解析结果，SQL trace 和 raw trace 必须共用；
+	// - 先回填 cfg，再进入 trace 初始化，避免空路径和两套来源分叉。
+	cfg.Log.File = logFile
 	var sqlTraceDir string
 	var sqlTraceSummaryPath string
 	var sqlTraceEnabledOnce bool
@@ -840,7 +845,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	sqlTraceMgr, err := initSQLTrace(cfg.Log.File, cfg.Debug)
+	sqlTraceMgr, err := initSQLTrace(logFile, cfg.Debug)
 	if err != nil {
 		_ = openedDB.Actor.Close()
 		_ = openedDB.DB.Close()
@@ -1008,8 +1013,6 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 		return nil, err
 	}
-
-	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
 	trace := in.RPCTrace
 	var closeTrace func() error
 	if trace == nil && cfg.Debug {

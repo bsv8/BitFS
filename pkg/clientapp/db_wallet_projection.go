@@ -121,6 +121,14 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			return err
 		}
 		stats := summarizeWalletUTXOState(desired)
+		utxoCount := int64(stats.UTXOCount)
+		balanceSatoshi := int64(stats.BalanceSatoshi)
+		plainBSVUTXOCount := int64(stats.PlainBSVUTXOCount)
+		plainBSVBalanceSatoshi := int64(stats.PlainBSVBalanceSatoshi)
+		protectedUTXOCount := int64(stats.ProtectedUTXOCount)
+		protectedBalanceSatoshi := int64(stats.ProtectedBalanceSatoshi)
+		unknownUTXOCount := int64(stats.UnknownUTXOCount)
+		unknownBalanceSatoshi := int64(stats.UnknownBalanceSatoshi)
 		if _, err := dbtx.Exec(
 			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -139,23 +147,23 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store *clientDB,
 			 	last_duration_ms=excluded.last_duration_ms`,
 			addr,
 			walletID,
-			stats.UTXOCount,
-			stats.BalanceSatoshi,
-			stats.PlainBSVUTXOCount,
-			stats.PlainBSVBalanceSatoshi,
-			stats.ProtectedUTXOCount,
-			stats.ProtectedBalanceSatoshi,
-			stats.UnknownUTXOCount,
-			stats.UnknownBalanceSatoshi,
+			utxoCount,
+			balanceSatoshi,
+			plainBSVUTXOCount,
+			plainBSVBalanceSatoshi,
+			protectedUTXOCount,
+			protectedBalanceSatoshi,
+			unknownUTXOCount,
+			unknownBalanceSatoshi,
 			updatedAt,
 			"",
 			"local_wallet_projection",
 			strings.TrimSpace(trigger),
-			0,
+			int64(0),
 			"",
 			"",
 			"",
-			0,
+			int64(0),
 		); err != nil {
 			return err
 		}
@@ -396,14 +404,14 @@ func dbUpdateWalletUTXOSyncStateStatsTx(tx *sql.Tx, address string, stats wallet
 		     updated_at_unix=?
 		 WHERE address=?`,
 		walletID,
-		stats.UTXOCount,
-		stats.BalanceSatoshi,
-		stats.PlainBSVUTXOCount,
-		stats.PlainBSVBalanceSatoshi,
-		stats.ProtectedUTXOCount,
-		stats.ProtectedBalanceSatoshi,
-		stats.UnknownUTXOCount,
-		stats.UnknownBalanceSatoshi,
+		int64(stats.UTXOCount),
+		int64(stats.BalanceSatoshi),
+		int64(stats.PlainBSVUTXOCount),
+		int64(stats.PlainBSVBalanceSatoshi),
+		int64(stats.ProtectedUTXOCount),
+		int64(stats.ProtectedBalanceSatoshi),
+		int64(stats.UnknownUTXOCount),
+		int64(stats.UnknownBalanceSatoshi),
 		updatedAt,
 		address,
 	)
@@ -422,23 +430,23 @@ func dbUpdateWalletUTXOSyncStateStatsTx(tx *sql.Tx, address string, stats wallet
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		address,
 		walletID,
-		stats.UTXOCount,
-		stats.BalanceSatoshi,
-		stats.PlainBSVUTXOCount,
-		stats.PlainBSVBalanceSatoshi,
-		stats.ProtectedUTXOCount,
-		stats.ProtectedBalanceSatoshi,
-		stats.UnknownUTXOCount,
-		stats.UnknownBalanceSatoshi,
+		int64(stats.UTXOCount),
+		int64(stats.BalanceSatoshi),
+		int64(stats.PlainBSVUTXOCount),
+		int64(stats.PlainBSVBalanceSatoshi),
+		int64(stats.ProtectedUTXOCount),
+		int64(stats.ProtectedBalanceSatoshi),
+		int64(stats.UnknownUTXOCount),
+		int64(stats.UnknownBalanceSatoshi),
 		updatedAt,
 		"",
 		"wallet_asset_projection",
 		"",
-		0,
+		int64(0),
 		"",
 		"",
 		"",
-		0,
+		int64(0),
 	)
 	return err
 }

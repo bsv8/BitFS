@@ -190,6 +190,8 @@ func dbUpdateWalletUTXOSyncStateError(ctx context.Context, store *clientDB, addr
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
 	return store.Do(ctx, func(db *sql.DB) error {
+		zeroCount := int64(0)
+		lastHTTPStatus := int64(httpStatus)
 		_, execErr := db.Exec(
 			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
 			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -204,7 +206,7 @@ func dbUpdateWalletUTXOSyncStateError(ctx context.Context, store *clientDB, addr
 				last_failed_step=excluded.last_failed_step,
 				last_upstream_path=excluded.last_upstream_path,
 				last_http_status=excluded.last_http_status`,
-			address, walletID, 0, 0, 0, 0, 0, 0, 0, 0, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), 0, roundID, failedStep, upstreamPath, httpStatus,
+			address, walletID, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), zeroCount, roundID, failedStep, upstreamPath, lastHTTPStatus,
 		)
 		if execErr != nil {
 			obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": execErr.Error(), "address": address})
@@ -224,6 +226,7 @@ func dbUpdateWalletUTXOSyncCursorError(ctx context.Context, store *clientDB, add
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
 	return store.Do(ctx, func(db *sql.DB) error {
+		zeroInt64 := int64(0)
 		_, err := db.Exec(
 			`INSERT INTO wallet_utxo_sync_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
 			 VALUES(?,?,?,?,?,?,?,?)
@@ -231,7 +234,7 @@ func dbUpdateWalletUTXOSyncCursorError(ctx context.Context, store *clientDB, add
 				wallet_id=excluded.wallet_id,
 				updated_at_unix=excluded.updated_at_unix,
 				last_error=excluded.last_error`,
-			address, walletID, 0, "", 0, 0, now, strings.TrimSpace(errMsg),
+			address, walletID, zeroInt64, "", zeroInt64, zeroInt64, now, strings.TrimSpace(errMsg),
 		)
 		if err != nil {
 			obs.Error("bitcast-client", "wallet_utxo_sync_cursor_upsert_failed", map[string]any{"error": err.Error(), "address": address})

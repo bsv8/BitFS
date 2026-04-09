@@ -1,0 +1,108 @@
+package clientapp
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
+)
+
+// 启动回归只盯组装层，不让 SQL trace 再被空日志路径卡死。
+func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
+	dir := t.TempDir()
+	wsDir := filepath.Join(dir, "workspace")
+	dataDir := filepath.Join(dir, "data")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatalf("mkdir data: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Storage.WorkspaceDir = wsDir
+	cfg.Storage.DataDir = dataDir
+	cfg.Storage.MinFreeBytes = 1
+	cfg.HTTP.Enabled = true
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.Enabled = true
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Debug = true
+	cfg.Log.File = ""
+	cfg.Seller.Enabled = false
+	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
+
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeTest); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	// 这里故意保留空路径，回归点就是 Run 需要自己补齐。
+	cfg.Log.File = ""
+	listenEnabled := false
+	cfg.Listen.Enabled = &listenEnabled
+	autoAnnounceEnabled := false
+	cfg.Reachability.AutoAnnounceEnabled = &autoAnnounceEnabled
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Storage.MinFreeBytes = 1
+
+	runIn := NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)
+	runIn.StartupMode = StartupModeTest
+	runIn.ActionChain = startupTestChain{}
+	runIn.WalletChain = startupTestWalletChain{}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	rt, err := Run(ctx, runIn)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	traceDir := rt.SQLTraceDir()
+	if traceDir == "" {
+		t.Fatalf("expected sql trace dir to be initialized")
+	}
+	eventsPath := filepath.Join(traceDir, "sql_trace.jsonl")
+	if _, err := os.Stat(eventsPath); err != nil {
+		t.Fatalf("stat sql trace events: %v", err)
+	}
+	if err := rt.Close(); err != nil {
+		t.Fatalf("close runtime: %v", err)
+	}
+	if _, err := os.Stat(eventsPath); err != nil {
+		t.Fatalf("sql trace events should remain after close: %v", err)
+	}
+}
+
+// 启动测试只需要最小费用池能力，不让它触发外部链。
+type startupTestChain struct{}
+
+func (startupTestChain) GetUTXOs(string) ([]poolcore.UTXO, error) { return nil, nil }
+func (startupTestChain) GetTipHeight() (uint32, error)            { return 0, nil }
+func (startupTestChain) Broadcast(string) (string, error)         { return "", nil }
+
+// 启动测试只需要钱包链接口能挂住，不走真实 WOC。
+type startupTestWalletChain struct{}
+
+func (startupTestWalletChain) BaseURL() string { return "" }
+func (startupTestWalletChain) GetAddressConfirmedUnspent(context.Context, string) ([]whatsonchain.UTXO, error) {
+	return nil, nil
+}
+func (startupTestWalletChain) GetChainInfo(context.Context) (uint32, error) { return 0, nil }
+func (startupTestWalletChain) GetAddressConfirmedHistory(context.Context, string) ([]whatsonchain.AddressHistoryItem, error) {
+	return nil, nil
+}
+func (startupTestWalletChain) GetAddressConfirmedHistoryPage(context.Context, string, whatsonchain.ConfirmedHistoryQuery) (whatsonchain.ConfirmedHistoryPage, error) {
+	return whatsonchain.ConfirmedHistoryPage{}, nil
+}
+func (startupTestWalletChain) GetAddressUnconfirmedHistory(context.Context, string) ([]string, error) {
+	return nil, nil
+}
+func (startupTestWalletChain) GetTxHash(context.Context, string) (whatsonchain.TxDetail, error) {
+	return whatsonchain.TxDetail{}, nil
+}
+func (startupTestWalletChain) GetTxHex(context.Context, string) (string, error) { return "", nil }
