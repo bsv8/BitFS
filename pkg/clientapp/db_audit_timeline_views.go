@@ -45,12 +45,23 @@ func ListCommandAuditTimeline(ctx context.Context, store *clientDB, f AuditTimel
 	return dbListCommandAuditTimeline(ctx, store, f)
 }
 
+// ListGatewayAuditTimelineDB 仅给仓外调用方（如 e2e 协调层）保留的兼容入口。
+// 设计说明：
+// - 运行时主路径统一传入 store 能力，不再让业务直接创建 db 适配器；
+// - 这里保留 DB 版本是为了避免跨仓改动耦合，不参与运行时依赖组装。
 func ListGatewayAuditTimelineDB(ctx context.Context, db *sql.DB, f AuditTimelineFilter) (AuditTimelinePage, error) {
-	return dbListGatewayAuditTimeline(ctx, newClientDB(db, nil), f)
+	if db == nil {
+		return AuditTimelinePage{}, fmt.Errorf("db is nil")
+	}
+	return dbListGatewayAuditTimeline(ctx, &clientDB{db: db}, f)
 }
 
+// ListCommandAuditTimelineDB 仅给仓外调用方（如 e2e 协调层）保留的兼容入口。
 func ListCommandAuditTimelineDB(ctx context.Context, db *sql.DB, f AuditTimelineFilter) (AuditTimelinePage, error) {
-	return dbListCommandAuditTimeline(ctx, newClientDB(db, nil), f)
+	if db == nil {
+		return AuditTimelinePage{}, fmt.Errorf("db is nil")
+	}
+	return dbListCommandAuditTimeline(ctx, &clientDB{db: db}, f)
 }
 
 func dbListGatewayAuditTimeline(ctx context.Context, store *clientDB, f AuditTimelineFilter) (AuditTimelinePage, error) {

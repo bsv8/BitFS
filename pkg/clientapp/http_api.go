@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/libp2p/go-libp2p/core/host"
 	libnetwork "github.com/libp2p/go-libp2p/core/network"
@@ -181,7 +180,6 @@ type httpAPIServer struct {
 	rt        *Runtime
 	cfg       *Config
 	db        *sql.DB
-	dbActor   *sqliteactor.Actor
 	store     *clientDB
 	h         host.Host
 	gateways  []peer.AddrInfo
@@ -221,13 +219,12 @@ type fileGetJob struct {
 	cancel          context.CancelFunc `json:"-"`
 }
 
-func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, dbActor *sqliteactor.Actor, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
+func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, store *clientDB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
 	return &httpAPIServer{
 		rt:        rt,
 		cfg:       cfg,
 		db:        db,
-		dbActor:   dbActor,
-		store:     newClientDB(db, dbActor),
+		store:     store,
 		h:         h,
 		gateways:  gateways,
 		workspace: workspace,
@@ -513,7 +510,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || (s.dbActor == nil && s.db == nil) {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -598,8 +595,8 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		}
 	}
 	if s != nil && s.store != nil {
-		if schedulerState, err := httpDBValue(r.Context(), s, func(db *sql.DB) (schedulerTaskSnapshot, error) {
-			return loadSchedulerTaskSnapshot(db, "chain_utxo_sync")
+		if schedulerState, err := httpDBValue(r.Context(), s, func(store *clientDB) (schedulerTaskSnapshot, error) {
+			return dbLoadSchedulerTaskSnapshot(r.Context(), store, "chain_utxo_sync")
 		}); err == nil {
 			walletUTXOSyncSchedulerStatus = strings.TrimSpace(schedulerState.Status)
 			walletUTXOSyncSchedulerLastTrigger = strings.TrimSpace(schedulerState.LastTrigger)
@@ -731,6 +728,15 @@ func walletUTXOSyncStateStaleness(syncState walletUTXOSyncState, runtimeStartedA
 		return true, "sync_error_missing_round_id"
 	}
 	return false, ""
+}
+
+func dbLoadSchedulerTaskSnapshot(ctx context.Context, store *clientDB, taskName string) (schedulerTaskSnapshot, error) {
+	if store == nil {
+		return schedulerTaskSnapshot{}, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (schedulerTaskSnapshot, error) {
+		return loadSchedulerTaskSnapshot(db, taskName)
+	})
 }
 
 func loadSchedulerTaskSnapshot(db *sql.DB, taskName string) (schedulerTaskSnapshot, error) {

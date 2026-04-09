@@ -35,11 +35,11 @@ type ConfirmedBSVSpendConsistency struct {
 	Repairable           bool     `json:"repairable,omitempty"`
 }
 
-// CheckTokenTxDualLineConsistency 检查 token tx 的双线是否齐全。
+// CheckTokenTxDualLineConsistency 检查 token tx 的主线是否齐全。
 // 设计说明：
-// - chain_bsv 负责 carrier 这一层的本币消耗；
-// - chain_token 负责 token 数量这一层的消耗；
-// - 少一条线时直接返回缺失项，调用方决定是否报错。
+// - 现在 BSV21 主链只要求一条 settlement_cycle 主线；
+// - token 数量事实可以挂在 chain_bsv 主线上，也可以由旧的 chain_token 线提供；
+// - 这里保留旧名字，只是为了兼容调用点，语义已经收口到“单主线 + 资产事实”。
 func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid string) (TokenTxDualLineConsistency, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
@@ -64,6 +64,16 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 			return TokenTxDualLineConsistency{}, err
 		}
 
+		if out.HasChainBSVCycle {
+			var count int
+			if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, bsvCycleID).Scan(&count); err != nil {
+				return TokenTxDualLineConsistency{}, err
+			}
+			if count > 0 {
+				out.HasTokenQuantityFact = true
+			}
+		}
+
 		var tokenCycleID int64
 		if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleID); err == nil {
 			out.HasChainTokenCycle = true
@@ -81,7 +91,7 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 		if !out.HasChainBSVCycle {
 			out.MissingItems = append(out.MissingItems, "chain_bsv_cycle")
 		}
-		if !out.HasChainTokenCycle {
+		if !out.HasChainTokenCycle && !out.HasTokenQuantityFact {
 			out.MissingItems = append(out.MissingItems, "chain_token_cycle")
 		}
 		if !out.HasCarrierBSVFact {

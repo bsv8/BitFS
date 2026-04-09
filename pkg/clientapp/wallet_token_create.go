@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -121,15 +120,16 @@ func buildWalletTokenCreatePreview(r *http.Request, s *httpAPIServer, req wallet
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
-	preview, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletAssetActionPreview, error) {
-		return previewWalletTokenCreate(newClientDB(db, s.dbActor), address, input)
+	preview, err := httpDBValue(r.Context(), s, func(store *clientDB) (walletAssetActionPreview, error) {
+		// 这里运行在 actor 闭包里，禁止再走 actor 入口，避免重入阻塞。
+		return previewWalletTokenCreate(store, address, input)
 	})
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
 	if s != nil && s.rt != nil && preview.Feasible {
-		prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenCreate, error) {
-			return prepareWalletTokenCreate(r.Context(), newClientDB(db, s.dbActor), s.rt, address, input)
+		prepared, prepareErr := httpDBValue(r.Context(), s, func(store *clientDB) (preparedWalletTokenCreate, error) {
+			return prepareWalletTokenCreate(r.Context(), store, s.rt, address, input)
 		})
 		if prepareErr == nil {
 			preview = prepared.Preview
@@ -160,8 +160,8 @@ func buildWalletTokenCreateSign(r *http.Request, s *httpAPIServer, req walletTok
 	if err != nil {
 		return walletAssetActionSignResp{}, err
 	}
-	prepared, err := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenCreate, error) {
-		return prepareWalletTokenCreate(r.Context(), newClientDB(db, s.dbActor), s.rt, address, input)
+	prepared, err := httpDBValue(r.Context(), s, func(db *clientDB) (preparedWalletTokenCreate, error) {
+		return prepareWalletTokenCreate(r.Context(), db, s.rt, address, input)
 	})
 	if err != nil {
 		return walletAssetActionSignResp{}, err
@@ -298,7 +298,10 @@ func normalizeWalletTokenCreateInput(tokenStandard string, symbol string, maxSup
 		return walletTokenCreateInput{}, fmt.Errorf("decimals invalid")
 	}
 	icon = strings.ToLower(strings.TrimSpace(icon))
-	if icon != "" && !isSeedHashHex(icon) {
+	if icon == "" {
+		return walletTokenCreateInput{}, fmt.Errorf("icon is required")
+	}
+	if !isSeedHashHex(icon) {
 		return walletTokenCreateInput{}, fmt.Errorf("icon invalid")
 	}
 	return walletTokenCreateInput{
@@ -311,7 +314,7 @@ func normalizeWalletTokenCreateInput(tokenStandard string, symbol string, maxSup
 }
 
 func previewWalletTokenCreate(store *clientDB, address string, input walletTokenCreateInput) (walletAssetActionPreview, error) {
-	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan(input.Icon)
+	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan()
 	selectedFee, fee, fundingNeed, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {
 		return walletAssetActionPreview{}, err
@@ -345,7 +348,7 @@ func previewWalletTokenCreate(store *clientDB, address string, input walletToken
 // prepareWalletTokenCreate 负责把 bsv21 deploy+mint 收口成“可签名交易”。
 // 设计说明：
 // - 这版只做 deploy+mint，不拆独立 deploy / mint，也不引入第二套钱包接口；
-// - `icon` 入参仍然收 seed hash，但链上固定写成 `_0 json + _1 deploy+mint`，避免把 bitfs 元数据塞进 token 正文里；
+// - `icon` 入参必须提供 seed hash，链上固定写成 `_0 json + _1 deploy+mint`，避免把 bitfs 元数据塞进 token 正文里；
 // - submit 之后先刷新 wallet_utxo，本地自己 create 出来的 token 可直接进入后续 send 链路；
 // - 外部验真只记录观察进度，不再作为 create / send 的业务前提。
 func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime, address string, input walletTokenCreateInput) (preparedWalletTokenCreate, error) {
@@ -355,13 +358,13 @@ func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime,
 	if rt == nil {
 		return preparedWalletTokenCreate{}, fmt.Errorf("runtime not initialized")
 	}
-	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan(input.Icon)
+	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan()
 	selectedFee, _, _, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}
 	if !selectedFee.Feasible {
-		return preparedWalletTokenCreate{}, fmt.Errorf("insufficient plain bsv for token create fee")
+		return preparedWalletTokenCreate{}, fmt.Errorf("insufficient plain bsv for miner fee")
 	}
 	feeUTXOs, err := loadWalletUTXOsByID(store, address, selectedFee.SelectedUTXOIDs)
 	if err != nil {
@@ -371,7 +374,7 @@ func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime,
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}
-	tokenID := walletTokenCreateTokenIDFromTxID(txID, walletBSV21CreateDeployOutputVoutForIcon(input.Icon))
+	tokenID := walletTokenCreateTokenIDFromTxID(txID, walletBSV21CreateDeployOutputVout)
 	preview := walletAssetActionPreview{
 		Action:                    "tokens.create",
 		Feasible:                  true,
@@ -457,13 +460,16 @@ func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime,
 	if err != nil {
 		return "", "", 0, 0, fmt.Errorf("build fee unlock template: %w", err)
 	}
-	payload, err := buildBSV21DeployMintData(symbol, maxSupply, decimals, icon)
+	payload, err := buildBSV21DeployMintData(symbol, maxSupply, decimals)
 	if err != nil {
 		return "", "", 0, 0, err
 	}
 	iconPayload, err := buildWalletBSV21IconJSONData(icon)
 	if err != nil {
 		return "", "", 0, 0, err
+	}
+	if len(iconPayload) == 0 {
+		return "", "", 0, 0, fmt.Errorf("icon payload is required")
 	}
 	txBuilder := txsdk.NewTransaction()
 	totalInput := uint64(0)
@@ -474,14 +480,12 @@ func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime,
 		}
 		totalInput += utxo.Value
 	}
-	if len(iconPayload) > 0 {
-		if err := txBuilder.Inscribe(&bsvscript.InscriptionArgs{
-			LockingScript: walletLockScript,
-			ContentType:   walletBSV21IconContentType,
-			Data:          iconPayload,
-		}); err != nil {
-			return "", "", 0, 0, fmt.Errorf("build token icon output failed: %w", err)
-		}
+	if err := txBuilder.Inscribe(&bsvscript.InscriptionArgs{
+		LockingScript: walletLockScript,
+		ContentType:   walletBSV21IconContentType,
+		Data:          iconPayload,
+	}); err != nil {
+		return "", "", 0, 0, fmt.Errorf("build token icon output failed: %w", err)
 	}
 	if err := txBuilder.Inscribe(&bsvscript.InscriptionArgs{
 		LockingScript: walletLockScript,
@@ -490,10 +494,7 @@ func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime,
 	}); err != nil {
 		return "", "", 0, 0, fmt.Errorf("build token output failed: %w", err)
 	}
-	requiredOutputs := uint64(1)
-	if len(iconPayload) > 0 {
-		requiredOutputs++
-	}
+	requiredOutputs := uint64(2)
 	hasChangeOutput := totalInput > requiredOutputs
 	if hasChangeOutput {
 		txBuilder.AddOutput(&txsdk.TransactionOutput{
@@ -506,7 +507,7 @@ func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime,
 	}
 	fee := estimateMinerFeeSatPerKB(txBuilder.Size(), walletAssetPreviewFeeRateSatPerKB)
 	if totalInput <= requiredOutputs+fee {
-		return "", "", 0, 0, fmt.Errorf("insufficient total input for token create fee")
+		return "", "", 0, 0, fmt.Errorf("insufficient total input for miner fee")
 	}
 	changeSatoshi := totalInput - requiredOutputs - fee
 	if hasChangeOutput {
@@ -523,7 +524,7 @@ func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime,
 	return strings.ToLower(strings.TrimSpace(txBuilder.Hex())), txID, fee, changeSatoshi, nil
 }
 
-func buildBSV21DeployMintData(symbol string, maxSupply string, decimals int, icon string) ([]byte, error) {
+func buildBSV21DeployMintData(symbol string, maxSupply string, decimals int) ([]byte, error) {
 	payload := map[string]string{
 		"p":   "bsv-20",
 		"op":  "deploy+mint",
@@ -533,16 +534,14 @@ func buildBSV21DeployMintData(symbol string, maxSupply string, decimals int, ico
 	if decimals > 0 {
 		payload["dec"] = fmt.Sprintf("%d", decimals)
 	}
-	if strings.TrimSpace(icon) != "" {
-		payload["icon"] = fmt.Sprintf("_%d", walletBSV21CreateIconOutputVout)
-	}
+	payload["icon"] = fmt.Sprintf("_%d", walletBSV21CreateIconOutputVout)
 	return json.Marshal(payload)
 }
 
 func buildWalletBSV21IconJSONData(icon string) ([]byte, error) {
 	seedHash := strings.ToLower(strings.TrimSpace(icon))
 	if seedHash == "" {
-		return nil, nil
+		return nil, fmt.Errorf("icon is required")
 	}
 	return json.Marshal(map[string]string{
 		"p":    "bitfs",
@@ -551,17 +550,7 @@ func buildWalletBSV21IconJSONData(icon string) ([]byte, error) {
 	})
 }
 
-func walletBSV21CreateDeployOutputVoutForIcon(icon string) uint32 {
-	if strings.TrimSpace(icon) == "" {
-		return walletBSV21CreateIconOutputVout
-	}
-	return walletBSV21CreateDeployOutputVout
-}
-
-func walletBSV21CreateOutputPlan(icon string) (int, uint64) {
-	if strings.TrimSpace(icon) == "" {
-		return 1, 1
-	}
+func walletBSV21CreateOutputPlan() (int, uint64) {
 	return 2, 2
 }
 
@@ -617,10 +606,8 @@ func buildWalletTokenCreatePreviewLines(address string, input walletTokenCreateI
 		fmt.Sprintf("已选链费输出: %d 个", len(feeUTXOIDs)),
 		fmt.Sprintf("矿工费估算: %d sat BSV", fee),
 	}
-	if input.Icon != "" {
-		lines = append(lines, fmt.Sprintf("Icon Seed Hash: %s", input.Icon))
-		lines = append(lines, "Icon 写入: 交易会生成 `_0` 的 bitfs json 输出，deploy+mint 放在 `_1`，icon 字段引用 `_0`。")
-	}
+	lines = append(lines, fmt.Sprintf("Icon Seed Hash: %s", input.Icon))
+	lines = append(lines, "Icon 写入: 交易会生成 `_0` 的 bitfs json 输出，deploy+mint 放在 `_1`，icon 字段引用 `_0`。")
 	lines = append(lines,
 		"说明: 这版固定构造 `_0 json + _1 deploy+mint`，一次铸满，token 输出固定归当前钱包。",
 		"说明: submit 成功后会记录一条外部验真状态，但它不是 create / send 的业务前提。",
@@ -641,10 +628,8 @@ func buildWalletTokenCreatePreparedLines(address string, input walletTokenCreate
 		fmt.Sprintf("已选链费输出: %d 个", len(feeUTXOIDs)),
 		fmt.Sprintf("矿工费: %d sat BSV", fee),
 	}
-	if input.Icon != "" {
-		lines = append(lines, fmt.Sprintf("Icon Seed Hash: %s", input.Icon))
-		lines = append(lines, "Icon 写入: 交易会生成 `_0` 的 bitfs json 输出，deploy+mint 放在 `_1`，icon 字段引用 `_0`。")
-	}
+	lines = append(lines, fmt.Sprintf("Icon Seed Hash: %s", input.Icon))
+	lines = append(lines, "Icon 写入: 交易会生成 `_0` 的 bitfs json 输出，deploy+mint 放在 `_1`，icon 字段引用 `_0`。")
 	if changeSatoshi > 0 {
 		lines = append(lines, fmt.Sprintf("BSV 找零回钱包: %d sat", changeSatoshi))
 	}

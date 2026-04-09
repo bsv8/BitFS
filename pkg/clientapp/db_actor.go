@@ -6,13 +6,17 @@ import (
 	"fmt"
 )
 
-func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*sql.DB) (T, error)) (T, error) {
+func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*clientDB) (T, error)) (T, error) {
 	store := httpStore(s)
 	if store == nil {
 		var zero T
 		return zero, fmt.Errorf("http db is nil")
 	}
-	return clientDBValue(ctx, store, fn)
+	if fn == nil {
+		var zero T
+		return zero, fmt.Errorf("http db fn is nil")
+	}
+	return fn(store)
 }
 
 func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(*sql.DB) error) error {
@@ -30,7 +34,12 @@ func httpStore(s *httpAPIServer) *clientDB {
 	if s.store != nil {
 		return s.store
 	}
-	return newClientDB(s.db, s.dbActor)
+	// 仅兼容旧测试夹具：很多单测直接构造 httpAPIServer{db:...}。
+	// 运行时主路径已在 run.go 注入 store，这里不走 newClientDB，避免新增构造入口。
+	if s.db != nil {
+		return &clientDB{db: s.db}
+	}
+	return nil
 }
 
 func schedulerStore(s *taskScheduler) *clientDB {

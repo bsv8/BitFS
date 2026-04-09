@@ -2,15 +2,16 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"math/big"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 const walletAssetPreviewFeeRateSatPerKB = 0.5
@@ -103,19 +104,53 @@ func (s *httpAPIServer) handleWalletTokenSendPreview(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
+	startedAt := time.Now()
+	obs.Info("bitcast-client", "wallet_token_send_preview_started", map[string]any{
+		"asset_key":      strings.TrimSpace(req.AssetKey),
+		"token_standard": strings.TrimSpace(req.TokenStandard),
+		"amount_text":    strings.TrimSpace(req.AmountText),
+		"to_address":     strings.TrimSpace(req.ToAddress),
+	})
 	resp, err := buildWalletTokenSendPreview(r, s, req)
 	if err != nil {
+		obs.Error("bitcast-client", "wallet_token_send_preview_failed", map[string]any{
+			"asset_key":          strings.TrimSpace(req.AssetKey),
+			"amount_text":        strings.TrimSpace(req.AmountText),
+			"to_address":         strings.TrimSpace(req.ToAddress),
+			"error":              err.Error(),
+			"duration_ms":        time.Since(startedAt).Milliseconds(),
+			"token_standard":     strings.TrimSpace(req.TokenStandard),
+			"http_method":        r.Method,
+			"http_request_path":  r.URL.Path,
+			"http_remote_target": r.RemoteAddr,
+		})
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	obs.Info("bitcast-client", "wallet_token_send_preview_succeeded", map[string]any{
+		"asset_key":      strings.TrimSpace(req.AssetKey),
+		"amount_text":    strings.TrimSpace(req.AmountText),
+		"to_address":     strings.TrimSpace(req.ToAddress),
+		"can_sign":       resp.Preview.CanSign,
+		"feasible":       resp.Preview.Feasible,
+		"duration_ms":    time.Since(startedAt).Milliseconds(),
+		"token_standard": strings.TrimSpace(req.TokenStandard),
+	})
 	writeJSON(w, http.StatusOK, resp)
 }
 
 func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTokenSendPreviewRequest) (walletAssetActionPreviewResp, error) {
+	stageStarted := time.Now()
 	standard := normalizeWalletTokenStandard(req.TokenStandard)
 	if standard == "" {
 		return walletAssetActionPreviewResp{}, fmt.Errorf("invalid token standard")
 	}
+	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+		"stage":       "validated_standard",
+		"duration_ms": time.Since(stageStarted).Milliseconds(),
+		"standard":    standard,
+	})
+	stageStarted = time.Now()
 	assetKey := strings.TrimSpace(req.AssetKey)
 	if assetKey == "" {
 		return walletAssetActionPreviewResp{}, fmt.Errorf("asset_key is required")
@@ -129,23 +164,57 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 	if err := validatePreviewAddress(toAddress); err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
+	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+		"stage":       "validated_request_fields",
+		"duration_ms": time.Since(stageStarted).Milliseconds(),
+		"asset_key":   assetKey,
+		"amount_text": amountText,
+		"to_address":  toAddress,
+	})
+	stageStarted = time.Now()
 	address, err := resolveWalletAddressForHTTP(r.Context(), s)
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
-	preview, err := httpDBValue(r.Context(), s, func(db *sql.DB) (walletAssetActionPreview, error) {
-		return previewWalletTokenSend(r.Context(), newClientDB(db, s.dbActor), s.rt, address, standard, assetKey, amountText, toAddress)
+	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+		"stage":          "resolved_wallet_address",
+		"duration_ms":    time.Since(stageStarted).Milliseconds(),
+		"wallet_address": address,
+	})
+	stageStarted = time.Now()
+	preview, err := httpDBValue(r.Context(), s, func(store *clientDB) (walletAssetActionPreview, error) {
+		// 这里运行在 httpDBValue 的 actor 闭包里，必须禁用 store.actor，避免同 actor 重入自锁。
+		return previewWalletTokenSend(r.Context(), store, s.rt, address, standard, assetKey, amountText, toAddress)
 	})
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
+	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+		"stage":       "preview_wallet_token_send_done",
+		"duration_ms": time.Since(stageStarted).Milliseconds(),
+		"feasible":    preview.Feasible,
+		"can_sign":    preview.CanSign,
+	})
 	if s != nil && s.rt != nil && preview.Feasible {
-		prepared, prepareErr := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenSend, error) {
-			return prepareWalletTokenSend(r.Context(), newClientDB(db, s.dbActor), s.rt, address, standard, assetKey, amountText, toAddress)
+		stageStarted = time.Now()
+		prepared, prepareErr := httpDBValue(r.Context(), s, func(store *clientDB) (preparedWalletTokenSend, error) {
+			// 同上：actor 闭包内只走当前 db 连接，不再二次入队 actor。
+			return prepareWalletTokenSend(r.Context(), store, s.rt, address, standard, assetKey, amountText, toAddress)
 		})
 		if prepareErr == nil {
 			preview = prepared.Preview
+			obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+				"stage":       "prepare_wallet_token_send_done",
+				"duration_ms": time.Since(stageStarted).Milliseconds(),
+				"txid":        strings.TrimSpace(prepared.TxID),
+			})
 		} else {
+			obs.Error("bitcast-client", "wallet_token_send_preview_stage_failed", map[string]any{
+				"stage":       "prepare_wallet_token_send",
+				"duration_ms": time.Since(stageStarted).Milliseconds(),
+				"error":       prepareErr.Error(),
+				"asset_key":   assetKey,
+			})
 			preview.CanSign = false
 			preview.WarningLevel = "high"
 			preview.DetailLines = append(preview.DetailLines, "状态: 当前预演可行，但真实交易构造失败，暂不能签名。")
@@ -322,7 +391,7 @@ func previewPlainBSVFeeFunding(store *clientDB, address string, assetInputSatosh
 // previewPlainBSVFunding 按“固定输出总额 + 矿工费”的口径估算 plain BSV 选币。
 // 设计说明：
 // - 当前 wallet 资产面只保留 bsv21 send；
-// - fixedOutputSatoshi 既包含 token 承载输出的 1 sat，也包含 bsv21 protocol fee；
+// - fixedOutputSatoshi 只表示 token 承载输出需要预留的 1 sat/输出；
 // - 这样 preview/sign 能共用一套 BSV 资金判断，不会在真实构造时低估所需资金。
 func previewPlainBSVFunding(store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int, fixedOutputSatoshi uint64) (plainBSVPreviewSelection, uint64, uint64, error) {
 	candidates, err := listPlainBSVFundingCandidatesFromDB(store, address)
@@ -472,8 +541,8 @@ func resolveWalletAddressForHTTP(ctx context.Context, s *httpAPIServer) (string,
 			return strings.TrimSpace(addr), nil
 		}
 	}
-	return httpDBValue(ctx, s, func(db *sql.DB) (string, error) {
-		return dbResolveWalletAddress(ctx, newClientDB(db, s.dbActor))
+	return httpDBValue(ctx, s, func(store *clientDB) (string, error) {
+		return dbResolveWalletAddress(ctx, store)
 	})
 }
 

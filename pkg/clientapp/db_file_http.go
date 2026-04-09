@@ -32,7 +32,14 @@ func fileHTTPStore(s *fileHTTPServer) *clientDB {
 	if s == nil {
 		return nil
 	}
-	return newClientDB(s.db, nil)
+	if s.store != nil {
+		return s.store
+	}
+	// 仅兼容旧测试夹具：fileHTTPServer 测试有 db 直塞场景。
+	if s.db != nil {
+		return &clientDB{db: s.db}
+	}
+	return nil
 }
 
 func dbGetFileDownloadState(ctx context.Context, store *clientDB, seedHash string) (fileDownloadStateRow, error) {

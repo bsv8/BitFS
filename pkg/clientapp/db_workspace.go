@@ -52,7 +52,11 @@ func workspaceStore(m *workspaceManager) *clientDB {
 	if m.store != nil {
 		return m.store
 	}
-	return newClientDB(m.db, nil)
+	// 仅兼容旧测试夹具：测试可能直接塞 db，不走 run.go 入口。
+	if m.db != nil {
+		return &clientDB{db: m.db}
+	}
+	return nil
 }
 
 func dbEnsureDefaultWorkspace(ctx context.Context, store *clientDB, workspaceDir string) error {

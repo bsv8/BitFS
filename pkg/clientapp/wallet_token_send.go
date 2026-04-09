@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -54,7 +53,6 @@ type preparedWalletTokenSend struct {
 	TxID               string
 	SelectedFeeUTXOIDs []string
 	MinerFeeSatoshi    uint64
-	OverlayFeeSatoshi  uint64
 	ChangeSatoshi      uint64
 }
 
@@ -109,8 +107,9 @@ func buildWalletTokenSendSign(r *http.Request, s *httpAPIServer, req walletToken
 	if err != nil {
 		return walletAssetActionSignResp{}, err
 	}
-	prepared, err := httpDBValue(r.Context(), s, func(db *sql.DB) (preparedWalletTokenSend, error) {
-		return prepareWalletTokenSend(r.Context(), newClientDB(db, s.dbActor), s.rt, address, standard, strings.TrimSpace(req.AssetKey), normalizePreviewQuantityText(req.AmountText), strings.TrimSpace(req.ToAddress))
+	prepared, err := httpDBValue(r.Context(), s, func(store *clientDB) (preparedWalletTokenSend, error) {
+		// 这里在 actor 闭包中，内部必须用 raw db，避免 actor 重入死锁。
+		return prepareWalletTokenSend(r.Context(), store, s.rt, address, standard, strings.TrimSpace(req.AssetKey), normalizePreviewQuantityText(req.AmountText), strings.TrimSpace(req.ToAddress))
 	})
 	if err != nil {
 		return walletAssetActionSignResp{}, err
@@ -167,10 +166,13 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 		recordWalletTokenSendRetryTask(s.rt, finalTxID, "local_broadcast_projection", err, txHex)
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed for txid %s: %w", finalTxID, err)
 	}
-	// Step 8：token 发送成功后写入 fact 消耗记录
-	if err := appendTokenConsumptionFromTxHex(r.Context(), s.store, txHex, finalTxID); err != nil {
+	// 这里把 BSV21 发送事实收口到单一入口：
+	// - 先落 1 条 business 和 1 条 settlement_cycle；
+	// - 再按 lot 写入多条 settlement_records；
+	// - 最后再展开到本币资产事实层，避免先写资产再补结算把口径打散。
+	if err := appendBSV21TokenSendAccountingAfterBroadcast(r.Context(), s.store, s.rt, txHex, finalTxID); err != nil {
 		recordWalletTokenSendRetryTask(s.rt, finalTxID, "fact_write", err, txHex)
-		return walletAssetActionSubmitResp{}, fmt.Errorf("append token consumption failed for txid %s: %w", finalTxID, err)
+		return walletAssetActionSubmitResp{}, fmt.Errorf("append token send accounting failed for txid %s: %w", finalTxID, err)
 	}
 	return walletAssetActionSubmitResp{
 		Ok:      true,
@@ -249,22 +251,12 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	if len(candidates) > 0 {
 		assetSymbol = strings.TrimSpace(candidates[0].Item.AssetSymbol)
 	}
-	var bsv21Rules walletBSV21SendRules
-	var overlayFee uint64
 	if standard != "bsv21" {
 		return preparedWalletTokenSend{}, fmt.Errorf("invalid token standard")
 	}
 	tokenID := walletBSV21TokenIDFromAssetKey(assetKey)
 	if tokenID == "" {
 		return preparedWalletTokenSend{}, fmt.Errorf("bsv21 token id is required")
-	}
-	rules, err := loadWalletBSV21SendRules(ctx, rt, tokenID)
-	if err != nil {
-		return preparedWalletTokenSend{}, err
-	}
-	bsv21Rules = rules
-	if sym := strings.TrimSpace(rules.Symbol); sym != "" {
-		assetSymbol = sym
 	}
 	selected, selectedTotal, _, selectedAssetSymbol, err := selectWalletTokenPreviewCandidates(candidates, requested)
 	if err != nil {
@@ -281,19 +273,18 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 		return preparedWalletTokenSend{}, err
 	}
 	tokenOutputCount := walletTokenOutputCount(changeText)
-	overlayFee = bsv21Rules.FeePerOutput * uint64(tokenOutputCount)
-	selectedFee, _, _, err := previewPlainBSVFunding(store, address, uint64(len(selected)), len(selected), tokenOutputCount+boolToInt(overlayFee > 0), uint64(tokenOutputCount)+overlayFee)
+	selectedFee, _, _, err := previewPlainBSVFunding(store, address, uint64(len(selected)), len(selected), tokenOutputCount, uint64(tokenOutputCount))
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
 	if !selectedFee.Feasible {
-		return preparedWalletTokenSend{}, fmt.Errorf("insufficient plain bsv for token send fee")
+		return preparedWalletTokenSend{}, fmt.Errorf("insufficient plain bsv for miner fee")
 	}
 	feeUTXOs, err := loadWalletUTXOsByID(store, address, selectedFee.SelectedUTXOIDs)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
-	txHex, txID, fee, changeSatoshi, overlayFee, err := buildWalletBSV21SendTx(ctx, store, rt, selected, feeUTXOs, assetKey, amountText, changeText, toAddress)
+	txHex, txID, fee, changeSatoshi, err := buildWalletBSV21SendTx(ctx, store, rt, selected, feeUTXOs, assetKey, amountText, changeText, toAddress)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
@@ -302,10 +293,10 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 		Feasible:                  true,
 		CanSign:                   true,
 		Summary:                   buildWalletTokenSendPreparedSummary(amountText, assetSymbol, len(selected), fee),
-		DetailLines:               buildWalletTokenSendPreparedLines(standard, assetKey, amountText, assetSymbol, toAddress, len(selected), selectedFee.SelectedUTXOIDs, fee, overlayFee, changeText, changeSatoshi),
+		DetailLines:               buildWalletTokenSendPreparedLines(standard, assetKey, amountText, assetSymbol, toAddress, len(selected), selectedFee.SelectedUTXOIDs, fee, changeText, changeSatoshi),
 		WarningLevel:              "normal",
 		EstimatedNetworkFeeBSVSat: fee,
-		FeeFundingTargetBSVSat:    walletTokenFundingNeed(uint64(len(selected)), uint64(tokenOutputCount)+overlayFee, fee),
+		FeeFundingTargetBSVSat:    walletTokenFundingNeed(uint64(len(selected)), uint64(tokenOutputCount), fee),
 		SelectedAssetUTXOIDs:      collectSelectedTokenUTXOIDs(selected),
 		SelectedFeeUTXOIDs:        append([]string(nil), selectedFee.SelectedUTXOIDs...),
 		TxID:                      txID,
@@ -343,18 +334,6 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 			},
 		},
 	}
-	if overlayFee > 0 {
-		preview.Changes = append(preview.Changes, walletAssetActionPreviewChange{
-			OwnerScope:    "network_fee",
-			AssetGroup:    "bsv",
-			AssetStandard: "native",
-			AssetKey:      "bsv",
-			AssetSymbol:   "BSV",
-			QuantityText:  fmt.Sprintf("%d", overlayFee),
-			Direction:     "debit",
-			Note:          "bsv21 protocol fee",
-		})
-	}
 	if isPositiveDecimalText(changeText) {
 		preview.Changes = append(preview.Changes, walletAssetActionPreviewChange{
 			OwnerScope:    "wallet_self",
@@ -385,111 +364,91 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 		TxID:               txID,
 		SelectedFeeUTXOIDs: append([]string(nil), selectedFee.SelectedUTXOIDs...),
 		MinerFeeSatoshi:    fee,
-		OverlayFeeSatoshi:  overlayFee,
 		ChangeSatoshi:      changeSatoshi,
 	}, nil
 }
 
-func buildWalletBSV21SendTx(ctx context.Context, store *clientDB, rt *Runtime, selected []walletTokenPreviewCandidate, feeUTXOs []poolcore.UTXO, assetKey string, amountText string, changeText string, toAddress string) (string, string, uint64, uint64, uint64, error) {
+func buildWalletBSV21SendTx(ctx context.Context, store *clientDB, rt *Runtime, selected []walletTokenPreviewCandidate, feeUTXOs []poolcore.UTXO, assetKey string, amountText string, changeText string, toAddress string) (string, string, uint64, uint64, error) {
 	if len(selected) == 0 {
-		return "", "", 0, 0, 0, fmt.Errorf("selected token outputs are empty")
+		return "", "", 0, 0, fmt.Errorf("selected token outputs are empty")
 	}
 	if rt == nil {
-		return "", "", 0, 0, 0, fmt.Errorf("runtime not initialized")
+		return "", "", 0, 0, fmt.Errorf("runtime not initialized")
 	}
 	tokenID := walletBSV21TokenIDFromAssetKey(assetKey)
 	if tokenID == "" {
-		return "", "", 0, 0, 0, fmt.Errorf("bsv21 token id is required")
-	}
-	rules, err := loadWalletBSV21SendRules(ctx, rt, tokenID)
-	if err != nil {
-		return "", "", 0, 0, 0, err
+		return "", "", 0, 0, fmt.Errorf("bsv21 token id is required")
 	}
 	actor, err := buildClientActorFromRunInput(rt.runIn)
 	if err != nil {
-		return "", "", 0, 0, 0, err
+		return "", "", 0, 0, err
 	}
 	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(actor.Addr))
 	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("parse wallet address: %w", err)
+		return "", "", 0, 0, fmt.Errorf("parse wallet address: %w", err)
 	}
 	walletLockScript, err := p2pkh.Lock(walletAddr)
 	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("build wallet lock script: %w", err)
+		return "", "", 0, 0, fmt.Errorf("build wallet lock script: %w", err)
 	}
 	recipientAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(toAddress))
 	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("parse recipient address: %w", err)
+		return "", "", 0, 0, fmt.Errorf("parse recipient address: %w", err)
 	}
 	recipientLockScript, err := p2pkh.Lock(recipientAddr)
 	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("build recipient lock script: %w", err)
-	}
-	feeAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(rules.FeeAddress))
-	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("parse bsv21 fee address: %w", err)
-	}
-	feeLockScript, err := p2pkh.Lock(feeAddr)
-	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("build bsv21 fee lock script: %w", err)
+		return "", "", 0, 0, fmt.Errorf("build recipient lock script: %w", err)
 	}
 	sigHash := sighash.Flag(sighash.ForkID | sighash.All)
 	unlockTpl, err := p2pkh.Unlock(actor.PrivKey, &sigHash)
 	if err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("build token unlock template: %w", err)
+		return "", "", 0, 0, fmt.Errorf("build token unlock template: %w", err)
 	}
 	txBuilder := txsdk.NewTransaction()
 	totalInput := uint64(0)
 	for _, item := range selected {
-		lockingScriptHex, lockErr := resolveWalletOutputLockingScriptHex(ctx, store, rt, item.Item.TxID, item.Item.Vout)
+		lockingScriptHex, lockErr := resolveWalletOutputLockingScriptHex(ctx, rt, item.Item.TxID, item.Item.Vout)
 		if lockErr != nil {
-			return "", "", 0, 0, 0, lockErr
+			return "", "", 0, 0, lockErr
 		}
 		if err := txBuilder.AddInputFrom(item.Item.TxID, item.Item.Vout, lockingScriptHex, item.Item.ValueSatoshi, unlockTpl); err != nil {
-			return "", "", 0, 0, 0, fmt.Errorf("add token input failed: %w", err)
+			return "", "", 0, 0, fmt.Errorf("add token input failed: %w", err)
 		}
 		totalInput += item.Item.ValueSatoshi
 	}
 	walletPrevLockHex := hex.EncodeToString(walletLockScript.Bytes())
 	for _, utxo := range feeUTXOs {
 		if err := txBuilder.AddInputFrom(utxo.TxID, utxo.Vout, walletPrevLockHex, utxo.Value, unlockTpl); err != nil {
-			return "", "", 0, 0, 0, fmt.Errorf("add fee input failed: %w", err)
+			return "", "", 0, 0, fmt.Errorf("add fee input failed: %w", err)
 		}
 		totalInput += utxo.Value
 	}
 	recipientData, err := buildBSV21TransferData(assetKey, amountText)
 	if err != nil {
-		return "", "", 0, 0, 0, err
+		return "", "", 0, 0, err
 	}
 	if err := txBuilder.Inscribe(&bsvscript.InscriptionArgs{
 		LockingScript: recipientLockScript,
 		ContentType:   walletTokenContentType,
 		Data:          recipientData,
 	}); err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("build token recipient output failed: %w", err)
+		return "", "", 0, 0, fmt.Errorf("build token recipient output failed: %w", err)
 	}
 	if isPositiveDecimalText(changeText) {
 		changeData, err := buildBSV21TransferData(assetKey, changeText)
 		if err != nil {
-			return "", "", 0, 0, 0, err
+			return "", "", 0, 0, err
 		}
 		if err := txBuilder.Inscribe(&bsvscript.InscriptionArgs{
 			LockingScript: walletLockScript,
 			ContentType:   walletTokenContentType,
 			Data:          changeData,
 		}); err != nil {
-			return "", "", 0, 0, 0, fmt.Errorf("build token change output failed: %w", err)
+			return "", "", 0, 0, fmt.Errorf("build token change output failed: %w", err)
 		}
 	}
 	tokenOutputCount := len(txBuilder.Outputs)
-	overlayFee := rules.FeePerOutput * uint64(tokenOutputCount)
-	if overlayFee > 0 {
-		txBuilder.AddOutput(&txsdk.TransactionOutput{
-			Satoshis:      overlayFee,
-			LockingScript: feeLockScript,
-		})
-	}
-	fixedOutputSatoshi := uint64(tokenOutputCount) + overlayFee
+	fixedOutputSatoshi := uint64(tokenOutputCount)
 	hasChangeOutput := totalInput > fixedOutputSatoshi
 	if hasChangeOutput {
 		txBuilder.AddOutput(&txsdk.TransactionOutput{
@@ -498,11 +457,11 @@ func buildWalletBSV21SendTx(ctx context.Context, store *clientDB, rt *Runtime, s
 		})
 	}
 	if err := signP2PKHAllInputs(txBuilder, unlockTpl); err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("pre-sign token send failed: %w", err)
+		return "", "", 0, 0, fmt.Errorf("pre-sign token send failed: %w", err)
 	}
 	fee := estimateMinerFeeSatPerKB(txBuilder.Size(), walletAssetPreviewFeeRateSatPerKB)
 	if totalInput <= fixedOutputSatoshi+fee {
-		return "", "", 0, 0, 0, fmt.Errorf("insufficient total input for token send fee")
+		return "", "", 0, 0, fmt.Errorf("insufficient total input for miner fee")
 	}
 	changeSatoshi := totalInput - fixedOutputSatoshi - fee
 	if hasChangeOutput {
@@ -513,35 +472,24 @@ func buildWalletBSV21SendTx(ctx context.Context, store *clientDB, rt *Runtime, s
 		}
 	}
 	if err := signP2PKHAllInputs(txBuilder, unlockTpl); err != nil {
-		return "", "", 0, 0, 0, fmt.Errorf("final-sign token send failed: %w", err)
+		return "", "", 0, 0, fmt.Errorf("final-sign token send failed: %w", err)
 	}
 	txID := strings.ToLower(strings.TrimSpace(txBuilder.TxID().String()))
-	return strings.ToLower(strings.TrimSpace(txBuilder.Hex())), txID, fee, changeSatoshi, overlayFee, nil
+	return strings.ToLower(strings.TrimSpace(txBuilder.Hex())), txID, fee, changeSatoshi, nil
 }
 
-func resolveWalletOutputLockingScriptHex(ctx context.Context, store *clientDB, rt *Runtime, txid string, vout uint32) (string, error) {
+func resolveWalletOutputLockingScriptHex(ctx context.Context, rt *Runtime, txid string, vout uint32) (string, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	if txid == "" {
 		return "", fmt.Errorf("txid is required")
-	}
-	localHex, err := loadWalletLocalBroadcastHex(store, txid)
-	if err != nil {
-		return "", err
-	}
-	if localHex != "" {
-		parsed, err := txsdk.NewTransactionFromHex(localHex)
-		if err != nil {
-			return "", fmt.Errorf("parse local broadcast tx failed: %w", err)
-		}
-		return walletOutputLockingScriptHexFromTx(parsed, vout)
 	}
 	if rt == nil || rt.WalletChain == nil {
 		return "", fmt.Errorf("wallet chain not initialized")
 	}
 	// 设计说明：
-	// - 这里不能再直接信任 GetTxHash 返回的 scriptPubKey.hex；
-	// - WoC 对 inscription 组合脚本的详情展示可能会把前缀做规范化，导致结果和 raw tx 里的真实锁定脚本不再逐字节一致；
-	// - 一旦把这种“展示脚本”拿去参与签名，签名上下文就会错，create 成功后的 bsv21 send 会在真实广播时失败。
+	// - 这里只从链上原始交易回读锁定脚本，不再回看本地广播表；
+	// - 本地广播表属于 quote/pay 的链支付读域，BSV21 send 不能再碰它；
+	// - 若源交易还没上链，这里就直接失败，避免把“未确认本地状态”误当成可签名事实。
 	sourceTxHex, err := rt.WalletChain.GetTxHex(ctx, txid)
 	if err != nil {
 		return "", fmt.Errorf("load source tx hex failed: %w", err)
@@ -564,10 +512,6 @@ func walletOutputLockingScriptHexFromTx(tx *txsdk.Transaction, vout uint32) (str
 		return "", fmt.Errorf("source output locking script missing")
 	}
 	return hex.EncodeToString(tx.Outputs[vout].LockingScript.Bytes()), nil
-}
-
-func loadWalletLocalBroadcastHex(store *clientDB, txid string) (string, error) {
-	return dbLoadWalletLocalBroadcastHex(context.Background(), store, txid)
 }
 
 func buildBSV21TransferData(assetKey string, amountText string) ([]byte, error) {
@@ -676,7 +620,7 @@ func buildWalletTokenSendPreparedSummary(amountText string, assetSymbol string, 
 	return fmt.Sprintf("将发送 %s %s，并已生成可签名交易，预计选择 %d 个承载输出，矿工费 %d sat BSV。", amountText, firstNonEmptyString(assetSymbol, "token"), selectedCount, fee)
 }
 
-func buildWalletTokenSendPreparedLines(standard string, assetKey string, amountText string, assetSymbol string, toAddress string, selectedCount int, feeUTXOIDs []string, fee uint64, overlayFee uint64, changeText string, changeSatoshi uint64) []string {
+func buildWalletTokenSendPreparedLines(standard string, assetKey string, amountText string, assetSymbol string, toAddress string, selectedCount int, feeUTXOIDs []string, fee uint64, changeText string, changeSatoshi uint64) []string {
 	lines := []string{
 		fmt.Sprintf("Token 标准: %s", standard),
 		fmt.Sprintf("资产标识: %s", assetKey),
@@ -685,9 +629,6 @@ func buildWalletTokenSendPreparedLines(standard string, assetKey string, amountT
 		fmt.Sprintf("已选承载输出: %d 个", selectedCount),
 		fmt.Sprintf("已选链费输出: %d 个", len(feeUTXOIDs)),
 		fmt.Sprintf("矿工费: %d sat BSV", fee),
-	}
-	if overlayFee > 0 {
-		lines = append(lines, fmt.Sprintf("协议费用: %d sat BSV", overlayFee))
 	}
 	if isPositiveDecimalText(changeText) {
 		lines = append(lines, fmt.Sprintf("资产找零: %s %s", changeText, firstNonEmptyString(assetSymbol, assetKey)))

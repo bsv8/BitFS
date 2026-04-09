@@ -133,7 +133,7 @@ func seedWalletBSV21LocalCreateCandidate(t *testing.T, db *sql.DB, rt *Runtime, 
 	if err != nil {
 		t.Fatalf("p2pkh.Lock: %v", err)
 	}
-	payload, err := buildBSV21DeployMintData(symbol, amount, 0, "")
+	payload, err := buildBSV21DeployMintData(symbol, amount, 0)
 	if err != nil {
 		t.Fatalf("buildBSV21DeployMintData: %v", err)
 	}

@@ -89,8 +89,8 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 	if err != nil {
 		t.Fatalf("build wallet chain inputs failed: %v", err)
 	}
-	if len(inputs) != 2 {
-		t.Fatalf("expected 2 chain inputs, got %d", len(inputs))
+	if len(inputs) != 1 {
+		t.Fatalf("expected 1 chain input, got %d", len(inputs))
 	}
 	for i := range inputs {
 		if err := recordWalletChainAccounting(db, inputs[i]); err != nil {
@@ -124,8 +124,11 @@ func TestHandleAdminWalletConsistency_OK(t *testing.T) {
 	if body.TxID != txid {
 		t.Fatalf("unexpected txid: got=%s want=%s", body.TxID, txid)
 	}
-	if !body.Consistency.HasChainBSVCycle || !body.Consistency.HasChainTokenCycle || !body.Consistency.HasCarrierBSVFact || !body.Consistency.HasTokenQuantityFact {
+	if !body.Consistency.HasChainBSVCycle || !body.Consistency.HasCarrierBSVFact || !body.Consistency.HasTokenQuantityFact {
 		t.Fatalf("unexpected consistency: %+v", body.Consistency)
+	}
+	if body.Consistency.HasChainTokenCycle {
+		t.Fatalf("expected no separate chain_token cycle: %+v", body.Consistency)
 	}
 	if len(body.Consistency.MissingItems) != 0 {
 		t.Fatalf("expected no missing items, got %+v", body.Consistency.MissingItems)

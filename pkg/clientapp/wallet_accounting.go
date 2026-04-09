@@ -364,14 +364,25 @@ func recordWalletChainAccountingConn(db sqlConn, in walletChainAccountingInput) 
 		}
 	}
 
-	// Step 4 出项关联：按显式来源只写对应的消耗口径。
+	// Step 4 出项关联：按显式来源写资产消耗。
 	// 说明：
-	// - chain_bsv 记真实 UTXO 本币流，包括 token carrier 的 1sat UTXO
-	// - chain_token 只记 token 数量流
+	// - chain_bsv 先写真实 UTXO 本币流；
+	// - 如果同一笔交易里也能识别出 token carrier，那么 token 资产事实在这里顺着同一条主账展开；
+	// - chain_token 仍保留给少数只看 token 数量流的旧输入，但新 BSV21 主链已经不再单独产出这条输入。
 	if walletSourceType == "chain_bsv" && len(utxoFacts) > 0 {
 		if err := dbAppendBSVConsumptionsForSettlementCycle(db, settlementCycleID, utxoFacts, now); err != nil {
 			obs.Error("bitcast-client", "wallet_accounting_bsv_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
 			return fmt.Errorf("append BSV consumptions for chain payment failed: %w", err)
+		}
+		tokenFacts, err := collectTokenUTXOLinkFacts(db, in.UTXOFacts)
+		if err != nil {
+			return fmt.Errorf("collect token carrier facts failed: %w", err)
+		}
+		if len(tokenFacts) > 0 {
+			if err := dbAppendTokenConsumptionsForSettlementCycle(db, settlementCycleID, tokenFacts, now); err != nil {
+				obs.Error("bitcast-client", "wallet_accounting_token_consumption_failed", map[string]any{"error": err.Error(), "txid": txid})
+				return fmt.Errorf("append token consumptions for chain payment failed: %w", err)
+			}
 		}
 	}
 	if walletSourceType == "chain_token" && len(utxoFacts) > 0 {

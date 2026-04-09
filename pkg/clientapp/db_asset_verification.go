@@ -58,17 +58,38 @@ func enqueueUnknownUTXOToVerification(ctx context.Context, store *clientDB, wall
 		return fmt.Errorf("store is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		now := time.Now().Unix()
-		_, err := db.Exec(
-			`INSERT OR IGNORE INTO wallet_utxo_token_verification(
-				utxo_id,wallet_id,address,txid,vout,value_satoshi,status,woc_response_json,
-				last_check_at_unix,next_retry_at_unix,retry_count,error_message,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			utxoID, walletID, address, txid, vout, value, "pending", "{}",
-			0, now, 0, "", now,
-		)
-		return err
+		return enqueueUnknownUTXOToVerificationSQL(db, walletID, address, utxoID, txid, vout, value)
 	})
+}
+
+// enqueueUnknownUTXOToVerificationTx 在已有事务内入队 unknown UTXO。
+// 设计说明：
+// - 事务闭包中禁止再次走 store.Do/store.Tx，避免 actor/事务重入导致超时。
+func enqueueUnknownUTXOToVerificationTx(tx *sql.Tx, walletID string, address string, utxoID string, txid string, vout uint32, value uint64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	return enqueueUnknownUTXOToVerificationSQL(tx, walletID, address, utxoID, txid, vout, value)
+}
+
+type verificationSQLExec interface {
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+func enqueueUnknownUTXOToVerificationSQL(exec verificationSQLExec, walletID string, address string, utxoID string, txid string, vout uint32, value uint64) error {
+	if exec == nil {
+		return fmt.Errorf("verification sql exec is nil")
+	}
+	now := time.Now().Unix()
+	_, err := exec.Exec(
+		`INSERT OR IGNORE INTO wallet_utxo_token_verification(
+			utxo_id,wallet_id,address,txid,vout,value_satoshi,status,woc_response_json,
+			last_check_at_unix,next_retry_at_unix,retry_count,error_message,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		utxoID, walletID, address, txid, vout, value, "pending", "{}",
+		0, now, 0, "", now,
+	)
+	return err
 }
 
 // wocTokenEvidence WOC 返回的 token 证据
@@ -128,13 +149,22 @@ func dbUpdateUTXOAllocationClass(ctx context.Context, store *clientDB, utxoID st
 		if utxoID == "" {
 			return fmt.Errorf("utxo_id is required")
 		}
-		_, err := db.Exec(
+		var currentClass string
+		var currentReason string
+		err := db.QueryRow(`SELECT allocation_class, allocation_reason FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&currentClass, &currentReason)
+		if err != nil && err != sql.ErrNoRows {
+			return err
+		}
+		if err == nil && normalizeWalletUTXOAllocationClass(currentClass) == newClass && strings.TrimSpace(currentReason) == strings.TrimSpace(reason) {
+			return nil
+		}
+		_, execErr := db.Exec(
 			`UPDATE wallet_utxo 
 			 SET allocation_class=?, allocation_reason=?, updated_at_unix=?
 			 WHERE utxo_id=?`,
 			newClass, strings.TrimSpace(reason), time.Now().Unix(), utxoID,
 		)
-		return err
+		return execErr
 	})
 }
 

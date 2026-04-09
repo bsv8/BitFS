@@ -22,7 +22,7 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 			return map[string]utxoStateRow{}, fmt.Errorf("wallet address is empty")
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix
+		rows, err := db.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=?
 			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
@@ -33,7 +33,7 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 		out := map[string]utxoStateRow{}
 		for rows.Next() {
 			var row utxoStateRow
-			if err := rows.Scan(&row.UTXOID, &row.TxID, &row.Vout, &row.Value, &row.State, &row.AllocationClass, &row.AllocationReason, &row.CreatedTxID, &row.SpentTxID, &row.CreatedAtUnix); err != nil {
+			if err := rows.Scan(&row.UTXOID, &row.TxID, &row.Vout, &row.Value, &row.State, &row.AllocationClass, &row.AllocationReason, &row.CreatedTxID, &row.SpentTxID, &row.CreatedAtUnix, &row.SpentAtUnix); err != nil {
 				return nil, err
 			}
 			row.AllocationClass = normalizeWalletUTXOAllocationClass(row.AllocationClass)
@@ -248,25 +248,6 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 			return nil, err
 		}
 		return out, nil
-	})
-}
-
-func dbLoadWalletLocalBroadcastHex(ctx context.Context, store *clientDB, txid string) (string, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		txid = strings.ToLower(strings.TrimSpace(txid))
-		if txid == "" {
-			return "", fmt.Errorf("txid is required")
-		}
-		var payloadJSON string
-		err := db.QueryRow(`SELECT payload_json
-			FROM fact_chain_payments
-			WHERE txid=? AND payment_subtype='wallet_local_broadcast'
-			ORDER BY submitted_at_unix DESC, updated_at_unix DESC, id DESC
-			LIMIT 1`, txid).Scan(&payloadJSON)
-		if err != nil {
-			return "", err
-		}
-		return factChainPaymentPayloadTxHex(payloadJSON)
 	})
 }
 

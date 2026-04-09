@@ -146,7 +146,66 @@ func dbUpsertBSVUTXODB(db sqlConn, e bsvUTXOEntry) error {
 	}
 	spentByTxid := strings.ToLower(strings.TrimSpace(e.SpentByTxid))
 
-	_, err := db.Exec(
+	var current struct {
+		OwnerPubkeyHex string
+		Address        string
+		TxID           string
+		Vout           uint32
+		ValueSatoshi   int64
+		UTXOState      string
+		CarrierType    string
+		SpentByTxid    string
+		CreatedAtUnix  int64
+		UpdatedAtUnix  int64
+		SpentAtUnix    int64
+		Note           string
+		PayloadJSON    string
+	}
+	var payloadJSON string
+	err := db.QueryRow(
+		`SELECT owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,COALESCE(spent_by_txid,''),created_at_unix,updated_at_unix,spent_at_unix,COALESCE(note,''),COALESCE(payload_json,'')
+		 FROM fact_bsv_utxos WHERE utxo_id=?`,
+		utxoID,
+	).Scan(
+		&current.OwnerPubkeyHex,
+		&current.Address,
+		&current.TxID,
+		&current.Vout,
+		&current.ValueSatoshi,
+		&current.UTXOState,
+		&current.CarrierType,
+		&current.SpentByTxid,
+		&current.CreatedAtUnix,
+		&current.UpdatedAtUnix,
+		&current.SpentAtUnix,
+		&current.Note,
+		&payloadJSON,
+	)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil {
+		current.PayloadJSON = payloadJSON
+		expectedSpentAt := current.SpentAtUnix
+		if utxoState == "spent" && expectedSpentAt == 0 {
+			expectedSpentAt = spentAt
+		}
+		if current.OwnerPubkeyHex == ownerPubkey &&
+			current.Address == strings.TrimSpace(e.Address) &&
+			current.TxID == txid &&
+			current.Vout == e.Vout &&
+			current.ValueSatoshi == e.ValueSatoshi &&
+			current.UTXOState == utxoState &&
+			current.CarrierType == carrierType &&
+			current.SpentByTxid == spentByTxid &&
+			current.SpentAtUnix == expectedSpentAt &&
+			current.Note == strings.TrimSpace(e.Note) &&
+			current.PayloadJSON == mustJSONString(e.Payload) {
+			return nil
+		}
+	}
+
+	_, execErr := db.Exec(
 		`INSERT INTO fact_bsv_utxos(
 			utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type,
 			spent_by_txid, created_at_unix, updated_at_unix, spent_at_unix, note, payload_json
@@ -161,7 +220,17 @@ func dbUpsertBSVUTXODB(db sqlConn, e bsvUTXOEntry) error {
 			updated_at_unix=excluded.updated_at_unix,
 			spent_at_unix=CASE WHEN excluded.utxo_state='spent' AND fact_bsv_utxos.spent_at_unix=0 THEN excluded.spent_at_unix ELSE fact_bsv_utxos.spent_at_unix END,
 			note=excluded.note,
-			payload_json=excluded.payload_json`,
+			payload_json=excluded.payload_json
+		WHERE
+			fact_bsv_utxos.owner_pubkey_hex <> excluded.owner_pubkey_hex OR
+			fact_bsv_utxos.address <> excluded.address OR
+			fact_bsv_utxos.value_satoshi <> excluded.value_satoshi OR
+			fact_bsv_utxos.utxo_state <> excluded.utxo_state OR
+			fact_bsv_utxos.carrier_type <> excluded.carrier_type OR
+			COALESCE(fact_bsv_utxos.spent_by_txid,'') <> COALESCE(excluded.spent_by_txid,'') OR
+			COALESCE(fact_bsv_utxos.spent_at_unix,0) <> COALESCE(excluded.spent_at_unix,0) OR
+			COALESCE(fact_bsv_utxos.note,'') <> COALESCE(excluded.note,'') OR
+			COALESCE(fact_bsv_utxos.payload_json,'') <> COALESCE(excluded.payload_json,'')`,
 		utxoID,
 		ownerPubkey,
 		strings.TrimSpace(e.Address),
@@ -177,7 +246,7 @@ func dbUpsertBSVUTXODB(db sqlConn, e bsvUTXOEntry) error {
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
 	)
-	return err
+	return execErr
 }
 
 // dbMarkBSVUTXOSpent 标记本币UTXO为已花费。
@@ -187,11 +256,15 @@ func dbMarkBSVUTXOSpent(ctx context.Context, store *clientDB, utxoID string, spe
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		return dbMarkBSVUTXOSpentDB(db, utxoID, spentByTxid)
+		return markBSVUTXOSpentConn(db, utxoID, spentByTxid, time.Now().Unix())
 	})
 }
 
 func dbMarkBSVUTXOSpentDB(db sqlConn, utxoID string, spentByTxid string) error {
+	return markBSVUTXOSpentConn(db, utxoID, spentByTxid, time.Now().Unix())
+}
+
+func markBSVUTXOSpentConn(db sqlConn, utxoID string, spentByTxid string, updatedAt int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -200,12 +273,21 @@ func dbMarkBSVUTXOSpentDB(db sqlConn, utxoID string, spentByTxid string) error {
 		return fmt.Errorf("utxo_id is required")
 	}
 	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
-	now := time.Now().Unix()
-	_, err := db.Exec(
+	var currentState string
+	var currentSpentByTxid string
+	var currentSpentAt int64
+	err := db.QueryRow(`SELECT utxo_state, COALESCE(spent_by_txid,''), spent_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&currentState, &currentSpentByTxid, &currentSpentAt)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == nil && strings.ToLower(strings.TrimSpace(currentState)) == "spent" && currentSpentByTxid == spentByTxid && currentSpentAt > 0 {
+		return nil
+	}
+	_, execErr := db.Exec(
 		`UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=?`,
-		spentByTxid, now, now, utxoID,
+		spentByTxid, updatedAt, updatedAt, utxoID,
 	)
-	return err
+	return execErr
 }
 
 // dbGetBSVUTXO 查询单个本币UTXO
