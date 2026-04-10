@@ -11,7 +11,7 @@ import (
 // 1. open/close 不再是正式收费 business
 // 2. 正式收费主线只认 biz_download_pool_*
 // 3. 第一次成功 pay 回写 settlement，target_id = fact_pool_session_events.id
-// 4. 正式查询只从 front_order -> biz_business_triggers -> settle_business_settlements 走
+// 4. 正式查询只从 front_order -> biz_business_triggers -> settle_records 走
 
 // seedPhase2DirectTransferPoolFacts 为第二阶段测试准备 pool 事实
 // 创建完整的 fact_pool_sessions 和 fact_pool_session_events 记录
@@ -54,7 +54,7 @@ func seedPhase2DirectTransferPoolFacts(t *testing.T, db *sql.DB) (sessionID, dea
 	return sessionID, dealID
 }
 
-// TestPhase2_OpenIsProcessFact open 生成过程型 settle_businesses，不是正式收费对象
+// TestPhase2_OpenIsProcessFact open 生成过程型 settle_records，不是正式收费对象
 func TestPhase2_OpenIsProcessFact(t *testing.T) {
 	t.Parallel()
 
@@ -80,19 +80,19 @@ func TestPhase2_OpenIsProcessFact(t *testing.T) {
 		t.Fatalf("open accounting failed: %v", err)
 	}
 
-	// 验证：settle_businesses 中存在 biz_c2c_open_*，但被标记为过程型财务对象
+	// 验证：settle_records 中存在 biz_c2c_open_*，但被标记为过程型财务对象
 	var businessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&businessCount); err != nil {
-		t.Fatalf("query settle_businesses failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&businessCount); err != nil {
+		t.Fatalf("query settle_records failed: %v", err)
 	}
 	if businessCount != 1 {
-		t.Fatalf("第二阶段：open 应生成 1 条过程型 settle_businesses 记录，got %d", businessCount)
+		t.Fatalf("第二阶段：open 应生成 1 条过程型 settle_records 记录，got %d", businessCount)
 	}
 
 	// 验证：accounting_scene 标记为过程型
 	var accountingScene, accountingSubtype string
-	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_businesses WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&accountingScene, &accountingSubtype); err != nil {
-		t.Fatalf("query settle_businesses fields failed: %v", err)
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_records WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&accountingScene, &accountingSubtype); err != nil {
+		t.Fatalf("query settle_records fields failed: %v", err)
 	}
 	if accountingScene != "direct_transfer_process" {
 		t.Fatalf("第二阶段：open 的 accounting_scene 应为 direct_transfer_process，got %s", accountingScene)
@@ -110,10 +110,10 @@ func TestPhase2_OpenIsProcessFact(t *testing.T) {
 		t.Fatal("第二阶段：open 应生成 fin_process_event 过程记录")
 	}
 
-	// 验证：settle_tx_breakdown 挂的是正式 business_id，不是临时 process_id
+	// 验证：settle_records 挂的是正式 business_id，不是临时 process_id
 	var txBreakdownCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&txBreakdownCount); err != nil {
-		t.Fatalf("query settle_tx_breakdown failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "biz_c2c_open_"+sessionID).Scan(&txBreakdownCount); err != nil {
+		t.Fatalf("query settle_records failed: %v", err)
 	}
 	if txBreakdownCount == 0 {
 		t.Fatal("第二阶段：open 的 tx_breakdown 应挂正式 business_id")
@@ -121,15 +121,15 @@ func TestPhase2_OpenIsProcessFact(t *testing.T) {
 
 	// 验证：没有使用临时的 proc_c2c_open_* 作为 business_id
 	var wrongProcessIDCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=?`, "proc_c2c_open_"+sessionID).Scan(&wrongProcessIDCount); err != nil {
-		t.Fatalf("query settle_tx_breakdown with wrong id failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "proc_c2c_open_"+sessionID).Scan(&wrongProcessIDCount); err != nil {
+		t.Fatalf("query settle_records with wrong id failed: %v", err)
 	}
 	if wrongProcessIDCount != 0 {
 		t.Fatal("第二阶段：禁止用 proc_c2c_open_* 充当 business_id")
 	}
 }
 
-// TestPhase2_CloseIsProcessFact close 生成过程型 settle_businesses，不是正式收费对象
+// TestPhase2_CloseIsProcessFact close 生成过程型 settle_records，不是正式收费对象
 func TestPhase2_CloseIsProcessFact(t *testing.T) {
 	t.Parallel()
 
@@ -147,19 +147,19 @@ func TestPhase2_CloseIsProcessFact(t *testing.T) {
 		t.Fatalf("close accounting failed: %v", err)
 	}
 
-	// 验证：settle_businesses 中存在 biz_c2c_close_*，但被标记为过程型财务对象
+	// 验证：settle_records 中存在 biz_c2c_close_*，但被标记为过程型财务对象
 	var businessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&businessCount); err != nil {
-		t.Fatalf("query settle_businesses failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&businessCount); err != nil {
+		t.Fatalf("query settle_records failed: %v", err)
 	}
 	if businessCount != 1 {
-		t.Fatalf("第二阶段：close 应生成 1 条过程型 settle_businesses 记录，got %d", businessCount)
+		t.Fatalf("第二阶段：close 应生成 1 条过程型 settle_records 记录，got %d", businessCount)
 	}
 
 	// 验证：accounting_scene 标记为过程型
 	var accountingScene, accountingSubtype string
-	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_businesses WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&accountingScene, &accountingSubtype); err != nil {
-		t.Fatalf("query settle_businesses fields failed: %v", err)
+	if err := db.QueryRow(`SELECT accounting_scene, accounting_subtype FROM settle_records WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&accountingScene, &accountingSubtype); err != nil {
+		t.Fatalf("query settle_records fields failed: %v", err)
 	}
 	if accountingScene != "direct_transfer_process" {
 		t.Fatalf("第二阶段：close 的 accounting_scene 应为 direct_transfer_process，got %s", accountingScene)
@@ -177,10 +177,10 @@ func TestPhase2_CloseIsProcessFact(t *testing.T) {
 		t.Fatal("第二阶段：close 应生成 fin_process_event 过程记录")
 	}
 
-	// 验证：settle_tx_breakdown 挂的是正式 business_id，不是临时 process_id
+	// 验证：settle_records 挂的是正式 business_id，不是临时 process_id
 	var txBreakdownCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&txBreakdownCount); err != nil {
-		t.Fatalf("query settle_tx_breakdown failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "biz_c2c_close_"+sessionID).Scan(&txBreakdownCount); err != nil {
+		t.Fatalf("query settle_records failed: %v", err)
 	}
 	if txBreakdownCount == 0 {
 		t.Fatal("第二阶段：close 的 tx_breakdown 应挂正式 business_id")
@@ -188,8 +188,8 @@ func TestPhase2_CloseIsProcessFact(t *testing.T) {
 
 	// 验证：没有使用临时的 proc_c2c_close_* 作为 business_id
 	var wrongProcessIDCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=?`, "proc_c2c_close_"+sessionID).Scan(&wrongProcessIDCount); err != nil {
-		t.Fatalf("query settle_tx_breakdown with wrong id failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "proc_c2c_close_"+sessionID).Scan(&wrongProcessIDCount); err != nil {
+		t.Fatalf("query settle_records with wrong id failed: %v", err)
 	}
 	if wrongProcessIDCount != 0 {
 		t.Fatal("第二阶段：禁止用 proc_c2c_close_* 充当 business_id")
@@ -223,20 +223,11 @@ func TestPhase2_PayProcessEventUsesProcessID(t *testing.T) {
 
 	// 验证：pay 不生成 biz_c2c_pay_* 正式收费对象
 	var payBusinessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBusinessCount); err != nil {
-		t.Fatalf("query settle_businesses pay failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "biz_c2c_pay_"+sessionID+"_2").Scan(&payBusinessCount); err != nil {
+		t.Fatalf("query settle_records pay failed: %v", err)
 	}
 	if payBusinessCount != 0 {
 		t.Fatalf("pay 不应生成 biz_c2c_pay_* 正式收费对象，got %d", payBusinessCount)
-	}
-
-	// 验证：settle_tx_breakdown 存在，且 business_id 指向 download business
-	var breakdownCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, "biz_download_pool_test_"+sessionID, "pay_tx_phase2_test").Scan(&breakdownCount); err != nil {
-		t.Fatalf("query settle_tx_breakdown failed: %v", err)
-	}
-	if breakdownCount == 0 {
-		t.Fatal("第二阶段：pay 应生成 settle_tx_breakdown 记录，挂到 download business")
 	}
 }
 
@@ -326,19 +317,19 @@ func TestPhase2_NoDealIdDirectQuery(t *testing.T) {
 	sessionID, dealID := seedPhase2DirectTransferPoolFacts(t, db)
 
 	// 验证：不应存在从 deal_id 直接查 settlement 的快捷方式
-	// 正式查询必须走 front_order -> biz_business_triggers -> settle_business_settlements
+	// 正式查询必须走 front_order -> biz_business_triggers -> settle_records
 
-	// 模拟错误用法：尝试直接用 deal_id 查 settle_businesses（不应有结果）
+	// 模拟错误用法：尝试直接用 deal_id 查 settle_records（不应有结果）
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_businesses WHERE source_type='deal' AND source_id=?`, dealID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE source_type='deal' AND source_id=?`, dealID).Scan(&count); err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
 	if count != 0 {
-		t.Fatalf("第二阶段：禁止直接用 deal_id 作为 source_id 查 settle_businesses")
+		t.Fatalf("第二阶段：禁止直接用 deal_id 作为 source_id 查 settle_records")
 	}
 
-	// 模拟错误用法：尝试直接用 session_id 查 settle_business_settlements（不应有结果）
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_business_settlements WHERE target_type='session' AND target_id=?`, sessionID).Scan(&count); err != nil {
+	// 模拟错误用法：尝试直接用 session_id 查 settle_records（不应有结果）
+	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE target_type='session' AND target_id=?`, sessionID).Scan(&count); err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
 	if count != 0 {
@@ -352,7 +343,7 @@ type Phase2TestRuntime struct {
 }
 
 // TestPhase2_MainSettlementStatusReadsFromBusinessSettlements
-// 正式结算状态只从 settle_business_settlements 读取
+// 正式结算状态只从 settle_records 读取
 func TestPhase2_MainSettlementStatusReadsFromBusinessSettlements(t *testing.T) {
 	t.Parallel()
 

@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -148,7 +149,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		// 第七阶段整改：BusinessRole 由调用方显式传入，桥接器不猜业务分类
 		// 桥接器只负责落链，不负责做业务类型裁判
 		idempotencyKey := "bridge:" + in.BusinessID
-		if err := dbAppendFinBusinessTx(ctx, tx, finBusinessEntry{
+		if err := dbUpsertSettleRecordTx(ctx, tx, finBusinessEntry{
 			BusinessID:        in.BusinessID,
 			BusinessRole:      in.BusinessRole, // 调用方显式传入
 			SourceType:        in.SourceType,
@@ -191,7 +192,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		}
 
 		// 4. 创建 business_settlement(status='pending')
-		if err := dbUpsertBusinessSettlementTx(ctx, tx, businessSettlementEntry{
+		if err := dbUpsertSettleRecordSettlementTx(ctx, tx, businessSettlementEntry{
 			SettlementID:     in.SettlementID,
 			BusinessID:       in.BusinessID,
 			SettlementMethod: string(in.SettlementMethod),
@@ -265,8 +266,12 @@ func dbUpsertFrontOrderTx(ctx context.Context, tx *sql.Tx, e frontOrderEntry) er
 	return err
 }
 
-// dbAppendFinBusinessTx 事务内插入或更新业务
-func dbAppendFinBusinessTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) error {
+// dbUpsertSettleRecordTx 事务内插入或更新业务与结算主表。
+// 设计说明：
+// - 业务字段先落，结算字段后补；
+// - 同一 business_id 始终只保留一行；
+// - settlement 字段为空时只更新业务字段，不会把已经写好的结算出口抹掉。
+func dbUpsertSettleRecordTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -276,6 +281,9 @@ func dbAppendFinBusinessTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) 
 	e.BusinessID = strings.TrimSpace(e.BusinessID)
 	if e.BusinessID == "" {
 		return fmt.Errorf("business_id is required")
+	}
+	if strings.TrimSpace(e.SettlementID) == "" {
+		e.SettlementID = e.BusinessID
 	}
 	// 第七阶段：business_role 必须是正式约束，不允许空值
 	e.BusinessRole = strings.TrimSpace(e.BusinessRole)
@@ -290,9 +298,10 @@ func dbAppendFinBusinessTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) 
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := ExecContext(ctx, tx,
-		`INSERT INTO settle_businesses(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(idempotency_key) DO UPDATE SET
+		`INSERT INTO settle_records(
+			business_id,settlement_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json,settlement_method,settlement_status,target_type,target_id,error_message,settlement_payload_json,created_at_unix,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(business_id) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
@@ -301,8 +310,12 @@ func dbAppendFinBusinessTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) 
 			source_id=excluded.source_id,
 			accounting_scene=excluded.accounting_scene,
 			accounting_subtype=excluded.accounting_subtype,
-			business_role=excluded.business_role`,
+			business_role=excluded.business_role,
+			from_party_id=excluded.from_party_id,
+			to_party_id=excluded.to_party_id,
+			updated_at_unix=excluded.updated_at_unix`,
 		e.BusinessID,
+		strings.TrimSpace(e.SettlementID),
 		strings.TrimSpace(e.BusinessRole),
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
@@ -315,6 +328,14 @@ func dbAppendFinBusinessTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) 
 		e.IdempotencyKey,
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
+		"",
+		"",
+		"",
+		"",
+		"",
+		"{}",
+		e.OccurredAtUnix,
+		e.OccurredAtUnix,
 	)
 	return err
 }
@@ -359,7 +380,7 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx *sql.Tx, e businessTrigge
 
 // dbUpsertBusinessSettlementTx 事务内插入或更新业务结算出口
 // 校验：settlement_method 只允许 'pool' 或 'chain'
-func dbUpsertBusinessSettlementTx(ctx context.Context, tx *sql.Tx, e businessSettlementEntry) error {
+func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx *sql.Tx, e businessSettlementEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -380,28 +401,33 @@ func dbUpsertBusinessSettlementTx(ctx context.Context, tx *sql.Tx, e businessSet
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = e.CreatedAtUnix
 	}
-	_, err := ExecContext(ctx, tx, 
-		`INSERT INTO settle_business_settlements(
-			settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(settlement_id) DO UPDATE SET
-			settlement_method=excluded.settlement_method,
-			status=excluded.status,
-			target_type=excluded.target_type,
-			target_id=excluded.target_id,
-			error_message=excluded.error_message,
-			updated_at_unix=excluded.updated_at_unix,
-			payload_json=excluded.payload_json`,
+	var exists int
+	if err := QueryRowContext(ctx, tx, `SELECT 1 FROM settle_records WHERE business_id=?`, e.BusinessID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("business record not found for settlement_id=%s", e.SettlementID)
+		}
+		return err
+	}
+	_, err := ExecContext(ctx, tx,
+		`UPDATE settle_records SET
+			settlement_id=?,
+			settlement_method=?,
+			settlement_status=?,
+			target_type=?,
+			target_id=?,
+			error_message=?,
+			settlement_payload_json=?,
+			updated_at_unix=?
+		WHERE business_id=?`,
 		e.SettlementID,
-		e.BusinessID,
 		strings.TrimSpace(e.SettlementMethod),
 		strings.TrimSpace(e.Status),
 		strings.TrimSpace(e.TargetType),
 		strings.TrimSpace(e.TargetID),
 		strings.TrimSpace(e.ErrorMessage),
-		e.CreatedAtUnix,
-		e.UpdatedAtUnix,
 		mustJSONString(e.Payload),
+		e.UpdatedAtUnix,
+		e.BusinessID,
 	)
 	return err
 }

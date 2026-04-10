@@ -20,7 +20,7 @@ import (
 // - 本文件所有函数【仅允许协议运行层使用】，禁止在 handler/业务查询/财务查询中复用
 // - proc_direct_transfer_pools / proc_direct_deals 已降级为【协议运行态表】
 // - 这些表只保留协议运行期的上下文（deal/parties/session/seed_hash 等），用于协议流恢复/校验
-// - 业务完成状态统一以 settle_business_settlements 为准，禁止根据 proc_direct_transfer_pools.status 判断业务是否完成
+// - 业务完成状态统一以 settle_records 为准，禁止根据 proc_direct_transfer_pools.status 判断业务是否完成
 // - 如需查询业务状态，请使用 GetFrontOrderSettlementSummary
 
 // dbLoadDirectDealParties 【协议运行层专用】恢复 deal 参与方上下文
@@ -68,7 +68,7 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 // dbLoadDirectTransferPoolRow 【协议运行层专用】加载池运行时状态
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 // - 返回值中的 Status 是协议运行时状态，不代表业务结算状态
-// - 业务状态请查 settle_business_settlements
+// - 业务状态请查 settle_records
 func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
 	return clientDBValue(ctx, store, func(db *sql.DB) (directTransferPoolRow, error) {
 		return loadDirectTransferPoolRowDB(ctx, db, sessionID)

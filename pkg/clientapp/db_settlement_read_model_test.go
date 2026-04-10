@@ -575,7 +575,7 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 	}
 
 	// 关键断言：即使 proc_direct_transfer_pools.status='active'，
-	// 聚合读模型仍然根据 settle_business_settlements 判断为 settled
+	// 聚合读模型仍然根据 settle_records 判断为 settled
 	if summary.Summary.OverallStatus != "settled" {
 		t.Fatalf("expected overall_status settled (settlement should dominate), got %s", summary.Summary.OverallStatus)
 	}

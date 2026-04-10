@@ -22,8 +22,8 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		"fact_pool_session_events",
 		"fact_settlement_cycles",
 		"fact_chain_payments",
+		"settle_records",
 		"wallet_local_broadcast_txs",
-		"settle_tx_utxo_links",
 	} {
 		exists, err := hasTable(db, table)
 		if err != nil {
@@ -66,6 +66,10 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		{
 			table: "fact_settlement_cycles",
 			cols:  []string{"id", "cycle_id", "source_type", "source_id", "state", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi"},
+		},
+		{
+			table: "settle_records",
+			cols:  []string{"business_id", "settlement_id", "business_role", "source_type", "source_id", "accounting_scene", "accounting_subtype", "from_party_id", "to_party_id", "status", "occurred_at_unix", "idempotency_key", "note", "payload_json", "settlement_method", "settlement_status", "target_type", "target_id", "error_message", "settlement_payload_json", "created_at_unix", "updated_at_unix"},
 		},
 		{
 			table: "wallet_local_broadcast_txs",

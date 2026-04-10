@@ -36,15 +36,16 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
-		// 查询所有域名注册相关的 fact_chain_payments，且还没有对应 settlement 的
+		// 查询所有域名注册相关的 fact_chain_payments，且还没有对应 settle_records 的
 		rows, err := QueryContext(ctx, db, `
 			SELECT cp.id, cp.txid, cp.payment_subtype, cp.status, cp.net_amount_satoshi,
 			       cp.occurred_at_unix, cp.from_party_id, cp.to_party_id, cp.payload_json
 			FROM fact_chain_payments cp
-			LEFT JOIN settle_business_settlements bs ON bs.settlement_method='chain' 
-				AND bs.target_id = CAST(cp.id AS TEXT)
+			LEFT JOIN settle_records sr ON sr.settlement_method='chain'
+				AND sr.target_type = 'chain_payment'
+				AND sr.target_id = CAST(cp.id AS TEXT)
 			WHERE cp.payment_subtype = 'domain_register'
-				AND bs.settlement_id IS NULL
+				AND sr.settlement_id IS NULL
 			ORDER BY cp.id ASC
 		`)
 		if err != nil {
@@ -109,18 +110,24 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for chain payment %d: %v", cp.ID, err))
 				continue
 			}
+			settlementStatus := "settled"
+			if cp.Status != "confirmed" {
+				settlementStatus = "pending"
+			}
 
-			// 2. 创建 business（第七阶段整改：显式写 business_role='formal'）
+			// 2. 创建 settle_records（第七阶段整改：显式写 business_role='formal'）
 			if _, err := ExecContext(ctx, db, `
-				INSERT INTO settle_businesses(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
-					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
-				VALUES(?, 'formal', 'settlement_cycle', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?)
+				INSERT INTO settle_records(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
+					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json,
+					settlement_id, settlement_method, settlement_status, target_type, target_id, error_message, settlement_payload_json, created_at_unix, updated_at_unix)
+				VALUES(?, 'formal', 'settlement_cycle', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?, ?, 'chain', ?, 'chain_payment', ?, '', ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
 				businessID, fmt.Sprintf("%d", settlementCycleID), cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
 				"backfill:"+businessID, "历史回填：域名注册",
 				fmt.Sprintf(`{"backfill":true,"chain_payment_id":%d}`, cp.ID),
+				settlementID, settlementStatus, fmt.Sprintf("%d", cp.ID), fmt.Sprintf(`{"backfill":true,"chain_payment_id":%d}`, cp.ID), now, now,
 			); err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("insert business %s: %v", businessID, err))
+				result.Errors = append(result.Errors, fmt.Sprintf("insert settle record %s: %v", businessID, err))
 				continue
 			}
 
@@ -133,22 +140,6 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				`{"backfill":true}`,
 			); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("insert trigger %s: %v", triggerID, err))
-				continue
-			}
-
-			// 4. 创建 settlement，直接指向已有的 chain_payment
-			settlementStatus := "settled"
-			if cp.Status != "confirmed" {
-				settlementStatus = "pending"
-			}
-			if _, err := ExecContext(ctx, db, `
-				INSERT INTO settle_business_settlements(settlement_id, business_id, settlement_method, status, target_type, target_id, created_at_unix, updated_at_unix, payload_json)
-				VALUES(?, ?, 'chain', ?, 'chain_payment', ?, ?, ?, ?)
-				ON CONFLICT(settlement_id) DO NOTHING`,
-				settlementID, businessID, settlementStatus, fmt.Sprintf("%d", cp.ID), now, now,
-				fmt.Sprintf(`{"backfill":true,"chain_payment_id":%d}`, cp.ID),
-			); err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("insert settlement %s: %v", settlementID, err))
 				continue
 			}
 
@@ -381,14 +372,14 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				ps.pool_amount_satoshi
 			FROM fact_pool_session_events pa
 			JOIN fact_pool_sessions ps ON ps.pool_session_id = pa.pool_session_id
-			WHERE pa.event_kind = '` + PoolFactEventKindPoolEvent + `'
-				AND pa.allocation_kind = '` + PoolBusinessActionPayLegacy + `'
+			WHERE pa.event_kind = '`+PoolFactEventKindPoolEvent+`'
+				AND pa.allocation_kind = '`+PoolBusinessActionPayLegacy+`'
 				AND pa.id = (
 					-- 取该 session 的第一次 pay allocation
 					SELECT MIN(id) FROM fact_pool_session_events 
 					WHERE pool_session_id = pa.pool_session_id 
-					AND event_kind = '` + PoolFactEventKindPoolEvent + `'
-					AND allocation_kind = '` + PoolBusinessActionPayLegacy + `'
+					AND event_kind = '`+PoolFactEventKindPoolEvent+`'
+					AND allocation_kind = '`+PoolBusinessActionPayLegacy+`'
 				)
 			ORDER BY pa.id ASC
 		`)
@@ -425,7 +416,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 			// 1. 先查 settlement：以 settlement 存在作为主要完成标志
 			var existingSettlement string
 			err := QueryRowContext(ctx, db, `
-				SELECT settlement_id FROM settle_business_settlements 
+				SELECT settlement_id FROM settle_records 
 				WHERE settlement_method = 'pool' AND target_id = ?`,
 				fmt.Sprintf("%d", payAlloc.ID),
 			).Scan(&existingSettlement)
@@ -459,16 +450,23 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				continue
 			}
 
-			// 3. 逐对象补齐：business（第七阶段整改：显式写 business_role='formal'）
+			// 3. 逐对象补齐：直接写入单条 settle_records
+			settlementStatus := "settled"
+			settlementTargetType := "pool_allocation"
+			settlementTargetID := fmt.Sprintf("%d", payAlloc.ID)
 			if _, err := ExecContext(ctx, db, `
-				INSERT INTO settle_businesses(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
-					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json)
-				VALUES(?, 'formal', 'settlement_cycle', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?)
+				INSERT INTO settle_records(business_id, settlement_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
+					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json,
+					settlement_method, settlement_status, target_type, target_id, settlement_payload_json, created_at_unix, updated_at_unix)
+				VALUES(?, ?, 'formal', 'settlement_cycle', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?, 'pool', ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
-				businessID, fmt.Sprintf("%d", settlementCycleID), payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
+				businessID, settlementID, fmt.Sprintf("%d", settlementCycleID), payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
 				"backfill:"+businessID,
 				"历史回填：池支付",
 				fmt.Sprintf(`{"backfill":true,"pool_session_id":"%s","pay_amount":%d}`, payAlloc.PoolSessionID, payAlloc.PayeeAmountAfter),
+				settlementStatus, settlementTargetType, settlementTargetID,
+				fmt.Sprintf(`{"backfill":true,"pool_session_id":"%s","pay_allocation_id":%d}`, payAlloc.PoolSessionID, payAlloc.ID),
+				now, now,
 			); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("insert business %s: %v", businessID, err))
 				completed = false
@@ -483,18 +481,6 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				`{"backfill":true}`,
 			); err != nil {
 				result.Errors = append(result.Errors, fmt.Sprintf("insert trigger %s: %v", triggerID, err))
-				completed = false
-			}
-
-			// 5. 逐对象补齐：settlement（幂等）
-			if _, err := ExecContext(ctx, db, `
-				INSERT INTO settle_business_settlements(settlement_id, business_id, settlement_method, status, target_type, target_id, created_at_unix, updated_at_unix, payload_json)
-				VALUES(?, ?, 'pool', 'settled', 'pool_allocation', ?, ?, ?, ?)
-				ON CONFLICT(settlement_id) DO NOTHING`,
-				settlementID, businessID, fmt.Sprintf("%d", payAlloc.ID), now, now,
-				fmt.Sprintf(`{"backfill":true,"pool_allocation_id":%d,"txid":"%s"}`, payAlloc.ID, payAlloc.TxID),
-			); err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("insert settlement %s: %v", settlementID, err))
 				completed = false
 			}
 

@@ -14,17 +14,17 @@ import (
 // 职责：验证主口径与历史数据是否一致，找出漂移点
 // 原则：
 //   - 只报告，不自动修复（防止误修复）
-//   - 新模型认定 settled 时，旧表不应显示异常
+//   - 新模型认定 settled 时，事实层应能找到对应目标
 //   - 冲突时以新模型为准
 // ============================================================
 
 // ReconciliationReport 一致性校验报告
 type ReconciliationReport struct {
-	CheckedAt       time.Time                `json:"checked_at"`
-	DomainChecks    []DomainReconcileItem    `json:"domain_checks,omitempty"`
-	PoolChecks      []PoolReconcileItem      `json:"pool_checks,omitempty"`
-	Inconsistencies []InconsistencyItem      `json:"inconsistencies,omitempty"`
-	Summary         ReconciliationSummary    `json:"summary"`
+	CheckedAt       time.Time             `json:"checked_at"`
+	DomainChecks    []DomainReconcileItem `json:"domain_checks,omitempty"`
+	PoolChecks      []PoolReconcileItem   `json:"pool_checks,omitempty"`
+	Inconsistencies []InconsistencyItem   `json:"inconsistencies,omitempty"`
+	Summary         ReconciliationSummary `json:"summary"`
 }
 
 // DomainReconcileItem 域名注册对账项
@@ -72,14 +72,14 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
-		// 查询所有 domain 类型的 settlements
+		// 查询所有 domain 类型的结算事实
 		rows, err := QueryContext(ctx, db, `
-			SELECT bs.settlement_id, bs.business_id, bs.status, bs.target_id,
-			       fb.source_type, fb.source_id
-			FROM settle_business_settlements bs
-			JOIN settle_businesses fb ON fb.business_id = bs.business_id
-			WHERE fb.accounting_scene = 'domain'
-			ORDER BY bs.created_at_unix DESC
+			SELECT settlement_id, business_id, settlement_status, target_id,
+			       source_type, source_id
+			FROM settle_records
+			WHERE accounting_scene = 'domain'
+			  AND settlement_method = 'chain'
+			ORDER BY updated_at_unix DESC
 		`)
 		if err != nil {
 			return fmt.Errorf("query settlements: %w", err)
@@ -161,12 +161,12 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
-		// 查询所有 pool 类型的 settlements
+		// 查询所有 pool 类型的结算事实
 		rows, err := QueryContext(ctx, db, `
-			SELECT bs.settlement_id, bs.business_id, bs.status, bs.target_id
-			FROM settle_business_settlements bs
-			WHERE bs.settlement_method = 'pool'
-			ORDER BY bs.created_at_unix DESC
+			SELECT settlement_id, business_id, settlement_status, target_id
+			FROM settle_records
+			WHERE settlement_method = 'pool'
+			ORDER BY updated_at_unix DESC
 		`)
 		if err != nil {
 			return fmt.Errorf("query pool settlements: %w", err)
@@ -201,7 +201,7 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 				}
 			}
 
-			// 检查旧 proc_direct_transfer_pools 状态
+			// 仍可反查池运行态，便于发现偏移，但不作为主判断
 			var oldPoolStatus string
 			if poolSessionID != "" {
 				_ = QueryRowContext(ctx, db, `SELECT status FROM proc_direct_transfer_pools WHERE session_id=?`, poolSessionID).Scan(&oldPoolStatus)
@@ -221,14 +221,14 @@ func RunPoolReconciliation(ctx context.Context, store *clientDB) (*Reconciliatio
 
 			// 如果新模型认定 settled，但旧模型显示异常，报告但不阻断
 			if item.Status == "settled" && oldPoolStatus != "" && oldPoolStatus != "active" && oldPoolStatus != "closing" && oldPoolStatus != "closed" {
-				// 旧状态异常，但新模型已 settled，这是允许的（旧表只是过程态）
+				// 旧状态异常，但新模型已 settled，这是允许的（运行态只是过程态）
 				// 记录但不标记为不一致
 				obs.Info("bitcast-client", "reconcile_pool_old_status_drift", map[string]any{
-					"settlement_id":    item.SettlementID,
-					"pool_session_id":  poolSessionID,
-					"new_status":       "settled",
-					"old_pool_status":  oldPoolStatus,
-					"note":             "new model settled, old pool has different status (expected)",
+					"settlement_id":   item.SettlementID,
+					"pool_session_id": poolSessionID,
+					"new_status":      "settled",
+					"old_pool_status": oldPoolStatus,
+					"note":            "new model settled, old pool has different status (expected)",
 				})
 			}
 
@@ -298,7 +298,7 @@ func CheckNewModelDominance(ctx context.Context, store *clientDB) (*DominanceChe
 			WHERE p.status = 'done'
 				AND NOT EXISTS (
 					SELECT 1 FROM biz_business_triggers bt
-					JOIN settle_businesses fb ON fb.business_id = bt.business_id
+					JOIN settle_records fb ON fb.business_id = bt.business_id
 					WHERE bt.trigger_type = 'purchase' 
 					AND bt.trigger_id_value = CAST(p.id AS TEXT)
 				)
@@ -330,8 +330,8 @@ func CheckNewModelDominance(ctx context.Context, store *clientDB) (*DominanceChe
 
 // DominanceCheckResult 新模型主导性检查结果
 type DominanceCheckResult struct {
-	CheckedAt          time.Time       `json:"checked_at"`
-	NewModelDominant   bool            `json:"new_model_dominant"`
+	CheckedAt          time.Time        `json:"checked_at"`
+	NewModelDominant   bool             `json:"new_model_dominant"`
 	OrphanedOldRecords []OrphanedRecord `json:"orphaned_old_records,omitempty"`
 }
 

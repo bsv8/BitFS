@@ -12,8 +12,8 @@ import (
 // ============================================================
 // 业务结算聚合读模型（第四步主线）
 // 设计原则：
-//   - 业务状态优先看 settle_business_settlements，不看旧过程表
-//   - 汇总状态只根据 settle_business_settlements 计算，不参考 proc_direct_transfer_pools/txid/旧表
+//   - 业务状态优先看 settle_records，不看旧过程表
+//   - 汇总状态只根据 settle_records 计算，不参考 proc_direct_transfer_pools/txid/旧表
 //   - 混合状态统一归 partial_settled
 //   - 本文件只做读取，不做写入
 // ============================================================
@@ -34,7 +34,7 @@ type BusinessSettlementView struct {
 	PoolAllocation *PoolAllocationItem    `json:"pool_allocation,omitempty"`
 }
 
-// SettlementSummary 汇总状态（只根据 settle_business_settlements 计算）
+// SettlementSummary 汇总状态（只根据 settle_records 计算）
 type SettlementSummary struct {
 	TotalBusinessCount int    `json:"total_business_count"`
 	SettledCount       int    `json:"settled_count"`
@@ -70,7 +70,7 @@ func GetFrontOrderSettlementSummary(ctx context.Context, store *clientDB, frontO
 	}
 	out.Businesses = bizViews
 
-	// 3. 计算汇总状态（只看 settle_business_settlements）
+	// 3. 计算汇总状态（只看 settle_records）
 	out.Summary = computeSettlementSummary(bizViews)
 
 	return out, nil
@@ -125,7 +125,7 @@ func ListBusinessesWithSettlementsByFrontOrderID(ctx context.Context, store *cli
 	return out, nil
 }
 
-// computeSettlementSummary 只根据 settle_business_settlements 计算汇总状态
+// computeSettlementSummary 只根据 settle_records 计算汇总状态
 // 规则：
 //   - 全部 settled → settled
 //   - 全部 failed → failed
@@ -228,9 +228,9 @@ func GetSettlementByChainPaymentID(ctx context.Context, store *clientDB, chainPa
 	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
-			 FROM settle_business_settlements WHERE settlement_method='chain' AND target_id=?`,
+			 FROM settle_records WHERE settlement_method='chain' AND target_id=?`,
 			fmt.Sprintf("%d", chainPaymentID),
 		).Scan(
 			&item.SettlementID, &item.BusinessID, &item.SettlementMethod, &item.Status,

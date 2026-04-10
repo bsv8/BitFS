@@ -39,17 +39,17 @@ type chainPaymentEntry struct {
 }
 
 // chainPaymentUTXOLinkEntry 统一结算链路的 UTXO 明细条目。
-// B组改造：增加 AssetKind/TokenID/TokenStandard 用于资产分流写入
+// 设计说明：这里是 chain_payment 事实的内部明细，不再依赖已下线的 settle tx 拆分表。
 type chainPaymentUTXOLinkEntry struct {
 	ChainPaymentID int64
 	UTXOID         string
 	IOSide         string
 	UTXORole       string
-	AssetKind      string // BSV/BSV20/BSV21，B组新增
-	TokenID        string // Token ID，当 AssetKind 不是 BSV 时使用，B组新增
-	TokenStandard  string // BSV20/BSV21，B组新增
+	AssetKind      string
+	TokenID        string
+	TokenStandard  string
 	AmountSatoshi  int64
-	QuantityText   string // Token 数量（十进制字符串），B组新增
+	QuantityText   string
 	CreatedAtUnix  int64
 	Note           string
 	Payload        any
@@ -344,7 +344,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 	}
 	now := time.Now().Unix()
 	return store.Tx(ctx, func(tx *sql.Tx) error {
-		inputFacts, grossInput, err := collectWalletInputTxLinkFactsTx(ctx, tx, parsed, "biz_chain_payment_"+txID, txID, "chain_payment input")
+		inputFacts, grossInput, err := collectWalletInputFactsTx(ctx, tx, parsed, txID, "chain_payment input")
 		if err != nil {
 			return err
 		}
@@ -353,8 +353,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 		}
 		changeBack := int64(0)
 		counterpartyOut := int64(0)
-		outputFacts := make([]finTxUTXOLinkEntry, 0, len(parsed.Outputs))
-		for idx, out := range parsed.Outputs {
+		for _, out := range parsed.Outputs {
 			if out == nil {
 				continue
 			}
@@ -362,33 +361,12 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 			if amount <= 0 {
 				continue
 			}
-			utxoID := txID + ":" + fmt.Sprint(idx)
 			outScriptHex := strings.ToLower(strings.TrimSpace(hex.EncodeToString(out.LockingScript.Bytes())))
 			if outScriptHex != "" && walletScriptHexMatchesAddressControl(outScriptHex, walletScriptHex) {
 				changeBack += amount
-				outputFacts = append(outputFacts, finTxUTXOLinkEntry{
-					BusinessID:    "biz_chain_payment_" + txID,
-					TxID:          txID,
-					UTXOID:        utxoID,
-					IOSide:        "output",
-					UTXORole:      "wallet_change",
-					AmountSatoshi: amount,
-					CreatedAtUnix: now,
-					Note:          "chain payment change output",
-				})
 				continue
 			}
 			counterpartyOut += amount
-			outputFacts = append(outputFacts, finTxUTXOLinkEntry{
-				BusinessID:    "biz_chain_payment_" + txID,
-				TxID:          txID,
-				UTXOID:        utxoID,
-				IOSide:        "output",
-				UTXORole:      "counterparty_out",
-				AmountSatoshi: amount,
-				CreatedAtUnix: now,
-				Note:          "chain payment external output",
-			})
 		}
 		minerFee := grossInput - changeBack - counterpartyOut
 		if minerFee < 0 {
@@ -437,38 +415,9 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 				"process_subtype": processSubType,
 			},
 		}); err != nil {
-			return fmt.Errorf("append settle_businesses failed: %w", err)
+			return fmt.Errorf("append settle record failed: %w", err)
 		}
-		if err := dbAppendFinTxBreakdownIfAbsent(tx, finTxBreakdownEntry{
-			BusinessID:         businessID,
-			TxID:               txID,
-			TxRole:             strings.TrimSpace(processSubType),
-			GrossInputSatoshi:  grossInput,
-			ChangeBackSatoshi:  changeBack,
-			ExternalInSatoshi:  0,
-			CounterpartyOutSat: counterpartyOut,
-			MinerFeeSatoshi:    minerFee,
-			NetOutSatoshi:      counterpartyOut + minerFee,
-			NetInSatoshi:       0,
-			CreatedAtUnix:      now,
-			Note:               "chain payment tx breakdown",
-			Payload: map[string]any{
-				"txid":            txID,
-				"payment_subtype": paymentSubType,
-			},
-		}); err != nil {
-			return fmt.Errorf("append settle_tx_breakdown failed: %w", err)
-		}
-		for _, fact := range inputFacts {
-			if err := dbAppendFinTxUTXOLinkIfAbsent(tx, fact); err != nil {
-				return fmt.Errorf("append input utxo link failed: %w", err)
-			}
-		}
-		for _, fact := range outputFacts {
-			if err := dbAppendFinTxUTXOLinkIfAbsent(tx, fact); err != nil {
-				return fmt.Errorf("append output utxo link failed: %w", err)
-			}
-		}
+		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 settle_records、chain_payment 和流程事件。
 		if err := dbAppendSettlementCycleFinProcessEvent(tx, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_chain_payment_" + txID,
 			AccountingScene:   "peer_call",
@@ -490,16 +439,15 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 	})
 }
 
-func collectWalletInputTxLinkFactsTx(ctx context.Context, db sqlConn, tx *txsdk.Transaction, businessID string, txID string, note string) ([]finTxUTXOLinkEntry, int64, error) {
+func collectWalletInputFactsTx(ctx context.Context, db sqlConn, tx *txsdk.Transaction, txID string, note string) ([]string, int64, error) {
 	if db == nil {
 		return nil, 0, fmt.Errorf("db is nil")
 	}
 	if tx == nil {
 		return nil, 0, fmt.Errorf("tx is nil")
 	}
-	out := make([]finTxUTXOLinkEntry, 0, len(tx.Inputs))
+	out := make([]string, 0, len(tx.Inputs))
 	var gross int64
-	now := time.Now().Unix()
 	for _, inp := range tx.Inputs {
 		if inp == nil || inp.SourceTXID == nil {
 			continue
@@ -513,16 +461,7 @@ func collectWalletInputTxLinkFactsTx(ctx context.Context, db sqlConn, tx *txsdk.
 			return nil, 0, fmt.Errorf("wallet input value missing for %s", utxoID)
 		}
 		gross += value
-		out = append(out, finTxUTXOLinkEntry{
-			BusinessID:    businessID,
-			TxID:          txID,
-			UTXOID:        utxoID,
-			IOSide:        "input",
-			UTXORole:      "wallet_input",
-			AmountSatoshi: value,
-			CreatedAtUnix: now,
-			Note:          note,
-		})
+		out = append(out, utxoID)
 	}
 	return out, gross, nil
 }

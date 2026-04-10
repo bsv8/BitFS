@@ -362,10 +362,6 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events", s.withAuth(s.handleAdminFinanceProcessEvents))
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events/detail", s.withAuth(s.handleAdminFinanceProcessEventDetail))
-		mux.HandleFunc(prefix+"/v1/admin/finance/breakdowns", s.withAuth(s.handleAdminFinanceBreakdowns))
-		mux.HandleFunc(prefix+"/v1/admin/finance/breakdowns/detail", s.withAuth(s.handleAdminFinanceBreakdownDetail))
-		mux.HandleFunc(prefix+"/v1/admin/finance/utxo-links", s.withAuth(s.handleAdminFinanceUTXOLinks))
-		mux.HandleFunc(prefix+"/v1/admin/finance/utxo-links/detail", s.withAuth(s.handleAdminFinanceUTXOLinkDetail))
 		mux.HandleFunc(prefix+"/v1/admin/config", s.withAuth(s.handleAdminConfig))
 		mux.HandleFunc(prefix+"/v1/admin/config/schema", s.withAuth(s.handleAdminConfigSchema))
 	}
@@ -751,7 +747,7 @@ func loadSchedulerTaskSnapshot(ctx context.Context, db *sql.DB, taskName string)
 	}
 	var out schedulerTaskSnapshot
 	var inFlightInt int
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT task_name,status,last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight
 		 FROM proc_scheduler_tasks WHERE task_name=?`,
 		taskName,
@@ -2183,141 +2179,6 @@ func (s *httpAPIServer) handleAdminFinanceProcessEventDetail(w http.ResponseWrit
 			if err == nil && state != "confirmed" {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
 				return
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
-func (s *httpAPIServer) handleAdminFinanceBreakdowns(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
-	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	page, err := dbListFinanceBreakdowns(r.Context(), httpStore(s), financeBreakdownFilter{
-		Limit:      limit,
-		Offset:     offset,
-		BusinessID: businessID,
-		TxID:       txid,
-		Query:      q,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
-}
-
-func (s *httpAPIServer) handleAdminFinanceBreakdownDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
-		return
-	}
-	it, err := dbGetFinanceBreakdown(r.Context(), httpStore(s), int64(id))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if !financeDetailAllowsAllStates(r) {
-		biz, err := dbGetFinanceBusiness(r.Context(), httpStore(s), it.BusinessID)
-		if err == nil && biz.SourceType == "settlement_cycle" {
-			cycleID, err := strconv.ParseInt(strings.TrimSpace(biz.SourceID), 10, 64)
-			if err == nil && cycleID > 0 {
-				state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
-				if err == nil && state != "confirmed" {
-					writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
-					return
-				}
-			}
-		}
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
-func (s *httpAPIServer) handleAdminFinanceUTXOLinks(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
-	txid := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("txid")))
-	utxoID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("utxo_id")))
-	txRole := strings.TrimSpace(r.URL.Query().Get("tx_role"))
-	ioSide := strings.TrimSpace(r.URL.Query().Get("io_side"))
-	utxoRole := strings.TrimSpace(r.URL.Query().Get("utxo_role"))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-
-	page, err := dbListFinanceUTXOLinks(r.Context(), httpStore(s), financeUTXOLinkFilter{
-		Limit:      limit,
-		Offset:     offset,
-		BusinessID: businessID,
-		TxID:       txid,
-		UTXOID:     utxoID,
-		TxRole:     txRole,
-		IOSide:     ioSide,
-		UTXORole:   utxoRole,
-		Query:      q,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
-}
-
-func (s *httpAPIServer) handleAdminFinanceUTXOLinkDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
-		return
-	}
-	it, err := dbGetFinanceUTXOLink(r.Context(), httpStore(s), int64(id))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if !financeDetailAllowsAllStates(r) {
-		biz, err := dbGetFinanceBusiness(r.Context(), httpStore(s), it.BusinessID)
-		if err == nil && biz.SourceType == "settlement_cycle" {
-			cycleID, err := strconv.ParseInt(strings.TrimSpace(biz.SourceID), 10, 64)
-			if err == nil && cycleID > 0 {
-				state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
-				if err == nil && state != "confirmed" {
-					writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
-					return
-				}
 			}
 		}
 	}

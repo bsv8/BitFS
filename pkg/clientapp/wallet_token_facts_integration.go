@@ -313,7 +313,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 				"token_lot_count": len(lots),
 			},
 		}); err != nil {
-			return fmt.Errorf("append settle_businesses failed: %w", err)
+			return fmt.Errorf("append settle record failed: %w", err)
 		}
 
 		for _, lot := range lots {
@@ -371,30 +371,16 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		if len(bsvFacts) == 0 {
 			return fmt.Errorf("no wallet input facts found for txid %s", txID)
 		}
-		businessID := walletBSV21SendBusinessID(txID)
 		var grossInputSat int64
-		inputLinks := make([]finTxUTXOLinkEntry, 0, len(bsvFacts))
 		for _, fact := range bsvFacts {
 			grossInputSat += fact.AmountSatoshi
-			inputLinks = append(inputLinks, finTxUTXOLinkEntry{
-				BusinessID:    businessID,
-				TxID:          txID,
-				UTXOID:        fact.UTXOID,
-				IOSide:        fact.IOSide,
-				UTXORole:      fact.UTXORole,
-				AmountSatoshi: fact.AmountSatoshi,
-				CreatedAtUnix: now,
-				Note:          fact.Note,
-				Payload:       fact.Payload,
-			})
 			if err := dbMarkBSVUTXOSpentDB(ctx, dbtx, fact.UTXOID, txID); err != nil {
 				return fmt.Errorf("mark bsv utxo spent for token send failed: %w", err)
 			}
 		}
 		changeBackSat := int64(0)
 		counterpartyOutSat := int64(0)
-		outputLinks := make([]finTxUTXOLinkEntry, 0, len(parsed.Outputs))
-		for idx, out := range parsed.Outputs {
+		for _, out := range parsed.Outputs {
 			if out == nil || out.LockingScript == nil {
 				continue
 			}
@@ -403,19 +389,8 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 				continue
 			}
 			scriptHex := hex.EncodeToString(out.LockingScript.Bytes())
-			utxoID := txID + ":" + fmt.Sprint(idx)
 			if walletScriptHexMatchesAddressControl(scriptHex, walletScriptHex) {
 				changeBackSat += amount
-				outputLinks = append(outputLinks, finTxUTXOLinkEntry{
-					BusinessID:    businessID,
-					TxID:          txID,
-					UTXOID:        utxoID,
-					IOSide:        "output",
-					UTXORole:      "wallet_change",
-					AmountSatoshi: amount,
-					CreatedAtUnix: now,
-					Note:          "bsv21 token send change output",
-				})
 				continue
 			}
 			payload, ok := decodeWalletTokenTransferPayload(out.LockingScript)
@@ -423,52 +398,12 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 				continue
 			}
 			counterpartyOutSat += amount
-			outputLinks = append(outputLinks, finTxUTXOLinkEntry{
-				BusinessID:    businessID,
-				TxID:          txID,
-				UTXOID:        utxoID,
-				IOSide:        "output",
-				UTXORole:      "counterparty_out",
-				AmountSatoshi: amount,
-				CreatedAtUnix: now,
-				Note:          "bsv21 token send carrier output",
-			})
 		}
 		minerFeeSat := grossInputSat - changeBackSat - counterpartyOutSat
 		if minerFeeSat < 0 {
 			minerFeeSat = 0
 		}
-		if err := dbAppendFinTxBreakdownIfAbsent(dbtx, finTxBreakdownEntry{
-			BusinessID:         businessID,
-			TxID:               txID,
-			TxRole:             "bsv21_send",
-			GrossInputSatoshi:  grossInputSat,
-			ChangeBackSatoshi:  changeBackSat,
-			ExternalInSatoshi:  0,
-			CounterpartyOutSat: counterpartyOutSat,
-			MinerFeeSatoshi:    minerFeeSat,
-			NetOutSatoshi:      counterpartyOutSat + minerFeeSat,
-			NetInSatoshi:       0,
-			CreatedAtUnix:      now,
-			Note:               "bsv21 token send accounting",
-			Payload: map[string]any{
-				"txid":            txID,
-				"token_lot_count": len(lots),
-				"token_send_text": consumedText,
-			},
-		}); err != nil {
-			return fmt.Errorf("append settle_tx_breakdown failed: %w", err)
-		}
-		for _, fact := range inputLinks {
-			if err := dbAppendFinTxUTXOLinkIfAbsent(dbtx, fact); err != nil {
-				return fmt.Errorf("append input utxo link failed: %w", err)
-			}
-		}
-		for _, fact := range outputLinks {
-			if err := dbAppendFinTxUTXOLinkIfAbsent(dbtx, fact); err != nil {
-				return fmt.Errorf("append output utxo link failed: %w", err)
-			}
-		}
+		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 token 事实和流程事件。
 		if err := dbAppendSettlementCycleFinProcessEvent(dbtx, settlementCycleID, finProcessEventEntry{
 			ProcessID:         "proc_wallet_bsv21_send_" + txID,
 			AccountingScene:   "wallet_transfer",

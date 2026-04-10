@@ -34,7 +34,7 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 
 	wantCols := []string{"source_type", "source_id", "accounting_scene", "accounting_subtype"}
-	for _, table := range []string{"settle_businesses", "settle_process_events"} {
+	for _, table := range []string{"settle_records", "settle_process_events"} {
 		cols, err := tableColumns(db, table)
 		if err != nil {
 			t.Fatalf("inspect %s columns failed: %v", table, err)
@@ -67,23 +67,23 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 
 	// 第六次迭代：只测试主口径字段
-	if _, err := db.Exec(`INSERT INTO settle_businesses(
-		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_fresh_1", "settlement_cycle", "1", "c2c_transfer", "open", "client:self", "pool:peer", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
+	if _, err := db.Exec(`INSERT INTO settle_records(
+		settlement_id,business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_fresh_1", "biz_fresh_1", "settlement_cycle", "1", "c2c_transfer", "open", "client:self", "pool:peer", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
 	); err != nil {
-		t.Fatalf("insert fresh settle_businesses failed: %v", err)
+		t.Fatalf("insert fresh settle_records failed: %v", err)
 	}
 
 	var sourceType, sourceID, accountingScene, accountingSubtype string
 	if err := db.QueryRow(
-		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM settle_businesses WHERE business_id=?`,
+		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM settle_records WHERE business_id=?`,
 		"biz_fresh_1",
 	).Scan(&sourceType, &sourceID, &accountingScene, &accountingSubtype); err != nil {
-		t.Fatalf("query fresh settle_businesses failed: %v", err)
+		t.Fatalf("query fresh settle_records failed: %v", err)
 	}
 	if sourceType != "settlement_cycle" || sourceID != "1" || accountingScene != "c2c_transfer" || accountingSubtype != "open" {
-		t.Fatalf("unexpected fresh settle_businesses values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
+		t.Fatalf("unexpected fresh settle_records values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
 	}
 }
 
@@ -97,9 +97,9 @@ func TestInitIndexDB_CreatesFinanceReadIndexes(t *testing.T) {
 
 	// 第六次迭代：只检查主口径索引
 	wantIndexes := map[string][]string{
-		"settle_businesses": {
-			"idx_settle_businesses_source",
-			"idx_settle_businesses_accounting",
+		"settle_records": {
+			"idx_settle_records_source",
+			"idx_settle_records_accounting",
 		},
 		"settle_process_events": {
 			"idx_settle_process_events_source",
@@ -217,7 +217,7 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 
 	var businessSourceType, businessSourceID string
 	if err := db.QueryRow(
-		`SELECT source_type,source_id FROM settle_businesses WHERE business_id=?`,
+		`SELECT source_type,source_id FROM settle_records WHERE business_id=?`,
 		"biz_settlement_guard_1",
 	).Scan(&businessSourceType, &businessSourceID); err != nil {
 		t.Fatalf("query settlement cycle business failed: %v", err)

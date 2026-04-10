@@ -64,10 +64,9 @@ func TestBusinessBridge_ValidationFailure_NoWrite(t *testing.T) {
 	t.Logf("✓ 参数校验失败测试通过：校验失败时未写入任何数据")
 }
 
-// TestBusinessBridge_TransactionRollback_MidTxFailure 真正的事务中途失败回滚测试
-// 设计意图：前三步成功后，第四步 business_settlement 写入失败，整体回滚
-// 实现：先完整创建第一条记录，然后第二次尝试复用 business_id 但使用新的 settlement_id，触发 settlement 层约束失败
-func TestBusinessBridge_TransactionRollback_MidTxFailure(t *testing.T) {
+// TestBusinessBridge_TransactionIdempotentUpdate 重复写入时保持单主表记录
+// 设计意图：同一 business_id 再次落链时，主表应更新而不是裂成两份
+func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -123,8 +122,7 @@ func TestBusinessBridge_TransactionRollback_MidTxFailure(t *testing.T) {
 	}
 
 	// 步骤2：第二次尝试，复用 business_id，但新的 front_order、trigger 和 settlement_id
-	// 关键：trigger 的组合 (business_id, trigger_type, trigger_id_value, trigger_role) 必须与第一次不同
-	// 这样 trigger 可以插入，然后 settlement 会因为 business_id 唯一约束而失败
+	// 这个模型下 business 行和 settlement 行都会按 business_id 收口更新，不再制造重复主行
 	secondInput := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:     "fo_second_attempt", // 新的 front_order
 		FrontType:        "domain",
@@ -154,10 +152,10 @@ func TestBusinessBridge_TransactionRollback_MidTxFailure(t *testing.T) {
 		SettlementTargetID:   "tx_second",
 	}
 
-	// 第二次调用应该失败（在 settlement 写入阶段触发 business_id 唯一约束）
+	// 第二次调用应该成功，并把同一 business 收口到新 settlement_id
 	err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, secondInput)
-	if err == nil {
-		t.Fatal("expected transaction failure due to business_id unique constraint on settlement, got nil")
+	if err != nil {
+		t.Fatalf("expected idempotent update, got error: %v", err)
 	}
 
 	// 步骤3：验证旧数据仍然存在
@@ -165,37 +163,26 @@ func TestBusinessBridge_TransactionRollback_MidTxFailure(t *testing.T) {
 	if oldFO.FrontOrderID == "" {
 		t.Fatal("old front_order should still exist")
 	}
-	oldSettlement, _ := dbGetBusinessSettlement(ctx, store, "set_first")
-	if oldSettlement.SettlementID == "" {
-		t.Fatal("old settlement should still exist")
-	}
-
-	// 步骤4：验证新尝试的数据没有残留（事务已回滚）
-
-	// 4.1 验证新的 front_order 没有残留
-	newFO, _ := dbGetFrontOrder(ctx, store, "fo_second_attempt")
-	if newFO.FrontOrderID != "" {
-		t.Fatal("new front_order should not exist after rollback")
-	}
-
-	// 4.2 验证新的 settlement 没有残留
 	newSettlement, _ := dbGetBusinessSettlement(ctx, store, "set_second")
-	if newSettlement.SettlementID != "" {
-		t.Fatal("new settlement should not exist after rollback")
+	if newSettlement.SettlementID == "" {
+		t.Fatal("new settlement should replace old settlement_id")
+	}
+	if newSettlement.BusinessID != "biz_shared" {
+		t.Fatalf("expected business_id biz_shared, got %s", newSettlement.BusinessID)
+	}
+	byBusiness, err := dbListBusinessSettlements(ctx, store, businessSettlementFilter{BusinessID: "biz_shared"})
+	if err != nil {
+		t.Fatalf("list business settlements failed: %v", err)
+	}
+	if byBusiness.Total != 1 {
+		t.Fatalf("expected 1 settlement row for biz_shared, got %d", byBusiness.Total)
 	}
 
-	// 4.3 验证新的 trigger 没有残留
-	// 查找 trg_second 应该不存在
-	triggerPage, _ := dbListBusinessTriggers(ctx, store, businessTriggerFilter{TriggerID: "trg_second"})
-	if triggerPage.Total != 0 {
-		t.Fatalf("expected 0 trigger for trg_second after rollback, got %d", triggerPage.Total)
-	}
-
-	// 4.4 验证旧的 trigger 仍然存在
+	// 4.3 验证旧的 trigger 仍然存在
 	oldTriggerPage, _ := dbListBusinessTriggers(ctx, store, businessTriggerFilter{TriggerID: "trg_first"})
 	if oldTriggerPage.Total != 1 {
 		t.Fatalf("expected 1 trigger for trg_first, got %d", oldTriggerPage.Total)
 	}
 
-	t.Logf("✓ 事务中途失败回滚测试通过：第一次成功，第二次前三步成功后第四步失败导致整体回滚，新数据无残留、旧数据仍在")
+	t.Logf("✓ 重复写入测试通过：同一 business_id 重新落链后仍只保留一条主记录")
 }

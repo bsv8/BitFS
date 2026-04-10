@@ -10,12 +10,11 @@ import (
 	"strings"
 )
 
-// settle_businesses 语义说明（第七次迭代收口）：
-// - 一条 settle_businesses = 一条独立收费事实
+// settle_records 语义说明（一次性收口）：
+// - 一条 settle_records 同时承载业务事实和结算出口
 // - 失败重试不新建 business，只更新原记录
 // - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
-// - 本阶段表名保持 settle_businesses，逻辑上已收口为 businesses
-// - 默认一条 settle_businesses 对应一条主 business_settlement
+// - 业务/结算查询都从 settle_records 出发，不再分表
 
 // financeBusinessFilter 业务查询过滤条件
 // 设计说明：
@@ -128,54 +127,6 @@ type financeProcessEventItem struct {
 	IdempotencyKey string          `json:"idempotency_key"`
 	Note           string          `json:"note"`
 	Payload        json.RawMessage `json:"payload"`
-}
-
-type financeBreakdownFilter struct {
-	Limit      int
-	Offset     int
-	BusinessID string
-	TxID       string
-	Query      string
-
-	// 结算状态过滤：默认只看 confirmed；all 表示不过滤
-	SettlementState string
-}
-
-type financeBreakdownPage struct {
-	Total int
-	Items []financeBreakdownItem
-}
-
-type financeBreakdownItem struct {
-	ID                 int64           `json:"id"`
-	BusinessID         string          `json:"business_id"`
-	TxID               string          `json:"txid"`
-	TxRole             string          `json:"tx_role"`
-	GrossInputSatoshi  int64           `json:"gross_input_satoshi"`
-	ChangeBackSatoshi  int64           `json:"change_back_satoshi"`
-	ExternalInSatoshi  int64           `json:"external_in_satoshi"`
-	CounterpartyOutSat int64           `json:"counterparty_out_satoshi"`
-	MinerFeeSatoshi    int64           `json:"miner_fee_satoshi"`
-	NetOutSatoshi      int64           `json:"net_out_satoshi"`
-	NetInSatoshi       int64           `json:"net_in_satoshi"`
-	CreatedAtUnix      int64           `json:"created_at_unix"`
-	Note               string          `json:"note"`
-	Payload            json.RawMessage `json:"payload"`
-}
-
-type financeUTXOLinkFilter struct {
-	Limit      int
-	Offset     int
-	BusinessID string
-	TxID       string
-	UTXOID     string
-	TxRole     string
-	IOSide     string
-	UTXORole   string
-	Query      string
-
-	// 结算状态过滤：默认只看 confirmed；all 表示不过滤
-	SettlementState string
 }
 
 type settlementCycleSourceResolution struct {
@@ -335,25 +286,6 @@ func dbGetSettlementCycleStateByIDDB(ctx context.Context, db *sql.DB, id int64) 
 	return strings.TrimSpace(state), nil
 }
 
-type financeUTXOLinkPage struct {
-	Total int
-	Items []financeUTXOLinkItem
-}
-
-type financeUTXOLinkItem struct {
-	ID            int64           `json:"id"`
-	BusinessID    string          `json:"business_id"`
-	TxID          string          `json:"txid"`
-	UTXOID        string          `json:"utxo_id"`
-	TxRole        string          `json:"tx_role"`
-	IOSide        string          `json:"io_side"`
-	UTXORole      string          `json:"utxo_role"`
-	AmountSatoshi int64           `json:"amount_satoshi"`
-	CreatedAtUnix int64           `json:"created_at_unix"`
-	Note          string          `json:"note"`
-	Payload       json.RawMessage `json:"payload"`
-}
-
 func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusinessFilter) (financeBusinessPage, error) {
 	if store == nil {
 		return financeBusinessPage{}, fmt.Errorf("client db is nil")
@@ -429,7 +361,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		var out financeBusinessPage
 		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
-			   FROM settle_businesses sb
+			   FROM settle_records sb
 			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			  WHERE 1=1`+where,
 			args...).Scan(&out.Total); err != nil {
@@ -437,7 +369,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		}
 		rows, err := QueryContext(ctx, db,
 			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
-			 FROM settle_businesses sb
+			 FROM settle_records sb
 			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			 WHERE 1=1`+where+` ORDER BY sb.occurred_at_unix DESC,sb.business_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -473,7 +405,7 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		var payload string
 		err := QueryRowContext(ctx, db,
 			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
-			 FROM settle_businesses sb
+			 FROM settle_records sb
 			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			 WHERE sb.business_id=?`,
 			businessID,
@@ -710,211 +642,5 @@ func dbListFinanceProcessEventsByTxID(ctx context.Context, store *clientDB, txid
 		SourceType:      "settlement_cycle",
 		SourceID:        fmt.Sprintf("%d", settlementCycleID),
 		SettlementState: "confirmed",
-	})
-}
-
-func dbListFinanceBreakdowns(ctx context.Context, store *clientDB, f financeBreakdownFilter) (financeBreakdownPage, error) {
-	if store == nil {
-		return financeBreakdownPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeBreakdownPage, error) {
-		where := ""
-		args := make([]any, 0, 12)
-		settlementState, err := normalizeSettlementStateFilter(f.SettlementState)
-		if err != nil {
-			return financeBreakdownPage{}, err
-		}
-		if f.BusinessID != "" {
-			where += " AND b.business_id=?"
-			args = append(args, f.BusinessID)
-		}
-		if f.TxID != "" {
-			where += " AND b.txid=?"
-			args = append(args, f.TxID)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (b.business_id LIKE ? OR b.txid LIKE ? OR b.note LIKE ?)"
-			args = append(args, like, like, like)
-		}
-		if settlementState != "all" {
-			where += " AND sc.state=?"
-			args = append(args, settlementState)
-		}
-		var out financeBreakdownPage
-		if err := QueryRowContext(ctx, db,
-			`SELECT COUNT(1)
-			   FROM settle_tx_breakdown b
-			   JOIN settle_businesses sb ON sb.business_id = b.business_id
-			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			  WHERE sb.source_type='settlement_cycle' AND 1=1`+where,
-			args...).Scan(&out.Total); err != nil {
-			return financeBreakdownPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT b.id,b.business_id,b.txid,b.tx_role,b.gross_input_satoshi,b.change_back_satoshi,b.external_in_satoshi,b.counterparty_out_satoshi,b.miner_fee_satoshi,b.net_out_satoshi,b.net_in_satoshi,b.created_at_unix,b.note,b.payload_json
-			 FROM settle_tx_breakdown b
-			 JOIN settle_businesses sb ON sb.business_id = b.business_id
-			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			 WHERE sb.source_type='settlement_cycle' AND 1=1`+where+` ORDER BY b.id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return financeBreakdownPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]financeBreakdownItem, 0, f.Limit)
-		for rows.Next() {
-			var it financeBreakdownItem
-			var payload string
-			if err := rows.Scan(
-				&it.ID, &it.BusinessID, &it.TxID, &it.TxRole, &it.GrossInputSatoshi, &it.ChangeBackSatoshi, &it.ExternalInSatoshi, &it.CounterpartyOutSat,
-				&it.MinerFeeSatoshi, &it.NetOutSatoshi, &it.NetInSatoshi, &it.CreatedAtUnix, &it.Note, &payload,
-			); err != nil {
-				return financeBreakdownPage{}, err
-			}
-			it.Payload = json.RawMessage(payload)
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return financeBreakdownPage{}, err
-		}
-		return out, nil
-	})
-}
-
-func dbGetFinanceBreakdown(ctx context.Context, store *clientDB, id int64) (financeBreakdownItem, error) {
-	if store == nil {
-		return financeBreakdownItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeBreakdownItem, error) {
-		var out financeBreakdownItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT b.id,b.business_id,b.txid,b.tx_role,b.gross_input_satoshi,b.change_back_satoshi,b.external_in_satoshi,b.counterparty_out_satoshi,b.miner_fee_satoshi,b.net_out_satoshi,b.net_in_satoshi,b.created_at_unix,b.note,b.payload_json
-			 FROM settle_tx_breakdown b
-			 JOIN settle_businesses sb ON sb.business_id = b.business_id
-			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			 WHERE sb.source_type='settlement_cycle' AND b.id=?`,
-			id,
-		).Scan(
-			&out.ID, &out.BusinessID, &out.TxID, &out.TxRole, &out.GrossInputSatoshi, &out.ChangeBackSatoshi, &out.ExternalInSatoshi, &out.CounterpartyOutSat,
-			&out.MinerFeeSatoshi, &out.NetOutSatoshi, &out.NetInSatoshi, &out.CreatedAtUnix, &out.Note, &payload,
-		)
-		if err != nil {
-			return financeBreakdownItem{}, err
-		}
-		out.Payload = json.RawMessage(payload)
-		return out, nil
-	})
-}
-
-func dbListFinanceUTXOLinks(ctx context.Context, store *clientDB, f financeUTXOLinkFilter) (financeUTXOLinkPage, error) {
-	if store == nil {
-		return financeUTXOLinkPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeUTXOLinkPage, error) {
-		where := ""
-		args := make([]any, 0, 12)
-		settlementState, err := normalizeSettlementStateFilter(f.SettlementState)
-		if err != nil {
-			return financeUTXOLinkPage{}, err
-		}
-		if f.BusinessID != "" {
-			where += " AND l.business_id=?"
-			args = append(args, f.BusinessID)
-		}
-		if f.TxID != "" {
-			where += " AND l.txid=?"
-			args = append(args, f.TxID)
-		}
-		if f.UTXOID != "" {
-			where += " AND l.utxo_id=?"
-			args = append(args, f.UTXOID)
-		}
-		if f.TxRole != "" {
-			where += " AND b.tx_role=?"
-			args = append(args, f.TxRole)
-		}
-		if f.IOSide != "" {
-			where += " AND l.io_side=?"
-			args = append(args, f.IOSide)
-		}
-		if f.UTXORole != "" {
-			where += " AND l.utxo_role=?"
-			args = append(args, f.UTXORole)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (l.business_id LIKE ? OR l.txid LIKE ? OR l.utxo_id LIKE ? OR l.note LIKE ? OR b.tx_role LIKE ? OR l.utxo_role LIKE ?)"
-			args = append(args, like, like, like, like, like, like)
-		}
-		if settlementState != "all" {
-			where += " AND sc.state=?"
-			args = append(args, settlementState)
-		}
-		var out financeUTXOLinkPage
-		if err := QueryRowContext(ctx, db,
-			`SELECT COUNT(1)
-			   FROM settle_tx_utxo_links l
-			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
-			   JOIN settle_businesses sb ON sb.business_id=l.business_id
-			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			  WHERE sb.source_type='settlement_cycle' AND 1=1`+where,
-			args...,
-		).Scan(&out.Total); err != nil {
-			return financeUTXOLinkPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
-			   FROM settle_tx_utxo_links l
-			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
-			   JOIN settle_businesses sb ON sb.business_id=l.business_id
-			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			  WHERE sb.source_type='settlement_cycle' AND 1=1`+where+` ORDER BY l.id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return financeUTXOLinkPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]financeUTXOLinkItem, 0, f.Limit)
-		for rows.Next() {
-			var it financeUTXOLinkItem
-			var payload string
-			if err := rows.Scan(&it.ID, &it.BusinessID, &it.TxID, &it.UTXOID, &it.TxRole, &it.IOSide, &it.UTXORole, &it.AmountSatoshi, &it.CreatedAtUnix, &it.Note, &payload); err != nil {
-				return financeUTXOLinkPage{}, err
-			}
-			it.Payload = json.RawMessage(payload)
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return financeUTXOLinkPage{}, err
-		}
-		return out, nil
-	})
-}
-
-func dbGetFinanceUTXOLink(ctx context.Context, store *clientDB, id int64) (financeUTXOLinkItem, error) {
-	if store == nil {
-		return financeUTXOLinkItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeUTXOLinkItem, error) {
-		var out financeUTXOLinkItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT l.id,l.business_id,l.txid,l.utxo_id,b.tx_role,l.io_side,l.utxo_role,l.amount_satoshi,l.created_at_unix,l.note,l.payload_json
-			   FROM settle_tx_utxo_links l
-			   JOIN settle_tx_breakdown b ON b.business_id=l.business_id AND b.txid=l.txid
-			   JOIN settle_businesses sb ON sb.business_id=l.business_id
-			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			  WHERE sb.source_type='settlement_cycle' AND l.id=?`,
-			id,
-		).Scan(&out.ID, &out.BusinessID, &out.TxID, &out.UTXOID, &out.TxRole, &out.IOSide, &out.UTXORole, &out.AmountSatoshi, &out.CreatedAtUnix, &out.Note, &payload)
-		if err != nil {
-			return financeUTXOLinkItem{}, err
-		}
-		out.Payload = json.RawMessage(payload)
-		return out, nil
 	})
 }

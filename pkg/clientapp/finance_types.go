@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// finBusinessEntry 业务财务写入条目。
+// finBusinessEntry 业务结算事实写入条目。
 // 设计说明：
-// - 这是业务主线的统一写入模型；
-// - 调用方必须显式提供业务身份、来源和结算语义；
+// - 这一条同时承载业务主事实和结算出口；
+// - 调用方必须显式提供业务身份、来源、结算方式和目标；
 // - 不在这里猜业务类型，也不在这里补旧账。
 type finBusinessEntry struct {
 	BusinessID   string
@@ -19,49 +19,22 @@ type finBusinessEntry struct {
 	AccountingScene   string
 	AccountingSubType string
 
-	FromPartyID    string
-	ToPartyID      string
-	Status         string
+	FromPartyID string
+	ToPartyID   string
+	Status      string
+
 	OccurredAtUnix int64
 	IdempotencyKey string
 	Note           string
 	Payload        any
-}
 
-// finTxBreakdownEntry 交易拆解写入条目。
-// 设计说明：
-// - 只保存提交成功时已经能确定的金额拆分；
-// - gross/change/counterparty/fee 都必须在业务提交点算清。
-type finTxBreakdownEntry struct {
-	BusinessID         string
-	TxID               string
-	TxRole             string
-	GrossInputSatoshi  int64
-	ChangeBackSatoshi  int64
-	ExternalInSatoshi  int64
-	CounterpartyOutSat int64
-	MinerFeeSatoshi    int64
-	NetOutSatoshi      int64
-	NetInSatoshi       int64
-	CreatedAtUnix      int64
-	Note               string
-	Payload            any
-}
-
-// finTxUTXOLinkEntry 交易与 UTXO 的关系写入条目。
-// 设计说明：
-// - 只描述事实，不推断业务；
-// - 角色和方向由真实提交时的交易结构决定。
-type finTxUTXOLinkEntry struct {
-	BusinessID    string
-	TxID          string
-	UTXOID        string
-	IOSide        string
-	UTXORole      string
-	AmountSatoshi int64
-	CreatedAtUnix int64
-	Note          string
-	Payload       any
+	SettlementID           string
+	SettlementMethod       string // pool | chain
+	SettlementStatus       string
+	SettlementTargetType   string
+	SettlementTargetID     string
+	SettlementErrorMessage string
+	SettlementPayload      any
 }
 
 // finProcessEventEntry 流程事件写入条目。

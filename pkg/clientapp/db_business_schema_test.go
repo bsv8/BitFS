@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"testing"
@@ -96,13 +97,13 @@ func TestInitIndexDB_CreatesBusinessTriggersTable(t *testing.T) {
 		}
 	}
 
-	// 验证外键存在
-	hasFK, err := tableHasForeignKey(db, "biz_business_triggers", "business_id", "settle_businesses", "business_id")
+	// 验证外键定义存在
+	hasFK, err := tableHasCreateSQLContains(db, "biz_business_triggers", "FOREIGN KEY(business_id) REFERENCES settle_records(business_id)")
 	if err != nil {
-		t.Fatalf("check foreign key failed: %v", err)
+		t.Fatalf("check foreign key sql failed: %v", err)
 	}
 	if !hasFK {
-		t.Fatal("biz_business_triggers should have foreign key on business_id referencing settle_businesses")
+		t.Fatal("biz_business_triggers should declare foreign key on business_id referencing settle_records")
 	}
 
 	// 验证索引存在
@@ -137,7 +138,7 @@ func TestInitIndexDB_CreatesBusinessTriggersTable(t *testing.T) {
 	}
 }
 
-// TestInitIndexDB_CreatesBusinessSettlementsTable 验证 settle_business_settlements 表存在且结构正确
+// TestInitIndexDB_CreatesBusinessSettlementsTable 验证 settle_records 表存在且结构正确
 func TestInitIndexDB_CreatesBusinessSettlementsTable(t *testing.T) {
 	t.Parallel()
 
@@ -147,12 +148,12 @@ func TestInitIndexDB_CreatesBusinessSettlementsTable(t *testing.T) {
 	}
 
 	// 验证表存在
-	hasTable, err := hasTable(db, "settle_business_settlements")
+	hasTable, err := hasTable(db, "settle_records")
 	if err != nil {
-		t.Fatalf("check settle_business_settlements table failed: %v", err)
+		t.Fatalf("check settle_records table failed: %v", err)
 	}
 	if !hasTable {
-		t.Fatal("settle_business_settlements table should exist")
+		t.Fatal("settle_records table should exist")
 	}
 
 	// 验证列存在
@@ -161,54 +162,50 @@ func TestInitIndexDB_CreatesBusinessSettlementsTable(t *testing.T) {
 		"target_type", "target_id", "error_message",
 		"created_at_unix", "updated_at_unix", "payload_json",
 	}
-	cols, err := tableColumns(db, "settle_business_settlements")
+	cols, err := tableColumns(db, "settle_records")
 	if err != nil {
-		t.Fatalf("inspect settle_business_settlements columns failed: %v", err)
+		t.Fatalf("inspect settle_records columns failed: %v", err)
 	}
 	for _, col := range wantCols {
 		if _, ok := cols[col]; !ok {
-			t.Fatalf("missing column %s on settle_business_settlements", col)
+			t.Fatalf("missing column %s on settle_records", col)
 		}
 	}
 
-	// 验证外键存在
-	hasFK, err := tableHasForeignKey(db, "settle_business_settlements", "business_id", "settle_businesses", "business_id")
-	if err != nil {
-		t.Fatalf("check foreign key failed: %v", err)
-	}
-	if !hasFK {
-		t.Fatal("settle_business_settlements should have foreign key on business_id referencing settle_businesses")
-	}
-
 	// 验证 business_id 唯一约束
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_business_settlements", []string{"business_id"})
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_records", []string{"business_id"})
 	if err != nil {
 		t.Fatalf("check unique constraint failed: %v", err)
 	}
 	if !hasUnique {
-		t.Fatal("settle_business_settlements should have unique constraint on business_id")
+		t.Fatal("settle_records should have unique constraint on business_id")
 	}
 
 	// 验证索引存在
 	wantIndexes := []string{
-		"idx_settle_business_settlements_status",
-		"idx_settle_business_settlements_method",
-		"idx_settle_business_settlements_target",
+		"idx_settle_records_status",
+		"idx_settle_records_method",
+		"idx_settle_records_target",
 	}
 	for _, idx := range wantIndexes {
-		hasIndex, err := tableHasIndex(db, "settle_business_settlements", idx)
+		hasIndex, err := tableHasIndex(db, "settle_records", idx)
 		if err != nil {
 			t.Fatalf("check index %s failed: %v", idx, err)
 		}
 		if !hasIndex {
-			t.Fatalf("missing index %s on settle_business_settlements", idx)
+			t.Fatalf("missing index %s on settle_records", idx)
 		}
 	}
 
 	// 验证主键约束
-	pks := tablePrimaryKeyColumns(t, db, "settle_business_settlements")
-	if !containsString(pks, "settlement_id") {
-		t.Fatal("settlement_id should be PRIMARY KEY")
+	pks := tablePrimaryKeyColumns(t, db, "settle_records")
+	if !containsString(pks, "business_id") {
+		t.Fatal("business_id should be PRIMARY KEY")
+	}
+	if hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_records", []string{"settlement_id"}); err != nil {
+		t.Fatalf("check settlement_id unique constraint failed: %v", err)
+	} else if !hasUnique {
+		t.Fatal("settlement_id should be UNIQUE")
 	}
 }
 
@@ -289,13 +286,13 @@ func TestInitIndexDB_BusinessTriggersIdempotent(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	// 先插入必要的 settle_businesses 记录（因为外键约束）
-	if _, err := db.Exec(`INSERT INTO settle_businesses(
-		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_test_1", "front_order", "fo_test_1", "domain", "register", "client:self", "gateway:peer", "pending", 1700000001, "idem_test_1", "test", `{}`,
+	// 先插入必要的 settle_records 记录（因为外键约束）
+	if _, err := db.Exec(`INSERT INTO settle_records(
+		settlement_id,business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_test_1", "biz_test_1", "front_order", "fo_test_1", "domain", "register", "client:self", "gateway:peer", "pending", 1700000001, "idem_test_1", "test", `{}`,
 	); err != nil {
-		t.Fatalf("insert settle_businesses failed: %v", err)
+		t.Fatalf("insert settle_records failed: %v", err)
 	}
 
 	// 第一次插入 trigger
@@ -317,7 +314,7 @@ func TestInitIndexDB_BusinessTriggersIdempotent(t *testing.T) {
 	}
 }
 
-// TestInitIndexDB_BusinessSettlementsIdempotent 验证 settle_business_settlements 写入幂等和 business_id 唯一约束
+// TestInitIndexDB_BusinessSettlementsIdempotent 验证 settle_records 写入幂等和 business_id 唯一约束
 func TestInitIndexDB_BusinessSettlementsIdempotent(t *testing.T) {
 	t.Parallel()
 
@@ -326,47 +323,57 @@ func TestInitIndexDB_BusinessSettlementsIdempotent(t *testing.T) {
 		t.Fatalf("initIndexDB failed: %v", err)
 	}
 
-	// 先插入必要的 settle_businesses 记录
-	if _, err := db.Exec(`INSERT INTO settle_businesses(
-		business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"biz_test_2", "front_order", "fo_test_2", "domain", "register", "client:self", "gateway:peer", "pending", 1700000001, "idem_test_2", "test", `{}`,
+	// 先插入必要的 settle_records 记录
+	if _, err := db.Exec(`INSERT INTO settle_records(
+		settlement_id,business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_test_2", "biz_test_2", "front_order", "fo_test_2", "domain", "register", "client:self", "gateway:peer", "pending", 1700000001, "idem_test_2", "test", `{}`,
 	); err != nil {
-		t.Fatalf("insert settle_businesses failed: %v", err)
+		t.Fatalf("insert settle_records failed: %v", err)
 	}
 
-	// 第一次插入 settlement
-	if _, err := db.Exec(`INSERT INTO settle_business_settlements(
-		settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		"set_test_1", "biz_test_2", "chain", "pending", "chain_payment", "", "", 1700000001, 1700000001, `{}`,
-	); err != nil {
-		t.Fatalf("first insert failed: %v", err)
+	// 第一次更新 settlement 字段
+	if err := dbUpsertBusinessSettlement(context.Background(), &clientDB{db: db}, businessSettlementEntry{
+		SettlementID:     "set_test_1",
+		BusinessID:       "biz_test_2",
+		SettlementMethod: "chain",
+		Status:           "pending",
+		TargetType:       "chain_payment",
+		TargetID:         "",
+		Payload:          map[string]any{"step": 1},
+	}); err != nil {
+		t.Fatalf("first settlement update failed: %v", err)
 	}
 
 	// 尝试插入同一 business_id 不同 settlement_id 应该失败
-	_, err := db.Exec(`INSERT INTO settle_business_settlements(
-		settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-		"set_test_2", "biz_test_2", "chain", "completed", "chain_payment", "", "", 1700000001, 1700000001, `{}`,
+	_, err := db.Exec(`INSERT INTO settle_records(
+		settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,idempotency_key,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_test_2", "biz_test_2", "chain", "completed", "chain_payment", "", "", 1700000001, 1700000001, "idem_set_test_2", `{}`,
 	)
 	if err == nil {
 		t.Fatal("expected unique constraint violation for duplicate business_id")
 	}
 
 	// 但更新现有记录应该成功
-	if _, err := db.Exec(`UPDATE settle_business_settlements SET status=?, updated_at_unix=? WHERE settlement_id=?`,
-		"completed", 1700000002, "set_test_1",
-	); err != nil {
+	if err := dbUpsertBusinessSettlement(context.Background(), &clientDB{db: db}, businessSettlementEntry{
+		SettlementID:     "set_test_1",
+		BusinessID:       "biz_test_2",
+		SettlementMethod: "chain",
+		Status:           "completed",
+		TargetType:       "chain_payment",
+		TargetID:         "",
+		Payload:          map[string]any{"step": 2},
+	}); err != nil {
 		t.Fatalf("update settlement failed: %v", err)
 	}
 
-	// 验证状态已更新
+	// 验证结算状态已更新
 	var status string
-	if err := db.QueryRow(`SELECT status FROM settle_business_settlements WHERE settlement_id=?`, "set_test_1").Scan(&status); err != nil {
+	if err := db.QueryRow(`SELECT settlement_status FROM settle_records WHERE settlement_id=?`, "set_test_1").Scan(&status); err != nil {
 		t.Fatalf("query failed: %v", err)
 	}
 	if status != "completed" {
-		t.Fatalf("expected status completed, got %s", status)
+		t.Fatalf("expected settlement_status completed, got %s", status)
 	}
 }

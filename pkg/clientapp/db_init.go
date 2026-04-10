@@ -121,7 +121,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 第五步定性：proc_direct_deals 是【协议过程对象】
 		// - 职责：保存协议协商/成交上下文（buyer/seller/seed_hash/price 等）
 		// - 非支付主事实，不决定业务是否完成
-		// - 业务完成状态以 settle_business_settlements 为准
+		// - 业务完成状态以 settle_records 为准
 		`CREATE TABLE IF NOT EXISTS proc_direct_deals(
 			deal_id TEXT PRIMARY KEY,
 			demand_id TEXT NOT NULL,
@@ -151,7 +151,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 第五步定性：proc_direct_transfer_pools 是【运行态池状态表】
 		// - 职责：保存池协议运行期的动态状态（sequence_num、current_tx_hex、status 等）
 		// - 非业务主判断入口，只服务于协议运行期
-		// - 业务完成状态以 settle_business_settlements 为准，不以此表的 status 为准
+		// - 业务完成状态以 settle_records 为准，不以此表的 status 为准
 		`CREATE TABLE IF NOT EXISTS proc_direct_transfer_pools(
 			session_id TEXT PRIMARY KEY,
 			deal_id TEXT NOT NULL,
@@ -427,24 +427,33 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 第六次迭代起新库 schema 不再定义旧字段（老库兼容迁移未做物理删列）
 		// 旧列迁移由 ensureFinAccountingSchema 处理
 		//
-		// settle_businesses 语义说明（第七次迭代收口）：
-		// - 一条 settle_businesses = 一条独立收费事实
-		// - 失败重试不新建 business，只更新原记录
-		// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
-		`CREATE TABLE IF NOT EXISTS settle_businesses(
+		// settle_records 语义说明（一次性收口）：
+		// - 一行同时承载业务事实和结算出口；
+		// - business_id 是主键，idempotency_key 必须唯一；
+		// - settlement_method='chain' 时，target_type/target_id 只能指向事实层主键，不允许写 txid。
+		`CREATE TABLE IF NOT EXISTS settle_records(
 			business_id TEXT PRIMARY KEY,
+			settlement_id TEXT NOT NULL UNIQUE,
 			business_role TEXT NOT NULL DEFAULT '' CHECK(business_role IN ('', 'formal', 'process')),
 			source_type TEXT NOT NULL DEFAULT '',
 			source_id TEXT NOT NULL DEFAULT '',
 			accounting_scene TEXT NOT NULL DEFAULT '',
 			accounting_subtype TEXT NOT NULL DEFAULT '',
-			from_party_id TEXT NOT NULL,
-			to_party_id TEXT NOT NULL,
-			status TEXT NOT NULL,
-			occurred_at_unix INTEGER NOT NULL,
+			from_party_id TEXT NOT NULL DEFAULT '',
+			to_party_id TEXT NOT NULL DEFAULT '',
+			status TEXT NOT NULL DEFAULT '',
+			occurred_at_unix INTEGER NOT NULL DEFAULT 0,
 			idempotency_key TEXT NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
+			note TEXT NOT NULL DEFAULT '',
+			payload_json TEXT NOT NULL DEFAULT '{}',
+			settlement_method TEXT NOT NULL DEFAULT '',
+			settlement_status TEXT NOT NULL DEFAULT '',
+			target_type TEXT NOT NULL DEFAULT '',
+			target_id TEXT NOT NULL DEFAULT '',
+			error_message TEXT NOT NULL DEFAULT '',
+			settlement_payload_json TEXT NOT NULL DEFAULT '{}',
+			created_at_unix INTEGER NOT NULL DEFAULT 0,
+			updated_at_unix INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS settle_process_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -460,37 +469,6 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			note TEXT NOT NULL,
 			payload_json TEXT NOT NULL
 		)`,
-		`CREATE TABLE IF NOT EXISTS settle_tx_breakdown(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			business_id TEXT NOT NULL,
-			txid TEXT NOT NULL,
-			tx_role TEXT,
-			gross_input_satoshi INTEGER NOT NULL,
-			change_back_satoshi INTEGER NOT NULL,
-			external_in_satoshi INTEGER NOT NULL,
-			counterparty_out_satoshi INTEGER NOT NULL,
-			miner_fee_satoshi INTEGER NOT NULL,
-			net_out_satoshi INTEGER NOT NULL,
-			net_in_satoshi INTEGER NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			UNIQUE(business_id, txid)
-		)`,
-		`CREATE TABLE IF NOT EXISTS settle_tx_utxo_links(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			business_id TEXT NOT NULL,
-			txid TEXT NOT NULL,
-			utxo_id TEXT NOT NULL,
-			io_side TEXT NOT NULL,
-			utxo_role TEXT NOT NULL,
-			amount_satoshi INTEGER NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL,
-			UNIQUE(business_id,txid,utxo_id,io_side,utxo_role)
-		)`,
-
 		// 前台业务主身份层（第七次迭代新增）
 		// 职责：表达前台业务主身份，不直接承载支付实现
 		`CREATE TABLE IF NOT EXISTS biz_front_orders(
@@ -521,25 +499,8 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			created_at_unix INTEGER NOT NULL,
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(business_id) REFERENCES settle_businesses(business_id) ON DELETE CASCADE,
+			FOREIGN KEY(business_id) REFERENCES settle_records(business_id) ON DELETE CASCADE,
 			UNIQUE(business_id, trigger_type, trigger_id_value, trigger_role)
-		)`,
-		// 统一结算出口（第七次迭代新增）
-		// 职责：表达一条 business 的统一结算出口
-		// 设计约束：本阶段强制一条 business 只对应一条主 settlement
-		`CREATE TABLE IF NOT EXISTS settle_business_settlements(
-			settlement_id TEXT PRIMARY KEY,
-			business_id TEXT NOT NULL,
-			settlement_method TEXT NOT NULL,
-			status TEXT NOT NULL,
-			target_type TEXT NOT NULL,
-			target_id TEXT NOT NULL,
-			error_message TEXT NOT NULL DEFAULT '',
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(business_id) REFERENCES settle_businesses(business_id) ON DELETE CASCADE,
-			UNIQUE(business_id)
 		)`,
 
 		// 链状态
@@ -745,22 +706,21 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_business ON biz_business_triggers(business_id, created_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_type_value ON biz_business_triggers(trigger_type, trigger_id_value)`,
 		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_type_value_role ON biz_business_triggers(trigger_type, trigger_id_value, trigger_role)`,
-		// 统一结算出口索引（第三次迭代新增）
-		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_status ON settle_business_settlements(status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_method ON settle_business_settlements(settlement_method, status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_business_settlements_target ON settle_business_settlements(target_type, target_id)`,
+		// 统一结算出口索引（一次性收口）
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_idempotency ON settle_records(idempotency_key)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_settlement_id ON settle_records(settlement_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_role ON settle_records(business_role, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_source ON settle_records(source_type, source_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_accounting ON settle_records(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_status ON settle_records(status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_method ON settle_records(settlement_method, settlement_status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_target ON settle_records(target_type, target_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_token_id ON fact_bsv21_events(token_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_kind_time ON fact_bsv21_events(event_kind, event_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_sync_cursor_round_tip ON wallet_utxo_sync_cursor(round_tip_height DESC, updated_at_unix DESC)`,
 		// 第六次迭代：finance 表索引移到 ensureFinAccountingIndexes 中创建
 		// 避免老库迁移时列不存在导致错误
 		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_process ON settle_process_events(process_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business ON settle_tx_breakdown(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_txid ON settle_tx_breakdown(txid, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_tx_utxo_links_business ON settle_tx_utxo_links(business_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_tx_utxo_links_utxo ON settle_tx_utxo_links(utxo_id, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_tx_utxo_links_txid ON settle_tx_utxo_links(txid, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_chain_tip_worker_logs_started ON proc_chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_chain_tip_worker_logs_status ON proc_chain_tip_worker_logs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_chain_utxo_worker_logs_started ON proc_chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
@@ -1830,16 +1790,30 @@ func ensureFinAccountingSchema(ctx context.Context, db *sql.DB) error {
 		col   string
 		stmt  string
 	}{
-		{table: "settle_businesses", col: "business_role", stmt: `ALTER TABLE settle_businesses ADD COLUMN business_role TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_businesses", col: "source_type", stmt: `ALTER TABLE settle_businesses ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_businesses", col: "source_id", stmt: `ALTER TABLE settle_businesses ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_businesses", col: "accounting_scene", stmt: `ALTER TABLE settle_businesses ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_businesses", col: "accounting_subtype", stmt: `ALTER TABLE settle_businesses ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "business_role", stmt: `ALTER TABLE settle_records ADD COLUMN business_role TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "source_type", stmt: `ALTER TABLE settle_records ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "source_id", stmt: `ALTER TABLE settle_records ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "accounting_scene", stmt: `ALTER TABLE settle_records ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "accounting_subtype", stmt: `ALTER TABLE settle_records ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "from_party_id", stmt: `ALTER TABLE settle_records ADD COLUMN from_party_id TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "to_party_id", stmt: `ALTER TABLE settle_records ADD COLUMN to_party_id TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "status", stmt: `ALTER TABLE settle_records ADD COLUMN status TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "occurred_at_unix", stmt: `ALTER TABLE settle_records ADD COLUMN occurred_at_unix INTEGER NOT NULL DEFAULT 0`},
+		{table: "settle_records", col: "idempotency_key", stmt: `ALTER TABLE settle_records ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "note", stmt: `ALTER TABLE settle_records ADD COLUMN note TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "payload_json", stmt: `ALTER TABLE settle_records ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'`},
+		{table: "settle_records", col: "settlement_method", stmt: `ALTER TABLE settle_records ADD COLUMN settlement_method TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "settlement_status", stmt: `ALTER TABLE settle_records ADD COLUMN settlement_status TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "target_type", stmt: `ALTER TABLE settle_records ADD COLUMN target_type TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "target_id", stmt: `ALTER TABLE settle_records ADD COLUMN target_id TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "error_message", stmt: `ALTER TABLE settle_records ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`},
+		{table: "settle_records", col: "settlement_payload_json", stmt: `ALTER TABLE settle_records ADD COLUMN settlement_payload_json TEXT NOT NULL DEFAULT '{}'`},
+		{table: "settle_records", col: "created_at_unix", stmt: `ALTER TABLE settle_records ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0`},
+		{table: "settle_records", col: "updated_at_unix", stmt: `ALTER TABLE settle_records ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0`},
 		{table: "settle_process_events", col: "source_type", stmt: `ALTER TABLE settle_process_events ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
 		{table: "settle_process_events", col: "source_id", stmt: `ALTER TABLE settle_process_events ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
 		{table: "settle_process_events", col: "accounting_scene", stmt: `ALTER TABLE settle_process_events ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
 		{table: "settle_process_events", col: "accounting_subtype", stmt: `ALTER TABLE settle_process_events ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_tx_breakdown", col: "tx_role", stmt: `ALTER TABLE settle_tx_breakdown ADD COLUMN tx_role TEXT`},
 	}
 
 	for _, m := range migrations {
@@ -1864,14 +1838,14 @@ func ensureFinAccountingIndexes(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	stmts := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_businesses_idempotency ON settle_businesses(idempotency_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_businesses_role ON settle_businesses(business_role, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_businesses_source ON settle_businesses(source_type, source_id, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_businesses_accounting ON settle_businesses(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_idempotency ON settle_records(idempotency_key)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_settlement_id ON settle_records(settlement_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_role ON settle_records(business_role, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_source ON settle_records(source_type, source_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_settle_records_accounting ON settle_records(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_process_events_idempotency ON settle_process_events(idempotency_key)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_source ON settle_process_events(source_type, source_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_accounting ON settle_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_tx_breakdown_business_txid ON settle_tx_breakdown(business_id, txid)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := ExecContext(ctx, db, stmt); err != nil {
@@ -1889,8 +1863,8 @@ func normalizeClientDBData(ctx context.Context, db *sql.DB) error {
 
 	// 这里只保留当前口径必需的轻量约束，避免把旧库收口逻辑继续留在初始化里。
 	if _, err := ExecContext(ctx, db, `
-		CREATE TRIGGER IF NOT EXISTS chk_settle_businesses_role_insert
-		BEFORE INSERT ON settle_businesses
+		CREATE TRIGGER IF NOT EXISTS chk_settle_records_role_insert
+		BEFORE INSERT ON settle_records
 		BEGIN
 			SELECT CASE
 				WHEN NEW.business_role NOT IN ('', 'formal', 'process')
@@ -1901,8 +1875,8 @@ func normalizeClientDBData(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("create business_role insert check trigger: %w", err)
 	}
 	if _, err := ExecContext(ctx, db, `
-		CREATE TRIGGER IF NOT EXISTS chk_settle_businesses_role_update
-		BEFORE UPDATE ON settle_businesses
+		CREATE TRIGGER IF NOT EXISTS chk_settle_records_role_update
+		BEFORE UPDATE ON settle_records
 		BEGIN
 			SELECT CASE
 				WHEN NEW.business_role NOT IN ('', 'formal', 'process')
@@ -3106,16 +3080,17 @@ func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bo
 	return rows.Err()
 }
 
-// cleanupLegacyCyclePayFinanceRows 清理不应存在于财务主表的 cycle_pay 过程事件
+// cleanupLegacyCyclePayFinanceRows 清理不应存在于财务主表的 cycle_pay 过程事件。
+// 这里只清理 settle_records 中不该保留的过程型残行，不碰旧表。
 func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 
 	// 第六次迭代：检查旧字段是否存在，不存在则跳过（全新数据库无旧数据需要清理）
-	cols, err := tableColumns(db, "settle_businesses")
+	cols, err := tableColumns(db, "settle_records")
 	if err != nil {
-		return fmt.Errorf("inspect settle_businesses columns: %w", err)
+		return fmt.Errorf("inspect settle_records columns: %w", err)
 	}
 	if _, hasOldSceneType := cols["scene_type"]; !hasOldSceneType {
 		// 全新数据库，无旧字段，无需清理
@@ -3125,11 +3100,6 @@ func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 	// 设计说明：
 	// - sqliteactor 把运行时压成单连接后，事务期间不能再回头走库级 Query；
 	// - 这里先在事务外判断旧表是否存在，避免同一函数里"持有 tx 又重新借 db"把自己堵死。
-	legacyExists, legacyErr := hasTable(db, "settle_biz_utxo_links")
-	if legacyErr != nil {
-		return legacyErr
-	}
-
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -3141,36 +3111,24 @@ func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
 	}()
 
 	if _, err = ExecContext(ctx, tx,
-		`DELETE FROM settle_tx_breakdown
+		`DELETE FROM settle_records
 		 WHERE business_id IN (
-			 SELECT business_id FROM settle_businesses
+			 SELECT business_id FROM settle_records
 			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
 		 )`,
 	); err != nil {
 		return err
 	}
 	if _, err = ExecContext(ctx, tx,
-		`DELETE FROM settle_tx_utxo_links
+		`DELETE FROM settle_records
 		 WHERE business_id IN (
-			 SELECT business_id FROM settle_businesses
+			 SELECT business_id FROM settle_records
 			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
 		 )`,
 	); err != nil {
 		return err
 	}
-	// 兼容旧库：如果历史表仍存在，也一起清掉，避免误导后续迁移逻辑
-	if legacyExists {
-		if _, err = ExecContext(ctx, tx,
-			`DELETE FROM settle_biz_utxo_links
-			 WHERE business_id IN (
-				 SELECT business_id FROM settle_businesses
-				 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
-			 )`,
-		); err != nil {
-			return err
-		}
-	}
-	if _, err = ExecContext(ctx, tx, `DELETE FROM settle_businesses WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'`); err != nil {
+	if _, err = ExecContext(ctx, tx, `DELETE FROM settle_records WHERE source_type='fee_pool' AND accounting_subtype='cycle_pay'`); err != nil {
 		return err
 	}
 
@@ -3234,42 +3192,27 @@ func hasSchemaObject(db *sql.DB, name string) (bool, error) {
 	return true, nil
 }
 
-// isFinTxBreakdownFinalized 判断第二轮收口是否已经完成。
-// 说明：只要仍然能看到旧表、可空 tx_role、缺少唯一约束或缺少关键索引，就不能跳过。
-func isFinTxBreakdownFinalized(ctx context.Context, db *sql.DB) (bool, error) {
-	hasBreakdown, err := hasTable(db, "settle_tx_breakdown")
+// isSettleRecordsFinalized 判断结算主表是否已经完成硬切。
+// 说明：只要仍然能看到旧表、缺少唯一约束或缺少关键索引，就不能跳过。
+func isSettleRecordsFinalized(ctx context.Context, db *sql.DB) (bool, error) {
+	hasRecord, err := hasTable(db, "settle_records")
 	if err != nil {
 		return false, err
 	}
-	if !hasBreakdown {
+	if !hasRecord {
 		return false, nil
 	}
 
-	hasOldTable, err := hasTable(db, "settle_business_txs")
+	cols, err := tableColumns(db, "settle_records")
 	if err != nil {
 		return false, err
 	}
-	if hasOldTable {
-		return false, nil
+	for _, col := range []string{"settlement_id", "business_role", "idempotency_key", "settlement_method", "settlement_status", "target_type", "target_id"} {
+		if _, ok := cols[col]; !ok {
+			return false, nil
+		}
 	}
-
-	cols, err := tableColumns(db, "settle_tx_breakdown")
-	if err != nil {
-		return false, err
-	}
-	if _, ok := cols["tx_role"]; !ok {
-		return false, nil
-	}
-
-	hasNotNull, err := tableColumnNotNull(db, "settle_tx_breakdown", "tx_role")
-	if err != nil {
-		return false, err
-	}
-	if !hasNotNull {
-		return false, nil
-	}
-
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_tx_breakdown", []string{"business_id", "txid"})
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_records", []string{"idempotency_key"})
 	if err != nil {
 		return false, err
 	}
@@ -3278,11 +3221,14 @@ func isFinTxBreakdownFinalized(ctx context.Context, db *sql.DB) (bool, error) {
 	}
 
 	for _, indexName := range []string{
-		"idx_settle_tx_breakdown_business",
-		"idx_settle_tx_breakdown_txid",
-		"idx_settle_tx_breakdown_business_txid",
+		"idx_settle_records_role",
+		"idx_settle_records_source",
+		"idx_settle_records_accounting",
+		"idx_settle_records_status",
+		"idx_settle_records_method",
+		"idx_settle_records_target",
 	} {
-		hasIndex, err := tableHasIndex(db, "settle_tx_breakdown", indexName)
+		hasIndex, err := tableHasIndex(db, "settle_records", indexName)
 		if err != nil {
 			return false, err
 		}

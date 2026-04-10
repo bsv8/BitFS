@@ -354,13 +354,13 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 	// 插入测试数据
 	for i := 0; i < 3; i++ {
 		businessID := fmt.Sprintf("biz_target_test_%d", i)
-		// 先插入 settle_businesses（第九阶段：必须带 business_role）
-		if _, err := db.Exec(`INSERT INTO settle_businesses(
-			business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			businessID, "formal", "test", "test", "test", "test", "client:self", "test:peer", "pending", 1700000000+int64(i), fmt.Sprintf("idem_%d", i), "test", `{}`,
+		// 先插入 settle_records（第九阶段：必须带 business_role）
+		if _, err := db.Exec(`INSERT INTO settle_records(
+			settlement_id,business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("set_target_test_%d", i), businessID, "formal", "test", "test", "test", "test", "client:self", "test:peer", "pending", 1700000000+int64(i), fmt.Sprintf("idem_%d", i), "test", `{}`,
 		); err != nil {
-			t.Fatalf("insert settle_businesses failed: %v", err)
+			t.Fatalf("insert settle_records failed: %v", err)
 		}
 
 		settlement := businessSettlementEntry{

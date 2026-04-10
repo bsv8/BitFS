@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -460,6 +459,15 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 	}
 }
 
+// dbUpsertSettleRecord 是共享写入口，给前台业务和非结算主线复用。
+// 设计边界：
+// - 这里只负责把一条财务事实稳定落库，不判断业务链路归属；
+// - 结算出口字段由桥接层单独补，不在这里猜；
+// - settlement_records 已经是唯一主表，旧来源一律拒绝。
+func dbUpsertSettleRecord(db sqlConn, e finBusinessEntry) error {
+	return dbAppendFinBusiness(db, e)
+}
+
 // dbAppendFinBusiness 是共享写入口，给前台业务和非结算主线复用。
 // 设计边界：
 // - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
@@ -475,6 +483,9 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	e.BusinessID = strings.TrimSpace(e.BusinessID)
 	if e.BusinessID == "" {
 		return fmt.Errorf("business_id is required")
+	}
+	if strings.TrimSpace(e.SettlementID) == "" {
+		e.SettlementID = e.BusinessID
 	}
 	// 第七阶段：business_role 必须是正式约束，不允许空值
 	e.BusinessRole = strings.TrimSpace(e.BusinessRole)
@@ -500,9 +511,10 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 		e.IdempotencyKey = e.BusinessID
 	}
 	_, err := db.Exec(
-		`INSERT INTO settle_businesses(business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(idempotency_key) DO UPDATE SET
+		`INSERT INTO settle_records(
+			business_id,settlement_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json,settlement_method,settlement_status,target_type,target_id,error_message,settlement_payload_json,created_at_unix,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(business_id) DO UPDATE SET
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
@@ -511,8 +523,13 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 			source_id=excluded.source_id,
 			accounting_scene=excluded.accounting_scene,
 			accounting_subtype=excluded.accounting_subtype,
-			business_role=excluded.business_role`,
+			business_role=excluded.business_role,
+			from_party_id=excluded.from_party_id,
+			to_party_id=excluded.to_party_id,
+			idempotency_key=excluded.idempotency_key,
+			updated_at_unix=excluded.updated_at_unix`,
 		e.BusinessID,
+		strings.TrimSpace(e.SettlementID),
 		strings.TrimSpace(e.BusinessRole),
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
@@ -525,6 +542,14 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 		e.IdempotencyKey,
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
+		"",
+		"",
+		"",
+		"",
+		"",
+		"{}",
+		e.OccurredAtUnix,
+		e.OccurredAtUnix,
 	)
 	return err
 }
@@ -543,124 +568,17 @@ func dbAppendSettlementCycleFinBusiness(db sqlConn, settlementCycleID int64, e f
 	return dbAppendFinBusiness(db, e)
 }
 
-func dbAppendFinTxBreakdownIfAbsent(db sqlConn, e finTxBreakdownEntry) error {
+func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	e.TxRole = strings.TrimSpace(e.TxRole)
-	if e.TxRole == "" {
-		return fmt.Errorf("tx_role is required for settle_tx_breakdown")
-	}
-	var existingRole sql.NullString
-	err := db.QueryRow(`SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
-	if err == nil {
-		if existingRole.Valid && existingRole.String == e.TxRole {
-			return nil
-		}
-		if !existingRole.Valid {
-			return fmt.Errorf("settle_tx_breakdown tx_role is null for (%s,%s), final schema required", e.BusinessID, e.TxID)
-		}
-		return fmt.Errorf("settle_tx_breakdown role mismatch for (%s,%s): existing=%s, want=%s", e.BusinessID, e.TxID, existingRole.String, e.TxRole)
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-	return dbAppendFinTxBreakdown(db, e)
-}
-
-func dbAppendFinTxUTXOLinkIfAbsent(db sqlConn, e finTxUTXOLinkEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	var n int
-	if err := db.QueryRow(
-		`SELECT COUNT(1) FROM settle_tx_utxo_links WHERE business_id=? AND txid=? AND utxo_id=? AND io_side=? AND utxo_role=?`,
-		strings.TrimSpace(e.BusinessID),
-		strings.ToLower(strings.TrimSpace(e.TxID)),
-		strings.ToLower(strings.TrimSpace(e.UTXOID)),
-		strings.TrimSpace(e.IOSide),
-		strings.TrimSpace(e.UTXORole),
-	).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
-	return dbAppendFinTxUTXOLink(db, e)
-}
-
-func dbAppendFinTxBreakdown(db sqlConn, e finTxBreakdownEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if e.CreatedAtUnix <= 0 {
-		e.CreatedAtUnix = time.Now().Unix()
-	}
-	_, err := db.Exec(
-		`INSERT INTO settle_tx_breakdown(
-			business_id,txid,tx_role,gross_input_satoshi,change_back_satoshi,external_in_satoshi,counterparty_out_satoshi,miner_fee_satoshi,net_out_satoshi,net_in_satoshi,created_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		strings.TrimSpace(e.BusinessID),
-		strings.ToLower(strings.TrimSpace(e.TxID)),
-		strings.TrimSpace(e.TxRole),
-		e.GrossInputSatoshi,
-		e.ChangeBackSatoshi,
-		e.ExternalInSatoshi,
-		e.CounterpartyOutSat,
-		e.MinerFeeSatoshi,
-		e.NetOutSatoshi,
-		e.NetInSatoshi,
-		e.CreatedAtUnix,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-	)
-	return err
-}
-
-func dbAppendFinTxUTXOLink(db sqlConn, e finTxUTXOLinkEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if e.CreatedAtUnix <= 0 {
-		e.CreatedAtUnix = time.Now().Unix()
-	}
-	_, err := db.Exec(
-		`INSERT INTO settle_tx_utxo_links(business_id,txid,utxo_id,io_side,utxo_role,amount_satoshi,created_at_unix,note,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
-		strings.TrimSpace(e.BusinessID),
-		strings.ToLower(strings.TrimSpace(e.TxID)),
-		strings.ToLower(strings.TrimSpace(e.UTXOID)),
-		strings.TrimSpace(e.IOSide),
-		strings.TrimSpace(e.UTXORole),
-		e.AmountSatoshi,
-		e.CreatedAtUnix,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-	)
-	return err
-}
-
-func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string, e finTxUTXOLinkEntry) error {
 	txRole = strings.TrimSpace(txRole)
 	if txRole == "" {
 		return fmt.Errorf("tx_role is required for business utxo fact")
 	}
-	// 第二轮规则：UTXO 明细必须挂到一条已成立的 TX 财务事实上
-	var existingRole sql.NullString
-	err := db.QueryRow(`SELECT tx_role FROM settle_tx_breakdown WHERE business_id=? AND txid=?`, strings.TrimSpace(e.BusinessID), strings.ToLower(strings.TrimSpace(e.TxID))).Scan(&existingRole)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("settle_tx_breakdown missing for (%s,%s) before appending utxo link", e.BusinessID, e.TxID)
-		}
-		return err
-	}
-	if !existingRole.Valid {
-		return fmt.Errorf("settle_tx_breakdown tx_role is null for (%s,%s), cannot append utxo link", e.BusinessID, e.TxID)
-	}
-	if existingRole.String != txRole {
-		return fmt.Errorf("settle_tx_breakdown role mismatch for (%s,%s): existing=%s, want=%s", e.BusinessID, e.TxID, existingRole.String, txRole)
-	}
-	// 第二轮只写新表
-	return dbAppendFinTxUTXOLinkIfAbsent(db, e)
+	// 旧的拆分/UTXO 明细表已硬切掉，这里只保留业务流程上的幂等占位。
+	// 需要更细的 tx 解释时，改查 settle_records / fact_* 事实表。
+	return nil
 }
 
 // dbAppendFinProcessEvent 是共享写入口，给前台业务和非结算主线复用。
@@ -903,16 +821,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 					if input.SourceTxOutput() != nil {
 						grossInput += int64(input.SourceTxOutput().Satoshis)
 						if input.SourceTXID != nil {
-							utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
-							_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-								BusinessID:    businessID,
-								TxID:          baseTxID,
-								UTXOID:        utxoID,
-								IOSide:        "input",
-								UTXORole:      "wallet_input",
-								AmountSatoshi: int64(input.SourceTxOutput().Satoshis),
-								Note:          "fee pool open input",
-							})
+							_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
 						}
 					}
 				}
@@ -920,28 +829,12 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 					amount := int64(out.Satoshis)
 					if idx == 0 {
 						lockAmount += amount
-						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-							BusinessID:    businessID,
-							TxID:          baseTxID,
-							UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-							IOSide:        "output",
-							UTXORole:      "pool_lock",
-							AmountSatoshi: amount,
-							Note:          "fee pool lock output",
-						})
+						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
 						continue
 					}
 					if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
 						changeBack += amount
-						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-							BusinessID:    businessID,
-							TxID:          baseTxID,
-							UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-							IOSide:        "output",
-							UTXORole:      "wallet_change",
-							AmountSatoshi: amount,
-							Note:          "wallet change output",
-						})
+						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
 					}
 				}
 				if lockAmount == 0 {
@@ -959,7 +852,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		// 这里直接按 chain_payment 反查 settlement_cycle，别再把旧 fee_pool 口径塞回写入口。
 		settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(ctx, db, strings.TrimSpace(in.SpendTxID))
 		if err != nil {
-			obs.Error("bitcast-client", "fee_pool_open_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
@@ -978,27 +871,10 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 				"base_txid":  baseTxID,
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "fee_pool_open_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
-		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
-			BusinessID:         businessID,
-			TxID:               baseTxID,
-			TxRole:             "open_base",
-			GrossInputSatoshi:  grossInput,
-			ChangeBackSatoshi:  changeBack,
-			ExternalInSatoshi:  0,
-			CounterpartyOutSat: lockAmount,
-			MinerFeeSatoshi:    minerFee,
-			NetOutSatoshi:      lockAmount + minerFee,
-			NetInSatoshi:       0,
-			Note:               "open lock gross_input-change_back",
-			Payload: map[string]any{
-				"formula": "net_out = counterparty_out + miner_fee",
-			},
-		}); err != nil {
-			obs.Error("bitcast-client", "fee_pool_open_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
-		}
+		// 旧 tx 拆解层已下线，业务主事实只保留 settle_records。
 	})
 }
 
@@ -1008,7 +884,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 		// 这里直接按 chain_payment 反查 settlement_cycle，保证写入和查询走同一条路。
 		settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(ctx, db, strings.TrimSpace(spendTxID))
 		if err != nil {
-			obs.Error("bitcast-client", "fee_pool_cycle_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 			return
 		}
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
@@ -1027,7 +903,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 				"financial_affected": false,
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "fee_pool_cycle_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 		}
 	})
 }
@@ -1036,15 +912,15 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 // 设计说明：
 // - 这是 direct_transfer_pool open 阶段的过程财务写入
 // - 第二阶段整改：open 不再是正式下载收费 business，改为过程型财务对象
-// - 前台业务完成状态以 settle_business_settlements（biz_download_pool_*）为准
-// - 本函数记录：settle_businesses(过程型) + fin_process_event + settle_tx_breakdown + utxo_fact
+// - 前台业务完成状态以 settle_records（biz_download_pool_*）为准
+// - 本函数记录：settle_records(过程型) + fin_process_event + 过程事实
 // - ⚠️ 禁止用 process_id 充当 business_id，business_id 必须是稳定业务身份键
 func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		// 第二阶段整改：open 继续有自己的 settle_businesses，但定性为过程型财务对象
+		// 第二阶段整改：open 继续有自己的业务记录，但定性为过程型财务对象
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(in.SessionID), "open", 1)
@@ -1064,44 +940,19 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				}
 				grossInput += int64(input.SourceTxOutput().Satoshis)
 				if input.SourceTXID != nil {
-					utxoID := strings.ToLower(strings.TrimSpace(input.SourceTXID.String())) + ":" + fmt.Sprint(input.SourceTxOutIndex)
-					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-						BusinessID:    businessID, // 第二阶段：utxo 挂到过程型 business
-						TxID:          baseTxID,
-						UTXOID:        utxoID,
-						IOSide:        "input",
-						UTXORole:      "wallet_input",
-						AmountSatoshi: int64(input.SourceTxOutput().Satoshis),
-						Note:          "direct pool open input",
-					})
+					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
 				}
 			}
 			for idx, out := range t.Outputs {
 				amount := int64(out.Satoshis)
 				if idx == 0 {
 					lockAmount += amount
-					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-						BusinessID:    businessID,
-						TxID:          baseTxID,
-						UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-						IOSide:        "output",
-						UTXORole:      "pool_lock",
-						AmountSatoshi: amount,
-						Note:          "direct pool lock output",
-					})
+					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
 					continue
 				}
 				if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
 					changeBack += amount
-					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base", finTxUTXOLinkEntry{
-						BusinessID:    businessID,
-						TxID:          baseTxID,
-						UTXOID:        baseTxID + ":" + fmt.Sprint(idx),
-						IOSide:        "output",
-						UTXORole:      "wallet_change",
-						AmountSatoshi: amount,
-						Note:          "wallet change output",
-					})
+					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
 				}
 			}
 		}
@@ -1112,7 +963,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		if minerFee < 0 {
 			minerFee = 0
 		}
-		// 第二阶段整改：open 继续写 settle_businesses，但明确标记为过程型财务对象
+		// 第二阶段整改：open 继续写业务记录，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
@@ -1133,7 +984,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				"process_type":  "pool_open", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_open_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
+			obs.Error("bitcast-client", "direct_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
 		if err := dbAppendSettlementCycleFinProcessEvent(db, settlementCycleID, finProcessEventEntry{
@@ -1155,24 +1006,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			obs.Error("bitcast-client", "direct_pool_open_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return err
 		}
-		// 第二阶段：tx_breakdown 挂正式的 business_id
-		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
-			BusinessID:         businessID,
-			TxID:               baseTxID,
-			TxRole:             "open_base",
-			GrossInputSatoshi:  grossInput,
-			ChangeBackSatoshi:  changeBack,
-			ExternalInSatoshi:  0,
-			CounterpartyOutSat: lockAmount,
-			MinerFeeSatoshi:    minerFee,
-			NetOutSatoshi:      lockAmount + minerFee,
-			NetInSatoshi:       0,
-			Note:               "direct open lock gross_input-change_back",
-			Payload:            map[string]any{"session_id": strings.TrimSpace(in.SessionID)},
-		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_open_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
-			return err
-		}
+		// 旧 tx 拆解层已下线，过程事实只保留 settle_records 和流程事件。
 		return nil
 	})
 }
@@ -1185,8 +1019,8 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 // - pay 是正式收费的事实来源，但不再单独新建并列 business
 // - pay 只保留：
 //   - fin_process_event（过程审计追踪）
-//   - settle_tx_breakdown（交易拆解，挂到 biz_download_pool_*）
-//   - 必要的 utxo fact
+//   - settle_records（业务主事实）
+//   - 必要的 fact / wallet 事实
 //
 // - settlement 回写由 triggerDirectTransferPoolPay 负责更新 biz_download_pool_* 的 settlement
 // - ⚠️ 任何代码不得将 biz_c2c_pay_* 作为正式业务读取入口
@@ -1224,24 +1058,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 			return err
 		}
 
-		// 交易拆解：挂到正式下载 business，不再挂过程 business
-		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
-			BusinessID:         downloadBusinessID,
-			TxID:               strings.TrimSpace(relatedTxID),
-			TxRole:             "pay",
-			GrossInputSatoshi:  0,
-			ChangeBackSatoshi:  0,
-			ExternalInSatoshi:  0,
-			CounterpartyOutSat: int64(amount),
-			MinerFeeSatoshi:    0,
-			NetOutSatoshi:      int64(amount),
-			NetInSatoshi:       0,
-			Note:               "offchain chunk pay",
-			Payload:            map[string]any{"sequence": sequence},
-		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_pay_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
-			return err
-		}
+		// 旧 tx 拆解层已下线，这里只保留流程事件。
 		return nil
 	})
 }
@@ -1250,8 +1067,8 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 // 设计说明：
 // - 这是 direct_transfer_pool close 阶段的过程财务写入
 // - 第二阶段整改：close 不再是正式收费 business，改为过程型财务对象
-// - 前台业务完成状态以 settle_business_settlements（biz_download_pool_*）为准（在 pay 阶段已更新）
-// - 本函数记录：settle_businesses(过程型) + fin_process_event + settle_tx_breakdown + utxo_fact
+// - 前台业务完成状态以 settle_records（biz_download_pool_*）为准（在 pay 阶段已更新）
+// - 本函数记录：settle_records(过程型) + fin_process_event + 过程事实
 // - ⚠️ 禁止用 process_id 充当 business_id，business_id 必须是稳定业务身份键
 func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) error {
 	if store == nil {
@@ -1272,7 +1089,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				}
 			}
 		}
-		// 第二阶段整改：close 继续有自己的 settle_businesses，但定性为过程型财务对象
+		// 第二阶段整改：close 继续有自己的业务记录，但定性为过程型财务对象
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "close", sequence)
 		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
@@ -1282,7 +1099,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		if err != nil {
 			return fmt.Errorf("resolve settlement cycle for pool allocation %s: %w", allocID, err)
 		}
-		// 第二阶段整改：close 继续写 settle_businesses，但明确标记为过程型财务对象
+		// 第二阶段整改：close 继续写业务记录，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
 		if err := dbAppendSettlementCycleFinBusiness(db, settlementCycleID, finBusinessEntry{
 			BusinessID:        businessID,
@@ -1302,7 +1119,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				"process_type":          "pool_close", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_close_settle_businesses_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
+			obs.Error("bitcast-client", "direct_pool_close_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
 			return err
 		}
 		// 过程事件继续使用统一的过程追踪 id
@@ -1324,78 +1141,31 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			obs.Error("bitcast-client", "direct_pool_close_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 			return err
 		}
-		if err := dbAppendFinTxBreakdownIfAbsent(db, finTxBreakdownEntry{
-			// 第二阶段：tx_breakdown 挂正式的 business_id
-			BusinessID:         businessID,
-			TxID:               finalTxID,
-			TxRole:             "close_final",
-			GrossInputSatoshi:  0,
-			ChangeBackSatoshi:  int64(buyerAmount),
-			ExternalInSatoshi:  0,
-			CounterpartyOutSat: 0,
-			MinerFeeSatoshi:    0,
-			NetOutSatoshi:      0,
-			NetInSatoshi:       0,
-			Note:               "pool settle return",
-			Payload:            map[string]any{"session_id": strings.TrimSpace(sessionID)},
-		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_close_fin_breakdown_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
-			return err
-		}
+		// 旧 tx 拆解层已下线，过程事实只保留 settle_records 和流程事件。
 		if parsedFinalTx == nil {
 			return nil
 		}
-		inputValueHint := int64(sellerAmount + buyerAmount)
-		for i, in := range parsedFinalTx.Inputs {
+		for _, in := range parsedFinalTx.Inputs {
 			if in.SourceTXID == nil {
 				continue
 			}
-			value := int64(0)
-			if i == 0 {
-				value = inputValueHint
-			}
-			utxoID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String())) + ":" + fmt.Sprint(in.SourceTxOutIndex)
-			// 第二阶段：utxo 挂正式的 business_id
-			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
-				BusinessID:    businessID,
-				TxID:          finalTxID,
-				UTXOID:        utxoID,
-				IOSide:        "input",
-				UTXORole:      "pool_input",
-				AmountSatoshi: value,
-				Note:          "direct pool settle input",
-			}); err != nil {
+			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final"); err != nil {
 				return err
 			}
 		}
 		sellerLeft := sellerAmount
 		buyerLeft := buyerAmount
-		for idx, out := range parsedFinalTx.Outputs {
+		for _, out := range parsedFinalTx.Outputs {
 			amount := out.Satoshis
 			if amount == 0 {
 				continue
 			}
-			utxoRole := "settle_other"
-			note := "direct pool settle output"
 			if sellerLeft > 0 && amount == sellerLeft {
-				utxoRole = "settle_to_seller"
-				note = "direct pool settle output to seller"
 				sellerLeft = 0
 			} else if buyerLeft > 0 && amount == buyerLeft {
-				utxoRole = "settle_to_buyer"
-				note = "direct pool settle output to buyer"
 				buyerLeft = 0
 			}
-			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final", finTxUTXOLinkEntry{
-				// 第二阶段：utxo 挂正式的 business_id
-				BusinessID:    businessID,
-				TxID:          finalTxID,
-				UTXOID:        finalTxID + ":" + fmt.Sprint(idx),
-				IOSide:        "output",
-				UTXORole:      utxoRole,
-				AmountSatoshi: int64(amount),
-				Note:          note,
-			}); err != nil {
+			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final"); err != nil {
 				return err
 			}
 		}
