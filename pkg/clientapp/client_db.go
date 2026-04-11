@@ -12,7 +12,7 @@ import (
 // 设计说明：
 // - 对外只保留这一个总模块，不再鼓励业务代码自己持有 sql 细节；
 // - actor 存在时优先走 actor，把运行期访问压回单 owner 串行模型；
-// - 迁移期仍保留底层 *sql.DB，仅给 db 模块内部闭包使用。
+// - 迁移期仍保留底层 *sql.DB，仅给入口组装和 db 模块内部闭包使用。
 type clientDB struct {
 	db    *sql.DB
 	actor *sqliteactor.Actor
@@ -26,6 +26,14 @@ func newClientDB(db *sql.DB, actor *sqliteactor.Actor) *clientDB {
 		db:    db,
 		actor: actor,
 	}
+}
+
+// NewClientStore 只给入口组装层使用。
+// 设计说明：
+// - 这里是把外层已经打开好的 db/actor 组装成业务能力；
+// - 业务代码不要绕过 Run 直接调用它。
+func NewClientStore(db *sql.DB, actor *sqliteactor.Actor) *clientDB {
+	return newClientDB(db, actor)
 }
 
 func (d *clientDB) Do(ctx context.Context, fn func(*sql.DB) error) error {

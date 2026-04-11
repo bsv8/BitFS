@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/infra/caps"
 	"github.com/bsv8/BFTP/pkg/infra/lhttp"
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
@@ -194,12 +196,12 @@ func (d *managedDaemon) close() error {
 		_ = rt.Close()
 	}
 	if d.srv != nil {
-		ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, stop := context.WithTimeout(context.WithoutCancel(d.rootCtx), 5*time.Second)
 		_ = d.srv.Shutdown(ctx)
 		stop()
 	}
 	if d.wocProxySrv != nil {
-		ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, stop := context.WithTimeout(context.WithoutCancel(d.rootCtx), 5*time.Second)
 		_ = d.wocProxySrv.Shutdown(ctx)
 		stop()
 	}
@@ -531,6 +533,23 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	runIn.DisableHTTPServer = true
 	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()
 	runIn.ObsSink = d.controlStream.ObsSink()
+	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
+	if !filepath.IsAbs(indexDBPath) {
+		indexDBPath = filepath.Join(strings.TrimSpace(runCfg.Storage.DataDir), indexDBPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(indexDBPath), 0o755); err != nil {
+		return err
+	}
+	openedDB, err := sqliteactor.Open(indexDBPath, runCfg.Debug)
+	if err != nil {
+		return err
+	}
+	deps := clientapp.RunDeps{
+		Store:   clientapp.NewClientStore(openedDB.DB, openedDB.Actor),
+		RawDB:   openedDB.DB,
+		DBActor: openedDB.Actor,
+		OwnsDB:  true,
+	}
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
 		Network:  d.cfg.BSV.Network,
@@ -542,6 +561,7 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 			_ = runIn.FSHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
+		_ = openedDB.Actor.Close()
 		return err
 	}
 	walletChain, err := clientapp.NewWalletChainClientWithBaseURL(chainbridge.Route{
@@ -553,19 +573,21 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 			_ = runIn.FSHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
+		_ = openedDB.Actor.Close()
 		return err
 	}
 	runIn.ActionChain = actionChain
 	runIn.WalletChain = walletChain
 
 	runCtx, cancel := context.WithCancel(d.rootCtx)
-	rt, err := clientapp.Run(runCtx, runIn)
+	rt, err := clientapp.Run(runCtx, runIn, deps)
 	if err != nil {
 		if runIn.FSHTTPListener != nil {
 			_ = runIn.FSHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		cancel()
+		_ = openedDB.Actor.Close()
 		return err
 	}
 	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt)
@@ -605,19 +627,24 @@ func (d *managedDaemon) prepareSystemHomepage() error {
 	return nil
 }
 
-func (d *managedDaemon) systemHomepageBootstrapHook() func(db *sql.DB) error {
+func (d *managedDaemon) systemHomepageBootstrapHook() func(ctx context.Context, store clientapp.ClientStore) error {
 	if d == nil || d.systemHomepage == nil {
 		return nil
 	}
 	resaleDiscountBPS := d.cfg.Seller.Pricing.ResaleDiscountBPS
-	return func(db *sql.DB) error {
-		if db == nil {
+	return func(ctx context.Context, store clientapp.ClientStore) error {
+		if ctx == nil {
+			return fmt.Errorf("ctx is required")
+		}
+		if store == nil {
 			return fmt.Errorf("runtime db not ready for system homepage bootstrap")
 		}
-		if err := d.systemHomepage.ApplySeedMetadata(db); err != nil {
-			return err
-		}
-		return d.systemHomepage.EnsureSeedPrices(db, resaleDiscountBPS)
+		return store.Do(ctx, func(db *sql.DB) error {
+			if err := d.systemHomepage.ApplySeedMetadata(db); err != nil {
+				return err
+			}
+			return d.systemHomepage.EnsureSeedPrices(db, resaleDiscountBPS)
+		})
 	}
 }
 

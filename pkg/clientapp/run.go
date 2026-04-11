@@ -498,7 +498,32 @@ type RunInput struct {
 	// - 这里给上层产品壳预留“本次启动专属”的 DB 引导钩子；
 	// - 典型用途是桌面版把系统首页的元信息/默认价格固化进索引；
 	// - 放在这个时机可以复用 startup_full_scan 的结果，同时避开运行期并发写数据库带来的锁竞争。
-	PostWorkspaceBootstrap func(db *sql.DB) error
+	PostWorkspaceBootstrap func(ctx context.Context, store ClientStore) error
+}
+
+// ClientStore 是业务层可见的最小数据库能力。
+// 设计约束：
+// - 这里不暴露 *sql.DB 给上层拼装逻辑；
+// - 业务函数只拿能力，不拿底层连接；
+// - 真正的实现仍然是 clientDB。
+type ClientStore interface {
+	Do(ctx context.Context, fn func(*sql.DB) error) error
+	Tx(ctx context.Context, fn func(*sql.Tx) error) error
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// RunDeps 由最外层装配好后显式传给 Run。
+// 设计约束：
+// - Run 不再自己开 DB；
+// - 这里必须显式提供已经准备好的 store 和 raw DB；
+// - OwnsDB 只决定本次 Run 是否回收外部注入的 DB 资源。
+type RunDeps struct {
+	Store   *clientDB
+	RawDB   *sql.DB
+	DBActor *sqliteactor.Actor
+	OwnsDB  bool
 }
 
 // NewRunInputFromConfig 在 Run 外完成配置复制，避免 RunInput 直接携带 Config。
@@ -785,9 +810,12 @@ func (r *Runtime) SQLTraceSummaryPath() string {
 	return strings.TrimSpace(r.sqlTraceSummaryPath)
 }
 
-func Run(ctx context.Context, in RunInput) (*Runtime, error) {
+func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
+	}
+	if deps.Store == nil || deps.RawDB == nil {
+		return nil, fmt.Errorf("runtime deps are required")
 	}
 	cfg := in.toConfig()
 	if err := applyConfigDefaultsForMode(&cfg, in.StartupMode); err != nil {
@@ -839,17 +867,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			_ = closeSQLTrace()
 		}
 	}()
-	openedDB, err := sqliteactor.Open(dbPath, cfg.Debug)
-	if err != nil {
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
 	sqlTraceMgr, err := initSQLTrace(logFile, cfg.Debug)
 	if err != nil {
-		_ = openedDB.Actor.Close()
-		_ = openedDB.DB.Close()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -860,22 +879,34 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		sqlTraceDir = sqlTraceMgr.TracePath()
 		sqlTraceSummaryPath = sqlTraceMgr.SummaryPath()
 	}
-	db := openedDB.DB
-	dbActor := openedDB.Actor
-	store := newClientDB(db, dbActor)
+	db := deps.RawDB
+	dbActor := deps.DBActor
+	store := deps.Store
+	closeOwnedDB := func() {
+		if !deps.OwnsDB {
+			return
+		}
+		if dbActor != nil {
+			_ = dbActor.Close()
+			return
+		}
+		if db != nil {
+			_ = db.Close()
+		}
+	}
 	// 设计说明：
 	// - BitFS 正式运行时的 sqlite 从这里开始统一进入单 owner 模型；
 	// - 初始化阶段仍有一些旧 helper 直接吃 `*sql.DB`，所以当前同时保留 `db` 和 `dbActor`；
 	// - 但运行期并发最重的路径必须优先走 actor，避免再长出新的直连写库逻辑。
 	if err := ensureClientDBSchema(ctx, store); err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if err := dbSyncSystemSeedPricingPolicies(ctx, db, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -891,14 +922,14 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		catalog: catalog,
 	}
 	if err := workspaceMgr.EnsureDefaultWorkspace(); err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if err := workspaceMgr.ValidateLiveCacheCapacity(cfg.Live.CacheMaxBytes); err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -906,7 +937,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	if cfg.Scan.StartupFullScan {
 		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
-			_ = dbActor.Close()
+			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -914,15 +945,15 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		}
 	}
 	if err := workspaceMgr.EnforceLiveCacheLimit(cfg.Live.CacheMaxBytes); err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if in.PostWorkspaceBootstrap != nil {
-		if err := in.PostWorkspaceBootstrap(db); err != nil {
-			_ = dbActor.Close()
+		if err := in.PostWorkspaceBootstrap(ctx, store); err != nil {
+			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -938,14 +969,14 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	}
 	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
 	if err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if strings.TrimSpace(effectivePrivHex) == "" {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -957,7 +988,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	in.EffectivePrivKeyHex = effectivePrivHex
 	priv, err := parsePrivHex(effectivePrivHex)
 	if err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -966,7 +997,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	opts = append(opts, libp2p.Identity(priv))
 	h, err := libp2p.New(opts...)
 	if err != nil {
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -975,7 +1006,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	clientPubHex, err := localPubKeyHex(h)
 	if err != nil {
 		_ = h.Close()
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -987,7 +1018,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	cfg.ClientID = clientPubHex
 	if err := validateClientIdentityConsistency(cfg); err != nil {
 		_ = h.Close()
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -997,7 +1028,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	activeGWs, err := connectGateways(ctx, h, cfg.Network.Gateways)
 	if err != nil {
 		_ = h.Close()
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -1009,7 +1040,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 	arbInfo, err := connectArbiters(ctx, h, cfg.Network.Arbiters)
 	if err != nil {
 		_ = h.Close()
-		_ = dbActor.Close()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -1021,7 +1052,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		localTrace, err := pproto.NewLocalRawTraceSink(logFile)
 		if err != nil {
 			_ = h.Close()
-			_ = dbActor.Close()
+			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -1061,10 +1092,8 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		"protocol_doc_name": BBroadcastProtocolName,
 	})
 	rt := &Runtime{
-		Host: h,
-		ctx:  ctx,
-		// DB:                       db,
-		// DBActor:                  dbActor,
+		Host:                     h,
+		ctx:                      ctx,
 		store:                    store,
 		runIn:                    in,
 		StartedAtUnix:            time.Now().Unix(),
@@ -1102,7 +1131,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			Network:  in.BSV.Network,
 		})
 		if err != nil {
-			_ = dbActor.Close()
+			closeOwnedDB()
 			if closeTrace != nil {
 				_ = closeTrace()
 			}
@@ -1119,7 +1148,7 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 			Network:  in.BSV.Network,
 		})
 		if err != nil {
-			_ = dbActor.Close()
+			closeOwnedDB()
 			if closeTrace != nil {
 				_ = closeTrace()
 			}
@@ -1210,8 +1239,16 @@ func Run(ctx context.Context, in RunInput) (*Runtime, error) {
 		if err := h.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if err := dbActor.Close(); err != nil && firstErr == nil {
-			firstErr = err
+		if deps.OwnsDB {
+			if dbActor != nil {
+				if err := dbActor.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			} else if db != nil {
+				if err := db.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			}
 		}
 		if err := closeSQLTrace(); err != nil && firstErr == nil {
 			firstErr = err

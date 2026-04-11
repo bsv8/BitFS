@@ -1,6 +1,7 @@
 package managedclient
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"net/http"
@@ -194,7 +195,7 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 	if hook == nil {
 		t.Fatalf("expected non-nil bootstrap hook")
 	}
-	if err := hook(db); err != nil {
+	if err := hook(context.Background(), clientapp.NewClientStore(db, nil)); err != nil {
 		t.Fatalf("run bootstrap hook: %v", err)
 	}
 

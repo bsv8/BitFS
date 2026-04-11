@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 )
 
@@ -54,6 +55,19 @@ func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
 	cfg.FSHTTP.Enabled = false
 	cfg.Storage.MinFreeBytes = 1
 
+	dbPath := cfg.Index.SQLitePath
+	if !filepath.IsAbs(dbPath) {
+		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
+	}
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatalf("mkdir db dir: %v", err)
+	}
+	openedDB, err := sqliteactor.Open(dbPath, true)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	defer func() { _ = openedDB.Actor.Close() }()
+
 	runIn := NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)
 	runIn.StartupMode = StartupModeTest
 	runIn.ActionChain = startupTestChain{}
@@ -62,7 +76,12 @@ func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	rt, err := Run(ctx, runIn)
+	rt, err := Run(ctx, runIn, RunDeps{
+		Store:   NewClientStore(openedDB.DB, openedDB.Actor),
+		RawDB:   openedDB.DB,
+		DBActor: openedDB.Actor,
+		OwnsDB:  true,
+	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
