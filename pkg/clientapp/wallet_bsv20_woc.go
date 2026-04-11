@@ -119,8 +119,14 @@ func matchBSV20VoutByScriptHash(ctx context.Context, txHex string, targetScriptH
 	
 	hash := sha256.Sum256(scriptBytes)
 	calculatedHash := strings.ToLower(hex.EncodeToString(hash[:]))
-	
-	return calculatedHash == targetScriptHash, nil
+	if calculatedHash == targetScriptHash {
+		return true, nil
+	}
+	// WOC 的 scriptHash 在部分端点是小端十六进制，这里兼容大小端两种编码。
+	if reverseHexByByte(calculatedHash) == targetScriptHash {
+		return true, nil
+	}
+	return false, nil
 }
 
 // matchBSV21VoutByScriptHash 复用 BSV20 的匹配逻辑
@@ -145,4 +151,18 @@ func extractOutputScriptsFromTxHex(txHex string) ([]string, error) {
 		}
 	}
 	return scripts, nil
+}
+
+func reverseHexByByte(s string) string {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if len(s) == 0 || len(s)%2 != 0 {
+		return ""
+	}
+	buf := make([]byte, len(s))
+	for i := 0; i < len(s); i += 2 {
+		src := len(s) - 2 - i
+		buf[i] = s[src]
+		buf[i+1] = s[src+1]
+	}
+	return string(buf)
 }

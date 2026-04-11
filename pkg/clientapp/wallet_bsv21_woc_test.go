@@ -86,6 +86,10 @@ func (testWalletChainClient) GetAddressConfirmedUnspent(context.Context, string)
 	return nil, nil
 }
 
+func (testWalletChainClient) GetAddressBSV21TokenUnspent(context.Context, string) ([]whatsonchain.BSV21TokenUTXO, error) {
+	return nil, nil
+}
+
 func (testWalletChainClient) GetChainInfo(context.Context) (uint32, error) { return 0, nil }
 
 func (testWalletChainClient) GetAddressConfirmedHistory(context.Context, string) ([]whatsonchain.AddressHistoryItem, error) {

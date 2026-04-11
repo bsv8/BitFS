@@ -1747,6 +1747,27 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 			continue
 		}
 
+		// 先确保 settlement record 落库。
+		// 不能依赖 fact_bsv_utxos 的 spent 状态来决定是否写 record，
+		// 因为本地投影可能已经把 UTXO 标为 spent（同一 tx），若这里直接 continue 会丢掉 BSV 结算记录。
+		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementCycleID, utxoID)
+		_, err = ExecContext(ctx, db,
+			`INSERT INTO fact_settlement_records(
+				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id,
+				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
+				used_satoshi=excluded.used_satoshi,
+				state=CASE WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending'
+					THEN fact_settlement_records.state ELSE excluded.state END`,
+			recordID, settlementCycleID, "BSV", "", utxoID,
+			fact.AmountSatoshi, "", "confirmed", occurredAtUnix, occurredAtUnix,
+			"BSV consumed by settlement cycle", mustJSONString(fact.Payload),
+		)
+		if err != nil {
+			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
+		}
+
 		var utxoState string
 		var currentSpentByTxid string
 		if err := QueryRowContext(ctx, db, `SELECT utxo_state, COALESCE(spent_by_txid,'') FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&utxoState, &currentSpentByTxid); err != nil {
@@ -1774,24 +1795,6 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 				continue
 			}
 			return fmt.Errorf("bsv utxo %s already spent by %s", utxoID, currentSpentByTxid)
-		}
-
-		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementCycleID, utxoID)
-		_, err := ExecContext(ctx, db, 
-			`INSERT INTO fact_settlement_records(
-				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id,
-				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
-				used_satoshi=excluded.used_satoshi,
-				state=CASE WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending' 
-					THEN fact_settlement_records.state ELSE excluded.state END`,
-			recordID, settlementCycleID, "BSV", "", utxoID,
-			fact.AmountSatoshi, "", "confirmed", occurredAtUnix, occurredAtUnix,
-			"BSV consumed by settlement cycle", mustJSONString(fact.Payload),
-		)
-		if err != nil {
-			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
 		}
 
 		// 标记 UTXO 为已花费。这里只认 settlement_cycle 推导出的 txid，禁止旁路写空值。

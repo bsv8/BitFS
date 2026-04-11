@@ -96,6 +96,9 @@ func (startupTestWalletChain) BaseURL() string { return "" }
 func (startupTestWalletChain) GetAddressConfirmedUnspent(context.Context, string) ([]whatsonchain.UTXO, error) {
 	return nil, nil
 }
+func (startupTestWalletChain) GetAddressBSV21TokenUnspent(context.Context, string) ([]whatsonchain.BSV21TokenUTXO, error) {
+	return nil, nil
+}
 func (startupTestWalletChain) GetChainInfo(context.Context) (uint32, error) { return 0, nil }
 func (startupTestWalletChain) GetAddressConfirmedHistory(context.Context, string) ([]whatsonchain.AddressHistoryItem, error) {
 	return nil, nil

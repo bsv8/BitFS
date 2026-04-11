@@ -13,6 +13,7 @@ import (
 type walletChainClient interface {
 	BaseURL() string
 	GetAddressConfirmedUnspent(ctx context.Context, address string) ([]whatsonchain.UTXO, error)
+	GetAddressBSV21TokenUnspent(ctx context.Context, address string) ([]whatsonchain.BSV21TokenUTXO, error)
 	GetChainInfo(ctx context.Context) (uint32, error)
 	GetAddressConfirmedHistory(ctx context.Context, address string) ([]whatsonchain.AddressHistoryItem, error)
 	GetAddressConfirmedHistoryPage(ctx context.Context, address string, q whatsonchain.ConfirmedHistoryQuery) (whatsonchain.ConfirmedHistoryPage, error)

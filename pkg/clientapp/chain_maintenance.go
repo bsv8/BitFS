@@ -1065,9 +1065,22 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 		})
 		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_utxos", utxoPath, err)
 	}
+	// BSV21 carrier 输出常常是 inscription + p2pkh 的组合脚本，
+	// 部分上游地址 unspent 端点不会把它算进普通 confirmed/unspent。
+	// 这里补一份 token 视图，把“已确认的 1sat carrier”并入当前快照，
+	// 让后续 unknown->verification->fact 能按统一链路落地。
+	bsv21TokenUTXOs, err := chain.GetAddressBSV21TokenUnspent(ctx, address)
+	if err != nil {
+		logWalletSyncStepError(meta, "chain_get_bsv21_unspent", err, map[string]any{
+			"upstream_path":    fmt.Sprintf("/token/bsv21/%s/unspent", strings.TrimSpace(address)),
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_bsv21_unspent", fmt.Sprintf("/token/bsv21/%s/unspent", strings.TrimSpace(address)), err)
+	}
 	logWalletSyncStepInfo(meta, "chain_get_utxos", map[string]any{
 		"upstream_path":      utxoPath,
 		"confirmed_utxo_cnt": len(confirmedUTXOs),
+		"bsv21_unspent_cnt":  len(bsv21TokenUTXOs),
 		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
 	})
 	current := map[string]poolcore.UTXO{}
@@ -1076,6 +1089,21 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 		txid := strings.ToLower(strings.TrimSpace(u.TxID))
 		utxoID := txid + ":" + fmt.Sprint(u.Vout)
 		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
+		confirmedLiveTxIDs[txid] = struct{}{}
+	}
+	for _, tokenUTXO := range bsv21TokenUTXOs {
+		if tokenUTXO.BlockHeight <= 0 {
+			continue
+		}
+		txid := strings.ToLower(strings.TrimSpace(tokenUTXO.TxID))
+		if txid == "" {
+			continue
+		}
+		utxoID := txid + ":" + fmt.Sprint(tokenUTXO.Vout)
+		if _, exists := current[utxoID]; exists {
+			continue
+		}
+		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: tokenUTXO.Vout, Value: 1}
 		confirmedLiveTxIDs[txid] = struct{}{}
 	}
 	stepStart = time.Now()

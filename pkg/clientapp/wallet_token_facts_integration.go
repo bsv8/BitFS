@@ -368,15 +368,33 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		if err != nil {
 			return err
 		}
-		if len(bsvFacts) == 0 {
+		// token carrier(1sat) 只参与 token 结算，不计入普通 BSV 扣账记录。
+		// 这里显式排除 carrier 输入，避免把 token 输入误记到 BSV 资产事实。
+		carrierInputs := make(map[string]struct{}, len(lots))
+		for _, lot := range lots {
+			utxoID := strings.ToLower(strings.TrimSpace(lot.CarrierUTXOID))
+			if utxoID == "" {
+				continue
+			}
+			carrierInputs[utxoID] = struct{}{}
+		}
+		filteredBSVFacts := make([]chainPaymentUTXOLinkEntry, 0, len(bsvFacts))
+		for _, fact := range bsvFacts {
+			utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+			if _, isCarrier := carrierInputs[utxoID]; isCarrier {
+				continue
+			}
+			filteredBSVFacts = append(filteredBSVFacts, fact)
+		}
+		if len(filteredBSVFacts) == 0 {
 			return fmt.Errorf("no wallet input facts found for txid %s", txID)
 		}
 		var grossInputSat int64
-		for _, fact := range bsvFacts {
+		for _, fact := range filteredBSVFacts {
 			grossInputSat += fact.AmountSatoshi
-			if err := dbMarkBSVUTXOSpentDB(ctx, dbtx, fact.UTXOID, txID); err != nil {
-				return fmt.Errorf("mark bsv utxo spent for token send failed: %w", err)
-			}
+		}
+		if err := dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, dbtx, settlementCycleID, filteredBSVFacts, now); err != nil {
+			return fmt.Errorf("append BSV settlement records for token send failed: %w", err)
 		}
 		changeBackSat := int64(0)
 		counterpartyOutSat := int64(0)
