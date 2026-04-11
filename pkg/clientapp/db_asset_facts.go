@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"strings"
 	"time"
+
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // ============================================================
@@ -205,7 +207,7 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 		}
 	}
 
-	_, execErr := ExecContext(ctx, db, 
+	result, execErr := ExecContext(ctx, db,
 		`INSERT INTO fact_bsv_utxos(
 			utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type,
 			spent_by_txid, created_at_unix, updated_at_unix, spent_at_unix, note, payload_json
@@ -246,7 +248,15 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
 	)
-	return execErr
+	if execErr != nil {
+		return execErr
+	}
+	if utxoState == "spent" && spentByTxid != "" && result != nil {
+		if affected, err := result.RowsAffected(); err == nil && affected > 0 {
+			emitFactBSVSpentAppliedEvent(ctx, db, strings.TrimSpace(e.Address), spentByTxid)
+		}
+	}
+	return nil
 }
 
 // dbMarkBSVUTXOSpent 标记本币UTXO为已花费。
@@ -283,11 +293,72 @@ func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentB
 	if err == nil && strings.ToLower(strings.TrimSpace(currentState)) == "spent" && currentSpentByTxid == spentByTxid && currentSpentAt > 0 {
 		return nil
 	}
-	_, execErr := ExecContext(ctx, db, 
+	result, execErr := ExecContext(ctx, db,
 		`UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=?`,
 		spentByTxid, updatedAt, updatedAt, utxoID,
 	)
-	return execErr
+	if execErr != nil {
+		return execErr
+	}
+	if result != nil {
+		if affected, err := result.RowsAffected(); err == nil && affected > 0 {
+			address, addrErr := loadBSVUTXOAddressByID(ctx, db, utxoID)
+			if addrErr == nil {
+				emitFactBSVSpentAppliedEvent(ctx, db, address, spentByTxid)
+			}
+		}
+	}
+	return nil
+}
+
+func loadBSVUTXOAddressByID(ctx context.Context, db sqlConn, utxoID string) (string, error) {
+	if db == nil {
+		return "", fmt.Errorf("db is nil")
+	}
+	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+	if utxoID == "" {
+		return "", fmt.Errorf("utxo_id is required")
+	}
+	var address string
+	if err := QueryRowContext(ctx, db, `SELECT address FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&address); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(address), nil
+}
+
+func queryFactBSVSpentCountByAddressTxID(ctx context.Context, db sqlConn, address string, spentByTxid string) (int64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
+	address = strings.TrimSpace(address)
+	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
+	if address == "" || spentByTxid == "" {
+		return 0, fmt.Errorf("address and spent_by_txid are required")
+	}
+	var n int64
+	if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE address=? AND utxo_state='spent' AND spent_by_txid=?`, address, spentByTxid).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+
+func emitFactBSVSpentAppliedEvent(ctx context.Context, db sqlConn, address string, spentByTxid string) {
+	address = strings.TrimSpace(address)
+	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
+	if address == "" || spentByTxid == "" {
+		return
+	}
+	spentRowCount, err := queryFactBSVSpentCountByAddressTxID(ctx, db, address, spentByTxid)
+	if err != nil {
+		return
+	}
+	obs.Info("bitcast-client", "fact_bsv_spent_applied", map[string]any{
+		"address":         address,
+		"spent_by_txid":   spentByTxid,
+		"spent_row_count": spentRowCount,
+		"sync_round_id":   strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey))),
+		"trigger_source":  strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextTriggerKey))),
+	})
 }
 
 // dbGetBSVUTXO 查询单个本币UTXO
@@ -1782,12 +1853,19 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 			if currentSpentByTxid == "" {
 				// 旧数据可能只有 spent 状态，没有写入来源 txid。
 				// 这里不重复扣，只把事实补齐成 cycle 反查出的真实 txid。
-				_, err := ExecContext(ctx, db, 
+				result, err := ExecContext(ctx, db, 
 					`UPDATE fact_bsv_utxos SET spent_by_txid=?, spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END, updated_at_unix=? WHERE utxo_id=? AND utxo_state='spent' AND COALESCE(spent_by_txid,'')=''`,
 					spentByTxid, occurredAtUnix, occurredAtUnix, utxoID,
 				)
 				if err != nil {
 					return fmt.Errorf("backfill spent_by_txid for bsv utxo %s failed: %w", utxoID, err)
+				}
+				if result != nil {
+					if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
+						if address, addrErr := loadBSVUTXOAddressByID(ctx, db, utxoID); addrErr == nil {
+							emitFactBSVSpentAppliedEvent(ctx, db, address, spentByTxid)
+						}
+					}
 				}
 				continue
 			}
@@ -1798,9 +1876,17 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 		}
 
 		// 标记 UTXO 为已花费。这里只认 settlement_cycle 推导出的 txid，禁止旁路写空值。
-		if _, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=? AND utxo_state<>'spent'`,
-			spentByTxid, occurredAtUnix, occurredAtUnix, utxoID); err != nil {
+		result, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=? AND utxo_state<>'spent'`,
+			spentByTxid, occurredAtUnix, occurredAtUnix, utxoID)
+		if err != nil {
 			return fmt.Errorf("mark bsv utxo spent %s failed: %w", utxoID, err)
+		}
+		if result != nil {
+			if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
+				if address, addrErr := loadBSVUTXOAddressByID(ctx, db, utxoID); addrErr == nil {
+					emitFactBSVSpentAppliedEvent(ctx, db, address, spentByTxid)
+				}
+			}
 		}
 	}
 	return nil

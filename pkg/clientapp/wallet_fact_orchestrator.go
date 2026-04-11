@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
 )
@@ -276,7 +277,13 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 	if len(changes) == 0 {
 		return nil
 	}
+	startedAt := time.Now()
+	obs.Info("bitcast-client", "fact_apply_confirmed_utxo_changes_started", map[string]any{
+		"change_count": len(changes),
+		"updated_at":   updatedAt,
+	})
 	return store.Do(ctx, func(db *sql.DB) error {
+		addressWallet := make(map[string]string, len(changes))
 		for _, change := range changes {
 			// 从 wallet_id 提取 owner_pubkey_hex（去掉 "wallet:" 前缀）
 			ownerPubkeyHex := strings.ToLower(strings.TrimSpace(change.WalletID))
@@ -304,7 +311,89 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 			if err := dbUpsertBSVUTXODB(ctx, db, entry); err != nil {
 				return fmt.Errorf("upsert bsv utxo for %s: %w", change.UTXOID, err)
 			}
+			addr := strings.TrimSpace(change.Address)
+			wid := strings.TrimSpace(change.WalletID)
+			if addr != "" && wid != "" {
+				addressWallet[addr] = wid
+			}
 		}
+		// 把 wallet_utxo 已花费状态回填到 fact_bsv_utxos，确保 fact 与钱包投影一致。
+		for address, walletID := range addressWallet {
+			if err := backfillFactSpentFromWalletUTXO(ctx, db, walletID, address, updatedAt); err != nil {
+				return fmt.Errorf("backfill fact spent from wallet_utxo failed: wallet_id=%s address=%s: %w", walletID, address, err)
+			}
+		}
+		obs.Info("bitcast-client", "fact_apply_confirmed_utxo_changes_finished", map[string]any{
+			"change_count": len(changes),
+			"updated_at":   updatedAt,
+			"duration_ms":  time.Since(startedAt).Milliseconds(),
+		})
 		return nil
 	})
+}
+
+func backfillFactSpentFromWalletUTXO(ctx context.Context, db *sql.DB, walletID string, address string, updatedAt int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	walletID = strings.TrimSpace(walletID)
+	address = strings.TrimSpace(address)
+	if walletID == "" || address == "" {
+		return fmt.Errorf("wallet_id and address are required")
+	}
+	startedAt := time.Now()
+	// 先拿“本轮刚变化为 spent”的明细，再按 utxo_id 定点回填，避免大范围更新导致锁等待。
+	rows, err := QueryContext(ctx, db, `SELECT LOWER(TRIM(utxo_id)), LOWER(TRIM(spent_txid))
+FROM wallet_utxo
+WHERE wallet_id=? AND address=? AND state='spent' AND COALESCE(TRIM(spent_txid),'')<>'' AND updated_at_unix=?`, walletID, address, updatedAt)
+	if err != nil {
+		return fmt.Errorf("query changed spent rows: %w", err)
+	}
+	defer rows.Close()
+	spentByUTXO := make(map[string]string)
+	spentTxIDs := make(map[string]struct{})
+	for rows.Next() {
+		var utxoID string
+		var spentTxID string
+		if err := rows.Scan(&utxoID, &spentTxID); err != nil {
+			return fmt.Errorf("scan changed spent rows: %w", err)
+		}
+		utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+		spentTxID = strings.ToLower(strings.TrimSpace(spentTxID))
+		if utxoID == "" || spentTxID == "" {
+			continue
+		}
+		spentByUTXO[utxoID] = spentTxID
+		spentTxIDs[spentTxID] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate changed spent rows: %w", err)
+	}
+	if len(spentByUTXO) == 0 {
+		return nil
+	}
+	for utxoID, spentTxID := range spentByUTXO {
+		if _, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos
+SET utxo_state='spent',
+    spent_by_txid=?,
+    spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END,
+    updated_at_unix=?
+WHERE utxo_id=? AND (utxo_state<>'spent' OR COALESCE(spent_by_txid,'')='')`,
+			spentTxID, updatedAt, updatedAt, utxoID,
+		); err != nil {
+			return fmt.Errorf("update fact spent by utxo_id=%s: %w", utxoID, err)
+		}
+	}
+	for spentTxID := range spentTxIDs {
+		emitFactBSVSpentAppliedEvent(ctx, db, address, spentTxID)
+	}
+	obs.Info("bitcast-client", "fact_backfill_spent_from_wallet_finished", map[string]any{
+		"wallet_id":       walletID,
+		"address":         address,
+		"updated_at":      updatedAt,
+		"spent_utxo_count": len(spentByUTXO),
+		"spent_tx_count":  len(spentTxIDs),
+		"duration_ms":     time.Since(startedAt).Milliseconds(),
+	})
+	return nil
 }
