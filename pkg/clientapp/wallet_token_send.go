@@ -167,7 +167,7 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed for txid %s: %w", finalTxID, err)
 	}
 	// 这里把 BSV21 发送事实收口到单一入口：
-	// - 先落 1 条 business 和 1 条 settlement_cycle；
+	// - 先落 1 条 business 和 1 条 settlement_payment_attempt；
 	// - 再按 lot 写入多条 settlement_records；
 	// - 最后再展开到本币资产事实层，避免先写资产再补结算把口径打散。
 	if err := appendBSV21TokenSendAccountingAfterBroadcast(r.Context(), s.store, s.rt, txHex, finalTxID); err != nil {

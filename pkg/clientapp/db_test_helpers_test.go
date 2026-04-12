@@ -37,32 +37,32 @@ func ensureClientDBBaseSchema(db *sql.DB) error {
 	return ensureClientDBBaseSchemaCtx(context.Background(), db)
 }
 
-// dbUpsertSettlementCycle 是测试用的薄包装。
-func dbUpsertSettlementCycle(db *sql.DB, cycleID string, sourceType string, sourceID string, state string,
+// dbUpsertSettlementPaymentAttempt 是测试用的薄包装。
+func dbUpsertSettlementPaymentAttempt(db *sql.DB, paymentAttemptID string, sourceType string, sourceID string, state string,
 	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
-	cycleIndex int, occurredAtUnix int64, note string, payload any) error {
-	return dbUpsertSettlementCycleCtx(context.Background(), db, cycleID, sourceType, sourceID, state,
-		grossSatoshi, gateFeeSatoshi, netSatoshi, cycleIndex, occurredAtUnix, note, payload)
+	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) error {
+	return dbUpsertSettlementPaymentAttemptCtx(context.Background(), db, paymentAttemptID, sourceType, sourceID, state,
+		grossSatoshi, gateFeeSatoshi, netSatoshi, paymentAttemptIndex, occurredAtUnix, note, payload)
 }
 
-// dbGetSettlementCycleBySource 是测试用的薄包装。
-func dbGetSettlementCycleBySource(db *sql.DB, sourceType string, sourceID string) (int64, error) {
-	return dbGetSettlementCycleBySourceCtx(context.Background(), db, sourceType, sourceID)
+// dbGetSettlementPaymentAttemptBySource 是测试用的薄包装。
+func dbGetSettlementPaymentAttemptBySource(db *sql.DB, sourceType string, sourceID string) (int64, error) {
+	return dbGetSettlementPaymentAttemptBySourceCtx(context.Background(), db, sourceType, sourceID)
 }
 
-// dbGetSettlementCycleSourceTxID 是测试用的薄包装。
-func dbGetSettlementCycleSourceTxID(db *sql.DB, settlementCycleID int64) (string, error) {
-	return dbGetSettlementCycleSourceTxIDCtx(context.Background(), db, settlementCycleID)
+// dbGetSettlementPaymentAttemptSourceTxID 是测试用的薄包装。
+func dbGetSettlementPaymentAttemptSourceTxID(db *sql.DB, settlementPaymentAttemptID int64) (string, error) {
+	return dbGetSettlementPaymentAttemptSourceTxIDCtx(context.Background(), db, settlementPaymentAttemptID)
 }
 
-// dbAppendBSVConsumptionsForSettlementCycle 是测试用的薄包装。
-func dbAppendBSVConsumptionsForSettlementCycle(db *sql.DB, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	return dbAppendBSVConsumptionsForSettlementCycleCtx(context.Background(), db, settlementCycleID, utxoFacts, occurredAtUnix)
+// dbAppendBSVConsumptionsForSettlementPaymentAttempt 是测试用的薄包装。
+func dbAppendBSVConsumptionsForSettlementPaymentAttempt(db *sql.DB, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	return dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(context.Background(), db, settlementPaymentAttemptID, utxoFacts, occurredAtUnix)
 }
 
-// dbAppendTokenConsumptionsForSettlementCycle 是测试用的薄包装。
-func dbAppendTokenConsumptionsForSettlementCycle(db *sql.DB, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
-	return dbAppendTokenConsumptionsForSettlementCycleCtx(context.Background(), db, settlementCycleID, utxoFacts, occurredAtUnix)
+// dbAppendTokenConsumptionsForSettlementPaymentAttempt 是测试用的薄包装。
+func dbAppendTokenConsumptionsForSettlementPaymentAttempt(db *sql.DB, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	return dbAppendTokenConsumptionsForSettlementPaymentAttemptCtx(context.Background(), db, settlementPaymentAttemptID, utxoFacts, occurredAtUnix)
 }
 
 // tableHasForeignKey 是测试用的薄包装。
@@ -121,7 +121,7 @@ func seedWalletUTXO(t *testing.T, db *sql.DB, utxoID, txid string, vout uint32, 
 }
 
 // seedDirectTransferPoolFacts 给直连池读模型测试种最小事实集。
-// 设计说明：固定 seed 一组可复用的 open/pay/close 运行态事实，方便读模型直接挂 settlement_cycle。
+// 设计说明：固定 seed 一组可复用的 open/pay/close 运行态事实，方便读模型直接挂 settlement_payment_attempt。
 func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
 	t.Helper()
 	ctx := context.Background()
@@ -158,12 +158,12 @@ func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
 	}
 }
 
-// mustSettlementCycleIDBySource 让旧测试更容易写断言。
-func mustSettlementCycleIDBySource(t *testing.T, db *sql.DB, sourceType, sourceID string) int64 {
+// mustSettlementPaymentAttemptIDBySource 让旧测试更容易写断言。
+func mustSettlementPaymentAttemptIDBySource(t *testing.T, db *sql.DB, sourceType, sourceID string) int64 {
 	t.Helper()
-	id, err := dbGetSettlementCycleBySource(db, sourceType, sourceID)
+	id, err := dbGetSettlementPaymentAttemptBySource(db, sourceType, sourceID)
 	if err != nil {
-		t.Fatalf("lookup settlement cycle failed: %v", err)
+		t.Fatalf("lookup settlement payment attempt failed: %v", err)
 	}
 	return id
 }

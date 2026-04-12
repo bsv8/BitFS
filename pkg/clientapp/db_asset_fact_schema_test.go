@@ -11,28 +11,28 @@ func legacyTableName(parts ...string) string {
 	return strings.Join(parts, "_")
 }
 
-func seedAssetFactSettlementCycle(t *testing.T, db *sql.DB, sourceType string, sourceID string, occurredAt int64) int64 {
+func seedAssetFactSettlementPaymentAttempt(t *testing.T, db *sql.DB, sourceType string, sourceID string, occurredAt int64) int64 {
 	t.Helper()
-	cycleID := fmt.Sprintf("cycle_%s_%s", sourceType, sourceID)
+	paymentAttemptID := fmt.Sprintf("cycle_%s_%s", sourceType, sourceID)
 	switch sourceType {
 	case "chain_quote_pay", "pool_session_quote_pay", "chain_direct_pay", "chain_asset_create":
 	default:
 		t.Fatalf("unsupported source type %s", sourceType)
 	}
-	res, err := db.Exec(`INSERT INTO fact_settlement_cycles(
-		cycle_id,source_type,source_id,state,
+	res, err := db.Exec(`INSERT INTO fact_settlement_payment_attempts(
+		payment_attempt_id,source_type,source_id,state,
 		gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,cycle_index,
 		occurred_at_unix,confirmed_at_unix,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		cycleID, sourceType, sourceID, "confirmed",
+		paymentAttemptID, sourceType, sourceID, "confirmed",
 		1000, 0, 1000, 0, occurredAt, occurredAt, "test cycle", "{}",
 	)
 	if err != nil {
-		t.Fatalf("seed settlement cycle failed: %v", err)
+		t.Fatalf("seed settlement payment attempt failed: %v", err)
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		t.Fatalf("seed settlement cycle id failed: %v", err)
+		t.Fatalf("seed settlement payment attempt id failed: %v", err)
 	}
 	return id
 }
@@ -50,7 +50,7 @@ func assertTableMissing(t *testing.T, db *sql.DB, parts ...string) {
 }
 
 // TestInitIndexDB_CreatesCurrentAssetFactSchema 验证新的资产事实表结构
-// 新五表：fact_bsv_utxos, fact_token_lots, fact_token_carrier_links, fact_settlement_records, fact_settlement_cycles
+// 新五表：fact_bsv_utxos, fact_token_lots, fact_token_carrier_links, fact_settlement_records, fact_settlement_payment_attempts
 func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 	t.Parallel()
 
@@ -65,7 +65,7 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 		"fact_token_lots",
 		"fact_token_carrier_links",
 		"fact_settlement_records",
-		"fact_settlement_cycles",
+		"fact_settlement_payment_attempts",
 	} {
 		exists, err := hasTable(db, table)
 		if err != nil {
@@ -144,7 +144,7 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 		t.Fatalf("inspect fact_settlement_records columns failed: %v", err)
 	}
 	for _, col := range []string{
-		"record_id", "settlement_cycle_id", "asset_type", "owner_pubkey_hex",
+		"record_id", "settlement_payment_attempt_id", "asset_type", "owner_pubkey_hex",
 		"source_utxo_id", "source_lot_id", "used_satoshi", "used_quantity_text",
 		"state", "occurred_at_unix", "confirmed_at_unix", "note", "payload_json",
 	} {
@@ -153,18 +153,18 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 		}
 	}
 
-	// 验证 fact_settlement_cycles 列结构
-	cycleCols, err := tableColumns(db, "fact_settlement_cycles")
+	// 验证 fact_settlement_payment_attempts 列结构
+	paymentAttemptCols, err := tableColumns(db, "fact_settlement_payment_attempts")
 	if err != nil {
-		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
+		t.Fatalf("inspect fact_settlement_payment_attempts columns failed: %v", err)
 	}
 	for _, col := range []string{
-		"id", "cycle_id", "source_type", "source_id", "state",
+		"id", "payment_attempt_id", "source_type", "source_id", "state",
 		"gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi", "cycle_index",
 		"occurred_at_unix", "confirmed_at_unix", "note", "payload_json",
 	} {
-		if _, ok := cycleCols[col]; !ok {
-			t.Fatalf("fact_settlement_cycles missing column %s", col)
+		if _, ok := paymentAttemptCols[col]; !ok {
+			t.Fatalf("fact_settlement_payment_attempts missing column %s", col)
 		}
 	}
 }
@@ -197,25 +197,25 @@ func TestInitIndexDB_AssetFactIndexesAndConstraints(t *testing.T) {
 		t.Fatal("fact_token_carrier_links should have unique constraint on (carrier_utxo_id, link_state)")
 	}
 
-	// 验证 fact_settlement_records 唯一约束 (settlement_cycle_id, asset_type, source_utxo_id, source_lot_id)
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_records", []string{"settlement_cycle_id", "asset_type", "source_utxo_id", "source_lot_id"}); err != nil {
+	// 验证 fact_settlement_records 唯一约束 (settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_records", []string{"settlement_payment_attempt_id", "asset_type", "source_utxo_id", "source_lot_id"}); err != nil {
 		t.Fatalf("inspect fact_settlement_records unique constraint failed: %v", err)
 	} else if !unique {
-		t.Fatal("fact_settlement_records should have unique constraint on (settlement_cycle_id, asset_type, source_utxo_id, source_lot_id)")
+		t.Fatal("fact_settlement_records should have unique constraint on (settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id)")
 	}
 
-	// 验证 fact_settlement_cycles 唯一约束 (source_type, source_id)
-	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"source_type", "source_id"}); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles unique constraint failed: %v", err)
+	// 验证 fact_settlement_payment_attempts 唯一约束 (source_type, source_id)
+	if unique, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_payment_attempts", []string{"source_type", "source_id"}); err != nil {
+		t.Fatalf("inspect fact_settlement_payment_attempts unique constraint failed: %v", err)
 	} else if !unique {
-		t.Fatal("fact_settlement_cycles should have unique constraint on (source_type, source_id)")
+		t.Fatal("fact_settlement_payment_attempts should have unique constraint on (source_type, source_id)")
 	}
 
 	// 验证 fact_settlement_records 外键约束
-	if hasFK, err := tableHasForeignKey(db, "fact_settlement_records", "settlement_cycle_id", "fact_settlement_cycles", "id"); err != nil {
+	if hasFK, err := tableHasForeignKey(db, "fact_settlement_records", "settlement_payment_attempt_id", "fact_settlement_payment_attempts", "id"); err != nil {
 		t.Fatalf("inspect fact_settlement_records foreign key failed: %v", err)
 	} else if !hasFK {
-		t.Fatal("fact_settlement_records should have foreign key on settlement_cycle_id referencing fact_settlement_cycles.id")
+		t.Fatal("fact_settlement_records should have foreign key on settlement_payment_attempt_id referencing fact_settlement_payment_attempts.id")
 	}
 
 	// 验证 NOT NULL 约束
@@ -231,10 +231,10 @@ func TestInitIndexDB_AssetFactIndexesAndConstraints(t *testing.T) {
 		t.Fatal("fact_token_lots.token_standard should be NOT NULL")
 	}
 
-	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "source_type"); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles source_type failed: %v", err)
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_payment_attempts", "source_type"); err != nil {
+		t.Fatalf("inspect fact_settlement_payment_attempts source_type failed: %v", err)
 	} else if !notNull {
-		t.Fatal("fact_settlement_cycles.source_type should be NOT NULL")
+		t.Fatal("fact_settlement_payment_attempts.source_type should be NOT NULL")
 	}
 }
 
@@ -321,14 +321,14 @@ func TestInitIndexDB_AssetFactWriteOperations(t *testing.T) {
 	}
 
 	// 创建结算周期
-	cycleID := seedAssetFactSettlementCycle(t, db, "chain_quote_pay", "payment_1", 1700000000)
+	paymentAttemptID := seedAssetFactSettlementPaymentAttempt(t, db, "chain_quote_pay", "payment_1", 1700000000)
 
 	// 插入 fact_settlement_records 测试数据
 	_, err = db.Exec(`INSERT INTO fact_settlement_records(
-		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex,
 		source_utxo_id, used_satoshi, state, occurred_at_unix, note
 	) VALUES(?,?,?,?,?,?,?,?,?)`,
-		"record_bsv_1", cycleID, "BSV", "pubkey_hex_1",
+		"record_bsv_1", paymentAttemptID, "BSV", "pubkey_hex_1",
 		"utxo_bsv_1", 1000, "confirmed", 1700000000, "test settlement record",
 	)
 	if err != nil {
@@ -343,16 +343,16 @@ func TestInitIndexDB_AssetFactWriteOperations(t *testing.T) {
 		t.Fatalf("expected 1 fact_settlement_records, got %d", recordCount)
 	}
 
-	// 验证外键约束：非法 settlement_cycle_id 应该失败
+	// 验证外键约束：非法 settlement_payment_attempt_id 应该失败
 	_, err = db.Exec(`INSERT INTO fact_settlement_records(
-		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex,
 		source_utxo_id, used_satoshi, state, occurred_at_unix
 	) VALUES(?,?,?,?,?,?,?,?)`,
 		"record_invalid", 99999, "BSV", "pubkey_hex_1",
 		"utxo_bsv_1", 1000, "confirmed", 1700000000,
 	)
 	if err == nil {
-		t.Fatal("expected invalid settlement_cycle_id insert to fail due to foreign key constraint")
+		t.Fatal("expected invalid settlement_payment_attempt_id insert to fail due to foreign key constraint")
 	}
 }
 
@@ -426,12 +426,12 @@ func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
 	}
 
 	// 测试 fact_settlement_records.asset_type CHECK 约束
-	cycleID := seedAssetFactSettlementCycle(t, db, "chain_quote_pay", "payment_check_1", 1700000000)
+	paymentAttemptID := seedAssetFactSettlementPaymentAttempt(t, db, "chain_quote_pay", "payment_check_1", 1700000000)
 	_, err = db.Exec(`INSERT INTO fact_settlement_records(
-		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex,
 		state, occurred_at_unix
 	) VALUES(?,?,?,?,?,?)`,
-		"record_check_1", cycleID, "INVALID_ASSET", "pubkey_hex_1",
+		"record_check_1", paymentAttemptID, "INVALID_ASSET", "pubkey_hex_1",
 		"confirmed", 1700000000,
 	)
 	if err == nil {
@@ -440,19 +440,19 @@ func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
 
 	// 测试 fact_settlement_records.state CHECK 约束
 	_, err = db.Exec(`INSERT INTO fact_settlement_records(
-		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
+		record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex,
 		state, occurred_at_unix
 	) VALUES(?,?,?,?,?,?)`,
-		"record_check_2", cycleID, "BSV", "pubkey_hex_1",
+		"record_check_2", paymentAttemptID, "BSV", "pubkey_hex_1",
 		"invalid_state", 1700000000,
 	)
 	if err == nil {
 		t.Fatal("expected invalid state to fail CHECK constraint")
 	}
 
-	// 测试 fact_settlement_cycles.source_type CHECK 约束
-	_, err = db.Exec(`INSERT INTO fact_settlement_cycles(
-		cycle_id, source_type, source_id, state, occurred_at_unix
+	// 测试 fact_settlement_payment_attempts.source_type CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_settlement_payment_attempts(
+		payment_attempt_id, source_type, source_id, state, occurred_at_unix
 	) VALUES(?,?,?,?,?)`,
 		"cycle_check_1", "invalid_source", "source_1", "confirmed", 1700000000,
 	)
@@ -460,9 +460,9 @@ func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
 		t.Fatal("expected invalid source_type to fail CHECK constraint")
 	}
 
-	// 测试 fact_settlement_cycles.state CHECK 约束
-	_, err = db.Exec(`INSERT INTO fact_settlement_cycles(
-		cycle_id, source_type, source_id, state, occurred_at_unix
+	// 测试 fact_settlement_payment_attempts.state CHECK 约束
+	_, err = db.Exec(`INSERT INTO fact_settlement_payment_attempts(
+		payment_attempt_id, source_type, source_id, state, occurred_at_unix
 	) VALUES(?,?,?,?,?)`,
 		"cycle_check_2", "chain_quote_pay", "source_2", "invalid_state", 1700000000,
 	)

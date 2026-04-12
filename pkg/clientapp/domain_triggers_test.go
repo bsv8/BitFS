@@ -137,15 +137,15 @@ func TestRecordDomainRegisterAccountingAfterBroadcast_WritesChainPaymentFacts(t 
 		t.Fatalf("expected 1 fact_settlement_channel_chain_quote_pay row, got %d", paymentCount)
 	}
 
-	var cycleCount int
+	var paymentAttemptCount int
 	var channelID int64
 	if err := db.QueryRow(`SELECT id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, strings.ToLower(parsed.TxID().String())).Scan(&channelID); err != nil {
 		t.Fatalf("query channel id failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", channelID)).Scan(&cycleCount); err != nil {
-		t.Fatalf("query fact_settlement_cycles failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", channelID)).Scan(&paymentAttemptCount); err != nil {
+		t.Fatalf("query fact_settlement_payment_attempts failed: %v", err)
 	}
-	if cycleCount != 1 {
-		t.Fatalf("expected 1 settlement cycle, got %d", cycleCount)
+	if paymentAttemptCount != 1 {
+		t.Fatalf("expected 1 settlement payment attempt, got %d", paymentAttemptCount)
 	}
 }

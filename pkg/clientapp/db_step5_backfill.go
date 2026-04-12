@@ -105,9 +105,9 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				continue
 			}
 
-			settlementCycleID, err := resolveChainPaymentSourceToSettlementCycleDB(ctx, db, cp.TxID)
+			settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx, db, cp.TxID)
 			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for chain payment %d: %v", cp.ID, err))
+				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement payment attempt for chain payment %d: %v", cp.ID, err))
 				continue
 			}
 			settlementStatus := "settled"
@@ -120,9 +120,9 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				INSERT INTO settle_records(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json,
 					settlement_id, settlement_method, settlement_status, target_type, target_id, error_message, settlement_payload_json, created_at_unix, updated_at_unix)
-				VALUES(?, 'formal', 'settlement_cycle', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?, ?, 'chain', ?, 'chain_quote_pay', ?, '', ?, ?, ?)
+				VALUES(?, 'formal', 'settlement_payment_attempt', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?, ?, 'chain', ?, 'chain_quote_pay', ?, '', ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
-				businessID, fmt.Sprintf("%d", settlementCycleID), cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
+				businessID, fmt.Sprintf("%d", settlementPaymentAttemptID), cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
 				"backfill:"+businessID, "历史回填：域名注册",
 				fmt.Sprintf(`{"backfill":true,"chain_payment_id":%d}`, cp.ID),
 				settlementID, settlementStatus, fmt.Sprintf("%d", cp.ID), fmt.Sprintf(`{"backfill":true,"chain_payment_id":%d}`, cp.ID), now, now,
@@ -443,9 +443,9 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				completed = false
 			}
 
-			settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycleDB(ctx, db, fmt.Sprintf("%d", payAlloc.ID))
+			settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx, db, fmt.Sprintf("%d", payAlloc.ID))
 			if err != nil {
-				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement cycle for pool allocation %d: %v", payAlloc.ID, err))
+				result.Errors = append(result.Errors, fmt.Sprintf("resolve settlement payment attempt for pool allocation %d: %v", payAlloc.ID, err))
 				completed = false
 				continue
 			}
@@ -458,9 +458,9 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				INSERT INTO settle_records(business_id, settlement_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json,
 					settlement_method, settlement_status, target_type, target_id, settlement_payload_json, created_at_unix, updated_at_unix)
-				VALUES(?, ?, 'formal', 'settlement_cycle', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?, 'pool', ?, ?, ?, ?, ?, ?)
+				VALUES(?, ?, 'formal', 'settlement_payment_attempt', ?, 'direct_transfer', 'pay', ?, ?, 'posted', ?, ?, ?, ?, 'pool', ?, ?, ?, ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
-				businessID, settlementID, fmt.Sprintf("%d", settlementCycleID), payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
+				businessID, settlementID, fmt.Sprintf("%d", settlementPaymentAttemptID), payAlloc.BuyerPubHex, payAlloc.SellerPubHex, payAlloc.CreatedAtUnix,
 				"backfill:"+businessID,
 				"历史回填：池支付",
 				fmt.Sprintf(`{"backfill":true,"pool_session_id":"%s","pay_amount":%d}`, payAlloc.PoolSessionID, payAlloc.PayeeAmountAfter),

@@ -232,7 +232,7 @@ func splitUTXOID(utxoID string) (string, uint32, bool) {
 
 // appendBSV21TokenSendAccountingAfterBroadcast token 发送成功后写入单一事实入口。
 // 设计说明：
-// - 一次只落 1 条 business + 1 条 settlement_cycle；
+// - 一次只落 1 条 business + 1 条 settlement_payment_attempt；
 // - token 记录按 lot 拆成多条 settlement_records；
 // - 本币消耗事实放到 settlement_records 之后再展开，避免先写资产再补结算。
 func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *clientDB, rt *Runtime, txHex string, txID string) error {
@@ -277,7 +277,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			return fmt.Errorf("no token transfer outputs found in txid %s", txID)
 		}
 
-		channelID, err := dbUpsertChainChannelWithSettlementCycle(ctx, dbtx, chainPaymentEntry{
+		channelID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, dbtx, chainPaymentEntry{
 			TxID:                 txID,
 			PaymentSubType:       "bsv21_transfer",
 			Status:               "confirmed",
@@ -298,16 +298,16 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 				"token_send_type": "bsv21_transfer",
 				"tx_hex":          txHex,
 			},
-		}, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", "cycle_chain_direct_pay", "bind chain direct pay channel id")
+		}, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", "payment_attempt_chain_direct_pay", "bind chain direct pay channel id")
 		if err != nil {
 			return fmt.Errorf("upsert direct pay channel for token send: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, dbtx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+		settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, dbtx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 		if err != nil {
-			return fmt.Errorf("resolve settlement cycle for token send: %w", err)
+			return fmt.Errorf("resolve settlement payment attempt for token send: %w", err)
 		}
 
-		if err := dbAppendSettlementCycleFinBusiness(dbtx, settlementCycleID, finBusinessEntry{
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(dbtx, settlementPaymentAttemptID, finBusinessEntry{
 			BusinessID:        walletBSV21SendBusinessID(txID),
 			BusinessRole:      "process",
 			AccountingScene:   "wallet_transfer",
@@ -330,10 +330,10 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		}
 
 		for _, lot := range lots {
-			recordID := fmt.Sprintf("rec_token_%d_%s", settlementCycleID, lot.Lot.LotID)
+			recordID := fmt.Sprintf("rec_token_%d_%s", settlementPaymentAttemptID, lot.Lot.LotID)
 			if err := dbAppendSettlementRecordDB(ctx, dbtx, settlementRecordEntry{
 				RecordID:          recordID,
-				SettlementCycleID: settlementCycleID,
+				SettlementPaymentAttemptID: settlementPaymentAttemptID,
 				AssetType:         "TOKEN",
 				OwnerPubkeyHex:    lot.Lot.OwnerPubkeyHex,
 				SourceLotID:       lot.Lot.LotID,
@@ -406,7 +406,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		for _, fact := range filteredBSVFacts {
 			grossInputSat += fact.AmountSatoshi
 		}
-		if err := dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, dbtx, settlementCycleID, filteredBSVFacts, now); err != nil {
+		if err := dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx, dbtx, settlementPaymentAttemptID, filteredBSVFacts, now); err != nil {
 			return fmt.Errorf("append BSV settlement records for token send failed: %w", err)
 		}
 		changeBackSat := int64(0)
@@ -435,7 +435,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			minerFeeSat = 0
 		}
 		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 token 事实和流程事件。
-		if err := dbAppendSettlementCycleFinProcessEvent(dbtx, settlementCycleID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(dbtx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_wallet_bsv21_send_" + txID,
 			AccountingScene:   "wallet_transfer",
 			AccountingSubType: "bsv21_send",

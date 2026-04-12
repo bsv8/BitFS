@@ -20,7 +20,7 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		"biz_pool_allocations",
 		"fact_settlement_channel_pool_session_quote_pay",
 		"fact_pool_session_events",
-		"fact_settlement_cycles",
+		"fact_settlement_payment_attempts",
 		"fact_settlement_channel_chain_quote_pay",
 		"settle_records",
 		"wallet_local_broadcast_txs",
@@ -64,8 +64,8 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 			cols:  []string{"id", "allocation_id", "pool_session_id", "allocation_kind", "event_kind", "sequence_num", "created_at_unix"},
 		},
 		{
-			table: "fact_settlement_cycles",
-			cols:  []string{"id", "cycle_id", "source_type", "source_id", "state", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi"},
+			table: "fact_settlement_payment_attempts",
+			cols:  []string{"id", "payment_attempt_id", "source_type", "source_id", "state", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi"},
 		},
 		{
 			table: "settle_records",

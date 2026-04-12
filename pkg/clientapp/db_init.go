@@ -175,7 +175,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 直连传输费用池事实层：只保留真实池会话与会话事件，不承载运行时快照职责。
 		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_pool_session_quote_pay(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			settlement_payment_attempt_id INTEGER NOT NULL UNIQUE,
 			pool_session_id TEXT NOT NULL UNIQUE,
 			txid TEXT NOT NULL DEFAULT '',
 			pool_scheme TEXT NOT NULL,
@@ -191,7 +191,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			status TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id)
+			FOREIGN KEY(settlement_payment_attempt_id) REFERENCES fact_settlement_payment_attempts(id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS fact_pool_session_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -219,7 +219,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		)`,
 		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_chain_quote_pay(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			settlement_payment_attempt_id INTEGER NOT NULL UNIQUE,
 			txid TEXT NOT NULL,
 			payment_subtype TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -234,12 +234,12 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			to_party_id TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
+			FOREIGN KEY(settlement_payment_attempt_id) REFERENCES fact_settlement_payment_attempts(id),
 			UNIQUE(txid)
 		)`,
 		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_chain_direct_pay(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			settlement_payment_attempt_id INTEGER NOT NULL UNIQUE,
 			txid TEXT NOT NULL,
 			payment_subtype TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -254,12 +254,12 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			to_party_id TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
+			FOREIGN KEY(settlement_payment_attempt_id) REFERENCES fact_settlement_payment_attempts(id),
 			UNIQUE(txid)
 		)`,
 		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_chain_asset_create(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			settlement_payment_attempt_id INTEGER NOT NULL UNIQUE,
 			txid TEXT NOT NULL,
 			payment_subtype TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -274,7 +274,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			to_party_id TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
+			FOREIGN KEY(settlement_payment_attempt_id) REFERENCES fact_settlement_payment_attempts(id),
 			UNIQUE(txid)
 		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
@@ -796,14 +796,14 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 新资产账本表（硬切版）
 		// 设计说明：
 		// - 新三表：fact_bsv_utxos（本币UTXO事实）、fact_token_lots（Token数量事实）、fact_token_carrier_links（Token与载体绑定）
-		// - 新增 fact_settlement_records（结算消耗记录）、fact_settlement_cycles（结算周期锚点）
+		// - 新增 fact_settlement_records（结算消耗记录）、fact_settlement_payment_attempts（结算周期锚点）
 		// - 余额事实统一从新表计算，不依赖 direction IN/OUT 模式
 		// ============================================================
 
 		// fact_bsv_utxos: 本币UTXO事实表（硬切新增）
 		// 设计说明：
 		// - 记录钱包拥有的本币UTXO状态（unspent/spent）
-		// - 这里只是余额事实，真正扣账只从 settlement_cycle 触发
+		// - 这里只是余额事实，真正扣账只从 settlement_payment_attempt 触发
 		// - carrier_type 区分：plain_bsv（纯本币）、token_carrier（token载体1sat）、fee_change（费用找零）、unknown（待确认）
 		// - 余额计算：owner_pubkey_hex + utxo_state='unspent' 聚合
 		`CREATE TABLE IF NOT EXISTS fact_bsv_utxos(
@@ -896,7 +896,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// - source_lot_id: token消耗来源（fact_token_lots.lot_id）
 		`CREATE TABLE IF NOT EXISTS fact_settlement_records(
 			record_id TEXT PRIMARY KEY,
-			settlement_cycle_id INTEGER NOT NULL,
+			settlement_payment_attempt_id INTEGER NOT NULL,
 			asset_type TEXT NOT NULL CHECK(asset_type IN ('BSV','TOKEN')),
 			owner_pubkey_hex TEXT NOT NULL,
 			source_utxo_id TEXT NOT NULL DEFAULT '',
@@ -908,25 +908,25 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			confirmed_at_unix INTEGER NOT NULL DEFAULT 0,
 			note TEXT NOT NULL DEFAULT '',
 			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
-			UNIQUE(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id)
+			FOREIGN KEY(settlement_payment_attempt_id) REFERENCES fact_settlement_payment_attempts(id),
+			UNIQUE(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id)
 		)`,
 		// fact_settlement_records 索引
-		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_cycle_asset ON fact_settlement_records(settlement_cycle_id, asset_type, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_cycle_asset ON fact_settlement_records(settlement_payment_attempt_id, asset_type, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_owner_state ON fact_settlement_records(owner_pubkey_hex, state, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_source_utxo ON fact_settlement_records(source_utxo_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_source_lot ON fact_settlement_records(source_lot_id, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_records_state_time ON fact_settlement_records(state, occurred_at_unix DESC)`,
 
-		// Step 15: 统一结算锚点 — fact_settlement_cycles
+		// Step 15: 统一结算锚点 — fact_settlement_payment_attempts
 		// 设计说明：
 		// - 把 4 个渠道写入统一到结算周期主表
 		// - 只保留 source_type/source_id 作为来源锚点
 		// - source_type/source_id 做唯一约束，禁止再靠旧事件列兜底
-		// - 业务扣账只认 settlement_cycle，不再直接改 fact_bsv_utxos
-		`CREATE TABLE IF NOT EXISTS fact_settlement_cycles(
+		// - 业务扣账只认 settlement_payment_attempt，不再直接改 fact_bsv_utxos
+		`CREATE TABLE IF NOT EXISTS fact_settlement_payment_attempts(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			cycle_id TEXT NOT NULL UNIQUE,
+			payment_attempt_id TEXT NOT NULL UNIQUE,
 			source_type TEXT NOT NULL CHECK(source_type IN ('pool_session_quote_pay','chain_quote_pay','chain_direct_pay','chain_asset_create')),
 			source_id TEXT NOT NULL,
 			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
@@ -940,7 +940,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			UNIQUE(source_type, source_id)
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_cycles_source_state ON fact_settlement_cycles(source_type, state, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_payment_attempts_source_state ON fact_settlement_payment_attempts(source_type, state, occurred_at_unix DESC)`,
 
 		// Step 9: WOC 证据驱动 token IN 入账 - 待确认队列表
 		// 设计说明：

@@ -294,7 +294,7 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	}
 	assertBizOrderPayBSVSettlementFacts(t, db, first.BusinessID, 2)
 	var chainCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_direct_pay WHERE settlement_cycle_id=(SELECT settlement_cycle_id FROM fact_settlement_channel_chain_direct_pay WHERE id=(SELECT target_id FROM settle_records WHERE business_id=?))`, first.BusinessID).Scan(&chainCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_direct_pay WHERE settlement_payment_attempt_id=(SELECT settlement_payment_attempt_id FROM fact_settlement_channel_chain_direct_pay WHERE id=(SELECT target_id FROM settle_records WHERE business_id=?))`, first.BusinessID).Scan(&chainCount); err != nil {
 		t.Fatalf("count fact_settlement_channel_chain_direct_pay failed: %v", err)
 	}
 	if chainCount != 1 {
@@ -593,11 +593,11 @@ func assertBizOrderPayBSVSettlementFacts(t *testing.T, db *sql.DB, businessID st
 	if chainCount != 1 {
 		t.Fatalf("expected one chain_direct_pay row, got %d", chainCount)
 	}
-	var cycleID int64
-	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_settlement_channel_chain_direct_pay WHERE id=?`, targetID).Scan(&cycleID); err != nil {
-		t.Fatalf("query settlement_cycle_id failed: %v", err)
+	var paymentAttemptID int64
+	if err := db.QueryRow(`SELECT settlement_payment_attempt_id FROM fact_settlement_channel_chain_direct_pay WHERE id=?`, targetID).Scan(&paymentAttemptID); err != nil {
+		t.Fatalf("query settlement_payment_attempt_id failed: %v", err)
 	}
-	rows, err := db.Query(`SELECT source_utxo_id, used_satoshi FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV' ORDER BY source_utxo_id ASC`, cycleID)
+	rows, err := db.Query(`SELECT source_utxo_id, used_satoshi FROM fact_settlement_records WHERE settlement_payment_attempt_id=? AND asset_type='BSV' ORDER BY source_utxo_id ASC`, paymentAttemptID)
 	if err != nil {
 		t.Fatalf("query fact_settlement_records failed: %v", err)
 	}

@@ -138,7 +138,7 @@ type txHistoryItem struct {
 	PoolID        string `json:"pool_id,omitempty"`
 	MsgID         string `json:"msg_id,omitempty"`
 	SequenceNum   uint32 `json:"sequence_num,omitempty"`
-	CycleIndex    uint32 `json:"cycle_index,omitempty"`
+	PaymentAttemptIndex    uint32 `json:"cycle_index,omitempty"`
 }
 
 type gatewayEventFilter struct {
@@ -587,7 +587,7 @@ type scanTxHistory interface {
 func scanTxHistoryItem(row scanTxHistory) (txHistoryItem, error) {
 	var out txHistoryItem
 	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.EventType, &out.Direction, &out.AmountSatoshi, &out.Purpose, &out.Note, &out.PoolID, &out.MsgID, &out.SequenceNum, &out.CycleIndex, &payload)
+	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.EventType, &out.Direction, &out.AmountSatoshi, &out.Purpose, &out.Note, &out.PoolID, &out.MsgID, &out.SequenceNum, &out.PaymentAttemptIndex, &payload)
 	if err != nil {
 		return txHistoryItem{}, err
 	}

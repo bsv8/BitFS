@@ -193,12 +193,12 @@ func seedWalletBSV21LocalCreateCandidate(t *testing.T, db *sql.DB, rt *Runtime, 
 	if factCount != 0 {
 		t.Fatalf("unexpected fact_settlement_channel_chain_quote_pay rows for local projection, got=%d", factCount)
 	}
-	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_direct_pay' AND source_id=?`, txID).Scan(&cycleCount); err != nil {
-		t.Fatalf("query fact_settlement_cycles count failed: %v", err)
+	var paymentAttemptCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_payment_attempts WHERE source_type='chain_direct_pay' AND source_id=?`, txID).Scan(&paymentAttemptCount); err != nil {
+		t.Fatalf("query fact_settlement_payment_attempts count failed: %v", err)
 	}
-	if cycleCount != 0 {
-		t.Fatalf("unexpected fact_settlement_cycles rows for local projection, got=%d", cycleCount)
+	if paymentAttemptCount != 0 {
+		t.Fatalf("unexpected fact_settlement_payment_attempts rows for local projection, got=%d", paymentAttemptCount)
 	}
 	return tokenID, txID
 }

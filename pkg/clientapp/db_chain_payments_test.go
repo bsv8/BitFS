@@ -21,7 +21,7 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	txid := "tx_idem_test_123"
 
 	// 第一次写入
-	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	id1, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_in",
 		Status:              "confirmed",
@@ -42,7 +42,7 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	}
 
 	// 第二次写入（相同 txid）- 应该返回相同 id
-	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	id2, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_in",
 		Status:              "confirmed",
@@ -71,12 +71,12 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 		t.Fatalf("expected 1 record, got %d", count)
 	}
 
-	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=? AND state='confirmed'`, fmt.Sprintf("%d", id1)).Scan(&cycleCount); err != nil {
-		t.Fatalf("count settlement cycles failed: %v", err)
+	var paymentAttemptCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=? AND state='confirmed'`, fmt.Sprintf("%d", id1)).Scan(&paymentAttemptCount); err != nil {
+		t.Fatalf("count settlement payment attempts failed: %v", err)
 	}
-	if cycleCount != 1 {
-		t.Fatalf("expected 1 confirmed settlement cycle, got %d", cycleCount)
+	if paymentAttemptCount != 1 {
+		t.Fatalf("expected 1 confirmed settlement payment attempt, got %d", paymentAttemptCount)
 	}
 
 	// 验证记录已被更新
@@ -89,17 +89,17 @@ func TestDbUpsertChainPayment_Idempotent(t *testing.T) {
 	}
 }
 
-// TestDbUpsertChainPayment_BackfillsMissingSettlementCycle 验证已有 chain_payment 但缺 cycle 时可自愈补齐。
-func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
+// TestDbUpsertChainPayment_BackfillsMissingSettlementPaymentAttempt 验证已有 chain_payment 但缺 cycle 时可自愈补齐。
+func TestDbUpsertChainPayment_BackfillsMissingSettlementPaymentAttempt(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
 	ctx := context.Background()
 	store := newClientDB(db, nil)
 
-	txid := "tx_backfill_cycle_001"
+	txid := "tx_backfill_attempt_001"
 
-	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	id1, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -122,11 +122,11 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 	}
 
 	// 模拟异常老数据：cycle 仍在，但 source_id 被污染。
-	if _, err := db.Exec(`UPDATE fact_settlement_cycles SET source_id='broken_source' WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)); err != nil {
-		t.Fatalf("corrupt settlement cycle source_id failed: %v", err)
+	if _, err := db.Exec(`UPDATE fact_settlement_payment_attempts SET source_id='broken_source' WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)); err != nil {
+		t.Fatalf("corrupt settlement payment attempt source_id failed: %v", err)
 	}
 
-	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	id2, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "external_out",
 		Status:              "confirmed",
@@ -146,21 +146,21 @@ func TestDbUpsertChainPayment_BackfillsMissingSettlementCycle(t *testing.T) {
 		t.Fatalf("expected same id %d, got %d", id1, id2)
 	}
 
-	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&cycleCount); err != nil {
-		t.Fatalf("count settlement cycles failed: %v", err)
+	var paymentAttemptCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&paymentAttemptCount); err != nil {
+		t.Fatalf("count settlement payment attempts failed: %v", err)
 	}
-	if cycleCount != 1 {
-		t.Fatalf("expected 1 settlement cycle after backfill, got %d", cycleCount)
+	if paymentAttemptCount != 1 {
+		t.Fatalf("expected 1 settlement payment attempt after backfill, got %d", paymentAttemptCount)
 	}
 
-	var cycleID string
-	if err := db.QueryRow(`SELECT cycle_id FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&cycleID); err != nil {
-		t.Fatalf("query settlement cycle failed: %v", err)
+	var paymentAttemptID string
+	if err := db.QueryRow(`SELECT payment_attempt_id FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&paymentAttemptID); err != nil {
+		t.Fatalf("query settlement payment attempt failed: %v", err)
 	}
-	wantCycleID := fmt.Sprintf("cycle_chain_quote_pay_%s", txid)
-	if cycleID != wantCycleID {
-		t.Fatalf("expected %s, got %s", wantCycleID, cycleID)
+	wantPaymentAttemptID := fmt.Sprintf("payment_attempt_chain_quote_pay_%s", txid)
+	if paymentAttemptID != wantPaymentAttemptID {
+		t.Fatalf("expected %s, got %s", wantPaymentAttemptID, paymentAttemptID)
 	}
 }
 
@@ -174,7 +174,7 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime_QuotePay(t *testing
 
 	txid := "tx_time_guard_001"
 
-	id1, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	id1, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                 txid,
 		PaymentSubType:       "quote_pay",
 		Status:               "submitted",
@@ -196,7 +196,7 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime_QuotePay(t *testing
 		t.Fatalf("expected positive id, got %d", id1)
 	}
 
-	id2, err := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	id2, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                 txid,
 		PaymentSubType:       "quote_pay",
 		Status:               "observed",
@@ -230,15 +230,15 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime_QuotePay(t *testing
 		t.Fatalf("wallet_observed_at_unix mismatch: got=%d want=1700002000", observedAt)
 	}
 
-	var cycleState string
-	if err := db.QueryRow(`SELECT state FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&cycleState); err != nil {
-		t.Fatalf("query settlement cycle state failed: %v", err)
+	var paymentAttemptState string
+	if err := db.QueryRow(`SELECT state FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&paymentAttemptState); err != nil {
+		t.Fatalf("query settlement payment attempt state failed: %v", err)
 	}
-	if cycleState != "pending" {
-		t.Fatalf("expected pending settlement cycle before confirmation, got %s", cycleState)
+	if paymentAttemptState != "pending" {
+		t.Fatalf("expected pending settlement payment attempt before confirmation, got %s", paymentAttemptState)
 	}
 
-	_, err = dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	_, err = dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                 txid,
 		PaymentSubType:       "quote_pay",
 		Status:               "confirmed",
@@ -256,11 +256,11 @@ func TestDbUpsertChainPayment_PreservesSubmitAndObservedTime_QuotePay(t *testing
 	if err != nil {
 		t.Fatalf("third upsert failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT state, confirmed_at_unix FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&cycleState, &observedAt); err != nil {
-		t.Fatalf("query confirmed settlement cycle failed: %v", err)
+	if err := db.QueryRow(`SELECT state, confirmed_at_unix FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", id1)).Scan(&paymentAttemptState, &observedAt); err != nil {
+		t.Fatalf("query confirmed settlement payment attempt failed: %v", err)
 	}
-	if cycleState != "confirmed" {
-		t.Fatalf("expected confirmed settlement cycle after confirmation, got %s", cycleState)
+	if paymentAttemptState != "confirmed" {
+		t.Fatalf("expected confirmed settlement payment attempt after confirmation, got %s", paymentAttemptState)
 	}
 	if observedAt != 1700003000 {
 		t.Fatalf("confirmed_at_unix mismatch: got=%d want=1700003000", observedAt)
@@ -334,18 +334,18 @@ func TestDbGetPoolAllocationIDByAllocationID(t *testing.T) {
 
 	// 先创建 pool_session
 	sessionID := "sess_alloc_lookup_1"
-	if err := dbUpsertSettlementCycle(db, "cycle_pool_session_quote_pay_"+sessionID, "pool_session_quote_pay", "pending:pool_session_quote_pay:"+sessionID, "pending", 0, 0, 0, 0, 1700000001, "test", nil); err != nil {
-		t.Fatalf("seed settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_pool_session_quote_pay_"+sessionID, "pool_session_quote_pay", "pending:pool_session_quote_pay:"+sessionID, "pending", 0, 0, 0, 0, 1700000001, "test", nil); err != nil {
+		t.Fatalf("seed settlement payment attempt failed: %v", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleBySource(db, "pool_session_quote_pay", "pending:pool_session_quote_pay:"+sessionID)
+	settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "pool_session_quote_pay", "pending:pool_session_quote_pay:"+sessionID)
 	if err != nil {
-		t.Fatalf("lookup settlement cycle failed: %v", err)
+		t.Fatalf("lookup settlement payment attempt failed: %v", err)
 	}
 	_, err = db.Exec(`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
-		settlement_cycle_id, pool_session_id, txid, pool_scheme, counterparty_pubkey_hex, seller_pubkey_hex, arbiter_pubkey_hex, gateway_pubkey_hex,
+		settlement_payment_attempt_id, pool_session_id, txid, pool_scheme, counterparty_pubkey_hex, seller_pubkey_hex, arbiter_pubkey_hex, gateway_pubkey_hex,
 		pool_amount_satoshi, spend_tx_fee_satoshi, fee_rate_sat_byte, lock_blocks, open_base_txid, status, created_at_unix, updated_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		settlementCycleID, sessionID, "tx_1", "2of3", "", "", "", "", 1000, 10, 0.5, 6, "base_tx_1", "active", 1700000001, 1700000001,
+		settlementPaymentAttemptID, sessionID, "tx_1", "2of3", "", "", "", "", 1000, 10, 0.5, 6, "base_tx_1", "active", 1700000001, 1700000001,
 	)
 	if err != nil {
 		t.Fatalf("insert pool_session failed: %v", err)
@@ -426,16 +426,16 @@ func TestRecordChainPaymentAccountingAfterBroadcast_WritesBusinessFacts(t *testi
 		t.Fatalf("expected 1 fact_settlement_channel_chain_quote_pay row, got %d", paymentCount)
 	}
 
-	var cycleCount int
+	var paymentAttemptCount int
 	var channelID int64
 	if err := db.QueryRow(`SELECT id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txID).Scan(&channelID); err != nil {
 		t.Fatalf("query channel id failed: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", channelID)).Scan(&cycleCount); err != nil {
-		t.Fatalf("query fact_settlement_cycles failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", channelID)).Scan(&paymentAttemptCount); err != nil {
+		t.Fatalf("query fact_settlement_payment_attempts failed: %v", err)
 	}
-	if cycleCount != 1 {
-		t.Fatalf("expected 1 settlement cycle, got %d", cycleCount)
+	if paymentAttemptCount != 1 {
+		t.Fatalf("expected 1 settlement payment attempt, got %d", paymentAttemptCount)
 	}
 
 	var businessCount int

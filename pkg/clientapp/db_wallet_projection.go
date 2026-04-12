@@ -15,7 +15,7 @@ import (
 // dbApplyLocalBroadcastWalletProjection 只负责把本地广播交易写回钱包视图。
 // 设计说明：
 // - 业务层只传交易和显式 store，这里统一处理钱包 UTXO 回填；
-// - 本地广播只是钱包运行态，不是结算事实；这里不允许补任何 settlement cycle；
+// - 本地广播只是钱包运行态，不是结算事实；这里不允许补任何 settlement payment attempt；
 // - 这样 local broadcast 这条链路就不会再散落 sql 细节。
 func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStore, rt *Runtime, tx *txsdk.Transaction, trigger string) error {
 	if store == nil {

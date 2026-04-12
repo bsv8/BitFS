@@ -37,7 +37,7 @@ type txHistoryEntry struct {
 	PoolID        string
 	MsgID         string
 	SequenceNum   uint32
-	CycleIndex    uint32
+	PaymentAttemptIndex    uint32
 }
 
 type gatewayEventEntry struct {
@@ -169,10 +169,10 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 		return "", sourceID, nil
 	}
 	switch sourceType {
-	case "settlement_cycle", "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
+	case "settlement_payment_attempt", "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
 		return sourceType, sourceID, nil
 	default:
-		return "", "", fmt.Errorf("source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
+		return "", "", fmt.Errorf("source_type must be settlement_payment_attempt, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
 	}
 }
 
@@ -1979,7 +1979,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 
 	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
-		poolAllocID, err := resolvePoolAllocationSourceToSettlementCycle(r.Context(), httpStore(s), poolAllocationID)
+		poolAllocID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(r.Context(), httpStore(s), poolAllocationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeBusinessItem{}})
@@ -1988,7 +1988,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		sourceType = "settlement_cycle"
+		sourceType = "settlement_payment_attempt"
 		sourceID = fmt.Sprintf("%d", poolAllocID)
 	}
 
@@ -2058,10 +2058,10 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in this business_role layer"})
 		return
 	}
-	if !financeDetailAllowsAllStates(r) && it.SourceType == "settlement_cycle" {
-		cycleID, err := strconv.ParseInt(strings.TrimSpace(it.SourceID), 10, 64)
-		if err == nil && cycleID > 0 {
-			state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
+	if !financeDetailAllowsAllStates(r) && it.SourceType == "settlement_payment_attempt" {
+		paymentAttemptID, err := strconv.ParseInt(strings.TrimSpace(it.SourceID), 10, 64)
+		if err == nil && paymentAttemptID > 0 {
+			state, err := dbGetSettlementPaymentAttemptStateByID(r.Context(), httpStore(s), paymentAttemptID)
 			if err == nil && state != "confirmed" {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
 				return
@@ -2116,7 +2116,7 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 
 	// pool_allocation_id 只做主键换算，不允许直接把 allocation_id 塞进 source_id
 	if poolAllocationID != "" && sourceType == "" && sourceID == "" {
-		poolAllocID, err := resolvePoolAllocationSourceToSettlementCycle(r.Context(), httpStore(s), poolAllocationID)
+		poolAllocID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(r.Context(), httpStore(s), poolAllocationID)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				writeJSON(w, http.StatusOK, map[string]any{"total": 0, "limit": limit, "offset": offset, "items": []financeProcessEventItem{}})
@@ -2125,7 +2125,7 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		sourceType = "settlement_cycle"
+		sourceType = "settlement_payment_attempt"
 		sourceID = fmt.Sprintf("%d", poolAllocID)
 	}
 
@@ -2173,10 +2173,10 @@ func (s *httpAPIServer) handleAdminFinanceProcessEventDetail(w http.ResponseWrit
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if !financeDetailAllowsAllStates(r) && it.SourceType == "settlement_cycle" {
-		cycleID, err := strconv.ParseInt(strings.TrimSpace(it.SourceID), 10, 64)
-		if err == nil && cycleID > 0 {
-			state, err := dbGetSettlementCycleStateByID(r.Context(), httpStore(s), cycleID)
+	if !financeDetailAllowsAllStates(r) && it.SourceType == "settlement_payment_attempt" {
+		paymentAttemptID, err := strconv.ParseInt(strings.TrimSpace(it.SourceID), 10, 64)
+		if err == nil && paymentAttemptID > 0 {
+			state, err := dbGetSettlementPaymentAttemptStateByID(r.Context(), httpStore(s), paymentAttemptID)
 			if err == nil && state != "confirmed" {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found in confirmed settlement layer"})
 				return

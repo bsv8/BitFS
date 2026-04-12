@@ -230,37 +230,37 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 	if status == "" {
 		status = "active"
 	}
-	cycleState := "pending"
+	paymentAttemptState := "pending"
 	if strings.EqualFold(status, "settled") || strings.EqualFold(status, "closed") || strings.EqualFold(status, "confirmed") {
-		cycleState = "confirmed"
+		paymentAttemptState = "confirmed"
 	}
-	var settlementCycleID int64
+	var settlementPaymentAttemptID int64
 	var existingChannelID int64
-	err := QueryRowContext(ctx, tx, `SELECT id,settlement_cycle_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&existingChannelID, &settlementCycleID)
+	err := QueryRowContext(ctx, tx, `SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&existingChannelID, &settlementPaymentAttemptID)
 	if err != nil && err != sql.ErrNoRows {
 		return err
 	}
 	if err == sql.ErrNoRows {
 		pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
-		if err := dbUpsertSettlementCycleCtx(ctx, tx,
-			"cycle_pool_session_quote_pay_"+sessionID,
+		if err := dbUpsertSettlementPaymentAttemptCtx(ctx, tx,
+			"payment_attempt_pool_session_quote_pay_"+sessionID,
 			"pool_session_quote_pay",
 			pendingSourceID,
-			cycleState,
+			paymentAttemptState,
 			0, 0, 0, 0, updatedAt,
 			"pre-bind pool session quote pay channel",
 			map[string]any{"pool_session_id": sessionID, "status": status},
 		); err != nil {
-			return fmt.Errorf("upsert settlement cycle shell for pool session channel: %w", err)
+			return fmt.Errorf("upsert settlement payment attempt shell for pool session channel: %w", err)
 		}
-		settlementCycleID, err = dbGetSettlementCycleBySourceCtx(ctx, tx, "pool_session_quote_pay", pendingSourceID)
+		settlementPaymentAttemptID, err = dbGetSettlementPaymentAttemptBySourceCtx(ctx, tx, "pool_session_quote_pay", pendingSourceID)
 		if err != nil {
-			return fmt.Errorf("resolve settlement cycle shell for pool session channel: %w", err)
+			return fmt.Errorf("resolve settlement payment attempt shell for pool session channel: %w", err)
 		}
 	}
 	_, err = ExecContext(ctx, tx,
 		`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
-			settlement_cycle_id,pool_session_id,txid,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+			settlement_payment_attempt_id,pool_session_id,txid,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 			pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(pool_session_id) DO UPDATE SET
@@ -277,7 +277,7 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 			open_base_txid=excluded.open_base_txid,
 			status=excluded.status,
 			updated_at_unix=excluded.updated_at_unix`,
-		settlementCycleID,
+		settlementPaymentAttemptID,
 		sessionID,
 		strings.ToLower(strings.TrimSpace(in.OpenBaseTxID)),
 		poolScheme,
@@ -301,7 +301,7 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 	if err := QueryRowContext(ctx, tx, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
 		return err
 	}
-	_, err = ExecContext(ctx, tx, `UPDATE fact_settlement_cycles SET source_type='pool_session_quote_pay', source_id=? WHERE id=?`, fmt.Sprintf("%d", channelID), settlementCycleID)
+	_, err = ExecContext(ctx, tx, `UPDATE fact_settlement_payment_attempts SET source_type='pool_session_quote_pay', source_id=? WHERE id=?`, fmt.Sprintf("%d", channelID), settlementPaymentAttemptID)
 	return err
 }
 
@@ -395,12 +395,12 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *sql.Tx, in 
 	if err := dbApplyDirectTransferBizPoolAccountingTx(ctx, tx, in, allocationNo); err != nil {
 		return err
 	}
-	var settlementCycleID int64
+	var settlementPaymentAttemptID int64
 	var channelID int64
 	if err := QueryRowContext(ctx, tx,
-		`SELECT id,settlement_cycle_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`,
+		`SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`,
 		sessionID,
-	).Scan(&channelID, &settlementCycleID); err != nil {
+	).Scan(&channelID, &settlementPaymentAttemptID); err != nil {
 		return fmt.Errorf("resolve pool session channel for allocation %s: %w", allocID, err)
 	}
 	if _, err := ExecContext(ctx, tx,
@@ -412,7 +412,7 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *sql.Tx, in 
 		return err
 	}
 	if _, err := ExecContext(ctx, tx,
-		`UPDATE fact_settlement_cycles
+		`UPDATE fact_settlement_payment_attempts
 		    SET source_type='pool_session_quote_pay',
 		        source_id=?,
 		        state='confirmed',
@@ -424,7 +424,7 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *sql.Tx, in 
 		createdAt,
 		createdAt,
 		"updated from pool allocation event",
-		settlementCycleID,
+		settlementPaymentAttemptID,
 	); err != nil {
 		return err
 	}

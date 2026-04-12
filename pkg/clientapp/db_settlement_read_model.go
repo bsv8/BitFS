@@ -240,7 +240,7 @@ func jsonAmountSatoshi(raw json.RawMessage) (uint64, bool) {
 // GetFullPoolSettlementChainByPoolSessionID 按 pool_session_id 直接查完整池结算链。
 // 说明：
 // - 这是 session 维度的新入口，保留 front_order 入口不变；
-// - 这里只负责把 pool_session -> settlement_cycle -> business -> settlement 串起来；
+// - 这里只负责把 pool_session -> settlement_payment_attempt -> business -> settlement 串起来；
 // - 旧的 front_order 读法仍然可用。
 func GetFullPoolSettlementChainByPoolSessionID(ctx context.Context, store *clientDB, poolSessionID string) (PoolSettlementChain, error) {
 	var out PoolSettlementChain
@@ -258,12 +258,12 @@ func GetFullPoolSettlementChainByPoolSessionID(ctx context.Context, store *clien
 	}
 	out.PoolSession = &poolSession
 
-	cycleID, err := dbGetSettlementCycleByPoolSessionIDDB(ctx, store.db, poolSessionID)
+	paymentAttemptID, err := dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, store.db, poolSessionID)
 	if err != nil {
-		return out, fmt.Errorf("find settlement cycle: %w", err)
+		return out, fmt.Errorf("find settlement payment attempt: %w", err)
 	}
 
-	business, err := dbGetLatestBusinessBySettlementCycleID(ctx, store, cycleID)
+	business, err := dbGetLatestBusinessBySettlementPaymentAttemptID(ctx, store, paymentAttemptID)
 	if err != nil {
 		return out, fmt.Errorf("find business: %w", err)
 	}

@@ -132,36 +132,36 @@ type financeProcessEventItem struct {
 type settlementCycleSourceResolution struct {
 	SourceType           string
 	SourceID             string
-	SettlementCycleID    int64
-	SettlementCycleState string
+	SettlementPaymentAttemptID    int64
+	SettlementPaymentAttemptState string
 }
 
-func resolvePoolAllocationSourceToSettlementCycle(ctx context.Context, store *clientDB, sourceID string) (int64, error) {
+func resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx context.Context, store *clientDB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return resolvePoolAllocationSourceToSettlementCycleDB(ctx, db, sourceID)
+		return resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx, db, sourceID)
 	})
 }
 
-func resolveChainPaymentSourceToSettlementCycle(ctx context.Context, store *clientDB, sourceID string) (int64, error) {
+func resolveChainPaymentSourceToSettlementPaymentAttempt(ctx context.Context, store *clientDB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return resolveChainPaymentSourceToSettlementCycleDB(ctx, db, sourceID)
+		return resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx, db, sourceID)
 	})
 }
 
-func dbGetSettlementCycleStateByID(ctx context.Context, store *clientDB, id int64) (string, error) {
+func dbGetSettlementPaymentAttemptStateByID(ctx context.Context, store *clientDB, id int64) (string, error) {
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		return dbGetSettlementCycleStateByIDDB(ctx, db, id)
+		return dbGetSettlementPaymentAttemptStateByIDDB(ctx, db, id)
 	})
 }
 
@@ -179,50 +179,50 @@ func normalizeSettlementStateFilter(state string) (string, error) {
 	}
 }
 
-// 财务查询只认 settlement_cycle；这里把空输入收口到主口径。
-func resolveSettlementCycleSourceDB(ctx context.Context, db *sql.DB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
+// 财务查询只认 settlement_payment_attempt；这里把空输入收口到主口径。
+func resolveSettlementPaymentAttemptSourceDB(ctx context.Context, db *sql.DB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceType == "" && sourceID == "" {
 		return settlementCycleSourceResolution{}, nil
 	}
 	if sourceType == "" {
-		sourceType = "settlement_cycle"
+		sourceType = "settlement_payment_attempt"
 	}
 	if sourceID == "" {
 		return settlementCycleSourceResolution{SourceType: sourceType}, nil
 	}
 	var (
-		cycleID int64
+		paymentAttemptID int64
 		err     error
 	)
 	switch sourceType {
-	case "settlement_cycle":
-		cycleID, err = strconv.ParseInt(sourceID, 10, 64)
-		if err != nil || cycleID <= 0 {
-			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
+	case "settlement_payment_attempt":
+		paymentAttemptID, err = strconv.ParseInt(sourceID, 10, 64)
+		if err != nil || paymentAttemptID <= 0 {
+			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_payment_attempt source_id must be a positive integer")
 		}
 	case "chain_quote_pay", "chain_direct_pay", "chain_asset_create", "pool_session_quote_pay":
-		cycleID, err = dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, sourceID)
+		paymentAttemptID, err = dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, sourceType, sourceID)
 		if err != nil {
 			return settlementCycleSourceResolution{}, err
 		}
 	default:
-		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
+		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_payment_attempt, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
 	}
-	state, err := dbGetSettlementCycleStateByIDDB(ctx, db, cycleID)
+	state, err := dbGetSettlementPaymentAttemptStateByIDDB(ctx, db, paymentAttemptID)
 	if err != nil {
 		return settlementCycleSourceResolution{}, err
 	}
 	return settlementCycleSourceResolution{
 		SourceType:           sourceType,
 		SourceID:             sourceID,
-		SettlementCycleID:    cycleID,
-		SettlementCycleState: state,
+		SettlementPaymentAttemptID:    paymentAttemptID,
+		SettlementPaymentAttemptState: state,
 	}, nil
 }
 
-func dbGetSettlementCycleByPoolSessionIDDB(ctx context.Context, db sqlConn, poolSessionID string) (int64, error) {
+func dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx context.Context, db sqlConn, poolSessionID string) (int64, error) {
 	poolSessionID = strings.TrimSpace(poolSessionID)
 	if poolSessionID == "" {
 		return 0, fmt.Errorf("pool_session_id is required")
@@ -231,10 +231,10 @@ func dbGetSettlementCycleByPoolSessionIDDB(ctx context.Context, db sqlConn, pool
 	if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, poolSessionID).Scan(&channelID); err != nil {
 		return 0, err
 	}
-	return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session_quote_pay", fmt.Sprintf("%d", channelID))
+	return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "pool_session_quote_pay", fmt.Sprintf("%d", channelID))
 }
 
-func resolvePoolAllocationSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
+func resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
@@ -244,23 +244,23 @@ func resolvePoolAllocationSourceToSettlementCycleDB(ctx context.Context, db *sql
 		if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
 			return 0, err
 		}
-		return dbGetSettlementCycleByPoolSessionIDDB(ctx, db, poolSessionID)
+		return dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, db, poolSessionID)
 	}
 	var poolSessionID string
 	if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
 		return 0, err
 	}
-	return dbGetSettlementCycleByPoolSessionIDDB(ctx, db, poolSessionID)
+	return dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, db, poolSessionID)
 }
 
-func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
+func resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
 	for _, sourceType := range []string{"chain_quote_pay", "chain_direct_pay", "chain_asset_create"} {
-		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.TrimSpace(sourceID)); err == nil {
-			return cycleID, nil
+		if paymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, sourceType, strings.TrimSpace(sourceID)); err == nil {
+			return paymentAttemptID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
@@ -269,46 +269,46 @@ func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.D
 	if txid != "" {
 		var channelID int64
 		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txid).Scan(&channelID); err == nil {
-			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_quote_pay", fmt.Sprintf("%d", channelID))
+			return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "chain_quote_pay", fmt.Sprintf("%d", channelID))
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
 		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_direct_pay WHERE txid=?`, txid).Scan(&channelID); err == nil {
-			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+			return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
 		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_asset_create WHERE txid=?`, txid).Scan(&channelID); err == nil {
-			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_asset_create", fmt.Sprintf("%d", channelID))
+			return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "chain_asset_create", fmt.Sprintf("%d", channelID))
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
 	}
 	if paymentID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && paymentID > 0 {
-		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_quote_pay", fmt.Sprintf("%d", paymentID)); err == nil {
-			return cycleID, nil
+		if paymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "chain_quote_pay", fmt.Sprintf("%d", paymentID)); err == nil {
+			return paymentAttemptID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_direct_pay", fmt.Sprintf("%d", paymentID)); err == nil {
-			return cycleID, nil
+		if paymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "chain_direct_pay", fmt.Sprintf("%d", paymentID)); err == nil {
+			return paymentAttemptID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-		return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_asset_create", fmt.Sprintf("%d", paymentID))
+		return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "chain_asset_create", fmt.Sprintf("%d", paymentID))
 	}
 	return 0, sql.ErrNoRows
 }
 
-func dbGetSettlementCycleStateByIDDB(ctx context.Context, db *sql.DB, id int64) (string, error) {
+func dbGetSettlementPaymentAttemptStateByIDDB(ctx context.Context, db *sql.DB, id int64) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
 	if id <= 0 {
-		return "", fmt.Errorf("settlement_cycle_id must be positive")
+		return "", fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
 	var state string
-	if err := QueryRowContext(ctx, db, `SELECT state FROM fact_settlement_cycles WHERE id=?`, id).Scan(&state); err != nil {
+	if err := QueryRowContext(ctx, db, `SELECT state FROM fact_settlement_payment_attempts WHERE id=?`, id).Scan(&state); err != nil {
 		return "", err
 	}
 	return strings.TrimSpace(state), nil
@@ -324,7 +324,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			return financeBusinessPage{}, err
 		}
 		if f.SourceType != "" || f.SourceID != "" {
-			resolved, err := resolveSettlementCycleSourceDB(ctx, db, f.SourceType, f.SourceID)
+			resolved, err := resolveSettlementPaymentAttemptSourceDB(ctx, db, f.SourceType, f.SourceID)
 			if err != nil {
 				return financeBusinessPage{}, err
 			}
@@ -333,7 +333,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		}
 		where := ""
 		args := make([]any, 0, 16)
-		where += " AND sb.source_type='settlement_cycle'"
+		where += " AND sb.source_type='settlement_payment_attempt'"
 		where += " AND sc.id = CAST(sb.source_id AS INTEGER)"
 		if settlementState != "all" {
 			where += " AND sc.state=?"
@@ -390,7 +390,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
 			   FROM settle_records sb
-			   JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
+			   JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			  WHERE 1=1`+where,
 			args...).Scan(&out.Total); err != nil {
 			return financeBusinessPage{}, err
@@ -398,7 +398,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		rows, err := QueryContext(ctx, db,
 			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
 			 FROM settle_records sb
-			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
+			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			 WHERE 1=1`+where+` ORDER BY sb.occurred_at_unix DESC,sb.business_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -434,7 +434,7 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		err := QueryRowContext(ctx, db,
 			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
 			 FROM settle_records sb
-			 JOIN fact_settlement_cycles sc ON sc.id = CAST(sb.source_id AS INTEGER)
+			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			 WHERE sb.business_id=?`,
 			businessID,
 		).Scan(&out.BusinessID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
@@ -456,7 +456,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 			return financeProcessEventPage{}, err
 		}
 		if f.SourceType != "" || f.SourceID != "" {
-			resolved, err := resolveSettlementCycleSourceDB(ctx, db, f.SourceType, f.SourceID)
+			resolved, err := resolveSettlementPaymentAttemptSourceDB(ctx, db, f.SourceType, f.SourceID)
 			if err != nil {
 				return financeProcessEventPage{}, err
 			}
@@ -465,7 +465,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		}
 		where := ""
 		args := make([]any, 0, 16)
-		where += " AND pe.source_type='settlement_cycle'"
+		where += " AND pe.source_type='settlement_payment_attempt'"
 		where += " AND sc.id = CAST(pe.source_id AS INTEGER)"
 		if settlementState != "all" {
 			where += " AND sc.state=?"
@@ -508,7 +508,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
 			   FROM settle_process_events pe
-			   JOIN fact_settlement_cycles sc ON sc.id = CAST(pe.source_id AS INTEGER)
+			   JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
 			  WHERE 1=1`+where,
 			args...).Scan(&out.Total); err != nil {
 			return financeProcessEventPage{}, err
@@ -516,7 +516,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		rows, err := QueryContext(ctx, db,
 			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
 			 FROM settle_process_events pe
-			 JOIN fact_settlement_cycles sc ON sc.id = CAST(pe.source_id AS INTEGER)
+			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
 			 WHERE 1=1`+where+` ORDER BY pe.occurred_at_unix DESC,pe.id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
@@ -551,7 +551,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 		err := QueryRowContext(ctx, db,
 			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
 			 FROM settle_process_events pe
-			 JOIN fact_settlement_cycles sc ON sc.id = CAST(pe.source_id AS INTEGER)
+			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
 			 WHERE pe.id=?`,
 			id,
 		).Scan(&out.ID, &out.ProcessID, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.EventType, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
@@ -578,7 +578,7 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 	if businessRole != "formal" && businessRole != "process" {
 		return financeBusinessPage{}, fmt.Errorf("businessRole must be 'formal' or 'process'")
 	}
-	settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycle(ctx, store, allocationID)
+	settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx, store, allocationID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return financeBusinessPage{Items: []financeBusinessItem{}}, nil
@@ -589,8 +589,8 @@ func dbListFinanceBusinessesByPoolAllocationID(ctx context.Context, store *clien
 		Limit:           limit,
 		Offset:          offset,
 		BusinessRole:    businessRole,
-		SourceType:      "settlement_cycle",
-		SourceID:        fmt.Sprintf("%d", settlementCycleID),
+		SourceType:      "settlement_payment_attempt",
+		SourceID:        fmt.Sprintf("%d", settlementPaymentAttemptID),
 		SettlementState: "confirmed",
 	})
 }
@@ -604,7 +604,7 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 	if allocationID == "" {
 		return financeProcessEventPage{}, fmt.Errorf("allocation_id is required")
 	}
-	settlementCycleID, err := resolvePoolAllocationSourceToSettlementCycle(ctx, store, allocationID)
+	settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx, store, allocationID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return financeProcessEventPage{Items: []financeProcessEventItem{}}, nil
@@ -614,8 +614,8 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 	return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:           limit,
 		Offset:          offset,
-		SourceType:      "settlement_cycle",
-		SourceID:        fmt.Sprintf("%d", settlementCycleID),
+		SourceType:      "settlement_payment_attempt",
+		SourceID:        fmt.Sprintf("%d", settlementPaymentAttemptID),
 		SettlementState: "confirmed",
 	})
 }
@@ -636,7 +636,7 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 	if businessRole != "formal" && businessRole != "process" {
 		return financeBusinessPage{}, fmt.Errorf("businessRole must be 'formal' or 'process'")
 	}
-	settlementCycleID, err := resolveChainPaymentSourceToSettlementCycle(ctx, store, txid)
+	settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, txid)
 	if err != nil {
 		return financeBusinessPage{Items: []financeBusinessItem{}}, nil
 	}
@@ -644,8 +644,8 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 		Limit:           limit,
 		Offset:          offset,
 		BusinessRole:    businessRole,
-		SourceType:      "settlement_cycle",
-		SourceID:        fmt.Sprintf("%d", settlementCycleID),
+		SourceType:      "settlement_payment_attempt",
+		SourceID:        fmt.Sprintf("%d", settlementPaymentAttemptID),
 		SettlementState: "confirmed",
 	})
 }
@@ -660,15 +660,15 @@ func dbListFinanceProcessEventsByTxID(ctx context.Context, store *clientDB, txid
 	if txid == "" {
 		return financeProcessEventPage{}, fmt.Errorf("txid is required")
 	}
-	settlementCycleID, err := resolveChainPaymentSourceToSettlementCycle(ctx, store, txid)
+	settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, txid)
 	if err != nil {
 		return financeProcessEventPage{Items: []financeProcessEventItem{}}, nil
 	}
 	return dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:           limit,
 		Offset:          offset,
-		SourceType:      "settlement_cycle",
-		SourceID:        fmt.Sprintf("%d", settlementCycleID),
+		SourceType:      "settlement_payment_attempt",
+		SourceID:        fmt.Sprintf("%d", settlementPaymentAttemptID),
 		SettlementState: "confirmed",
 	})
 }

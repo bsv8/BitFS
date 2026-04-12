@@ -417,12 +417,12 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse chain_payment_id: %v", err)
 	}
-	settlementCycleID := mustSettlementCycleIDByChainPaymentID(t, db, chainPaymentIntID)
-	settlementSourceID = fmt.Sprintf("%d", settlementCycleID)
+	settlementPaymentAttemptID := mustSettlementPaymentAttemptIDByChainPaymentID(t, db, chainPaymentIntID)
+	settlementSourceID = fmt.Sprintf("%d", settlementPaymentAttemptID)
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "formal", // 正式收费对象
-		SourceType:        "settlement_cycle",
+		SourceType:        "settlement_payment_attempt",
 		SourceID:          settlementSourceID,
 		AccountingScene:   "domain",
 		AccountingSubType: "register",
@@ -479,7 +479,7 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 		t.Fatalf("expected business_id %s, got %s", businessID, biz.BusinessID)
 	}
 	if biz.SourceID != settlementSourceID {
-		t.Fatalf("expected source_id (settlement_cycle_id) %s, got %s", settlementSourceID, biz.SourceID)
+		t.Fatalf("expected source_id (settlement_payment_attempt_id) %s, got %s", settlementSourceID, biz.SourceID)
 	}
 }
 
@@ -600,9 +600,9 @@ func TestStep4_OldTablesNotDominant(t *testing.T) {
 
 func dbTestInsertChainPayment(t *testing.T, store *clientDB, entry chainPaymentEntry) string {
 	t.Helper()
-	id, err := dbUpsertChainPaymentWithSettlementCycle(context.Background(), store, entry)
+	id, err := dbUpsertChainPaymentWithSettlementPaymentAttempt(context.Background(), store, entry)
 	if err != nil {
-		t.Fatalf("dbUpsertChainPaymentWithSettlementCycle: %v", err)
+		t.Fatalf("dbUpsertChainPaymentWithSettlementPaymentAttempt: %v", err)
 	}
 	return fmt.Sprintf("%d", id)
 }
@@ -860,7 +860,7 @@ func TestFullPoolSettlementChainByPoolSessionID_StillWorks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load pay allocation id failed: %v", err)
 	}
-	cycleID := mustSettlementCycleIDByPoolAllocationID(t, db, directTransferPoolAllocationID(sessionID, PoolBusinessActionPayLegacy, 2))
+	paymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, directTransferPoolAllocationID(sessionID, PoolBusinessActionPayLegacy, 2))
 
 	frontOrderID := "fo_pool_session_chain"
 	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
@@ -887,8 +887,8 @@ func TestFullPoolSettlementChainByPoolSessionID_StillWorks(t *testing.T) {
 		FrontOrderNote:    "session 读入口测试",
 		BusinessID:        businessID,
 		BusinessRole:      "formal",
-		SourceType:        "settlement_cycle",
-		SourceID:          fmt.Sprintf("%d", cycleID),
+		SourceType:        "settlement_payment_attempt",
+		SourceID:          fmt.Sprintf("%d", paymentAttemptID),
 		AccountingScene:   "direct_transfer",
 		AccountingSubType: "download_pool",
 		FromPartyID:       "client:self",

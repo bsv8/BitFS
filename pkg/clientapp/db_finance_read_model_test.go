@@ -53,13 +53,13 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 
 	// 验证：pay 的 process event 存在且主口径字段正确
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	paySettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocID)
-	payAllocationSourceID := fmt.Sprintf("%d", paySettlementCycleID)
+	paySettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocID)
+	payAllocationSourceID := fmt.Sprintf("%d", paySettlementPaymentAttemptID)
 
 	// 验证：pay 的 process event 存在且主口径字段正确
 	payProcPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
-		SourceType:        "settlement_cycle",
+		SourceType:        "settlement_payment_attempt",
 		SourceID:          payAllocationSourceID,
 		AccountingScene:   "c2c_transfer",
 		AccountingSubtype: "chunk_pay",
@@ -70,7 +70,7 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 	if payProcPage.Total != 1 || len(payProcPage.Items) != 1 {
 		t.Fatalf("process page mismatch: total=%d items=%d", payProcPage.Total, len(payProcPage.Items))
 	}
-	if payProcPage.Items[0].SourceType != "settlement_cycle" || payProcPage.Items[0].SourceID != payAllocationSourceID {
+	if payProcPage.Items[0].SourceType != "settlement_payment_attempt" || payProcPage.Items[0].SourceID != payAllocationSourceID {
 		t.Fatalf("process page source mismatch: %+v", payProcPage.Items[0])
 	}
 
@@ -86,9 +86,9 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 		t.Fatalf("get finance process event failed: %v", err)
 	}
 	wantCloseAllocationID := directTransferPoolAllocationID(sessionID, "close", 3)
-	wantCloseSettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, wantCloseAllocationID)
-	wantCloseAllocationSourceID := fmt.Sprintf("%d", wantCloseSettlementCycleID)
-	if proc.SourceType != "settlement_cycle" || proc.SourceID != wantCloseAllocationSourceID {
+	wantCloseSettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, wantCloseAllocationID)
+	wantCloseAllocationSourceID := fmt.Sprintf("%d", wantCloseSettlementPaymentAttemptID)
+	if proc.SourceType != "settlement_payment_attempt" || proc.SourceID != wantCloseAllocationSourceID {
 		t.Fatalf("unexpected process source fields: %+v", proc)
 	}
 	if proc.AccountingScene != "c2c_transfer" || proc.AccountingSubtype != "close" {
@@ -96,7 +96,7 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 	}
 	procPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
-		SourceType:        "settlement_cycle",
+		SourceType:        "settlement_payment_attempt",
 		SourceID:          wantCloseAllocationSourceID,
 		AccountingScene:   "c2c_transfer",
 		AccountingSubtype: "close",
@@ -107,7 +107,7 @@ func TestFinanceReadModel_ExposesPrimaryFields(t *testing.T) {
 	if procPage.Total != 1 || len(procPage.Items) != 1 {
 		t.Fatalf("process page mismatch: total=%d items=%d", procPage.Total, len(procPage.Items))
 	}
-	if procPage.Items[0].SourceType != "settlement_cycle" || procPage.Items[0].SourceID != wantCloseAllocationSourceID {
+	if procPage.Items[0].SourceType != "settlement_payment_attempt" || procPage.Items[0].SourceID != wantCloseAllocationSourceID {
 		t.Fatalf("process page source mismatch: %+v", procPage.Items[0])
 	}
 }
@@ -129,7 +129,7 @@ func TestFinanceReadModel_UsesSharedTxHistoryKind(t *testing.T) {
 		PoolID:        "pool_1",
 		MsgID:         "msg_1",
 		SequenceNum:   1,
-		CycleIndex:    1,
+		PaymentAttemptIndex:    1,
 	})
 
 	counters, err := dbLoadWalletSummaryCounters(context.Background(), store)
@@ -162,17 +162,17 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 		PoolAmountSatoshi: 990,
 		SellerPubHex:      sellerPubHex,
 	})
-	// 第二阶段：改用 pay 测试（pay 通过 pool_allocation_id 换算到 settlement_cycle）
+	// 第二阶段：改用 pay 测试（pay 通过 pool_allocation_id 换算到 settlement_payment_attempt）
 	dbRecordDirectPoolPayAccounting(ctx, store, "biz_download_pool_test_"+sessionID, sessionID, 2, 300, "pay_tx_finance_trace_1")
 
 	allocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	allocationSettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, allocationID)
-	allocationSourceID := fmt.Sprintf("%d", allocationSettlementCycleID)
+	allocationSettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, allocationID)
+	allocationSourceID := fmt.Sprintf("%d", allocationSettlementPaymentAttemptID)
 
 	// 验证：pay 不再生成 settle_records（正式查询应返回空）
 	bizPage, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, allocationID, "formal", 20, 0)
 	if err != nil {
-		t.Fatalf("trace businesses by settlement_cycle conversion failed: %v", err)
+		t.Fatalf("trace businesses by settlement_payment_attempt conversion failed: %v", err)
 	}
 	if bizPage.Total != 0 {
 		t.Fatalf("pay 不应生成 settle_records，got %d", bizPage.Total)
@@ -181,7 +181,7 @@ func TestFinanceReadModel_TracesByPoolAllocationID(t *testing.T) {
 	// 验证 process events 存在（pay 生成 process events）
 	procPage, err := dbListFinanceProcessEventsByPoolAllocationID(ctx, store, allocationID, 20, 0)
 	if err != nil {
-		t.Fatalf("trace process events by settlement_cycle conversion failed: %v", err)
+		t.Fatalf("trace process events by settlement_payment_attempt conversion failed: %v", err)
 	}
 	if procPage.Total == 0 {
 		t.Fatalf("trace process page should not be empty")
@@ -209,8 +209,8 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 
 	// 使用 pay allocation 测试查询
 	payAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	paySettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocationID)
-	payAllocationSourceID := fmt.Sprintf("%d", paySettlementCycleID)
+	paySettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocationID)
+	payAllocationSourceID := fmt.Sprintf("%d", paySettlementPaymentAttemptID)
 	// 使用 pay allocation 测试查询 - pay 不再生成 settle_records，所以返回空
 	// 第九阶段整改：必须传 business_role 参数
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/businesses?business_role=formal&pool_allocation_id="+payAllocationID+"&limit=10", nil)
@@ -305,7 +305,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	if err = json.Unmarshal(rec.Body.Bytes(), &processDetail); err != nil {
 		t.Fatalf("decode process detail failed: %v", err)
 	}
-	if processDetail.SourceType != "settlement_cycle" || processDetail.SourceID != payAllocationSourceID {
+	if processDetail.SourceType != "settlement_payment_attempt" || processDetail.SourceID != payAllocationSourceID {
 		t.Fatalf("process detail source mismatch: %+v", processDetail)
 	}
 
@@ -313,7 +313,7 @@ func TestAdminFinanceHTTP_ReadsNewFieldsAndParams(t *testing.T) {
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("process list by settlement_cycle conversion status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+		t.Fatalf("process list by settlement_payment_attempt conversion status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	if err = json.Unmarshal(rec.Body.Bytes(), &processResp); err != nil {
 		t.Fatalf("decode process list by allocation failed: %v", err)
@@ -359,13 +359,13 @@ func TestFinancePrimaryFilter_QueryByPrimaryModel(t *testing.T) {
 	// 测试：同时传新旧参数，验证新口径优先匹配
 	// 新参数能精确匹配到 pay 记录（chunk_pay），旧参数可能匹配到多条
 	payAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	paySettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocationID)
-	payAllocationSourceID := fmt.Sprintf("%d", paySettlementCycleID)
+	paySettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocationID)
+	payAllocationSourceID := fmt.Sprintf("%d", paySettlementPaymentAttemptID)
 
 	// 用新口径精确查询（pay 不再生成 settle_records，改用 process events）
 	newFilterPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
-		SourceType:        "settlement_cycle",
+		SourceType:        "settlement_payment_attempt",
 		SourceID:          payAllocationSourceID,
 		AccountingScene:   "c2c_transfer",
 		AccountingSubtype: "chunk_pay",
@@ -408,12 +408,12 @@ func TestFinanceDefaultPresentation_PrimaryFieldsFirst(t *testing.T) {
 	// 第二阶段：验证 pay 不生成 settle_records
 	// 查询 process event 验证主口径字段
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	paySettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocID)
-	payAllocationSourceID := fmt.Sprintf("%d", paySettlementCycleID)
+	paySettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocID)
+	payAllocationSourceID := fmt.Sprintf("%d", paySettlementPaymentAttemptID)
 
 	procPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
-		SourceType:        "settlement_cycle",
+		SourceType:        "settlement_payment_attempt",
 		SourceID:          payAllocationSourceID,
 		AccountingScene:   "c2c_transfer",
 		AccountingSubtype: "chunk_pay",
@@ -427,8 +427,8 @@ func TestFinanceDefaultPresentation_PrimaryFieldsFirst(t *testing.T) {
 
 	// 验证：主口径字段必须存在且有效
 	item := procPage.Items[0]
-	if item.SourceType != "settlement_cycle" {
-		t.Fatalf("SourceType should be 'settlement_cycle': got=%s", item.SourceType)
+	if item.SourceType != "settlement_payment_attempt" {
+		t.Fatalf("SourceType should be 'settlement_payment_attempt': got=%s", item.SourceType)
 	}
 	if item.SourceID != payAllocationSourceID {
 		t.Fatalf("SourceID mismatch: got=%s want=%s", item.SourceID, payAllocationSourceID)
@@ -488,8 +488,8 @@ func TestFinanceNoNewDiffusion_NoNewCodeDependsOnOldFields(t *testing.T) {
 	// 测试：新辅助函数 dbListFinanceBusinessesByPoolAllocationID 只使用新口径
 	// 第十一阶段：必须显式传 businessRole
 	payAllocationID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	paySettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocationID)
-	payAllocationSourceID := fmt.Sprintf("%d", paySettlementCycleID)
+	paySettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocationID)
+	payAllocationSourceID := fmt.Sprintf("%d", paySettlementPaymentAttemptID)
 	page, err := dbListFinanceBusinessesByPoolAllocationID(ctx, store, payAllocationID, "formal", 10, 0)
 	if err != nil {
 		t.Fatalf("new helper function failed: %v", err)
@@ -540,11 +540,11 @@ func TestFinanceRegression_FourthIterationCapabilities(t *testing.T) {
 
 	// 回归1: 用新字段过滤必须能工作（验证 pay 的 process event）
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	payAllocSettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocID)
-	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementCycleID)
+	payAllocSettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocID)
+	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementPaymentAttemptID)
 	procPage, err := dbListFinanceProcessEvents(ctx, store, financeProcessEventFilter{
 		Limit:             10,
-		SourceType:        "settlement_cycle",
+		SourceType:        "settlement_payment_attempt",
 		SourceID:          payAllocSourceID,
 		AccountingScene:   "c2c_transfer",
 		AccountingSubtype: "chunk_pay",
@@ -634,8 +634,8 @@ func TestFinanceHTTP_QueryByPrimaryParams(t *testing.T) {
 	// 第二阶段：改用 pay 测试（pay 不再生成 settle_records，只生成 process event + tx_breakdown）
 	// 测试：用 pool_allocation_id 兼容换算查询 pay 的 process event
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	payAllocSettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocID)
-	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementCycleID)
+	payAllocSettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocID)
+	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementPaymentAttemptID)
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/finance/process-events?pool_allocation_id="+payAllocID+"&accounting_scene=c2c_transfer&accounting_subtype=chunk_pay&limit=10", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
@@ -684,8 +684,8 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 	// - 旧参数：scene_subtype=open（如果生效会查不到记录，与 pay_alloc 冲突）
 	// - 旧参数：ref_id=wrong_session（如果生效会导致查不到任何记录）
 	payAllocID := directTransferPoolAllocationID(sessionID, "pay", 2)
-	payAllocSettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, payAllocID)
-	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementCycleID)
+	payAllocSettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, payAllocID)
+	payAllocSourceID := fmt.Sprintf("%d", payAllocSettlementPaymentAttemptID)
 
 	// 测试1：pool_allocation_id 兼容换算后精确查询 pay 过程记录
 	req := httptest.NewRequest(http.MethodGet,
@@ -714,7 +714,7 @@ func TestFinanceBusiness_ConflictParams_NewWins(t *testing.T) {
 
 	// 测试2：source_type/source_id 精确查询（改用 process events）
 	req = httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/process-events?source_type=settlement_cycle&source_id="+payAllocSourceID+"&limit=10", nil)
+		"/api/v1/admin/finance/process-events?source_type=settlement_payment_attempt&source_id="+payAllocSourceID+"&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
 	if rec.Code != http.StatusOK {
@@ -782,8 +782,8 @@ func TestFinanceProcessEvent_ConflictParams_NewWins(t *testing.T) {
 	srv := &httpAPIServer{db: db, store: store}
 
 	closeAllocID := directTransferPoolAllocationID(sessionID, "close", 3)
-	closeAllocSettlementCycleID := mustSettlementCycleIDByPoolAllocationID(t, db, closeAllocID)
-	closeAllocSourceID := fmt.Sprintf("%d", closeAllocSettlementCycleID)
+	closeAllocSettlementPaymentAttemptID := mustSettlementPaymentAttemptIDByPoolAllocationID(t, db, closeAllocID)
+	closeAllocSourceID := fmt.Sprintf("%d", closeAllocSettlementPaymentAttemptID)
 	wrongSessionID := "wrong_session_id"
 
 	// 测试1：pool_allocation_id + scene_subtype 冲突（兼容换算场景）
@@ -811,7 +811,7 @@ func TestFinanceProcessEvent_ConflictParams_NewWins(t *testing.T) {
 
 	// 测试2：source_* + ref_id 冲突
 	req = httptest.NewRequest(http.MethodGet,
-		"/api/v1/admin/finance/process-events?source_type=settlement_cycle&source_id="+closeAllocSourceID+
+		"/api/v1/admin/finance/process-events?source_type=settlement_payment_attempt&source_id="+closeAllocSourceID+
 			"&ref_id="+wrongSessionID+"&limit=10", nil)
 	rec = httptest.NewRecorder()
 	srv.handleAdminFinanceProcessEvents(rec, req)
@@ -877,18 +877,18 @@ func TestFinanceLayer_FormalBusinessOnly(t *testing.T) {
 
 	// 写入正式 business：直接挂到 chain_payment 来源，避免再走旧的手工 cycle 口径
 	businessID := "biz_download_pool_layer_formal_1"
-	if err := dbUpsertSettlementCycle(db, "cycle_layer_formal_1", "chain_quote_pay", "tx_layer_formal_1", "confirmed", 990, 0, 990, 1, 1700000401, "formal test", map[string]any{"scene": "formal"}); err != nil {
-		t.Fatalf("insert formal settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_layer_formal_1", "chain_quote_pay", "tx_layer_formal_1", "confirmed", 990, 0, 990, 1, 1700000401, "formal test", map[string]any{"scene": "formal"}); err != nil {
+		t.Fatalf("insert formal settlement payment attempt failed: %v", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_layer_formal_1")
+	settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_quote_pay", "tx_layer_formal_1")
 	if err != nil {
-		t.Fatalf("resolve formal settlement cycle id failed: %v", err)
+		t.Fatalf("resolve formal settlement payment attempt id failed: %v", err)
 	}
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        businessID,
 		BusinessRole:      "formal",
-		SourceType:        "settlement_cycle",
-		SourceID:          fmt.Sprintf("%d", settlementCycleID),
+		SourceType:        "settlement_payment_attempt",
+		SourceID:          fmt.Sprintf("%d", settlementPaymentAttemptID),
 		AccountingScene:   "direct_transfer",
 		AccountingSubType: "download_pool",
 		FromPartyID:       "client:self",
@@ -1214,18 +1214,18 @@ func TestFinanceFormalQuery_ByRoleFilters(t *testing.T) {
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	if err := dbUpsertSettlementCycle(db, "cycle_formal_1", "chain_quote_pay", "tx_formal_1", "confirmed", 990, 0, 990, 1, 1700000501, "formal test", map[string]any{"scene": "formal"}); err != nil {
-		t.Fatalf("insert formal settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_formal_1", "chain_quote_pay", "tx_formal_1", "confirmed", 990, 0, 990, 1, 1700000501, "formal test", map[string]any{"scene": "formal"}); err != nil {
+		t.Fatalf("insert formal settlement payment attempt failed: %v", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_formal_1")
+	settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_quote_pay", "tx_formal_1")
 	if err != nil {
-		t.Fatalf("resolve formal settlement cycle id failed: %v", err)
+		t.Fatalf("resolve formal settlement payment attempt id failed: %v", err)
 	}
 	if err := dbAppendFinBusiness(db, finBusinessEntry{
 		BusinessID:        "biz_download_pool_formal_1",
 		BusinessRole:      "formal",
-		SourceType:        "settlement_cycle",
-		SourceID:          fmt.Sprintf("%d", settlementCycleID),
+		SourceType:        "settlement_payment_attempt",
+		SourceID:          fmt.Sprintf("%d", settlementPaymentAttemptID),
 		AccountingScene:   "direct_transfer",
 		AccountingSubType: "download_pool",
 		FromPartyID:       "client:self",

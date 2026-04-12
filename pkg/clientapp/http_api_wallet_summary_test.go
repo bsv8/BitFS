@@ -47,14 +47,20 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv utxo fact failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_sum_bsv_pay", "chain_direct_pay", "sum_bsv_pay", "confirmed", 600, 0, -600, 0, now, "summary test", map[string]any{"kind": "bsv"}); err != nil {
-		t.Fatalf("seed bsv settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_chain_bsv_sum_bsv_pay", "chain_direct_pay", "sum_bsv_pay", "confirmed", 600, 0, -600, 0, now, "summary test", map[string]any{"kind": "bsv"}); err != nil {
+		t.Fatalf("seed bsv settlement payment attempt failed: %v", err)
 	}
-	bsvCycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", "sum_bsv_pay")
+	bsvPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_direct_pay", "sum_bsv_pay")
 	if err != nil {
-		t.Fatalf("lookup bsv settlement cycle failed: %v", err)
+		t.Fatalf("lookup bsv settlement payment attempt failed: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForSettlementCycle(db, bsvCycleID, []chainPaymentUTXOLinkEntry{
+	if _, err := db.Exec(`INSERT INTO fact_settlement_channel_chain_direct_pay(settlement_payment_attempt_id, txid, payment_subtype, status, wallet_input_satoshi, wallet_output_satoshi, net_amount_satoshi, block_height, occurred_at_unix, submitted_at_unix, wallet_observed_at_unix, from_party_id, to_party_id, payload_json, updated_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		bsvPaymentAttemptID, "sum_bsv_pay", "summary", "confirmed", 600, 0, -600, 0, now, now, 0, "wallet:self", "external:unknown", `{"kind":"bsv"}`, now,
+	); err != nil {
+		t.Fatalf("seed bsv channel row failed: %v", err)
+	}
+	if err := dbAppendBSVConsumptionsForSettlementPaymentAttempt(db, bsvPaymentAttemptID, []chainPaymentUTXOLinkEntry{
 		{
 			UTXOID:        bsvUTXOID,
 			IOSide:        "input",
@@ -119,14 +125,20 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_sum_token_pay", "chain_direct_pay", "sum_token_pay", "confirmed", 0, 0, 0, 0, now, "summary test", map[string]any{"kind": "token"}); err != nil {
-		t.Fatalf("seed token settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_chain_token_sum_token_pay", "chain_direct_pay", "sum_token_pay", "confirmed", 0, 0, 0, 0, now, "summary test", map[string]any{"kind": "token"}); err != nil {
+		t.Fatalf("seed token settlement payment attempt failed: %v", err)
 	}
-	tokenCycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", "sum_token_pay")
+	tokenPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_direct_pay", "sum_token_pay")
 	if err != nil {
-		t.Fatalf("lookup token settlement cycle failed: %v", err)
+		t.Fatalf("lookup token settlement payment attempt failed: %v", err)
 	}
-	if err := dbAppendTokenConsumptionsForSettlementCycle(db, tokenCycleID, []chainPaymentUTXOLinkEntry{
+	if _, err := db.Exec(`INSERT INTO fact_settlement_channel_chain_direct_pay(settlement_payment_attempt_id, txid, payment_subtype, status, wallet_input_satoshi, wallet_output_satoshi, net_amount_satoshi, block_height, occurred_at_unix, submitted_at_unix, wallet_observed_at_unix, from_party_id, to_party_id, payload_json, updated_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		tokenPaymentAttemptID, "sum_token_pay", "summary", "confirmed", 0, 0, 0, 0, now, now, 0, "wallet:self", "external:unknown", `{"kind":"token"}`, now,
+	); err != nil {
+		t.Fatalf("seed token channel row failed: %v", err)
+	}
+	if err := dbAppendTokenConsumptionsForSettlementPaymentAttempt(db, tokenPaymentAttemptID, []chainPaymentUTXOLinkEntry{
 		{
 			UTXOID:        tokenUTXOID,
 			IOSide:        "input",

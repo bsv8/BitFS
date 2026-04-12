@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func resolveSettlementCycleIDByChannelTxID(ctx context.Context, db *sql.DB, sourceType, channelTable, txid string, requireConfirmed bool) (int64, bool, error) {
+func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, db *sql.DB, sourceType, channelTable, txid string, requireConfirmed bool) (int64, bool, error) {
 	if db == nil {
 		return 0, false, fmt.Errorf("db is nil")
 	}
@@ -20,8 +20,8 @@ func resolveSettlementCycleIDByChannelTxID(ctx context.Context, db *sql.DB, sour
 	}
 	query := fmt.Sprintf(
 		`SELECT sc.id
-		   FROM fact_settlement_cycles sc
-		   JOIN %s ch ON ch.settlement_cycle_id=sc.id
+		   FROM fact_settlement_payment_attempts sc
+		   JOIN %s ch ON ch.settlement_payment_attempt_id=sc.id
 		  WHERE sc.source_type=? AND ch.txid=?`,
 		channelTable,
 	)
@@ -30,14 +30,14 @@ func resolveSettlementCycleIDByChannelTxID(ctx context.Context, db *sql.DB, sour
 		query += " AND sc.state='confirmed'"
 	}
 	query += " LIMIT 1"
-	var cycleID int64
-	if err := QueryRowContext(ctx, db, query, args...).Scan(&cycleID); err != nil {
+	var paymentAttemptID int64
+	if err := QueryRowContext(ctx, db, query, args...).Scan(&paymentAttemptID); err != nil {
 		if err == sql.ErrNoRows {
 			return 0, false, nil
 		}
 		return 0, false, err
 	}
-	return cycleID, true, nil
+	return paymentAttemptID, true, nil
 }
 
 // TokenTxDualLineConsistency 是 token 交易一致性检查结果。
@@ -54,9 +54,9 @@ type TokenTxDualLineConsistency struct {
 
 // ConfirmedBSVSpendConsistency 是 BSV 支付已确认后的扣账一致性检查结果。
 // 设计说明：
-// - 只检查 settlement_cycle -> fact_bsv_utxos 这一条主线；
+// - 只检查 settlement_payment_attempt -> fact_bsv_utxos 这一条主线；
 // - 告警只看“cycle 已确认但对应 UTXO 还没 spent”；
-// - 修复入口只能重放 settlement_cycle，不允许旁路直改 UTXO。
+// - 修复入口只能重放 settlement_payment_attempt，不允许旁路直改 UTXO。
 type ConfirmedBSVSpendConsistency struct {
 	TxID                 string   `json:"txid"`
 	HasConfirmedCycle    bool     `json:"has_confirmed_cycle"`
@@ -88,13 +88,13 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 			out.HasCarrierBSVFact = true
 		}
 
-		tokenCycleID, found, err := resolveSettlementCycleIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, false)
+		tokenPaymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, false)
 		if err != nil {
 			return TokenTxDualLineConsistency{}, err
 		}
 		if found {
 			out.HasChainTokenCycle = true
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_payment_attempt_id=?`, tokenPaymentAttemptID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
 			}
 			if count > 0 {
@@ -126,14 +126,14 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (ConfirmedBSVSpendConsistency, error) {
 		out := ConfirmedBSVSpendConsistency{TxID: txid}
-		cycleID, found, err := resolveSettlementCycleIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
+		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
 		if err != nil {
 			return ConfirmedBSVSpendConsistency{}, err
 		}
 		if found {
 			out.HasConfirmedCycle = true
 			var count int
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV'`, cycleID).Scan(&count); err != nil {
+			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_payment_attempt_id=? AND asset_type='BSV'`, paymentAttemptID).Scan(&count); err != nil {
 				return ConfirmedBSVSpendConsistency{}, err
 			}
 			if count > 0 {
@@ -161,9 +161,9 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	})
 }
 
-// RepairConfirmedBSVSpendConsistency 通过 settlement_cycle 重放 BSV 扣账。
+// RepairConfirmedBSVSpendConsistency 通过 settlement_payment_attempt 重放 BSV 扣账。
 // 设计说明：
-// - 只从既有 settlement_cycle / settlement_record 回放；
+// - 只从既有 settlement_payment_attempt / settlement_record 回放；
 // - 不直接改 fact_bsv_utxos，避免旁路修复把账修歪；
 // - 重放本身是幂等的，已 spent 的 UTXO 会直接跳过。
 func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txid string) error {
@@ -175,17 +175,17 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		cycleID, found, err := resolveSettlementCycleIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
+		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
 		if err != nil {
 			return err
 		}
 		if !found {
-			return fmt.Errorf("confirmed settlement cycle not found for txid=%s", txid)
+			return fmt.Errorf("confirmed settlement payment attempt not found for txid=%s", txid)
 		}
 		rows, err := QueryContext(ctx, db, `SELECT source_utxo_id, used_satoshi
 			FROM fact_settlement_records
-			WHERE settlement_cycle_id=? AND asset_type='BSV' AND state='confirmed' AND source_utxo_id<>''`,
-			cycleID)
+			WHERE settlement_payment_attempt_id=? AND asset_type='BSV' AND state='confirmed' AND source_utxo_id<>''`,
+			paymentAttemptID)
 		if err != nil {
 			return err
 		}
@@ -211,6 +211,6 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		if len(facts) == 0 {
 			return fmt.Errorf("no bsv settlement records found for txid=%s", txid)
 		}
-		return dbAppendBSVConsumptionsForSettlementCycleCtx(ctx, db, cycleID, facts, time.Now().Unix())
+		return dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx, db, paymentAttemptID, facts, time.Now().Unix())
 	})
 }

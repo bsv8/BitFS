@@ -137,8 +137,8 @@ func TestBSVUTXOMarkSpent(t *testing.T) {
 	}
 }
 
-// TestBSVConsumptionsFromSettlementCycle_IsIdempotent 验证 BSV 扣账只走 settlement_cycle，重复回放不二次扣。
-func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
+// TestBSVConsumptionsFromSettlementPaymentAttempt_IsIdempotent 验证 BSV 扣账只走 settlement_payment_attempt，重复回放不二次扣。
+func TestBSVConsumptionsFromSettlementPaymentAttempt_IsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetFactsTestDB(t)
@@ -163,12 +163,18 @@ func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv utxo failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_direct_pay", txid, "confirmed", 7000, 0, -7000, 0, now, "cycle spend test", nil); err != nil {
-		t.Fatalf("seed settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_chain_bsv_"+txid, "chain_direct_pay", txid, "confirmed", 7000, 0, -7000, 0, now, "payment attempt spend test", nil); err != nil {
+		t.Fatalf("seed settlement payment attempt failed: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", txid)
+	paymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_direct_pay", txid)
 	if err != nil {
-		t.Fatalf("lookup settlement cycle failed: %v", err)
+		t.Fatalf("lookup settlement payment attempt failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO fact_settlement_channel_chain_direct_pay(settlement_payment_attempt_id, txid, payment_subtype, status, wallet_input_satoshi, wallet_output_satoshi, net_amount_satoshi, block_height, occurred_at_unix, submitted_at_unix, wallet_observed_at_unix, from_party_id, to_party_id, payload_json, updated_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		paymentAttemptID, txid, "external_out", "confirmed", 7000, 0, -7000, 0, now, now, 0, "wallet:self", "external:unknown", "{}", now,
+	); err != nil {
+		t.Fatalf("seed chain direct pay channel row failed: %v", err)
 	}
 
 	facts := []chainPaymentUTXOLinkEntry{{
@@ -178,10 +184,10 @@ func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
 		AmountSatoshi: 7000,
 		CreatedAtUnix: now,
 	}}
-	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, facts, now); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementPaymentAttempt(db, paymentAttemptID, facts, now); err != nil {
 		t.Fatalf("first append bsv consumption failed: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, facts, now+1); err != nil {
+	if err := dbAppendBSVConsumptionsForSettlementPaymentAttempt(db, paymentAttemptID, facts, now+1); err != nil {
 		t.Fatalf("second append bsv consumption failed: %v", err)
 	}
 
@@ -200,7 +206,7 @@ func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
 	}
 
 	var recordCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV' AND source_utxo_id=?`, cycleID, utxoID).Scan(&recordCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_payment_attempt_id=? AND asset_type='BSV' AND source_utxo_id=?`, paymentAttemptID, utxoID).Scan(&recordCount); err != nil {
 		t.Fatalf("count settlement records failed: %v", err)
 	}
 	if recordCount != 1 {
@@ -208,8 +214,8 @@ func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
 	}
 }
 
-// TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID 验证 pool_session 也能反查到 txid 锚点。
-func TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *testing.T) {
+// TestGetSettlementPaymentAttemptSourceTxID_PoolSessionReturnsLatestPoolEventTxID 验证 pool_session 也能反查到 txid 锚点。
+func TestGetSettlementPaymentAttemptSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetFactsTestDB(t)
@@ -217,8 +223,18 @@ func TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *t
 	sessionID := "sess_pool_source_txid_001"
 	txid := "pool_source_txid_001"
 
-	if err := dbUpsertSettlementCycle(db, "cycle_pool_session_"+sessionID, "pool_session_quote_pay", sessionID, "confirmed", 0, 0, 0, 0, now, "pool session source txid test", nil); err != nil {
-		t.Fatalf("seed settlement cycle failed: %v", err)
+	if err := dbUpsertSettlementPaymentAttempt(db, "payment_attempt_pool_session_"+sessionID, "pool_session_quote_pay", sessionID, "confirmed", 0, 0, 0, 0, now, "pool session source txid test", nil); err != nil {
+		t.Fatalf("seed settlement payment attempt failed: %v", err)
+	}
+	paymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "pool_session_quote_pay", sessionID)
+	if err != nil {
+		t.Fatalf("lookup settlement payment attempt failed: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO fact_settlement_channel_pool_session_quote_pay(settlement_payment_attempt_id, pool_session_id, txid, pool_scheme, counterparty_pubkey_hex, seller_pubkey_hex, arbiter_pubkey_hex, gateway_pubkey_hex, pool_amount_satoshi, spend_tx_fee_satoshi, fee_rate_sat_byte, lock_blocks, open_base_txid, status, created_at_unix, updated_at_unix)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		paymentAttemptID, sessionID, txid, "2of3", "", "", "", "", 0, 0, 0, 0, "", "confirmed", now, now,
+	); err != nil {
+		t.Fatalf("seed pool session channel row failed: %v", err)
 	}
 	if _, err := db.Exec(`
 		INSERT INTO fact_pool_session_events(
@@ -248,16 +264,58 @@ func TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *t
 		t.Fatalf("seed pool session event failed: %v", err)
 	}
 
-	cycleID, err := dbGetSettlementCycleBySource(db, "pool_session_quote_pay", sessionID)
+	paymentAttemptID, err = dbGetSettlementPaymentAttemptBySource(db, "pool_session_quote_pay", sessionID)
 	if err != nil {
-		t.Fatalf("lookup settlement cycle failed: %v", err)
+		t.Fatalf("lookup settlement payment attempt failed: %v", err)
 	}
-	gotTxID, err := dbGetSettlementCycleSourceTxID(db, cycleID)
+	gotTxID, err := dbGetSettlementPaymentAttemptSourceTxID(db, paymentAttemptID)
 	if err != nil {
 		t.Fatalf("resolve pool session txid failed: %v", err)
 	}
 	if gotTxID != txid {
 		t.Fatalf("expected txid %s, got %s", txid, gotTxID)
+	}
+}
+
+// TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast 验证渠道行缺失时直接报错，不再回退到旧口径。
+func TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast(t *testing.T) {
+	t.Parallel()
+
+	db := newAssetFactsTestDB(t)
+	now := time.Now().Unix()
+
+	cases := []struct {
+		name       string
+		sourceType string
+		sourceID   string
+	}{
+		{name: "chain_quote_pay", sourceType: "chain_quote_pay", sourceID: "missing_quote_txid"},
+		{name: "chain_direct_pay", sourceType: "chain_direct_pay", sourceID: "missing_direct_txid"},
+		{name: "chain_asset_create", sourceType: "chain_asset_create", sourceID: "missing_asset_txid"},
+		{name: "pool_session_quote_pay", sourceType: "pool_session_quote_pay", sourceID: "missing_pool_session_id"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			paymentAttemptKey := "payment_attempt_missing_" + tc.name
+			if err := dbUpsertSettlementPaymentAttempt(db, paymentAttemptKey, tc.sourceType, tc.sourceID, "confirmed", 0, 0, 0, 0, now, "missing channel row test", nil); err != nil {
+				t.Fatalf("seed settlement payment attempt failed: %v", err)
+			}
+			paymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, tc.sourceType, tc.sourceID)
+			if err != nil {
+				t.Fatalf("lookup settlement payment attempt failed: %v", err)
+			}
+			gotTxID, err := dbGetSettlementPaymentAttemptSourceTxID(db, paymentAttemptID)
+			if err == nil {
+				t.Fatalf("expected error, got txid=%s", gotTxID)
+			}
+			if !strings.Contains(err.Error(), "channel row not found") {
+				t.Fatalf("expected channel row missing error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -1130,15 +1188,15 @@ func TestSettlementRecordBasic(t *testing.T) {
 	store := newClientDB(db, nil)
 	now := time.Now().Unix()
 
-	// 先创建 settlement cycle
-	cycleID := "cycle_test_001"
-	if err := dbUpsertSettlementCycle(db, cycleID, "chain_quote_pay", "tx_test_001", "confirmed", 10000, 0, 10000, 1, now, "test cycle", nil); err != nil {
-		t.Fatalf("upsert settlement cycle: %v", err)
+	// 先创建 settlement payment attempt
+	paymentAttemptID := "payment_attempt_test_001"
+	if err := dbUpsertSettlementPaymentAttempt(db, paymentAttemptID, "chain_quote_pay", "tx_test_001", "confirmed", 10000, 0, 10000, 1, now, "test cycle", nil); err != nil {
+		t.Fatalf("upsert settlement payment attempt: %v", err)
 	}
 
-	cycleDBID, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_test_001")
+	paymentAttemptDBID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_quote_pay", "tx_test_001")
 	if err != nil {
-		t.Fatalf("get settlement cycle: %v", err)
+		t.Fatalf("get settlement payment attempt: %v", err)
 	}
 
 	ownerPubkey := "038888888888888888888888888888888888888888888888888888888888888888"
@@ -1146,7 +1204,7 @@ func TestSettlementRecordBasic(t *testing.T) {
 	// 写入 BSV 结算记录
 	record := settlementRecordEntry{
 		RecordID:          "rec_bsv_001",
-		SettlementCycleID: cycleDBID,
+		SettlementPaymentAttemptID: paymentAttemptDBID,
 		AssetType:         "BSV",
 		OwnerPubkeyHex:    ownerPubkey,
 		SourceUTXOID:      "tx_input_001:0",
@@ -1160,7 +1218,7 @@ func TestSettlementRecordBasic(t *testing.T) {
 	}
 
 	// 查询记录
-	records, err := dbListSettlementRecordsByCycle(ctx, store, cycleDBID)
+	records, err := dbListSettlementRecordsByCycle(ctx, store, paymentAttemptDBID)
 	if err != nil {
 		t.Fatalf("list settlement records: %v", err)
 	}

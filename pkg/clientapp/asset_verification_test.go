@@ -1188,25 +1188,25 @@ func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 		t.Fatalf("seed token lot: %v", err)
 	}
 
-	// 种子 settlement cycle
-	cycleID := "cycle_test_hist"
-	err = dbUpsertSettlementCycle(db, cycleID, "chain_quote_pay", "tx_hist_pay", "confirmed",
+	// 种子 settlement payment attempt
+	paymentAttemptID := "payment_attempt_test_hist"
+	err = dbUpsertSettlementPaymentAttempt(db, paymentAttemptID, "chain_quote_pay", "tx_hist_pay", "confirmed",
 		1000, 100, 900, 1, now, "test cycle", nil)
 	if err != nil {
-		t.Fatalf("seed settlement cycle: %v", err)
+		t.Fatalf("seed settlement payment attempt: %v", err)
 	}
 
-	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_hist_pay")
+	paymentAttemptIDInt, err := dbGetSettlementPaymentAttemptBySource(db, "chain_quote_pay", "tx_hist_pay")
 	if err != nil {
-		t.Fatalf("lookup settlement cycle: %v", err)
+		t.Fatalf("lookup settlement payment attempt: %v", err)
 	}
 
 	// 种子结算记录（消耗记录）
-	recordID := fmt.Sprintf("rec_token_%d_%s", cycleIDInt, lotID)
+	recordID := fmt.Sprintf("rec_token_%d_%s", paymentAttemptIDInt, lotID)
 	_, err = db.Exec(
-		`INSERT INTO fact_settlement_records(record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_lot_id, used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json)
+		`INSERT INTO fact_settlement_records(record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_lot_id, used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json)
 		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		recordID, cycleIDInt, "TOKEN", ownerPubkeyHex, lotID, 0, "100", "confirmed", now, now, "test", "{}",
+		recordID, paymentAttemptIDInt, "TOKEN", ownerPubkeyHex, lotID, 0, "100", "confirmed", now, now, "test", "{}",
 	)
 	if err != nil {
 		t.Fatalf("seed settlement record: %v", err)
@@ -1249,31 +1249,31 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 		t.Fatalf("seed token lot: %v", err)
 	}
 
-	// 种子 settlement cycle
-	cycleID := "cycle_test_001"
-	err = dbUpsertSettlementCycle(db, cycleID, "chain_quote_pay", "tx_idem_pay", "confirmed",
+	// 种子 settlement payment attempt
+	paymentAttemptID := "payment_attempt_test_001"
+	err = dbUpsertSettlementPaymentAttempt(db, paymentAttemptID, "chain_quote_pay", "tx_idem_pay", "confirmed",
 		1000, 100, 900, 1, now, "test cycle", nil)
 	if err != nil {
-		t.Fatalf("seed settlement cycle: %v", err)
+		t.Fatalf("seed settlement payment attempt: %v", err)
 	}
 
-	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_idem_pay")
+	paymentAttemptIDInt, err := dbGetSettlementPaymentAttemptBySource(db, "chain_quote_pay", "tx_idem_pay")
 	if err != nil {
-		t.Fatalf("lookup settlement cycle: %v", err)
+		t.Fatalf("lookup settlement payment attempt: %v", err)
 	}
 
 	// 第一次写入结算记录
-	recordID := fmt.Sprintf("rec_token_%d_%s", cycleIDInt, lotID)
+	recordID := fmt.Sprintf("rec_token_%d_%s", paymentAttemptIDInt, lotID)
 	err = dbAppendSettlementRecordDB(context.Background(), db, settlementRecordEntry{
 		RecordID:          recordID,
-		SettlementCycleID: cycleIDInt,
+		SettlementPaymentAttemptID: paymentAttemptIDInt,
 		AssetType:         "TOKEN",
 		OwnerPubkeyHex:    ownerPubkeyHex,
 		SourceLotID:       lotID,
 		UsedQuantityText:  "50",
 		State:             "confirmed",
 		OccurredAtUnix:    now,
-		Note:              "Token consumed by settlement cycle",
+		Note:              "Token consumed by settlement payment attempt",
 	})
 	if err != nil {
 		t.Fatalf("first write: %v", err)
@@ -1282,14 +1282,14 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 	// 第二次写入结算记录（相同 record_id，应被幂等跳过）
 	err = dbAppendSettlementRecordDB(context.Background(), db, settlementRecordEntry{
 		RecordID:          recordID,
-		SettlementCycleID: cycleIDInt,
+		SettlementPaymentAttemptID: paymentAttemptIDInt,
 		AssetType:         "TOKEN",
 		OwnerPubkeyHex:    ownerPubkeyHex,
 		SourceLotID:       lotID,
 		UsedQuantityText:  "50",
 		State:             "confirmed",
 		OccurredAtUnix:    now,
-		Note:              "Token consumed by settlement cycle",
+		Note:              "Token consumed by settlement payment attempt",
 	})
 	if err != nil {
 		t.Fatalf("second write (idempotent): %v", err)
@@ -1297,7 +1297,7 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 
 	// 验证只有一条消耗记录
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=?`, cycleIDInt).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_payment_attempt_id=?`, paymentAttemptIDInt).Scan(&count); err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 1 {

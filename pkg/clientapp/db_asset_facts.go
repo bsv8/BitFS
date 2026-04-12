@@ -74,7 +74,7 @@ type tokenCarrierLinkEntry struct {
 // settlementRecordEntry fact_settlement_records 写入条目
 type settlementRecordEntry struct {
 	RecordID          string
-	SettlementCycleID int64
+	SettlementPaymentAttemptID int64
 	AssetType         string // BSV, TOKEN
 	OwnerPubkeyHex    string
 	SourceUTXOID      string // 本币用
@@ -91,14 +91,14 @@ type settlementRecordEntry struct {
 // dbAppendBSVSettlementRecordsForCycleTx 写入 chain_direct_pay 的 BSV 结算明细。
 // 设计说明：
 // - 这里只认本次交易真实花掉的输入 UTXO 列表，不从余额反推；
-// - 每个输入只落一条明细，幂等由 settlement_cycle_id + asset_type + source_utxo_id + source_lot_id 收口；
+// - 每个输入只落一条明细，幂等由 settlement_payment_attempt_id + asset_type + source_utxo_id + source_lot_id 收口；
 // - 这里不改 UTXO 状态，状态流转由本地投影和事实明细各自负责。
-func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, settlementCycleID int64, ownerPubkeyHex string, utxoIDs []string, occurredAtUnix int64, payload any) error {
+func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, ownerPubkeyHex string, utxoIDs []string, occurredAtUnix int64, payload any) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if settlementCycleID <= 0 {
-		return fmt.Errorf("settlement_cycle_id is required")
+	if settlementPaymentAttemptID <= 0 {
+		return fmt.Errorf("settlement_payment_attempt_id is required")
 	}
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
@@ -132,13 +132,13 @@ func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, set
 			return fmt.Errorf("lookup bsv utxo %s failed: %w", utxoID, err)
 		}
 
-		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementCycleID, utxoID)
+		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementPaymentAttemptID, utxoID)
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO fact_settlement_records(
-				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
+				record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
 				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
+			ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
 				record_id=excluded.record_id,
 				owner_pubkey_hex=excluded.owner_pubkey_hex,
 				used_satoshi=excluded.used_satoshi,
@@ -154,7 +154,7 @@ func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, set
 				note=excluded.note,
 				payload_json=excluded.payload_json`,
 			recordID,
-			settlementCycleID,
+			settlementPaymentAttemptID,
 			"BSV",
 			ownerPubkeyHex,
 			utxoID,
@@ -346,7 +346,7 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 }
 
 // dbMarkBSVUTXOSpent 标记本币UTXO为已花费。
-// 说明：这是内部/测试辅助入口，业务路径必须走 settlement_cycle 驱动的扣账。
+// 说明：这是内部/测试辅助入口，业务路径必须走 settlement_payment_attempt 驱动的扣账。
 func dbMarkBSVUTXOSpent(ctx context.Context, store *clientDB, utxoID string, spentByTxid string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
@@ -985,8 +985,8 @@ func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRec
 	if recordID == "" {
 		return fmt.Errorf("record_id is required")
 	}
-	if e.SettlementCycleID <= 0 {
-		return fmt.Errorf("settlement_cycle_id is required")
+	if e.SettlementPaymentAttemptID <= 0 {
+		return fmt.Errorf("settlement_payment_attempt_id is required")
 	}
 	assetType := strings.ToUpper(strings.TrimSpace(e.AssetType))
 	if assetType != "BSV" && assetType != "TOKEN" {
@@ -1017,10 +1017,10 @@ func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRec
 
 	_, err := ExecContext(ctx, db,
 		`INSERT INTO fact_settlement_records(
-			record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
+			record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
 			used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
+		ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
 			used_satoshi=excluded.used_satoshi,
 			used_quantity_text=excluded.used_quantity_text,
 			state=CASE
@@ -1033,7 +1033,7 @@ func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRec
 			END,
 			note=excluded.note,
 			payload_json=excluded.payload_json`,
-		recordID, e.SettlementCycleID, assetType, ownerPubkey,
+		recordID, e.SettlementPaymentAttemptID, assetType, ownerPubkey,
 		strings.ToLower(strings.TrimSpace(e.SourceUTXOID)),
 		strings.TrimSpace(e.SourceLotID),
 		e.UsedSatoshi,
@@ -1048,25 +1048,25 @@ func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRec
 }
 
 // dbListSettlementRecordsByCycle 查询结算周期的消耗记录
-func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settlementCycleID int64) ([]settlementRecordEntry, error) {
+func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settlementPaymentAttemptID int64) ([]settlementRecordEntry, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) ([]settlementRecordEntry, error) {
-		return dbListSettlementRecordsByCycleDB(ctx, db, settlementCycleID)
+		return dbListSettlementRecordsByCycleDB(ctx, db, settlementPaymentAttemptID)
 	})
 }
 
-func dbListSettlementRecordsByCycleDB(ctx context.Context, db sqlConn, settlementCycleID int64) ([]settlementRecordEntry, error) {
-	if settlementCycleID <= 0 {
-		return nil, fmt.Errorf("settlement_cycle_id is required")
+func dbListSettlementRecordsByCycleDB(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64) ([]settlementRecordEntry, error) {
+	if settlementPaymentAttemptID <= 0 {
+		return nil, fmt.Errorf("settlement_payment_attempt_id is required")
 	}
 	rows, err := QueryContext(ctx, db,
-		`SELECT record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
+		`SELECT record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
 			used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
-		 FROM fact_settlement_records WHERE settlement_cycle_id=?
+		 FROM fact_settlement_records WHERE settlement_payment_attempt_id=?
 		 ORDER BY occurred_at_unix ASC`,
-		settlementCycleID,
+		settlementPaymentAttemptID,
 	)
 	if err != nil {
 		return nil, err
@@ -1077,7 +1077,7 @@ func dbListSettlementRecordsByCycleDB(ctx context.Context, db sqlConn, settlemen
 	for rows.Next() {
 		var e settlementRecordEntry
 		var payloadJSON string
-		if err := rows.Scan(&e.RecordID, &e.SettlementCycleID, &e.AssetType, &e.OwnerPubkeyHex,
+		if err := rows.Scan(&e.RecordID, &e.SettlementPaymentAttemptID, &e.AssetType, &e.OwnerPubkeyHex,
 			&e.SourceUTXOID, &e.SourceLotID, &e.UsedSatoshi, &e.UsedQuantityText, &e.State,
 			&e.OccurredAtUnix, &e.ConfirmedAtUnix, &e.Note, &payloadJSON); err != nil {
 			return nil, err
@@ -1790,15 +1790,15 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 
 // ========== Settlement Cycle 函数（硬切版保留） ==========
 
-// dbUpsertSettlementCycle 幂等写入结算周期
-func dbUpsertSettlementCycleCtx(ctx context.Context, db sqlConn, cycleID string, sourceType string, sourceID string, state string,
+// dbUpsertSettlementPaymentAttempt 幂等写入结算周期
+func dbUpsertSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, paymentAttemptID string, sourceType string, sourceID string, state string,
 	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
-	cycleIndex int, occurredAtUnix int64, note string, payload any) error {
+	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if cycleID == "" {
-		return fmt.Errorf("cycle_id is required")
+	if paymentAttemptID == "" {
+		return fmt.Errorf("payment_attempt_id is required")
 	}
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)
@@ -1829,20 +1829,20 @@ func dbUpsertSettlementCycleCtx(ctx context.Context, db sqlConn, cycleID string,
 	}()
 
 	_, err := ExecContext(ctx, db,
-		`INSERT INTO fact_settlement_cycles(
-			cycle_id,source_type,source_id,state,
+		`INSERT INTO fact_settlement_payment_attempts(
+			payment_attempt_id,source_type,source_id,state,
 			gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,
 			cycle_index,occurred_at_unix,confirmed_at_unix,note,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(source_type, source_id) DO UPDATE SET
-			cycle_id=excluded.cycle_id,
+			payment_attempt_id=excluded.payment_attempt_id,
 			state=CASE
-				WHEN fact_settlement_cycles.state='confirmed' AND excluded.state='pending' THEN fact_settlement_cycles.state
+				WHEN fact_settlement_payment_attempts.state='confirmed' AND excluded.state='pending' THEN fact_settlement_payment_attempts.state
 				ELSE excluded.state
 			END,
 			confirmed_at_unix=CASE
 				WHEN excluded.state='confirmed' THEN excluded.occurred_at_unix
-				ELSE fact_settlement_cycles.confirmed_at_unix
+				ELSE fact_settlement_payment_attempts.confirmed_at_unix
 			END,
 			gross_amount_satoshi=excluded.gross_amount_satoshi,
 			gate_fee_satoshi=excluded.gate_fee_satoshi,
@@ -1850,16 +1850,16 @@ func dbUpsertSettlementCycleCtx(ctx context.Context, db sqlConn, cycleID string,
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
 			payload_json=excluded.payload_json`,
-		cycleID, sourceType, sourceID, state,
+		paymentAttemptID, sourceType, sourceID, state,
 		grossSatoshi, gateFeeSatoshi, netSatoshi,
-		cycleIndex, occurredAt, confirmedAt,
+		paymentAttemptIndex, occurredAt, confirmedAt,
 		strings.TrimSpace(note), mustJSONString(payload),
 	)
 	return err
 }
 
-// dbGetSettlementCycleBySource 通过 source_type/source_id 查找 settlement_cycle_id
-func dbGetSettlementCycleBySourceCtx(ctx context.Context, db sqlConn, sourceType string, sourceID string) (int64, error) {
+// dbGetSettlementPaymentAttemptBySource 通过 source_type/source_id 查找 settlement_payment_attempt_id
+func dbGetSettlementPaymentAttemptBySourceCtx(ctx context.Context, db sqlConn, sourceType string, sourceID string) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -1869,69 +1869,57 @@ func dbGetSettlementCycleBySourceCtx(ctx context.Context, db sqlConn, sourceType
 		return 0, fmt.Errorf("source_type and source_id are required")
 	}
 	var id int64
-	err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type=? AND source_id=?`, sourceType, sourceID).Scan(&id)
+	err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_payment_attempts WHERE source_type=? AND source_id=?`, sourceType, sourceID).Scan(&id)
 	if err == sql.ErrNoRows {
-		return 0, fmt.Errorf("%w: settlement cycle not found for %s:%s", sql.ErrNoRows, sourceType, sourceID)
+		return 0, fmt.Errorf("%w: settlement payment attempt not found for %s:%s", sql.ErrNoRows, sourceType, sourceID)
 	}
 	return id, err
 }
 
-// dbGetSettlementCycleSourceTxID 只通过 settlement_cycle 反查来源 txid。
+// dbGetSettlementPaymentAttemptSourceTxID 只通过 settlement_payment_attempt 反查来源 txid。
 // 设计说明：
-// - 业务扣账只认 settlement_cycle，不再从 payment 事实绕路取 txid；
-// - 所有来源都按 settlement_cycle_id 回到渠道子表拿 txid；
+// - 业务扣账只认 settlement_payment_attempt，不再从 payment 事实绕路取 txid；
+// - 所有来源都按 settlement_payment_attempt_id 回到渠道子表拿 txid；
 // - 其他 source_type 不允许拿来驱动 BSV 扣账。
-func dbGetSettlementCycleSourceTxIDCtx(ctx context.Context, db sqlConn, settlementCycleID int64) (string, error) {
+func dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
-	if settlementCycleID <= 0 {
-		return "", fmt.Errorf("settlement_cycle_id is required")
+	if settlementPaymentAttemptID <= 0 {
+		return "", fmt.Errorf("settlement_payment_attempt_id is required")
 	}
 	var sourceType string
 	var sourceID string
-	if err := QueryRowContext(ctx, db, `SELECT source_type, source_id FROM fact_settlement_cycles WHERE id=?`, settlementCycleID).Scan(&sourceType, &sourceID); err != nil {
+	if err := QueryRowContext(ctx, db, `SELECT source_type, source_id FROM fact_settlement_payment_attempts WHERE id=?`, settlementPaymentAttemptID).Scan(&sourceType, &sourceID); err != nil {
 		if err == sql.ErrNoRows {
-			return "", fmt.Errorf("settlement cycle not found: %d", settlementCycleID)
+			return "", fmt.Errorf("settlement payment attempt not found: %d", settlementPaymentAttemptID)
 		}
 		return "", err
 	}
 	switch strings.ToLower(strings.TrimSpace(sourceType)) {
 	case "chain_quote_pay":
 		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_quote_pay WHERE settlement_cycle_id=?`, settlementCycleID).Scan(&txid); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_quote_pay WHERE settlement_payment_attempt_id=?`, settlementPaymentAttemptID).Scan(&txid); err != nil {
 			if err == sql.ErrNoRows {
-				txid = strings.ToLower(strings.TrimSpace(sourceID))
-				if txid != "" {
-					return txid, nil
-				}
-				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
 			}
 			return "", err
 		}
 		return strings.ToLower(strings.TrimSpace(txid)), nil
 	case "chain_direct_pay":
 		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_direct_pay WHERE settlement_cycle_id=?`, settlementCycleID).Scan(&txid); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_direct_pay WHERE settlement_payment_attempt_id=?`, settlementPaymentAttemptID).Scan(&txid); err != nil {
 			if err == sql.ErrNoRows {
-				txid = strings.ToLower(strings.TrimSpace(sourceID))
-				if txid != "" {
-					return txid, nil
-				}
-				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
 			}
 			return "", err
 		}
 		return strings.ToLower(strings.TrimSpace(txid)), nil
 	case "chain_asset_create":
 		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_asset_create WHERE settlement_cycle_id=?`, settlementCycleID).Scan(&txid); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_asset_create WHERE settlement_payment_attempt_id=?`, settlementPaymentAttemptID).Scan(&txid); err != nil {
 			if err == sql.ErrNoRows {
-				txid = strings.ToLower(strings.TrimSpace(sourceID))
-				if txid != "" {
-					return txid, nil
-				}
-				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
 			}
 			return "", err
 		}
@@ -1939,48 +1927,34 @@ func dbGetSettlementCycleSourceTxIDCtx(ctx context.Context, db sqlConn, settleme
 	case "pool_session_quote_pay":
 		var txid string
 		err := QueryRowContext(ctx, db,
-			`SELECT txid FROM fact_settlement_channel_pool_session_quote_pay WHERE settlement_cycle_id=?`,
-			settlementCycleID,
+			`SELECT txid FROM fact_settlement_channel_pool_session_quote_pay WHERE settlement_payment_attempt_id=?`,
+			settlementPaymentAttemptID,
 		).Scan(&txid)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				poolSessionID := strings.TrimSpace(sourceID)
-				if poolSessionID != "" {
-					var fallbackTx string
-					if qErr := QueryRowContext(ctx, db,
-						`SELECT txid
-						   FROM fact_pool_session_events
-						  WHERE pool_session_id=? AND txid<>''
-						  ORDER BY sequence_num DESC, created_at_unix DESC, id DESC
-						  LIMIT 1`,
-						poolSessionID,
-					).Scan(&fallbackTx); qErr == nil {
-						return strings.ToLower(strings.TrimSpace(fallbackTx)), nil
-					}
-				}
-				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+				return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
 			}
 			return "", err
 		}
 		return strings.ToLower(strings.TrimSpace(txid)), nil
 	default:
-		return "", fmt.Errorf("settlement cycle %d source_type %s cannot derive txid", settlementCycleID, strings.TrimSpace(sourceType))
+		return "", fmt.Errorf("settlement payment attempt %d source_type %s cannot derive txid", settlementPaymentAttemptID, strings.TrimSpace(sourceType))
 	}
 }
 
 // ========== 消耗记录函数（硬切版） ==========
 
-// dbAppendBSVConsumptionsForSettlementCycle 写入 BSV 消耗记录
-func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+// dbAppendBSVConsumptionsForSettlementPaymentAttempt 写入 BSV 消耗记录
+func dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if settlementCycleID <= 0 {
-		return fmt.Errorf("settlement_cycle_id is required")
+	if settlementPaymentAttemptID <= 0 {
+		return fmt.Errorf("settlement_payment_attempt_id is required")
 	}
-	spentByTxid, err := dbGetSettlementCycleSourceTxIDCtx(ctx, db, settlementCycleID)
+	spentByTxid, err := dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx, db, settlementPaymentAttemptID)
 	if err != nil {
-		return fmt.Errorf("resolve settlement cycle txid failed: %w", err)
+		return fmt.Errorf("resolve settlement payment attempt txid failed: %w", err)
 	}
 
 	for _, fact := range utxoFacts {
@@ -1996,19 +1970,19 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 		// 先确保 settlement record 落库。
 		// 不能依赖 fact_bsv_utxos 的 spent 状态来决定是否写 record，
 		// 因为本地投影可能已经把 UTXO 标为 spent（同一 tx），若这里直接 continue 会丢掉 BSV 结算记录。
-		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementCycleID, utxoID)
+		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementPaymentAttemptID, utxoID)
 		_, err = ExecContext(ctx, db,
 			`INSERT INTO fact_settlement_records(
-				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id,
+				record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_utxo_id,
 				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
+			ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
 				used_satoshi=excluded.used_satoshi,
 				state=CASE WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending'
 					THEN fact_settlement_records.state ELSE excluded.state END`,
-			recordID, settlementCycleID, "BSV", "", utxoID,
+			recordID, settlementPaymentAttemptID, "BSV", "", utxoID,
 			fact.AmountSatoshi, "", "confirmed", occurredAtUnix, occurredAtUnix,
-			"BSV consumed by settlement cycle", mustJSONString(fact.Payload),
+			"BSV consumed by settlement payment attempt", mustJSONString(fact.Payload),
 		)
 		if err != nil {
 			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
@@ -2050,7 +2024,7 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 			return fmt.Errorf("bsv utxo %s already spent by %s", utxoID, currentSpentByTxid)
 		}
 
-		// 标记 UTXO 为已花费。这里只认 settlement_cycle 推导出的 txid，禁止旁路写空值。
+		// 标记 UTXO 为已花费。这里只认 settlement_payment_attempt 推导出的 txid，禁止旁路写空值。
 		result, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=? AND utxo_state<>'spent'`,
 			spentByTxid, occurredAtUnix, occurredAtUnix, utxoID)
 		if err != nil {
@@ -2067,17 +2041,17 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 	return nil
 }
 
-// dbAppendTokenConsumptionsForSettlementCycle 写入 Token 消耗记录
-func dbAppendTokenConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlConn, settlementCycleID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+// dbAppendTokenConsumptionsForSettlementPaymentAttempt 写入 Token 消耗记录
+func dbAppendTokenConsumptionsForSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	if settlementCycleID <= 0 {
-		return fmt.Errorf("settlement_cycle_id is required")
+	if settlementPaymentAttemptID <= 0 {
+		return fmt.Errorf("settlement_payment_attempt_id is required")
 	}
-	spentByTxid, err := dbGetSettlementCycleSourceTxIDCtx(ctx, db, settlementCycleID)
+	spentByTxid, err := dbGetSettlementPaymentAttemptSourceTxIDCtx(ctx, db, settlementPaymentAttemptID)
 	if err != nil {
-		return fmt.Errorf("resolve settlement cycle txid failed: %w", err)
+		return fmt.Errorf("resolve settlement payment attempt txid failed: %w", err)
 	}
 
 	for _, fact := range utxoFacts {
@@ -2100,19 +2074,19 @@ func dbAppendTokenConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlC
 			return fmt.Errorf("lookup lot for utxo %s: %w", utxoID, err)
 		}
 
-		recordID := fmt.Sprintf("rec_token_%d_%s", settlementCycleID, lotID)
+		recordID := fmt.Sprintf("rec_token_%d_%s", settlementPaymentAttemptID, lotID)
 		_, err = ExecContext(ctx, db,
 			`INSERT INTO fact_settlement_records(
-				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_lot_id,
+				record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_lot_id,
 				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
+			ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
 				used_quantity_text=excluded.used_quantity_text,
 				state=CASE WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending' 
 					THEN fact_settlement_records.state ELSE excluded.state END`,
-			recordID, settlementCycleID, "TOKEN", "", lotID,
+			recordID, settlementPaymentAttemptID, "TOKEN", "", lotID,
 			0, fact.QuantityText, "confirmed", occurredAtUnix, occurredAtUnix,
-			"Token consumed by settlement cycle", mustJSONString(fact.Payload),
+			"Token consumed by settlement payment attempt", mustJSONString(fact.Payload),
 		)
 		if err != nil {
 			return fmt.Errorf("append token consumption for lot %s: %w", lotID, err)

@@ -415,7 +415,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			return resp, fmt.Errorf("selected utxo ids are required for settlement records")
 		}
 		if err := store.Tx(ctx, func(tx *sql.Tx) error {
-			channelID, err := dbUpsertChainChannelWithSettlementCycle(ctx, tx, chainPaymentEntry{
+			channelID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, chainPaymentEntry{
 				TxID:                 submitted.BroadcastTxID,
 				PaymentSubType:       "biz_order_pay_bsv",
 				Status:               processStatus,
@@ -431,7 +431,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			},
 				"chain_direct_pay",
 				"fact_settlement_channel_chain_direct_pay",
-				"cycle_chain_direct_pay",
+				"payment_attempt_chain_direct_pay",
 				"bind chain direct pay channel id",
 			)
 			if err != nil {
@@ -439,11 +439,11 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			}
 			payload["chain_direct_pay_id"] = channelID
 			chainPaymentPayload["chain_direct_pay_id"] = channelID
-			settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, tx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+			settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, tx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 			if err != nil {
-				return fmt.Errorf("resolve settlement cycle for chain direct pay: %w", err)
+				return fmt.Errorf("resolve settlement payment attempt for chain direct pay: %w", err)
 			}
-			if err := dbAppendBSVSettlementRecordsForCycleTx(ctx, tx, settlementCycleID, ownerPubkeyHex, selectedUTXOIDs, now, chainPaymentPayload); err != nil {
+			if err := dbAppendBSVSettlementRecordsForCycleTx(ctx, tx, settlementPaymentAttemptID, ownerPubkeyHex, selectedUTXOIDs, now, chainPaymentPayload); err != nil {
 				return err
 			}
 			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{

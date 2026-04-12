@@ -120,22 +120,22 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_Success(t *testing.T) {
 	}
 
 	var chainID int64
-	var cycleRef string
-	if err := db.QueryRow(`SELECT id, settlement_cycle_id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, res.PaymentTxID).Scan(&chainID, &cycleRef); err != nil {
+	var paymentAttemptRef string
+	if err := db.QueryRow(`SELECT id, settlement_payment_attempt_id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, res.PaymentTxID).Scan(&chainID, &paymentAttemptRef); err != nil {
 		t.Fatalf("query fact_settlement_channel_chain_quote_pay failed: %v", err)
 	}
 	if chainID == 0 {
 		t.Fatal("chain payment id should not be zero")
 	}
-	var cycleID int64
-	if err := db.QueryRow(`SELECT id FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", chainID)).Scan(&cycleID); err != nil {
-		t.Fatalf("query fact_settlement_cycles failed: %v", err)
+	var paymentAttemptID int64
+	if err := db.QueryRow(`SELECT id FROM fact_settlement_payment_attempts WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", chainID)).Scan(&paymentAttemptID); err != nil {
+		t.Fatalf("query fact_settlement_payment_attempts failed: %v", err)
 	}
-	if cycleID == 0 {
-		t.Fatal("settlement cycle id should not be zero")
+	if paymentAttemptID == 0 {
+		t.Fatal("settlement payment attempt id should not be zero")
 	}
-	if cycleRef != fmt.Sprintf("%d", cycleID) {
-		t.Fatalf("cycle id mismatch: row=%s cycle=%d", cycleRef, cycleID)
+	if paymentAttemptRef != fmt.Sprintf("%d", paymentAttemptID) {
+		t.Fatalf("payment attempt id mismatch: row=%s cycle=%d", paymentAttemptRef, paymentAttemptID)
 	}
 
 	row, found, err := gatewayStore.LoadServiceQuotePayment(res.ServiceQuoteHash)

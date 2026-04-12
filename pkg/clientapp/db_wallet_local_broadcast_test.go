@@ -52,12 +52,12 @@ func TestDbUpsertWalletLocalBroadcastStoreTx_PreservesMaxObservedTime(t *testing
 	if count != 1 {
 		t.Fatalf("expected 1 wallet_local_broadcast_txs row, got %d", count)
 	}
-	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_direct_pay' AND source_id=?`, txid).Scan(&cycleCount); err != nil {
-		t.Fatalf("count fact_settlement_cycles failed: %v", err)
+	var paymentAttemptCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_payment_attempts WHERE source_type='chain_direct_pay' AND source_id=?`, txid).Scan(&paymentAttemptCount); err != nil {
+		t.Fatalf("count fact_settlement_payment_attempts failed: %v", err)
 	}
-	if cycleCount != 0 {
-		t.Fatalf("expected no chain_bsv settlement cycle, got %d", cycleCount)
+	if paymentAttemptCount != 0 {
+		t.Fatalf("expected no chain_bsv settlement payment attempt, got %d", paymentAttemptCount)
 	}
 	var factCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txid).Scan(&factCount); err != nil {

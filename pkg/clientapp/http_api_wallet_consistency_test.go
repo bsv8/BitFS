@@ -72,7 +72,7 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
-	channelID, err := dbUpsertChainDirectPayWithSettlementCycle(ctx, store, chainPaymentEntry{
+	channelID, err := dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "bsv21_transfer",
 		Status:              "confirmed",
@@ -87,16 +87,16 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 	if err != nil {
 		t.Fatalf("seed chain_direct_pay channel failed: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+	paymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 	if err != nil {
 		t.Fatalf("lookup chain_direct_pay cycle failed: %v", err)
 	}
-	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
+	if err := dbAppendBSVConsumptionsForSettlementPaymentAttempt(db, paymentAttemptID, []chainPaymentUTXOLinkEntry{
 		{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1, CreatedAtUnix: now},
 	}, now); err != nil {
 		t.Fatalf("seed carrier bsv fact failed: %v", err)
 	}
-	if err := dbAppendTokenConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
+	if err := dbAppendTokenConsumptionsForSettlementPaymentAttempt(db, paymentAttemptID, []chainPaymentUTXOLinkEntry{
 		{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1, QuantityText: "1000", AssetKind: "BSV21", TokenID: tokenID, TokenStandard: "BSV21", CreatedAtUnix: now},
 	}, now); err != nil {
 		t.Fatalf("seed token quantity fact failed: %v", err)
@@ -177,7 +177,7 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed chain_token fact utxo failed: %v", err)
 	}
-	channelID, err := dbUpsertChainDirectPayWithSettlementCycle(context.Background(), store, chainPaymentEntry{
+	channelID, err := dbUpsertChainDirectPayWithSettlementPaymentAttempt(context.Background(), store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "bsv21_transfer",
 		Status:              "confirmed",
@@ -191,7 +191,7 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed chain_direct_pay channel failed: %v", err)
 	}
-	if _, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID)); err != nil {
+	if _, err := dbGetSettlementPaymentAttemptBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID)); err != nil {
 		t.Fatalf("lookup chain_direct_pay cycle failed: %v", err)
 	}
 
@@ -243,7 +243,7 @@ func TestCheckConfirmedBSVSpendConsistency_RepairByCycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv utxo failed: %v", err)
 	}
-	channelID, err := dbUpsertChainDirectPayWithSettlementCycle(ctx, store, chainPaymentEntry{
+	channelID, err := dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx, store, chainPaymentEntry{
 		TxID:                txid,
 		PaymentSubType:      "wallet_transfer",
 		Status:              "confirmed",
@@ -257,13 +257,13 @@ func TestCheckConfirmedBSVSpendConsistency_RepairByCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed chain_direct_pay channel failed: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+	paymentAttemptID, err := dbGetSettlementPaymentAttemptBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 	if err != nil {
-		t.Fatalf("lookup settlement cycle failed: %v", err)
+		t.Fatalf("lookup settlement payment attempt failed: %v", err)
 	}
 	if err := dbAppendSettlementRecord(ctx, store, settlementRecordEntry{
 		RecordID:          "rec_repair_" + txid,
-		SettlementCycleID: cycleID,
+		SettlementPaymentAttemptID: paymentAttemptID,
 		AssetType:         "BSV",
 		OwnerPubkeyHex:    walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
 		SourceUTXOID:      utxoID,

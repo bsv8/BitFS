@@ -46,31 +46,31 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 		}
 	}
 
-	cycleCols, err := tableColumns(db, "fact_settlement_cycles")
+	paymentAttemptCols, err := tableColumns(db, "fact_settlement_payment_attempts")
 	if err != nil {
-		t.Fatalf("inspect fact_settlement_cycles columns failed: %v", err)
+		t.Fatalf("inspect fact_settlement_payment_attempts columns failed: %v", err)
 	}
-	for _, col := range []string{"source_type", "source_id", "cycle_id"} {
-		if _, ok := cycleCols[col]; !ok {
-			t.Fatalf("missing column %s on fact_settlement_cycles", col)
+	for _, col := range []string{"source_type", "source_id", "payment_attempt_id"} {
+		if _, ok := paymentAttemptCols[col]; !ok {
+			t.Fatalf("missing column %s on fact_settlement_payment_attempts", col)
 		}
 	}
-	if notNull, err := tableColumnNotNull(db, "fact_settlement_cycles", "source_type"); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles source_type notnull failed: %v", err)
+	if notNull, err := tableColumnNotNull(db, "fact_settlement_payment_attempts", "source_type"); err != nil {
+		t.Fatalf("inspect fact_settlement_payment_attempts source_type notnull failed: %v", err)
 	} else if !notNull {
-		t.Fatal("fact_settlement_cycles.source_type should be NOT NULL")
+		t.Fatal("fact_settlement_payment_attempts.source_type should be NOT NULL")
 	}
-	if hasIndex, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_cycles", []string{"source_type", "source_id"}); err != nil {
-		t.Fatalf("inspect fact_settlement_cycles unique index failed: %v", err)
+	if hasIndex, err := tableHasUniqueIndexOnColumns(db, "fact_settlement_payment_attempts", []string{"source_type", "source_id"}); err != nil {
+		t.Fatalf("inspect fact_settlement_payment_attempts unique index failed: %v", err)
 	} else if !hasIndex {
-		t.Fatal("fact_settlement_cycles should keep unique index on source_type/source_id")
+		t.Fatal("fact_settlement_payment_attempts should keep unique index on source_type/source_id")
 	}
 
 	// 第六次迭代：只测试主口径字段
 	if _, err := db.Exec(`INSERT INTO settle_records(
 		settlement_id,business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"set_fresh_1", "biz_fresh_1", "settlement_cycle", "1", "c2c_transfer", "open", "client:self", "pool:peer", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
+		"set_fresh_1", "biz_fresh_1", "settlement_payment_attempt", "1", "c2c_transfer", "open", "client:self", "pool:peer", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
 	); err != nil {
 		t.Fatalf("insert fresh settle_records failed: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	).Scan(&sourceType, &sourceID, &accountingScene, &accountingSubtype); err != nil {
 		t.Fatalf("query fresh settle_records failed: %v", err)
 	}
-	if sourceType != "settlement_cycle" || sourceID != "1" || accountingScene != "c2c_transfer" || accountingSubtype != "open" {
+	if sourceType != "settlement_payment_attempt" || sourceID != "1" || accountingScene != "c2c_transfer" || accountingSubtype != "open" {
 		t.Fatalf("unexpected fresh settle_records values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
 	}
 }
@@ -132,9 +132,9 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 		SourceID:   "1",
 	})
 	if err == nil {
-		t.Fatal("expected dbListFinanceBusinesses to reject non-settlement_cycle source_type")
+		t.Fatal("expected dbListFinanceBusinesses to reject non-settlement_payment_attempt source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_payment_attempt, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -144,9 +144,9 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 		SourceID:   "1",
 	})
 	if err == nil {
-		t.Fatal("expected dbListFinanceProcessEvents to reject non-settlement_cycle source_type")
+		t.Fatal("expected dbListFinanceProcessEvents to reject non-settlement_payment_attempt source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_payment_attempt, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -186,12 +186,12 @@ func TestNormalizeFinanceQuerySourceAllowsChainWalletTypes(t *testing.T) {
 	}
 }
 
-func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
+func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
 
-	if err := dbAppendSettlementCycleFinBusiness(db, 77, finBusinessEntry{
+	if err := dbAppendSettlementPaymentAttemptFinBusiness(db, 77, finBusinessEntry{
 		BusinessID:        "biz_settlement_guard_1",
 		BusinessRole:      "process",
 		AccountingScene:   "wallet_transfer",
@@ -203,10 +203,10 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 		IdempotencyKey:    "idem_settlement_guard_1",
 		Note:              "历史回填业务",
 	}); err != nil {
-		t.Fatalf("settlement cycle business write failed: %v", err)
+		t.Fatalf("settlement payment attempt business write failed: %v", err)
 	}
 
-	if err := dbAppendSettlementCycleFinProcessEvent(db, 77, finProcessEventEntry{
+	if err := dbAppendSettlementPaymentAttemptFinProcessEvent(db, 77, finProcessEventEntry{
 		ProcessID:         "proc_settlement_guard_1",
 		AccountingScene:   "wallet_transfer",
 		AccountingSubType: "open",
@@ -216,7 +216,7 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 		IdempotencyKey:    "idem_settlement_guard_evt_1",
 		Note:              "历史回填事件",
 	}); err != nil {
-		t.Fatalf("settlement cycle process event write failed: %v", err)
+		t.Fatalf("settlement payment attempt process event write failed: %v", err)
 	}
 
 	var businessSourceType, businessSourceID string
@@ -224,10 +224,10 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 		`SELECT source_type,source_id FROM settle_records WHERE business_id=?`,
 		"biz_settlement_guard_1",
 	).Scan(&businessSourceType, &businessSourceID); err != nil {
-		t.Fatalf("query settlement cycle business failed: %v", err)
+		t.Fatalf("query settlement payment attempt business failed: %v", err)
 	}
-	if businessSourceType != "settlement_cycle" || businessSourceID != "77" {
-		t.Fatalf("unexpected settlement cycle business source: %s %s", businessSourceType, businessSourceID)
+	if businessSourceType != "settlement_payment_attempt" || businessSourceID != "77" {
+		t.Fatalf("unexpected settlement payment attempt business source: %s %s", businessSourceType, businessSourceID)
 	}
 
 	var processSourceType, processSourceID string
@@ -235,16 +235,16 @@ func TestSettlementCycleWrappersPopulateSettlementSource(t *testing.T) {
 		`SELECT source_type,source_id FROM settle_process_events WHERE process_id=?`,
 		"proc_settlement_guard_1",
 	).Scan(&processSourceType, &processSourceID); err != nil {
-		t.Fatalf("query settlement cycle process event failed: %v", err)
+		t.Fatalf("query settlement payment attempt process event failed: %v", err)
 	}
-	if processSourceType != "settlement_cycle" || processSourceID != "77" {
-		t.Fatalf("unexpected settlement cycle process source: %s %s", processSourceType, processSourceID)
+	if processSourceType != "settlement_payment_attempt" || processSourceID != "77" {
+		t.Fatalf("unexpected settlement payment attempt process source: %s %s", processSourceType, processSourceID)
 	}
 }
 
-// TestSettlementCycleWriteGuard_NoSharedEntryDirectCalls 是收官固定检查：
+// TestSettlementPaymentAttemptWriteGuard_NoSharedEntryDirectCalls 是收官固定检查：
 // 这里只允许结算写入口经过专用封装，不允许新增共享入口直调或手填来源字段。
-func TestSettlementCycleWriteGuard_NoSharedEntryDirectCalls(t *testing.T) {
+func TestSettlementPaymentAttemptWriteGuard_NoSharedEntryDirectCalls(t *testing.T) {
 	t.Parallel()
 
 	files := []string{

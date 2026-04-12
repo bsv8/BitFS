@@ -595,14 +595,14 @@ func GetLatestBusinessByFrontOrderID(ctx context.Context, store *clientDB, front
 	return businesses[0], nil
 }
 
-// dbGetLatestBusinessBySettlementCycleID 按 settlement_cycle_id 查最近一条 business。
-// 设计说明：pool_session 读入口会先映射到 settlement_cycle，再走这条查询。
-func dbGetLatestBusinessBySettlementCycleID(ctx context.Context, store *clientDB, settlementCycleID int64) (financeBusinessItem, error) {
+// dbGetLatestBusinessBySettlementPaymentAttemptID 按 settlement_payment_attempt_id 查最近一条 business。
+// 设计说明：pool_session 读入口会先映射到 settlement_payment_attempt，再走这条查询。
+func dbGetLatestBusinessBySettlementPaymentAttemptID(ctx context.Context, store *clientDB, settlementPaymentAttemptID int64) (financeBusinessItem, error) {
 	if store == nil {
 		return financeBusinessItem{}, fmt.Errorf("client db is nil")
 	}
-	if settlementCycleID <= 0 {
-		return financeBusinessItem{}, fmt.Errorf("settlement_cycle_id is required")
+	if settlementPaymentAttemptID <= 0 {
+		return financeBusinessItem{}, fmt.Errorf("settlement_payment_attempt_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessItem, error) {
 		var out financeBusinessItem
@@ -610,9 +610,9 @@ func dbGetLatestBusinessBySettlementCycleID(ctx context.Context, store *clientDB
 		err := QueryRowContext(ctx, db,
 			`SELECT business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
 			 FROM settle_records
-			 WHERE source_type='settlement_cycle' AND source_id=?
+			 WHERE source_type='settlement_payment_attempt' AND source_id=?
 			 ORDER BY occurred_at_unix DESC,business_id DESC LIMIT 1`,
-			fmt.Sprintf("%d", settlementCycleID),
+			fmt.Sprintf("%d", settlementPaymentAttemptID),
 		).Scan(
 			&out.BusinessID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype,
 			&out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload,
