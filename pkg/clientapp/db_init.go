@@ -940,6 +940,23 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			UNIQUE(source_type, source_id)
 		)`,
+		// 兼容视图：新链路仍然按 payment_attempt 落地，但对外保留 cycles 读口，避免 e2e 再查错表。
+		`CREATE VIEW IF NOT EXISTS fact_settlement_cycles AS
+			SELECT
+				id,
+				payment_attempt_id,
+				source_type,
+				source_id,
+				state,
+				gross_amount_satoshi,
+				gate_fee_satoshi,
+				net_amount_satoshi,
+				cycle_index,
+				occurred_at_unix,
+				confirmed_at_unix,
+				note,
+				payload_json
+			FROM fact_settlement_payment_attempts`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_payment_attempts_source_state ON fact_settlement_payment_attempts(source_type, state, occurred_at_unix DESC)`,
 
 		// Step 9: WOC 证据驱动 token IN 入账 - 待确认队列表

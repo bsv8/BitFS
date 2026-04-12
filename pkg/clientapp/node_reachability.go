@@ -147,14 +147,18 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 	if !cfgBool(rt.runIn.Reachability.AutoAnnounceEnabled, true) {
 		return
 	}
-	if len(rt.HealthyGWs) == 0 {
+	if rt.gwManager == nil {
+		return
+	}
+	gatewayPeerID := rt.gwManager.GetMasterGateway()
+	if gatewayPeerID == "" {
 		return
 	}
 	ttlSeconds := rt.runIn.Reachability.AnnounceTTLSeconds
 	if ttlSeconds == 0 {
 		ttlSeconds = 3600
 	}
-	gateway := gatewayBusinessID(rt, rt.HealthyGWs[0].ID)
+	gateway := gatewayBusinessID(rt, gatewayPeerID)
 	nodePubkeyHex, _, fingerprint, err := currentLocalNodeReachabilitySnapshot(rt)
 	if err != nil {
 		msg := err.Error()
@@ -215,9 +219,6 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("no healthy gateway")
-	}
 	ttlSeconds := p.TTLSeconds
 	if ttlSeconds == 0 {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("ttl_seconds must be >= 1")
@@ -225,6 +226,9 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	nodePubkeyHex, err := localPubKeyHex(rt.Host)
 	if err != nil {
@@ -313,9 +317,6 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, r
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("no healthy gateway")
-	}
 	targetNodePubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(p.TargetNodePubkeyHex))
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("target_node_pubkey_hex invalid: %w", err)
@@ -323,6 +324,9 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, r
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	body := &broadcastmodule.NodeReachabilityQueryReq{
 		TargetNodePubkeyHex: targetNodePubkeyHex,

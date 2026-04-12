@@ -28,16 +28,16 @@ import (
 )
 
 type txHistoryEntry struct {
-	GatewayPeerID string
-	EventType     string
-	Direction     string
-	AmountSatoshi int64
-	Purpose       string
-	Note          string
-	PoolID        string
-	MsgID         string
-	SequenceNum   uint32
-	PaymentAttemptIndex    uint32
+	GatewayPeerID       string
+	EventType           string
+	Direction           string
+	AmountSatoshi       int64
+	Purpose             string
+	Note                string
+	PoolID              string
+	MsgID               string
+	SequenceNum         uint32
+	PaymentAttemptIndex uint32
 }
 
 type gatewayEventEntry struct {
@@ -2205,6 +2205,10 @@ func (s *httpAPIServer) handleGetFileStart(w http.ResponseWriter, r *http.Reques
 	req.GatewayPeerID = strings.TrimSpace(req.GatewayPeerID)
 	if req.SeedHash == "" || req.ChunkCount == 0 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "seed_hash and chunk_count are required"})
+		return
+	}
+	if req.GatewayPeerID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "gateway_pubkey_hex is required"})
 		return
 	}
 	if req.ChunkCount > 10000 {

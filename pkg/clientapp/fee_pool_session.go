@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 )
@@ -47,6 +48,52 @@ func (r *Runtime) getFeePool(gatewayPeerID string) (*feePoolSession, bool) {
 	defer r.feePoolsMu.RUnlock()
 	s, ok := r.feePools[gatewayPeerID]
 	return s, ok
+}
+
+// FeePoolGatewayPeerID 返回当前唯一活跃费用池会话对应的网关公钥 hex。
+// 设计说明：
+// - 这里不做“默认第一个网关”兜底；
+// - 只在运行态已经明确存在唯一会话，且能映射到配置里的 gateway_pubkey_hex 时返回；
+// - 用于 e2e / 运维显式把 gateway_pubkey_hex 传回触发入口。
+func (r *Runtime) FeePoolGatewayPeerID() (string, error) {
+	if r == nil {
+		return "", fmt.Errorf("runtime not initialized")
+	}
+	r.feePoolsMu.RLock()
+	defer r.feePoolsMu.RUnlock()
+	var peerIDs []string
+	for gatewayPeerID, sess := range r.feePools {
+		if sess == nil {
+			continue
+		}
+		if strings.TrimSpace(sess.SpendTxID) == "" {
+			continue
+		}
+		peerIDs = append(peerIDs, strings.TrimSpace(gatewayPeerID))
+	}
+	switch len(peerIDs) {
+	case 0:
+		return "", fmt.Errorf("fee pool session missing")
+	case 1:
+		peerID := strings.TrimSpace(peerIDs[0])
+		if peerID == "" {
+			return "", fmt.Errorf("fee pool session missing")
+		}
+		for _, g := range r.runIn.Network.Gateways {
+			ai, err := parseAddr(g.Addr)
+			if err != nil || ai == nil || strings.TrimSpace(ai.ID.String()) != peerID {
+				continue
+			}
+			pubkey := strings.ToLower(strings.TrimSpace(g.Pubkey))
+			if pubkey == "" {
+				return "", fmt.Errorf("gateway_pubkey_hex missing for fee pool gateway=%s", peerID)
+			}
+			return pubkey, nil
+		}
+		return "", fmt.Errorf("gateway_pubkey_hex not found for fee pool gateway=%s", peerID)
+	default:
+		return "", fmt.Errorf("multiple fee pool sessions found")
+	}
 }
 
 func (r *Runtime) setFeePool(gatewayPeerID string, s *feePoolSession) {

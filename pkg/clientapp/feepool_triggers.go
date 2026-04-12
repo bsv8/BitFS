@@ -17,16 +17,20 @@ type FeePoolStateResult struct {
 	State         poolcore.StateResp `json:"state"`
 }
 
-func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime) (FeePoolStateResult, error) {
+type FeePoolGatewayParams struct {
+	GatewayPeerID string `json:"gateway_pubkey_hex"`
+}
+
+func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime, p FeePoolGatewayParams) (FeePoolStateResult, error) {
 	if rt == nil || rt.Host == nil {
 		return FeePoolStateResult{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return FeePoolStateResult{}, fmt.Errorf("no healthy gateway")
+	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	if err != nil {
+		return FeePoolStateResult{}, err
 	}
-	gw := rt.HealthyGWs[0]
 	gatewayID := gatewayBusinessID(rt, gw.ID)
-	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{})
+	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{"gateway_pubkey_hex": gatewayID})
 	resp, err := callNodePoolSessionState(ctx, rt, gw.ID, "")
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
@@ -42,14 +46,17 @@ type FeePoolCloseResult struct {
 }
 
 // TriggerGatewayFeePoolClose 触发关闭费用池通道并广播 final tx（用于 e2e 清理环境）。
-func TriggerGatewayFeePoolClose(ctx context.Context, store *clientDB, rt *Runtime) (FeePoolCloseResult, error) {
+func TriggerGatewayFeePoolClose(ctx context.Context, store *clientDB, rt *Runtime, p FeePoolGatewayParams) (FeePoolCloseResult, error) {
 	if rt == nil || rt.Host == nil {
 		return FeePoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return FeePoolCloseResult{}, fmt.Errorf("no healthy gateway")
+	if store == nil {
+		return FeePoolCloseResult{}, fmt.Errorf("client db is nil")
 	}
-	gw := rt.HealthyGWs[0]
+	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	if err != nil {
+		return FeePoolCloseResult{}, err
+	}
 	gatewayID := gatewayBusinessID(rt, gw.ID)
 
 	sess, ok := rt.getFeePool(gw.ID.String())
@@ -63,8 +70,11 @@ func TriggerGatewayFeePoolClose(ctx context.Context, store *clientDB, rt *Runtim
 	})
 }
 
-func TriggerGatewayFeePoolCloseRuntime(ctx context.Context, rt *Runtime) (FeePoolCloseResult, error) {
-	return TriggerGatewayFeePoolClose(ctx, nil, rt)
+func TriggerGatewayFeePoolCloseRuntime(ctx context.Context, rt *Runtime, p FeePoolGatewayParams) (FeePoolCloseResult, error) {
+	if rt == nil {
+		return FeePoolCloseResult{}, fmt.Errorf("runtime not initialized")
+	}
+	return TriggerGatewayFeePoolClose(ctx, rt.store, rt, p)
 }
 
 type FeePoolCloseBySpendTxIDParams struct {
@@ -260,6 +270,9 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 	if rt == nil || rt.Host == nil {
 		return FeePoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
+	if store == nil {
+		return FeePoolCloseResult{}, fmt.Errorf("client db is nil")
+	}
 	spendTxID := strings.TrimSpace(p.SpendTxID)
 	if spendTxID == "" {
 		return FeePoolCloseResult{}, fmt.Errorf("spend_txid required")
@@ -278,13 +291,25 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		return FeePoolCloseResult{}, fmt.Errorf("session not found by spend_txid: %s", spendTxID)
 	}
 	if strings.TrimSpace(st.Status) == "closed" {
+		finalTxID := strings.ToLower(strings.TrimSpace(st.FinalTxID))
+		if finalTxID == "" {
+			return FeePoolCloseResult{}, fmt.Errorf("closed session missing final_spend_txid")
+		}
+		if err := dbRecordFeePoolCloseAccounting(ctx, store, spendTxID, finalTxID, hex.EncodeToString(st.CurrentTx), gatewayID); err != nil {
+			return FeePoolCloseResult{}, err
+		}
+		if sess, ok := rt.getFeePool(gw.ID.String()); ok && sess != nil {
+			sess.Status = "closed"
+			sess.FinalTxID = finalTxID
+			rt.setFeePool(gw.ID.String(), sess)
+		}
 		return FeePoolCloseResult{
 			GatewayPeerID: gatewayID,
 			Result: poolcore.CloseResp{
 				Success:        true,
 				Status:         "closed",
 				Broadcasted:    true,
-				FinalSpendTxID: strings.TrimSpace(st.FinalTxID),
+				FinalSpendTxID: finalTxID,
 			},
 		}, nil
 	}
@@ -333,11 +358,24 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
+	finalTxID := strings.ToLower(strings.TrimSpace(resp.FinalSpendTxID))
+	if finalTxID == "" {
+		return FeePoolCloseResult{}, fmt.Errorf("close response missing final_spend_txid")
+	}
+	if err := dbRecordFeePoolCloseAccounting(ctx, store, spendTxID, finalTxID, hex.EncodeToString(st.CurrentTx), gatewayID); err != nil {
+		return FeePoolCloseResult{}, err
+	}
+	if sess, ok := rt.getFeePool(gw.ID.String()); ok && sess != nil {
+		sess.Status = "closed"
+		sess.FinalTxID = finalTxID
+		rt.setFeePool(gw.ID.String(), sess)
+	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_end", map[string]any{
 		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":         spendTxID,
-		"final_txid":         resp.FinalSpendTxID,
+		"final_txid":         finalTxID,
 		"status":             resp.Status,
 	})
+	resp.FinalSpendTxID = finalTxID
 	return FeePoolCloseResult{GatewayPeerID: gatewayID, Result: resp}, nil
 }

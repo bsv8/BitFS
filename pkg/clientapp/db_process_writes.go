@@ -908,6 +908,369 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 	})
 }
 
+// dbRecordFeePoolQuotePayAccounting 把费用池 quote/pay 的真实回执落到共享事实表。
+// 设计说明：
+// - 只写真实支付成功后的结果，不补“模拟账”；
+// - pool_session_id 统一用 fee pool 会话的 spend_txid，保证本地 sqlite 可反查；
+// - 这里同时写 payment_attempt、channel 和 pool_session_events，满足后续断言与财务回看。
+func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gatewayPubkeyHex string, session *feePoolSession, updatedTxID string, updatedTxHex string, chargedAmount uint64, chargeReason string) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	if session == nil {
+		return fmt.Errorf("fee pool session missing")
+	}
+	sessionID := strings.TrimSpace(session.SpendTxID)
+	if sessionID == "" {
+		return fmt.Errorf("fee pool session spend_txid is required")
+	}
+	updatedTxID = strings.ToLower(strings.TrimSpace(updatedTxID))
+	if updatedTxID == "" {
+		return fmt.Errorf("updated_txid is required")
+	}
+	updatedTxHex = strings.ToLower(strings.TrimSpace(updatedTxHex))
+	if updatedTxHex == "" {
+		return fmt.Errorf("updated_tx_hex is required")
+	}
+	gatewayPubkeyHex = strings.ToLower(strings.TrimSpace(gatewayPubkeyHex))
+	if gatewayPubkeyHex == "" {
+		gatewayPubkeyHex = "unknown"
+	}
+	chargeReason = strings.TrimSpace(chargeReason)
+	if chargeReason == "" {
+		chargeReason = "demand_publish_fee"
+	}
+	now := time.Now().Unix()
+	sequence := session.Sequence
+	if sequence == 0 {
+		sequence = 1
+	}
+	allocationID := directTransferPoolAllocationID(sessionID, "pay", sequence)
+	if allocationID == "" {
+		return fmt.Errorf("allocation_id is required")
+	}
+	paymentAttemptKey := "payment_attempt_fee_pool_" + sessionID
+	pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
+	payload := map[string]any{
+		"session_id":                  sessionID,
+		"gateway_pubkey_hex":          gatewayPubkeyHex,
+		"updated_txid":                updatedTxID,
+		"updated_tx_hex":              updatedTxHex,
+		"charge_reason":               chargeReason,
+		"charged_amount_satoshi":      chargedAmount,
+		"sequence_num":                sequence,
+		"pool_amount_satoshi":         session.PoolAmountSat,
+		"spend_tx_fee_satoshi":        session.SpendTxFeeSat,
+		"server_amount_after_satoshi": session.ServerAmount,
+		"client_amount_after_satoshi": session.ClientAmount,
+		"billing_cycle_seconds":       session.BillingCycleSeconds,
+		"single_cycle_fee_satoshi":    session.SingleCycleFeeSatoshi,
+		"single_publish_fee_satoshi":  session.SinglePublishFeeSatoshi,
+		"single_query_fee_satoshi":    session.SingleQueryFeeSatoshi,
+		"minimum_pool_amount_satoshi": session.MinimumPoolAmountSatoshi,
+		"lock_blocks":                 session.LockBlocks,
+		"fee_rate_sat_per_byte":       session.FeeRateSatPerByte,
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		if err := dbUpsertSettlementPaymentAttemptCtx(ctx, db,
+			paymentAttemptKey,
+			"pool_session_quote_pay",
+			pendingSourceID,
+			"confirmed",
+			int64(chargedAmount), 0, int64(chargedAmount),
+			int(sequence),
+			now,
+			"fee pool quote pay accounting",
+			payload,
+		); err != nil {
+			return err
+		}
+		settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "pool_session_quote_pay", pendingSourceID)
+		if err != nil {
+			return err
+		}
+		_, err = ExecContext(ctx, db,
+			`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
+				settlement_payment_attempt_id,pool_session_id,txid,pool_scheme,
+				counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+				pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,
+				status,created_at_unix,updated_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(pool_session_id) DO UPDATE SET
+				settlement_payment_attempt_id=excluded.settlement_payment_attempt_id,
+				txid=excluded.txid,
+				pool_scheme=excluded.pool_scheme,
+				counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
+				seller_pubkey_hex=excluded.seller_pubkey_hex,
+				arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
+				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
+				pool_amount_satoshi=excluded.pool_amount_satoshi,
+				spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
+				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
+				lock_blocks=excluded.lock_blocks,
+				open_base_txid=excluded.open_base_txid,
+				status=excluded.status,
+				updated_at_unix=excluded.updated_at_unix`,
+			settlementPaymentAttemptID,
+			sessionID,
+			updatedTxID,
+			"2of2",
+			"",
+			"",
+			"",
+			gatewayPubkeyHex,
+			int64(session.PoolAmountSat),
+			int64(session.SpendTxFeeSat),
+			session.FeeRateSatPerByte,
+			int64(session.LockBlocks),
+			strings.ToLower(strings.TrimSpace(session.BaseTxID)),
+			"confirmed",
+			now,
+			now,
+		)
+		if err != nil {
+			return err
+		}
+		var channelID int64
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
+			return err
+		}
+		if _, err := ExecContext(ctx, db,
+			`UPDATE fact_settlement_payment_attempts SET
+				source_type='pool_session_quote_pay',
+				source_id=?,
+				state='confirmed',
+				occurred_at_unix=?,
+				confirmed_at_unix=?,
+				note=?,
+				payload_json=?
+			WHERE id=?`,
+			fmt.Sprintf("%d", channelID),
+			now,
+			now,
+			"fee pool quote pay accounting",
+			mustJSONString(payload),
+			settlementPaymentAttemptID,
+		); err != nil {
+			return err
+		}
+		_, err = ExecContext(ctx, db,
+			`INSERT INTO fact_pool_session_events(
+				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(allocation_id) DO UPDATE SET
+				pool_session_id=excluded.pool_session_id,
+				allocation_no=excluded.allocation_no,
+				allocation_kind=excluded.allocation_kind,
+				event_kind=excluded.event_kind,
+				sequence_num=excluded.sequence_num,
+				state=excluded.state,
+				direction=excluded.direction,
+				amount_satoshi=excluded.amount_satoshi,
+				purpose=excluded.purpose,
+				note=excluded.note,
+				msg_id=excluded.msg_id,
+				cycle_index=excluded.cycle_index,
+				payee_amount_after=excluded.payee_amount_after,
+				payer_amount_after=excluded.payer_amount_after,
+				txid=excluded.txid,
+				tx_hex=excluded.tx_hex,
+				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
+				created_at_unix=excluded.created_at_unix,
+				payload_json=excluded.payload_json`,
+			allocationID,
+			sessionID,
+			int64(sequence),
+			"pay",
+			PoolFactEventKindPoolEvent,
+			int64(sequence),
+			"confirmed",
+			"out",
+			int64(chargedAmount),
+			chargeReason,
+			"fee pool quote pay accounting",
+			updatedTxID,
+			int64(sequence),
+			int64(session.ServerAmount),
+			int64(session.ClientAmount),
+			updatedTxID,
+			updatedTxHex,
+			gatewayPubkeyHex,
+			now,
+			mustJSONString(payload),
+		)
+		return err
+	})
+}
+
+// dbRecordFeePoolCloseAccounting 把费用池 close 的事实写回共享事实层。
+// 设计说明：
+// - close 不是新的费用项，只是把现有会话状态收口为 closed；
+// - 这里必须幂等，重复 close 不能新增脏行；
+// - 允许 tx_hex 为空，但 final_spend_txid 必须有值。
+func dbRecordFeePoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, finalTxID string, finalTxHex string, gatewayPeerID string) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return fmt.Errorf("pool_session_id is required")
+	}
+	finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
+	if finalTxID == "" {
+		return fmt.Errorf("final_spend_txid is required")
+	}
+	finalTxHex = strings.ToLower(strings.TrimSpace(finalTxHex))
+	gatewayPeerID = strings.ToLower(strings.TrimSpace(gatewayPeerID))
+	now := time.Now().Unix()
+	return store.Do(ctx, func(db *sql.DB) error {
+		var existing struct {
+			SettlementPaymentAttemptID int64
+			PoolScheme                 string
+			CounterpartyPubHex         string
+			SellerPubHex               string
+			ArbiterPubHex              string
+			GatewayPubHex              string
+			PoolAmountSat              int64
+			SpendTxFeeSat              int64
+			FeeRateSatByte             float64
+			LockBlocks                 int64
+			OpenBaseTxID               string
+			Status                     string
+			CreatedAtUnix              int64
+		}
+		if err := db.QueryRowContext(ctx, `
+			SELECT settlement_payment_attempt_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+			       pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix
+			  FROM fact_settlement_channel_pool_session_quote_pay
+			 WHERE pool_session_id=?`,
+			sessionID,
+		).Scan(
+			&existing.SettlementPaymentAttemptID,
+			&existing.PoolScheme,
+			&existing.CounterpartyPubHex,
+			&existing.SellerPubHex,
+			&existing.ArbiterPubHex,
+			&existing.GatewayPubHex,
+			&existing.PoolAmountSat,
+			&existing.SpendTxFeeSat,
+			&existing.FeeRateSatByte,
+			&existing.LockBlocks,
+			&existing.OpenBaseTxID,
+			&existing.Status,
+			&existing.CreatedAtUnix,
+		); err != nil {
+			return err
+		}
+		if existing.Status == "" {
+			existing.Status = "closed"
+		}
+		if gatewayPeerID == "" {
+			gatewayPeerID = strings.ToLower(strings.TrimSpace(existing.GatewayPubHex))
+		}
+		if gatewayPeerID == "" {
+			gatewayPeerID = "unknown"
+		}
+		if existing.CreatedAtUnix <= 0 {
+			existing.CreatedAtUnix = now
+		}
+		if _, err := ExecContext(ctx, db,
+			`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
+				settlement_payment_attempt_id,pool_session_id,txid,pool_scheme,
+				counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+				pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,
+				status,created_at_unix,updated_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(pool_session_id) DO UPDATE SET
+				settlement_payment_attempt_id=excluded.settlement_payment_attempt_id,
+				txid=excluded.txid,
+				pool_scheme=excluded.pool_scheme,
+				counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
+				seller_pubkey_hex=excluded.seller_pubkey_hex,
+				arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
+				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
+				pool_amount_satoshi=excluded.pool_amount_satoshi,
+				spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
+				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
+				lock_blocks=excluded.lock_blocks,
+				open_base_txid=excluded.open_base_txid,
+				status=excluded.status,
+				updated_at_unix=excluded.updated_at_unix`,
+			existing.SettlementPaymentAttemptID,
+			sessionID,
+			finalTxID,
+			existing.PoolScheme,
+			existing.CounterpartyPubHex,
+			existing.SellerPubHex,
+			existing.ArbiterPubHex,
+			gatewayPeerID,
+			existing.PoolAmountSat,
+			existing.SpendTxFeeSat,
+			existing.FeeRateSatByte,
+			existing.LockBlocks,
+			existing.OpenBaseTxID,
+			"closed",
+			existing.CreatedAtUnix,
+			now,
+		); err != nil {
+			return err
+		}
+		allocationID := "fee_pool_close:" + sessionID
+		payload := map[string]any{
+			"session_id":         sessionID,
+			"gateway_pubkey_hex": gatewayPeerID,
+			"final_spend_txid":   finalTxID,
+			"status":             "closed",
+		}
+		_, err := ExecContext(ctx, db,
+			`INSERT INTO fact_pool_session_events(
+				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(allocation_id) DO UPDATE SET
+				pool_session_id=excluded.pool_session_id,
+				allocation_no=excluded.allocation_no,
+				allocation_kind=excluded.allocation_kind,
+				event_kind=excluded.event_kind,
+				sequence_num=excluded.sequence_num,
+				state=excluded.state,
+				direction=excluded.direction,
+				amount_satoshi=excluded.amount_satoshi,
+				purpose=excluded.purpose,
+				note=excluded.note,
+				msg_id=excluded.msg_id,
+				cycle_index=excluded.cycle_index,
+				payee_amount_after=excluded.payee_amount_after,
+				payer_amount_after=excluded.payer_amount_after,
+				txid=excluded.txid,
+				tx_hex=excluded.tx_hex,
+				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
+				created_at_unix=excluded.created_at_unix,
+				payload_json=excluded.payload_json`,
+			allocationID,
+			sessionID,
+			int64(1),
+			"close",
+			PoolFactEventKindPoolEvent,
+			int64(1),
+			"confirmed",
+			"out",
+			int64(0),
+			"fee_pool_close",
+			"fee pool close accounting",
+			finalTxID,
+			int64(0),
+			int64(0),
+			int64(0),
+			finalTxID,
+			finalTxHex,
+			gatewayPeerID,
+			now,
+			mustJSONString(payload),
+		)
+		return err
+	})
+}
+
 // dbRecordDirectPoolOpenAccounting 【第二阶段：过程财务写入边界】
 // 设计说明：
 // - 这是 direct_transfer_pool open 阶段的过程财务写入

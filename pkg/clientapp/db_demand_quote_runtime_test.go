@@ -55,8 +55,9 @@ func TestTriggerGatewayPublishDemandRecordsDemand(t *testing.T) {
 	}, nil)
 
 	resp, err := TriggerGatewayPublishDemand(context.Background(), store, rt, PublishDemandParams{
-		SeedHash:   "seed_publish_records",
-		ChunkCount: 1,
+		SeedHash:      "seed_publish_records",
+		ChunkCount:    1,
+		GatewayPeerID: gwPubHex,
 	})
 	if err != nil {
 		t.Fatalf("publish demand: %v", err)

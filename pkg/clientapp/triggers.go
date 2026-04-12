@@ -246,10 +246,6 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
-	}
-
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" || p.ChunkCount == 0 {
 		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("invalid params")
@@ -258,6 +254,9 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
 		return broadcastmodule.DemandPublishPaidResp{}, err
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	buyerAddrs := localAdvertiseAddrs(rt)
 	body := &broadcastmodule.DemandPublishReq{
@@ -291,9 +290,6 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
-	}
 	items, err := normalizeDemandBatchItems(p.Items)
 	if err != nil {
 		return broadcastmodule.DemandPublishBatchPaidResp{}, err
@@ -302,6 +298,9 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
 		return broadcastmodule.DemandPublishBatchPaidResp{}, err
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	reqItems := make([]*broadcastmodule.DemandPublishBatchPaidItem, 0, len(items))
 	for _, item := range items {
@@ -345,9 +344,6 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *R
 	if rt == nil || rt.Host == nil {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
-	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
-	}
 	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
 	if !isSeedHashHex(streamID) || p.Window == 0 {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("invalid params")
@@ -355,6 +351,9 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *R
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
 		return broadcastmodule.LiveDemandPublishPaidResp{}, err
+	}
+	if len(rt.HealthyGWs) == 0 {
+		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	body := &broadcastmodule.LiveDemandPublishReq{
 		StreamID:         streamID,
@@ -470,15 +469,15 @@ func pickGatewayForBusiness(rt *Runtime, gatewayPeerID string) (peer.AddrInfo, e
 	if rt == nil {
 		return peer.AddrInfo{}, fmt.Errorf("runtime not initialized")
 	}
+	override := strings.TrimSpace(gatewayPeerID)
+	if override == "" {
+		return peer.AddrInfo{}, fmt.Errorf("gateway_pubkey_hex is required")
+	}
 	if len(rt.HealthyGWs) == 0 {
 		return peer.AddrInfo{}, fmt.Errorf("no healthy gateway")
 	}
-	override := strings.TrimSpace(gatewayPeerID)
-	if override == "" {
-		return rt.HealthyGWs[0], nil
-	}
 	for _, gw := range rt.HealthyGWs {
-		if strings.EqualFold(gw.ID.String(), override) || strings.EqualFold(gatewayBusinessID(rt, gw.ID), override) {
+		if strings.EqualFold(gatewayBusinessID(rt, gw.ID), override) {
 			return gw, nil
 		}
 	}

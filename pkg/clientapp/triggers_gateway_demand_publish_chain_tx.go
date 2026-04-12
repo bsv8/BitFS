@@ -51,12 +51,6 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		out.Error = err.Error()
 		return out, err
 	}
-	if len(rt.HealthyGWs) == 0 {
-		err := fmt.Errorf("no healthy gateway")
-		out.Error = err.Error()
-		return out, err
-	}
-
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" || p.ChunkCount == 0 {
 		err := fmt.Errorf("invalid params")
@@ -68,6 +62,11 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
+		out.Error = err.Error()
+		return out, err
+	}
+	if len(rt.HealthyGWs) == 0 {
+		err := fmt.Errorf("no healthy gateway")
 		out.Error = err.Error()
 		return out, err
 	}

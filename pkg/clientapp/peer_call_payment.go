@@ -278,6 +278,15 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, store *cl
 			nextTxHex = strings.ToLower(hex.EncodeToString(receipt.MergedCurrentTx))
 		}
 		applyFeePoolChargeToSession(chargeCtx.Session, chargeCtx.NextSeq, chargeCtx.NextServerAmount, nextTxHex)
+		gatewayPubHex := gatewayBusinessID(rt, peerID)
+		if quoted.GatewayPub != nil {
+			if v := strings.TrimSpace(quoted.GatewayPub.ToDERHex()); v != "" {
+				gatewayPubHex = strings.ToLower(v)
+			}
+		}
+		if err := dbRecordFeePoolQuotePayAccounting(ctx, store, gatewayPubHex, chargeCtx.Session, receipt.UpdatedTxID, nextTxHex, quoted.ServiceQuote.ChargeAmountSatoshi, quoted.ChargeReason); err != nil {
+			return ncall.CallResp{}, err
+		}
 		// 资金流水已迁移到 fact_* 事实表组装
 	}
 	return out, nil
@@ -404,7 +413,10 @@ func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, s
 		return info, peer.AddrInfo{}, err
 	}
 	gw := peer.AddrInfo{ID: peerID}
-	if cur, ok := rt.getFeePool(gw.ID.String()); ok && cur != nil && strings.TrimSpace(cur.SpendTxID) != "" && cur.Status == "active" {
+	if cur, ok := rt.getFeePool(gw.ID.String()); ok && cur != nil && strings.TrimSpace(cur.SpendTxID) != "" {
+		if cur.Status != "active" {
+			return info, gw, fmt.Errorf("fee pool session not active for peer=%s status=%s", gw.ID, strings.TrimSpace(cur.Status))
+		}
 		if cur.ClientAmount >= charge+cur.SpendTxFeeSat {
 			return info, gw, nil
 		}

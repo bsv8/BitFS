@@ -419,11 +419,11 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	sess.mu.Unlock()
 
 	ctx := context.Background()
-	gw, err := pickGatewayForBusiness(sess.server.rt, "")
+	gatewayPeerID, err := sess.server.rt.FeePoolGatewayPeerID()
 	if err != nil {
 		return err
 	}
-	pub, err := TriggerGatewayPublishDemand(ctx, sess.server.store, sess.server.rt, PublishDemandParams{SeedHash: sess.seedHash, ChunkCount: 1, GatewayPeerID: gw.ID.String()})
+	pub, err := TriggerGatewayPublishDemand(ctx, sess.server.store, sess.server.rt, PublishDemandParams{SeedHash: sess.seedHash, ChunkCount: 1, GatewayPeerID: gatewayPeerID})
 	if err != nil {
 		return err
 	}

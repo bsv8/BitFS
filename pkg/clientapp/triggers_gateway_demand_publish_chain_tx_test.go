@@ -92,8 +92,9 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_Success(t *testing.T) {
 	}
 
 	res, err := TriggerGatewayDemandPublishChainTxQuotePay(context.Background(), store, rt, PublishDemandParams{
-		SeedHash:   strings.Repeat("ab", 32),
-		ChunkCount: 1,
+		SeedHash:      strings.Repeat("ab", 32),
+		ChunkCount:    1,
+		GatewayPeerID: gatewayPubHex,
 	})
 	if err != nil {
 		t.Fatalf("trigger failed: %v", err)
@@ -163,8 +164,8 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_NoHealthyGateway(t *testing.
 	if _, err := TriggerGatewayDemandPublishChainTxQuotePay(context.Background(), store, rt, PublishDemandParams{
 		SeedHash:   strings.Repeat("ab", 32),
 		ChunkCount: 1,
-	}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "no healthy gateway") {
-		t.Fatalf("expected no healthy gateway error, got=%v", err)
+	}); err == nil || !strings.Contains(strings.ToLower(err.Error()), "gateway_pubkey_hex is required") {
+		t.Fatalf("expected gateway_pubkey_hex is required, got=%v", err)
 	}
 }
 
@@ -216,8 +217,9 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_PayAfterValidationFailure(t 
 	}
 
 	res, err := TriggerGatewayDemandPublishChainTxQuotePay(context.Background(), store, rt, PublishDemandParams{
-		SeedHash:   strings.Repeat("cd", 32),
-		ChunkCount: 1,
+		SeedHash:      strings.Repeat("cd", 32),
+		ChunkCount:    1,
+		GatewayPeerID: gatewayPubHex,
 	})
 	if err == nil {
 		t.Fatalf("expected failure, got success: %+v", res)
