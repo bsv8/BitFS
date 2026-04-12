@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -37,6 +38,170 @@ type businessSettlementEntry struct {
 	CreatedAtUnix    int64
 	UpdatedAtUnix    int64
 	Payload          any
+}
+
+// businessSettlementOutcomeEntry 用来一次性回写业务状态和结算出口状态。
+// 设计说明：
+// - 结算执行时不能只改 settlement_status，否则前台看到的 biz_ 状态会飘；
+// - 这里把 biz_ 状态和 settle_ 状态收口到同一行，避免两套口径打架。
+type businessSettlementOutcomeEntry struct {
+	BusinessID        string
+	BusinessStatus    string
+	SettlementStatus  string
+	SettlementMethod  string
+	TargetType        string
+	TargetID          string
+	ErrorMessage      string
+	SettlementPayload any
+	UpdatedAtUnix     int64
+}
+
+// dbUpdateBusinessSettlementOutcomeTx 在同一个事务里同步回写业务状态和结算出口状态。
+func dbUpdateBusinessSettlementOutcomeTx(ctx context.Context, tx *sql.Tx, e businessSettlementOutcomeEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	e.BusinessID = strings.TrimSpace(e.BusinessID)
+	if e.BusinessID == "" {
+		return fmt.Errorf("business_id is required")
+	}
+	if e.UpdatedAtUnix <= 0 {
+		e.UpdatedAtUnix = time.Now().Unix()
+	}
+	_, err := ExecContext(ctx, tx,
+		`UPDATE settle_records SET
+			status=?,
+			settlement_status=?,
+			settlement_method=?,
+			target_type=?,
+			target_id=?,
+			error_message=?,
+			settlement_payload_json=?,
+			updated_at_unix=?
+		WHERE business_id=?`,
+		strings.TrimSpace(e.BusinessStatus),
+		strings.TrimSpace(e.SettlementStatus),
+		strings.TrimSpace(e.SettlementMethod),
+		strings.TrimSpace(e.TargetType),
+		strings.TrimSpace(e.TargetID),
+		strings.TrimSpace(e.ErrorMessage),
+		mustJSONString(e.SettlementPayload),
+		e.UpdatedAtUnix,
+		e.BusinessID,
+	)
+	return err
+}
+
+// claimBusinessSettlementExecutionTx 原子领取一条 business 的结算执行权。
+// 设计说明：
+// - 只允许 pending -> processing；
+// - 这样并发请求里只有一个能继续打链上，其他请求直接回当前状态；
+// - 这里不新增字段，复用现有 status / settlement_status。
+func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, businessID string) (BusinessSettlementItem, bool, error) {
+	if store == nil {
+		return BusinessSettlementItem{}, false, fmt.Errorf("client db is nil")
+	}
+	businessID = strings.TrimSpace(businessID)
+	if businessID == "" {
+		return BusinessSettlementItem{}, false, fmt.Errorf("business_id is required")
+	}
+	type claimResult struct {
+		Item    BusinessSettlementItem
+		Claimed bool
+	}
+	res, err := clientDBValue(ctx, store, func(db *sql.DB) (claimResult, error) {
+		var current BusinessSettlementItem
+		var payload string
+		err := QueryRowContext(ctx, db,
+			`SELECT settlement_id,business_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
+			 FROM settle_records WHERE business_id=?`,
+			businessID,
+		).Scan(
+			&current.SettlementID, &current.BusinessID, &current.SettlementMethod, &current.Status,
+			&current.TargetType, &current.TargetID, &current.ErrorMessage,
+			&current.CreatedAtUnix, &current.UpdatedAtUnix, &payload,
+		)
+		if err != nil {
+			return claimResult{}, err
+		}
+		current.Payload = json.RawMessage(payload)
+		currentStatus := strings.ToLower(strings.TrimSpace(current.Status))
+		if currentStatus != "pending" && currentStatus != "waiting_fund" {
+			return claimResult{Item: current, Claimed: false}, nil
+		}
+		result, err := ExecContext(ctx, db,
+			`UPDATE settle_records SET
+				status='processing',
+				settlement_status='processing',
+				updated_at_unix=?
+			WHERE business_id=? AND status IN ('pending','waiting_fund') AND settlement_status IN ('pending','waiting_fund')`,
+			time.Now().Unix(),
+			businessID,
+		)
+		if err != nil {
+			return claimResult{}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return claimResult{}, err
+		}
+		if affected > 0 {
+			return claimResult{Item: current, Claimed: true}, nil
+		}
+		err = QueryRowContext(ctx, db,
+			`SELECT settlement_id,business_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
+			 FROM settle_records WHERE business_id=?`,
+			businessID,
+		).Scan(
+			&current.SettlementID, &current.BusinessID, &current.SettlementMethod, &current.Status,
+			&current.TargetType, &current.TargetID, &current.ErrorMessage,
+			&current.CreatedAtUnix, &current.UpdatedAtUnix, &payload,
+		)
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return claimResult{}, fmt.Errorf("business record not found for business_id=%s", businessID)
+			}
+			return claimResult{}, err
+		}
+		current.Payload = json.RawMessage(payload)
+		return claimResult{Item: current, Claimed: false}, nil
+	})
+	if err != nil {
+		return BusinessSettlementItem{}, false, err
+	}
+	return res.Item, res.Claimed, nil
+}
+
+// GetBusinessSettlementChainTxID 尽量返回 chain 结算对应的真实 txid。
+// 设计说明：
+// - settled 时优先从 fact_chain_payments 取；
+// - 如果还没落 chain_payment，但 payload 里已经带了 txid，也可以回退出来；
+// - 目标 id 仍然只保留 fact_chain_payments.id，不把 txid 混进去。
+func GetBusinessSettlementChainTxID(ctx context.Context, store *clientDB, settlement BusinessSettlementItem) (string, error) {
+	if settlement.SettlementMethod != string(SettlementMethodChain) {
+		return "", fmt.Errorf("settlement_method is not chain")
+	}
+	if strings.TrimSpace(settlement.TargetID) != "" {
+		chainPaymentID, err := strconv.ParseInt(strings.TrimSpace(settlement.TargetID), 10, 64)
+		if err == nil {
+			cp, err := GetChainPaymentByID(ctx, store, chainPaymentID)
+			if err == nil {
+				return strings.TrimSpace(cp.TxID), nil
+			}
+		}
+	}
+	var payload map[string]any
+	if len(settlement.Payload) > 0 {
+		if err := json.Unmarshal(settlement.Payload, &payload); err == nil {
+			if txid, ok := payload["txid"].(string); ok {
+				txid = strings.TrimSpace(txid)
+				if txid != "" {
+					return txid, nil
+				}
+			}
+		}
+	}
+	return "", fmt.Errorf("chain txid not found")
 }
 
 // businessSettlementFilter 业务结算出口查询过滤条件
@@ -320,6 +485,48 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 			strings.TrimSpace(targetID),
 			time.Now().Unix(),
 			settlementID,
+		)
+		return err
+	})
+}
+
+// dbUpdateBusinessSettlementOutcome 同步回写 biz_ 状态和 settle_ 状态。
+// 设计说明：
+// - 这是结算层的主回写入口；
+// - 业务状态、结算状态、目标链上事实必须一起更新；
+// - 这样前台不需要猜“这笔单到底算到哪一步了”。
+func dbUpdateBusinessSettlementOutcome(ctx context.Context, store *clientDB, e businessSettlementOutcomeEntry) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	e.BusinessID = strings.TrimSpace(e.BusinessID)
+	if e.BusinessID == "" {
+		return fmt.Errorf("business_id is required")
+	}
+	if e.UpdatedAtUnix <= 0 {
+		e.UpdatedAtUnix = time.Now().Unix()
+	}
+	return store.Do(ctx, func(db *sql.DB) error {
+		_, err := ExecContext(ctx, db,
+			`UPDATE settle_records SET
+				status=?,
+				settlement_status=?,
+				settlement_method=?,
+				target_type=?,
+				target_id=?,
+				error_message=?,
+				settlement_payload_json=?,
+				updated_at_unix=?
+			WHERE business_id=?`,
+			strings.TrimSpace(e.BusinessStatus),
+			strings.TrimSpace(e.SettlementStatus),
+			strings.TrimSpace(e.SettlementMethod),
+			strings.TrimSpace(e.TargetType),
+			strings.TrimSpace(e.TargetID),
+			strings.TrimSpace(e.ErrorMessage),
+			mustJSONString(e.SettlementPayload),
+			e.UpdatedAtUnix,
+			e.BusinessID,
 		)
 		return err
 	})

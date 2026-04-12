@@ -2,9 +2,11 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bsv-blockchain/go-sdk/script"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
@@ -49,18 +51,35 @@ type walletBSVTransferPrepared struct {
 	signedTxHex string
 }
 
-// TriggerWalletBSVTransfer 触发普通 BSV 转账。
+type walletBSVTransferSubmissionResult struct {
+	Result        WalletBSVTransferResult
+	SignedTxHex   string
+	BroadcastTxID string
+}
+
+// TriggerWalletBSVTransfer 只保留给结算层内部执行。
 // 设计说明：
-// - 这里直接走业务层，不借助外部工具去拼交易；
-// - 成功时会把本地钱包视图投影回去，保证调用方看到的是同一条业务链路；
-// - 余额不足、地址非法、运行时未初始化都直接失败，不做旁路兜底。
+// - 这不是新的业务入口，外层不能直接拿它当“下单”；
+// - 它只负责把一笔已经准备好的普通 BSV 转账广播出去，并回写本地钱包视图；
+// - 结算层要先写 biz_/settle_，再调用这里完成实际链上动作。
 func TriggerWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime, req WalletBSVTransferRequest) (WalletBSVTransferResult, error) {
 	prepared, err := prepareWalletBSVTransfer(ctx, store, rt, req)
 	if err != nil {
 		return prepared.Result, err
 	}
+	submitted, err := submitWalletBSVTransferPrepared(ctx, store, rt, prepared)
+	if err != nil {
+		return submitted.Result, err
+	}
+	return submitted.Result, nil
+}
+
+func submitWalletBSVTransferPrepared(ctx context.Context, store *clientDB, rt *Runtime, prepared walletBSVTransferPrepared) (walletBSVTransferSubmissionResult, error) {
 	if prepared.signedTxHex == "" {
-		return prepared.Result, fmt.Errorf("signed tx hex is empty")
+		return walletBSVTransferSubmissionResult{Result: prepared.Result}, fmt.Errorf("signed tx hex is empty")
+	}
+	if rt == nil || rt.ActionChain == nil {
+		return walletBSVTransferSubmissionResult{Result: prepared.Result}, fmt.Errorf("runtime not initialized")
 	}
 	broadcastTxID, err := rt.ActionChain.Broadcast(prepared.signedTxHex)
 	if err != nil {
@@ -68,7 +87,7 @@ func TriggerWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime,
 		prepared.Result.Code = "BROADCAST_FAILED"
 		prepared.Result.Message = "broadcast wallet bsv transfer failed"
 		prepared.Result.TxID = prepared.Result.TxID
-		return prepared.Result, fmt.Errorf("%s: %w", prepared.Result.Message, err)
+		return walletBSVTransferSubmissionResult{Result: prepared.Result, SignedTxHex: prepared.signedTxHex}, fmt.Errorf("%s: %w", prepared.Result.Message, err)
 	}
 	localTxID := prepared.Result.TxID
 	finalTxID := strings.ToLower(strings.TrimSpace(broadcastTxID))
@@ -80,13 +99,365 @@ func TriggerWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime,
 		prepared.Result.Code = "LOCAL_PROJECTION_FAILED"
 		prepared.Result.Message = "project wallet bsv transfer failed"
 		prepared.Result.TxID = finalTxID
-		return prepared.Result, fmt.Errorf("%s for txid %s: %w", prepared.Result.Message, finalTxID, err)
+		return walletBSVTransferSubmissionResult{Result: prepared.Result, SignedTxHex: prepared.signedTxHex, BroadcastTxID: finalTxID}, fmt.Errorf("%s for txid %s: %w", prepared.Result.Message, finalTxID, err)
 	}
 	prepared.Result.Ok = true
 	prepared.Result.Code = "OK"
 	prepared.Result.Message = "wallet bsv transfer submitted"
 	prepared.Result.TxID = finalTxID
-	return prepared.Result, nil
+	return walletBSVTransferSubmissionResult{
+		Result:        prepared.Result,
+		SignedTxHex:   prepared.signedTxHex,
+		BroadcastTxID: finalTxID,
+	}, nil
+}
+
+// executeBizOrderPayBSVSettlement 结算层内部执行器。
+// 设计说明：
+// - 先跑真实钱包转账，再把链上结果回写到 settle_records / settle_process_events；
+// - 同一个 order_id + idempotency_key 重复提交时，不会再生成第二笔支付；
+// - 前台最终看的是 biz_ + settle_ 聚合，不再看钱包直发结果。
+func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *Runtime, orderID string, businessID string, settlementID string, idempotencyKey string, toAddress string, amountSatoshi uint64, fromPartyID string, toPartyID string) (BizOrderPayBSVResponse, error) {
+	resp := BizOrderPayBSVResponse{
+		Ok:             false,
+		Code:           "PENDING",
+		OrderID:        strings.TrimSpace(orderID),
+		FrontOrderID:   strings.TrimSpace(orderID),
+		BusinessID:     strings.TrimSpace(businessID),
+		SettlementID:   strings.TrimSpace(settlementID),
+		IdempotencyKey: strings.TrimSpace(idempotencyKey),
+		Status:         "pending",
+	}
+	if ctx == nil {
+		return resp, fmt.Errorf("context is required")
+	}
+	if store == nil {
+		return resp, fmt.Errorf("client db is nil")
+	}
+	if rt == nil || rt.ActionChain == nil {
+		return resp, fmt.Errorf("runtime not initialized")
+	}
+
+	// 幂等重复：先原子抢占执行权，只有把 pending 改成 processing 的请求才能继续打链上。
+	existing, claimed, err := claimBusinessSettlementExecutionTx(ctx, store, businessID)
+	if err != nil {
+		return resp, err
+	}
+	if !claimed {
+		existingStatus := strings.ToLower(strings.TrimSpace(existing.Status))
+		summary, sumErr := GetFrontOrderSettlementSummary(ctx, store, orderID)
+		if sumErr == nil {
+			resp.FrontOrderSummary = &summary
+			resp.TargetAmountSatoshi = summary.Summary.TotalTargetSatoshi
+			resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
+		}
+		resp.Ok = existingStatus == "settled" || existingStatus == "submitted" || existingStatus == "submitted_unknown_projection"
+		resp.Code = strings.ToUpper(existingStatus)
+		resp.Status = existingStatus
+		resp.Message = "existing settlement returned"
+		if txid, txErr := GetBusinessSettlementChainTxID(ctx, store, existing); txErr == nil {
+			resp.TxID = txid
+		}
+		return resp, nil
+	}
+
+	prepared, err := prepareWalletBSVTransfer(ctx, store, rt, WalletBSVTransferRequest{
+		ToAddress:     toAddress,
+		AmountSatoshi: amountSatoshi,
+	})
+	if err != nil {
+		msg := strings.ToLower(strings.TrimSpace(err.Error()))
+		if strings.Contains(msg, "insufficient plain bsv balance") {
+			now := time.Now().Unix()
+			eventPayload := map[string]any{
+				"order_id":        orderID,
+				"business_id":     businessID,
+				"settlement_id":   settlementID,
+				"idempotency_key": idempotencyKey,
+				"to_address":      toAddress,
+				"amount_satoshi":  amountSatoshi,
+				"status":          "waiting_fund",
+				"error":           err.Error(),
+			}
+			if txErr := store.Tx(ctx, func(tx *sql.Tx) error {
+				if writeErr := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+					ProcessID:         "proc_" + businessID,
+					SourceType:        "biz_order_pay_bsv",
+					SourceID:          settlementID,
+					AccountingScene:   "wallet_transfer",
+					AccountingSubType: "pay_bsv",
+					EventType:         "wallet_transfer_prepare",
+					Status:            "failed",
+					OccurredAtUnix:    now,
+					IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+					Note:              "wallet transfer waiting for funds",
+					Payload:           eventPayload,
+				}); writeErr != nil {
+					return writeErr
+				}
+				return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+					BusinessID:        businessID,
+					BusinessStatus:    "waiting_fund",
+					SettlementStatus:  "waiting_fund",
+					SettlementMethod:  string(SettlementMethodChain),
+					TargetType:        "",
+					TargetID:          "",
+					ErrorMessage:      err.Error(),
+					SettlementPayload: eventPayload,
+					UpdatedAtUnix:     now,
+				})
+			}); txErr != nil {
+				return resp, txErr
+			}
+			summary, _ := GetFrontOrderSettlementSummary(ctx, store, orderID)
+			resp.Ok = false
+			resp.Code = "WAITING_FUND"
+			resp.Message = err.Error()
+			resp.Status = "waiting_fund"
+			resp.FrontOrderSummary = &summary
+			resp.TargetAmountSatoshi = summary.Summary.TotalTargetSatoshi
+			resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
+			return resp, nil
+		}
+		now := time.Now().Unix()
+		failedPayload := map[string]any{
+			"order_id":        orderID,
+			"business_id":     businessID,
+			"settlement_id":   settlementID,
+			"idempotency_key": idempotencyKey,
+			"to_address":      toAddress,
+			"amount_satoshi":  amountSatoshi,
+			"status":          "failed",
+			"error":           err.Error(),
+		}
+		if txErr := store.Tx(ctx, func(tx *sql.Tx) error {
+			if writeErr := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+				ProcessID:         "proc_" + businessID,
+				SourceType:        "biz_order_pay_bsv",
+				SourceID:          settlementID,
+				AccountingScene:   "wallet_transfer",
+				AccountingSubType: "pay_bsv",
+				EventType:         "wallet_transfer_prepare",
+				Status:            "failed",
+				OccurredAtUnix:    now,
+				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				Note:              "wallet transfer prepare failed",
+				Payload:           failedPayload,
+			}); writeErr != nil {
+				return writeErr
+			}
+			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+				BusinessID:        businessID,
+				BusinessStatus:    "failed",
+				SettlementStatus:  "failed",
+				SettlementMethod:  string(SettlementMethodChain),
+				TargetType:        "",
+				TargetID:          "",
+				ErrorMessage:      err.Error(),
+				SettlementPayload: failedPayload,
+				UpdatedAtUnix:     now,
+			})
+		}); txErr != nil {
+			return resp, txErr
+		}
+		return resp, err
+	}
+
+	submitted, submitErr := submitWalletBSVTransferPrepared(ctx, store, rt, prepared)
+	now := time.Now().Unix()
+	finalStatus := "submitted"
+	finalCode := "OK"
+	finalMessage := "wallet transfer submitted"
+	processStatus := "submitted"
+	if submitErr != nil {
+		switch submitted.Result.Code {
+		case "LOCAL_PROJECTION_FAILED":
+			finalStatus = "submitted_unknown_projection"
+			finalCode = "SUBMITTED_UNKNOWN_PROJECTION"
+			finalMessage = "broadcast succeeded but local projection failed"
+			processStatus = "submitted_unknown_projection"
+		case "BROADCAST_FAILED":
+			finalStatus = "failed"
+			finalCode = "BROADCAST_FAILED"
+			finalMessage = submitted.Result.Message
+			processStatus = "failed"
+		default:
+			finalStatus = "failed"
+			finalCode = "SUBMIT_FAILED"
+			finalMessage = submitErr.Error()
+			processStatus = "failed"
+			submitted.Result.Ok = false
+			submitted.Result.Code = finalCode
+			submitted.Result.Message = finalMessage
+		}
+	}
+
+	payload := map[string]any{
+		"order_id":        orderID,
+		"business_id":     businessID,
+		"settlement_id":   settlementID,
+		"idempotency_key": idempotencyKey,
+		"amount_satoshi":  amountSatoshi,
+		"miner_fee_sat":   submitted.Result.MinerFeeSatoshi,
+		"change_sat":      submitted.Result.ChangeSatoshi,
+		"to_address":      toAddress,
+		"txid":            submitted.BroadcastTxID,
+	}
+
+	if finalStatus == "failed" {
+		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+				ProcessID:         "proc_" + businessID,
+				SourceType:        "biz_order_pay_bsv",
+				SourceID:          settlementID,
+				AccountingScene:   "wallet_transfer",
+				AccountingSubType: "pay_bsv",
+				EventType:         "wallet_transfer_submit",
+				Status:            processStatus,
+				OccurredAtUnix:    now,
+				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				Note:              finalMessage,
+				Payload:           payload,
+			}); err != nil {
+				return err
+			}
+			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+				BusinessID:        businessID,
+				BusinessStatus:    finalStatus,
+				SettlementStatus:  finalStatus,
+				SettlementMethod:  string(SettlementMethodChain),
+				TargetType:        "",
+				TargetID:          "",
+				ErrorMessage:      finalMessage,
+				SettlementPayload: payload,
+				UpdatedAtUnix:     now,
+			})
+		}); err != nil {
+			return resp, err
+		}
+		summary, _ := GetFrontOrderSettlementSummary(ctx, store, orderID)
+		_ = dbUpdateFrontOrderStatus(ctx, store, orderID, summary.Summary.OverallStatus)
+		resp.Ok = false
+		resp.Code = finalCode
+		resp.Message = finalMessage
+		resp.Status = finalStatus
+		resp.TxID = submitted.BroadcastTxID
+		resp.TargetAmountSatoshi = summary.Summary.TotalTargetSatoshi
+		resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
+		resp.FrontOrderSummary = &summary
+		return resp, nil
+	}
+
+	chainPaymentID, cpErr := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+		TxID:                 submitted.BroadcastTxID,
+		PaymentSubType:       "biz_order_pay_bsv",
+		Status:               processStatus,
+		WalletInputSatoshi:   int64(amountSatoshi + submitted.Result.MinerFeeSatoshi + submitted.Result.ChangeSatoshi),
+		WalletOutputSatoshi:  int64(submitted.Result.ChangeSatoshi),
+		NetAmountSatoshi:     -int64(amountSatoshi + submitted.Result.MinerFeeSatoshi),
+		OccurredAtUnix:       now,
+		SubmittedAtUnix:      now,
+		WalletObservedAtUnix: now,
+		FromPartyID:          strings.TrimSpace(fromPartyID),
+		ToPartyID:            strings.TrimSpace(toPartyID),
+		Payload: map[string]any{
+			"order_id":        orderID,
+			"business_id":     businessID,
+			"settlement_id":   settlementID,
+			"idempotency_key": idempotencyKey,
+			"amount_satoshi":  amountSatoshi,
+			"miner_fee_sat":   submitted.Result.MinerFeeSatoshi,
+			"change_sat":      submitted.Result.ChangeSatoshi,
+			"to_address":      toAddress,
+			"txid":            submitted.BroadcastTxID,
+		},
+	})
+	if cpErr != nil {
+		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+				ProcessID:         "proc_" + businessID,
+				SourceType:        "biz_order_pay_bsv",
+				SourceID:          settlementID,
+				AccountingScene:   "wallet_transfer",
+				AccountingSubType: "pay_bsv",
+				EventType:         "wallet_transfer_submit",
+				Status:            "submitted_unknown_projection",
+				OccurredAtUnix:    now,
+				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				Note:              "broadcast succeeded but local projection failed",
+				Payload:           payload,
+			}); err != nil {
+				return err
+			}
+			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+				BusinessID:        businessID,
+				BusinessStatus:    "submitted_unknown_projection",
+				SettlementStatus:  "submitted_unknown_projection",
+				SettlementMethod:  string(SettlementMethodChain),
+				TargetType:        "",
+				TargetID:          "",
+				ErrorMessage:      cpErr.Error(),
+				SettlementPayload: payload,
+				UpdatedAtUnix:     now,
+			})
+		}); err != nil {
+			return resp, err
+		}
+		finalStatus = "submitted_unknown_projection"
+		finalCode = "SUBMITTED_UNKNOWN_PROJECTION"
+		finalMessage = "broadcast succeeded but local projection failed"
+		processStatus = "submitted_unknown_projection"
+	} else {
+		payload["chain_payment_id"] = chainPaymentID
+		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+				ProcessID:         "proc_" + businessID,
+				SourceType:        "biz_order_pay_bsv",
+				SourceID:          settlementID,
+				AccountingScene:   "wallet_transfer",
+				AccountingSubType: "pay_bsv",
+				EventType:         "wallet_transfer_submit",
+				Status:            processStatus,
+				OccurredAtUnix:    now,
+				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				Note:              finalMessage,
+				Payload:           payload,
+			}); err != nil {
+				return err
+			}
+			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+				BusinessID:        businessID,
+				BusinessStatus:    finalStatus,
+				SettlementStatus:  finalStatus,
+				SettlementMethod:  string(SettlementMethodChain),
+				TargetType:        "chain_payment",
+				TargetID:          fmt.Sprintf("%d", chainPaymentID),
+				ErrorMessage:      "",
+				SettlementPayload: payload,
+				UpdatedAtUnix:     now,
+			})
+		}); err != nil {
+			return resp, fmt.Errorf("write settlement outcome failed: %w", err)
+		}
+	}
+
+	summary, _ := GetFrontOrderSettlementSummary(ctx, store, orderID)
+	_ = dbUpdateFrontOrderStatus(ctx, store, orderID, summary.Summary.OverallStatus)
+
+	submitted.Result.Ok = finalStatus == "submitted" || finalStatus == "submitted_unknown_projection"
+	submitted.Result.Code = finalCode
+	submitted.Result.Message = finalMessage
+	submitted.Result.TxID = submitted.BroadcastTxID
+
+	resp.Ok = submitted.Result.Ok
+	resp.Code = finalCode
+	resp.Message = finalMessage
+	resp.Status = finalStatus
+	resp.TxID = submitted.BroadcastTxID
+	resp.TargetAmountSatoshi = summary.Summary.TotalTargetSatoshi
+	resp.SettledAmountSatoshi = summary.Summary.SettledAmountSatoshi
+	resp.FrontOrderSummary = &summary
+	return resp, nil
 }
 
 func prepareWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime, req WalletBSVTransferRequest) (walletBSVTransferPrepared, error) {
@@ -116,9 +487,20 @@ func prepareWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime,
 	rt.walletAllocMu.Lock()
 	defer rt.walletAllocMu.Unlock()
 
-	candidates, err := dbListSpendableBSVUTXOs(ctx, store, strings.ToLower(strings.TrimSpace(actor.PubHex)))
+	ownerKey := strings.ToLower(strings.TrimSpace(actor.PubHex))
+	candidates, err := dbListSpendableBSVUTXOs(ctx, store, ownerKey)
 	if err != nil {
 		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "BALANCE_LOAD_FAILED", Message: err.Error(), FromAddress: fromAddress, ToAddress: toAddress, AmountSatoshi: req.AmountSatoshi}}, fmt.Errorf("load spendable plain bsv utxos failed: %w", err)
+	}
+	// 兼容现网历史数据：部分链上同步记录把 owner_pubkey_hex 落成了地址小写。
+	// 业务仍以公钥为主键，但这里做一次地址回退，避免“余额在库里却选不到币”。
+	addressKey := strings.ToLower(strings.TrimSpace(fromAddress))
+	if len(candidates) == 0 && addressKey != "" && addressKey != ownerKey {
+		fallback, fallbackErr := dbListSpendableBSVUTXOs(ctx, store, addressKey)
+		if fallbackErr != nil {
+			return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "BALANCE_LOAD_FAILED", Message: fallbackErr.Error(), FromAddress: fromAddress, ToAddress: toAddress, AmountSatoshi: req.AmountSatoshi}}, fmt.Errorf("load spendable plain bsv utxos by address fallback failed: %w", fallbackErr)
+		}
+		candidates = fallback
 	}
 	available := totalPlainBSVAmount(candidates)
 	if available == 0 {

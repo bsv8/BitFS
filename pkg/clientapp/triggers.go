@@ -3,8 +3,10 @@ package clientapp
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -67,6 +69,100 @@ func TriggerWorkspaceSyncOnce(ctx context.Context, rt *Runtime) (WorkspaceSyncRe
 
 	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_end", map[string]any{"seed_count": len(out)})
 	return WorkspaceSyncResult{SeedCount: len(out), Seeds: out}, nil
+}
+
+// TriggerBizOrderPayBSV 新的 BSV 业务下单入口。
+// 设计说明：
+// - 先写 biz_ 订单、事件和 pending settle 单；
+// - 再交给 settle 层做真实链上支付；
+// - e2e 只调用这个入口，不再碰钱包直发函数。
+func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, req BizOrderPayBSVRequest) (BizOrderPayBSVResponse, error) {
+	orderID := strings.ToLower(strings.TrimSpace(req.OrderID))
+	toAddress := strings.TrimSpace(req.ToAddress)
+	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
+	if orderID == "" {
+		return BizOrderPayBSVResponse{}, fmt.Errorf("order_id is required")
+	}
+	if err := validatePreviewAddress(toAddress); err != nil {
+		return BizOrderPayBSVResponse{}, err
+	}
+	if req.AmountSatoshi == 0 {
+		return BizOrderPayBSVResponse{}, fmt.Errorf("amount_satoshi must be greater than zero")
+	}
+	if idempotencyKey == "" {
+		return BizOrderPayBSVResponse{}, fmt.Errorf("idempotency_key is required")
+	}
+	if store == nil {
+		return BizOrderPayBSVResponse{}, fmt.Errorf("client db is nil")
+	}
+	if rt == nil || rt.ActionChain == nil {
+		return BizOrderPayBSVResponse{}, fmt.Errorf("runtime not initialized")
+	}
+	actor, err := buildClientActorFromRunInput(rt.runIn)
+	if err != nil {
+		return BizOrderPayBSVResponse{}, err
+	}
+	fromPubHex := strings.ToLower(strings.TrimSpace(actor.PubHex))
+	fromAddress := strings.TrimSpace(actor.Addr)
+	toAddress = strings.TrimSpace(toAddress)
+	frontOrderID, businessID, settlementID, triggerID := bizOrderPayBSVIdentity(orderID, idempotencyKey)
+	nowNote := fmt.Sprintf("BSV payment order %s", orderID)
+	payload := map[string]any{
+		"order_id":        orderID,
+		"to_address":      toAddress,
+		"amount_satoshi":  req.AmountSatoshi,
+		"idempotency_key": idempotencyKey,
+		"from_pubkey_hex": fromPubHex,
+		"from_address":    fromAddress,
+	}
+
+	if _, err := dbGetBusinessSettlementByBusinessID(ctx, store, businessID); err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return BizOrderPayBSVResponse{}, err
+		}
+		if err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, CreateBusinessWithFrontTriggerAndPendingSettlementInput{
+			FrontOrderID:      frontOrderID,
+			FrontType:         "biz_order",
+			FrontSubtype:      "pay_bsv",
+			OwnerPubkeyHex:    fromPubHex,
+			TargetObjectType:  "bsv_address",
+			TargetObjectID:    toAddress,
+			FrontOrderNote:    nowNote,
+			FrontOrderPayload: payload,
+
+			BusinessID:        businessID,
+			BusinessRole:      "formal",
+			SourceType:        "front_order",
+			SourceID:          frontOrderID,
+			AccountingScene:   "wallet_transfer",
+			AccountingSubType: "pay_bsv",
+			FromPartyID:       fromPubHex,
+			ToPartyID:         toAddress,
+			BusinessNote:      nowNote,
+			BusinessPayload:   payload,
+
+			TriggerID:      triggerID,
+			TriggerType:    "front_order",
+			TriggerIDValue: frontOrderID,
+			TriggerRole:    "primary",
+			TriggerNote:    "front order pay bsv",
+			TriggerPayload: payload,
+
+			SettlementID:         settlementID,
+			SettlementMethod:     SettlementMethodChain,
+			SettlementTargetType: "chain_payment",
+			SettlementTargetID:   "",
+			SettlementPayload:    payload,
+		}); err != nil {
+			return BizOrderPayBSVResponse{}, err
+		}
+	}
+
+	resp, execErr := executeBizOrderPayBSVSettlement(ctx, store, rt, frontOrderID, businessID, settlementID, idempotencyKey, toAddress, req.AmountSatoshi, fromPubHex, toAddress)
+	if execErr != nil {
+		return resp, execErr
+	}
+	return resp, nil
 }
 
 type PublishDemandParams struct {

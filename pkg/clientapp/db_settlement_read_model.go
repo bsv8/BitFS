@@ -36,11 +36,13 @@ type BusinessSettlementView struct {
 
 // SettlementSummary 汇总状态（只根据 settle_records 计算）
 type SettlementSummary struct {
-	TotalBusinessCount int    `json:"total_business_count"`
-	SettledCount       int    `json:"settled_count"`
-	FailedCount        int    `json:"failed_count"`
-	PendingCount       int    `json:"pending_count"`
-	OverallStatus      string `json:"overall_status"` // pending | partial_settled | settled | failed
+	TotalBusinessCount   int    `json:"total_business_count"`
+	SettledCount         int    `json:"settled_count"`
+	FailedCount          int    `json:"failed_count"`
+	PendingCount         int    `json:"pending_count"`
+	TotalTargetSatoshi   uint64 `json:"total_target_satoshi"`
+	SettledAmountSatoshi uint64 `json:"settled_amount_satoshi"`
+	OverallStatus        string `json:"overall_status"` // pending | waiting_fund | partial_settled | settled | failed
 }
 
 // GetFrontOrderSettlementSummary 按 front_order_id 查完整聚合视图
@@ -141,12 +143,18 @@ func computeSettlementSummary(views []BusinessSettlementView) SettlementSummary 
 		return summary
 	}
 
+	waitingFundCount := 0
 	for _, v := range views {
+		amount := settlementTargetAmountSatoshi(v)
+		summary.TotalTargetSatoshi += amount
 		switch v.Settlement.Status {
 		case "settled":
 			summary.SettledCount++
+			summary.SettledAmountSatoshi += amount
 		case "failed":
 			summary.FailedCount++
+		case "waiting_fund":
+			waitingFundCount++
 		default:
 			summary.PendingCount++
 		}
@@ -157,14 +165,76 @@ func computeSettlementSummary(views []BusinessSettlementView) SettlementSummary 
 		summary.OverallStatus = "settled"
 	} else if summary.FailedCount == len(views) {
 		summary.OverallStatus = "failed"
+	} else if waitingFundCount > 0 && summary.SettledCount == 0 {
+		summary.OverallStatus = "waiting_fund"
+	} else if summary.TotalTargetSatoshi > 0 && summary.SettledAmountSatoshi >= summary.TotalTargetSatoshi {
+		summary.OverallStatus = "settled"
 	} else if summary.PendingCount == len(views) {
 		summary.OverallStatus = "pending"
 	} else {
-		// 混合情况统一归 partial_settled
-		summary.OverallStatus = "partial_settled"
+		if summary.SettledCount > 0 {
+			summary.OverallStatus = "partial_settled"
+		} else {
+			if waitingFundCount > 0 {
+				summary.OverallStatus = "waiting_fund"
+			} else {
+				summary.OverallStatus = "pending"
+			}
+		}
 	}
 
 	return summary
+}
+
+// settlementTargetAmountSatoshi 尽量从 settlement/business payload 里抠出目标金额。
+// 设计说明：
+// - 新的 BSV 订单会把 amount_satoshi 放在 payload 里；
+// - 老业务如果没有金额字段，这里就退化成 0，不影响状态判断。
+func settlementTargetAmountSatoshi(view BusinessSettlementView) uint64 {
+	if amount, ok := jsonAmountSatoshi(view.Settlement.Payload); ok {
+		return amount
+	}
+	if amount, ok := jsonAmountSatoshi(view.Business.Payload); ok {
+		return amount
+	}
+	return 0
+}
+
+func jsonAmountSatoshi(raw json.RawMessage) (uint64, bool) {
+	if len(raw) == 0 {
+		return 0, false
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0, false
+	}
+	for _, key := range []string{"amount_satoshi", "amount_sat", "target_amount_satoshi"} {
+		v, ok := payload[key]
+		if !ok {
+			continue
+		}
+		switch n := v.(type) {
+		case float64:
+			if n >= 0 {
+				return uint64(n), true
+			}
+		case int64:
+			if n >= 0 {
+				return uint64(n), true
+			}
+		case uint64:
+			return n, true
+		case string:
+			n = strings.TrimSpace(n)
+			if n == "" {
+				continue
+			}
+			if parsed, err := strconv.ParseUint(n, 10, 64); err == nil {
+				return parsed, true
+			}
+		}
+	}
+	return 0, false
 }
 
 // GetFullPoolSettlementChainByPoolSessionID 按 pool_session_id 直接查完整池结算链。

@@ -56,6 +56,39 @@ type WalletBusinessSignResp struct {
 	TxID        string                `json:"txid,omitempty"`
 }
 
+// BizOrderPayBSVRequest 是新的 BSV 业务下单输入。
+// 设计说明：
+// - order_id 是业务主单号，业务状态都围绕它聚合；
+// - idempotency_key 用于重复提交去重，不能靠金额兜底；
+// - 这里只描述“要付什么”，真正的链上支付留给 settle 层执行。
+type BizOrderPayBSVRequest struct {
+	OrderID        string `json:"order_id"`
+	ToAddress      string `json:"to_address"`
+	AmountSatoshi  uint64 `json:"amount_satoshi"`
+	IdempotencyKey string `json:"idempotency_key"`
+}
+
+// BizOrderPayBSVResponse 是新的 BSV 业务下单结果。
+// 设计说明：
+// - ok=false 不一定是技术错误，很多时候只是业务上还没付成；
+// - status 直接给前台看，方便按 biz_ + settle_ 聚合展示；
+// - summary 里会带出这张订单下所有 payment 单的汇总。
+type BizOrderPayBSVResponse struct {
+	Ok                   bool                         `json:"ok"`
+	Code                 string                       `json:"code"`
+	Message              string                       `json:"message,omitempty"`
+	OrderID              string                       `json:"order_id,omitempty"`
+	FrontOrderID         string                       `json:"front_order_id,omitempty"`
+	BusinessID           string                       `json:"business_id,omitempty"`
+	SettlementID         string                       `json:"settlement_id,omitempty"`
+	IdempotencyKey       string                       `json:"idempotency_key,omitempty"`
+	Status               string                       `json:"status,omitempty"`
+	TxID                 string                       `json:"txid,omitempty"`
+	TargetAmountSatoshi  uint64                       `json:"target_amount_satoshi,omitempty"`
+	SettledAmountSatoshi uint64                       `json:"settled_amount_satoshi,omitempty"`
+	FrontOrderSummary    *FrontOrderSettlementSummary `json:"summary,omitempty"`
+}
+
 type walletBusinessPreparedTx struct {
 	Preview     WalletBusinessPreview
 	SignedTxHex string
@@ -200,4 +233,20 @@ func buildUnknownWalletBusinessPreview(signerPubkeyHex string, templateID string
 func walletBusinessPreviewHash(rawTx []byte) string {
 	sum := sha256.Sum256(rawTx)
 	return hex.EncodeToString(sum[:])
+}
+
+// bizOrderPayBSVIdentity 生成业务下单、结算单、触发器使用的稳定主键。
+// 设计说明：
+// - 同一个 order_id + idempotency_key 必须落到同一组主键；
+// - 这样重复提交只会回到同一条业务线，不会再生一张新单。
+func bizOrderPayBSVIdentity(orderID, idempotencyKey string) (frontOrderID string, businessID string, settlementID string, triggerID string) {
+	orderID = strings.ToLower(strings.TrimSpace(orderID))
+	idempotencyKey = strings.ToLower(strings.TrimSpace(idempotencyKey))
+	sum := sha256.Sum256([]byte(orderID + "\n" + idempotencyKey))
+	suffix := hex.EncodeToString(sum[:12])
+	frontOrderID = orderID
+	businessID = "biz_order_pay_bsv_" + suffix
+	settlementID = "set_order_pay_bsv_" + suffix
+	triggerID = "trg_order_pay_bsv_" + suffix
+	return
 }

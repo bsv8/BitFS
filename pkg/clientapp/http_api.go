@@ -246,6 +246,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/sync-once", s.withAuth(s.handleWalletSyncOnce))
 		mux.HandleFunc(prefix+"/v1/wallet/business/preview", s.withAuth(s.handleWalletBusinessPreview))
 		mux.HandleFunc(prefix+"/v1/wallet/business/sign", s.withAuth(s.handleWalletBusinessSign))
+		mux.HandleFunc(prefix+"/v1/wallet/business/pay-bsv", s.withAuth(s.handleBizOrderPayBSV))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/preview", s.withAuth(s.handleWalletTokenCreatePreview))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/sign", s.withAuth(s.handleWalletTokenCreateSign))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/submit", s.withAuth(s.handleWalletTokenCreateSubmit))
