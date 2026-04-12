@@ -176,7 +176,7 @@ func TestTriggerWalletBSVTransfer_InvalidAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildClientActorFromRunInput: %v", err)
 	}
-	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
+	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
 
@@ -224,7 +224,7 @@ func TestTriggerBizOrderPayBSV_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildClientActorFromRunInput: %v", err)
 	}
-	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
+	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
 
@@ -252,13 +252,7 @@ func TestTriggerBizOrderPayBSV_Success(t *testing.T) {
 	if resp.FrontOrderSummary.Summary.TotalBusinessCount != 1 {
 		t.Fatalf("expected one business, got %+v", resp.FrontOrderSummary.Summary)
 	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, resp.BusinessID).Scan(&count); err != nil {
-		t.Fatalf("count settle_records failed: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("expected one settle_records row, got %d", count)
-	}
+	assertBizOrderPayBSVSettlementFacts(t, db, resp.BusinessID, 2)
 }
 
 func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
@@ -274,7 +268,7 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildClientActorFromRunInput: %v", err)
 	}
-	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
+	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
 
@@ -298,12 +292,13 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	if first.TxID == "" || second.TxID == "" || first.TxID != second.TxID {
 		t.Fatalf("expected stable txid on idempotent retry: first=%+v second=%+v", first, second)
 	}
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, first.BusinessID).Scan(&count); err != nil {
-		t.Fatalf("count settle_records failed: %v", err)
+	assertBizOrderPayBSVSettlementFacts(t, db, first.BusinessID, 2)
+	var chainCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_direct_pay WHERE settlement_cycle_id=(SELECT settlement_cycle_id FROM fact_settlement_channel_chain_direct_pay WHERE id=(SELECT target_id FROM settle_records WHERE business_id=?))`, first.BusinessID).Scan(&chainCount); err != nil {
+		t.Fatalf("count fact_settlement_channel_chain_direct_pay failed: %v", err)
 	}
-	if count != 1 {
-		t.Fatalf("expected one settle_records row, got %d", count)
+	if chainCount != 1 {
+		t.Fatalf("expected one chain_direct_pay row, got %d", chainCount)
 	}
 }
 
@@ -524,52 +519,126 @@ func newWalletBSVTransferTestRuntime(t *testing.T) *Runtime {
 	}
 }
 
-func seedWalletBSVTransferTestRows(t *testing.T, db *sql.DB, address string, ownerPubkeyHex string, amount uint64) error {
+func seedWalletBSVTransferTestRows(t *testing.T, db *sql.DB, address string, ownerPubkeyHex string, amounts ...uint64) error {
 	t.Helper()
+	if len(amounts) == 0 {
+		return fmt.Errorf("amounts are required")
+	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	txid := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	if _, err := db.Exec(
-		`INSERT INTO wallet_utxo(
-			utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		txid+":0",
-		walletID,
-		address,
-		txid,
-		int64(0),
-		int64(amount),
-		"unspent",
-		walletUTXOAllocationPlainBSV,
-		"",
-		txid,
-		"",
-		now,
-		now,
-		0,
-	); err != nil {
-		return fmt.Errorf("seed wallet_utxo failed: %w", err)
-	}
-	if _, err := db.Exec(
-		`INSERT INTO fact_bsv_utxos(
-			utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		txid+":0",
-		ownerPubkeyHex,
-		address,
-		txid,
-		int64(0),
-		int64(amount),
-		"unspent",
-		"plain_bsv",
-		"",
-		now,
-		now,
-		int64(0),
-		"seed wallet transfer test utxo",
-		"{}",
-	); err != nil {
-		return fmt.Errorf("seed fact_bsv_utxos failed: %w", err)
+	for i, amount := range amounts {
+		txid := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		if len(amounts) > 1 {
+			txid = fmt.Sprintf("%064x", i+1)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO wallet_utxo(
+				utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			txid+":0",
+			walletID,
+			address,
+			txid,
+			int64(0),
+			int64(amount),
+			"unspent",
+			walletUTXOAllocationPlainBSV,
+			"",
+			txid,
+			"",
+			now,
+			now,
+			0,
+		); err != nil {
+			return fmt.Errorf("seed wallet_utxo failed: %w", err)
+		}
+		if _, err := db.Exec(
+			`INSERT INTO fact_bsv_utxos(
+				utxo_id,owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,spent_by_txid,created_at_unix,updated_at_unix,spent_at_unix,note,payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			txid+":0",
+			ownerPubkeyHex,
+			address,
+			txid,
+			int64(0),
+			int64(amount),
+			"unspent",
+			"plain_bsv",
+			"",
+			now,
+			now,
+			int64(0),
+			"seed wallet transfer test utxo",
+			"{}",
+		); err != nil {
+			return fmt.Errorf("seed fact_bsv_utxos failed: %w", err)
+		}
 	}
 	return nil
+}
+
+func assertBizOrderPayBSVSettlementFacts(t *testing.T, db *sql.DB, businessID string, wantCount int) {
+	t.Helper()
+	var targetID string
+	if err := db.QueryRow(`SELECT target_id FROM settle_records WHERE business_id=?`, businessID).Scan(&targetID); err != nil {
+		t.Fatalf("query settle_records target_id failed: %v", err)
+	}
+	if strings.TrimSpace(targetID) == "" {
+		t.Fatalf("settle_records target_id should not be empty for business %s", businessID)
+	}
+	var chainCount int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_direct_pay WHERE id=?`, targetID).Scan(&chainCount); err != nil {
+		t.Fatalf("count fact_settlement_channel_chain_direct_pay failed: %v", err)
+	}
+	if chainCount != 1 {
+		t.Fatalf("expected one chain_direct_pay row, got %d", chainCount)
+	}
+	var cycleID int64
+	if err := db.QueryRow(`SELECT settlement_cycle_id FROM fact_settlement_channel_chain_direct_pay WHERE id=?`, targetID).Scan(&cycleID); err != nil {
+		t.Fatalf("query settlement_cycle_id failed: %v", err)
+	}
+	rows, err := db.Query(`SELECT source_utxo_id, used_satoshi FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV' ORDER BY source_utxo_id ASC`, cycleID)
+	if err != nil {
+		t.Fatalf("query fact_settlement_records failed: %v", err)
+	}
+	defer rows.Close()
+	type factRow struct {
+		utxoID string
+		used   int64
+	}
+	var got []factRow
+	for rows.Next() {
+		var row factRow
+		if err := rows.Scan(&row.utxoID, &row.used); err != nil {
+			t.Fatalf("scan fact_settlement_records failed: %v", err)
+		}
+		got = append(got, row)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate fact_settlement_records failed: %v", err)
+	}
+	if len(got) != wantCount {
+		t.Fatalf("expected %d fact_settlement_records rows, got %d", wantCount, len(got))
+	}
+	wantUTXOIDs := make([]string, 0, wantCount)
+	wantUsed := make([]int64, 0, wantCount)
+	for i := 0; i < wantCount; i++ {
+		txid := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		if wantCount > 1 {
+			txid = fmt.Sprintf("%064x", i+1)
+		}
+		wantUTXOIDs = append(wantUTXOIDs, txid+":0")
+		wantUsed = append(wantUsed, 5)
+	}
+	if wantCount > 1 {
+		wantUsed[1] = 6
+	}
+	for i := range got {
+		if got[i].utxoID != wantUTXOIDs[i] {
+			t.Fatalf("source_utxo_id mismatch at %d: want=%s got=%s", i, wantUTXOIDs[i], got[i].utxoID)
+		}
+		if got[i].used != wantUsed[i] {
+			t.Fatalf("used_satoshi mismatch at %d: want=%d got=%d", i, wantUsed[i], got[i].used)
+		}
+	}
 }

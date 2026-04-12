@@ -88,6 +88,92 @@ type settlementRecordEntry struct {
 	Payload           any
 }
 
+// dbAppendBSVSettlementRecordsForCycleTx 写入 chain_direct_pay 的 BSV 结算明细。
+// 设计说明：
+// - 这里只认本次交易真实花掉的输入 UTXO 列表，不从余额反推；
+// - 每个输入只落一条明细，幂等由 settlement_cycle_id + asset_type + source_utxo_id + source_lot_id 收口；
+// - 这里不改 UTXO 状态，状态流转由本地投影和事实明细各自负责。
+func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, settlementCycleID int64, ownerPubkeyHex string, utxoIDs []string, occurredAtUnix int64, payload any) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	if settlementCycleID <= 0 {
+		return fmt.Errorf("settlement_cycle_id is required")
+	}
+	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
+	if ownerPubkeyHex == "" {
+		return fmt.Errorf("owner_pubkey_hex is required")
+	}
+	if len(utxoIDs) == 0 {
+		return fmt.Errorf("utxo_ids are required")
+	}
+	now := time.Now().Unix()
+	if occurredAtUnix <= 0 {
+		occurredAtUnix = now
+	}
+	confirmedAtUnix := occurredAtUnix
+
+	seen := make(map[string]struct{}, len(utxoIDs))
+	for i, rawUTXOID := range utxoIDs {
+		utxoID := strings.ToLower(strings.TrimSpace(rawUTXOID))
+		if utxoID == "" {
+			return fmt.Errorf("utxo_id is required at index %d", i)
+		}
+		if _, ok := seen[utxoID]; ok {
+			return fmt.Errorf("duplicate utxo_id in settlement inputs: %s", utxoID)
+		}
+		seen[utxoID] = struct{}{}
+
+		var usedSatoshi int64
+		if err := QueryRowContext(ctx, db, `SELECT value_satoshi FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&usedSatoshi); err != nil {
+			if err == sql.ErrNoRows {
+				return fmt.Errorf("bsv utxo not found: %s", utxoID)
+			}
+			return fmt.Errorf("lookup bsv utxo %s failed: %w", utxoID, err)
+		}
+
+		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementCycleID, utxoID)
+		_, err := ExecContext(ctx, db,
+			`INSERT INTO fact_settlement_records(
+				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
+				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(settlement_cycle_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
+				record_id=excluded.record_id,
+				owner_pubkey_hex=excluded.owner_pubkey_hex,
+				used_satoshi=excluded.used_satoshi,
+				used_quantity_text=excluded.used_quantity_text,
+				state=CASE
+					WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending' THEN fact_settlement_records.state
+					ELSE excluded.state
+				END,
+				confirmed_at_unix=CASE
+					WHEN excluded.state='confirmed' THEN excluded.confirmed_at_unix
+					ELSE fact_settlement_records.confirmed_at_unix
+				END,
+				note=excluded.note,
+				payload_json=excluded.payload_json`,
+			recordID,
+			settlementCycleID,
+			"BSV",
+			ownerPubkeyHex,
+			utxoID,
+			"",
+			usedSatoshi,
+			"",
+			"confirmed",
+			occurredAtUnix,
+			confirmedAtUnix,
+			"BSV consumed by chain direct pay",
+			mustJSONString(payload),
+		)
+		if err != nil {
+			return fmt.Errorf("append bsv settlement record for utxo %s failed: %w", utxoID, err)
+		}
+	}
+	return nil
+}
+
 // ========== BSV UTXO 读写 ==========
 
 // dbUpsertBSVUTXO 幂等写入/更新本币UTXO事实

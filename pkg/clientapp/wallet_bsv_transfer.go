@@ -293,15 +293,16 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	}
 
 	payload := map[string]any{
-		"order_id":        orderID,
-		"business_id":     businessID,
-		"settlement_id":   settlementID,
-		"idempotency_key": idempotencyKey,
-		"amount_satoshi":  amountSatoshi,
-		"miner_fee_sat":   submitted.Result.MinerFeeSatoshi,
-		"change_sat":      submitted.Result.ChangeSatoshi,
-		"to_address":      toAddress,
-		"txid":            submitted.BroadcastTxID,
+		"order_id":          orderID,
+		"business_id":       businessID,
+		"settlement_id":     settlementID,
+		"idempotency_key":   idempotencyKey,
+		"amount_satoshi":    amountSatoshi,
+		"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
+		"change_sat":        submitted.Result.ChangeSatoshi,
+		"to_address":        toAddress,
+		"txid":              submitted.BroadcastTxID,
+		"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
 	}
 
 	if finalStatus == "failed" {
@@ -348,31 +349,9 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		return resp, nil
 	}
 
-	chainPaymentID, cpErr := dbUpsertChainDirectPayWithSettlementCycle(ctx, store, chainPaymentEntry{
-		TxID:                 submitted.BroadcastTxID,
-		PaymentSubType:       "biz_order_pay_bsv",
-		Status:               processStatus,
-		WalletInputSatoshi:   int64(amountSatoshi + submitted.Result.MinerFeeSatoshi + submitted.Result.ChangeSatoshi),
-		WalletOutputSatoshi:  int64(submitted.Result.ChangeSatoshi),
-		NetAmountSatoshi:     -int64(amountSatoshi + submitted.Result.MinerFeeSatoshi),
-		OccurredAtUnix:       now,
-		SubmittedAtUnix:      now,
-		WalletObservedAtUnix: now,
-		FromPartyID:          strings.TrimSpace(fromPartyID),
-		ToPartyID:            strings.TrimSpace(toPartyID),
-		Payload: map[string]any{
-			"order_id":        orderID,
-			"business_id":     businessID,
-			"settlement_id":   settlementID,
-			"idempotency_key": idempotencyKey,
-			"amount_satoshi":  amountSatoshi,
-			"miner_fee_sat":   submitted.Result.MinerFeeSatoshi,
-			"change_sat":      submitted.Result.ChangeSatoshi,
-			"to_address":      toAddress,
-			"txid":            submitted.BroadcastTxID,
-		},
-	})
-	if cpErr != nil {
+	if finalStatus == "submitted_unknown_projection" {
+		payload["status"] = "submitted_unknown_projection"
+		payload["error"] = submitted.Result.Message
 		if err := store.Tx(ctx, func(tx *sql.Tx) error {
 			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
@@ -396,7 +375,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				SettlementMethod:  string(SettlementMethodChain),
 				TargetType:        "",
 				TargetID:          "",
-				ErrorMessage:      cpErr.Error(),
+				ErrorMessage:      submitted.Result.Message,
 				SettlementPayload: payload,
 				UpdatedAtUnix:     now,
 			})
@@ -408,8 +387,65 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		finalMessage = "broadcast succeeded but local projection failed"
 		processStatus = "submitted_unknown_projection"
 	} else {
-		payload["chain_direct_pay_id"] = chainPaymentID
+		chainPaymentPayload := map[string]any{
+			"order_id":          orderID,
+			"business_id":       businessID,
+			"settlement_id":     settlementID,
+			"idempotency_key":   idempotencyKey,
+			"amount_satoshi":    amountSatoshi,
+			"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
+			"change_sat":        submitted.Result.ChangeSatoshi,
+			"to_address":        toAddress,
+			"txid":              submitted.BroadcastTxID,
+			"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
+		}
+		ownerPubkeyHex := strings.ToLower(strings.TrimSpace(rt.ClientID()))
+		if ownerPubkeyHex == "" {
+			clientActor, actorErr := buildClientActorFromRunInput(rt.runIn)
+			if actorErr != nil {
+				return resp, fmt.Errorf("client id is required for settlement records")
+			}
+			ownerPubkeyHex = strings.ToLower(strings.TrimSpace(clientActor.PubHex))
+		}
+		if ownerPubkeyHex == "" {
+			return resp, fmt.Errorf("client id is required for settlement records")
+		}
+		selectedUTXOIDs := append([]string(nil), submitted.Result.SelectedUTXOIDs...)
+		if len(selectedUTXOIDs) == 0 {
+			return resp, fmt.Errorf("selected utxo ids are required for settlement records")
+		}
 		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+			channelID, err := dbUpsertChainChannelWithSettlementCycle(ctx, tx, chainPaymentEntry{
+				TxID:                 submitted.BroadcastTxID,
+				PaymentSubType:       "biz_order_pay_bsv",
+				Status:               processStatus,
+				WalletInputSatoshi:   int64(amountSatoshi + submitted.Result.MinerFeeSatoshi + submitted.Result.ChangeSatoshi),
+				WalletOutputSatoshi:  int64(submitted.Result.ChangeSatoshi),
+				NetAmountSatoshi:     -int64(amountSatoshi + submitted.Result.MinerFeeSatoshi),
+				OccurredAtUnix:       now,
+				SubmittedAtUnix:      now,
+				WalletObservedAtUnix: now,
+				FromPartyID:          strings.TrimSpace(fromPartyID),
+				ToPartyID:            strings.TrimSpace(toPartyID),
+				Payload:              chainPaymentPayload,
+			},
+				"chain_direct_pay",
+				"fact_settlement_channel_chain_direct_pay",
+				"cycle_chain_direct_pay",
+				"bind chain direct pay channel id",
+			)
+			if err != nil {
+				return err
+			}
+			payload["chain_direct_pay_id"] = channelID
+			chainPaymentPayload["chain_direct_pay_id"] = channelID
+			settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, tx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+			if err != nil {
+				return fmt.Errorf("resolve settlement cycle for chain direct pay: %w", err)
+			}
+			if err := dbAppendBSVSettlementRecordsForCycleTx(ctx, tx, settlementCycleID, ownerPubkeyHex, selectedUTXOIDs, now, chainPaymentPayload); err != nil {
+				return err
+			}
 			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -431,12 +467,59 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				SettlementStatus:  finalStatus,
 				SettlementMethod:  string(SettlementMethodChain),
 				TargetType:        "chain_direct_pay",
-				TargetID:          fmt.Sprintf("%d", chainPaymentID),
+				TargetID:          fmt.Sprintf("%d", channelID),
 				ErrorMessage:      "",
 				SettlementPayload: payload,
 				UpdatedAtUnix:     now,
 			})
 		}); err != nil {
+			failedPayload := map[string]any{
+				"order_id":          orderID,
+				"business_id":       businessID,
+				"settlement_id":     settlementID,
+				"idempotency_key":   idempotencyKey,
+				"amount_satoshi":    amountSatoshi,
+				"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
+				"change_sat":        submitted.Result.ChangeSatoshi,
+				"to_address":        toAddress,
+				"txid":              submitted.BroadcastTxID,
+				"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
+				"status":            "failed",
+				"error":             err.Error(),
+			}
+			_ = store.Tx(ctx, func(tx *sql.Tx) error {
+				if writeErr := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+					ProcessID:         "proc_" + businessID,
+					SourceType:        "biz_order_pay_bsv",
+					SourceID:          settlementID,
+					AccountingScene:   "wallet_transfer",
+					AccountingSubType: "pay_bsv",
+					EventType:         "wallet_transfer_submit",
+					Status:            "failed",
+					OccurredAtUnix:    now,
+					IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+					Note:              "write settlement outcome failed",
+					Payload:           failedPayload,
+				}); writeErr != nil {
+					return writeErr
+				}
+				return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+					BusinessID:        businessID,
+					BusinessStatus:    "failed",
+					SettlementStatus:  "failed",
+					SettlementMethod:  string(SettlementMethodChain),
+					TargetType:        "",
+					TargetID:          "",
+					ErrorMessage:      err.Error(),
+					SettlementPayload: failedPayload,
+					UpdatedAtUnix:     now,
+				})
+			})
+			resp.Ok = false
+			resp.Code = "FAILED"
+			resp.Message = err.Error()
+			resp.Status = "failed"
+			resp.TxID = submitted.BroadcastTxID
 			return resp, fmt.Errorf("write settlement outcome failed: %w", err)
 		}
 	}
