@@ -26,13 +26,9 @@ func mustSettlementPaymentAttemptIDByPoolAllocationID(t *testing.T, db *sql.DB, 
 			t.Fatalf("resolve pool session id failed: %v", err)
 		}
 	}
-	var channelID int64
-	if err := db.QueryRow(`SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, poolSessionID).Scan(&channelID); err != nil {
-		t.Fatalf("resolve pool channel id failed: %v", err)
-	}
 	var paymentAttemptID int64
-	if err := db.QueryRow(`SELECT id FROM fact_settlement_payment_attempts WHERE source_type=? AND source_id=?`, "pool_session_quote_pay", fmt.Sprintf("%d", channelID)).Scan(&paymentAttemptID); err != nil {
-		t.Fatalf("resolve settlement payment attempt by pool allocation failed: %v", err)
+	if err := db.QueryRow(`SELECT settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, poolSessionID).Scan(&paymentAttemptID); err != nil {
+		t.Fatalf("resolve pool channel id failed: %v", err)
 	}
 	return paymentAttemptID
 }

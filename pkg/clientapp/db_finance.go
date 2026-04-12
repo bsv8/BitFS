@@ -130,8 +130,8 @@ type financeProcessEventItem struct {
 }
 
 type settlementCycleSourceResolution struct {
-	SourceType           string
-	SourceID             string
+	SourceType                    string
+	SourceID                      string
 	SettlementPaymentAttemptID    int64
 	SettlementPaymentAttemptState string
 }
@@ -194,7 +194,7 @@ func resolveSettlementPaymentAttemptSourceDB(ctx context.Context, db *sql.DB, so
 	}
 	var (
 		paymentAttemptID int64
-		err     error
+		err              error
 	)
 	switch sourceType {
 	case "settlement_payment_attempt":
@@ -215,8 +215,8 @@ func resolveSettlementPaymentAttemptSourceDB(ctx context.Context, db *sql.DB, so
 		return settlementCycleSourceResolution{}, err
 	}
 	return settlementCycleSourceResolution{
-		SourceType:           sourceType,
-		SourceID:             sourceID,
+		SourceType:                    sourceType,
+		SourceID:                      sourceID,
 		SettlementPaymentAttemptID:    paymentAttemptID,
 		SettlementPaymentAttemptState: state,
 	}, nil
@@ -227,11 +227,11 @@ func dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx context.Context, db sqlC
 	if poolSessionID == "" {
 		return 0, fmt.Errorf("pool_session_id is required")
 	}
-	var channelID int64
-	if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, poolSessionID).Scan(&channelID); err != nil {
+	var settlementPaymentAttemptID int64
+	if err := QueryRowContext(ctx, db, `SELECT settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, poolSessionID).Scan(&settlementPaymentAttemptID); err != nil {
 		return 0, err
 	}
-	return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "pool_session_quote_pay", fmt.Sprintf("%d", channelID))
+	return settlementPaymentAttemptID, nil
 }
 
 func resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {

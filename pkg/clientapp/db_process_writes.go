@@ -949,8 +949,6 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 	if allocationID == "" {
 		return fmt.Errorf("allocation_id is required")
 	}
-	paymentAttemptKey := "payment_attempt_fee_pool_" + sessionID
-	pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
 	payload := map[string]any{
 		"session_id":                  sessionID,
 		"gateway_pubkey_hex":          gatewayPubkeyHex,
@@ -972,22 +970,31 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		"fee_rate_sat_per_byte":       session.FeeRateSatPerByte,
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		if err := dbUpsertSettlementPaymentAttemptCtx(ctx, db,
-			paymentAttemptKey,
-			"pool_session_quote_pay",
-			pendingSourceID,
-			"confirmed",
-			int64(chargedAmount), 0, int64(chargedAmount),
-			int(sequence),
-			now,
-			"fee pool quote pay accounting",
-			payload,
-		); err != nil {
+		var settlementPaymentAttemptID int64
+		var channelID int64
+		err := QueryRowContext(ctx, db, `SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID, &settlementPaymentAttemptID)
+		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
-		settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "pool_session_quote_pay", pendingSourceID)
-		if err != nil {
-			return err
+		if err == sql.ErrNoRows {
+			pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
+			if err := dbUpsertSettlementPaymentAttemptCtx(ctx, db,
+				"payment_attempt_pool_session_quote_pay_"+sessionID,
+				"pool_session_quote_pay",
+				pendingSourceID,
+				"confirmed",
+				int64(chargedAmount), 0, int64(chargedAmount),
+				int(sequence),
+				now,
+				"fee pool quote pay accounting",
+				payload,
+			); err != nil {
+				return err
+			}
+			settlementPaymentAttemptID, err = dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "pool_session_quote_pay", pendingSourceID)
+			if err != nil {
+				return err
+			}
 		}
 		_, err = ExecContext(ctx, db,
 			`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
@@ -1031,9 +1038,10 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		if err != nil {
 			return err
 		}
-		var channelID int64
-		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
-			return err
+		if channelID == 0 {
+			if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
+				return err
+			}
 		}
 		if _, err := ExecContext(ctx, db,
 			`UPDATE fact_settlement_payment_attempts SET
