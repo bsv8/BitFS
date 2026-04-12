@@ -477,14 +477,14 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		t.Fatalf("query fact_settlement_cycles count: %v", err)
 	}
 	if cycleCount != 0 {
-		t.Fatalf("fact_settlement_cycles should stay empty for local broadcast, got=%d", cycleCount)
+		t.Fatalf("unexpected fact_settlement_cycles rows for local projection, got=%d", cycleCount)
 	}
 	var factCount int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, localTxID).Scan(&factCount); err != nil {
 		t.Fatalf("query fact_settlement_channel_chain_quote_pay count: %v", err)
 	}
 	if factCount != 0 {
-		t.Fatalf("fact_settlement_channel_chain_quote_pay should stay empty for local broadcast, got=%d", factCount)
+		t.Fatalf("unexpected fact_settlement_channel_chain_quote_pay rows for local projection, got=%d", factCount)
 	}
 }
 
