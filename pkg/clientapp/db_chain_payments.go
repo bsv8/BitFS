@@ -506,7 +506,7 @@ func dbWalletUTXOValueConn(ctx context.Context, db sqlConn, utxoID string) (int6
 // - 这里不等钱包同步，不走旧的事后回写；
 // - 只接受已经广播成功的真实交易；
 // - 输入金额来自 wallet_utxo，输出角色来自交易本身。
-func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clientDB, rt *Runtime, txHex string, txID string, paymentSubType string, processSubType string, fromPartyID string, toPartyID string) error {
+func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store ClientStore, rt *Runtime, txHex string, txID string, paymentSubType string, processSubType string, fromPartyID string, toPartyID string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}

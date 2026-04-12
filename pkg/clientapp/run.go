@@ -723,6 +723,17 @@ type Runtime struct {
 	closeFn   func() error
 }
 
+// Store 返回已经准备好的客户端 store 能力。
+// 说明：
+// - 这里只暴露能力接口，不暴露底层 *sql.DB；
+// - 上层触发入口只拿到这个能力即可，不需要也不应该自己重建 DB。
+func (r *Runtime) Store() ClientStore {
+	if r == nil {
+		return nil
+	}
+	return r.store
+}
+
 func (r *Runtime) Close() error {
 	if r == nil {
 		return nil

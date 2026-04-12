@@ -75,7 +75,7 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	})
 }
 
-func dbRecordDemand(ctx context.Context, store *clientDB, demandID string, seedHash string) error {
+func dbRecordDemand(ctx context.Context, store ClientStore, demandID string, seedHash string) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}

@@ -1301,13 +1301,31 @@ type selectedSourceFlow struct {
 
 // dbListSpendableSourceFlows 保持旧接口但查询新表
 // 设计说明：旧函数保留接口，内部改为查 fact_bsv_utxos
-func dbListSpendableSourceFlows(ctx context.Context, store *clientDB, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
+func dbListSpendableSourceFlows(ctx context.Context, store ClientStore, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]spendableSourceFlow, error) {
-		return dbListSpendableSourceFlowsDB(ctx, db, walletID, assetKind, tokenID)
-	})
+	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
+	if ownerPubkeyHex == "" {
+		return nil, fmt.Errorf("wallet_id is required")
+	}
+	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
+	walletOwnerKey := walletIDByAddress(ownerPubkeyHex)
+	rows, err := store.QueryContext(ctx,
+		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
+			created_at_unix
+		 FROM fact_bsv_utxos
+		 WHERE (owner_pubkey_hex=? OR owner_pubkey_hex=?)
+		   AND utxo_state='unspent' AND carrier_type='plain_bsv'
+		 ORDER BY value_satoshi ASC, created_at_unix ASC`,
+		ownerPubkeyHex,
+		walletOwnerKey,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanSpendableSourceFlowRows(rows, walletID)
 }
 
 func dbListSpendableSourceFlowsDB(ctx context.Context, db *sql.DB, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
@@ -1340,11 +1358,11 @@ func dbListSpendableSourceFlowsDB(ctx context.Context, db *sql.DB, walletID stri
 	var flowID int64 = 1 // 模拟 flow_id
 	for rows.Next() {
 		var s spendableSourceFlow
-		var utxoID, owner, addr, txid string
+		var utxoID, addr, txid string
 		var vout uint32
 		var value int64
 		var createdAt int64
-		if err := rows.Scan(&utxoID, &owner, &addr, &txid, &vout, &value, &createdAt); err != nil {
+		if err := rows.Scan(&utxoID, new(string), &addr, &txid, &vout, &value, &createdAt); err != nil {
 			return nil, err
 		}
 		s.FlowID = flowID
@@ -1410,6 +1428,39 @@ func dbSelectSourceFlowsForTargetDB(ctx context.Context, db *sql.DB, walletID st
 		return nil, fmt.Errorf("insufficient balance: target=%d, available=%d, missing=%d", target, totalAvailable, remaining)
 	}
 
+	return out, nil
+}
+
+func scanSpendableSourceFlowRows(rows *sql.Rows, walletID string) ([]spendableSourceFlow, error) {
+	out := make([]spendableSourceFlow, 0, 16)
+	var flowID int64 = 1
+	for rows.Next() {
+		var s spendableSourceFlow
+		var utxoID, addr, txid string
+		var vout uint32
+		var value int64
+		var createdAt int64
+		if err := rows.Scan(&utxoID, new(string), &addr, &txid, &vout, &value, &createdAt); err != nil {
+			return nil, err
+		}
+		s.FlowID = flowID
+		s.WalletID = walletID
+		s.Address = addr
+		s.AssetKind = "BSV"
+		s.TokenID = ""
+		s.UTXOID = utxoID
+		s.TxID = txid
+		s.Vout = vout
+		s.TotalInSatoshi = value
+		s.TotalUsed = 0
+		s.Remaining = value
+		s.OccurredAtUnix = createdAt
+		out = append(out, s)
+		flowID++
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return out, nil
 }
 

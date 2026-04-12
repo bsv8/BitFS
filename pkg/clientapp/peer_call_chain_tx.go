@@ -57,7 +57,7 @@ func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, store *clientDB,
 	}, quoted, nil
 }
 
-func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error) {
+func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error) {
 	if rt == nil || rt.Host == nil {
 		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
@@ -95,6 +95,9 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store *client
 		}
 		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("service quote rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
+	if len(resp.ServiceQuote) == 0 {
+		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("service quote empty")
+	}
 	quote, quoteHash, err := poolcore.ParseAndVerifyServiceQuote(resp.ServiceQuote, gatewayPub)
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
@@ -116,7 +119,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store *client
 	}, nil
 }
 
-func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error) {
+func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error) {
 	built, err := buildPeerCallChainTx(ctx, store, rt, quoted.GatewayPub, quoted.ServiceQuoteRaw, quoted.ServiceQuote)
 	if err != nil {
 		return ncall.CallResp{}, err
@@ -145,7 +148,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *client
 		return ncall.CallResp{}, fmt.Errorf("payment receipt txid mismatch")
 	}
 	if err := applyLocalBroadcastWalletTxBytes(ctx, store, rt, built.RawTx, "peer_call_chain_tx"); err != nil {
-		return ncall.CallResp{}, err
+		return out, fmt.Errorf("submitted_unknown_projection: %w", err)
 	}
 	// 资金流水已迁移到 fact_* 事实表组装
 	obs.Business("bitcast-client", "evt_trigger_peer_call_chain_tx_end", map[string]any{
@@ -171,7 +174,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store *client
 	return out, nil
 }
 
-func buildPeerCallChainTx(ctx context.Context, store *clientDB, rt *Runtime, gatewayPub *ec.PublicKey, rawQuote []byte, quote payflow.ServiceQuote) (builtPeerCallChainTx, error) {
+func buildPeerCallChainTx(ctx context.Context, store ClientStore, rt *Runtime, gatewayPub *ec.PublicKey, rawQuote []byte, quote payflow.ServiceQuote) (builtPeerCallChainTx, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return builtPeerCallChainTx{}, fmt.Errorf("runtime not initialized")
 	}

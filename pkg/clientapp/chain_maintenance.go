@@ -1556,7 +1556,7 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 	return s.UpdatedAtUnix > 0 && s.UpdatedAtUnix < startedAtUnix
 }
 
-func getWalletUTXOsFromDB(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
+func getWalletUTXOsFromDB(ctx context.Context, store ClientStore, rt *Runtime) ([]poolcore.UTXO, error) {
 	return listEligiblePlainBSVWalletUTXOsFact(ctx, store, rt)
 }
 
@@ -1564,7 +1564,7 @@ func getWalletUTXOsFromDB(ctx context.Context, store *clientDB, rt *Runtime) ([]
 // 设计说明：
 // - 按 spendable source flow 返回，剩余 > 0 的才返回
 // - 返回的是原始金额，实际使用由上层决定
-func listEligiblePlainBSVWalletUTXOsFact(ctx context.Context, store *clientDB, rt *Runtime) ([]poolcore.UTXO, error) {
+func listEligiblePlainBSVWalletUTXOsFact(ctx context.Context, store ClientStore, rt *Runtime) ([]poolcore.UTXO, error) {
 	if rt == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
