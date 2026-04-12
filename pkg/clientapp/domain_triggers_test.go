@@ -130,15 +130,19 @@ func TestRecordDomainRegisterAccountingAfterBroadcast_WritesChainPaymentFacts(t 
 	}
 
 	var paymentCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, strings.ToLower(parsed.TxID().String())).Scan(&paymentCount); err != nil {
-		t.Fatalf("query fact_chain_payments failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, strings.ToLower(parsed.TxID().String())).Scan(&paymentCount); err != nil {
+		t.Fatalf("query fact_settlement_channel_chain_quote_pay failed: %v", err)
 	}
 	if paymentCount != 1 {
-		t.Fatalf("expected 1 fact_chain_payments row, got %d", paymentCount)
+		t.Fatalf("expected 1 fact_settlement_channel_chain_quote_pay row, got %d", paymentCount)
 	}
 
 	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_payment' AND source_id=?`, strings.ToLower(parsed.TxID().String())).Scan(&cycleCount); err != nil {
+	var channelID int64
+	if err := db.QueryRow(`SELECT id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, strings.ToLower(parsed.TxID().String())).Scan(&channelID); err != nil {
+		t.Fatalf("query channel id failed: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_quote_pay' AND source_id=?`, fmt.Sprintf("%d", channelID)).Scan(&cycleCount); err != nil {
 		t.Fatalf("query fact_settlement_cycles failed: %v", err)
 	}
 	if cycleCount != 1 {

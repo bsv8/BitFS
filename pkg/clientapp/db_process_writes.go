@@ -500,7 +500,7 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	switch e.SourceType {
 	case "":
 		return fmt.Errorf("source_type is required")
-	case "fee_pool", "pool_allocation", "chain_payment":
+	case "fee_pool", "pool_allocation", "chain_quote_pay":
 		return fmt.Errorf("source_type must be settlement_cycle")
 	}
 	if e.SourceID == "" {
@@ -607,7 +607,7 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	switch e.SourceType {
 	case "":
 		return fmt.Errorf("source_type is required")
-	case "fee_pool", "pool_allocation", "chain_payment":
+	case "fee_pool", "pool_allocation", "chain_quote_pay":
 		return fmt.Errorf("source_type must be settlement_cycle")
 	}
 	if e.SourceID == "" {
@@ -707,14 +707,14 @@ func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx *sql.Tx, i
 	if err := tx.QueryRow(`
 		SELECT pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 		       pool_amount_satoshi,spend_tx_fee_satoshi,status,open_base_txid,created_at_unix,updated_at_unix
-		  FROM fact_pool_sessions
+		  FROM fact_settlement_channel_pool_session_quote_pay
 		 WHERE pool_session_id=?`,
 		sessionID,
 	).Scan(
 		&session.PoolScheme, &session.CounterpartyPubHex, &session.SellerPubHex, &session.ArbiterPubHex, &session.GatewayPubHex,
 		&session.PoolAmountSat, &session.SpendTxFeeSat, &session.Status, &session.OpenBaseTxID, &session.CreatedAtUnix, &session.UpdatedAtUnix,
 	); err != nil {
-		return fmt.Errorf("load fact_pool_sessions for %s: %w", sessionID, err)
+		return fmt.Errorf("load fact_settlement_channel_pool_session_quote_pay for %s: %w", sessionID, err)
 	}
 
 	poolAmountSat := uint64(0)

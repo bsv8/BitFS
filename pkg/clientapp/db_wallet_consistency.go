@@ -8,6 +8,38 @@ import (
 	"time"
 )
 
+func resolveSettlementCycleIDByChannelTxID(ctx context.Context, db *sql.DB, sourceType, channelTable, txid string, requireConfirmed bool) (int64, bool, error) {
+	if db == nil {
+		return 0, false, fmt.Errorf("db is nil")
+	}
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	channelTable = strings.TrimSpace(channelTable)
+	txid = strings.ToLower(strings.TrimSpace(txid))
+	if sourceType == "" || channelTable == "" || txid == "" {
+		return 0, false, fmt.Errorf("source_type, channel_table and txid are required")
+	}
+	query := fmt.Sprintf(
+		`SELECT sc.id
+		   FROM fact_settlement_cycles sc
+		   JOIN %s ch ON ch.settlement_cycle_id=sc.id
+		  WHERE sc.source_type=? AND ch.txid=?`,
+		channelTable,
+	)
+	args := []any{sourceType, txid}
+	if requireConfirmed {
+		query += " AND sc.state='confirmed'"
+	}
+	query += " LIMIT 1"
+	var cycleID int64
+	if err := QueryRowContext(ctx, db, query, args...).Scan(&cycleID); err != nil {
+		if err == sql.ErrNoRows {
+			return 0, false, nil
+		}
+		return 0, false, err
+	}
+	return cycleID, true, nil
+}
+
 // TokenTxDualLineConsistency 是 token 交易一致性检查结果。
 // 设计说明：
 // - 这里只做核对，不补账；
@@ -56,8 +88,11 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 			out.HasCarrierBSVFact = true
 		}
 
-		var tokenCycleID int64
-		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_token' AND source_id=?`, txid).Scan(&tokenCycleID); err == nil {
+		tokenCycleID, found, err := resolveSettlementCycleIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, false)
+		if err != nil {
+			return TokenTxDualLineConsistency{}, err
+		}
+		if found {
 			out.HasChainTokenCycle = true
 			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_cycle_id=?`, tokenCycleID).Scan(&count); err != nil {
 				return TokenTxDualLineConsistency{}, err
@@ -65,8 +100,6 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 			if count > 0 {
 				out.HasTokenQuantityFact = true
 			}
-		} else if err != sql.ErrNoRows {
-			return TokenTxDualLineConsistency{}, err
 		}
 
 		if !out.HasChainTokenCycle {
@@ -93,8 +126,11 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (ConfirmedBSVSpendConsistency, error) {
 		out := ConfirmedBSVSpendConsistency{TxID: txid}
-		var cycleID int64
-		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleID); err == nil {
+		cycleID, found, err := resolveSettlementCycleIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
+		if err != nil {
+			return ConfirmedBSVSpendConsistency{}, err
+		}
+		if found {
 			out.HasConfirmedCycle = true
 			var count int
 			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_cycle_id=? AND asset_type='BSV'`, cycleID).Scan(&count); err != nil {
@@ -109,8 +145,6 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 			if count > 0 {
 				out.HasSpentUTXO = true
 			}
-		} else if err != sql.ErrNoRows {
-			return ConfirmedBSVSpendConsistency{}, err
 		}
 
 		if !out.HasConfirmedCycle {
@@ -141,12 +175,12 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
-		var cycleID int64
-		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=? AND state='confirmed'`, txid).Scan(&cycleID); err != nil {
-			if err == sql.ErrNoRows {
-				return fmt.Errorf("confirmed settlement cycle not found for txid=%s", txid)
-			}
+		cycleID, found, err := resolveSettlementCycleIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
+		if err != nil {
 			return err
+		}
+		if !found {
+			return fmt.Errorf("confirmed settlement cycle not found for txid=%s", txid)
 		}
 		rows, err := QueryContext(ctx, db, `SELECT source_utxo_id, used_satoshi
 			FROM fact_settlement_records

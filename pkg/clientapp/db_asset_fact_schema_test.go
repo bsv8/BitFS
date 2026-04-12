@@ -15,7 +15,7 @@ func seedAssetFactSettlementCycle(t *testing.T, db *sql.DB, sourceType string, s
 	t.Helper()
 	cycleID := fmt.Sprintf("cycle_%s_%s", sourceType, sourceID)
 	switch sourceType {
-	case "chain_payment", "pool_session", "chain_bsv", "chain_token":
+	case "chain_quote_pay", "pool_session_quote_pay", "chain_direct_pay", "chain_asset_create":
 	default:
 		t.Fatalf("unsupported source type %s", sourceType)
 	}
@@ -321,7 +321,7 @@ func TestInitIndexDB_AssetFactWriteOperations(t *testing.T) {
 	}
 
 	// 创建结算周期
-	cycleID := seedAssetFactSettlementCycle(t, db, "chain_payment", "payment_1", 1700000000)
+	cycleID := seedAssetFactSettlementCycle(t, db, "chain_quote_pay", "payment_1", 1700000000)
 
 	// 插入 fact_settlement_records 测试数据
 	_, err = db.Exec(`INSERT INTO fact_settlement_records(
@@ -426,7 +426,7 @@ func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
 	}
 
 	// 测试 fact_settlement_records.asset_type CHECK 约束
-	cycleID := seedAssetFactSettlementCycle(t, db, "chain_payment", "payment_check_1", 1700000000)
+	cycleID := seedAssetFactSettlementCycle(t, db, "chain_quote_pay", "payment_check_1", 1700000000)
 	_, err = db.Exec(`INSERT INTO fact_settlement_records(
 		record_id, settlement_cycle_id, asset_type, owner_pubkey_hex,
 		state, occurred_at_unix
@@ -464,7 +464,7 @@ func TestInitIndexDB_AssetFactCheckConstraints(t *testing.T) {
 	_, err = db.Exec(`INSERT INTO fact_settlement_cycles(
 		cycle_id, source_type, source_id, state, occurred_at_unix
 	) VALUES(?,?,?,?,?)`,
-		"cycle_check_2", "chain_payment", "source_2", "invalid_state", 1700000000,
+		"cycle_check_2", "chain_quote_pay", "source_2", "invalid_state", 1700000000,
 	)
 	if err == nil {
 		t.Fatal("expected invalid state to fail CHECK constraint")

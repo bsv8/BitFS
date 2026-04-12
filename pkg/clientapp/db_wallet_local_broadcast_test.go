@@ -53,17 +53,17 @@ func TestDbUpsertWalletLocalBroadcastStoreTx_PreservesMaxObservedTime(t *testing
 		t.Fatalf("expected 1 wallet_local_broadcast_txs row, got %d", count)
 	}
 	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, txid).Scan(&cycleCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_direct_pay' AND source_id=?`, txid).Scan(&cycleCount); err != nil {
 		t.Fatalf("count fact_settlement_cycles failed: %v", err)
 	}
 	if cycleCount != 0 {
 		t.Fatalf("expected no chain_bsv settlement cycle, got %d", cycleCount)
 	}
 	var factCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, txid).Scan(&factCount); err != nil {
-		t.Fatalf("count fact_chain_payments failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txid).Scan(&factCount); err != nil {
+		t.Fatalf("count fact_settlement_channel_chain_quote_pay failed: %v", err)
 	}
 	if factCount != 0 {
-		t.Fatalf("expected no fact_chain_payments row, got %d", factCount)
+		t.Fatalf("expected no fact_settlement_channel_chain_quote_pay row, got %d", factCount)
 	}
 }

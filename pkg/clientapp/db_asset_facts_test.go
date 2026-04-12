@@ -163,10 +163,10 @@ func TestBSVConsumptionsFromSettlementCycle_IsIdempotent(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv utxo failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_bsv", txid, "confirmed", 7000, 0, -7000, 0, now, "cycle spend test", nil); err != nil {
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_direct_pay", txid, "confirmed", 7000, 0, -7000, 0, now, "cycle spend test", nil); err != nil {
 		t.Fatalf("seed settlement cycle failed: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid)
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", txid)
 	if err != nil {
 		t.Fatalf("lookup settlement cycle failed: %v", err)
 	}
@@ -217,7 +217,7 @@ func TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *t
 	sessionID := "sess_pool_source_txid_001"
 	txid := "pool_source_txid_001"
 
-	if err := dbUpsertSettlementCycle(db, "cycle_pool_session_"+sessionID, "pool_session", sessionID, "confirmed", 0, 0, 0, 0, now, "pool session source txid test", nil); err != nil {
+	if err := dbUpsertSettlementCycle(db, "cycle_pool_session_"+sessionID, "pool_session_quote_pay", sessionID, "confirmed", 0, 0, 0, 0, now, "pool session source txid test", nil); err != nil {
 		t.Fatalf("seed settlement cycle failed: %v", err)
 	}
 	if _, err := db.Exec(`
@@ -248,7 +248,7 @@ func TestGetSettlementCycleSourceTxID_PoolSessionReturnsLatestPoolEventTxID(t *t
 		t.Fatalf("seed pool session event failed: %v", err)
 	}
 
-	cycleID, err := dbGetSettlementCycleBySource(db, "pool_session", sessionID)
+	cycleID, err := dbGetSettlementCycleBySource(db, "pool_session_quote_pay", sessionID)
 	if err != nil {
 		t.Fatalf("lookup settlement cycle failed: %v", err)
 	}
@@ -1132,11 +1132,11 @@ func TestSettlementRecordBasic(t *testing.T) {
 
 	// 先创建 settlement cycle
 	cycleID := "cycle_test_001"
-	if err := dbUpsertSettlementCycle(db, cycleID, "chain_payment", "tx_test_001", "confirmed", 10000, 0, 10000, 1, now, "test cycle", nil); err != nil {
+	if err := dbUpsertSettlementCycle(db, cycleID, "chain_quote_pay", "tx_test_001", "confirmed", 10000, 0, 10000, 1, now, "test cycle", nil); err != nil {
 		t.Fatalf("upsert settlement cycle: %v", err)
 	}
 
-	cycleDBID, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_test_001")
+	cycleDBID, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_test_001")
 	if err != nil {
 		t.Fatalf("get settlement cycle: %v", err)
 	}

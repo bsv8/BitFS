@@ -169,10 +169,10 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 		return "", sourceID, nil
 	}
 	switch sourceType {
-	case "settlement_cycle", "chain_bsv", "chain_token":
+	case "settlement_cycle", "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
 		return sourceType, sourceID, nil
 	default:
-		return "", "", fmt.Errorf("source_type must be settlement_cycle, chain_bsv or chain_token")
+		return "", "", fmt.Errorf("source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
 	}
 }
 

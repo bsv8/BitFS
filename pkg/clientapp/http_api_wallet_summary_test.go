@@ -47,10 +47,10 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv utxo fact failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_sum_bsv_pay", "chain_bsv", "sum_bsv_pay", "confirmed", 600, 0, -600, 0, now, "summary test", map[string]any{"kind": "bsv"}); err != nil {
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_sum_bsv_pay", "chain_direct_pay", "sum_bsv_pay", "confirmed", 600, 0, -600, 0, now, "summary test", map[string]any{"kind": "bsv"}); err != nil {
 		t.Fatalf("seed bsv settlement cycle failed: %v", err)
 	}
-	bsvCycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", "sum_bsv_pay")
+	bsvCycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", "sum_bsv_pay")
 	if err != nil {
 		t.Fatalf("lookup bsv settlement cycle failed: %v", err)
 	}
@@ -119,10 +119,10 @@ func TestHandleWalletSummary_SplitsBSVAndTokenUsed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_sum_token_pay", "chain_token", "sum_token_pay", "confirmed", 0, 0, 0, 0, now, "summary test", map[string]any{"kind": "token"}); err != nil {
+	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_sum_token_pay", "chain_direct_pay", "sum_token_pay", "confirmed", 0, 0, 0, 0, now, "summary test", map[string]any{"kind": "token"}); err != nil {
 		t.Fatalf("seed token settlement cycle failed: %v", err)
 	}
-	tokenCycleID, err := dbGetSettlementCycleBySource(db, "chain_token", "sum_token_pay")
+	tokenCycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", "sum_token_pay")
 	if err != nil {
 		t.Fatalf("lookup token settlement cycle failed: %v", err)
 	}

@@ -115,7 +115,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 		BusinessID:       businessID,
 		SettlementMethod: string(SettlementMethodChain),
 		Status:           "pending",
-		TargetType:       "chain_payment",
+		TargetType:       "chain_quote_pay",
 		TargetID:         "",
 		Payload: map[string]any{
 			"estimated_fee_sat": 500,
@@ -217,7 +217,7 @@ func TestBusinessBridgeFlow_CreateBusinessWithFrontTriggerAndPendingSettlement(t
 		// 结算
 		SettlementID:         "set_bridge_test_001",
 		SettlementMethod:     SettlementMethodChain,
-		SettlementTargetType: "chain_payment",
+		SettlementTargetType: "chain_quote_pay",
 		SettlementTargetID:   "",
 		SettlementPayload: map[string]any{
 			"estimated_confirmations": 1,
@@ -368,7 +368,7 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 			BusinessID:       businessID,
 			SettlementMethod: string(SettlementMethodChain),
 			Status:           "pending",
-			TargetType:       "chain_payment",
+			TargetType:       "chain_quote_pay",
 			TargetID:         fmt.Sprintf("tx_target_%d", i),
 		}
 		if err := dbUpsertBusinessSettlement(ctx, store, settlement); err != nil {
@@ -377,7 +377,7 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 	}
 
 	// 按 target_type + target_id 查询
-	result, err := dbListBusinessSettlementsByTarget(ctx, store, "chain_payment", "tx_target_1", 10, 0)
+	result, err := dbListBusinessSettlementsByTarget(ctx, store, "chain_quote_pay", "tx_target_1", 10, 0)
 	if err != nil {
 		t.Fatalf("query by target failed: %v", err)
 	}

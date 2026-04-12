@@ -23,7 +23,7 @@ import (
 // BackfillDomainRegisterHistory 回填域名注册历史到新主线
 // 场景：把历史域名注册支付补成 front_order + business + settlement
 // 策略：
-//   - 查旧表 fact_chain_payments 中 subtype='domain_register' 的记录
+//   - 查旧表 fact_settlement_channel_chain_quote_pay 中 subtype='domain_register' 的记录
 //   - 为每条记录创建对应的 front_order + business + trigger + settlement
 //   - settlement 直接指向已有的 chain_payment
 func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*BackfillResult, error) {
@@ -36,20 +36,20 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 	}
 
 	err := store.Do(ctx, func(db *sql.DB) error {
-		// 查询所有域名注册相关的 fact_chain_payments，且还没有对应 settle_records 的
+		// 查询所有域名注册相关的 fact_settlement_channel_chain_quote_pay，且还没有对应 settle_records 的
 		rows, err := QueryContext(ctx, db, `
 			SELECT cp.id, cp.txid, cp.payment_subtype, cp.status, cp.net_amount_satoshi,
 			       cp.occurred_at_unix, cp.from_party_id, cp.to_party_id, cp.payload_json
-			FROM fact_chain_payments cp
+			FROM fact_settlement_channel_chain_quote_pay cp
 			LEFT JOIN settle_records sr ON sr.settlement_method='chain'
-				AND sr.target_type = 'chain_payment'
+				AND sr.target_type = 'chain_quote_pay'
 				AND sr.target_id = CAST(cp.id AS TEXT)
 			WHERE cp.payment_subtype = 'domain_register'
 				AND sr.settlement_id IS NULL
 			ORDER BY cp.id ASC
 		`)
 		if err != nil {
-			return fmt.Errorf("query fact_chain_payments: %w", err)
+			return fmt.Errorf("query fact_settlement_channel_chain_quote_pay: %w", err)
 		}
 		defer rows.Close()
 
@@ -120,7 +120,7 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 				INSERT INTO settle_records(business_id, business_role, source_type, source_id, accounting_scene, accounting_subtype,
 					from_party_id, to_party_id, status, occurred_at_unix, idempotency_key, note, payload_json,
 					settlement_id, settlement_method, settlement_status, target_type, target_id, error_message, settlement_payload_json, created_at_unix, updated_at_unix)
-				VALUES(?, 'formal', 'settlement_cycle', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?, ?, 'chain', ?, 'chain_payment', ?, '', ?, ?, ?)
+				VALUES(?, 'formal', 'settlement_cycle', ?, 'domain', 'register', ?, ?, 'posted', ?, ?, ?, ?, ?, 'chain', ?, 'chain_quote_pay', ?, '', ?, ?, ?)
 				ON CONFLICT(idempotency_key) DO NOTHING`,
 				businessID, fmt.Sprintf("%d", settlementCycleID), cp.FromPartyID, cp.ToPartyID, cp.OccurredAtUnix,
 				"backfill:"+businessID, "历史回填：域名注册",
@@ -145,14 +145,14 @@ func BackfillDomainRegisterHistory(ctx context.Context, store *clientDB) (*Backf
 
 			result.Success++
 			obs.Info("bitcast-client", "backfill_domain_register_success", map[string]any{
-				"front_order_id": frontOrderID,
-				"business_id":    businessID,
-				"chain_payment":  cp.TxID[:8] + "..." + cp.TxID[len(cp.TxID)-4:],
+				"front_order_id":  frontOrderID,
+				"business_id":     businessID,
+				"chain_quote_pay": cp.TxID[:8] + "..." + cp.TxID[len(cp.TxID)-4:],
 			})
 		}
 
 		if err := rows.Err(); err != nil {
-			return fmt.Errorf("iterate fact_chain_payments: %w", err)
+			return fmt.Errorf("iterate fact_settlement_channel_chain_quote_pay: %w", err)
 		}
 		return nil
 	})
@@ -187,11 +187,11 @@ func backfillBizPoolFacts(ctx context.Context, db *sql.DB) error {
 	sessions, err := QueryContext(ctx, db, `
 		SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 		       pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
-		FROM fact_pool_sessions
+		FROM fact_settlement_channel_pool_session_quote_pay
 		ORDER BY created_at_unix ASC, pool_session_id ASC
 	`)
 	if err != nil {
-		return fmt.Errorf("query fact_pool_sessions: %w", err)
+		return fmt.Errorf("query fact_settlement_channel_pool_session_quote_pay: %w", err)
 	}
 	defer sessions.Close()
 
@@ -202,7 +202,7 @@ func backfillBizPoolFacts(ctx context.Context, db *sql.DB) error {
 			&session.GatewayPubHex, &session.PoolAmountSat, &session.SpendTxFeeSat, &session.FeeRateSatByte, &session.LockBlocks,
 			&session.OpenBaseTxID, &session.Status, &session.CreatedAtUnix, &session.UpdatedAtUnix,
 		); err != nil {
-			return fmt.Errorf("scan fact_pool_sessions: %w", err)
+			return fmt.Errorf("scan fact_settlement_channel_pool_session_quote_pay: %w", err)
 		}
 
 		events, err := QueryContext(ctx, db, `
@@ -339,7 +339,7 @@ func backfillBizPoolFacts(ctx context.Context, db *sql.DB) error {
 	}
 
 	if err := sessions.Err(); err != nil {
-		return fmt.Errorf("iterate fact_pool_sessions: %w", err)
+		return fmt.Errorf("iterate fact_settlement_channel_pool_session_quote_pay: %w", err)
 	}
 	return nil
 }
@@ -371,7 +371,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 				ps.counterparty_pubkey_hex,
 				ps.pool_amount_satoshi
 			FROM fact_pool_session_events pa
-			JOIN fact_pool_sessions ps ON ps.pool_session_id = pa.pool_session_id
+			JOIN fact_settlement_channel_pool_session_quote_pay ps ON ps.pool_session_id = pa.pool_session_id
 			WHERE pa.event_kind = '`+PoolFactEventKindPoolEvent+`'
 				AND pa.allocation_kind = '`+PoolBusinessActionPayLegacy+`'
 				AND pa.id = (
@@ -433,7 +433,7 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 			if _, err := ExecContext(ctx, db, `
 				INSERT INTO biz_front_orders(front_order_id, front_type, front_subtype, owner_pubkey_hex, 
 					target_object_type, target_object_id, status, created_at_unix, updated_at_unix, note, payload_json)
-				VALUES(?, 'download', 'direct_transfer', ?, 'pool_session', ?, 'settled', ?, ?, ?, ?)
+				VALUES(?, 'download', 'direct_transfer', ?, 'pool_session_quote_pay', ?, 'settled', ?, ?, ?, ?)
 				ON CONFLICT(front_order_id) DO NOTHING`,
 				frontOrderID, payAlloc.BuyerPubHex, payAlloc.PoolSessionID, now, now,
 				"历史回填：池支付",
@@ -487,10 +487,10 @@ func BackfillPoolAllocationHistory(ctx context.Context, store *clientDB) (*Backf
 			if completed {
 				result.Success++
 				obs.Info("bitcast-client", "backfill_pool_pay_success", map[string]any{
-					"front_order_id": frontOrderID,
-					"business_id":    businessID,
-					"pool_session":   payAlloc.PoolSessionID[:8] + "...",
-					"pay_amount":     payAlloc.PayeeAmountAfter,
+					"front_order_id":         frontOrderID,
+					"business_id":            businessID,
+					"pool_session_quote_pay": payAlloc.PoolSessionID[:8] + "...",
+					"pay_amount":             payAlloc.PayeeAmountAfter,
 				})
 			}
 		}

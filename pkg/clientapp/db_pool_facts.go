@@ -103,7 +103,7 @@ func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx *sql.Tx, in
 	if nextSeq == 0 {
 		nextSeq = 1
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`INSERT INTO biz_pool(
 			pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 			pool_amount_satoshi,spend_tx_fee_satoshi,allocated_satoshi,cycle_fee_satoshi,available_satoshi,next_sequence_num,
@@ -178,7 +178,7 @@ func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx *sql.Tx, 
 	if createdAt <= 0 {
 		createdAt = now
 	}
-	_, err := ExecContext(ctx, tx, 
+	_, err := ExecContext(ctx, tx,
 		`INSERT INTO biz_pool_allocations(
 			allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?)
@@ -230,12 +230,41 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 	if status == "" {
 		status = "active"
 	}
-	_, err := ExecContext(ctx, tx, 
-		`INSERT INTO fact_pool_sessions(
-			pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
+	cycleState := "pending"
+	if strings.EqualFold(status, "settled") || strings.EqualFold(status, "closed") || strings.EqualFold(status, "confirmed") {
+		cycleState = "confirmed"
+	}
+	var settlementCycleID int64
+	var existingChannelID int64
+	err := QueryRowContext(ctx, tx, `SELECT id,settlement_cycle_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&existingChannelID, &settlementCycleID)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if err == sql.ErrNoRows {
+		pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
+		if err := dbUpsertSettlementCycleCtx(ctx, tx,
+			"cycle_pool_session_quote_pay_"+sessionID,
+			"pool_session_quote_pay",
+			pendingSourceID,
+			cycleState,
+			0, 0, 0, 0, updatedAt,
+			"pre-bind pool session quote pay channel",
+			map[string]any{"pool_session_id": sessionID, "status": status},
+		); err != nil {
+			return fmt.Errorf("upsert settlement cycle shell for pool session channel: %w", err)
+		}
+		settlementCycleID, err = dbGetSettlementCycleBySourceCtx(ctx, tx, "pool_session_quote_pay", pendingSourceID)
+		if err != nil {
+			return fmt.Errorf("resolve settlement cycle shell for pool session channel: %w", err)
+		}
+	}
+	_, err = ExecContext(ctx, tx,
+		`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
+			settlement_cycle_id,pool_session_id,txid,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
 			pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(pool_session_id) DO UPDATE SET
+			txid=excluded.txid,
 			pool_scheme=excluded.pool_scheme,
 			counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
 			seller_pubkey_hex=excluded.seller_pubkey_hex,
@@ -248,7 +277,9 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 			open_base_txid=excluded.open_base_txid,
 			status=excluded.status,
 			updated_at_unix=excluded.updated_at_unix`,
+		settlementCycleID,
 		sessionID,
+		strings.ToLower(strings.TrimSpace(in.OpenBaseTxID)),
 		poolScheme,
 		strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex)),
 		strings.ToLower(strings.TrimSpace(in.SellerPubHex)),
@@ -263,6 +294,14 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 		createdAt,
 		updatedAt,
 	)
+	if err != nil {
+		return err
+	}
+	var channelID int64
+	if err := QueryRowContext(ctx, tx, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
+		return err
+	}
+	_, err = ExecContext(ctx, tx, `UPDATE fact_settlement_cycles SET source_type='pool_session_quote_pay', source_id=? WHERE id=?`, fmt.Sprintf("%d", channelID), settlementCycleID)
 	return err
 }
 
@@ -356,18 +395,38 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *sql.Tx, in 
 	if err := dbApplyDirectTransferBizPoolAccountingTx(ctx, tx, in, allocationNo); err != nil {
 		return err
 	}
-	poolAllocID, err := dbGetPoolAllocationIDByAllocationIDTx(ctx, tx, allocID)
-	if err != nil {
-		return fmt.Errorf("lookup pool allocation id for alloc %s: %w", allocID, err)
+	var settlementCycleID int64
+	var channelID int64
+	if err := QueryRowContext(ctx, tx,
+		`SELECT id,settlement_cycle_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`,
+		sessionID,
+	).Scan(&channelID, &settlementCycleID); err != nil {
+		return fmt.Errorf("resolve pool session channel for allocation %s: %w", allocID, err)
 	}
-	// 结算周期必须先落地；这是写账本的锚点，业务层只认这个主键。
-	cycleID := fmt.Sprintf("cycle_pool_session_%s", sessionID)
-	if err := dbUpsertSettlementCycleCtx(ctx, tx,
-		cycleID, "pool_session", sessionID, "confirmed",
-		0, 0, 0,
-		0, createdAt, "auto-created from pool allocation", map[string]any{},
+	if _, err := ExecContext(ctx, tx,
+		`UPDATE fact_settlement_channel_pool_session_quote_pay
+		    SET txid=?,updated_at_unix=?
+		  WHERE id=?`,
+		txID, createdAt, channelID,
 	); err != nil {
-		return fmt.Errorf("upsert settlement cycle for pool allocation %d: %w", poolAllocID, err)
+		return err
+	}
+	if _, err := ExecContext(ctx, tx,
+		`UPDATE fact_settlement_cycles
+		    SET source_type='pool_session_quote_pay',
+		        source_id=?,
+		        state='confirmed',
+		        occurred_at_unix=?,
+		        confirmed_at_unix=?,
+		        note=?
+		  WHERE id=?`,
+		fmt.Sprintf("%d", channelID),
+		createdAt,
+		createdAt,
+		"updated from pool allocation event",
+		settlementCycleID,
+	); err != nil {
+		return err
 	}
 	return nil
 }

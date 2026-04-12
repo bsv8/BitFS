@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -71,12 +72,24 @@ func seedWalletDualLineConsistencyPresent(t *testing.T, db *sql.DB, txid string)
 		t.Fatalf("seed token carrier link failed: %v", err)
 	}
 
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_"+txid, "chain_token", txid, "confirmed", 0, 0, 0, 0, now, "dual line consistency", map[string]any{"kind": "token"}); err != nil {
-		t.Fatalf("seed chain_token cycle failed: %v", err)
-	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_token", txid)
+	channelID, err := dbUpsertChainDirectPayWithSettlementCycle(ctx, store, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      "bsv21_transfer",
+		Status:              "confirmed",
+		WalletInputSatoshi:  0,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    0,
+		OccurredAtUnix:      now,
+		FromPartyID:         "wallet:self",
+		ToPartyID:           "external:unknown",
+		Payload:             map[string]any{"kind": "token"},
+	})
 	if err != nil {
-		t.Fatalf("lookup chain_token cycle failed: %v", err)
+		t.Fatalf("seed chain_direct_pay channel failed: %v", err)
+	}
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+	if err != nil {
+		t.Fatalf("lookup chain_direct_pay cycle failed: %v", err)
 	}
 	if err := dbAppendBSVConsumptionsForSettlementCycle(db, cycleID, []chainPaymentUTXOLinkEntry{
 		{UTXOID: inputUTXO, IOSide: "input", UTXORole: "wallet_input", AmountSatoshi: 1, CreatedAtUnix: now},
@@ -164,8 +177,22 @@ func TestHandleAdminWalletConsistency_MissingItemsReturned(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed chain_token fact utxo failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_token_"+txid, "chain_token", txid, "confirmed", 0, 0, 0, 0, time.Now().Unix(), "consistency missing", nil); err != nil {
-		t.Fatalf("seed chain_token cycle failed: %v", err)
+	channelID, err := dbUpsertChainDirectPayWithSettlementCycle(context.Background(), store, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      "bsv21_transfer",
+		Status:              "confirmed",
+		WalletInputSatoshi:  0,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    0,
+		OccurredAtUnix:      time.Now().Unix(),
+		FromPartyID:         "wallet:self",
+		ToPartyID:           "external:unknown",
+	})
+	if err != nil {
+		t.Fatalf("seed chain_direct_pay channel failed: %v", err)
+	}
+	if _, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID)); err != nil {
+		t.Fatalf("lookup chain_direct_pay cycle failed: %v", err)
 	}
 
 	srv := &httpAPIServer{store: store}
@@ -216,10 +243,21 @@ func TestCheckConfirmedBSVSpendConsistency_RepairByCycle(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed bsv utxo failed: %v", err)
 	}
-	if err := dbUpsertSettlementCycle(db, "cycle_chain_bsv_"+txid, "chain_bsv", txid, "confirmed", 1200, 0, -1200, 0, now, "consistency repair", nil); err != nil {
-		t.Fatalf("seed settlement cycle failed: %v", err)
+	channelID, err := dbUpsertChainDirectPayWithSettlementCycle(ctx, store, chainPaymentEntry{
+		TxID:                txid,
+		PaymentSubType:      "wallet_transfer",
+		Status:              "confirmed",
+		WalletInputSatoshi:  1200,
+		WalletOutputSatoshi: 0,
+		NetAmountSatoshi:    -1200,
+		OccurredAtUnix:      now,
+		FromPartyID:         "wallet:self",
+		ToPartyID:           "external:unknown",
+	})
+	if err != nil {
+		t.Fatalf("seed chain_direct_pay channel failed: %v", err)
 	}
-	cycleID, err := dbGetSettlementCycleBySource(db, "chain_bsv", txid)
+	cycleID, err := dbGetSettlementCycleBySource(db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 	if err != nil {
 		t.Fatalf("lookup settlement cycle failed: %v", err)
 	}

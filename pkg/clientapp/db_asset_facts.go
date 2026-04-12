@@ -164,7 +164,7 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 		PayloadJSON    string
 	}
 	var payloadJSON string
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,COALESCE(spent_by_txid,''),created_at_unix,updated_at_unix,spent_at_unix,COALESCE(note,''),COALESCE(payload_json,'')
 		 FROM fact_bsv_utxos WHERE utxo_id=?`,
 		utxoID,
@@ -378,7 +378,7 @@ func dbGetBSVUTXODB(ctx context.Context, db sqlConn, utxoID string) (*bsvUTXOEnt
 	}
 	var e bsvUTXOEntry
 	var payloadJSON string
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type,
 			spent_by_txid, created_at_unix, updated_at_unix, spent_at_unix, note, payload_json
 		 FROM fact_bsv_utxos WHERE utxo_id=?`,
@@ -413,7 +413,7 @@ func dbListSpendableBSVUTXOsDB(ctx context.Context, db *sql.DB, ownerPubkeyHex s
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
 	}
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, carrier_type,
 			created_at_unix, updated_at_unix, note, payload_json
 		 FROM fact_bsv_utxos
@@ -463,7 +463,7 @@ func dbCalcBSVBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string) 
 
 	// 已确认可用余额：unspent + plain_bsv
 	var confirmed int64
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT COALESCE(SUM(value_satoshi),0) FROM fact_bsv_utxos
 		 WHERE owner_pubkey_hex=? AND utxo_state='unspent' AND carrier_type='plain_bsv'`,
 		ownerPubkeyHex,
@@ -474,7 +474,7 @@ func dbCalcBSVBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string) 
 
 	// 总余额（包含token载体和费用找零等）
 	var total int64
-	err = QueryRowContext(ctx, db, 
+	err = QueryRowContext(ctx, db,
 		`SELECT COALESCE(SUM(value_satoshi),0) FROM fact_bsv_utxos
 		 WHERE owner_pubkey_hex=? AND utxo_state='unspent'`,
 		ownerPubkeyHex,
@@ -543,7 +543,7 @@ func dbUpsertTokenLotDB(ctx context.Context, db sqlConn, e tokenLotEntry) error 
 		usedQuantityText = "0"
 	}
 
-	_, err := ExecContext(ctx, db, 
+	_, err := ExecContext(ctx, db,
 		`INSERT INTO fact_token_lots(
 			lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text,
 			lot_state, mint_txid, last_spend_txid, created_at_unix, updated_at_unix, note, payload_json
@@ -579,7 +579,7 @@ func dbGetTokenLotDB(ctx context.Context, db sqlConn, lotID string) (*tokenLotEn
 	}
 	var e tokenLotEntry
 	var payloadJSON string
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text,
 			lot_state, mint_txid, last_spend_txid, created_at_unix, updated_at_unix, note, payload_json
 		 FROM fact_token_lots WHERE lot_id=?`,
@@ -620,7 +620,7 @@ func dbListSpendableTokenLotsDB(ctx context.Context, db *sql.DB, ownerPubkeyHex 
 		return nil, fmt.Errorf("token_id is required")
 	}
 
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text,
 			lot_state, mint_txid, last_spend_txid, created_at_unix, updated_at_unix, note, payload_json
 		 FROM fact_token_lots
@@ -673,7 +673,7 @@ func dbCalcTokenBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex string
 	}
 
 	// 获取所有 unspent lot 的 quantity 和 used_quantity
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT quantity_text, used_quantity_text FROM fact_token_lots
 		 WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=? AND lot_state='unspent'`,
 		ownerPubkeyHex, tokenStandard, tokenID,
@@ -787,7 +787,7 @@ func dbUpsertTokenCarrierLinkDB(ctx context.Context, db sqlConn, e tokenCarrierL
 		updatedAt = now
 	}
 
-	_, err := ExecContext(ctx, db, 
+	_, err := ExecContext(ctx, db,
 		`INSERT INTO fact_token_carrier_links(
 			link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid,
 			created_at_unix, updated_at_unix, note, payload_json
@@ -822,7 +822,7 @@ func dbGetActiveCarrierForLotDB(ctx context.Context, db sqlConn, lotID string) (
 	}
 	var e tokenCarrierLinkEntry
 	var payloadJSON string
-	err := QueryRowContext(ctx, db, 
+	err := QueryRowContext(ctx, db,
 		`SELECT link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid,
 			created_at_unix, updated_at_unix, note, payload_json
 		 FROM fact_token_carrier_links WHERE lot_id=? AND link_state='active' LIMIT 1`,
@@ -853,7 +853,7 @@ func dbListActiveCarrierLinksByOwnerDB(ctx context.Context, db sqlConn, ownerPub
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
 	}
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid,
 			created_at_unix, updated_at_unix, note, payload_json
 		 FROM fact_token_carrier_links WHERE owner_pubkey_hex=? AND link_state='active'
@@ -929,7 +929,7 @@ func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRec
 		confirmedAt = occurredAt
 	}
 
-	_, err := ExecContext(ctx, db, 
+	_, err := ExecContext(ctx, db,
 		`INSERT INTO fact_settlement_records(
 			record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
 			used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
@@ -975,7 +975,7 @@ func dbListSettlementRecordsByCycleDB(ctx context.Context, db sqlConn, settlemen
 	if settlementCycleID <= 0 {
 		return nil, fmt.Errorf("settlement_cycle_id is required")
 	}
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
 			used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
 		 FROM fact_settlement_records WHERE settlement_cycle_id=?
@@ -1097,7 +1097,7 @@ func dbLoadWalletBSVBalanceDB(ctx context.Context, db *sql.DB, ownerPubkeyHex st
 	}
 
 	var spendableCount int
-	err = QueryRowContext(ctx, db, 
+	err = QueryRowContext(ctx, db,
 		`SELECT COUNT(1) FROM fact_bsv_utxos
 		 WHERE owner_pubkey_hex=? AND utxo_state='unspent' AND carrier_type='plain_bsv'`,
 		ownerPubkeyHex,
@@ -1131,7 +1131,7 @@ func dbLoadAllWalletTokenBalancesDB(ctx context.Context, db *sql.DB, ownerPubkey
 	}
 
 	// 获取所有有未花费 lot 的 token
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT DISTINCT token_standard, token_id FROM fact_token_lots
 		 WHERE owner_pubkey_hex=? AND lot_state='unspent'`,
 		ownerPubkeyHex,
@@ -1236,7 +1236,7 @@ func dbListSpendableSourceFlowsDB(ctx context.Context, db *sql.DB, walletID stri
 	walletOwnerKey := walletIDByAddress(ownerPubkeyHex)
 
 	// 查询新表
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
 			created_at_unix
 		 FROM fact_bsv_utxos
@@ -1370,7 +1370,7 @@ func dbListTokenSpendableSourceFlowsDB(ctx context.Context, db *sql.DB, walletID
 
 	// 查询新表：获取未花费的 lot 及其 active carrier
 	// 设计说明：关联 wallet_utxo 表排除 allocation_class='unknown' 的项
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT l.lot_id, l.owner_pubkey_hex, l.token_id, l.token_standard, l.quantity_text, l.used_quantity_text,
 			l.created_at_unix, c.carrier_utxo_id
 		 FROM fact_token_lots l
@@ -1441,7 +1441,7 @@ func dbLoadTokenBalanceFactDB(ctx context.Context, db *sql.DB, walletID string, 
 	tokenID = strings.TrimSpace(tokenID)
 
 	// 查询新表获取 quantity 和 used_quantity
-	rows, err := QueryContext(ctx, db, 
+	rows, err := QueryContext(ctx, db,
 		`SELECT quantity_text, used_quantity_text FROM fact_token_lots
 		 WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=? AND lot_state='unspent'`,
 		ownerPubkeyHex, assetKind, tokenID,
@@ -1669,9 +1669,9 @@ func dbUpsertSettlementCycleCtx(ctx context.Context, db sqlConn, cycleID string,
 		return fmt.Errorf("source_type and source_id are required")
 	}
 	switch sourceType {
-	case "chain_payment", "pool_session", "chain_bsv", "chain_token":
+	case "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
 	default:
-		return fmt.Errorf("source_type must be chain_payment, pool_session, chain_bsv or chain_token, got %s", sourceType)
+		return fmt.Errorf("source_type must be pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create, got %s", sourceType)
 	}
 	if state == "" {
 		state = "confirmed"
@@ -1691,7 +1691,7 @@ func dbUpsertSettlementCycleCtx(ctx context.Context, db sqlConn, cycleID string,
 		return 0
 	}()
 
-	_, err := ExecContext(ctx, db, 
+	_, err := ExecContext(ctx, db,
 		`INSERT INTO fact_settlement_cycles(
 			cycle_id,source_type,source_id,state,
 			gross_amount_satoshi,gate_fee_satoshi,net_amount_satoshi,
@@ -1742,8 +1742,7 @@ func dbGetSettlementCycleBySourceCtx(ctx context.Context, db sqlConn, sourceType
 // dbGetSettlementCycleSourceTxID 只通过 settlement_cycle 反查来源 txid。
 // 设计说明：
 // - 业务扣账只认 settlement_cycle，不再从 payment 事实绕路取 txid；
-// - chain_payment / chain_bsv / chain_token 直接把 source_id 当作来源 txid；
-// - pool_session 走会话内最新 pool event 的 txid 锚点；
+// - 所有来源都按 settlement_cycle_id 回到渠道子表拿 txid；
 // - 其他 source_type 不允许拿来驱动 BSV 扣账。
 func dbGetSettlementCycleSourceTxIDCtx(ctx context.Context, db sqlConn, settlementCycleID int64) (string, error) {
 	if db == nil {
@@ -1761,31 +1760,70 @@ func dbGetSettlementCycleSourceTxIDCtx(ctx context.Context, db sqlConn, settleme
 		return "", err
 	}
 	switch strings.ToLower(strings.TrimSpace(sourceType)) {
-	case "chain_payment", "chain_bsv", "chain_token":
-		txid := strings.ToLower(strings.TrimSpace(sourceID))
-		if txid == "" {
-			return "", fmt.Errorf("settlement cycle %d source_id is empty", settlementCycleID)
-		}
-		return txid, nil
-	case "pool_session":
-		poolSessionID := strings.TrimSpace(sourceID)
-		if poolSessionID == "" {
-			return "", fmt.Errorf("settlement cycle %d source_id is empty", settlementCycleID)
-		}
+	case "chain_quote_pay":
 		var txid string
-		err := QueryRowContext(ctx, db, 
-			`SELECT txid
-			   FROM fact_pool_session_events
-			  WHERE pool_session_id=? AND txid<>''
-			  ORDER BY sequence_num DESC, created_at_unix DESC, id DESC
-			  LIMIT 1`,
-			poolSessionID,
+		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_quote_pay WHERE settlement_cycle_id=?`, settlementCycleID).Scan(&txid); err != nil {
+			if err == sql.ErrNoRows {
+				txid = strings.ToLower(strings.TrimSpace(sourceID))
+				if txid != "" {
+					return txid, nil
+				}
+				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+			}
+			return "", err
+		}
+		return strings.ToLower(strings.TrimSpace(txid)), nil
+	case "chain_direct_pay":
+		var txid string
+		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_direct_pay WHERE settlement_cycle_id=?`, settlementCycleID).Scan(&txid); err != nil {
+			if err == sql.ErrNoRows {
+				txid = strings.ToLower(strings.TrimSpace(sourceID))
+				if txid != "" {
+					return txid, nil
+				}
+				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+			}
+			return "", err
+		}
+		return strings.ToLower(strings.TrimSpace(txid)), nil
+	case "chain_asset_create":
+		var txid string
+		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_asset_create WHERE settlement_cycle_id=?`, settlementCycleID).Scan(&txid); err != nil {
+			if err == sql.ErrNoRows {
+				txid = strings.ToLower(strings.TrimSpace(sourceID))
+				if txid != "" {
+					return txid, nil
+				}
+				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
+			}
+			return "", err
+		}
+		return strings.ToLower(strings.TrimSpace(txid)), nil
+	case "pool_session_quote_pay":
+		var txid string
+		err := QueryRowContext(ctx, db,
+			`SELECT txid FROM fact_settlement_channel_pool_session_quote_pay WHERE settlement_cycle_id=?`,
+			settlementCycleID,
 		).Scan(&txid)
 		if err != nil {
 			if err == sql.ErrNoRows {
-				return "", fmt.Errorf("pool session %s has no txid anchor", poolSessionID)
+				poolSessionID := strings.TrimSpace(sourceID)
+				if poolSessionID != "" {
+					var fallbackTx string
+					if qErr := QueryRowContext(ctx, db,
+						`SELECT txid
+						   FROM fact_pool_session_events
+						  WHERE pool_session_id=? AND txid<>''
+						  ORDER BY sequence_num DESC, created_at_unix DESC, id DESC
+						  LIMIT 1`,
+						poolSessionID,
+					).Scan(&fallbackTx); qErr == nil {
+						return strings.ToLower(strings.TrimSpace(fallbackTx)), nil
+					}
+				}
+				return "", fmt.Errorf("channel row not found for settlement cycle %d", settlementCycleID)
 			}
-			return "", fmt.Errorf("resolve pool session txid failed: %w", err)
+			return "", err
 		}
 		return strings.ToLower(strings.TrimSpace(txid)), nil
 	default:
@@ -1853,7 +1891,7 @@ func dbAppendBSVConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlCon
 			if currentSpentByTxid == "" {
 				// 旧数据可能只有 spent 状态，没有写入来源 txid。
 				// 这里不重复扣，只把事实补齐成 cycle 反查出的真实 txid。
-				result, err := ExecContext(ctx, db, 
+				result, err := ExecContext(ctx, db,
 					`UPDATE fact_bsv_utxos SET spent_by_txid=?, spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END, updated_at_unix=? WHERE utxo_id=? AND utxo_state='spent' AND COALESCE(spent_by_txid,'')=''`,
 					spentByTxid, occurredAtUnix, occurredAtUnix, utxoID,
 				)
@@ -1926,7 +1964,7 @@ func dbAppendTokenConsumptionsForSettlementCycleCtx(ctx context.Context, db sqlC
 		}
 
 		recordID := fmt.Sprintf("rec_token_%d_%s", settlementCycleID, lotID)
-		_, err = ExecContext(ctx, db, 
+		_, err = ExecContext(ctx, db,
 			`INSERT INTO fact_settlement_records(
 				record_id, settlement_cycle_id, asset_type, owner_pubkey_hex, source_lot_id,
 				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json

@@ -277,19 +277,32 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			return fmt.Errorf("no token transfer outputs found in txid %s", txID)
 		}
 
-		cycleID := fmt.Sprintf("cycle_chain_token_%s", txID)
-		if err := dbUpsertSettlementCycleCtx(ctx, dbtx, cycleID, "chain_token", txID, "confirmed", 0, 0, 0, 0, now, "bsv21 send broadcast", map[string]any{
-			"txid":            txID,
-			"wallet_id":       walletID,
-			"wallet_address":  walletAddr,
-			"token_send_text": consumedText,
-			"token_lot_count": len(lots),
-			"token_send_type": "bsv21",
-			"tx_hex":          txHex,
-		}); err != nil {
-			return fmt.Errorf("upsert settlement cycle for token send: %w", err)
+		channelID, err := dbUpsertChainChannelWithSettlementCycle(ctx, dbtx, chainPaymentEntry{
+			TxID:                 txID,
+			PaymentSubType:       "bsv21_transfer",
+			Status:               "confirmed",
+			WalletInputSatoshi:   0,
+			WalletOutputSatoshi:  0,
+			NetAmountSatoshi:     0,
+			OccurredAtUnix:       now,
+			SubmittedAtUnix:      now,
+			WalletObservedAtUnix: now,
+			FromPartyID:          "wallet:" + walletAddr,
+			ToPartyID:            "external:unknown",
+			Payload: map[string]any{
+				"txid":            txID,
+				"wallet_id":       walletID,
+				"wallet_address":  walletAddr,
+				"token_send_text": consumedText,
+				"token_lot_count": len(lots),
+				"token_send_type": "bsv21_transfer",
+				"tx_hex":          txHex,
+			},
+		}, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", "cycle_chain_direct_pay", "bind chain direct pay channel id")
+		if err != nil {
+			return fmt.Errorf("upsert direct pay channel for token send: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, dbtx, "chain_token", txID)
+		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, dbtx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
 		if err != nil {
 			return fmt.Errorf("resolve settlement cycle for token send: %w", err)
 		}

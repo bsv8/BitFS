@@ -18,10 +18,10 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 	for _, table := range []string{
 		"biz_pool",
 		"biz_pool_allocations",
-		"fact_pool_sessions",
+		"fact_settlement_channel_pool_session_quote_pay",
 		"fact_pool_session_events",
 		"fact_settlement_cycles",
-		"fact_chain_payments",
+		"fact_settlement_channel_chain_quote_pay",
 		"settle_records",
 		"wallet_local_broadcast_txs",
 	} {

@@ -473,18 +473,18 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		t.Fatalf("observed_at_unix mismatch: got=%d want=0", observedAt)
 	}
 	var cycleCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_bsv' AND source_id=?`, localTxID).Scan(&cycleCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_cycles WHERE source_type='chain_direct_pay' AND source_id=?`, localTxID).Scan(&cycleCount); err != nil {
 		t.Fatalf("query fact_settlement_cycles count: %v", err)
 	}
 	if cycleCount != 0 {
 		t.Fatalf("fact_settlement_cycles should stay empty for local broadcast, got=%d", cycleCount)
 	}
 	var factCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_chain_payments WHERE txid=?`, localTxID).Scan(&factCount); err != nil {
-		t.Fatalf("query fact_chain_payments count: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, localTxID).Scan(&factCount); err != nil {
+		t.Fatalf("query fact_settlement_channel_chain_quote_pay count: %v", err)
 	}
 	if factCount != 0 {
-		t.Fatalf("fact_chain_payments should stay empty for local broadcast, got=%d", factCount)
+		t.Fatalf("fact_settlement_channel_chain_quote_pay should stay empty for local broadcast, got=%d", factCount)
 	}
 }
 

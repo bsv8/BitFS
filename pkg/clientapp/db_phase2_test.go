@@ -14,7 +14,7 @@ import (
 // 4. 正式查询只从 front_order -> biz_business_triggers -> settle_records 走
 
 // seedPhase2DirectTransferPoolFacts 为第二阶段测试准备 pool 事实
-// 创建完整的 fact_pool_sessions 和 fact_pool_session_events 记录
+// 创建完整的 fact_settlement_channel_pool_session_quote_pay 和 fact_pool_session_events 记录
 func seedPhase2DirectTransferPoolFacts(t *testing.T, db *sql.DB) (sessionID, dealID string) {
 	t.Helper()
 

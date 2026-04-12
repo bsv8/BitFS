@@ -1190,13 +1190,13 @@ func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 
 	// 种子 settlement cycle
 	cycleID := "cycle_test_hist"
-	err = dbUpsertSettlementCycle(db, cycleID, "chain_payment", "tx_hist_pay", "confirmed",
+	err = dbUpsertSettlementCycle(db, cycleID, "chain_quote_pay", "tx_hist_pay", "confirmed",
 		1000, 100, 900, 1, now, "test cycle", nil)
 	if err != nil {
 		t.Fatalf("seed settlement cycle: %v", err)
 	}
 
-	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_hist_pay")
+	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_hist_pay")
 	if err != nil {
 		t.Fatalf("lookup settlement cycle: %v", err)
 	}
@@ -1251,13 +1251,13 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 
 	// 种子 settlement cycle
 	cycleID := "cycle_test_001"
-	err = dbUpsertSettlementCycle(db, cycleID, "chain_payment", "tx_idem_pay", "confirmed",
+	err = dbUpsertSettlementCycle(db, cycleID, "chain_quote_pay", "tx_idem_pay", "confirmed",
 		1000, 100, 900, 1, now, "test cycle", nil)
 	if err != nil {
 		t.Fatalf("seed settlement cycle: %v", err)
 	}
 
-	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_idem_pay")
+	cycleIDInt, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_idem_pay")
 	if err != nil {
 		t.Fatalf("lookup settlement cycle: %v", err)
 	}

@@ -150,7 +150,7 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 
 			SettlementID:         settlementID,
 			SettlementMethod:     SettlementMethodChain,
-			SettlementTargetType: "chain_payment",
+			SettlementTargetType: "chain_quote_pay",
 			SettlementTargetID:   "",
 			SettlementPayload:    payload,
 		}); err != nil {

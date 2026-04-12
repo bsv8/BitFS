@@ -20,7 +20,7 @@ type sqlConn interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
-// chainPaymentEntry fact_chain_payments 写入条目
+// chainPaymentEntry fact_settlement_channel_chain_quote_pay 写入条目
 // 设计说明：链支付事实只走显式业务提交入口，后续写入都靠事实表主键收口。
 type chainPaymentEntry struct {
 	TxID                 string
@@ -55,7 +55,7 @@ type chainPaymentUTXOLinkEntry struct {
 	Payload        any
 }
 
-// dbUpsertChainPayment 按 txid  upsert fact_chain_payments
+// dbUpsertChainPayment 按 txid  upsert fact_settlement_channel_chain_quote_pay
 // 同一个 txid 重复写入不会生成多条记录
 func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
 	if store == nil {
@@ -124,11 +124,12 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 
 	// 先尝试查询已存在的记录
 	var existingID int64
+	var existingSettlementCycleID int64
 	var existingSubmittedAt int64
 	var existingWalletObservedAt int64
-	err := QueryRowContext(ctx, db, `SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&existingID)
+	err := QueryRowContext(ctx, db, `SELECT id,settlement_cycle_id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txid).Scan(&existingID, &existingSettlementCycleID)
 	if err == nil {
-		if err := QueryRowContext(ctx, db, `SELECT submitted_at_unix,wallet_observed_at_unix FROM fact_chain_payments WHERE id=?`, existingID).Scan(&existingSubmittedAt, &existingWalletObservedAt); err != nil {
+		if err := QueryRowContext(ctx, db, `SELECT submitted_at_unix,wallet_observed_at_unix FROM fact_settlement_channel_chain_quote_pay WHERE id=?`, existingID).Scan(&existingSubmittedAt, &existingWalletObservedAt); err != nil {
 			return 0, err
 		}
 		if submittedAt < existingSubmittedAt {
@@ -139,7 +140,7 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 		}
 		// 存在则更新
 		_, err = ExecContext(ctx, db,
-			`UPDATE fact_chain_payments SET
+			`UPDATE fact_settlement_channel_chain_quote_pay SET
 				payment_subtype=?,
 				status=?,
 				wallet_input_satoshi=?,
@@ -174,12 +175,31 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 		}
 		if writeSettlementCycle {
 			settlementState := settlementCycleStateForChainPayment(e.Status)
-			if err := dbUpsertSettlementCycleCtx(ctx, db,
-				fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, settlementState,
-				e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
-				0, occurredAt, "auto-created from chain payment", e.Payload,
+			if _, err := ExecContext(ctx, db,
+				`UPDATE fact_settlement_cycles
+				    SET source_type='chain_quote_pay',
+				        source_id=?,
+				        state=?,
+				        gross_amount_satoshi=?,
+				        gate_fee_satoshi=0,
+				        net_amount_satoshi=?,
+				        occurred_at_unix=?,
+				        confirmed_at_unix=CASE WHEN ?='confirmed' THEN ? ELSE confirmed_at_unix END,
+				        note=?,
+				        payload_json=?
+				  WHERE id=?`,
+				fmt.Sprintf("%d", existingID),
+				settlementState,
+				e.WalletInputSatoshi,
+				e.NetAmountSatoshi,
+				occurredAt,
+				settlementState,
+				occurredAt,
+				"auto-created from chain quote pay",
+				mustJSONString(e.Payload),
+				existingSettlementCycleID,
 			); err != nil {
-				return 0, fmt.Errorf("upsert settlement cycle for existing chain payment %d: %w", existingID, err)
+				return 0, fmt.Errorf("update settlement cycle for existing chain quote pay %d: %w", existingID, err)
 			}
 		}
 		return existingID, nil
@@ -188,12 +208,27 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 		return 0, err
 	}
 
+	settlementState := settlementCycleStateForChainPayment(e.Status)
+	cycleToken := "pending:chain_quote_pay:" + txid
+	if err := dbUpsertSettlementCycleCtx(ctx, db,
+		fmt.Sprintf("cycle_chain_quote_pay_%s", txid), "chain_quote_pay", cycleToken, settlementState,
+		e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
+		0, occurredAt, "pre-bind chain quote pay channel", e.Payload,
+	); err != nil {
+		return 0, fmt.Errorf("create settlement cycle shell for chain quote pay: %w", err)
+	}
+	settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_quote_pay", cycleToken)
+	if err != nil {
+		return 0, fmt.Errorf("lookup settlement cycle shell for chain quote pay: %w", err)
+	}
+
 	// 不存在则插入
 	res, err := ExecContext(ctx, db,
-		`INSERT INTO fact_chain_payments(
-			txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
+		`INSERT INTO fact_settlement_channel_chain_quote_pay(
+			settlement_cycle_id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
 			block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		settlementCycleID,
 		txid,
 		strings.TrimSpace(e.PaymentSubType),
 		strings.TrimSpace(e.Status),
@@ -218,20 +253,180 @@ func dbUpsertChainPaymentDBWithSettlementCycle(ctx context.Context, db sqlConn, 
 	}
 
 	if writeSettlementCycle {
-		settlementState := settlementCycleStateForChainPayment(e.Status)
-		if err := dbUpsertSettlementCycleCtx(ctx, db,
-			fmt.Sprintf("cycle_chain_payment_%s", txid), "chain_payment", txid, settlementState,
-			e.WalletInputSatoshi, 0, e.NetAmountSatoshi,
-			0, occurredAt, "auto-created from chain payment", e.Payload,
+		if _, err := ExecContext(ctx, db,
+			`UPDATE fact_settlement_cycles
+			    SET source_type='chain_quote_pay',
+			        source_id=?,
+			        note=?,
+			        payload_json=?
+			  WHERE id=?`,
+			fmt.Sprintf("%d", paymentID),
+			"bind chain quote pay channel id",
+			mustJSONString(e.Payload),
+			settlementCycleID,
 		); err != nil {
-			return 0, fmt.Errorf("upsert settlement cycle for chain payment %d: %w", paymentID, err)
+			return 0, fmt.Errorf("bind settlement cycle source id for chain quote pay %d: %w", paymentID, err)
 		}
 	}
 
 	return paymentID, nil
 }
 
-// dbGetChainPaymentByTxID 按 txid 查 fact_chain_payments
+func dbUpsertChainChannelWithSettlementCycle(ctx context.Context, db sqlConn, e chainPaymentEntry, sourceType string, tableName string, cyclePrefix string, bindNote string) (int64, error) {
+	if db == nil {
+		return 0, fmt.Errorf("db is nil")
+	}
+	txid := strings.ToLower(strings.TrimSpace(e.TxID))
+	if txid == "" {
+		return 0, fmt.Errorf("txid is required")
+	}
+	now := time.Now().Unix()
+	occurredAt := e.OccurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+	submittedAt := e.SubmittedAtUnix
+	walletObservedAt := e.WalletObservedAtUnix
+
+	selectSQL := fmt.Sprintf("SELECT id,settlement_cycle_id,submitted_at_unix,wallet_observed_at_unix FROM %s WHERE txid=?", tableName)
+	var existingID int64
+	var existingSettlementCycleID int64
+	var existingSubmittedAt int64
+	var existingWalletObservedAt int64
+	err := QueryRowContext(ctx, db, selectSQL, txid).Scan(&existingID, &existingSettlementCycleID, &existingSubmittedAt, &existingWalletObservedAt)
+	if err == nil {
+		if submittedAt < existingSubmittedAt {
+			submittedAt = existingSubmittedAt
+		}
+		if walletObservedAt < existingWalletObservedAt {
+			walletObservedAt = existingWalletObservedAt
+		}
+		updateSQL := fmt.Sprintf(`UPDATE %s SET
+			payment_subtype=?,
+			status=?,
+			wallet_input_satoshi=?,
+			wallet_output_satoshi=?,
+			net_amount_satoshi=?,
+			block_height=?,
+			occurred_at_unix=?,
+			submitted_at_unix=?,
+			wallet_observed_at_unix=?,
+			from_party_id=?,
+			to_party_id=?,
+			payload_json=?,
+			updated_at_unix=?
+		WHERE id=?`, tableName)
+		if _, err := ExecContext(ctx, db, updateSQL,
+			strings.TrimSpace(e.PaymentSubType),
+			strings.TrimSpace(e.Status),
+			e.WalletInputSatoshi,
+			e.WalletOutputSatoshi,
+			e.NetAmountSatoshi,
+			e.BlockHeight,
+			occurredAt,
+			submittedAt,
+			walletObservedAt,
+			strings.TrimSpace(e.FromPartyID),
+			strings.TrimSpace(e.ToPartyID),
+			mustJSONString(e.Payload),
+			now,
+			existingID,
+		); err != nil {
+			return 0, err
+		}
+		state := settlementCycleStateForChainPayment(e.Status)
+		if _, err := ExecContext(ctx, db,
+			`UPDATE fact_settlement_cycles
+			    SET source_type=?,source_id=?,state=?,gross_amount_satoshi=?,gate_fee_satoshi=0,net_amount_satoshi=?,occurred_at_unix=?,confirmed_at_unix=CASE WHEN ?='confirmed' THEN ? ELSE confirmed_at_unix END,note=?,payload_json=?
+			  WHERE id=?`,
+			sourceType, fmt.Sprintf("%d", existingID), state, e.WalletInputSatoshi, e.NetAmountSatoshi, occurredAt, state, occurredAt, bindNote, mustJSONString(e.Payload), existingSettlementCycleID,
+		); err != nil {
+			return 0, err
+		}
+		return existingID, nil
+	}
+	if err != sql.ErrNoRows {
+		return 0, err
+	}
+
+	state := settlementCycleStateForChainPayment(e.Status)
+	cycleToken := "pending:" + sourceType + ":" + txid
+	if err := dbUpsertSettlementCycleCtx(ctx, db,
+		fmt.Sprintf("%s_%s", cyclePrefix, txid), sourceType, cycleToken, state,
+		e.WalletInputSatoshi, 0, e.NetAmountSatoshi, 0, occurredAt, "pre-bind channel row", e.Payload,
+	); err != nil {
+		return 0, err
+	}
+	settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, cycleToken)
+	if err != nil {
+		return 0, err
+	}
+	insertSQL := fmt.Sprintf(`INSERT INTO %s(
+		settlement_cycle_id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
+		block_height,occurred_at_unix,submitted_at_unix,wallet_observed_at_unix,from_party_id,to_party_id,payload_json,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, tableName)
+	res, err := ExecContext(ctx, db, insertSQL,
+		settlementCycleID,
+		txid,
+		strings.TrimSpace(e.PaymentSubType),
+		strings.TrimSpace(e.Status),
+		e.WalletInputSatoshi,
+		e.WalletOutputSatoshi,
+		e.NetAmountSatoshi,
+		e.BlockHeight,
+		occurredAt,
+		submittedAt,
+		walletObservedAt,
+		strings.TrimSpace(e.FromPartyID),
+		strings.TrimSpace(e.ToPartyID),
+		mustJSONString(e.Payload),
+		now,
+	)
+	if err != nil {
+		return 0, err
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return 0, err
+	}
+	if _, err := ExecContext(ctx, db,
+		`UPDATE fact_settlement_cycles SET source_type=?,source_id=?,note=?,payload_json=? WHERE id=?`,
+		sourceType, fmt.Sprintf("%d", id), bindNote, mustJSONString(e.Payload), settlementCycleID,
+	); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+func dbUpsertChainDirectPayWithSettlementCycle(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+		return dbUpsertChainChannelWithSettlementCycle(ctx, db, e,
+			"chain_direct_pay",
+			"fact_settlement_channel_chain_direct_pay",
+			"cycle_chain_direct_pay",
+			"bind chain direct pay channel id",
+		)
+	})
+}
+
+func dbUpsertChainAssetCreateWithSettlementCycle(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+		return dbUpsertChainChannelWithSettlementCycle(ctx, db, e,
+			"chain_asset_create",
+			"fact_settlement_channel_chain_asset_create",
+			"cycle_chain_asset_create",
+			"bind chain asset create channel id",
+		)
+	})
+}
+
+// dbGetChainPaymentByTxID 按 txid 查 fact_settlement_channel_chain_quote_pay
 func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) (int64, error) {
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
@@ -242,7 +437,7 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 			return 0, fmt.Errorf("txid is required")
 		}
 		var id int64
-		err := QueryRowContext(ctx, db, `SELECT id FROM fact_chain_payments WHERE txid=?`, txid).Scan(&id)
+		err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txid).Scan(&id)
 		if err != nil {
 			return 0, err
 		}
@@ -250,14 +445,14 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 	})
 }
 
-// dbGetChainPaymentByID 按 id 查 fact_chain_payments（验证存在性）
+// dbGetChainPaymentByID 按 id 查 fact_settlement_channel_chain_quote_pay（验证存在性）
 func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool, error) {
 	if store == nil {
 		return false, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
 		var exists int
-		err := QueryRowContext(ctx, db, `SELECT 1 FROM fact_chain_payments WHERE id=?`, id).Scan(&exists)
+		err := QueryRowContext(ctx, db, `SELECT 1 FROM fact_settlement_channel_chain_quote_pay WHERE id=?`, id).Scan(&exists)
 		if err == sql.ErrNoRows {
 			return false, nil
 		}
@@ -373,7 +568,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 			minerFee = 0
 		}
 		netAmount := changeBack - grossInput
-		if _, err := dbUpsertChainPaymentDBWithSettlementCycle(ctx, tx, chainPaymentEntry{
+		channelID, err := dbUpsertChainPaymentDBWithSettlementCycle(ctx, tx, chainPaymentEntry{
 			TxID:                 txID,
 			PaymentSubType:       paymentSubType,
 			Status:               "confirmed",
@@ -390,10 +585,11 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store *clie
 				"payment_subtype": paymentSubType,
 				"process_subtype": processSubType,
 			},
-		}, true); err != nil {
+		}, true)
+		if err != nil {
 			return fmt.Errorf("upsert chain payment failed: %w", err)
 		}
-		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, tx, "chain_payment", txID)
+		settlementCycleID, err := dbGetSettlementCycleBySourceCtx(ctx, tx, "chain_quote_pay", fmt.Sprintf("%d", channelID))
 		if err != nil {
 			return fmt.Errorf("resolve settlement cycle for chain payment: %w", err)
 		}

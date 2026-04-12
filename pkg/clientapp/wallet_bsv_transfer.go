@@ -348,7 +348,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		return resp, nil
 	}
 
-	chainPaymentID, cpErr := dbUpsertChainPaymentWithSettlementCycle(ctx, store, chainPaymentEntry{
+	chainPaymentID, cpErr := dbUpsertChainDirectPayWithSettlementCycle(ctx, store, chainPaymentEntry{
 		TxID:                 submitted.BroadcastTxID,
 		PaymentSubType:       "biz_order_pay_bsv",
 		Status:               processStatus,
@@ -408,7 +408,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		finalMessage = "broadcast succeeded but local projection failed"
 		processStatus = "submitted_unknown_projection"
 	} else {
-		payload["chain_payment_id"] = chainPaymentID
+		payload["chain_direct_pay_id"] = chainPaymentID
 		if err := store.Tx(ctx, func(tx *sql.Tx) error {
 			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
@@ -430,7 +430,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				BusinessStatus:    finalStatus,
 				SettlementStatus:  finalStatus,
 				SettlementMethod:  string(SettlementMethodChain),
-				TargetType:        "chain_payment",
+				TargetType:        "chain_direct_pay",
 				TargetID:          fmt.Sprintf("%d", chainPaymentID),
 				ErrorMessage:      "",
 				SettlementPayload: payload,

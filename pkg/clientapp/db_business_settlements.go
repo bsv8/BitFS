@@ -174,9 +174,9 @@ func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, bu
 
 // GetBusinessSettlementChainTxID 尽量返回 chain 结算对应的真实 txid。
 // 设计说明：
-// - settled 时优先从 fact_chain_payments 取；
+// - settled 时优先从 fact_settlement_channel_chain_quote_pay 取；
 // - 如果还没落 chain_payment，但 payload 里已经带了 txid，也可以回退出来；
-// - 目标 id 仍然只保留 fact_chain_payments.id，不把 txid 混进去。
+// - 目标 id 仍然只保留 fact_settlement_channel_chain_quote_pay.id，不把 txid 混进去。
 func GetBusinessSettlementChainTxID(ctx context.Context, store *clientDB, settlement BusinessSettlementItem) (string, error) {
 	if settlement.SettlementMethod != string(SettlementMethodChain) {
 		return "", fmt.Errorf("settlement_method is not chain")
@@ -184,7 +184,7 @@ func GetBusinessSettlementChainTxID(ctx context.Context, store *clientDB, settle
 	if strings.TrimSpace(settlement.TargetID) != "" {
 		chainPaymentID, err := strconv.ParseInt(strings.TrimSpace(settlement.TargetID), 10, 64)
 		if err == nil {
-			cp, err := GetChainPaymentByID(ctx, store, chainPaymentID)
+			cp, err := GetChainPaymentByIDAndTargetType(ctx, store, chainPaymentID, settlement.TargetType)
 			if err == nil {
 				return strings.TrimSpace(cp.TxID), nil
 			}
@@ -651,7 +651,7 @@ func GetMainSettlementStatusByFrontOrderID(ctx context.Context, store *clientDB,
 }
 
 // GetChainPaymentBySettlement 按 settlement 查对应的 chain_payment
-// 设计：当 settlement_method='chain' 时，target_id 存的是 fact_chain_payments.id
+// 设计：当 settlement_method='chain' 时，target_id 存的是 fact_settlement_channel_chain_quote_pay.id
 func GetChainPaymentBySettlement(ctx context.Context, store *clientDB, settlement BusinessSettlementItem) (ChainPaymentItem, error) {
 	if settlement.SettlementMethod != string(SettlementMethodChain) {
 		return ChainPaymentItem{}, fmt.Errorf("settlement_method is not chain")
@@ -663,10 +663,10 @@ func GetChainPaymentBySettlement(ctx context.Context, store *clientDB, settlemen
 	if err != nil {
 		return ChainPaymentItem{}, fmt.Errorf("parse settlement target_id: %w", err)
 	}
-	return GetChainPaymentByID(ctx, store, chainPaymentID)
+	return GetChainPaymentByIDAndTargetType(ctx, store, chainPaymentID, settlement.TargetType)
 }
 
-// ChainPaymentItem fact_chain_payments 查询返回项
+// ChainPaymentItem fact_settlement_channel_chain_quote_pay 查询返回项
 type ChainPaymentItem struct {
 	ID                  int64           `json:"id"`
 	TxID                string          `json:"txid"`
@@ -683,18 +683,40 @@ type ChainPaymentItem struct {
 	Payload             json.RawMessage `json:"payload"`
 }
 
-// GetChainPaymentByID 按 id 查 fact_chain_payments
+// GetChainPaymentByID 按 id 查 fact_settlement_channel_chain_quote_pay
 func GetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (ChainPaymentItem, error) {
+	return GetChainPaymentByIDAndTargetType(ctx, store, id, "chain_quote_pay")
+}
+
+func settlementChannelTableByTargetType(targetType string) string {
+	switch strings.ToLower(strings.TrimSpace(targetType)) {
+	case "", "chain_quote_pay":
+		return "fact_settlement_channel_chain_quote_pay"
+	case "chain_direct_pay":
+		return "fact_settlement_channel_chain_direct_pay"
+	case "chain_asset_create":
+		return "fact_settlement_channel_chain_asset_create"
+	default:
+		return ""
+	}
+}
+
+func GetChainPaymentByIDAndTargetType(ctx context.Context, store *clientDB, id int64, targetType string) (ChainPaymentItem, error) {
 	if store == nil {
 		return ChainPaymentItem{}, fmt.Errorf("client db is nil")
+	}
+	tableName := settlementChannelTableByTargetType(targetType)
+	if tableName == "" {
+		return ChainPaymentItem{}, fmt.Errorf("unsupported target_type: %s", targetType)
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (ChainPaymentItem, error) {
 		var item ChainPaymentItem
 		var payload string
+		query := fmt.Sprintf(`SELECT id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
+				block_height,occurred_at_unix,from_party_id,to_party_id,updated_at_unix,payload_json
+			 FROM %s WHERE id=?`, tableName)
 		err := QueryRowContext(ctx, db,
-			`SELECT id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
-					block_height,occurred_at_unix,from_party_id,to_party_id,updated_at_unix,payload_json
-			 FROM fact_chain_payments WHERE id=?`,
+			query,
 			id,
 		).Scan(
 			&item.ID, &item.TxID, &item.PaymentSubType, &item.Status,
@@ -784,7 +806,7 @@ type PoolAllocationItem struct {
 	CreatedAtUnix    int64  `json:"created_at_unix"`
 }
 
-// PoolSessionItem fact_pool_sessions 查询返回项
+// PoolSessionItem fact_settlement_channel_pool_session_quote_pay 查询返回项
 type PoolSessionItem struct {
 	PoolSessionID      string  `json:"pool_session_id"`
 	PoolScheme         string  `json:"pool_scheme"`
@@ -849,7 +871,7 @@ func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (Pool
 	})
 }
 
-// GetPoolSessionByID 按 id 查 fact_pool_sessions（通过 pool_session_id）
+// GetPoolSessionByID 按 id 查 fact_settlement_channel_pool_session_quote_pay（通过 pool_session_id）
 func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID string) (PoolSessionItem, error) {
 	if store == nil {
 		return PoolSessionItem{}, fmt.Errorf("client db is nil")
@@ -864,7 +886,7 @@ func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID stri
 			`SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
 					gateway_pubkey_hex,pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,
 					open_base_txid,status,created_at_unix,updated_at_unix
-			 FROM fact_pool_sessions WHERE pool_session_id=?`,
+			 FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`,
 			poolSessionID,
 		).Scan(
 			&item.PoolSessionID, &item.PoolScheme, &item.CounterpartyPubHex, &item.SellerPubHex, &item.ArbiterPubHex,

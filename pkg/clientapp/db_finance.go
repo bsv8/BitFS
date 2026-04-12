@@ -202,13 +202,13 @@ func resolveSettlementCycleSourceDB(ctx context.Context, db *sql.DB, sourceType,
 		if err != nil || cycleID <= 0 {
 			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_cycle source_id must be a positive integer")
 		}
-	case "chain_token":
+	case "chain_quote_pay", "chain_direct_pay", "chain_asset_create", "pool_session_quote_pay":
 		cycleID, err = dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, sourceID)
 		if err != nil {
 			return settlementCycleSourceResolution{}, err
 		}
 	default:
-		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle or chain_token")
+		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
 	}
 	state, err := dbGetSettlementCycleStateByIDDB(ctx, db, cycleID)
 	if err != nil {
@@ -223,7 +223,15 @@ func resolveSettlementCycleSourceDB(ctx context.Context, db *sql.DB, sourceType,
 }
 
 func dbGetSettlementCycleByPoolSessionIDDB(ctx context.Context, db sqlConn, poolSessionID string) (int64, error) {
-	return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
+	poolSessionID = strings.TrimSpace(poolSessionID)
+	if poolSessionID == "" {
+		return 0, fmt.Errorf("pool_session_id is required")
+	}
+	var channelID int64
+	if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, poolSessionID).Scan(&channelID); err != nil {
+		return 0, err
+	}
+	return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session_quote_pay", fmt.Sprintf("%d", channelID))
 }
 
 func resolvePoolAllocationSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
@@ -236,13 +244,13 @@ func resolvePoolAllocationSourceToSettlementCycleDB(ctx context.Context, db *sql
 		if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE id=?`, allocID).Scan(&poolSessionID); err != nil {
 			return 0, err
 		}
-		return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
+		return dbGetSettlementCycleByPoolSessionIDDB(ctx, db, poolSessionID)
 	}
 	var poolSessionID string
 	if err := QueryRowContext(ctx, db, `SELECT pool_session_id FROM fact_pool_session_events WHERE allocation_id=?`, sourceID).Scan(&poolSessionID); err != nil {
 		return 0, err
 	}
-	return dbGetSettlementCycleBySourceCtx(ctx, db, "pool_session", poolSessionID)
+	return dbGetSettlementCycleByPoolSessionIDDB(ctx, db, poolSessionID)
 }
 
 func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
@@ -250,24 +258,44 @@ func resolveChainPaymentSourceToSettlementCycleDB(ctx context.Context, db *sql.D
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	for _, sourceType := range []string{"chain_payment", "chain_token"} {
-		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.ToLower(sourceID)); err == nil {
+	for _, sourceType := range []string{"chain_quote_pay", "chain_direct_pay", "chain_asset_create"} {
+		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, sourceType, strings.TrimSpace(sourceID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
 	}
-	if paymentID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && paymentID > 0 {
-		var txid string
-		if err := QueryRowContext(ctx, db, `SELECT txid FROM fact_chain_payments WHERE id=?`, paymentID).Scan(&txid); err != nil {
+	txid := strings.ToLower(strings.TrimSpace(sourceID))
+	if txid != "" {
+		var channelID int64
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_quote_pay WHERE txid=?`, txid).Scan(&channelID); err == nil {
+			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_quote_pay", fmt.Sprintf("%d", channelID))
+		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_payment", txid); err == nil {
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_direct_pay WHERE txid=?`, txid).Scan(&channelID); err == nil {
+			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_direct_pay", fmt.Sprintf("%d", channelID))
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_chain_asset_create WHERE txid=?`, txid).Scan(&channelID); err == nil {
+			return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_asset_create", fmt.Sprintf("%d", channelID))
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+	}
+	if paymentID, err := strconv.ParseInt(sourceID, 10, 64); err == nil && paymentID > 0 {
+		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_quote_pay", fmt.Sprintf("%d", paymentID)); err == nil {
 			return cycleID, nil
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return 0, err
 		}
-		return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_token", txid)
+		if cycleID, err := dbGetSettlementCycleBySourceCtx(ctx, db, "chain_direct_pay", fmt.Sprintf("%d", paymentID)); err == nil {
+			return cycleID, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return 0, err
+		}
+		return dbGetSettlementCycleBySourceCtx(ctx, db, "chain_asset_create", fmt.Sprintf("%d", paymentID))
 	}
 	return 0, sql.ErrNoRows
 }
@@ -596,7 +624,7 @@ func dbListFinanceProcessEventsByPoolAllocationID(ctx context.Context, store *cl
 // 第十一阶段收口：增加 businessRole 参数，不再默认全量
 // 设计说明：
 // - txid 这里只做便利查询输入，不直接作为 source_id；
-// - 底层只按 fact_chain_payments.id 过滤新口径记录；
+// - 底层只按 fact_settlement_channel_chain_quote_pay.id 过滤新口径记录；
 // - 查不到 chain_payment 时返回空结果，不模糊搜索；
 // - businessRole 必填：formal 或 process，不再允许空值。
 func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid string, businessRole string, limit, offset int) (financeBusinessPage, error) {
@@ -625,7 +653,7 @@ func dbListFinanceBusinessesByTxID(ctx context.Context, store *clientDB, txid st
 // dbListFinanceProcessEventsByTxID 按 txid 查流程事件
 // 设计说明：
 // - txid 这里只做便利查询输入，不直接作为 source_id；
-// - 底层只按 fact_chain_payments.id 过滤新口径记录；
+// - 底层只按 fact_settlement_channel_chain_quote_pay.id 过滤新口径记录；
 // - 查不到 chain_payment 时返回空结果，不模糊搜索。
 func dbListFinanceProcessEventsByTxID(ctx context.Context, store *clientDB, txid string, limit, offset int) (financeProcessEventPage, error) {
 	txid = strings.ToLower(strings.TrimSpace(txid))

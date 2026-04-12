@@ -134,7 +134,7 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected dbListFinanceBusinesses to reject non-settlement_cycle source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle or chain_token") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -146,7 +146,7 @@ func TestFinanceDBLayerRejectsHistoricalSourceType(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected dbListFinanceProcessEvents to reject non-settlement_cycle source_type")
 	}
-	if !strings.Contains(err.Error(), "source_type must be settlement_cycle or chain_token") {
+	if !strings.Contains(err.Error(), "source_type must be settlement_cycle, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -158,27 +158,31 @@ func TestNormalizeFinanceQuerySourceAllowsChainWalletTypes(t *testing.T) {
 	db := newWalletAccountingTestDB(t)
 	store := newClientDB(db, nil)
 
-	sourceType, sourceID, err := normalizeFinanceQuerySource(context.Background(), store, "chain_bsv", "tx_bsv_1")
+	sourceType, sourceID, err := normalizeFinanceQuerySource(context.Background(), store, "chain_direct_pay", "tx_bsv_1")
 	if err != nil {
 		t.Fatalf("normalize chain_bsv failed: %v", err)
 	}
-	if sourceType != "chain_bsv" || sourceID != "tx_bsv_1" {
+	if sourceType != "chain_direct_pay" || sourceID != "tx_bsv_1" {
 		t.Fatalf("unexpected chain_bsv normalize result: %s %s", sourceType, sourceID)
 	}
 
-	sourceType, sourceID, err = normalizeFinanceQuerySource(context.Background(), store, "chain_token", "tx_token_1")
+	sourceType, sourceID, err = normalizeFinanceQuerySource(context.Background(), store, "chain_direct_pay", "tx_token_1")
 	if err != nil {
 		t.Fatalf("normalize chain_token failed: %v", err)
 	}
-	if sourceType != "chain_token" || sourceID != "tx_token_1" {
+	if sourceType != "chain_direct_pay" || sourceID != "tx_token_1" {
 		t.Fatalf("unexpected chain_token normalize result: %s %s", sourceType, sourceID)
 	}
 
-	if _, _, err := normalizeFinanceQuerySource(context.Background(), store, "chain_payment", "tx_legacy_1"); err == nil {
-		t.Fatal("expected historical source_type chain_payment to be rejected")
+	if sourceType, sourceID, err = normalizeFinanceQuerySource(context.Background(), store, "chain_quote_pay", "42"); err != nil {
+		t.Fatalf("normalize chain_quote_pay failed: %v", err)
+	} else if sourceType != "chain_quote_pay" || sourceID != "42" {
+		t.Fatalf("unexpected chain_quote_pay normalize result: %s %s", sourceType, sourceID)
 	}
-	if _, _, err := normalizeFinanceQuerySource(context.Background(), store, "pool_session", "sess_legacy_1"); err == nil {
-		t.Fatal("expected historical source_type pool_session to be rejected")
+	if sourceType, sourceID, err = normalizeFinanceQuerySource(context.Background(), store, "pool_session_quote_pay", "7"); err != nil {
+		t.Fatalf("normalize pool_session_quote_pay failed: %v", err)
+	} else if sourceType != "pool_session_quote_pay" || sourceID != "7" {
+		t.Fatalf("unexpected pool_session_quote_pay normalize result: %s %s", sourceType, sourceID)
 	}
 }
 

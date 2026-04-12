@@ -173,8 +173,11 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			updated_at_unix INTEGER NOT NULL
 		)`,
 		// 直连传输费用池事实层：只保留真实池会话与会话事件，不承载运行时快照职责。
-		`CREATE TABLE IF NOT EXISTS fact_pool_sessions(
-			pool_session_id TEXT PRIMARY KEY,
+		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_pool_session_quote_pay(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			pool_session_id TEXT NOT NULL UNIQUE,
+			txid TEXT NOT NULL DEFAULT '',
 			pool_scheme TEXT NOT NULL,
 			counterparty_pubkey_hex TEXT NOT NULL DEFAULT '',
 			seller_pubkey_hex TEXT NOT NULL DEFAULT '',
@@ -187,7 +190,8 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			open_base_txid TEXT NOT NULL DEFAULT '',
 			status TEXT NOT NULL,
 			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL
+			updated_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id)
 		)`,
 		`CREATE TABLE IF NOT EXISTS fact_pool_session_events(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -213,8 +217,9 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			payload_json TEXT NOT NULL DEFAULT '{}',
 			UNIQUE(allocation_id)
 		)`,
-		`CREATE TABLE IF NOT EXISTS fact_chain_payments(
+		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_chain_quote_pay(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			settlement_cycle_id INTEGER NOT NULL UNIQUE,
 			txid TEXT NOT NULL,
 			payment_subtype TEXT NOT NULL,
 			status TEXT NOT NULL,
@@ -229,6 +234,47 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			to_party_id TEXT NOT NULL,
 			payload_json TEXT NOT NULL,
 			updated_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
+			UNIQUE(txid)
+		)`,
+		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_chain_direct_pay(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			txid TEXT NOT NULL,
+			payment_subtype TEXT NOT NULL,
+			status TEXT NOT NULL,
+			wallet_input_satoshi INTEGER NOT NULL,
+			wallet_output_satoshi INTEGER NOT NULL,
+			net_amount_satoshi INTEGER NOT NULL,
+			block_height INTEGER NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			submitted_at_unix INTEGER NOT NULL DEFAULT 0,
+			wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0,
+			from_party_id TEXT NOT NULL,
+			to_party_id TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
+			UNIQUE(txid)
+		)`,
+		`CREATE TABLE IF NOT EXISTS fact_settlement_channel_chain_asset_create(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			settlement_cycle_id INTEGER NOT NULL UNIQUE,
+			txid TEXT NOT NULL,
+			payment_subtype TEXT NOT NULL,
+			status TEXT NOT NULL,
+			wallet_input_satoshi INTEGER NOT NULL,
+			wallet_output_satoshi INTEGER NOT NULL,
+			net_amount_satoshi INTEGER NOT NULL,
+			block_height INTEGER NOT NULL,
+			occurred_at_unix INTEGER NOT NULL,
+			submitted_at_unix INTEGER NOT NULL DEFAULT 0,
+			wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0,
+			from_party_id TEXT NOT NULL,
+			to_party_id TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL,
+			FOREIGN KEY(settlement_cycle_id) REFERENCES fact_settlement_cycles(id),
 			UNIQUE(txid)
 		)`,
 		`CREATE TABLE IF NOT EXISTS wallet_local_broadcast_txs(
@@ -241,16 +287,23 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			observed_at_unix INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_fact_pool_session_events_session_kind_seq ON fact_pool_session_events(pool_session_id,allocation_kind,sequence_num) WHERE event_kind='` + PoolFactEventKindPoolEvent + `'`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_scheme_status ON fact_pool_sessions(pool_scheme,status,updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_pool_sessions_counterparty ON fact_pool_sessions(counterparty_pubkey_hex,status)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_pool_session_quote_pay_scheme_status ON fact_settlement_channel_pool_session_quote_pay(pool_scheme,status,updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_pool_session_quote_pay_counterparty ON fact_settlement_channel_pool_session_quote_pay(counterparty_pubkey_hex,status)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_pool_session_quote_pay_txid ON fact_settlement_channel_pool_session_quote_pay(txid)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_session_no ON fact_pool_session_events(pool_session_id,allocation_no DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_kind_seq ON fact_pool_session_events(pool_session_id,event_kind,sequence_num)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_txid ON fact_pool_session_events(txid)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_pool_session_events_created ON fact_pool_session_events(created_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_local_broadcast_txs_wallet_observed ON wallet_local_broadcast_txs(wallet_id, observed_at_unix, created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_occurred ON fact_chain_payments(occurred_at_unix DESC, id DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_subtype ON fact_chain_payments(payment_subtype, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_fact_chain_payments_status ON fact_chain_payments(status, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_quote_pay_occurred ON fact_settlement_channel_chain_quote_pay(occurred_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_quote_pay_subtype ON fact_settlement_channel_chain_quote_pay(payment_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_quote_pay_status ON fact_settlement_channel_chain_quote_pay(status, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_direct_pay_occurred ON fact_settlement_channel_chain_direct_pay(occurred_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_direct_pay_subtype ON fact_settlement_channel_chain_direct_pay(payment_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_direct_pay_status ON fact_settlement_channel_chain_direct_pay(status, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_asset_create_occurred ON fact_settlement_channel_chain_asset_create(occurred_at_unix DESC, id DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_asset_create_subtype ON fact_settlement_channel_chain_asset_create(payment_subtype, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_fact_settlement_channel_chain_asset_create_status ON fact_settlement_channel_chain_asset_create(status, occurred_at_unix DESC)`,
 
 		// 命令日志
 		// trigger_key 设计说明：表示"这次命令执行是被哪一条上游触发链路推出来的"
@@ -867,14 +920,14 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 
 		// Step 15: 统一结算锚点 — fact_settlement_cycles
 		// 设计说明：
-		// - 把 chain_payment / pool_session / wallet chain/token 统一到一个周期结算事实层
+		// - 把 4 个渠道写入统一到结算周期主表
 		// - 只保留 source_type/source_id 作为来源锚点
 		// - source_type/source_id 做唯一约束，禁止再靠旧事件列兜底
 		// - 业务扣账只认 settlement_cycle，不再直接改 fact_bsv_utxos
 		`CREATE TABLE IF NOT EXISTS fact_settlement_cycles(
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			cycle_id TEXT NOT NULL UNIQUE,
-			source_type TEXT NOT NULL CHECK(source_type IN ('chain_payment','pool_session','chain_bsv','chain_token')),
+			source_type TEXT NOT NULL CHECK(source_type IN ('pool_session_quote_pay','chain_quote_pay','chain_direct_pay','chain_asset_create')),
 			source_id TEXT NOT NULL,
 			state TEXT NOT NULL DEFAULT 'confirmed' CHECK(state IN ('pending','confirmed','failed')),
 			gross_amount_satoshi INTEGER NOT NULL DEFAULT 0,
@@ -2934,21 +2987,38 @@ func ensureFactChainPaymentTimingSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	cols, err := tableColumns(db, "fact_chain_payments")
+	for _, tableName := range []string{
+		"fact_settlement_channel_chain_quote_pay",
+		"fact_settlement_channel_chain_direct_pay",
+		"fact_settlement_channel_chain_asset_create",
+	} {
+		cols, err := tableColumns(db, tableName)
+		if err != nil {
+			return err
+		}
+		if len(cols) == 0 {
+			continue
+		}
+		if _, ok := cols["submitted_at_unix"]; !ok {
+			if _, err := ExecContext(ctx, db, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN submitted_at_unix INTEGER NOT NULL DEFAULT 0`, tableName)); err != nil {
+				return err
+			}
+		}
+		if _, ok := cols["wallet_observed_at_unix"]; !ok {
+			if _, err := ExecContext(ctx, db, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0`, tableName)); err != nil {
+				return err
+			}
+		}
+	}
+	poolCols, err := tableColumns(db, "fact_settlement_channel_pool_session_quote_pay")
 	if err != nil {
 		return err
 	}
-	if len(cols) == 0 {
-		return nil
-	}
-	if _, ok := cols["submitted_at_unix"]; !ok {
-		if _, err := ExecContext(ctx, db, `ALTER TABLE fact_chain_payments ADD COLUMN submitted_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
-		}
-	}
-	if _, ok := cols["wallet_observed_at_unix"]; !ok {
-		if _, err := ExecContext(ctx, db, `ALTER TABLE fact_chain_payments ADD COLUMN wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
+	if len(poolCols) > 0 {
+		if _, ok := poolCols["txid"]; !ok {
+			if _, err := ExecContext(ctx, db, `ALTER TABLE fact_settlement_channel_pool_session_quote_pay ADD COLUMN txid TEXT NOT NULL DEFAULT ''`); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -3009,10 +3079,10 @@ func normalizeClientPubKeyColumns(ctx context.Context, db *sql.DB) error {
 		{table: "proc_direct_deals", column: "seller_pubkey_hex"},
 		{table: "proc_direct_transfer_pools", column: "buyer_pubkey_hex"},
 		{table: "proc_direct_transfer_pools", column: "seller_pubkey_hex"},
-		{table: "fact_pool_sessions", column: "counterparty_pubkey_hex", allowEmpty: true},
-		{table: "fact_pool_sessions", column: "seller_pubkey_hex", allowEmpty: true},
-		{table: "fact_pool_sessions", column: "arbiter_pubkey_hex", allowEmpty: true},
-		{table: "fact_pool_sessions", column: "gateway_pubkey_hex", allowEmpty: true},
+		{table: "fact_settlement_channel_pool_session_quote_pay", column: "counterparty_pubkey_hex", allowEmpty: true},
+		{table: "fact_settlement_channel_pool_session_quote_pay", column: "seller_pubkey_hex", allowEmpty: true},
+		{table: "fact_settlement_channel_pool_session_quote_pay", column: "arbiter_pubkey_hex", allowEmpty: true},
+		{table: "fact_settlement_channel_pool_session_quote_pay", column: "gateway_pubkey_hex", allowEmpty: true},
 		{table: "biz_live_quotes", column: "seller_pubkey_hex"},
 		{table: "proc_live_follows", column: "last_quote_seller_pubkey_hex", allowEmpty: true},
 		{table: "proc_file_download_chunks", column: "seller_pubkey_hex", allowEmpty: true},

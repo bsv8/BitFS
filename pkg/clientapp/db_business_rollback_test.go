@@ -102,7 +102,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 
 		SettlementID:         "set_first",
 		SettlementMethod:     SettlementMethodChain,
-		SettlementTargetType: "chain_payment",
+		SettlementTargetType: "chain_quote_pay",
 		SettlementTargetID:   "tx_first",
 	}
 
@@ -148,7 +148,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 
 		SettlementID:         "set_second", // 新的 settlement_id，但 business_id 冲突
 		SettlementMethod:     SettlementMethodChain,
-		SettlementTargetType: "chain_payment",
+		SettlementTargetType: "chain_quote_pay",
 		SettlementTargetID:   "tx_second",
 	}
 

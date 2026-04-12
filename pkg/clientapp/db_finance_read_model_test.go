@@ -877,10 +877,10 @@ func TestFinanceLayer_FormalBusinessOnly(t *testing.T) {
 
 	// 写入正式 business：直接挂到 chain_payment 来源，避免再走旧的手工 cycle 口径
 	businessID := "biz_download_pool_layer_formal_1"
-	if err := dbUpsertSettlementCycle(db, "cycle_layer_formal_1", "chain_payment", "tx_layer_formal_1", "confirmed", 990, 0, 990, 1, 1700000401, "formal test", map[string]any{"scene": "formal"}); err != nil {
+	if err := dbUpsertSettlementCycle(db, "cycle_layer_formal_1", "chain_quote_pay", "tx_layer_formal_1", "confirmed", 990, 0, 990, 1, 1700000401, "formal test", map[string]any{"scene": "formal"}); err != nil {
 		t.Fatalf("insert formal settlement cycle failed: %v", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_layer_formal_1")
+	settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_layer_formal_1")
 	if err != nil {
 		t.Fatalf("resolve formal settlement cycle id failed: %v", err)
 	}
@@ -1214,10 +1214,10 @@ func TestFinanceFormalQuery_ByRoleFilters(t *testing.T) {
 	sellerPubHex := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
-	if err := dbUpsertSettlementCycle(db, "cycle_formal_1", "chain_payment", "tx_formal_1", "confirmed", 990, 0, 990, 1, 1700000501, "formal test", map[string]any{"scene": "formal"}); err != nil {
+	if err := dbUpsertSettlementCycle(db, "cycle_formal_1", "chain_quote_pay", "tx_formal_1", "confirmed", 990, 0, 990, 1, 1700000501, "formal test", map[string]any{"scene": "formal"}); err != nil {
 		t.Fatalf("insert formal settlement cycle failed: %v", err)
 	}
-	settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_payment", "tx_formal_1")
+	settlementCycleID, err := dbGetSettlementCycleBySource(db, "chain_quote_pay", "tx_formal_1")
 	if err != nil {
 		t.Fatalf("resolve formal settlement cycle id failed: %v", err)
 	}

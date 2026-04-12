@@ -338,7 +338,7 @@ func TestInitIndexDB_BusinessSettlementsIdempotent(t *testing.T) {
 		BusinessID:       "biz_test_2",
 		SettlementMethod: "chain",
 		Status:           "pending",
-		TargetType:       "chain_payment",
+		TargetType:       "chain_quote_pay",
 		TargetID:         "",
 		Payload:          map[string]any{"step": 1},
 	}); err != nil {
@@ -349,7 +349,7 @@ func TestInitIndexDB_BusinessSettlementsIdempotent(t *testing.T) {
 	_, err := db.Exec(`INSERT INTO settle_records(
 		settlement_id,business_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,idempotency_key,payload_json
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"set_test_2", "biz_test_2", "chain", "completed", "chain_payment", "", "", 1700000001, 1700000001, "idem_set_test_2", `{}`,
+		"set_test_2", "biz_test_2", "chain", "completed", "chain_quote_pay", "", "", 1700000001, 1700000001, "idem_set_test_2", `{}`,
 	)
 	if err == nil {
 		t.Fatal("expected unique constraint violation for duplicate business_id")
@@ -361,7 +361,7 @@ func TestInitIndexDB_BusinessSettlementsIdempotent(t *testing.T) {
 		BusinessID:       "biz_test_2",
 		SettlementMethod: "chain",
 		Status:           "completed",
-		TargetType:       "chain_payment",
+		TargetType:       "chain_quote_pay",
 		TargetID:         "",
 		Payload:          map[string]any{"step": 2},
 	}); err != nil {

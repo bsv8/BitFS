@@ -69,7 +69,7 @@ func createDomainRegisterBusinessChain(
 		// 结算
 		SettlementID:         settlementID,
 		SettlementMethod:     SettlementMethodChain, // 域名注册是直接链上支付
-		SettlementTargetType: "chain_payment",
+		SettlementTargetType: "chain_quote_pay",
 		SettlementTargetID:   "", // 待填充
 		SettlementPayload: map[string]any{
 			"name":                name,
@@ -81,9 +81,9 @@ func createDomainRegisterBusinessChain(
 
 // finalizeDomainRegisterSettlement 回写域名注册结算状态
 // 在提交阶段调用：根据提交结果设置 settlement 状态
-// 硬要求：settlement_method='chain' 时，target_id 必须写 fact_chain_payments.id
-//   - 成功时：通过 txID 查 fact_chain_payments.id，写入 target_id
-//   - 查不到 fact_chain_payments.id 时报错，不静默降级为 txid
+// 硬要求：settlement_method='chain' 时，target_id 必须写 fact_settlement_channel_chain_quote_pay.id
+//   - 成功时：通过 txID 查 fact_settlement_channel_chain_quote_pay.id，写入 target_id
+//   - 查不到 fact_settlement_channel_chain_quote_pay.id 时报错，不静默降级为 txid
 //   - 失败时：写 status='failed' + error_message，target_id 留空
 func finalizeDomainRegisterSettlement(
 	ctx context.Context,
@@ -105,10 +105,10 @@ func finalizeDomainRegisterSettlement(
 		if txID == "" {
 			return fmt.Errorf("txid is required for successful settlement")
 		}
-		// 硬要求：必须拿到 fact_chain_payments.id，不降级
+		// 硬要求：必须拿到 fact_settlement_channel_chain_quote_pay.id，不降级
 		chainPaymentID, err := dbGetChainPaymentByTxID(ctx, store, txID)
 		if err != nil {
-			return fmt.Errorf("find fact_chain_payments.id for txid=%s: %w", txID, err)
+			return fmt.Errorf("find fact_settlement_channel_chain_quote_pay.id for txid=%s: %w", txID, err)
 		}
 		targetID = fmt.Sprintf("%d", chainPaymentID)
 	} else {
@@ -117,7 +117,7 @@ func finalizeDomainRegisterSettlement(
 
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := ExecContext(ctx, db,
-			`UPDATE settle_records SET settlement_status=?, target_type='chain_payment', target_id=?, error_message=?, updated_at_unix=strftime('%s','now') WHERE settlement_id=?`,
+			`UPDATE settle_records SET settlement_status=?, target_type='chain_quote_pay', target_id=?, error_message=?, updated_at_unix=strftime('%s','now') WHERE settlement_id=?`,
 			status,
 			targetID,
 			errMsg,

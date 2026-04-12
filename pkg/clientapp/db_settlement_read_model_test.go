@@ -134,7 +134,7 @@ func TestStep4_DomainSettlementSummary(t *testing.T) {
 		BusinessID:       businessID,
 		SettlementMethod: "chain",
 		Status:           "settled",
-		TargetType:       "chain_payment",
+		TargetType:       "chain_quote_pay",
 		TargetID:         chainPaymentID,
 		Payload:          map[string]any{"status": "settled"},
 	}); err != nil {
@@ -448,7 +448,7 @@ func TestStep4_SettlementReverseLookup(t *testing.T) {
 		BusinessID:       businessID,
 		SettlementMethod: "chain",
 		Status:           "settled",
-		TargetType:       "chain_payment",
+		TargetType:       "chain_quote_pay",
 		TargetID:         chainPaymentID,
 	}); err != nil {
 		t.Fatalf("upsert settlement: %v", err)

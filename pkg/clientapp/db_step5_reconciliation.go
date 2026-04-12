@@ -111,7 +111,7 @@ func RunDomainRegisterReconciliation(ctx context.Context, store *clientDB) (*Rec
 			var txid string
 			var cpFound bool
 			if chainPaymentID > 0 {
-				err := QueryRowContext(ctx, db, `SELECT txid FROM fact_chain_payments WHERE id=?`, chainPaymentID).Scan(&txid)
+				err := QueryRowContext(ctx, db, `SELECT txid FROM fact_settlement_channel_chain_quote_pay WHERE id=?`, chainPaymentID).Scan(&txid)
 				if err == nil {
 					cpFound = true
 				}
