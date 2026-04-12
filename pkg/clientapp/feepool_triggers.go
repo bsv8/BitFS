@@ -5,11 +5,15 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 type FeePoolStateResult struct {
@@ -197,18 +201,23 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, store *client
 	}
 
 	underpay := sess.SingleCycleFeeSatoshi - 1
-	payloadRaw, err := poolcore.MarshalListenCycleQuotePayload(0, 0, 0)
+	listenReq := &broadcastmodule.ListenCycleReq{
+		RequestedDurationSeconds: sess.BillingCycleSeconds,
+		ProposedPaymentSatoshi:   listenOfferPaymentSatoshi(rt, sess),
+	}
+	if sess.BillingCycleSeconds > 0 {
+		listenReq.RequestedUntilUnix = time.Now().Add(time.Duration(sess.BillingCycleSeconds) * time.Second).Unix()
+	}
+	payloadRaw, err := oldproto.Marshal(listenReq)
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
 	}
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
-		Session:              sess,
-		GatewayPeerID:        gw.ID,
-		ServiceType:          poolcore.QuoteServiceTypeListenCycle,
-		Target:               "listen_cycle/underpay_probe",
-		ServiceParamsPayload: payloadRaw,
-		PricingMode:          poolcore.ServiceOfferPricingModeBudgetForService,
-		ProposedPaymentSat:   underpay,
+		Session:       sess,
+		GatewayPeerID: gw.ID,
+		Route:         broadcastmodule.RouteBroadcastV1ListenCycle,
+		ContentType:   ncall.ContentTypeProto,
+		Body:          payloadRaw,
 	})
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("request listen quote failed: %w", err)

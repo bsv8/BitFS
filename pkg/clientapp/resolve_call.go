@@ -123,11 +123,11 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	if err != nil {
 		return out, err
 	}
-	if !isNodePaymentRequired(out) {
+	if !isNodePaymentQuoted(out) {
 		return out, nil
 	}
 	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentRequired(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
+		return quotePeerCallFromPaymentQuoted(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
 	}
 	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
 	if payErr != nil {
@@ -196,8 +196,8 @@ func marshalNodeCallProto(msg oldproto.Message) (ncall.CallResp, error) {
 	}, nil
 }
 
-func isNodePaymentRequired(resp ncall.CallResp) bool {
-	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") && len(resp.PaymentSchemes) > 0
+func isNodePaymentQuoted(resp ncall.CallResp) bool {
+	return !resp.Ok && strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_QUOTED") && len(resp.PaymentSchemes) > 0
 }
 
 func normalizePeerCallPaymentMode(raw string) string {

@@ -15,13 +15,6 @@ func callNodePoolInfo(ctx context.Context, rt *Runtime, peerID peer.ID) (poolcor
 	return out, err
 }
 
-func callNodeServiceQuote(ctx context.Context, rt *Runtime, peerID peer.ID, req poolcore.ServiceQuoteReq) (poolcore.ServiceQuoteResp, error) {
-	req.ClientID = ""
-	var out poolcore.ServiceQuoteResp
-	err := callNodeRouteProto(ctx, rt, peerID, ncall.RoutePaymentV1Quote, &req, &out)
-	return out, err
-}
-
 func callNodePoolCreate(ctx context.Context, rt *Runtime, peerID peer.ID, req poolcore.CreateReq) (poolcore.CreateResp, error) {
 	req.ClientID = ""
 	var out poolcore.CreateResp

@@ -232,7 +232,7 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_PayAfterValidationFailure(t 
 func TestValidateGatewayDemandPublishChainTxPreflight(t *testing.T) {
 	if err := validateGatewayDemandPublishChainTxPreflight(ncall.CallResp{
 		Ok:   false,
-		Code: "PAYMENT_REQUIRED",
+		Code: "PAYMENT_QUOTED",
 		PaymentSchemes: []*ncall.PaymentOption{
 			{Scheme: ncall.PaymentSchemePool2of2V1},
 		},
@@ -241,7 +241,7 @@ func TestValidateGatewayDemandPublishChainTxPreflight(t *testing.T) {
 	}
 	if err := validateGatewayDemandPublishChainTxPreflight(ncall.CallResp{
 		Ok:   false,
-		Code: "PAYMENT_REQUIRED",
+		Code: "PAYMENT_QUOTED",
 		PaymentSchemes: []*ncall.PaymentOption{
 			{Scheme: ncall.PaymentSchemeChainTxV1},
 		},
@@ -362,54 +362,52 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 	}
 	ncall.Register(h, nodeSecForRuntime(nil), func(ctx context.Context, meta ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
 		switch strings.TrimSpace(req.Route) {
-		case ncall.RoutePaymentV1Quote:
-			var quoteReq poolcore.ServiceQuoteReq
-			if err := oldproto.Unmarshal(req.Body, &quoteReq); err != nil {
-				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
-			}
-			offer, err := payflow.UnmarshalServiceOffer(quoteReq.ServiceOffer)
-			if err != nil {
-				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
-			}
-			if err := offer.Validate(); err != nil {
-				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
-			}
-			gatewayActor, err := poolcore.BuildActor("gateway", gatewayPrivHex, false)
-			if err != nil {
-				return ncall.CallResp{}, err
-			}
-			quote, err := payflow.SignServiceQuote(payflow.ServiceQuote{
-				OfferHash:           mustHashServiceOfferForTest(offer),
-				ChargeAmountSatoshi: quoteAmount,
-				ExpiresAtUnix:       time.Now().Add(30 * time.Second).Unix(),
-			}, gatewayActor.PrivKey)
-			if err != nil {
-				return ncall.CallResp{}, err
-			}
-			rawQuote, err := payflow.MarshalServiceQuote(quote)
-			if err != nil {
-				return ncall.CallResp{}, err
-			}
-			state.mu.Lock()
-			state.lastOffer = offer
-			state.lastServiceQuote = append([]byte(nil), rawQuote...)
-			state.mu.Unlock()
-			resp := poolcore.ServiceQuoteResp{
-				Success:      true,
-				Status:       "accepted",
-				ServiceQuote: rawQuote,
-			}
-			return marshalNodeCallProto(&resp)
 		case broadcastmodule.RouteBroadcastV1DemandPublish:
 			if strings.TrimSpace(req.PaymentScheme) == "" {
+				var body broadcastmodule.DemandPublishReq
+				if err := oldproto.Unmarshal(req.Body, &body); err != nil {
+					return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
+				}
+				payloadRaw, err := broadcastmodule.MarshalDemandPublishQuotePayload(body.SeedHash, body.ChunkCount, body.BuyerAddrs)
+				if err != nil {
+					return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
+				}
+				gatewayActor, err := poolcore.BuildActor("gateway", gatewayPrivHex, false)
+				if err != nil {
+					return ncall.CallResp{}, err
+				}
+				offer := payflow.ServiceOffer{
+					ServiceType:          broadcastmodule.QuoteServiceTypeDemandPublish,
+					ServiceNodePubkeyHex: state.gatewayPubHex,
+					ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(meta.SenderPubkeyHex)),
+					RequestParams:        append([]byte(nil), payloadRaw...),
+					CreatedAtUnix:        time.Now().Unix(),
+				}
+				quote, err := payflow.SignServiceQuote(payflow.ServiceQuote{
+					OfferHash:           mustHashServiceOfferForTest(offer),
+					ChargeAmountSatoshi: quoteAmount,
+					ExpiresAtUnix:       time.Now().Add(30 * time.Second).Unix(),
+				}, gatewayActor.PrivKey)
+				if err != nil {
+					return ncall.CallResp{}, err
+				}
+				rawQuote, err := payflow.MarshalServiceQuote(quote)
+				if err != nil {
+					return ncall.CallResp{}, err
+				}
+				state.mu.Lock()
+				state.lastOffer = offer
+				state.lastServiceQuote = append([]byte(nil), rawQuote...)
+				state.mu.Unlock()
 				return ncall.CallResp{
 					Ok:      false,
-					Code:    "PAYMENT_REQUIRED",
-					Message: "payment required",
+					Code:    "PAYMENT_QUOTED",
+					Message: "payment quote ready",
 					PaymentSchemes: []*ncall.PaymentOption{
-						{Scheme: ncall.PaymentSchemePool2of2V1},
-						{Scheme: ncall.PaymentSchemeChainTxV1},
+						{Scheme: ncall.PaymentSchemePool2of2V1, AmountSatoshi: quoteAmount, Description: broadcastmodule.QuoteServiceTypeDemandPublish, QuoteStatus: "accepted"},
+						{Scheme: ncall.PaymentSchemeChainTxV1, AmountSatoshi: quoteAmount, Description: broadcastmodule.QuoteServiceTypeDemandPublish, QuoteStatus: "accepted"},
 					},
+					ServiceQuote: rawQuote,
 				}, nil
 			}
 			if strings.TrimSpace(req.PaymentScheme) != ncall.PaymentSchemeChainTxV1 {

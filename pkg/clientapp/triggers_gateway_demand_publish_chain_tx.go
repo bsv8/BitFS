@@ -208,9 +208,9 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	return out, nil
 }
 
-// validateGatewayDemandPublishChainTxPreflight 硬要求：必须拿到 PAYMENT_REQUIRED 且 chain_tx_v1 在广告里。
+// validateGatewayDemandPublishChainTxPreflight 硬要求：必须拿到 PAYMENT_QUOTED 且 chain_tx_v1 在广告里。
 func validateGatewayDemandPublishChainTxPreflight(resp ncall.CallResp) error {
-	if !strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_REQUIRED") {
+	if !strings.EqualFold(strings.TrimSpace(resp.Code), "PAYMENT_QUOTED") {
 		return fmt.Errorf("chain_tx_v1 not offered")
 	}
 	for _, opt := range resp.PaymentSchemes {

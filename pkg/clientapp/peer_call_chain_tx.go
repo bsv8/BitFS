@@ -65,6 +65,21 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
+	quotedResp, err := callNodeRoute(ctx, rt, peerID, ncall.CallReq{
+		To:          buildPeerCallQuoteTarget(req),
+		Route:       strings.TrimSpace(req.Route),
+		ContentType: strings.TrimSpace(req.ContentType),
+		Body:        append([]byte(nil), req.Body...),
+	})
+	if err != nil {
+		return peerCallChainTxQuoteBuilt{}, err
+	}
+	if strings.TrimSpace(quotedResp.Code) != "PAYMENT_QUOTED" {
+		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("payment quote unavailable: code=%s message=%s", strings.TrimSpace(quotedResp.Code), strings.TrimSpace(quotedResp.Message))
+	}
+	if len(quotedResp.PaymentSchemes) == 0 || quotedResp.PaymentSchemes[0] == nil {
+		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("payment schemes missing")
+	}
 	gatewayPub, err := gatewayPublicKeyFromPeer(rt, peerID)
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
@@ -76,29 +91,10 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 		RequestParams:        append([]byte(nil), serviceParamsPayload...),
 		CreatedAtUnix:        time.Now().Unix(),
 	}
-	rawOffer, err := payflow.MarshalServiceOffer(offer)
-	if err != nil {
-		return peerCallChainTxQuoteBuilt{}, err
-	}
-	resp, err := callNodeServiceQuote(ctx, rt, peerID, poolcore.ServiceQuoteReq{
-		ClientID:             rt.runIn.ClientID,
-		ServiceOffer:         rawOffer,
-		ServiceParamsPayload: append([]byte(nil), serviceParamsPayload...),
-	})
-	if err != nil {
-		return peerCallChainTxQuoteBuilt{}, err
-	}
-	if !resp.Success {
-		msg := strings.TrimSpace(resp.Error)
-		if msg == "" {
-			msg = "service quote rejected"
-		}
-		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("service quote rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
-	}
-	if len(resp.ServiceQuote) == 0 {
+	if len(quotedResp.ServiceQuote) == 0 {
 		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("service quote empty")
 	}
-	quote, quoteHash, err := poolcore.ParseAndVerifyServiceQuote(resp.ServiceQuote, gatewayPub)
+	quote, quoteHash, err := poolcore.ParseAndVerifyServiceQuote(quotedResp.ServiceQuote, gatewayPub)
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
@@ -111,8 +107,8 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	}
 	return peerCallChainTxQuoteBuilt{
 		GatewayPub:       gatewayPub,
-		QuoteStatus:      strings.TrimSpace(resp.Status),
-		ServiceQuoteRaw:  append([]byte(nil), resp.ServiceQuote...),
+		QuoteStatus:      strings.TrimSpace(quotedResp.PaymentSchemes[0].QuoteStatus),
+		ServiceQuoteRaw:  append([]byte(nil), quotedResp.ServiceQuote...),
 		ServiceQuote:     quote,
 		ServiceQuoteHash: quoteHash,
 		ChargeReason:     chargeReason,
