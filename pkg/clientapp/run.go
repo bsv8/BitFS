@@ -1215,7 +1215,9 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 		if rt.taskSched != nil {
 			if err := rt.taskSched.Shutdown(); err != nil {
-				obs.Error("bitcast-client", "task_scheduler_shutdown_failed", map[string]any{"error": err.Error()})
+				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
+					obs.Error("bitcast-client", "task_scheduler_shutdown_failed", map[string]any{"error": err.Error()})
+				}
 			}
 		}
 		if rt.chainMaint != nil {

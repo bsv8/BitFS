@@ -267,11 +267,19 @@ func (s *taskScheduler) Shutdown() error {
 		}
 	}
 	s.wg.Wait()
+	// 关闭阶段需要把任务状态落为 stopped。
+	// 这里使用 root ctx 的 without-cancel 派生上下文，避免主流程 cancel 后误报 context canceled。
+	stopCtx := s.ctx
+	stopCancel := func() {}
+	if s.ctx != nil {
+		stopCtx, stopCancel = context.WithTimeout(context.WithoutCancel(s.ctx), 3*time.Second)
+	}
+	defer stopCancel()
 	for _, rt := range runtimes {
 		if rt == nil {
 			continue
 		}
-		if err := s.markTaskStopped(rt.spec.Name); err != nil && firstErr == nil {
+		if err := s.markTaskStoppedWithCtx(stopCtx, rt.spec.Name); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
@@ -419,7 +427,7 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 		runCount := int64(0)
 		successCount := int64(0)
 		failureCount := int64(0)
-		_, err := ExecContext(s.ctx, db, 
+		_, err := ExecContext(s.ctx, db,
 			`INSERT INTO proc_scheduler_tasks(
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
@@ -458,17 +466,21 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 }
 
 func (s *taskScheduler) markTaskStopped(name string) error {
+	return s.markTaskStoppedWithCtx(s.ctx, name)
+}
+
+func (s *taskScheduler) markTaskStoppedWithCtx(ctx context.Context, name string) error {
 	if s == nil {
 		return nil
 	}
-	if s.ctx == nil {
+	if ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
 	now := time.Now().Unix()
-	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, ctx, func(db *sql.DB) error {
 		closedAtUnix := int64(now)
 		updatedAtUnix := int64(now)
-		_, err := ExecContext(s.ctx, db, 
+		_, err := ExecContext(ctx, db,
 			`UPDATE proc_scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
 			closedAtUnix, updatedAtUnix, strings.TrimSpace(name),
 		)
@@ -485,7 +497,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 	}
 	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		updatedAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(s.ctx, db, 
+		_, err := ExecContext(s.ctx, db,
 			`UPDATE proc_scheduler_tasks SET
 				last_trigger=?,
 				last_started_at_unix=?,
@@ -518,7 +530,7 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	}
 	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		updatedAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(s.ctx, db, 
+		_, err := ExecContext(s.ctx, db,
 			`UPDATE proc_scheduler_tasks SET
 				last_ended_at_unix=?,
 				last_duration_ms=?,
@@ -552,7 +564,7 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 	}
 	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
 		createdAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(s.ctx, db, 
+		_, err := ExecContext(s.ctx, db,
 			`INSERT INTO proc_scheduler_task_runs(
 				task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
@@ -621,7 +633,7 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(filtered)), ",")
 	args = append([]any{startupUnix, startupUnix}, args...)
 	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
-		_, err := ExecContext(s.ctx, db, 
+		_, err := ExecContext(s.ctx, db,
 			`UPDATE proc_scheduler_tasks SET
 				status='stopped',
 				updated_at_unix=?,

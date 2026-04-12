@@ -141,3 +141,43 @@ func TestTaskSchedulerWritesProfileAndRunRows(t *testing.T) {
 		t.Fatalf("task run rows mismatch: got=%d want=1", runRows)
 	}
 }
+
+func TestTaskSchedulerShutdownAfterRootCancelStillStopsTask(t *testing.T) {
+	t.Parallel()
+
+	db := openSchemaTestDB(t)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB failed: %v", err)
+	}
+	store := newClientDB(db, nil)
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	scheduler := newTestTaskScheduler(rootCtx, store)
+
+	if err := scheduler.RegisterPeriodicTask(context.Background(), periodicTaskSpec{
+		Name:      "test_shutdown_after_cancel",
+		Owner:     "unit_test",
+		Mode:      "static",
+		Interval:  time.Hour,
+		Immediate: false,
+		Run: func(ctx context.Context, trigger string) (map[string]any, error) {
+			return map[string]any{"trigger": trigger}, nil
+		},
+	}); err != nil {
+		t.Fatalf("RegisterPeriodicTask() error = %v", err)
+	}
+
+	// 模拟 runtime 关闭顺序：先 cancel 根上下文，再调用调度器 shutdown。
+	rootCancel()
+
+	if err := scheduler.Shutdown(); err != nil {
+		t.Fatalf("Shutdown() error = %v", err)
+	}
+
+	var status string
+	if err := db.QueryRow(`SELECT status FROM proc_scheduler_tasks WHERE task_name=?`, "test_shutdown_after_cancel").Scan(&status); err != nil {
+		t.Fatalf("load scheduler task status failed: %v", err)
+	}
+	if status != "stopped" {
+		t.Fatalf("status mismatch: got=%s want=stopped", status)
+	}
+}
