@@ -3,13 +3,13 @@ package clientapp
 import (
 	"testing"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
 func TestDecodeDemandPublishRouteRespUsesTopLevelReceipts(t *testing.T) {
-	body, err := oldproto.Marshal(&broadcastmodule.DemandPublishPaidResp{
+	body, err := oldproto.Marshal(&contractmessage.DemandPublishPaidResp{
 		Success:  true,
 		Status:   "ok",
 		DemandID: "dmd_1",

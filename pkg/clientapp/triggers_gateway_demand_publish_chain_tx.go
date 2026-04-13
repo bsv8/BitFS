@@ -5,8 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
 )
@@ -78,7 +79,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	}
 
 	buyerAddrs := localAdvertiseAddrs(rt)
-	body := &broadcastmodule.DemandPublishReq{
+	body := &contractmessage.DemandPublishReq{
 		SeedHash:   seedHash,
 		ChunkCount: p.ChunkCount,
 		BuyerAddrs: buyerAddrs,
@@ -98,8 +99,8 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 
 	preflightResp, err := callNodeRoute(ctx, rt, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
-		Route:       broadcastmodule.RouteBroadcastV1DemandPublish,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        bodyRaw,
 	})
 	if err != nil {
@@ -116,14 +117,14 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 
 	quoted, err := requestPeerCallChainTxQuote(ctx, rt, store, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
-		Route:       broadcastmodule.RouteBroadcastV1DemandPublish,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        bodyRaw,
 	}, &ncall.PaymentOption{
 		Scheme:          ncall.PaymentSchemeChainTxV1,
 		PaymentDomain:   "",
 		AmountSatoshi:   0,
-		Description:     broadcastmodule.RouteBroadcastV1DemandPublish,
+		Description:     string(contractroute.RouteBroadcastV1DemandPublish),
 		PricingMode:     "",
 		ServiceQuantity: 1,
 	})
@@ -140,19 +141,19 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	out.QuoteOfferHash = strings.TrimSpace(quoted.ServiceQuote.OfferHash)
 	out.QuoteChargeSatoshi = quoted.ServiceQuote.ChargeAmountSatoshi
 	out.QuoteExpiresAtUnix = quoted.ServiceQuote.ExpiresAtUnix
-	out.QuoteServiceType = broadcastmodule.QuoteServiceTypeDemandPublish
+	out.QuoteServiceType = quoteServiceTypeDemandPublish
 	out.ServiceQuoteHash = strings.TrimSpace(quoted.ServiceQuoteHash)
 
 	paidResp, payErr := payPeerCallWithChainTxQuote(ctx, rt, store, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
-		Route:       broadcastmodule.RouteBroadcastV1DemandPublish,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        bodyRaw,
 	}, &ncall.PaymentOption{
 		Scheme:          ncall.PaymentSchemeChainTxV1,
 		PaymentDomain:   "",
 		AmountSatoshi:   quoted.ServiceQuote.ChargeAmountSatoshi,
-		Description:     broadcastmodule.RouteBroadcastV1DemandPublish,
+		Description:     string(contractroute.RouteBroadcastV1DemandPublish),
 		PricingMode:     "",
 		ServiceQuantity: 1,
 	}, quoted)
@@ -236,21 +237,21 @@ func validateGatewayDemandPublishChainTxQuoteBuilt(quoted peerCallChainTxQuoteBu
 }
 
 // parseDemandPublishPaidResp 统一把 chain_tx_v1 的支付回执和业务体拆开。
-func parseDemandPublishPaidResp(callResp ncall.CallResp) (broadcastmodule.DemandPublishPaidResp, string, error) {
+func parseDemandPublishPaidResp(callResp ncall.CallResp) (contractmessage.DemandPublishPaidResp, string, error) {
 	if strings.TrimSpace(callResp.PaymentReceiptScheme) != ncall.PaymentSchemeChainTxV1 || len(callResp.PaymentReceipt) == 0 {
-		return broadcastmodule.DemandPublishPaidResp{}, "", fmt.Errorf("payment receipt missing")
+		return contractmessage.DemandPublishPaidResp{}, "", fmt.Errorf("payment receipt missing")
 	}
 	var receipt ncall.ChainTxV1Receipt
 	if err := oldproto.Unmarshal(callResp.PaymentReceipt, &receipt); err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, "", err
+		return contractmessage.DemandPublishPaidResp{}, "", err
 	}
 	txID := strings.TrimSpace(receipt.PaymentTxID)
 	if txID == "" {
-		return broadcastmodule.DemandPublishPaidResp{}, "", fmt.Errorf("payment txid missing")
+		return contractmessage.DemandPublishPaidResp{}, "", fmt.Errorf("payment txid missing")
 	}
-	var demandResp broadcastmodule.DemandPublishPaidResp
+	var demandResp contractmessage.DemandPublishPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &demandResp); err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, "", err
+		return contractmessage.DemandPublishPaidResp{}, "", err
 	}
 	return demandResp, txID, nil
 }

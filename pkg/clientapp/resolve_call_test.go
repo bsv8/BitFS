@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	oldproto "github.com/golang/protobuf/proto"
@@ -103,8 +105,8 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 
 	capOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
-		Route:       ncall.RouteNodeV1CapabilitiesShow,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteNodeV1CapabilitiesShow),
+		ContentType: contractmessage.ContentTypeProto,
 		Store:       senderStore,
 	})
 	if err != nil {

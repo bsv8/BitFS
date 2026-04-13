@@ -11,10 +11,10 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
@@ -646,7 +646,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, store *clientDB, gw pee
 		return errListenFeePoolRotateRequired
 	}
 	offerPayment := listenOfferPaymentSatoshi(rt, s)
-	rawBody, err := oldproto.Marshal(&broadcastmodule.ListenCycleReq{
+	rawBody, err := oldproto.Marshal(&contractmessage.ListenCycleReq{
 		ProposedPaymentSatoshi: offerPayment,
 	})
 	if err != nil {
@@ -654,8 +654,8 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, store *clientDB, gw pee
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:                   gw.String(),
-		Route:                broadcastmodule.RouteBroadcastV1ListenCycle,
-		ContentType:          ncall.ContentTypeProto,
+		Route:                string(contractroute.RouteBroadcastV1ListenCycle),
+		ContentType:          contractmessage.ContentTypeProto,
 		Body:                 rawBody,
 		Store:                store,
 		RequireActiveFeePool: true,
@@ -689,7 +689,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, store *clientDB, gw pee
 		Direction:     "debit",
 		AmountSatoshi: -int64(resp.ChargedAmount),
 		Purpose:       "listen_cycle_fee",
-		Note:          fmt.Sprintf("route=%s spend_txid=%s seq=%d updated_txid=%s", broadcastmodule.RouteBroadcastV1ListenCycle, s.SpendTxID, sequence, resp.UpdatedTxID),
+		Note:          fmt.Sprintf("route=%s spend_txid=%s seq=%d updated_txid=%s", contractroute.RouteBroadcastV1ListenCycle, s.SpendTxID, sequence, resp.UpdatedTxID),
 		PoolID:        s.SpendTxID,
 		SequenceNum:   sequence,
 	})

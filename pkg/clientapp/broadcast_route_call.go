@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
@@ -40,7 +40,7 @@ func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runti
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(to),
 		Route:       strings.TrimSpace(route),
-		ContentType: ncall.ContentTypeProto,
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        rawBody,
 		Store:       store,
 	})
@@ -54,10 +54,10 @@ func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runti
 	return resp, callResp, nil
 }
 
-func decodeListenCycleRouteResp(callResp ncall.CallResp) (broadcastmodule.ListenCyclePaidResp, error) {
-	var resp broadcastmodule.ListenCyclePaidResp
+func decodeListenCycleRouteResp(callResp ncall.CallResp) (contractmessage.ListenCyclePaidResp, error) {
+	var resp contractmessage.ListenCyclePaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return broadcastmodule.ListenCyclePaidResp{}, err
+		return contractmessage.ListenCyclePaidResp{}, err
 	}
 	if receipt, ok := parseFeePoolRouteReceipt(callResp); ok {
 		resp.ChargedAmount = receipt.ChargedAmountSatoshi
@@ -69,52 +69,52 @@ func decodeListenCycleRouteResp(callResp ncall.CallResp) (broadcastmodule.Listen
 	return resp, nil
 }
 
-func decodeDemandPublishRouteResp(callResp ncall.CallResp) (broadcastmodule.DemandPublishPaidResp, error) {
-	var resp broadcastmodule.DemandPublishPaidResp
+func decodeDemandPublishRouteResp(callResp ncall.CallResp) (contractmessage.DemandPublishPaidResp, error) {
+	var resp contractmessage.DemandPublishPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, err
+		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	applyFeePoolRouteReceiptToDemandPublishResp(&resp, callResp)
 	return resp, nil
 }
 
-func decodeDemandPublishBatchRouteResp(callResp ncall.CallResp) (broadcastmodule.DemandPublishBatchPaidResp, error) {
-	var resp broadcastmodule.DemandPublishBatchPaidResp
+func decodeDemandPublishBatchRouteResp(callResp ncall.CallResp) (contractmessage.DemandPublishBatchPaidResp, error) {
+	var resp contractmessage.DemandPublishBatchPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
+		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
 	applyFeePoolRouteReceiptToDemandPublishBatchResp(&resp, callResp)
 	return resp, nil
 }
 
-func decodeLiveDemandPublishRouteResp(callResp ncall.CallResp) (broadcastmodule.LiveDemandPublishPaidResp, error) {
-	var resp broadcastmodule.LiveDemandPublishPaidResp
+func decodeLiveDemandPublishRouteResp(callResp ncall.CallResp) (contractmessage.LiveDemandPublishPaidResp, error) {
+	var resp contractmessage.LiveDemandPublishPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
+		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
 	applyFeePoolRouteReceiptToLiveDemandPublishResp(&resp, callResp)
 	return resp, nil
 }
 
-func decodeNodeReachabilityAnnounceRouteResp(callResp ncall.CallResp) (broadcastmodule.NodeReachabilityAnnouncePaidResp, error) {
-	var resp broadcastmodule.NodeReachabilityAnnouncePaidResp
+func decodeNodeReachabilityAnnounceRouteResp(callResp ncall.CallResp) (contractmessage.NodeReachabilityAnnouncePaidResp, error) {
+	var resp contractmessage.NodeReachabilityAnnouncePaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	applyFeePoolRouteReceiptToNodeReachabilityAnnounceResp(&resp, callResp)
 	return resp, nil
 }
 
-func decodeNodeReachabilityQueryRouteResp(callResp ncall.CallResp) (broadcastmodule.NodeReachabilityQueryPaidResp, error) {
-	var resp broadcastmodule.NodeReachabilityQueryPaidResp
+func decodeNodeReachabilityQueryRouteResp(callResp ncall.CallResp) (contractmessage.NodeReachabilityQueryPaidResp, error) {
+	var resp contractmessage.NodeReachabilityQueryPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+		return contractmessage.NodeReachabilityQueryPaidResp{}, err
 	}
 	applyFeePoolRouteReceiptToNodeReachabilityQueryResp(&resp, callResp)
 	return resp, nil
 }
 
-func applyFeePoolRouteReceiptToDemandPublishResp(resp *broadcastmodule.DemandPublishPaidResp, callResp ncall.CallResp) {
+func applyFeePoolRouteReceiptToDemandPublishResp(resp *contractmessage.DemandPublishPaidResp, callResp ncall.CallResp) {
 	if resp == nil {
 		return
 	}
@@ -128,7 +128,7 @@ func applyFeePoolRouteReceiptToDemandPublishResp(resp *broadcastmodule.DemandPub
 	resp.ServiceReceipt = append([]byte(nil), callResp.ServiceReceipt...)
 }
 
-func applyFeePoolRouteReceiptToDemandPublishBatchResp(resp *broadcastmodule.DemandPublishBatchPaidResp, callResp ncall.CallResp) {
+func applyFeePoolRouteReceiptToDemandPublishBatchResp(resp *contractmessage.DemandPublishBatchPaidResp, callResp ncall.CallResp) {
 	if resp == nil {
 		return
 	}
@@ -142,7 +142,7 @@ func applyFeePoolRouteReceiptToDemandPublishBatchResp(resp *broadcastmodule.Dema
 	resp.ServiceReceipt = append([]byte(nil), callResp.ServiceReceipt...)
 }
 
-func applyFeePoolRouteReceiptToLiveDemandPublishResp(resp *broadcastmodule.LiveDemandPublishPaidResp, callResp ncall.CallResp) {
+func applyFeePoolRouteReceiptToLiveDemandPublishResp(resp *contractmessage.LiveDemandPublishPaidResp, callResp ncall.CallResp) {
 	if resp == nil {
 		return
 	}
@@ -156,7 +156,7 @@ func applyFeePoolRouteReceiptToLiveDemandPublishResp(resp *broadcastmodule.LiveD
 	resp.ServiceReceipt = append([]byte(nil), callResp.ServiceReceipt...)
 }
 
-func applyFeePoolRouteReceiptToNodeReachabilityAnnounceResp(resp *broadcastmodule.NodeReachabilityAnnouncePaidResp, callResp ncall.CallResp) {
+func applyFeePoolRouteReceiptToNodeReachabilityAnnounceResp(resp *contractmessage.NodeReachabilityAnnouncePaidResp, callResp ncall.CallResp) {
 	if resp == nil {
 		return
 	}
@@ -170,7 +170,7 @@ func applyFeePoolRouteReceiptToNodeReachabilityAnnounceResp(resp *broadcastmodul
 	resp.ServiceReceipt = append([]byte(nil), callResp.ServiceReceipt...)
 }
 
-func applyFeePoolRouteReceiptToNodeReachabilityQueryResp(resp *broadcastmodule.NodeReachabilityQueryPaidResp, callResp ncall.CallResp) {
+func applyFeePoolRouteReceiptToNodeReachabilityQueryResp(resp *contractmessage.NodeReachabilityQueryPaidResp, callResp ncall.CallResp) {
 	if resp == nil {
 		return
 	}

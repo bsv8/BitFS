@@ -13,10 +13,11 @@ import (
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/gateway/pkg/gatewayapp"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p"
@@ -263,7 +264,7 @@ func TestValidateGatewayDemandPublishChainTxQuoteBuilt(t *testing.T) {
 }
 
 func TestParseDemandPublishPaidResp_MissingTxID(t *testing.T) {
-	respBody, err := oldproto.Marshal(&broadcastmodule.DemandPublishPaidResp{
+	respBody, err := oldproto.Marshal(&contractmessage.DemandPublishPaidResp{
 		Success:   true,
 		Status:    "ok",
 		DemandID:  "dmd_1",
@@ -362,13 +363,13 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 	}
 	ncall.Register(h, nodeSecForRuntime(nil), func(ctx context.Context, meta ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
 		switch strings.TrimSpace(req.Route) {
-		case broadcastmodule.RouteBroadcastV1DemandPublish:
+		case string(contractroute.RouteBroadcastV1DemandPublish):
 			if strings.TrimSpace(req.PaymentScheme) == "" {
-				var body broadcastmodule.DemandPublishReq
+				var body contractmessage.DemandPublishReq
 				if err := oldproto.Unmarshal(req.Body, &body); err != nil {
 					return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
 				}
-				payloadRaw, err := broadcastmodule.MarshalDemandPublishQuotePayload(body.SeedHash, body.ChunkCount, body.BuyerAddrs)
+				payloadRaw, err := marshalDemandPublishQuotePayload(body.SeedHash, body.ChunkCount, body.BuyerAddrs)
 				if err != nil {
 					return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
 				}
@@ -377,7 +378,7 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 					return ncall.CallResp{}, err
 				}
 				offer := payflow.ServiceOffer{
-					ServiceType:          broadcastmodule.QuoteServiceTypeDemandPublish,
+					ServiceType:          quoteServiceTypeDemandPublish,
 					ServiceNodePubkeyHex: state.gatewayPubHex,
 					ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(meta.SenderPubkeyHex)),
 					RequestParams:        append([]byte(nil), payloadRaw...),
@@ -404,8 +405,8 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 					Code:    "PAYMENT_QUOTED",
 					Message: "payment quote ready",
 					PaymentSchemes: []*ncall.PaymentOption{
-						{Scheme: ncall.PaymentSchemePool2of2V1, AmountSatoshi: quoteAmount, Description: broadcastmodule.QuoteServiceTypeDemandPublish, QuoteStatus: "accepted"},
-						{Scheme: ncall.PaymentSchemeChainTxV1, AmountSatoshi: quoteAmount, Description: broadcastmodule.QuoteServiceTypeDemandPublish, QuoteStatus: "accepted"},
+						{Scheme: ncall.PaymentSchemePool2of2V1, AmountSatoshi: quoteAmount, Description: quoteServiceTypeDemandPublish, QuoteStatus: "accepted"},
+						{Scheme: ncall.PaymentSchemeChainTxV1, AmountSatoshi: quoteAmount, Description: quoteServiceTypeDemandPublish, QuoteStatus: "accepted"},
 					},
 					ServiceQuote: rawQuote,
 				}, nil
@@ -429,21 +430,21 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 			if err != nil {
 				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
 			}
-			var body broadcastmodule.DemandPublishReq
+			var body contractmessage.DemandPublishReq
 			if err := oldproto.Unmarshal(req.Body, &body); err != nil {
 				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
 			}
-			payloadRaw, err := broadcastmodule.MarshalDemandPublishQuotePayload(body.SeedHash, body.ChunkCount, body.BuyerAddrs)
+			payloadRaw, err := marshalDemandPublishQuotePayload(body.SeedHash, body.ChunkCount, body.BuyerAddrs)
 			if err != nil {
 				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
 			}
 			state.mu.Lock()
 			offer := state.lastOffer
 			state.mu.Unlock()
-			if err := poolcore.ValidateServiceQuoteBinding(quote, offer, state.gatewayPubHex, strings.ToLower(strings.TrimSpace(meta.SenderPubkeyHex)), broadcastmodule.QuoteServiceTypeDemandPublish, payloadRaw, time.Now().Unix()); err != nil {
+			if err := poolcore.ValidateServiceQuoteBinding(quote, offer, state.gatewayPubHex, strings.ToLower(strings.TrimSpace(meta.SenderPubkeyHex)), quoteServiceTypeDemandPublish, payloadRaw, time.Now().Unix()); err != nil {
 				return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error()}, nil
 			}
-			demandResp := broadcastmodule.DemandPublishPaidResp{
+			demandResp := contractmessage.DemandPublishPaidResp{
 				Success:   true,
 				Status:    "ok",
 				DemandID:  demandID,
@@ -456,11 +457,11 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 			if err != nil {
 				return ncall.CallResp{}, err
 			}
-			servicePayloadRaw, err := broadcastmodule.MarshalDemandPublishServicePayload(demandResp)
+			servicePayloadRaw, err := marshalDemandPublishServicePayload(demandResp)
 			if err != nil {
 				return ncall.CallResp{}, err
 			}
-			serviceReceiptRaw, err := poolcore.BuildSignedServiceReceipt(gatewayPrivHex, false, quote.OfferHash, broadcastmodule.ServiceTypeDemandPublish, servicePayloadRaw)
+			serviceReceiptRaw, err := poolcore.BuildSignedServiceReceipt(gatewayPrivHex, false, quote.OfferHash, serviceTypeDemandPublish, servicePayloadRaw)
 			if err != nil {
 				return ncall.CallResp{}, err
 			}
@@ -484,7 +485,7 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 			return ncall.CallResp{
 				Ok:                   true,
 				Code:                 "OK",
-				ContentType:          ncall.ContentTypeProto,
+				ContentType:          contractmessage.ContentTypeProto,
 				Body:                 demandRespRaw,
 				PaymentReceiptScheme: ncall.PaymentSchemeChainTxV1,
 				PaymentReceipt:       paymentReceiptRaw,

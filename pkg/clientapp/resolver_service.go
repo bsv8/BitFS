@@ -5,7 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/modules/domain"
 	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
@@ -45,14 +46,14 @@ func TriggerResolverResolve(ctx context.Context, store *clientDB, rt *Runtime, p
 	if err != nil {
 		return out, err
 	}
-	payload, err := oldproto.Marshal(&domainmodule.NameRouteReq{Name: name})
+	payload, err := oldproto.Marshal(&contractmessage.NameRouteReq{Name: name})
 	if err != nil {
 		return out, err
 	}
 	resp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          resolverPubkeyHex,
-		Route:       domainmodule.RouteDomainV1Resolve,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteDomainV1Resolve),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
 	})
@@ -67,7 +68,7 @@ func TriggerResolverResolve(ctx context.Context, store *clientDB, rt *Runtime, p
 		}
 		return out, nil
 	}
-	var routeBody domainmodule.ResolveNamePaidResp
+	var routeBody contractmessage.ResolveNamePaidResp
 	if err := oldproto.Unmarshal(resp.Body, &routeBody); err != nil {
 		return out, fmt.Errorf("decode domain resolve body: %w", err)
 	}

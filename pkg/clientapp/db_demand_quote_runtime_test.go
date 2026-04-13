@@ -7,8 +7,9 @@ import (
 	"testing"
 	"time"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -34,10 +35,10 @@ func TestTriggerGatewayPublishDemandRecordsDemand(t *testing.T) {
 		{Enabled: true, Addr: gwHost.Addrs()[0].String() + "/p2p/" + gwHost.ID().String(), Pubkey: gwPubHex},
 	}
 	ncall.Register(gwHost, nodeSecForRuntime(rt), func(_ context.Context, _ ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
-		if req.Route != broadcastmodule.RouteBroadcastV1DemandPublish {
+		if req.Route != string(contractroute.RouteBroadcastV1DemandPublish) {
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-		body, err := oldproto.Marshal(&broadcastmodule.DemandPublishPaidResp{
+		body, err := oldproto.Marshal(&contractmessage.DemandPublishPaidResp{
 			Success:   true,
 			Status:    "ok",
 			DemandID:  "dmd_publish_records",
@@ -49,7 +50,7 @@ func TestTriggerGatewayPublishDemandRecordsDemand(t *testing.T) {
 		return ncall.CallResp{
 			Ok:          true,
 			Code:        "OK",
-			ContentType: ncall.ContentTypeProto,
+			ContentType: contractmessage.ContentTypeProto,
 			Body:        body,
 		}, nil
 	}, nil)

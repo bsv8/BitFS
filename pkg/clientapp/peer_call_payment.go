@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -246,7 +246,7 @@ func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, store *clien
 		chargeReason = peerCallQuotedServiceType(req.Route)
 	}
 	quantity, unit := describePeerCallQuoteQuantity(quote)
-	if strings.TrimSpace(req.Route) == broadcastmodule.RouteBroadcastV1ListenCycle {
+	if strings.TrimSpace(req.Route) == string(contractroute.RouteBroadcastV1ListenCycle) {
 		quantity, unit = 1, "second"
 		if duration, err := poolcore.ListenOfferBudgetToDurationSeconds(quote.ChargeAmountSatoshi, session.SingleCycleFeeSatoshi, session.BillingCycleSeconds); err == nil {
 			quantity = duration
@@ -330,66 +330,66 @@ func payPeerCallWithFeePool2of2Quote(ctx context.Context, rt *Runtime, store *cl
 
 func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
 	switch strings.TrimSpace(route) {
-	case broadcastmodule.RouteBroadcastV1ListenCycle:
-		var resp broadcastmodule.ListenCyclePaidResp
+	case string(contractroute.RouteBroadcastV1ListenCycle):
+		var resp contractmessage.ListenCyclePaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode broadcast listen cycle body failed: %w", err)
 		}
-		return broadcastmodule.MarshalListenCycleServicePayload(resp)
-	case broadcastmodule.RouteBroadcastV1DemandPublish:
-		var resp broadcastmodule.DemandPublishPaidResp
+		return marshalListenCycleServicePayload(resp)
+	case string(contractroute.RouteBroadcastV1DemandPublish):
+		var resp contractmessage.DemandPublishPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode broadcast demand publish body failed: %w", err)
 		}
-		return broadcastmodule.MarshalDemandPublishServicePayload(resp)
-	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
-		var resp broadcastmodule.DemandPublishBatchPaidResp
+		return marshalDemandPublishServicePayload(resp)
+	case string(contractroute.RouteBroadcastV1DemandPublishBatch):
+		var resp contractmessage.DemandPublishBatchPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode broadcast demand publish batch body failed: %w", err)
 		}
-		return broadcastmodule.MarshalDemandPublishBatchServicePayload(resp)
-	case broadcastmodule.RouteBroadcastV1LiveDemandPublish:
-		var resp broadcastmodule.LiveDemandPublishPaidResp
+		return marshalDemandPublishBatchServicePayload(resp)
+	case string(contractroute.RouteBroadcastV1LiveDemandPublish):
+		var resp contractmessage.LiveDemandPublishPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode broadcast live demand publish body failed: %w", err)
 		}
-		return broadcastmodule.MarshalLiveDemandPublishServicePayload(resp)
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce:
-		var resp broadcastmodule.NodeReachabilityAnnouncePaidResp
+		return marshalLiveDemandPublishServicePayload(resp)
+	case string(contractroute.RouteBroadcastV1NodeReachabilityAnnounce):
+		var resp contractmessage.NodeReachabilityAnnouncePaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode broadcast node reachability announce body failed: %w", err)
 		}
-		return broadcastmodule.MarshalNodeReachabilityAnnounceServicePayload(resp)
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityQuery:
-		var resp broadcastmodule.NodeReachabilityQueryPaidResp
+		return marshalNodeReachabilityAnnounceServicePayload(resp)
+	case string(contractroute.RouteBroadcastV1NodeReachabilityQuery):
+		var resp contractmessage.NodeReachabilityQueryPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode broadcast node reachability query body failed: %w", err)
 		}
-		return broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
-	case domainmodule.RouteDomainV1Resolve:
-		var resp domainmodule.ResolveNamePaidResp
+		return marshalNodeReachabilityQueryServicePayload(resp)
+	case string(contractroute.RouteDomainV1Resolve):
+		var resp contractmessage.ResolveNamePaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode domain resolve body failed: %w", err)
 		}
-		return domainmodule.MarshalResolveNameServicePayload(resp)
-	case domainmodule.RouteDomainV1Query:
-		var resp domainmodule.QueryNamePaidResp
+		return marshalResolveNameServicePayload(resp)
+	case string(contractroute.RouteDomainV1Query):
+		var resp contractmessage.QueryNamePaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode domain query body failed: %w", err)
 		}
-		return domainmodule.MarshalQueryNameServicePayload(resp)
-	case domainmodule.RouteDomainV1Lock:
-		var resp domainmodule.RegisterLockPaidResp
+		return marshalQueryNameServicePayload(resp)
+	case string(contractroute.RouteDomainV1Lock):
+		var resp contractmessage.RegisterLockPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode domain register lock body failed: %w", err)
 		}
-		return domainmodule.MarshalRegisterLockServicePayload(resp)
-	case domainmodule.RouteDomainV1SetTarget:
-		var resp domainmodule.SetTargetPaidResp
+		return marshalRegisterLockServicePayload(resp)
+	case string(contractroute.RouteDomainV1SetTarget):
+		var resp contractmessage.SetTargetPaidResp
 		if err := oldproto.Unmarshal(body, &resp); err != nil {
 			return nil, fmt.Errorf("decode domain set target body failed: %w", err)
 		}
-		return domainmodule.MarshalSetTargetServicePayload(resp)
+		return marshalSetTargetServicePayload(resp)
 	default:
 		return append([]byte(nil), body...), nil
 	}
@@ -397,42 +397,42 @@ func expectedPeerCallResultPayload(route string, body []byte) ([]byte, error) {
 
 func buildPeerCallServiceParamsPayload(route string, body []byte) ([]byte, error) {
 	switch strings.TrimSpace(route) {
-	case broadcastmodule.RouteBroadcastV1ListenCycle:
-		var req broadcastmodule.ListenCycleReq
+	case string(contractroute.RouteBroadcastV1ListenCycle):
+		var req contractmessage.ListenCycleReq
 		if err := oldproto.Unmarshal(body, &req); err != nil {
 			return nil, fmt.Errorf("decode broadcast listen cycle request failed: %w", err)
 		}
 		return poolcore.MarshalListenCycleQuotePayload(req.RequestedDurationSeconds, req.RequestedUntilUnix, req.ProposedPaymentSatoshi)
-	case broadcastmodule.RouteBroadcastV1DemandPublish:
-		var req broadcastmodule.DemandPublishReq
+	case string(contractroute.RouteBroadcastV1DemandPublish):
+		var req contractmessage.DemandPublishReq
 		if err := oldproto.Unmarshal(body, &req); err != nil {
 			return nil, fmt.Errorf("decode broadcast demand publish request failed: %w", err)
 		}
-		return broadcastmodule.MarshalDemandPublishQuotePayload(req.SeedHash, req.ChunkCount, req.BuyerAddrs)
-	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
-		var req broadcastmodule.DemandPublishBatchReq
+		return marshalDemandPublishQuotePayload(req.SeedHash, req.ChunkCount, req.BuyerAddrs)
+	case string(contractroute.RouteBroadcastV1DemandPublishBatch):
+		var req contractmessage.DemandPublishBatchReq
 		if err := oldproto.Unmarshal(body, &req); err != nil {
 			return nil, fmt.Errorf("decode broadcast demand publish batch request failed: %w", err)
 		}
-		return broadcastmodule.MarshalDemandPublishBatchQuotePayload(req.Items, req.BuyerAddrs)
-	case broadcastmodule.RouteBroadcastV1LiveDemandPublish:
-		var req broadcastmodule.LiveDemandPublishReq
+		return marshalDemandPublishBatchQuotePayload(req.Items, req.BuyerAddrs)
+	case string(contractroute.RouteBroadcastV1LiveDemandPublish):
+		var req contractmessage.LiveDemandPublishReq
 		if err := oldproto.Unmarshal(body, &req); err != nil {
 			return nil, fmt.Errorf("decode broadcast live demand publish request failed: %w", err)
 		}
-		return broadcastmodule.MarshalLiveDemandPublishQuotePayload(req.StreamID, req.HaveSegmentIndex, req.Window, req.BuyerAddrs)
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce:
-		var req broadcastmodule.NodeReachabilityAnnounceReq
+		return marshalLiveDemandPublishQuotePayload(req.StreamID, req.HaveSegmentIndex, req.Window, req.BuyerAddrs)
+	case string(contractroute.RouteBroadcastV1NodeReachabilityAnnounce):
+		var req contractmessage.NodeReachabilityAnnounceReq
 		if err := oldproto.Unmarshal(body, &req); err != nil {
 			return nil, fmt.Errorf("decode broadcast node reachability announce request failed: %w", err)
 		}
-		return broadcastmodule.MarshalNodeReachabilityAnnounceQuotePayload(req.SignedAnnouncement)
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityQuery:
-		var req broadcastmodule.NodeReachabilityQueryReq
+		return marshalNodeReachabilityAnnounceQuotePayload(req.SignedAnnouncement)
+	case string(contractroute.RouteBroadcastV1NodeReachabilityQuery):
+		var req contractmessage.NodeReachabilityQueryReq
 		if err := oldproto.Unmarshal(body, &req); err != nil {
 			return nil, fmt.Errorf("decode broadcast node reachability query request failed: %w", err)
 		}
-		return broadcastmodule.MarshalNodeReachabilityQueryQuotePayload(req.TargetNodePubkeyHex)
+		return marshalNodeReachabilityQueryQuotePayload(req.TargetNodePubkeyHex)
 	default:
 		return append([]byte(nil), body...), nil
 	}
@@ -554,18 +554,18 @@ func buildPeerCallQuoteTarget(req ncall.CallReq) string {
 
 func peerCallQuotedServiceType(route string) string {
 	switch strings.TrimSpace(route) {
-	case broadcastmodule.RouteBroadcastV1ListenCycle:
+	case string(contractroute.RouteBroadcastV1ListenCycle):
 		return poolcore.QuoteServiceTypeListenCycle
-	case broadcastmodule.RouteBroadcastV1DemandPublish:
-		return broadcastmodule.QuoteServiceTypeDemandPublish
-	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
-		return broadcastmodule.QuoteServiceTypeDemandPublishBatch
-	case broadcastmodule.RouteBroadcastV1LiveDemandPublish:
-		return broadcastmodule.QuoteServiceTypeLiveDemandPublish
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce:
-		return broadcastmodule.QuoteServiceTypeNodeReachabilityAnnounce
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityQuery:
-		return broadcastmodule.QuoteServiceTypeNodeReachabilityQuery
+	case string(contractroute.RouteBroadcastV1DemandPublish):
+		return quoteServiceTypeDemandPublish
+	case string(contractroute.RouteBroadcastV1DemandPublishBatch):
+		return quoteServiceTypeDemandPublishBatch
+	case string(contractroute.RouteBroadcastV1LiveDemandPublish):
+		return quoteServiceTypeLiveDemandPublish
+	case string(contractroute.RouteBroadcastV1NodeReachabilityAnnounce):
+		return quoteServiceTypeNodeReachabilityAnnounce
+	case string(contractroute.RouteBroadcastV1NodeReachabilityQuery):
+		return quoteServiceTypeNodeReachabilityQuery
 	default:
 		return strings.TrimSpace(route)
 	}
@@ -573,26 +573,26 @@ func peerCallQuotedServiceType(route string) string {
 
 func peerCallReceiptServiceType(route string) string {
 	switch strings.TrimSpace(route) {
-	case broadcastmodule.RouteBroadcastV1ListenCycle:
-		return broadcastmodule.ServiceTypeListenCycle
-	case broadcastmodule.RouteBroadcastV1DemandPublish:
-		return broadcastmodule.ServiceTypeDemandPublish
-	case broadcastmodule.RouteBroadcastV1DemandPublishBatch:
-		return broadcastmodule.ServiceTypeDemandPublishBatch
-	case broadcastmodule.RouteBroadcastV1LiveDemandPublish:
-		return broadcastmodule.ServiceTypeLiveDemandPublish
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce:
-		return broadcastmodule.ServiceTypeNodeReachabilityAnnounce
-	case broadcastmodule.RouteBroadcastV1NodeReachabilityQuery:
-		return broadcastmodule.ServiceTypeNodeReachabilityQuery
-	case domainmodule.RouteDomainV1Resolve:
-		return domainmodule.ServiceTypeResolveName
-	case domainmodule.RouteDomainV1Query:
-		return domainmodule.ServiceTypeQueryName
-	case domainmodule.RouteDomainV1Lock:
-		return domainmodule.ServiceTypeRegisterLock
-	case domainmodule.RouteDomainV1SetTarget:
-		return domainmodule.ServiceTypeSetTarget
+	case string(contractroute.RouteBroadcastV1ListenCycle):
+		return serviceTypeListenCycle
+	case string(contractroute.RouteBroadcastV1DemandPublish):
+		return serviceTypeDemandPublish
+	case string(contractroute.RouteBroadcastV1DemandPublishBatch):
+		return serviceTypeDemandPublishBatch
+	case string(contractroute.RouteBroadcastV1LiveDemandPublish):
+		return serviceTypeLiveDemandPublish
+	case string(contractroute.RouteBroadcastV1NodeReachabilityAnnounce):
+		return serviceTypeNodeReachabilityAnnounce
+	case string(contractroute.RouteBroadcastV1NodeReachabilityQuery):
+		return serviceTypeNodeReachabilityQuery
+	case string(contractroute.RouteDomainV1Resolve):
+		return serviceTypeResolveName
+	case string(contractroute.RouteDomainV1Query):
+		return serviceTypeQueryName
+	case string(contractroute.RouteDomainV1Lock):
+		return serviceTypeRegisterLock
+	case string(contractroute.RouteDomainV1SetTarget):
+		return serviceTypeSetTarget
 	default:
 		return strings.TrimSpace(route)
 	}

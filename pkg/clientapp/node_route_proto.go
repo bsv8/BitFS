@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -48,7 +49,7 @@ func callNodeRouteProto(ctx context.Context, rt *Runtime, peerID peer.ID, route 
 	resp, err := callNodeRoute(ctx, rt, peerID, ncall.CallReq{
 		To:          peerID.String(),
 		Route:       strings.TrimSpace(route),
-		ContentType: ncall.ContentTypeProto,
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        rawBody,
 	})
 	if err != nil {

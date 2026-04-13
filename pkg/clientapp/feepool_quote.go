@@ -8,10 +8,10 @@ import (
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -97,7 +97,7 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	}
 	grantedDurationSeconds := uint32(0)
 	grantedDeadlineUnix := int64(0)
-	if strings.TrimSpace(args.Route) == broadcastmodule.RouteBroadcastV1ListenCycle {
+	if strings.TrimSpace(args.Route) == string(contractroute.RouteBroadcastV1ListenCycle) {
 		if args.Session == nil {
 			return feePoolServiceQuoteBuilt{}, fmt.Errorf("fee pool session missing")
 		}

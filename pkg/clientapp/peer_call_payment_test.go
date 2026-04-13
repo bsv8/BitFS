@@ -3,15 +3,15 @@ package clientapp
 import (
 	"testing"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
-	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
 func TestExpectedPeerCallResultPayloadForDomainQuery(t *testing.T) {
-	resp := domainmodule.QueryNamePaidResp{
+	resp := contractmessage.QueryNamePaidResp{
 		Success:                  true,
 		Status:                   "available",
 		Name:                     "movie.david",
@@ -28,11 +28,11 @@ func TestExpectedPeerCallResultPayloadForDomainQuery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proto.Marshal() error = %v", err)
 	}
-	got, err := expectedPeerCallResultPayload(domainmodule.RouteDomainV1Query, body)
+	got, err := expectedPeerCallResultPayload(string(contractroute.RouteDomainV1Query), body)
 	if err != nil {
 		t.Fatalf("expectedPeerCallResultPayload() error = %v", err)
 	}
-	want, err := domainmodule.MarshalQueryNameServicePayload(resp)
+	want, err := marshalQueryNameServicePayload(resp)
 	if err != nil {
 		t.Fatalf("MarshalQueryNameServicePayload() error = %v", err)
 	}
@@ -42,7 +42,7 @@ func TestExpectedPeerCallResultPayloadForDomainQuery(t *testing.T) {
 }
 
 func TestExpectedPeerCallResultPayloadForBroadcastDemandPublish(t *testing.T) {
-	resp := broadcastmodule.DemandPublishPaidResp{
+	resp := contractmessage.DemandPublishPaidResp{
 		Success:        true,
 		Status:         "ok",
 		DemandID:       "demand-1",
@@ -54,11 +54,11 @@ func TestExpectedPeerCallResultPayloadForBroadcastDemandPublish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proto.Marshal() error = %v", err)
 	}
-	got, err := expectedPeerCallResultPayload(broadcastmodule.RouteBroadcastV1DemandPublish, body)
+	got, err := expectedPeerCallResultPayload(string(contractroute.RouteBroadcastV1DemandPublish), body)
 	if err != nil {
 		t.Fatalf("expectedPeerCallResultPayload() error = %v", err)
 	}
-	want, err := broadcastmodule.MarshalDemandPublishServicePayload(resp)
+	want, err := marshalDemandPublishServicePayload(resp)
 	if err != nil {
 		t.Fatalf("MarshalDemandPublishServicePayload() error = %v", err)
 	}
@@ -68,7 +68,7 @@ func TestExpectedPeerCallResultPayloadForBroadcastDemandPublish(t *testing.T) {
 }
 
 func TestExpectedPeerCallResultPayloadForBroadcastListenCycle(t *testing.T) {
-	resp := broadcastmodule.ListenCyclePaidResp{
+	resp := contractmessage.ListenCyclePaidResp{
 		Success:                true,
 		Status:                 "ok",
 		ChargedAmount:          123,
@@ -81,11 +81,11 @@ func TestExpectedPeerCallResultPayloadForBroadcastListenCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proto.Marshal() error = %v", err)
 	}
-	got, err := expectedPeerCallResultPayload(broadcastmodule.RouteBroadcastV1ListenCycle, body)
+	got, err := expectedPeerCallResultPayload(string(contractroute.RouteBroadcastV1ListenCycle), body)
 	if err != nil {
 		t.Fatalf("expectedPeerCallResultPayload() error = %v", err)
 	}
-	want, err := broadcastmodule.MarshalListenCycleServicePayload(resp)
+	want, err := marshalListenCycleServicePayload(resp)
 	if err != nil {
 		t.Fatalf("MarshalListenCycleServicePayload() error = %v", err)
 	}
@@ -95,7 +95,7 @@ func TestExpectedPeerCallResultPayloadForBroadcastListenCycle(t *testing.T) {
 }
 
 func TestExpectedPeerCallResultPayloadForBroadcastNodeReachabilityQuery(t *testing.T) {
-	resp := broadcastmodule.NodeReachabilityQueryPaidResp{
+	resp := contractmessage.NodeReachabilityQueryPaidResp{
 		Success:             true,
 		Status:              "ok",
 		Found:               true,
@@ -107,11 +107,11 @@ func TestExpectedPeerCallResultPayloadForBroadcastNodeReachabilityQuery(t *testi
 	if err != nil {
 		t.Fatalf("proto.Marshal() error = %v", err)
 	}
-	got, err := expectedPeerCallResultPayload(broadcastmodule.RouteBroadcastV1NodeReachabilityQuery, body)
+	got, err := expectedPeerCallResultPayload(string(contractroute.RouteBroadcastV1NodeReachabilityQuery), body)
 	if err != nil {
 		t.Fatalf("expectedPeerCallResultPayload() error = %v", err)
 	}
-	want, err := broadcastmodule.MarshalNodeReachabilityQueryServicePayload(resp)
+	want, err := marshalNodeReachabilityQueryServicePayload(resp)
 	if err != nil {
 		t.Fatalf("MarshalNodeReachabilityQueryServicePayload() error = %v", err)
 	}
@@ -179,31 +179,31 @@ func TestChooseAcceptedQuotePaymentScheme(t *testing.T) {
 }
 
 func TestPeerCallQuotedServiceTypeMapsBroadcastRoute(t *testing.T) {
-	if got := peerCallQuotedServiceType(broadcastmodule.RouteBroadcastV1DemandPublish); got != broadcastmodule.QuoteServiceTypeDemandPublish {
-		t.Fatalf("peerCallQuotedServiceType(demand_publish) = %s, want %s", got, broadcastmodule.QuoteServiceTypeDemandPublish)
+	if got := peerCallQuotedServiceType(string(contractroute.RouteBroadcastV1DemandPublish)); got != quoteServiceTypeDemandPublish {
+		t.Fatalf("peerCallQuotedServiceType(demand_publish) = %s, want %s", got, quoteServiceTypeDemandPublish)
 	}
-	if got := peerCallQuotedServiceType(broadcastmodule.RouteBroadcastV1ListenCycle); got != poolcore.QuoteServiceTypeListenCycle {
+	if got := peerCallQuotedServiceType(string(contractroute.RouteBroadcastV1ListenCycle)); got != poolcore.QuoteServiceTypeListenCycle {
 		t.Fatalf("peerCallQuotedServiceType(listen_cycle) = %s, want %s", got, poolcore.QuoteServiceTypeListenCycle)
 	}
-	if got := peerCallQuotedServiceType(domainmodule.RouteDomainV1Query); got != domainmodule.RouteDomainV1Query {
-		t.Fatalf("peerCallQuotedServiceType(domain_query) = %s, want %s", got, domainmodule.RouteDomainV1Query)
+	if got := peerCallQuotedServiceType(string(contractroute.RouteDomainV1Query)); got != string(contractroute.RouteDomainV1Query) {
+		t.Fatalf("peerCallQuotedServiceType(domain_query) = %s, want %s", got, string(contractroute.RouteDomainV1Query))
 	}
 }
 
 func TestPeerCallReceiptServiceTypeMapsRoutes(t *testing.T) {
-	if got := peerCallReceiptServiceType(broadcastmodule.RouteBroadcastV1DemandPublish); got != broadcastmodule.ServiceTypeDemandPublish {
-		t.Fatalf("peerCallReceiptServiceType(demand_publish) = %s, want %s", got, broadcastmodule.ServiceTypeDemandPublish)
+	if got := peerCallReceiptServiceType(string(contractroute.RouteBroadcastV1DemandPublish)); got != serviceTypeDemandPublish {
+		t.Fatalf("peerCallReceiptServiceType(demand_publish) = %s, want %s", got, serviceTypeDemandPublish)
 	}
-	if got := peerCallReceiptServiceType(broadcastmodule.RouteBroadcastV1ListenCycle); got != broadcastmodule.ServiceTypeListenCycle {
-		t.Fatalf("peerCallReceiptServiceType(listen_cycle) = %s, want %s", got, broadcastmodule.ServiceTypeListenCycle)
+	if got := peerCallReceiptServiceType(string(contractroute.RouteBroadcastV1ListenCycle)); got != serviceTypeListenCycle {
+		t.Fatalf("peerCallReceiptServiceType(listen_cycle) = %s, want %s", got, serviceTypeListenCycle)
 	}
-	if got := peerCallReceiptServiceType(domainmodule.RouteDomainV1SetTarget); got != domainmodule.ServiceTypeSetTarget {
-		t.Fatalf("peerCallReceiptServiceType(set_target) = %s, want %s", got, domainmodule.ServiceTypeSetTarget)
+	if got := peerCallReceiptServiceType(string(contractroute.RouteDomainV1SetTarget)); got != serviceTypeSetTarget {
+		t.Fatalf("peerCallReceiptServiceType(set_target) = %s, want %s", got, serviceTypeSetTarget)
 	}
 }
 
 func TestBuildPeerCallServiceParamsPayloadForListenCycle(t *testing.T) {
-	body, err := oldproto.Marshal(&broadcastmodule.ListenCycleReq{
+	body, err := oldproto.Marshal(&contractmessage.ListenCycleReq{
 		RequestedDurationSeconds: 120,
 		RequestedUntilUnix:       1234567890,
 		ProposedPaymentSatoshi:   456,
@@ -211,7 +211,7 @@ func TestBuildPeerCallServiceParamsPayloadForListenCycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("proto.Marshal() error = %v", err)
 	}
-	got, err := buildPeerCallServiceParamsPayload(broadcastmodule.RouteBroadcastV1ListenCycle, body)
+	got, err := buildPeerCallServiceParamsPayload(string(contractroute.RouteBroadcastV1ListenCycle), body)
 	if err != nil {
 		t.Fatalf("buildPeerCallServiceParamsPayload() error = %v", err)
 	}

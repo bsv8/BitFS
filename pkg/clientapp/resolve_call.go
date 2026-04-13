@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
@@ -69,7 +72,7 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
 		}
 		switch route {
-		case ncall.RouteNodeV1CapabilitiesShow:
+		case string(contractroute.RouteNodeV1CapabilitiesShow):
 			body := clientCapabilitiesShowBody(rt)
 			return marshalNodeCallProto(&body)
 		case routeInboxMessage:
@@ -91,7 +94,7 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 		return ncall.ResolveResp{
 			Ok:          true,
 			Code:        "OK",
-			ContentType: ncall.ContentTypeProto,
+			ContentType: contractmessage.ContentTypeProto,
 			Body:        body,
 		}, nil
 	})
@@ -148,7 +151,7 @@ func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolvePa
 	if err := ensureTargetPeerReachable(ctx, p.Store, rt, to, peerID); err != nil {
 		return out, err
 	}
-	err = pproto.CallProto(ctx, rt.Host, peerID, ncall.ProtoNodeResolve, nodeSecForRuntime(rt), ncall.ResolveReq{
+	err = pproto.CallProto(ctx, rt.Host, peerID, contractprotoid.ProtoNodeResolve, nodeSecForRuntime(rt), contractmessage.ResolveReq{
 		To:    to,
 		Route: normalizeResolveRoute(p.Route),
 	}, &out)
@@ -157,20 +160,20 @@ func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolvePa
 
 func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error) {
 	var out ncall.CallResp
-	if err := pproto.CallProto(ctx, rt.Host, peerID, ncall.ProtoNodeCall, nodeSecForRuntime(rt), req, &out); err != nil {
+	if err := pproto.CallProto(ctx, rt.Host, peerID, contractprotoid.ProtoNodeCall, nodeSecForRuntime(rt), req, &out); err != nil {
 		return ncall.CallResp{}, err
 	}
 	return out, nil
 }
 
-func clientCapabilitiesShowBody(rt *Runtime) ncall.CapabilitiesShowBody {
+func clientCapabilitiesShowBody(rt *Runtime) contractmessage.CapabilitiesShowBody {
 	nodePubkeyHex := ""
 	if rt != nil && rt.runIn.ClientID != "" {
 		nodePubkeyHex = strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
 	}
-	return ncall.CapabilitiesShowBody{
+	return contractmessage.CapabilitiesShowBody{
 		NodePubkeyHex: nodePubkeyHex,
-		Capabilities: []*ncall.CapabilityItem{
+		Capabilities: []*contractmessage.CapabilityItem{
 			{
 				ID:      "wallet",
 				Version: 1,
@@ -191,7 +194,7 @@ func marshalNodeCallProto(msg oldproto.Message) (ncall.CallResp, error) {
 	return ncall.CallResp{
 		Ok:          true,
 		Code:        "OK",
-		ContentType: ncall.ContentTypeProto,
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        body,
 	}, nil
 }

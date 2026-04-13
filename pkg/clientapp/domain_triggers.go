@@ -12,7 +12,8 @@ import (
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -137,7 +138,7 @@ type TriggerDomainSetTargetResult struct {
 
 type domainQueryResult struct {
 	ResolverPeerID peer.ID
-	Response       domainmodule.QueryNamePaidResp
+	Response       contractmessage.QueryNamePaidResp
 }
 
 type domainRegisterQuote struct {
@@ -660,14 +661,14 @@ func triggerDomainQueryName(ctx context.Context, store *clientDB, rt *Runtime, r
 	if rt == nil || rt.Host == nil {
 		return domainQueryResult{}, fmt.Errorf("runtime not initialized")
 	}
-	payload, err := oldproto.Marshal(&domainmodule.NameRouteReq{Name: name})
+	payload, err := oldproto.Marshal(&contractmessage.NameRouteReq{Name: name})
 	if err != nil {
 		return domainQueryResult{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          resolverPubkeyHex,
-		Route:       domainmodule.RouteDomainV1Query,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteDomainV1Query),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
 	})
@@ -677,90 +678,90 @@ func triggerDomainQueryName(ctx context.Context, store *clientDB, rt *Runtime, r
 	if !callResp.Ok {
 		return domainQueryResult{}, fmt.Errorf("domain query route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
-	var resp domainmodule.QueryNamePaidResp
+	var resp contractmessage.QueryNamePaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
 		return domainQueryResult{}, fmt.Errorf("decode domain query body failed: %w", err)
 	}
 	return domainQueryResult{ResolverPeerID: resolverPeerID, Response: resp}, nil
 }
 
-func triggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.RegisterLockPaidResp, error) {
-	payload, err := oldproto.Marshal(&domainmodule.NameTargetRouteReq{
+func triggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (contractmessage.RegisterLockPaidResp, error) {
+	payload, err := oldproto.Marshal(&contractmessage.NameTargetRouteReq{
 		Name:            name,
 		TargetPubkeyHex: targetPubkeyHex,
 	})
 	if err != nil {
-		return domainmodule.RegisterLockPaidResp{}, err
+		return contractmessage.RegisterLockPaidResp{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		Route:       domainmodule.RouteDomainV1Lock,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteDomainV1Lock),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
 	})
 	if err != nil {
-		return domainmodule.RegisterLockPaidResp{}, err
+		return contractmessage.RegisterLockPaidResp{}, err
 	}
 	if !callResp.Ok {
-		return domainmodule.RegisterLockPaidResp{}, fmt.Errorf("domain register lock route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
+		return contractmessage.RegisterLockPaidResp{}, fmt.Errorf("domain register lock route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
-	var resp domainmodule.RegisterLockPaidResp
+	var resp contractmessage.RegisterLockPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return domainmodule.RegisterLockPaidResp{}, fmt.Errorf("decode domain register lock body failed: %w", err)
+		return contractmessage.RegisterLockPaidResp{}, fmt.Errorf("decode domain register lock body failed: %w", err)
 	}
 	return resp, nil
 }
 
-func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, store *clientDB, resolverPubkeyHex string, registerTx []byte) (domainmodule.RegisterSubmitResp, error) {
-	payload, err := oldproto.Marshal(&domainmodule.RegisterSubmitReq{RegisterTx: append([]byte(nil), registerTx...)})
+func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, store *clientDB, resolverPubkeyHex string, registerTx []byte) (contractmessage.RegisterSubmitResp, error) {
+	payload, err := oldproto.Marshal(&contractmessage.RegisterSubmitReq{RegisterTx: append([]byte(nil), registerTx...)})
 	if err != nil {
-		return domainmodule.RegisterSubmitResp{}, err
+		return contractmessage.RegisterSubmitResp{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		Route:       domainmodule.RouteDomainV1RegisterSubmit,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteDomainV1RegisterSubmit),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
 	})
 	if err != nil {
-		return domainmodule.RegisterSubmitResp{}, err
+		return contractmessage.RegisterSubmitResp{}, err
 	}
 	if !callResp.Ok {
-		return domainmodule.RegisterSubmitResp{}, fmt.Errorf("domain register submit route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
+		return contractmessage.RegisterSubmitResp{}, fmt.Errorf("domain register submit route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
-	var routeResp domainmodule.RegisterSubmitResp
+	var routeResp contractmessage.RegisterSubmitResp
 	if err := oldproto.Unmarshal(callResp.Body, &routeResp); err != nil {
-		return domainmodule.RegisterSubmitResp{}, fmt.Errorf("decode domain register submit body failed: %w", err)
+		return contractmessage.RegisterSubmitResp{}, fmt.Errorf("decode domain register submit body failed: %w", err)
 	}
 	return routeResp, nil
 }
 
-func triggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (domainmodule.SetTargetPaidResp, error) {
-	payload, err := oldproto.Marshal(&domainmodule.NameTargetRouteReq{
+func triggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, resolverPubkeyHex string, name string, targetPubkeyHex string, charge uint64) (contractmessage.SetTargetPaidResp, error) {
+	payload, err := oldproto.Marshal(&contractmessage.NameTargetRouteReq{
 		Name:            name,
 		TargetPubkeyHex: targetPubkeyHex,
 	})
 	if err != nil {
-		return domainmodule.SetTargetPaidResp{}, err
+		return contractmessage.SetTargetPaidResp{}, err
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		Route:       domainmodule.RouteDomainV1SetTarget,
-		ContentType: ncall.ContentTypeProto,
+		Route:       string(contractroute.RouteDomainV1SetTarget),
+		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
 	})
 	if err != nil {
-		return domainmodule.SetTargetPaidResp{}, err
+		return contractmessage.SetTargetPaidResp{}, err
 	}
 	if !callResp.Ok {
-		return domainmodule.SetTargetPaidResp{}, fmt.Errorf("domain set target route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
+		return contractmessage.SetTargetPaidResp{}, fmt.Errorf("domain set target route failed: code=%s message=%s", strings.TrimSpace(callResp.Code), strings.TrimSpace(callResp.Message))
 	}
-	var resp domainmodule.SetTargetPaidResp
+	var resp contractmessage.SetTargetPaidResp
 	if err := oldproto.Unmarshal(callResp.Body, &resp); err != nil {
-		return domainmodule.SetTargetPaidResp{}, fmt.Errorf("decode domain set target body failed: %w", err)
+		return contractmessage.SetTargetPaidResp{}, fmt.Errorf("decode domain set target body failed: %w", err)
 	}
 	return resp, nil
 }

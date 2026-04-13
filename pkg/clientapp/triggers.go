@@ -16,9 +16,10 @@ import (
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
@@ -242,37 +243,37 @@ func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePl
 	}, nil
 }
 
-func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandParams) (broadcastmodule.DemandPublishPaidResp, error) {
+func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandParams) (contractmessage.DemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
+		return contractmessage.DemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" || p.ChunkCount == 0 {
-		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("invalid params")
+		return contractmessage.DemandPublishPaidResp{}, fmt.Errorf("invalid params")
 	}
 
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, err
+		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.DemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
+		return contractmessage.DemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	buyerAddrs := localAdvertiseAddrs(rt)
-	body := &broadcastmodule.DemandPublishReq{
+	body := &contractmessage.DemandPublishReq{
 		SeedHash:   seedHash,
 		ChunkCount: p.ChunkCount,
 		BuyerAddrs: buyerAddrs,
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1DemandPublish, body, decodeDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublish), body, decodeDemandPublishRouteResp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
-		return broadcastmodule.DemandPublishPaidResp{}, err
+		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	if err := validateDemandPublishPaidResp(resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
-		return broadcastmodule.DemandPublishPaidResp{}, err
+		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_end", map[string]any{
 		"demand_id": resp.DemandID,
@@ -281,47 +282,47 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		"error":     strings.TrimSpace(resp.Error),
 	})
 	if err := dbRecordDemand(ctx, store, resp.DemandID, seedHash); err != nil {
-		return broadcastmodule.DemandPublishPaidResp{}, err
+		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	return resp, nil
 }
 
-func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandBatchParams) (broadcastmodule.DemandPublishBatchPaidResp, error) {
+func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandBatchParams) (contractmessage.DemandPublishBatchPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
+		return contractmessage.DemandPublishBatchPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	items, err := normalizeDemandBatchItems(p.Items)
 	if err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
+		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
 
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
+		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
+		return contractmessage.DemandPublishBatchPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
-	reqItems := make([]*broadcastmodule.DemandPublishBatchPaidItem, 0, len(items))
+	reqItems := make([]*contractmessage.DemandPublishBatchPaidItem, 0, len(items))
 	for _, item := range items {
-		reqItems = append(reqItems, &broadcastmodule.DemandPublishBatchPaidItem{
+		reqItems = append(reqItems, &contractmessage.DemandPublishBatchPaidItem{
 			SeedHash:   item.SeedHash,
 			ChunkCount: item.ChunkCount,
 		})
 	}
-	body := &broadcastmodule.DemandPublishBatchReq{
+	body := &contractmessage.DemandPublishBatchReq{
 		Items:      reqItems,
 		BuyerAddrs: localAdvertiseAddrs(rt),
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1DemandPublishBatch, body, decodeDemandPublishBatchRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublishBatch), body, decodeDemandPublishBatchRouteResp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
+		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
 	if err := validateDemandPublishBatchPaidResp(resp); err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
-		return broadcastmodule.DemandPublishBatchPaidResp{}, err
+		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_end", map[string]any{
 		"published_count": resp.PublishedCount,
@@ -334,39 +335,39 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 			continue
 		}
 		if err := dbRecordDemand(ctx, store, item.DemandID, item.SeedHash); err != nil {
-			return broadcastmodule.DemandPublishBatchPaidResp{}, err
+			return contractmessage.DemandPublishBatchPaidResp{}, err
 		}
 	}
 	return resp, nil
 }
 
-func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishLiveDemandParams) (broadcastmodule.LiveDemandPublishPaidResp, error) {
+func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishLiveDemandParams) (contractmessage.LiveDemandPublishPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
+		return contractmessage.LiveDemandPublishPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
 	if !isSeedHashHex(streamID) || p.Window == 0 {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("invalid params")
+		return contractmessage.LiveDemandPublishPaidResp{}, fmt.Errorf("invalid params")
 	}
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
+		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
+		return contractmessage.LiveDemandPublishPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
-	body := &broadcastmodule.LiveDemandPublishReq{
+	body := &contractmessage.LiveDemandPublishReq{
 		StreamID:         streamID,
 		HaveSegmentIndex: p.HaveSegmentIndex,
 		Window:           p.Window,
 		BuyerAddrs:       localAdvertiseAddrs(rt),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1LiveDemandPublish, body, decodeLiveDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1LiveDemandPublish), body, decodeLiveDemandPublishRouteResp)
 	if err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
+		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
 	if err := validateLiveDemandPublishPaidResp(resp); err != nil {
-		return broadcastmodule.LiveDemandPublishPaidResp{}, err
+		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
 	return resp, nil
 }
@@ -391,7 +392,7 @@ func applyFeePoolChargeToSession(session *feePoolSession, nextSeq uint32, nextSe
 // 设计约束：
 // - RPC 成功 != 业务成功，必须检查 success 位；
 // - success=true 时 demand_id 必须存在，否则后续 list quotes 必然失败。
-func validateDemandPublishPaidResp(resp broadcastmodule.DemandPublishPaidResp) error {
+func validateDemandPublishPaidResp(resp contractmessage.DemandPublishPaidResp) error {
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
@@ -405,7 +406,7 @@ func validateDemandPublishPaidResp(resp broadcastmodule.DemandPublishPaidResp) e
 	return nil
 }
 
-func validateDemandPublishBatchPaidResp(resp broadcastmodule.DemandPublishBatchPaidResp) error {
+func validateDemandPublishBatchPaidResp(resp contractmessage.DemandPublishBatchPaidResp) error {
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
@@ -428,7 +429,7 @@ func validateDemandPublishBatchPaidResp(resp broadcastmodule.DemandPublishBatchP
 }
 
 // validateLiveDemandPublishPaidResp 统一校验网关 publish_live_demand 业务响应。
-func validateLiveDemandPublishPaidResp(resp broadcastmodule.LiveDemandPublishPaidResp) error {
+func validateLiveDemandPublishPaidResp(resp contractmessage.LiveDemandPublishPaidResp) error {
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {

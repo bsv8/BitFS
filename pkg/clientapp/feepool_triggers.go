@@ -8,9 +8,9 @@ import (
 	"time"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
 	ce "github.com/bsv8/MultisigPool/pkg/dual_endpoint"
 	oldproto "github.com/golang/protobuf/proto"
@@ -201,7 +201,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, store *client
 	}
 
 	underpay := sess.SingleCycleFeeSatoshi - 1
-	listenReq := &broadcastmodule.ListenCycleReq{
+	listenReq := &contractmessage.ListenCycleReq{
 		RequestedDurationSeconds: sess.BillingCycleSeconds,
 		ProposedPaymentSatoshi:   listenOfferPaymentSatoshi(rt, sess),
 	}
@@ -215,8 +215,8 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, store *client
 	quoted, err := requestGatewayServiceQuote(ctx, rt, feePoolServiceQuoteArgs{
 		Session:       sess,
 		GatewayPeerID: gw.ID,
-		Route:         broadcastmodule.RouteBroadcastV1ListenCycle,
-		ContentType:   ncall.ContentTypeProto,
+		Route:         string(contractroute.RouteBroadcastV1ListenCycle),
+		ContentType:   contractmessage.ContentTypeProto,
 		Body:          payloadRaw,
 	})
 	if err != nil {

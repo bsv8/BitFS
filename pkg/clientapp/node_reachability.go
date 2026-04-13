@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -215,36 +217,36 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 // - head_height + seq 是声明版本，不和费用池 sequence 混用；
 // - TTL 属于节点本地设置，gateway 不替节点决定声明寿命；
 // - 广播声明必须由节点自己签名，方便以后跨 gateway 转发时仍能验证主体。
-func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p AnnounceNodeReachabilityParams) (broadcastmodule.NodeReachabilityAnnouncePaidResp, error) {
+func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p AnnounceNodeReachabilityParams) (contractmessage.NodeReachabilityAnnouncePaidResp, error) {
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("runtime not initialized")
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	ttlSeconds := p.TTLSeconds
 	if ttlSeconds == 0 {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("ttl_seconds must be >= 1")
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("ttl_seconds must be >= 1")
 	}
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("no healthy gateway")
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("no healthy gateway")
 	}
 	nodePubkeyHex, err := localPubKeyHex(rt.Host)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	_, multiaddrs, _, err := currentLocalNodeReachabilitySnapshot(rt)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	headHeight, err := rt.ActionChain.GetTipHeight()
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("query head height failed: %w", err)
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("query head height failed: %w", err)
 	}
 	state, _, err := dbLoadSelfNodeReachabilityState(ctx, store, nodePubkeyHex)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	announceSeq := uint64(1)
 	if state.HeadHeight == uint64(headHeight) {
@@ -254,17 +256,17 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 	expiresAtUnix := publishedAtUnix + int64(ttlSeconds)
 	signPayload, err := broadcastmodule.BuildNodeReachabilitySignPayload(nodePubkeyHex, multiaddrs, uint64(headHeight), announceSeq, publishedAtUnix, expiresAtUnix)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	hostPriv := rt.Host.Peerstore().PrivKey(rt.Host.ID())
 	if hostPriv == nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("missing host private key")
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("missing host private key")
 	}
 	announcementSig, err := hostPriv.Sign(signPayload)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("sign node reachability announcement failed: %w", err)
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("sign node reachability announcement failed: %w", err)
 	}
-	signedAnnouncement, err := broadcastmodule.MarshalSignedNodeReachabilityAnnouncement(broadcastmodule.NodeReachabilityAnnouncement{
+	signedAnnouncement, err := marshalSignedNodeReachabilityAnnouncement(broadcastmodule.NodeReachabilityAnnouncement{
 		NodePubkeyHex:   nodePubkeyHex,
 		Multiaddrs:      multiaddrs,
 		HeadHeight:      uint64(headHeight),
@@ -274,28 +276,28 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 		Signature:       append([]byte(nil), announcementSig...),
 	})
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	body := &broadcastmodule.NodeReachabilityAnnounceReq{
+	body := &contractmessage.NodeReachabilityAnnounceReq{
 		SignedAnnouncement: append([]byte(nil), signedAnnouncement...),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityAnnounce, body, decodeNodeReachabilityAnnounceRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1NodeReachabilityAnnounce), body, decodeNodeReachabilityAnnounceRouteResp)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
 			msg = "gateway announce node reachability failed"
 		}
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, fmt.Errorf("gateway node reachability announce rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
 	if err := dbSaveSelfNodeReachabilityState(ctx, store, selfNodeReachabilityState{
 		NodePubkeyHex: nodePubkeyHex,
 		HeadHeight:    uint64(headHeight),
 		Seq:           announceSeq,
 	}); err != nil {
-		return broadcastmodule.NodeReachabilityAnnouncePaidResp{}, err
+		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_node_reachability_announce_end", map[string]any{
 		"gateway_pubkey_hex":     gatewayBusinessID(rt, gw.ID),
@@ -313,45 +315,45 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 // - 查询未命中也收费，因此 RPC 成功后不管 found 与否都要落账；
 // - 缓存是客户端行为：gateway 只返回最新有效声明，客户端自己决定何时复查；
 // - 查询成功后把多地址全部注入 peerstore，连接层不做“最佳地址”裁判。
-func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p QueryNodeReachabilityParams) (broadcastmodule.NodeReachabilityQueryPaidResp, error) {
+func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, rt *Runtime, p QueryNodeReachabilityParams) (contractmessage.NodeReachabilityQueryPaidResp, error) {
 	if rt == nil || rt.Host == nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("runtime not initialized")
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("runtime not initialized")
 	}
 	targetNodePubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(p.TargetNodePubkeyHex))
 	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("target_node_pubkey_hex invalid: %w", err)
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("target_node_pubkey_hex invalid: %w", err)
 	}
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+		return contractmessage.NodeReachabilityQueryPaidResp{}, err
 	}
 	if len(rt.HealthyGWs) == 0 {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("no healthy gateway")
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("no healthy gateway")
 	}
-	body := &broadcastmodule.NodeReachabilityQueryReq{
+	body := &contractmessage.NodeReachabilityQueryReq{
 		TargetNodePubkeyHex: targetNodePubkeyHex,
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), broadcastmodule.RouteBroadcastV1NodeReachabilityQuery, body, decodeNodeReachabilityQueryRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1NodeReachabilityQuery), body, decodeNodeReachabilityQueryRouteResp)
 	if err != nil {
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+		return contractmessage.NodeReachabilityQueryPaidResp{}, err
 	}
 	if !resp.Success {
 		msg := strings.TrimSpace(resp.Error)
 		if msg == "" {
 			msg = "gateway query node reachability failed"
 		}
-		return broadcastmodule.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
+		return contractmessage.NodeReachabilityQueryPaidResp{}, fmt.Errorf("gateway node reachability query rejected: status=%s error=%s", strings.TrimSpace(resp.Status), msg)
 	}
 	if resp.Found {
 		ann, err := announcementFromQueryResp(resp)
 		if err != nil {
-			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+			return contractmessage.NodeReachabilityQueryPaidResp{}, err
 		}
 		if err := dbSaveNodeReachabilityCache(ctx, store, gatewayBusinessID(rt, gw.ID), ann); err != nil {
-			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+			return contractmessage.NodeReachabilityQueryPaidResp{}, err
 		}
 		if err := injectNodeReachabilityAnnouncement(rt, ann); err != nil {
-			return broadcastmodule.NodeReachabilityQueryPaidResp{}, err
+			return contractmessage.NodeReachabilityQueryPaidResp{}, err
 		}
 	}
 	obs.Business("bitcast-client", "evt_trigger_gateway_node_reachability_query_end", map[string]any{
@@ -380,7 +382,7 @@ func loadSelfNodeReachabilityState(store *clientDB, nodePubkeyHex string) (selfN
 	return dbLoadSelfNodeReachabilityState(context.Background(), store, nodePubkeyHex)
 }
 
-func announcementFromQueryResp(resp broadcastmodule.NodeReachabilityQueryPaidResp) (broadcastmodule.NodeReachabilityAnnouncement, error) {
+func announcementFromQueryResp(resp contractmessage.NodeReachabilityQueryPaidResp) (broadcastmodule.NodeReachabilityAnnouncement, error) {
 	ann, err := broadcastmodule.UnmarshalSignedNodeReachabilityAnnouncement(resp.SignedAnnouncement)
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncement{}, err

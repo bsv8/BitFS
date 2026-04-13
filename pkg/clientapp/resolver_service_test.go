@@ -8,9 +8,10 @@ import (
 	"testing"
 	"time"
 
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
-	"github.com/bsv8/BFTP/pkg/modules/domain"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/host"
 )
@@ -123,23 +124,23 @@ func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPu
 		Network: "test",
 		TTL:     30 * time.Second,
 	}, func(_ context.Context, _ ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
-		if strings.TrimSpace(req.Route) != domainmodule.RouteDomainV1Resolve {
+		if strings.TrimSpace(req.Route) != string(contractroute.RouteDomainV1Resolve) {
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
-		var body domainmodule.NameRouteReq
+		var body contractmessage.NameRouteReq
 		if err := oldproto.Unmarshal(req.Body, &body); err != nil {
 			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: "invalid protobuf body"}, nil
 		}
 		name, err := normalizeResolverNameCanonical(body.Name)
 		if err != nil {
-			raw, _ := oldproto.Marshal(&domainmodule.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
-			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: ncall.ContentTypeProto, Body: raw}, nil
+			raw, _ := oldproto.Marshal(&contractmessage.ResolveNamePaidResp{Success: false, Status: "bad_request", Error: err.Error()})
+			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: err.Error(), ContentType: contractmessage.ContentTypeProto, Body: raw}, nil
 		}
-		var routeResp domainmodule.ResolveNamePaidResp
+		var routeResp contractmessage.ResolveNamePaidResp
 		if name != expectedName {
-			routeResp = domainmodule.ResolveNamePaidResp{Success: false, Status: "not_found", Name: name, Error: "domain name not found"}
+			routeResp = contractmessage.ResolveNamePaidResp{Success: false, Status: "not_found", Name: name, Error: "domain name not found"}
 		} else {
-			routeResp = domainmodule.ResolveNamePaidResp{
+			routeResp = contractmessage.ResolveNamePaidResp{
 				Success:         true,
 				Status:          "ok",
 				Name:            name,
@@ -151,6 +152,6 @@ func registerFakeDomainResolveHandler(h host.Host, expectedName string, targetPu
 		if err != nil {
 			return ncall.CallResp{}, err
 		}
-		return ncall.CallResp{Ok: true, Code: "OK", ContentType: ncall.ContentTypeProto, Body: raw}, nil
+		return ncall.CallResp{Ok: true, Code: "OK", ContentType: contractmessage.ContentTypeProto, Body: raw}, nil
 	}, nil)
 }

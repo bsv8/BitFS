@@ -26,6 +26,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
+	bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -39,18 +40,18 @@ import (
 const (
 	BBroadcastSuiteVersion             = "BBroadcast/1.0"
 	BBroadcastProtocolName             = "Bitcast Broadcast Protocol"
-	ProtoHealth            protocol.ID = "/bsv-transfer/healthz/1.0.0"
+	ProtoHealth            protocol.ID = bitfsprotoid.ProtoHealth
 
-	ProtoArbHealth         protocol.ID = "/bsv-transfer/arbiter/healthz/1.0.0"
-	ProtoSeedGet           protocol.ID = "/bsv-transfer/client/seed/get/1.0.0"
-	ProtoQuoteDirectSubmit protocol.ID = "/bsv-transfer/client/quote/direct_submit/1.0.0"
-	ProtoLiveQuoteSubmit   protocol.ID = "/bsv-transfer/client/live_quote/submit/1.0.0"
-	ProtoDirectDealAccept  protocol.ID = "/bsv-transfer/client/deal/accept/1.0.0"
-	ProtoTransferPoolOpen  protocol.ID = "/bsv-transfer/client/transfer-pool/open/1.0.0"
-	ProtoTransferPoolPay   protocol.ID = "/bsv-transfer/client/transfer-pool/pay/1.0.0"
-	ProtoTransferPoolClose protocol.ID = "/bsv-transfer/client/transfer-pool/close/1.0.0"
-	ProtoLiveSubscribe     protocol.ID = "/bsv-transfer/live/subscribe/1.0.0"
-	ProtoLiveHeadPush      protocol.ID = "/bsv-transfer/live/head-push/1.0.0"
+	ProtoArbHealth         protocol.ID = bitfsprotoid.ProtoArbHealth
+	ProtoSeedGet           protocol.ID = bitfsprotoid.ProtoSeedGet
+	ProtoQuoteDirectSubmit protocol.ID = bitfsprotoid.ProtoQuoteDirectSubmit
+	ProtoLiveQuoteSubmit   protocol.ID = bitfsprotoid.ProtoLiveQuoteSubmit
+	ProtoDirectDealAccept  protocol.ID = bitfsprotoid.ProtoDirectDealAccept
+	ProtoTransferPoolOpen  protocol.ID = bitfsprotoid.ProtoTransferPoolOpen
+	ProtoTransferPoolPay   protocol.ID = bitfsprotoid.ProtoTransferPoolPay
+	ProtoTransferPoolClose protocol.ID = bitfsprotoid.ProtoTransferPoolClose
+	ProtoLiveSubscribe     protocol.ID = bitfsprotoid.ProtoLiveSubscribe
+	ProtoLiveHeadPush      protocol.ID = bitfsprotoid.ProtoLiveHeadPush
 
 	bootPeerConnectTimeout = 5 * time.Second
 	bootPeerHealthTimeout  = 5 * time.Second

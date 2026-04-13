@@ -3,6 +3,7 @@ module github.com/bsv8/BitFS
 go 1.26
 
 require (
+	github.com/bsv8/bitfs-contract v0.0.0
 	github.com/bsv-blockchain/go-sdk v1.2.18
 	github.com/bsv8/BFTP v0.0.0
 	github.com/bsv8/MultisigPool v0.0.0
@@ -122,3 +123,5 @@ replace github.com/bsv8/WOCProxy => ../WOCProxy
 replace github.com/libp2p/go-libp2p/core => github.com/libp2p/go-libp2p v0.45.0
 
 replace github.com/bsv8/BFTP-contract => ../BFTP-contract
+
+replace github.com/bsv8/bitfs-contract => ../bitfs-contract

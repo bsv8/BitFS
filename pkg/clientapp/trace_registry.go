@@ -1,6 +1,7 @@
 package clientapp
 
-import "github.com/bsv8/BFTP/pkg/infra/ncall"
+import contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+import contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 import oldproto "github.com/golang/protobuf/proto"
 
 // NewTraceProtoMessage 为调试工具提供 client 私有 protobuf 类型实例。
@@ -72,19 +73,19 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		if kind == "resp" {
 			return &liveHeadPushResp{}, true
 		}
-	case string(ncall.ProtoNodeCall):
+	case string(contractprotoid.ProtoNodeCall):
 		if kind == "req" {
-			return &ncall.CallReq{}, true
+			return &contractmessage.CallReq{}, true
 		}
 		if kind == "resp" {
-			return &ncall.CallResp{}, true
+			return &contractmessage.CallResp{}, true
 		}
-	case string(ncall.ProtoNodeResolve):
+	case string(contractprotoid.ProtoNodeResolve):
 		if kind == "req" {
-			return &ncall.ResolveReq{}, true
+			return &contractmessage.ResolveReq{}, true
 		}
 		if kind == "resp" {
-			return &ncall.ResolveResp{}, true
+			return &contractmessage.ResolveResp{}, true
 		}
 	}
 	return nil, false
