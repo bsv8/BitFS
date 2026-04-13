@@ -34,7 +34,7 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 
 	wantCols := []string{"source_type", "source_id", "accounting_scene", "accounting_subtype"}
-	for _, table := range []string{"settle_records", "settle_process_events"} {
+	for _, table := range []string{"order_settlements", "order_settlement_events"} {
 		cols, err := tableColumns(db, table)
 		if err != nil {
 			t.Fatalf("inspect %s columns failed: %v", table, err)
@@ -67,23 +67,23 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	}
 
 	// 第六次迭代：只测试主口径字段
-	if _, err := db.Exec(`INSERT INTO settle_records(
-		settlement_id,business_id,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"set_fresh_1", "biz_fresh_1", "settlement_payment_attempt", "1", "c2c_transfer", "open", "client:self", "pool:peer", "posted", 1700000003, "idem_biz_2", "新业务", "{}",
+	if _, err := db.Exec(`INSERT INTO order_settlements(
+		settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_fresh_1", "ord_fresh_1", 1, "formal", "settlement_payment_attempt", "1", "c2c_transfer", "open", "chain", "posted", "posted", "client:self", "pool:peer", "", "", "idem_biz_2", "新业务", "{}", "{}", 1700000003, 1700000003,
 	); err != nil {
-		t.Fatalf("insert fresh settle_records failed: %v", err)
+		t.Fatalf("insert fresh order_settlements failed: %v", err)
 	}
 
 	var sourceType, sourceID, accountingScene, accountingSubtype string
 	if err := db.QueryRow(
-		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM settle_records WHERE business_id=?`,
-		"biz_fresh_1",
+		`SELECT source_type,source_id,accounting_scene,accounting_subtype FROM order_settlements WHERE order_id=?`,
+		"ord_fresh_1",
 	).Scan(&sourceType, &sourceID, &accountingScene, &accountingSubtype); err != nil {
-		t.Fatalf("query fresh settle_records failed: %v", err)
+		t.Fatalf("query fresh order_settlements failed: %v", err)
 	}
 	if sourceType != "settlement_payment_attempt" || sourceID != "1" || accountingScene != "c2c_transfer" || accountingSubtype != "open" {
-		t.Fatalf("unexpected fresh settle_records values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
+		t.Fatalf("unexpected fresh order_settlements values: %q %q %q %q", sourceType, sourceID, accountingScene, accountingSubtype)
 	}
 }
 
@@ -97,13 +97,15 @@ func TestInitIndexDB_CreatesFinanceReadIndexes(t *testing.T) {
 
 	// 第六次迭代：只检查主口径索引
 	wantIndexes := map[string][]string{
-		"settle_records": {
-			"idx_settle_records_source",
-			"idx_settle_records_accounting",
+		"order_settlements": {
+			"idx_order_settlements_order",
+			"idx_order_settlements_status",
+			"idx_order_settlements_method",
+			"idx_order_settlements_target",
 		},
-		"settle_process_events": {
-			"idx_settle_process_events_source",
-			"idx_settle_process_events_accounting",
+		"order_settlement_events": {
+			"idx_order_settlement_events_settlement",
+			"idx_order_settlement_events_type",
 		},
 	}
 	for table, wants := range wantIndexes {
@@ -191,8 +193,8 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 
 	db := newWalletAccountingTestDB(t)
 
-	if err := dbAppendSettlementPaymentAttemptFinBusiness(db, 77, finBusinessEntry{
-		BusinessID:        "biz_settlement_guard_1",
+	if err := dbAppendSettlementPaymentAttemptFinBusiness(context.Background(), db, 77, finBusinessEntry{
+		OrderID:           "biz_settlement_guard_1",
 		BusinessRole:      "process",
 		AccountingScene:   "wallet_transfer",
 		AccountingSubType: "open",
@@ -206,7 +208,7 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 		t.Fatalf("settlement payment attempt business write failed: %v", err)
 	}
 
-	if err := dbAppendSettlementPaymentAttemptFinProcessEvent(db, 77, finProcessEventEntry{
+	if err := dbAppendSettlementPaymentAttemptFinProcessEvent(context.Background(), db, 77, finProcessEventEntry{
 		ProcessID:         "proc_settlement_guard_1",
 		AccountingScene:   "wallet_transfer",
 		AccountingSubType: "open",
@@ -221,7 +223,7 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 
 	var businessSourceType, businessSourceID string
 	if err := db.QueryRow(
-		`SELECT source_type,source_id FROM settle_records WHERE business_id=?`,
+		`SELECT source_type,source_id FROM order_settlements WHERE order_id=?`,
 		"biz_settlement_guard_1",
 	).Scan(&businessSourceType, &businessSourceID); err != nil {
 		t.Fatalf("query settlement payment attempt business failed: %v", err)
@@ -232,13 +234,71 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 
 	var processSourceType, processSourceID string
 	if err := db.QueryRow(
-		`SELECT source_type,source_id FROM settle_process_events WHERE process_id=?`,
+		`SELECT source_type,source_id FROM order_settlement_events WHERE process_id=?`,
 		"proc_settlement_guard_1",
 	).Scan(&processSourceType, &processSourceID); err != nil {
 		t.Fatalf("query settlement payment attempt process event failed: %v", err)
 	}
 	if processSourceType != "settlement_payment_attempt" || processSourceID != "77" {
 		t.Fatalf("unexpected settlement payment attempt process source: %s %s", processSourceType, processSourceID)
+	}
+}
+
+// TestBizOrderPayBSVProcessEventUsesSourceSettlementID 验证钱包主流程事件不会把 process_id 误当 settlement_id。
+func TestBizOrderPayBSVProcessEventUsesSourceSettlementID(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+
+	if err := dbAppendFinBusiness(context.Background(), db, finBusinessEntry{
+		OrderID:           "biz_wallet_guard_1",
+		BusinessRole:      "process",
+		SourceType:        "front_order",
+		SourceID:          "fo_wallet_guard_1",
+		AccountingScene:   "wallet_transfer",
+		AccountingSubType: "pay_bsv",
+		FromPartyID:       "client:self",
+		ToPartyID:         "gateway:peer",
+		Status:            "posted",
+		OccurredAtUnix:    1700000610,
+		IdempotencyKey:    "idem_wallet_guard_1",
+		Note:              "钱包主流程业务",
+		Payload:           map[string]any{"step": 1},
+		SettlementID:      "set_wallet_guard_1",
+		SettlementMethod:  "chain",
+		SettlementStatus:  "posted",
+	}); err != nil {
+		t.Fatalf("business write failed: %v", err)
+	}
+
+	if err := dbAppendFinProcessEvent(context.Background(), db, finProcessEventEntry{
+		ProcessID:         "proc_wallet_guard_1",
+		SourceType:        "biz_order_pay_bsv",
+		SourceID:          "set_wallet_guard_1",
+		AccountingScene:   "wallet_transfer",
+		AccountingSubType: "pay_bsv",
+		EventType:         "wallet_transfer_submit",
+		Status:            "submitted",
+		OccurredAtUnix:    1700000611,
+		IdempotencyKey:    "idem_wallet_guard_evt_1",
+		Note:              "钱包主流程事件",
+		Payload:           map[string]any{"step": 2},
+	}); err != nil {
+		t.Fatalf("process event write failed: %v", err)
+	}
+
+	var settlementID, sourceType, sourceID string
+	if err := db.QueryRow(
+		`SELECT settlement_id,source_type,source_id FROM order_settlement_events WHERE process_id=?`,
+		"proc_wallet_guard_1",
+	).Scan(&settlementID, &sourceType, &sourceID); err != nil {
+		t.Fatalf("query process event failed: %v", err)
+	}
+	if settlementID != "set_wallet_guard_1" {
+		t.Fatalf("expected settlement_id set_wallet_guard_1, got %s", settlementID)
+	}
+	if sourceType != "biz_order_pay_bsv" || sourceID != "set_wallet_guard_1" {
+		t.Fatalf("unexpected process source: %s %s", sourceType, sourceID)
 	}
 }
 
@@ -253,10 +313,10 @@ func TestSettlementPaymentAttemptWriteGuard_NoSharedEntryDirectCalls(t *testing.
 	}
 	allowed := map[string]map[string]bool{
 		"db_process_writes.go": {
-			"func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {":         true,
-			"func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {": true,
-			"return dbAppendFinBusiness(db, e)":                                        true,
-			"return dbAppendFinProcessEvent(db, e)":                                    true,
+			"func dbAppendFinBusiness(ctx context.Context, db sqlConn, e finBusinessEntry) error {":         true,
+			"func dbAppendFinProcessEvent(ctx context.Context, db sqlConn, e finProcessEventEntry) error {": true,
+			"return dbAppendFinBusiness(ctx, db, e)":                                                        true,
+			"return dbAppendFinProcessEvent(ctx, db, e)":                                                    true,
 		},
 	}
 

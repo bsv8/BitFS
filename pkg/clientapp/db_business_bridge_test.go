@@ -90,12 +90,12 @@ func TestBusinessBridge_MultipleBusinessesFromOneFrontOrder(t *testing.T) {
 	}
 
 	// 验证两条 business 都存在
-	triggers1, _ := dbListBusinessTriggersByBusinessID(ctx, store, "biz_multi_1", 10, 0)
+	triggers1, _ := dbListBusinessTriggersByOrderID(ctx, store, "biz_multi_1", 10, 0)
 	if len(triggers1.Items) != 1 {
 		t.Fatalf("expected 1 trigger for biz_multi_1, got %d", len(triggers1.Items))
 	}
 
-	triggers2, _ := dbListBusinessTriggersByBusinessID(ctx, store, "biz_multi_2", 10, 0)
+	triggers2, _ := dbListBusinessTriggersByOrderID(ctx, store, "biz_multi_2", 10, 0)
 	if len(triggers2.Items) != 1 {
 		t.Fatalf("expected 1 trigger for biz_multi_2, got %d", len(triggers2.Items))
 	}

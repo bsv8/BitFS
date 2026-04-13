@@ -22,7 +22,7 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		"fact_pool_session_events",
 		"fact_settlement_payment_attempts",
 		"fact_settlement_channel_chain_quote_pay",
-		"settle_records",
+		"order_settlements",
 		"wallet_local_broadcast_txs",
 	} {
 		exists, err := hasTable(db, table)
@@ -68,8 +68,8 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 			cols:  []string{"id", "payment_attempt_id", "source_type", "source_id", "state", "gross_amount_satoshi", "gate_fee_satoshi", "net_amount_satoshi"},
 		},
 		{
-			table: "settle_records",
-			cols:  []string{"business_id", "settlement_id", "business_role", "source_type", "source_id", "accounting_scene", "accounting_subtype", "from_party_id", "to_party_id", "status", "occurred_at_unix", "idempotency_key", "note", "payload_json", "settlement_method", "settlement_status", "target_type", "target_id", "error_message", "settlement_payload_json", "created_at_unix", "updated_at_unix"},
+			table: "order_settlements",
+			cols:  []string{"settlement_id", "order_id", "settlement_no", "business_role", "source_type", "source_id", "accounting_scene", "accounting_subtype", "settlement_method", "status", "settlement_status", "amount_satoshi", "from_party_id", "to_party_id", "target_type", "target_id", "idempotency_key", "note", "error_message", "payload_json", "settlement_payload_json", "created_at_unix", "updated_at_unix"},
 		},
 		{
 			table: "wallet_local_broadcast_txs",
@@ -214,7 +214,7 @@ func TestInitIndexDB_RejectsLegacyPoolSchema(t *testing.T) {
 
 	if err := initIndexDB(db); err == nil {
 		t.Fatal("expected initIndexDB to reject legacy pool schema")
-	} else if !strings.Contains(err.Error(), "rebuild DB") {
+	} else if !strings.Contains(err.Error(), "legacy settlement schema detected, please recreate db") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

@@ -557,7 +557,7 @@ func TestInitIndexDB_RejectsLegacyAssetSchema(t *testing.T) {
 
 	if err := initIndexDB(db); err == nil {
 		t.Fatal("expected initIndexDB to reject legacy asset schema")
-	} else if !strings.Contains(err.Error(), "rebuild DB") {
+	} else if !strings.Contains(err.Error(), "legacy settlement schema detected, please recreate db") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
@@ -575,7 +575,7 @@ func TestInitIndexDB_RejectsOldAssetFlowTable(t *testing.T) {
 
 	if err := initIndexDB(db); err == nil {
 		t.Fatal("expected initIndexDB to reject legacy fact_chain_asset_flows table")
-	} else if !strings.Contains(err.Error(), "rebuild DB") {
+	} else if !strings.Contains(err.Error(), "legacy settlement schema detected, please recreate db") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

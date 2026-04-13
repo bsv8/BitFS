@@ -12,9 +12,9 @@ import (
 // frontOrderItem 前台业务单记录
 // 职责：表达前台业务主身份，不直接承载支付实现
 type frontOrderItem struct {
-	FrontOrderID     string          `json:"front_order_id"`
-	FrontType        string          `json:"front_type"`
-	FrontSubtype     string          `json:"front_subtype"`
+	FrontOrderID     string          `json:"order_id"`
+	FrontType        string          `json:"order_type"`
+	FrontSubtype     string          `json:"order_subtype"`
 	OwnerPubkeyHex   string          `json:"owner_pubkey_hex"`
 	TargetObjectType string          `json:"target_object_type"`
 	TargetObjectID   string          `json:"target_object_id"`
@@ -34,6 +34,7 @@ type frontOrderEntry struct {
 	TargetObjectType string
 	TargetObjectID   string
 	Status           string
+	IdempotencyKey   string
 	CreatedAtUnix    int64
 	UpdatedAtUnix    int64
 	Note             string
@@ -60,14 +61,14 @@ type frontOrderPage struct {
 }
 
 // dbUpsertFrontOrder 插入或更新前台业务单
-// 幂等设计：同一 front_order_id 重复写入时更新非主键字段
+// 幂等设计：同一 order_id 重复写入时更新非主键字段
 func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
 	e.FrontOrderID = strings.TrimSpace(e.FrontOrderID)
 	if e.FrontOrderID == "" {
-		return fmt.Errorf("front_order_id is required")
+		return fmt.Errorf("order_id is required")
 	}
 	now := time.Now().Unix()
 	if e.CreatedAtUnix <= 0 {
@@ -76,18 +77,23 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = now
 	}
+	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
+	if e.IdempotencyKey == "" {
+		e.IdempotencyKey = e.FrontOrderID
+	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := ExecContext(ctx, db, 
-			`INSERT INTO biz_front_orders(
-				front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(front_order_id) DO UPDATE SET
-				front_type=excluded.front_type,
-				front_subtype=excluded.front_subtype,
+			`INSERT INTO orders(
+				order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,note,payload_json,created_at_unix,updated_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(order_id) DO UPDATE SET
+				order_type=excluded.order_type,
+				order_subtype=excluded.order_subtype,
 				owner_pubkey_hex=excluded.owner_pubkey_hex,
 				target_object_type=excluded.target_object_type,
 				target_object_id=excluded.target_object_id,
 				status=excluded.status,
+				idempotency_key=excluded.idempotency_key,
 				updated_at_unix=excluded.updated_at_unix,
 				note=excluded.note,
 				payload_json=excluded.payload_json`,
@@ -98,30 +104,31 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 			strings.TrimSpace(e.TargetObjectType),
 			strings.TrimSpace(e.TargetObjectID),
 			strings.TrimSpace(e.Status),
-			e.CreatedAtUnix,
-			e.UpdatedAtUnix,
+			e.IdempotencyKey,
 			strings.TrimSpace(e.Note),
 			mustJSONString(e.Payload),
+			e.CreatedAtUnix,
+			e.UpdatedAtUnix,
 		)
 		return err
 	})
 }
 
-// dbGetFrontOrder 按 front_order_id 查询前台业务单
+// dbGetFrontOrder 按 order_id 查询前台业务单
 func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) (frontOrderItem, error) {
 	if store == nil {
 		return frontOrderItem{}, fmt.Errorf("client db is nil")
 	}
 	frontOrderID = strings.TrimSpace(frontOrderID)
 	if frontOrderID == "" {
-		return frontOrderItem{}, fmt.Errorf("front_order_id is required")
+		return frontOrderItem{}, fmt.Errorf("order_id is required")
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (frontOrderItem, error) {
 		var item frontOrderItem
 		var payload string
 		err := QueryRowContext(ctx, db, 
-			`SELECT front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			 FROM biz_front_orders WHERE front_order_id=?`,
+			`SELECT order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
+			 FROM orders WHERE order_id=?`,
 			frontOrderID,
 		).Scan(
 			&item.FrontOrderID, &item.FrontType, &item.FrontSubtype, &item.OwnerPubkeyHex,
@@ -145,15 +152,15 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 		where := ""
 		args := make([]any, 0, 16)
 		if f.FrontOrderID != "" {
-			where += " AND front_order_id=?"
+			where += " AND order_id=?"
 			args = append(args, f.FrontOrderID)
 		}
 		if f.FrontType != "" {
-			where += " AND front_type=?"
+			where += " AND order_type=?"
 			args = append(args, f.FrontType)
 		}
 		if f.FrontSubtype != "" {
-			where += " AND front_subtype=?"
+			where += " AND order_subtype=?"
 			args = append(args, f.FrontSubtype)
 		}
 		if f.OwnerPubkeyHex != "" {
@@ -173,15 +180,15 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 			args = append(args, f.Status)
 		}
 		var out frontOrderPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM biz_front_orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
+		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return frontOrderPage{}, err
 		}
 		if f.Limit <= 0 {
 			f.Limit = 20
 		}
 		rows, err := QueryContext(ctx, db, 
-			`SELECT front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			 FROM biz_front_orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,front_order_id DESC LIMIT ? OFFSET ?`,
+			`SELECT order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
+			 FROM orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,order_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -216,11 +223,11 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 	}
 	frontOrderID = strings.TrimSpace(frontOrderID)
 	if frontOrderID == "" {
-		return fmt.Errorf("front_order_id is required")
+		return fmt.Errorf("order_id is required")
 	}
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := ExecContext(ctx, db, 
-			`UPDATE biz_front_orders SET status=?, updated_at_unix=? WHERE front_order_id=?`,
+			`UPDATE orders SET status=?, updated_at_unix=? WHERE order_id=?`,
 			strings.TrimSpace(status),
 			time.Now().Unix(),
 			frontOrderID,

@@ -3,7 +3,7 @@ package clientapp
 import (
 	"testing"
 
-	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 )
 
 func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
@@ -37,7 +37,7 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		if got, want := cfg.Listen.TickSeconds, uint32(1); got != want {
 			t.Fatalf("listen.tick_seconds=%d, want %d", got, want)
 		}
-		if got, want := cfg.Payment.PreferredScheme, ncall.PaymentSchemePool2of2V1; got != want {
+		if got, want := cfg.Payment.PreferredScheme, contractprotoid.PaymentSchemePool2of2V1; got != want {
 			t.Fatalf("payment.preferred_scheme=%s, want %s", got, want)
 		}
 	})
@@ -70,7 +70,7 @@ func TestApplyConfigDefaults_ListenDefaults(t *testing.T) {
 		if got, want := cfg.Listen.TickSeconds, uint32(30); got != want {
 			t.Fatalf("listen.tick_seconds=%d, want %d", got, want)
 		}
-		if got, want := cfg.Payment.PreferredScheme, ncall.PaymentSchemePool2of2V1; got != want {
+		if got, want := cfg.Payment.PreferredScheme, contractprotoid.PaymentSchemePool2of2V1; got != want {
 			t.Fatalf("payment.preferred_scheme=%s, want %s", got, want)
 		}
 	})

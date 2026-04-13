@@ -11,7 +11,7 @@ import (
 // - 调用方必须显式提供业务身份、来源、结算方式和目标；
 // - 不在这里猜业务类型，也不在这里补旧账。
 type finBusinessEntry struct {
-	BusinessID   string
+	OrderID      string
 	BusinessRole string // formal | process
 
 	SourceType        string

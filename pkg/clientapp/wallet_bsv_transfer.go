@@ -114,16 +114,14 @@ func submitWalletBSVTransferPrepared(ctx context.Context, store *clientDB, rt *R
 
 // executeBizOrderPayBSVSettlement 结算层内部执行器。
 // 设计说明：
-// - 先跑真实钱包转账，再把链上结果回写到 settle_records / settle_process_events；
+// - 先跑真实钱包转账，再把链上结果回写到 order_settlements / order_settlement_events；
 // - 同一个 order_id + idempotency_key 重复提交时，不会再生成第二笔支付；
 // - 前台最终看的是 biz_ + settle_ 聚合，不再看钱包直发结果。
 func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *Runtime, orderID string, businessID string, settlementID string, idempotencyKey string, toAddress string, amountSatoshi uint64, fromPartyID string, toPartyID string) (BizOrderPayBSVResponse, error) {
 	resp := BizOrderPayBSVResponse{
 		Ok:             false,
 		Code:           "PENDING",
-		OrderID:        strings.TrimSpace(orderID),
-		FrontOrderID:   strings.TrimSpace(orderID),
-		BusinessID:     strings.TrimSpace(businessID),
+		OrderID:        strings.TrimSpace(businessID),
 		SettlementID:   strings.TrimSpace(settlementID),
 		IdempotencyKey: strings.TrimSpace(idempotencyKey),
 		Status:         "pending",
@@ -171,7 +169,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			now := time.Now().Unix()
 			eventPayload := map[string]any{
 				"order_id":        orderID,
-				"business_id":     businessID,
 				"settlement_id":   settlementID,
 				"idempotency_key": idempotencyKey,
 				"to_address":      toAddress,
@@ -180,7 +177,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"error":           err.Error(),
 			}
 			if txErr := store.Tx(ctx, func(tx *sql.Tx) error {
-				if writeErr := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",
 					SourceID:          settlementID,
@@ -196,7 +193,8 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 					return writeErr
 				}
 				return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
-					BusinessID:        businessID,
+					OrderID:           businessID,
+					SettlementID:      settlementID,
 					BusinessStatus:    "waiting_fund",
 					SettlementStatus:  "waiting_fund",
 					SettlementMethod:  string(SettlementMethodChain),
@@ -222,7 +220,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		now := time.Now().Unix()
 		failedPayload := map[string]any{
 			"order_id":        orderID,
-			"business_id":     businessID,
 			"settlement_id":   settlementID,
 			"idempotency_key": idempotencyKey,
 			"to_address":      toAddress,
@@ -231,7 +228,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			"error":           err.Error(),
 		}
 		if txErr := store.Tx(ctx, func(tx *sql.Tx) error {
-			if writeErr := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+			if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
 				SourceID:          settlementID,
@@ -247,7 +244,8 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				return writeErr
 			}
 			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
-				BusinessID:        businessID,
+				OrderID:           businessID,
+				SettlementID:      settlementID,
 				BusinessStatus:    "failed",
 				SettlementStatus:  "failed",
 				SettlementMethod:  string(SettlementMethodChain),
@@ -294,7 +292,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 
 	payload := map[string]any{
 		"order_id":          orderID,
-		"business_id":       businessID,
 		"settlement_id":     settlementID,
 		"idempotency_key":   idempotencyKey,
 		"amount_satoshi":    amountSatoshi,
@@ -307,7 +304,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 
 	if finalStatus == "failed" {
 		if err := store.Tx(ctx, func(tx *sql.Tx) error {
-			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
 				SourceID:          settlementID,
@@ -323,7 +320,8 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				return err
 			}
 			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
-				BusinessID:        businessID,
+				OrderID:           businessID,
+				SettlementID:      settlementID,
 				BusinessStatus:    finalStatus,
 				SettlementStatus:  finalStatus,
 				SettlementMethod:  string(SettlementMethodChain),
@@ -353,7 +351,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		payload["status"] = "submitted_unknown_projection"
 		payload["error"] = submitted.Result.Message
 		if err := store.Tx(ctx, func(tx *sql.Tx) error {
-			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
 				SourceID:          settlementID,
@@ -369,7 +367,8 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				return err
 			}
 			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
-				BusinessID:        businessID,
+				OrderID:           businessID,
+				SettlementID:      settlementID,
 				BusinessStatus:    "submitted_unknown_projection",
 				SettlementStatus:  "submitted_unknown_projection",
 				SettlementMethod:  string(SettlementMethodChain),
@@ -389,7 +388,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	} else {
 		chainPaymentPayload := map[string]any{
 			"order_id":          orderID,
-			"business_id":       businessID,
 			"settlement_id":     settlementID,
 			"idempotency_key":   idempotencyKey,
 			"amount_satoshi":    amountSatoshi,
@@ -446,7 +444,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			if err := dbAppendBSVSettlementRecordsForCycleTx(ctx, tx, settlementPaymentAttemptID, ownerPubkeyHex, selectedUTXOIDs, now, chainPaymentPayload); err != nil {
 				return err
 			}
-			if err := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
 				SourceID:          settlementID,
@@ -462,7 +460,8 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				return err
 			}
 			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
-				BusinessID:        businessID,
+				OrderID:           businessID,
+				SettlementID:      settlementID,
 				BusinessStatus:    finalStatus,
 				SettlementStatus:  finalStatus,
 				SettlementMethod:  string(SettlementMethodChain),
@@ -475,7 +474,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		}); err != nil {
 			failedPayload := map[string]any{
 				"order_id":          orderID,
-				"business_id":       businessID,
 				"settlement_id":     settlementID,
 				"idempotency_key":   idempotencyKey,
 				"amount_satoshi":    amountSatoshi,
@@ -488,7 +486,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"error":             err.Error(),
 			}
 			_ = store.Tx(ctx, func(tx *sql.Tx) error {
-				if writeErr := dbAppendFinProcessEvent(tx, finProcessEventEntry{
+				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",
 					SourceID:          settlementID,
@@ -504,7 +502,8 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 					return writeErr
 				}
 				return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
-					BusinessID:        businessID,
+					OrderID:           businessID,
+					SettlementID:      settlementID,
 					BusinessStatus:    "failed",
 					SettlementStatus:  "failed",
 					SettlementMethod:  string(SettlementMethodChain),
@@ -668,7 +667,7 @@ func prepareWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime,
 		if rawTx, decodeErr := hex.DecodeString(strings.TrimSpace(signedTxHex)); decodeErr == nil && len(rawTx) > 0 {
 			previewHashBytes = rawTx
 		}
-		previewHash := walletBusinessPreviewHash(previewHashBytes)
+		previewHash := walletOrderPreviewHash(previewHashBytes)
 		result := WalletBSVTransferResult{
 			Ok:              true,
 			Code:            "OK",

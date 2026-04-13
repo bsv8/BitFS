@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -59,7 +58,7 @@ type CreateBusinessWithFrontTriggerAndPendingSettlementInput struct {
 	BusinessPayload   any
 
 	// 触发器字段
-	TriggerID      string // 可选，未传时默认为 "trg_{business_id}"
+	TriggerID      string // 可选，未传时默认为 "trg_{order_id}"
 	TriggerType    string
 	TriggerIDValue string
 	TriggerRole    string
@@ -83,7 +82,7 @@ type CreateBusinessWithFrontTriggerAndPendingSettlementInput struct {
 //
 // 设计约束：
 //   - 单事务：四步全部成功或全部回滚
-//   - 幂等设计：同一 front_order_id/business_id/trigger_id/settlement_id 重复调用不产生脏数据
+//   - 幂等设计：同一 order_id/order_id/trigger_id/settlement_id 重复调用不产生脏数据
 //   - 不替代底层支付逻辑，只是主链骨架落地
 func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, store *clientDB, in CreateBusinessWithFrontTriggerAndPendingSettlementInput) error {
 	if store == nil {
@@ -92,10 +91,10 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 
 	// 参数校验
 	if strings.TrimSpace(in.FrontOrderID) == "" {
-		return fmt.Errorf("front_order_id is required")
+		return fmt.Errorf("order_id is required")
 	}
 	if strings.TrimSpace(in.BusinessID) == "" {
-		return fmt.Errorf("business_id is required")
+		return fmt.Errorf("order_id is required")
 	}
 	if strings.TrimSpace(in.SettlementID) == "" {
 		return fmt.Errorf("settlement_id is required")
@@ -115,7 +114,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		return err
 	}
 
-	// 生成 trigger_id（未传时默认为 "trg_{business_id}" ）
+	// 生成 trigger_id（未传时默认为 "trg_{order_id}" ）
 	triggerID := strings.TrimSpace(in.TriggerID)
 	if triggerID == "" {
 		triggerID = "trg_" + in.BusinessID
@@ -139,8 +138,8 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			Payload:          in.FrontOrderPayload,
 		}); err != nil {
 			obs.Error("bitcast-client", "bridge_front_order_failed", map[string]any{
-				"error":          err.Error(),
-				"front_order_id": in.FrontOrderID,
+				"error":    err.Error(),
+				"order_id": in.FrontOrderID,
 			})
 			return fmt.Errorf("upsert front_order: %w", err)
 		}
@@ -150,51 +149,38 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		// 桥接器只负责落链，不负责做业务类型裁判
 		idempotencyKey := "bridge:" + in.BusinessID
 		if err := dbUpsertSettleRecordTx(ctx, tx, finBusinessEntry{
-			BusinessID:        in.BusinessID,
-			BusinessRole:      in.BusinessRole, // 调用方显式传入
-			SourceType:        in.SourceType,
-			SourceID:          in.SourceID,
-			AccountingScene:   in.AccountingScene,
-			AccountingSubType: in.AccountingSubType,
-			FromPartyID:       in.FromPartyID,
-			ToPartyID:         in.ToPartyID,
-			Status:            "pending",
-			OccurredAtUnix:    now,
-			IdempotencyKey:    idempotencyKey,
-			Note:              in.BusinessNote,
-			Payload:           in.BusinessPayload,
+			OrderID:                in.BusinessID,
+			BusinessRole:           in.BusinessRole, // 调用方显式传入
+			SourceType:             in.SourceType,
+			SourceID:               in.SourceID,
+			AccountingScene:        in.AccountingScene,
+			AccountingSubType:      in.AccountingSubType,
+			FromPartyID:            in.FromPartyID,
+			ToPartyID:              in.ToPartyID,
+			Status:                 "pending",
+			OccurredAtUnix:         now,
+			IdempotencyKey:         idempotencyKey,
+			Note:                   in.BusinessNote,
+			Payload:                in.BusinessPayload,
+			SettlementID:           in.SettlementID,
+			SettlementMethod:       string(in.SettlementMethod),
+			SettlementStatus:       "pending",
+			SettlementTargetType:   in.SettlementTargetType,
+			SettlementTargetID:     in.SettlementTargetID,
+			SettlementErrorMessage: "",
+			SettlementPayload:      in.SettlementPayload,
 		}); err != nil {
 			obs.Error("bitcast-client", "bridge_business_failed", map[string]any{
-				"error":       err.Error(),
-				"business_id": in.BusinessID,
+				"error":    err.Error(),
+				"order_id": in.BusinessID,
 			})
 			return fmt.Errorf("append business: %w", err)
 		}
 
-		// 3. 创建 business_trigger（支持一前台单多条 business）
-		// 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
-		if err := dbAppendBusinessTriggerTx(ctx, tx, businessTriggerEntry{
-			TriggerID:      triggerID,
-			BusinessID:     in.BusinessID,
-			TriggerType:    in.TriggerType,
-			TriggerIDValue: in.TriggerIDValue,
-			TriggerRole:    in.TriggerRole,
-			CreatedAtUnix:  now,
-			Note:           in.TriggerNote,
-			Payload:        in.TriggerPayload,
-		}); err != nil {
-			obs.Error("bitcast-client", "bridge_trigger_failed", map[string]any{
-				"error":       err.Error(),
-				"trigger_id":  triggerID,
-				"business_id": in.BusinessID,
-			})
-			return fmt.Errorf("append business_trigger: %w", err)
-		}
-
-		// 4. 创建 business_settlement(status='pending')
+		// 3. 创建 business_settlement(status='pending')
 		if err := dbUpsertSettleRecordSettlementTx(ctx, tx, businessSettlementEntry{
 			SettlementID:     in.SettlementID,
-			BusinessID:       in.BusinessID,
+			OrderID:          in.BusinessID,
 			SettlementMethod: string(in.SettlementMethod),
 			Status:           "pending",
 			TargetType:       in.SettlementTargetType,
@@ -206,14 +192,35 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			obs.Error("bitcast-client", "bridge_settlement_failed", map[string]any{
 				"error":         err.Error(),
 				"settlement_id": in.SettlementID,
-				"business_id":   in.BusinessID,
+				"order_id":      in.BusinessID,
 			})
 			return fmt.Errorf("upsert business_settlement: %w", err)
 		}
 
+		// 4. 创建 business_trigger（支持一前台单多条 business）
+		// 幂等约束在 (order_id, trigger_type, trigger_id_value, trigger_role) 上
+		if err := dbAppendBusinessTriggerTx(ctx, tx, businessTriggerEntry{
+			TriggerID:      triggerID,
+			OrderID:        in.BusinessID,
+			SettlementID:   in.SettlementID,
+			TriggerType:    in.TriggerType,
+			TriggerIDValue: in.TriggerIDValue,
+			TriggerRole:    in.TriggerRole,
+			CreatedAtUnix:  now,
+			Note:           in.TriggerNote,
+			Payload:        in.TriggerPayload,
+		}); err != nil {
+			obs.Error("bitcast-client", "bridge_trigger_failed", map[string]any{
+				"error":      err.Error(),
+				"trigger_id": triggerID,
+				"order_id":   in.BusinessID,
+			})
+			return fmt.Errorf("append business_trigger: %w", err)
+		}
+
 		obs.Info("bitcast-client", "bridge_success", map[string]any{
 			"front_order_id":    in.FrontOrderID,
-			"business_id":       in.BusinessID,
+			"order_id":          in.BusinessID,
 			"trigger_id":        triggerID,
 			"settlement_id":     in.SettlementID,
 			"settlement_method": in.SettlementMethod,
@@ -229,7 +236,7 @@ func dbUpsertFrontOrderTx(ctx context.Context, tx *sql.Tx, e frontOrderEntry) er
 	}
 	e.FrontOrderID = strings.TrimSpace(e.FrontOrderID)
 	if e.FrontOrderID == "" {
-		return fmt.Errorf("front_order_id is required")
+		return fmt.Errorf("order_id is required")
 	}
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
@@ -237,20 +244,25 @@ func dbUpsertFrontOrderTx(ctx context.Context, tx *sql.Tx, e frontOrderEntry) er
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = e.CreatedAtUnix
 	}
-	_, err := ExecContext(ctx, tx,
-		`INSERT INTO biz_front_orders(
-			front_order_id,front_type,front_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(front_order_id) DO UPDATE SET
-			front_type=excluded.front_type,
-			front_subtype=excluded.front_subtype,
-			owner_pubkey_hex=excluded.owner_pubkey_hex,
-			target_object_type=excluded.target_object_type,
-			target_object_id=excluded.target_object_id,
-			status=excluded.status,
-			updated_at_unix=excluded.updated_at_unix,
-			note=excluded.note,
-			payload_json=excluded.payload_json`,
+	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
+	if e.IdempotencyKey == "" {
+		e.IdempotencyKey = e.FrontOrderID
+	}
+	if _, err := ExecContext(ctx, tx,
+		`INSERT INTO orders(
+				order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,note,payload_json,created_at_unix,updated_at_unix
+			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+			ON CONFLICT(order_id) DO UPDATE SET
+				order_type=excluded.order_type,
+				order_subtype=excluded.order_subtype,
+				owner_pubkey_hex=excluded.owner_pubkey_hex,
+				target_object_type=excluded.target_object_type,
+				target_object_id=excluded.target_object_id,
+				status=excluded.status,
+				idempotency_key=excluded.idempotency_key,
+				updated_at_unix=excluded.updated_at_unix,
+				note=excluded.note,
+				payload_json=excluded.payload_json`,
 		e.FrontOrderID,
 		strings.TrimSpace(e.FrontType),
 		strings.TrimSpace(e.FrontSubtype),
@@ -258,90 +270,31 @@ func dbUpsertFrontOrderTx(ctx context.Context, tx *sql.Tx, e frontOrderEntry) er
 		strings.TrimSpace(e.TargetObjectType),
 		strings.TrimSpace(e.TargetObjectID),
 		strings.TrimSpace(e.Status),
-		e.CreatedAtUnix,
-		e.UpdatedAtUnix,
+		e.IdempotencyKey,
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
-	)
-	return err
+		e.CreatedAtUnix,
+		e.UpdatedAtUnix,
+	); err != nil {
+		return fmt.Errorf("upsert front_order: %w", err)
+	}
+	return nil
 }
 
-// dbUpsertSettleRecordTx 事务内插入或更新业务与结算主表。
+// dbUpsertSettleRecordTx 事务内写业务与结算主表。
 // 设计说明：
-// - 业务字段先落，结算字段后补；
-// - 同一 business_id 始终只保留一行；
-// - settlement 字段为空时只更新业务字段，不会把已经写好的结算出口抹掉。
+// - 业务和结算一起落，不再把同一 order_id 压成一行；
+// - settlement_id 负责精确定位，后续新执行单会顺延新增；
+// - 这个入口只做桥接，不自己拼旧式 UPSERT。
 func dbUpsertSettleRecordTx(ctx context.Context, tx *sql.Tx, e finBusinessEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	if e.OccurredAtUnix <= 0 {
-		e.OccurredAtUnix = time.Now().Unix()
-	}
-	e.BusinessID = strings.TrimSpace(e.BusinessID)
-	if e.BusinessID == "" {
-		return fmt.Errorf("business_id is required")
-	}
-	if strings.TrimSpace(e.SettlementID) == "" {
-		e.SettlementID = e.BusinessID
-	}
-	// 第七阶段：business_role 必须是正式约束，不允许空值
-	e.BusinessRole = strings.TrimSpace(e.BusinessRole)
-	if e.BusinessRole == "" {
-		return fmt.Errorf("business_role is required: must be 'formal' or 'process'")
-	}
-	if e.BusinessRole != "formal" && e.BusinessRole != "process" {
-		return fmt.Errorf("business_role must be 'formal' or 'process', got '%s'", e.BusinessRole)
-	}
-	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
-	if e.IdempotencyKey == "" {
-		e.IdempotencyKey = e.BusinessID
-	}
-	_, err := ExecContext(ctx, tx,
-		`INSERT INTO settle_records(
-			business_id,settlement_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json,settlement_method,settlement_status,target_type,target_id,error_message,settlement_payload_json,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(business_id) DO UPDATE SET
-			status=excluded.status,
-			occurred_at_unix=excluded.occurred_at_unix,
-			note=excluded.note,
-			payload_json=excluded.payload_json,
-			source_type=excluded.source_type,
-			source_id=excluded.source_id,
-			accounting_scene=excluded.accounting_scene,
-			accounting_subtype=excluded.accounting_subtype,
-			business_role=excluded.business_role,
-			from_party_id=excluded.from_party_id,
-			to_party_id=excluded.to_party_id,
-			updated_at_unix=excluded.updated_at_unix`,
-		e.BusinessID,
-		strings.TrimSpace(e.SettlementID),
-		strings.TrimSpace(e.BusinessRole),
-		strings.TrimSpace(e.SourceType),
-		strings.TrimSpace(e.SourceID),
-		strings.TrimSpace(e.AccountingScene),
-		strings.TrimSpace(e.AccountingSubType),
-		strings.TrimSpace(e.FromPartyID),
-		strings.TrimSpace(e.ToPartyID),
-		strings.TrimSpace(e.Status),
-		e.OccurredAtUnix,
-		e.IdempotencyKey,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-		"",
-		"",
-		"",
-		"",
-		"",
-		"{}",
-		e.OccurredAtUnix,
-		e.OccurredAtUnix,
-	)
-	return err
+	return dbAppendFinBusinessTx(ctx, tx, e)
 }
 
 // dbAppendBusinessTriggerTx 事务内插入业务触发桥接记录
-// 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
+// 幂等约束在 (order_id, trigger_type, trigger_id_value, trigger_role) 上
 // 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
 func dbAppendBusinessTriggerTx(ctx context.Context, tx *sql.Tx, e businessTriggerEntry) error {
 	if tx == nil {
@@ -351,29 +304,43 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx *sql.Tx, e businessTrigge
 	if e.TriggerID == "" {
 		return fmt.Errorf("trigger_id is required")
 	}
-	e.BusinessID = strings.TrimSpace(e.BusinessID)
-	if e.BusinessID == "" {
-		return fmt.Errorf("business_id is required")
+	e.OrderID = strings.TrimSpace(e.OrderID)
+	if e.OrderID == "" {
+		return fmt.Errorf("order_id is required")
+	}
+	e.SettlementID = strings.TrimSpace(e.SettlementID)
+	if e.SettlementID == "" {
+		e.SettlementID = e.OrderID
 	}
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
 	_, err := ExecContext(ctx, tx,
-		`INSERT INTO biz_business_triggers(
-			trigger_id,business_id,trigger_type,trigger_id_value,trigger_role,created_at_unix,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?)
-		ON CONFLICT(business_id, trigger_type, trigger_id_value, trigger_role) DO UPDATE SET
-			trigger_id=excluded.trigger_id,
+		`INSERT INTO order_settlement_events(
+			process_id,settlement_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,idempotency_key,note,payload_json,occurred_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(settlement_id, event_type, idempotency_key) DO UPDATE SET
+			process_id=excluded.process_id,
+			source_type=excluded.source_type,
+			source_id=excluded.source_id,
+			accounting_scene=excluded.accounting_scene,
+			accounting_subtype=excluded.accounting_subtype,
+			status=excluded.status,
 			note=excluded.note,
-			payload_json=excluded.payload_json`,
+			payload_json=excluded.payload_json,
+			occurred_at_unix=excluded.occurred_at_unix`,
 		e.TriggerID,
-		e.BusinessID,
+		e.SettlementID,
 		strings.TrimSpace(e.TriggerType),
 		strings.TrimSpace(e.TriggerIDValue),
+		"",
 		strings.TrimSpace(e.TriggerRole),
-		e.CreatedAtUnix,
+		"bridge_trigger",
+		"linked",
+		e.TriggerID+":"+e.OrderID+":"+strings.TrimSpace(e.TriggerType)+":"+strings.TrimSpace(e.TriggerIDValue)+":"+strings.TrimSpace(e.TriggerRole),
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
+		e.CreatedAtUnix,
 	)
 	return err
 }
@@ -384,50 +351,5 @@ func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx *sql.Tx, e busines
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	e.SettlementID = strings.TrimSpace(e.SettlementID)
-	if e.SettlementID == "" {
-		return fmt.Errorf("settlement_id is required")
-	}
-	e.BusinessID = strings.TrimSpace(e.BusinessID)
-	if e.BusinessID == "" {
-		return fmt.Errorf("business_id is required")
-	}
-	if err := validateSettlementMethod(e.SettlementMethod); err != nil {
-		return err
-	}
-	if e.CreatedAtUnix <= 0 {
-		e.CreatedAtUnix = time.Now().Unix()
-	}
-	if e.UpdatedAtUnix <= 0 {
-		e.UpdatedAtUnix = e.CreatedAtUnix
-	}
-	var exists int
-	if err := QueryRowContext(ctx, tx, `SELECT 1 FROM settle_records WHERE business_id=?`, e.BusinessID).Scan(&exists); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("business record not found for settlement_id=%s", e.SettlementID)
-		}
-		return err
-	}
-	_, err := ExecContext(ctx, tx,
-		`UPDATE settle_records SET
-			settlement_id=?,
-			settlement_method=?,
-			settlement_status=?,
-			target_type=?,
-			target_id=?,
-			error_message=?,
-			settlement_payload_json=?,
-			updated_at_unix=?
-		WHERE business_id=?`,
-		e.SettlementID,
-		strings.TrimSpace(e.SettlementMethod),
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.TargetType),
-		strings.TrimSpace(e.TargetID),
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSONString(e.Payload),
-		e.UpdatedAtUnix,
-		e.BusinessID,
-	)
-	return err
+	return dbUpsertBusinessSettlementTx(ctx, tx, e)
 }

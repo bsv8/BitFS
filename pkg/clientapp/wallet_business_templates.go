@@ -11,18 +11,18 @@ import (
 	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 )
 
-// WalletBusinessRequest 是页面交给钱包的签名业务原文。
+// WalletOrderRequest 是页面交给钱包的签名订单原文。
 // 设计说明：
 // - 页面只负责搬运远端给出的 [[字段...],签名]，不自己解释业务；
 // - 钱包本地根据模板 ID 决定能否验证、能否组交易、如何给用户解释；
 // - signer_pubkey_hex 明确告诉钱包“这份业务原文是谁签的”，避免页面口头说明和验签目标脱节。
-type WalletBusinessRequest struct {
+type WalletOrderRequest struct {
 	SignerPubkeyHex     string          `json:"signer_pubkey_hex"`
 	SignedEnvelope      json.RawMessage `json:"signed_envelope"`
 	ExpectedPreviewHash string          `json:"expected_preview_hash,omitempty"`
 }
 
-type WalletBusinessPreview struct {
+type WalletOrderPreview struct {
 	Recognized            bool     `json:"recognized"`
 	CanSign               bool     `json:"can_sign"`
 	TemplateID            string   `json:"template_id,omitempty"`
@@ -40,20 +40,20 @@ type WalletBusinessPreview struct {
 	PreviewHash           string   `json:"preview_hash,omitempty"`
 }
 
-type WalletBusinessPreviewResp struct {
-	Ok      bool                  `json:"ok"`
-	Code    string                `json:"code"`
-	Message string                `json:"message,omitempty"`
-	Preview WalletBusinessPreview `json:"preview"`
+type WalletOrderPreviewResp struct {
+	Ok      bool               `json:"ok"`
+	Code    string             `json:"code"`
+	Message string             `json:"message,omitempty"`
+	Preview WalletOrderPreview `json:"preview"`
 }
 
-type WalletBusinessSignResp struct {
-	Ok          bool                  `json:"ok"`
-	Code        string                `json:"code"`
-	Message     string                `json:"message,omitempty"`
-	Preview     WalletBusinessPreview `json:"preview"`
-	SignedTxHex string                `json:"signed_tx_hex,omitempty"`
-	TxID        string                `json:"txid,omitempty"`
+type WalletOrderSignResp struct {
+	Ok          bool               `json:"ok"`
+	Code        string             `json:"code"`
+	Message     string             `json:"message,omitempty"`
+	Preview     WalletOrderPreview `json:"preview"`
+	SignedTxHex string             `json:"signed_tx_hex,omitempty"`
+	TxID        string             `json:"txid,omitempty"`
 }
 
 // BizOrderPayBSVRequest 是新的 BSV 业务下单输入。
@@ -78,8 +78,6 @@ type BizOrderPayBSVResponse struct {
 	Code                 string                       `json:"code"`
 	Message              string                       `json:"message,omitempty"`
 	OrderID              string                       `json:"order_id,omitempty"`
-	FrontOrderID         string                       `json:"front_order_id,omitempty"`
-	BusinessID           string                       `json:"business_id,omitempty"`
 	SettlementID         string                       `json:"settlement_id,omitempty"`
 	IdempotencyKey       string                       `json:"idempotency_key,omitempty"`
 	Status               string                       `json:"status,omitempty"`
@@ -89,23 +87,23 @@ type BizOrderPayBSVResponse struct {
 	FrontOrderSummary    *FrontOrderSettlementSummary `json:"summary,omitempty"`
 }
 
-type walletBusinessPreparedTx struct {
-	Preview     WalletBusinessPreview
+type walletOrderPreparedTx struct {
+	Preview     WalletOrderPreview
 	SignedTxHex string
 	TxID        string
 }
 
-type walletBusinessTemplate interface {
+type walletOrderTemplate interface {
 	TemplateID() string
-	Prepare(context.Context, *clientDB, *Runtime, WalletBusinessRequest) (walletBusinessPreparedTx, error)
+	Prepare(context.Context, *clientDB, *Runtime, WalletOrderRequest) (walletOrderPreparedTx, error)
 }
 
-func TriggerWalletBusinessPreview(ctx context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (WalletBusinessPreviewResp, error) {
-	prepared, err := prepareWalletBusinessTx(ctx, store, rt, req)
+func TriggerWalletOrderPreview(ctx context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (WalletOrderPreviewResp, error) {
+	prepared, err := prepareWalletOrderTx(ctx, store, rt, req)
 	if err != nil {
-		return WalletBusinessPreviewResp{}, err
+		return WalletOrderPreviewResp{}, err
 	}
-	return WalletBusinessPreviewResp{
+	return WalletOrderPreviewResp{
 		Ok:      true,
 		Code:    "OK",
 		Message: "",
@@ -113,22 +111,22 @@ func TriggerWalletBusinessPreview(ctx context.Context, store *clientDB, rt *Runt
 	}, nil
 }
 
-func TriggerWalletBusinessSign(ctx context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (WalletBusinessSignResp, error) {
-	prepared, err := prepareWalletBusinessTx(ctx, store, rt, req)
+func TriggerWalletOrderSign(ctx context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (WalletOrderSignResp, error) {
+	prepared, err := prepareWalletOrderTx(ctx, store, rt, req)
 	if err != nil {
-		return WalletBusinessSignResp{}, err
+		return WalletOrderSignResp{}, err
 	}
 	if !prepared.Preview.CanSign {
-		return WalletBusinessSignResp{
+		return WalletOrderSignResp{
 			Ok:      false,
 			Code:    "UNKNOWN_TEMPLATE",
-			Message: "wallet business template not found",
+			Message: "wallet order template not found",
 			Preview: prepared.Preview,
 		}, nil
 	}
 	expected := strings.ToLower(strings.TrimSpace(req.ExpectedPreviewHash))
 	if expected == "" {
-		return WalletBusinessSignResp{
+		return WalletOrderSignResp{
 			Ok:      false,
 			Code:    "PREVIEW_REQUIRED",
 			Message: "expected preview hash is required",
@@ -136,14 +134,14 @@ func TriggerWalletBusinessSign(ctx context.Context, store *clientDB, rt *Runtime
 		}, nil
 	}
 	if !strings.EqualFold(expected, prepared.Preview.PreviewHash) {
-		return WalletBusinessSignResp{
+		return WalletOrderSignResp{
 			Ok:      false,
 			Code:    "PREVIEW_CHANGED",
 			Message: "wallet preview changed; retry",
 			Preview: prepared.Preview,
 		}, nil
 	}
-	return WalletBusinessSignResp{
+	return WalletOrderSignResp{
 		Ok:          true,
 		Code:        "OK",
 		Message:     "",
@@ -153,46 +151,46 @@ func TriggerWalletBusinessSign(ctx context.Context, store *clientDB, rt *Runtime
 	}, nil
 }
 
-func prepareWalletBusinessTx(ctx context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (walletBusinessPreparedTx, error) {
+func prepareWalletOrderTx(ctx context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (walletOrderPreparedTx, error) {
 	_ = ctx
 	if rt == nil || store == nil || rt.ActionChain == nil {
-		return walletBusinessPreparedTx{}, fmt.Errorf("runtime not initialized")
+		return walletOrderPreparedTx{}, fmt.Errorf("runtime not initialized")
 	}
 	signerPubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(req.SignerPubkeyHex))
 	if err != nil {
-		return walletBusinessPreparedTx{}, fmt.Errorf("signer_pubkey_hex invalid: %w", err)
+		return walletOrderPreparedTx{}, fmt.Errorf("signer_pubkey_hex invalid: %w", err)
 	}
 	envelopeRaw := append([]byte(nil), req.SignedEnvelope...)
 	if len(strings.TrimSpace(string(envelopeRaw))) == 0 {
-		return walletBusinessPreparedTx{}, fmt.Errorf("signed_envelope is required")
+		return walletOrderPreparedTx{}, fmt.Errorf("signed_envelope is required")
 	}
-	templateID, err := walletBusinessTemplateIDFromEnvelope(envelopeRaw)
+	templateID, err := walletOrderTemplateIDFromEnvelope(envelopeRaw)
 	if err != nil {
-		return walletBusinessPreparedTx{}, err
+		return walletOrderPreparedTx{}, err
 	}
-	tpl, ok := walletBusinessTemplateRegistry()[templateID]
+	tpl, ok := walletOrderTemplateRegistry()[templateID]
 	if !ok {
-		preview := buildUnknownWalletBusinessPreview(signerPubkeyHex, templateID)
-		return walletBusinessPreparedTx{Preview: preview}, nil
+		preview := buildUnknownWalletOrderPreview(signerPubkeyHex, templateID)
+		return walletOrderPreparedTx{Preview: preview}, nil
 	}
-	prepared, err := tpl.Prepare(ctx, store, rt, WalletBusinessRequest{
+	prepared, err := tpl.Prepare(ctx, store, rt, WalletOrderRequest{
 		SignerPubkeyHex:     signerPubkeyHex,
 		SignedEnvelope:      envelopeRaw,
 		ExpectedPreviewHash: strings.TrimSpace(req.ExpectedPreviewHash),
 	})
 	if err != nil {
-		return walletBusinessPreparedTx{}, err
+		return walletOrderPreparedTx{}, err
 	}
 	return prepared, nil
 }
 
-func walletBusinessTemplateRegistry() map[string]walletBusinessTemplate {
-	return map[string]walletBusinessTemplate{
-		domainQuotePayloadVersion: walletBusinessTemplateDomainRegister{},
+func walletOrderTemplateRegistry() map[string]walletOrderTemplate {
+	return map[string]walletOrderTemplate{
+		domainQuotePayloadVersion: walletOrderTemplateDomainRegister{},
 	}
 }
 
-func walletBusinessTemplateIDFromEnvelope(raw []byte) (string, error) {
+func walletOrderTemplateIDFromEnvelope(raw []byte) (string, error) {
 	var env domainmodule.SignedEnvelope
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return "", fmt.Errorf("decode signed envelope: %w", err)
@@ -207,7 +205,7 @@ func walletBusinessTemplateIDFromEnvelope(raw []byte) (string, error) {
 	return templateID, nil
 }
 
-func buildUnknownWalletBusinessPreview(signerPubkeyHex string, templateID string) WalletBusinessPreview {
+func buildUnknownWalletOrderPreview(signerPubkeyHex string, templateID string) WalletOrderPreview {
 	lines := []string{
 		fmt.Sprintf("签发节点公钥: %s", strings.ToLower(strings.TrimSpace(signerPubkeyHex))),
 	}
@@ -218,7 +216,7 @@ func buildUnknownWalletBusinessPreview(signerPubkeyHex string, templateID string
 		"说明: 当前钱包没有这个业务模板，无法安全解释交易意图，也不会替页面组装交易。",
 		"建议: 只在你完全确认来源和业务语义时，再继续接入对应模板。",
 	)
-	return WalletBusinessPreview{
+	return WalletOrderPreview{
 		Recognized:       false,
 		CanSign:          false,
 		TemplateID:       strings.TrimSpace(templateID),
@@ -230,7 +228,7 @@ func buildUnknownWalletBusinessPreview(signerPubkeyHex string, templateID string
 	}
 }
 
-func walletBusinessPreviewHash(rawTx []byte) string {
+func walletOrderPreviewHash(rawTx []byte) string {
 	sum := sha256.Sum256(rawTx)
 	return hex.EncodeToString(sum[:])
 }

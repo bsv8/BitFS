@@ -244,9 +244,9 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/wallet/summary", s.withAuth(s.handleWalletSummary))
 		mux.HandleFunc(prefix+"/v1/admin/wallet/consistency", s.withAuth(s.handleAdminWalletConsistency))
 		mux.HandleFunc(prefix+"/v1/wallet/sync-once", s.withAuth(s.handleWalletSyncOnce))
-		mux.HandleFunc(prefix+"/v1/wallet/business/preview", s.withAuth(s.handleWalletBusinessPreview))
-		mux.HandleFunc(prefix+"/v1/wallet/business/sign", s.withAuth(s.handleWalletBusinessSign))
-		mux.HandleFunc(prefix+"/v1/wallet/business/pay-bsv", s.withAuth(s.handleBizOrderPayBSV))
+		mux.HandleFunc(prefix+"/v1/wallet/order/preview", s.withAuth(s.handleWalletOrderPreview))
+		mux.HandleFunc(prefix+"/v1/wallet/order/sign", s.withAuth(s.handleWalletOrderSign))
+		mux.HandleFunc(prefix+"/v1/wallet/order/pay-bsv", s.withAuth(s.handleWalletOrderPayBSV))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/preview", s.withAuth(s.handleWalletTokenCreatePreview))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/sign", s.withAuth(s.handleWalletTokenCreateSign))
 		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/submit", s.withAuth(s.handleWalletTokenCreateSubmit))
@@ -1929,7 +1929,7 @@ func (s *httpAPIServer) handleAdminWalletUTXODetail(w http.ResponseWriter, r *ht
 //   - 不支持自由模糊搜索（q 参数），请使用调试入口
 //
 // 结构化条件（仅用于过滤）：
-//   - business_id：按业务 ID 精确查
+//   - order_id：按订单 ID 精确查
 //   - pool_allocation_id：按池分配主键换算查
 //   - source_type/source_id：按来源查
 //   - status：按状态过滤
@@ -1946,7 +1946,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 	}
 	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
 	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
+	orderID := strings.TrimSpace(r.URL.Query().Get("order_id"))
 	poolAllocationID := strings.TrimSpace(r.URL.Query().Get("pool_allocation_id"))
 
 	// 正式口不支持自由模糊搜索，q 不是正式查询条件。
@@ -2002,7 +2002,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		Limit:             limit,
 		Offset:            offset,
 		BusinessRole:      businessRole,
-		BusinessID:        businessID,
+		OrderID:           orderID,
 		SourceType:        sourceType,
 		SourceID:          sourceID,
 		AccountingScene:   accountingScene,
@@ -2024,9 +2024,9 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	businessID := strings.TrimSpace(r.URL.Query().Get("business_id"))
-	if businessID == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "business_id is required"})
+	orderID := strings.TrimSpace(r.URL.Query().Get("order_id"))
+	if orderID == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "order_id is required"})
 		return
 	}
 
@@ -2042,7 +2042,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinessDetail(w http.ResponseWriter, 
 		return
 	}
 
-	it, err := dbGetFinanceBusiness(r.Context(), httpStore(s), businessID)
+	it, err := dbGetFinanceBusiness(r.Context(), httpStore(s), orderID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})

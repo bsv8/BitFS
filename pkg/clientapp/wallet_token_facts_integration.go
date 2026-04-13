@@ -307,8 +307,8 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			return fmt.Errorf("resolve settlement payment attempt for token send: %w", err)
 		}
 
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(dbtx, settlementPaymentAttemptID, finBusinessEntry{
-			BusinessID:        walletBSV21SendBusinessID(txID),
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, dbtx, settlementPaymentAttemptID, finBusinessEntry{
+			OrderID:           walletBSV21SendBusinessID(txID),
 			BusinessRole:      "process",
 			AccountingScene:   "wallet_transfer",
 			AccountingSubType: "bsv21_send",
@@ -332,16 +332,16 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		for _, lot := range lots {
 			recordID := fmt.Sprintf("rec_token_%d_%s", settlementPaymentAttemptID, lot.Lot.LotID)
 			if err := dbAppendSettlementRecordDB(ctx, dbtx, settlementRecordEntry{
-				RecordID:          recordID,
+				RecordID:                   recordID,
 				SettlementPaymentAttemptID: settlementPaymentAttemptID,
-				AssetType:         "TOKEN",
-				OwnerPubkeyHex:    lot.Lot.OwnerPubkeyHex,
-				SourceLotID:       lot.Lot.LotID,
-				UsedQuantityText:  lot.UsedText,
-				State:             "confirmed",
-				OccurredAtUnix:    now,
-				ConfirmedAtUnix:   now,
-				Note:              "bsv21 token consumed by send tx",
+				AssetType:                  "TOKEN",
+				OwnerPubkeyHex:             lot.Lot.OwnerPubkeyHex,
+				SourceLotID:                lot.Lot.LotID,
+				UsedQuantityText:           lot.UsedText,
+				State:                      "confirmed",
+				OccurredAtUnix:             now,
+				ConfirmedAtUnix:            now,
+				Note:                       "bsv21 token consumed by send tx",
 				Payload: map[string]any{
 					"txid":             txID,
 					"carrier_utxo_id":  lot.CarrierUTXOID,
@@ -435,7 +435,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			minerFeeSat = 0
 		}
 		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 token 事实和流程事件。
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(dbtx, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, dbtx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_wallet_bsv21_send_" + txID,
 			AccountingScene:   "wallet_transfer",
 			AccountingSubType: "bsv21_send",
@@ -450,7 +450,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 				"token_send_text": consumedText,
 			},
 		}); err != nil {
-			return fmt.Errorf("append settle_process_events failed: %w", err)
+			return fmt.Errorf("append order_settlement_events failed: %w", err)
 		}
 		return nil
 	})

@@ -439,18 +439,18 @@ func TestRecordChainPaymentAccountingAfterBroadcast_WritesBusinessFacts(t *testi
 	}
 
 	var businessCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_records WHERE business_id=?`, "biz_chain_payment_"+txID).Scan(&businessCount); err != nil {
-		t.Fatalf("query settle_records failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM order_settlements WHERE order_id=?`, "biz_chain_payment_"+txID).Scan(&businessCount); err != nil {
+		t.Fatalf("query order_settlements failed: %v", err)
 	}
 	if businessCount != 1 {
-		t.Fatalf("expected 1 settle_records row, got %d", businessCount)
+		t.Fatalf("expected 1 order_settlements row, got %d", businessCount)
 	}
 
 	var processCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM settle_process_events WHERE process_id=?`, "proc_chain_payment_"+txID).Scan(&processCount); err != nil {
-		t.Fatalf("query settle_process_events failed: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(1) FROM order_settlement_events WHERE process_id=?`, "proc_chain_payment_"+txID).Scan(&processCount); err != nil {
+		t.Fatalf("query order_settlement_events failed: %v", err)
 	}
 	if processCount != 1 {
-		t.Fatalf("expected 1 settle_process_events row, got %d", processCount)
+		t.Fatalf("expected 1 order_settlement_events row, got %d", processCount)
 	}
 }

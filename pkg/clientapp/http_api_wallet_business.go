@@ -5,7 +5,7 @@ import (
 	"net/http"
 )
 
-func (s *httpAPIServer) handleWalletBusinessPreview(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleWalletOrderPreview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -14,12 +14,12 @@ func (s *httpAPIServer) handleWalletBusinessPreview(w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	var req WalletBusinessRequest
+	var req WalletOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerWalletBusinessPreview(r.Context(), s.store, s.rt, req)
+	resp, err := TriggerWalletOrderPreview(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -27,7 +27,7 @@ func (s *httpAPIServer) handleWalletBusinessPreview(w http.ResponseWriter, r *ht
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *httpAPIServer) handleWalletBusinessSign(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleWalletOrderSign(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
@@ -36,12 +36,12 @@ func (s *httpAPIServer) handleWalletBusinessSign(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	var req WalletBusinessRequest
+	var req WalletOrderRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	resp, err := TriggerWalletBusinessSign(r.Context(), s.store, s.rt, req)
+	resp, err := TriggerWalletOrderSign(r.Context(), s.store, s.rt, req)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -49,7 +49,7 @@ func (s *httpAPIServer) handleWalletBusinessSign(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (s *httpAPIServer) handleBizOrderPayBSV(w http.ResponseWriter, r *http.Request) {
+func (s *httpAPIServer) handleWalletOrderPayBSV(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return

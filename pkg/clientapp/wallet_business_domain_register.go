@@ -7,22 +7,22 @@ import (
 	"strings"
 )
 
-type walletBusinessTemplateDomainRegister struct{}
+type walletOrderTemplateDomainRegister struct{}
 
-func (walletBusinessTemplateDomainRegister) TemplateID() string {
+func (walletOrderTemplateDomainRegister) TemplateID() string {
 	return domainQuotePayloadVersion
 }
 
-func (walletBusinessTemplateDomainRegister) Prepare(_ context.Context, store *clientDB, rt *Runtime, req WalletBusinessRequest) (walletBusinessPreparedTx, error) {
+func (walletOrderTemplateDomainRegister) Prepare(_ context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (walletOrderPreparedTx, error) {
 	quote, err := verifyRegisterQuote(req.SignerPubkeyHex, req.SignedEnvelope)
 	if err != nil {
-		return walletBusinessPreparedTx{}, err
+		return walletOrderPreparedTx{}, err
 	}
 	built, err := buildDomainRegisterTxDetailed(store, rt, req.SignedEnvelope, quote)
 	if err != nil {
-		return walletBusinessPreparedTx{}, err
+		return walletOrderPreparedTx{}, err
 	}
-	preview := WalletBusinessPreview{
+	preview := WalletOrderPreview{
 		Recognized:            true,
 		CanSign:               true,
 		TemplateID:            domainQuotePayloadVersion,
@@ -37,9 +37,9 @@ func (walletBusinessTemplateDomainRegister) Prepare(_ context.Context, store *cl
 		TotalSpendSatoshi:     quote.TotalPaySatoshi + built.MinerFeeSatoshi,
 		ChangeAmountSatoshi:   built.ChangeSatoshi,
 		TxID:                  built.TxID,
-		PreviewHash:           walletBusinessPreviewHash(built.RawTx),
+		PreviewHash:           walletOrderPreviewHash(built.RawTx),
 	}
-	return walletBusinessPreparedTx{
+	return walletOrderPreparedTx{
 		Preview:     preview,
 		SignedTxHex: hex.EncodeToString(built.RawTx),
 		TxID:        built.TxID,

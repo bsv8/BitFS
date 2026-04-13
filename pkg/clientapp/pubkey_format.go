@@ -40,3 +40,28 @@ func normalizeCompressedPubKeyHexLegacyAware(in string) (string, error) {
 	}
 	return normalizeCompressedPubKeyHex(converted)
 }
+
+// normalizePubHexList 统一整理一组公钥 hex。
+// 设计说明：
+// - 只接受系统内的压缩公钥 hex；
+// - 自动去重、去空白；
+// - 遇到任意非法项直接返回错误，避免把脏值继续往下传。
+func normalizePubHexList(in []string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		pubHex, err := normalizeCompressedPubKeyHex(raw)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[pubHex]; ok {
+			continue
+		}
+		seen[pubHex] = struct{}{}
+		out = append(out, pubHex)
+	}
+	return out, nil
+}

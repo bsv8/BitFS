@@ -10,11 +10,11 @@ import (
 	"strings"
 )
 
-// settle_records 语义说明（一次性收口）：
-// - 一条 settle_records 同时承载业务事实和结算出口
-// - 失败重试不新建 business，只更新原记录
-// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 business
-// - 业务/结算查询都从 settle_records 出发，不再分表
+// order_settlements 语义说明（一次性收口）：
+// - 一条 order_settlements 同时承载业务事实和结算出口
+// - 失败重试不新建 order，只更新原记录
+// - 退款、冲正、撤销如果产生新的资金动作，必须新建新的 order
+// - 业务/结算查询都从 order_settlements 出发，不再分表
 
 // financeBusinessFilter 业务查询过滤条件
 // 设计说明：
@@ -34,7 +34,7 @@ type financeBusinessFilter struct {
 	BusinessRole string // "formal" | "process"
 
 	// 主口径 - 唯一模型字段
-	BusinessID        string
+	OrderID           string
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
@@ -59,7 +59,7 @@ type financeBusinessPage struct {
 // 旧列在已升级数据库中仍存在，但新代码不再引用
 // 第四阶段新增：BusinessRole 明确表达该记录是正式收费还是过程财务
 type financeBusinessItem struct {
-	BusinessID string `json:"business_id"`
+	OrderID string `json:"order_id"`
 
 	// 第四阶段新增：业务角色（formal | process）
 	BusinessRole string `json:"business_role"`
@@ -349,9 +349,9 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 			where += " AND business_role='process'"
 		}
 
-		if f.BusinessID != "" {
-			where += " AND sb.business_id=?"
-			args = append(args, f.BusinessID)
+		if f.OrderID != "" {
+			where += " AND sb.order_id=?"
+			args = append(args, f.OrderID)
 		}
 		if f.SourceType != "" {
 			where += " AND sb.source_type=?"
@@ -383,23 +383,23 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		}
 		if f.Query != "" {
 			like := "%" + f.Query + "%"
-			where += " AND (sb.business_id LIKE ? OR sb.note LIKE ? OR sb.idempotency_key LIKE ? OR sb.source_type LIKE ? OR sb.source_id LIKE ? OR sb.accounting_scene LIKE ? OR sb.accounting_subtype LIKE ?)"
+			where += " AND (sb.order_id LIKE ? OR sb.note LIKE ? OR sb.idempotency_key LIKE ? OR sb.source_type LIKE ? OR sb.source_id LIKE ? OR sb.accounting_scene LIKE ? OR sb.accounting_subtype LIKE ?)"
 			args = append(args, like, like, like, like, like, like, like)
 		}
 		var out financeBusinessPage
 		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
-			   FROM settle_records sb
+			   FROM order_settlements sb
 			   JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
 			  WHERE 1=1`+where,
 			args...).Scan(&out.Total); err != nil {
 			return financeBusinessPage{}, err
 		}
 		rows, err := QueryContext(ctx, db,
-			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
-			 FROM settle_records sb
+			`SELECT sb.order_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.created_at_unix,sb.idempotency_key,sb.note,sb.payload_json
+			 FROM order_settlements sb
 			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			 WHERE 1=1`+where+` ORDER BY sb.occurred_at_unix DESC,sb.business_id DESC LIMIT ? OFFSET ?`,
+			 WHERE 1=1`+where+` ORDER BY sb.created_at_unix DESC,sb.order_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -410,7 +410,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 		for rows.Next() {
 			var it financeBusinessItem
 			var payload string
-			if err := rows.Scan(&it.BusinessID, &it.BusinessRole, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+			if err := rows.Scan(&it.OrderID, &it.BusinessRole, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
 				return financeBusinessPage{}, err
 			}
 			it.Payload = json.RawMessage(payload)
@@ -432,12 +432,12 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 		var out financeBusinessItem
 		var payload string
 		err := QueryRowContext(ctx, db,
-			`SELECT sb.business_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.occurred_at_unix,sb.idempotency_key,sb.note,sb.payload_json
-			 FROM settle_records sb
+			`SELECT sb.order_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.created_at_unix,sb.idempotency_key,sb.note,sb.payload_json
+			 FROM order_settlements sb
 			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			 WHERE sb.business_id=?`,
+			 WHERE sb.order_id=?`,
 			businessID,
-		).Scan(&out.BusinessID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+		).Scan(&out.OrderID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
 		if err != nil {
 			return financeBusinessItem{}, err
 		}
@@ -507,7 +507,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		var out financeProcessEventPage
 		if err := QueryRowContext(ctx, db,
 			`SELECT COUNT(1)
-			   FROM settle_process_events pe
+			   FROM order_settlement_events pe
 			   JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
 			  WHERE 1=1`+where,
 			args...).Scan(&out.Total); err != nil {
@@ -515,7 +515,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 		}
 		rows, err := QueryContext(ctx, db,
 			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
-			 FROM settle_process_events pe
+			 FROM order_settlement_events pe
 			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
 			 WHERE 1=1`+where+` ORDER BY pe.occurred_at_unix DESC,pe.id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -550,7 +550,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 		var payload string
 		err := QueryRowContext(ctx, db,
 			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
-			 FROM settle_process_events pe
+			 FROM order_settlement_events pe
 			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
 			 WHERE pe.id=?`,
 			id,

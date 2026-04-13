@@ -13,16 +13,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestTriggerWalletBusinessPreview_UnknownTemplateShowsHighWarning(t *testing.T) {
+func TestTriggerWalletOrderPreview_UnknownTemplateShowsHighWarning(t *testing.T) {
 	t.Parallel()
 
-	rt, store := newWalletBusinessTestRuntime(t)
-	resp, err := TriggerWalletBusinessPreview(context.Background(), store, rt, WalletBusinessRequest{
+	rt, store := newWalletOrderTestRuntime(t)
+	resp, err := TriggerWalletOrderPreview(context.Background(), store, rt, WalletOrderRequest{
 		SignerPubkeyHex: "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		SignedEnvelope:  []byte(`[["unknown-template-v1","x"],"abcd"]`),
 	})
 	if err != nil {
-		t.Fatalf("TriggerWalletBusinessPreview failed: %v", err)
+		t.Fatalf("TriggerWalletOrderPreview failed: %v", err)
 	}
 	if !resp.Ok {
 		t.Fatalf("preview should succeed: %+v", resp)
@@ -41,10 +41,10 @@ func TestTriggerWalletBusinessPreview_UnknownTemplateShowsHighWarning(t *testing
 	}
 }
 
-func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testing.T) {
+func TestTriggerWalletOrderSign_DomainRegisterTemplateBuildsSignedTx(t *testing.T) {
 	t.Parallel()
 
-	rt, store := newWalletBusinessTestRuntime(t)
+	rt, store := newWalletOrderTestRuntime(t)
 	clientPubkeyHex := rt.runIn.ClientID
 	targetPubkeyHex, err := clientIDFromPrivHex("3333333333333333333333333333333333333333333333333333333333333333")
 	if err != nil {
@@ -71,12 +71,12 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 		t.Fatalf("signEnvelopeForTest failed: %v", err)
 	}
 
-	previewResp, err := TriggerWalletBusinessPreview(context.Background(), store, rt, WalletBusinessRequest{
+	previewResp, err := TriggerWalletOrderPreview(context.Background(), store, rt, WalletOrderRequest{
 		SignerPubkeyHex: domainPubkeyHex,
 		SignedEnvelope:  signedEnvelope,
 	})
 	if err != nil {
-		t.Fatalf("TriggerWalletBusinessPreview failed: %v", err)
+		t.Fatalf("TriggerWalletOrderPreview failed: %v", err)
 	}
 	if !previewResp.Ok || !previewResp.Preview.Recognized || !previewResp.Preview.CanSign {
 		t.Fatalf("unexpected preview response: %+v", previewResp)
@@ -87,13 +87,13 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 	if previewResp.Preview.MinerFeeSatoshi == 0 {
 		t.Fatalf("miner fee should be calculated")
 	}
-	signResp, err := TriggerWalletBusinessSign(context.Background(), store, rt, WalletBusinessRequest{
+	signResp, err := TriggerWalletOrderSign(context.Background(), store, rt, WalletOrderRequest{
 		SignerPubkeyHex:     domainPubkeyHex,
 		SignedEnvelope:      signedEnvelope,
 		ExpectedPreviewHash: previewResp.Preview.PreviewHash,
 	})
 	if err != nil {
-		t.Fatalf("TriggerWalletBusinessSign failed: %v", err)
+		t.Fatalf("TriggerWalletOrderSign failed: %v", err)
 	}
 	if !signResp.Ok {
 		t.Fatalf("sign response not ok: %+v", signResp)
@@ -106,7 +106,7 @@ func TestTriggerWalletBusinessSign_DomainRegisterTemplateBuildsSignedTx(t *testi
 	}
 }
 
-func newWalletBusinessTestRuntime(t *testing.T) (*Runtime, *clientDB) {
+func newWalletOrderTestRuntime(t *testing.T) (*Runtime, *clientDB) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
 	db, err := sql.Open("sqlite", dbPath)

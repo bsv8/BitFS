@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 )
 
 // ensureClientDBBaseSchema 创建基础表和索引。
@@ -121,7 +120,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 第五步定性：proc_direct_deals 是【协议过程对象】
 		// - 职责：保存协议协商/成交上下文（buyer/seller/seed_hash/price 等）
 		// - 非支付主事实，不决定业务是否完成
-		// - 业务完成状态以 settle_records 为准
+		// - 业务完成状态以 order_settlements 为准
 		`CREATE TABLE IF NOT EXISTS proc_direct_deals(
 			deal_id TEXT PRIMARY KEY,
 			demand_id TEXT NOT NULL,
@@ -151,7 +150,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		// 第五步定性：proc_direct_transfer_pools 是【运行态池状态表】
 		// - 职责：保存池协议运行期的动态状态（sequence_num、current_tx_hex、status 等）
 		// - 非业务主判断入口，只服务于协议运行期
-		// - 业务完成状态以 settle_records 为准，不以此表的 status 为准
+		// - 业务完成状态以 order_settlements 为准，不以此表的 status 为准
 		`CREATE TABLE IF NOT EXISTS proc_direct_transfer_pools(
 			session_id TEXT PRIMARY KEY,
 			deal_id TEXT NOT NULL,
@@ -479,85 +478,67 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			last_error TEXT NOT NULL
 		)`,
 
-		// 财务业务
-		// 第六次迭代起新库 schema 不再定义旧字段（老库兼容迁移未做物理删列）
-		// 旧列迁移由 ensureFinAccountingSchema 处理
-		//
-		// settle_records 语义说明（一次性收口）：
-		// - 一行同时承载业务事实和结算出口；
-		// - business_id 是主键，idempotency_key 必须唯一；
-		// - settlement_method='chain' 时，target_type/target_id 只能指向事实层主键，不允许写 txid。
-		`CREATE TABLE IF NOT EXISTS settle_records(
-			business_id TEXT PRIMARY KEY,
-			settlement_id TEXT NOT NULL UNIQUE,
-			business_role TEXT NOT NULL DEFAULT '' CHECK(business_role IN ('', 'formal', 'process')),
-			source_type TEXT NOT NULL DEFAULT '',
-			source_id TEXT NOT NULL DEFAULT '',
-			accounting_scene TEXT NOT NULL DEFAULT '',
-			accounting_subtype TEXT NOT NULL DEFAULT '',
-			from_party_id TEXT NOT NULL DEFAULT '',
-			to_party_id TEXT NOT NULL DEFAULT '',
-			status TEXT NOT NULL DEFAULT '',
-			occurred_at_unix INTEGER NOT NULL DEFAULT 0,
-			idempotency_key TEXT NOT NULL,
-			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			settlement_method TEXT NOT NULL DEFAULT '',
-			settlement_status TEXT NOT NULL DEFAULT '',
-			target_type TEXT NOT NULL DEFAULT '',
-			target_id TEXT NOT NULL DEFAULT '',
-			error_message TEXT NOT NULL DEFAULT '',
-			settlement_payload_json TEXT NOT NULL DEFAULT '{}',
-			created_at_unix INTEGER NOT NULL DEFAULT 0,
-			updated_at_unix INTEGER NOT NULL DEFAULT 0
-		)`,
-		`CREATE TABLE IF NOT EXISTS settle_process_events(
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			process_id TEXT NOT NULL,
-			source_type TEXT NOT NULL DEFAULT '',
-			source_id TEXT NOT NULL DEFAULT '',
-			accounting_scene TEXT NOT NULL DEFAULT '',
-			accounting_subtype TEXT NOT NULL DEFAULT '',
-			event_type TEXT NOT NULL,
-			status TEXT NOT NULL,
-			occurred_at_unix INTEGER NOT NULL,
-			idempotency_key TEXT NOT NULL,
-			note TEXT NOT NULL,
-			payload_json TEXT NOT NULL
-		)`,
-		// 前台业务主身份层（第七次迭代新增）
-		// 职责：表达前台业务主身份，不直接承载支付实现
-		`CREATE TABLE IF NOT EXISTS biz_front_orders(
-			front_order_id TEXT PRIMARY KEY,
-			front_type TEXT NOT NULL,
-			front_subtype TEXT NOT NULL,
-			owner_pubkey_hex TEXT NOT NULL,
-			target_object_type TEXT NOT NULL,
-			target_object_id TEXT NOT NULL,
-			status TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}'
-		)`,
-		// 前台到财务桥接层（第七次迭代新增）
-		// 职责：表达"哪个前台主对象触发了哪条财务事实"
-		// 设计说明：
-		//   - 本阶段不强绑 biz_front_orders 外键，允许旧对象直接触发 business
-		//   - 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
-		//   - 幂等约束在 (business_id, trigger_type, trigger_id_value, trigger_role) 上
-		`CREATE TABLE IF NOT EXISTS biz_business_triggers(
-			trigger_id TEXT PRIMARY KEY,
-			business_id TEXT NOT NULL,
-			trigger_type TEXT NOT NULL,
-			trigger_id_value TEXT NOT NULL,
-			trigger_role TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			note TEXT NOT NULL DEFAULT '',
-			payload_json TEXT NOT NULL DEFAULT '{}',
-			FOREIGN KEY(business_id) REFERENCES settle_records(business_id) ON DELETE CASCADE,
-			UNIQUE(business_id, trigger_type, trigger_id_value, trigger_role)
-		)`,
+			// 新结算主线
+			// - orders 记录“这次要办什么事”
+			// - order_settlements 记录拆出来的每笔支付执行单
+			// - order_settlement_events 记录 settlement 生命周期事件
+			`CREATE TABLE IF NOT EXISTS orders(
+				order_id TEXT PRIMARY KEY,
+				order_type TEXT NOT NULL,
+				order_subtype TEXT NOT NULL,
+				owner_pubkey_hex TEXT NOT NULL,
+				target_object_type TEXT NOT NULL,
+				target_object_id TEXT NOT NULL,
+				status TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				note TEXT NOT NULL DEFAULT '',
+				payload_json TEXT NOT NULL DEFAULT '{}',
+				created_at_unix INTEGER NOT NULL,
+				updated_at_unix INTEGER NOT NULL,
+				UNIQUE(order_type, idempotency_key)
+			)`,
+			`CREATE TABLE IF NOT EXISTS order_settlements(
+				settlement_id TEXT PRIMARY KEY,
+				order_id TEXT NOT NULL,
+				settlement_no INTEGER NOT NULL,
+				business_role TEXT NOT NULL DEFAULT '',
+				source_type TEXT NOT NULL DEFAULT '',
+				source_id TEXT NOT NULL DEFAULT '',
+				accounting_scene TEXT NOT NULL DEFAULT '',
+				accounting_subtype TEXT NOT NULL DEFAULT '',
+				settlement_method TEXT NOT NULL,
+				status TEXT NOT NULL,
+				settlement_status TEXT NOT NULL DEFAULT '',
+				amount_satoshi INTEGER NOT NULL DEFAULT 0,
+				from_party_id TEXT NOT NULL,
+				to_party_id TEXT NOT NULL,
+				target_type TEXT NOT NULL,
+				target_id TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL DEFAULT '',
+				note TEXT NOT NULL DEFAULT '',
+				error_message TEXT NOT NULL DEFAULT '',
+				payload_json TEXT NOT NULL DEFAULT '{}',
+				settlement_payload_json TEXT NOT NULL DEFAULT '{}',
+				created_at_unix INTEGER NOT NULL,
+				updated_at_unix INTEGER NOT NULL,
+				UNIQUE(order_id, settlement_no)
+			)`,
+			`CREATE TABLE IF NOT EXISTS order_settlement_events(
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				process_id TEXT NOT NULL DEFAULT '',
+				settlement_id TEXT NOT NULL,
+				source_type TEXT NOT NULL DEFAULT '',
+				source_id TEXT NOT NULL DEFAULT '',
+				accounting_scene TEXT NOT NULL DEFAULT '',
+				accounting_subtype TEXT NOT NULL DEFAULT '',
+				event_type TEXT NOT NULL,
+				status TEXT NOT NULL,
+				idempotency_key TEXT NOT NULL,
+				note TEXT NOT NULL DEFAULT '',
+				payload_json TEXT NOT NULL DEFAULT '{}',
+				occurred_at_unix INTEGER NOT NULL,
+				UNIQUE(settlement_id, event_type, idempotency_key)
+			)`,
 
 		// 链状态
 		`CREATE TABLE IF NOT EXISTS proc_chain_tip_state(
@@ -756,28 +737,23 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_script_type ON wallet_utxo(wallet_id, state, script_type, created_at_unix ASC, value_satoshi ASC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
 		// 前台业务主身份层索引（第七次迭代新增）
-		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_type_status ON biz_front_orders(front_type, status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_target ON biz_front_orders(target_object_type, target_object_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_owner ON biz_front_orders(owner_pubkey_hex, created_at_unix DESC)`,
-		// 业务触发桥接层索引（第三次迭代新增）
-		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_business ON biz_business_triggers(business_id, created_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_type_value ON biz_business_triggers(trigger_type, trigger_id_value)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_business_triggers_type_value_role ON biz_business_triggers(trigger_type, trigger_id_value, trigger_role)`,
-		// 统一结算出口索引（一次性收口）
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_idempotency ON settle_records(idempotency_key)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_settlement_id ON settle_records(settlement_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_role ON settle_records(business_role, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_source ON settle_records(source_type, source_id, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_accounting ON settle_records(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_status ON settle_records(status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_method ON settle_records(settlement_method, settlement_status, updated_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_target ON settle_records(target_type, target_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_orders_type_status ON orders(order_type, status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orders_target ON orders(target_object_type, target_object_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_orders_owner ON orders(owner_pubkey_hex, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status, updated_at_unix DESC)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_order_settlements_order_no ON order_settlements(order_id, settlement_no)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_order_settlements_settlement_id ON order_settlements(settlement_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_order_settlements_order ON order_settlements(order_id, created_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_order_settlements_status ON order_settlements(status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_order_settlements_method ON order_settlements(settlement_method, status, updated_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_order_settlements_target ON order_settlements(target_type, target_id)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_order_settlement_events_idempotency ON order_settlement_events(settlement_id, event_type, idempotency_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_order_settlement_events_settlement ON order_settlement_events(settlement_id, occurred_at_unix DESC)`,
+		`CREATE INDEX IF NOT EXISTS idx_order_settlement_events_type ON order_settlement_events(event_type, occurred_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_token_id ON fact_bsv21_events(token_id, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fact_bsv21_events_kind_time ON fact_bsv21_events(event_kind, event_at_unix DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_sync_cursor_round_tip ON wallet_utxo_sync_cursor(round_tip_height DESC, updated_at_unix DESC)`,
-		// 第六次迭代：finance 表索引移到 ensureFinAccountingIndexes 中创建
-		// 避免老库迁移时列不存在导致错误
-		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_process ON settle_process_events(process_id, id DESC)`,
+		// 新结算主线在上面已创建，这里不再保留旧结算索引
 		`CREATE INDEX IF NOT EXISTS idx_proc_chain_tip_worker_logs_started ON proc_chain_tip_worker_logs(started_at_unix DESC, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_chain_tip_worker_logs_status ON proc_chain_tip_worker_logs(status, id DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_proc_chain_utxo_worker_logs_started ON proc_chain_utxo_worker_logs(started_at_unix DESC, id DESC)`,
@@ -1849,1306 +1825,34 @@ func bizPoolSchemaStmts() []string {
 	}
 }
 
-// ensureFinAccountingSchema 只补财务表的主口径列，不改历史数据行为。
-// 设计说明：
-// - 新库由 CREATE TABLE 直接带上新列；
-// - 老库靠这里补列，避免启动时因缺列失败；
-// - 这一批只铺轨，不改任何写入和读取逻辑。
+// ensureFinAccountingSchema 旧财务补列入口。
+// 说明：新版本不再做旧表迁移，这里只保留壳子，避免初始化链路继续依赖旧口径。
 func ensureFinAccountingSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-
-	migrations := []struct {
-		table string
-		col   string
-		stmt  string
-	}{
-		{table: "settle_records", col: "business_role", stmt: `ALTER TABLE settle_records ADD COLUMN business_role TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "source_type", stmt: `ALTER TABLE settle_records ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "source_id", stmt: `ALTER TABLE settle_records ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "accounting_scene", stmt: `ALTER TABLE settle_records ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "accounting_subtype", stmt: `ALTER TABLE settle_records ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "from_party_id", stmt: `ALTER TABLE settle_records ADD COLUMN from_party_id TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "to_party_id", stmt: `ALTER TABLE settle_records ADD COLUMN to_party_id TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "status", stmt: `ALTER TABLE settle_records ADD COLUMN status TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "occurred_at_unix", stmt: `ALTER TABLE settle_records ADD COLUMN occurred_at_unix INTEGER NOT NULL DEFAULT 0`},
-		{table: "settle_records", col: "idempotency_key", stmt: `ALTER TABLE settle_records ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "note", stmt: `ALTER TABLE settle_records ADD COLUMN note TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "payload_json", stmt: `ALTER TABLE settle_records ADD COLUMN payload_json TEXT NOT NULL DEFAULT '{}'`},
-		{table: "settle_records", col: "settlement_method", stmt: `ALTER TABLE settle_records ADD COLUMN settlement_method TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "settlement_status", stmt: `ALTER TABLE settle_records ADD COLUMN settlement_status TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "target_type", stmt: `ALTER TABLE settle_records ADD COLUMN target_type TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "target_id", stmt: `ALTER TABLE settle_records ADD COLUMN target_id TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "error_message", stmt: `ALTER TABLE settle_records ADD COLUMN error_message TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_records", col: "settlement_payload_json", stmt: `ALTER TABLE settle_records ADD COLUMN settlement_payload_json TEXT NOT NULL DEFAULT '{}'`},
-		{table: "settle_records", col: "created_at_unix", stmt: `ALTER TABLE settle_records ADD COLUMN created_at_unix INTEGER NOT NULL DEFAULT 0`},
-		{table: "settle_records", col: "updated_at_unix", stmt: `ALTER TABLE settle_records ADD COLUMN updated_at_unix INTEGER NOT NULL DEFAULT 0`},
-		{table: "settle_process_events", col: "source_type", stmt: `ALTER TABLE settle_process_events ADD COLUMN source_type TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_process_events", col: "source_id", stmt: `ALTER TABLE settle_process_events ADD COLUMN source_id TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_process_events", col: "accounting_scene", stmt: `ALTER TABLE settle_process_events ADD COLUMN accounting_scene TEXT NOT NULL DEFAULT ''`},
-		{table: "settle_process_events", col: "accounting_subtype", stmt: `ALTER TABLE settle_process_events ADD COLUMN accounting_subtype TEXT NOT NULL DEFAULT ''`},
-	}
-
-	for _, m := range migrations {
-		cols, err := tableColumns(db, m.table)
-		if err != nil {
-			return fmt.Errorf("inspect %s: %w", m.table, err)
-		}
-		if _, ok := cols[strings.ToLower(m.col)]; ok {
-			continue
-		}
-		if _, err := ExecContext(ctx, db, m.stmt); err != nil {
-			return fmt.Errorf("add %s.%s: %w", m.table, m.col, err)
-		}
-	}
+	_, _ = ctx, db
 	return nil
 }
 
-// ensureFinAccountingIndexes 只创建 finance 新口径查询所需的索引。
+// ensureFinAccountingIndexes 旧财务索引入口。
+// 说明：新版本不再补旧索引，这里保留为空壳，避免调用链继续依赖老表。
 // 说明：要放在列补齐之后执行，老库迁移时不能提前碰还不存在的列。
 func ensureFinAccountingIndexes(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-	stmts := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_idempotency ON settle_records(idempotency_key)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_records_settlement_id ON settle_records(settlement_id)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_role ON settle_records(business_role, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_source ON settle_records(source_type, source_id, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_records_accounting ON settle_records(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_settle_process_events_idempotency ON settle_process_events(idempotency_key)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_source ON settle_process_events(source_type, source_id, occurred_at_unix DESC)`,
-		`CREATE INDEX IF NOT EXISTS idx_settle_process_events_accounting ON settle_process_events(accounting_scene, accounting_subtype, occurred_at_unix DESC)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := ExecContext(ctx, db, stmt); err != nil {
-			return err
-		}
-	}
+	_, _ = ctx, db
 	return nil
 }
 
-// normalizeClientDBData 只做当前口径需要的轻量归一化，不做历史迁移。
+// normalizeClientDBData 只做当前口径需要的轻量归一化。
 func normalizeClientDBData(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
-
-	// 这里只保留当前口径必需的轻量约束，避免把旧库收口逻辑继续留在初始化里。
-	if _, err := ExecContext(ctx, db, `
-		CREATE TRIGGER IF NOT EXISTS chk_settle_records_role_insert
-		BEFORE INSERT ON settle_records
-		BEGIN
-			SELECT CASE
-				WHEN NEW.business_role NOT IN ('', 'formal', 'process')
-				THEN RAISE(ABORT, 'business_role must be formal or process')
-			END;
-		END;
-	`); err != nil {
-		return fmt.Errorf("create business_role insert check trigger: %w", err)
-	}
-	if _, err := ExecContext(ctx, db, `
-		CREATE TRIGGER IF NOT EXISTS chk_settle_records_role_update
-		BEFORE UPDATE ON settle_records
-		BEGIN
-			SELECT CASE
-				WHEN NEW.business_role NOT IN ('', 'formal', 'process')
-				THEN RAISE(ABORT, 'business_role must be formal or process')
-			END;
-		END;
-	`); err != nil {
-		return fmt.Errorf("create business_role update check trigger: %w", err)
-	}
-
-	// 公钥格式统一化为压缩公钥 hex
-	if err := normalizeClientPubKeyColumns(ctx, db); err != nil {
-		return fmt.Errorf("pubkey columns: %w", err)
-	}
-
+	_, _ = ctx, db
 	return nil
-}
-
-// ==================== 以下是当前结构辅助函数实现 ====================
-
-func ensureDemandQuoteCurrentSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	hasQuotes, err := hasTable(db, "biz_demand_quotes")
-	if err != nil {
-		return fmt.Errorf("check biz_demand_quotes table: %w", err)
-	}
-	hasArbiters, err := hasTable(db, "biz_demand_quote_arbiters")
-	if err != nil {
-		return fmt.Errorf("check biz_demand_quote_arbiters table: %w", err)
-	}
-	if !hasQuotes || !hasArbiters {
-		return nil
-	}
-
-	quotesNeedFK, err := demandQuoteTableMissingFK(ctx, db, "biz_demand_quotes", "demand_id", "biz_demands", "demand_id")
-	if err != nil {
-		return fmt.Errorf("inspect biz_demand_quotes foreign keys: %w", err)
-	}
-	arbitersNeedFK, err := demandQuoteTableMissingFK(ctx, db, "biz_demand_quote_arbiters", "quote_id", "biz_demand_quotes", "id")
-	if err != nil {
-		return fmt.Errorf("inspect biz_demand_quote_arbiters foreign keys: %w", err)
-	}
-	if !quotesNeedFK && !arbitersNeedFK {
-		return nil
-	}
-	return rebuildDemandQuoteFKTables(ctx, db, quotesNeedFK, arbitersNeedFK)
-}
-
-func ensureDemandQuoteIndexes(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	stmts := []string{
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quotes_demand_seller ON biz_demand_quotes(demand_id, seller_pub_hex)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quotes_demand_created ON biz_demand_quotes(demand_id, created_at_unix DESC)`,
-		`CREATE UNIQUE INDEX IF NOT EXISTS uq_biz_demand_quote_arbiters_quote_arbiter ON biz_demand_quote_arbiters(quote_id, arbiter_pub_hex)`,
-		`CREATE INDEX IF NOT EXISTS idx_biz_demand_quote_arbiters_arbiter ON biz_demand_quote_arbiters(arbiter_pub_hex, quote_id)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := ExecContext(ctx, db, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func rebuildDemandQuoteFKTables(ctx context.Context, db *sql.DB, rebuildQuotes bool, rebuildArbiters bool) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if err := demandQuoteRejectOrphanRows(ctx, db); err != nil {
-		return err
-	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func() {
-		_ = tx.Rollback()
-	}
-	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=OFF`); err != nil {
-		rollback()
-		return err
-	}
-
-	if rebuildQuotes {
-		if err := rebuildDemandQuotesTableTx(ctx, tx); err != nil {
-			rollback()
-			return err
-		}
-	}
-	if rebuildArbiters {
-		if err := rebuildDemandQuoteArbitersTableTx(ctx, tx); err != nil {
-			rollback()
-			return err
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		rollback()
-		return err
-	}
-	if err := ensureDemandQuoteIndexes(ctx, db); err != nil {
-		return err
-	}
-	return nil
-}
-
-func demandQuoteRejectOrphanRows(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if has, err := hasTable(db, "biz_demand_quotes"); err != nil {
-		return err
-	} else if has {
-		var quoteID int64
-		var demandID string
-		err := QueryRowContext(ctx, db, `SELECT id,demand_id FROM biz_demand_quotes
-			WHERE NOT EXISTS(SELECT 1 FROM biz_demands WHERE biz_demands.demand_id = biz_demand_quotes.demand_id)
-			ORDER BY id ASC LIMIT 1`).Scan(&quoteID, &demandID)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err == nil {
-			return fmt.Errorf("biz_demand_quotes contains orphan row id=%d demand_id=%s", quoteID, strings.TrimSpace(demandID))
-		}
-	}
-	if has, err := hasTable(db, "biz_demand_quote_arbiters"); err != nil {
-		return err
-	} else if has {
-		var id int64
-		var quoteID int64
-		var arbiterPubHex string
-		err := QueryRowContext(ctx, db, `SELECT id,quote_id,arbiter_pub_hex FROM biz_demand_quote_arbiters
-			WHERE NOT EXISTS(SELECT 1 FROM biz_demand_quotes WHERE biz_demand_quotes.id = biz_demand_quote_arbiters.quote_id)
-			ORDER BY id ASC LIMIT 1`).Scan(&id, &quoteID, &arbiterPubHex)
-		if err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if err == nil {
-			return fmt.Errorf("biz_demand_quote_arbiters contains orphan row id=%d quote_id=%d arbiter_pub_hex=%s", id, quoteID, strings.TrimSpace(arbiterPubHex))
-		}
-	}
-	return nil
-}
-
-func rebuildDemandQuotesTableTx(ctx context.Context, tx *sql.Tx) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_demand_quotes_fk_rebuild`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_demand_quotes RENAME TO biz_demand_quotes_fk_rebuild`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_demand_quotes(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		demand_id TEXT NOT NULL,
-		seller_pub_hex TEXT NOT NULL,
-		seed_price_satoshi INTEGER NOT NULL,
-		chunk_price_satoshi INTEGER NOT NULL,
-		chunk_count INTEGER NOT NULL,
-		file_size_bytes INTEGER NOT NULL,
-		recommended_file_name TEXT NOT NULL,
-		mime_type TEXT NOT NULL,
-		available_chunk_bitmap_hex TEXT NOT NULL,
-		expires_at_unix INTEGER NOT NULL,
-		created_at_unix INTEGER NOT NULL,
-		FOREIGN KEY(demand_id) REFERENCES biz_demands(demand_id) ON DELETE CASCADE,
-		UNIQUE(demand_id, seller_pub_hex)
-	)`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `INSERT INTO biz_demand_quotes(
-			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-		) SELECT
-			id,demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-		FROM biz_demand_quotes_fk_rebuild ORDER BY id ASC`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE biz_demand_quotes_fk_rebuild`); err != nil {
-		return err
-	}
-	return nil
-}
-
-func rebuildDemandQuoteArbitersTableTx(ctx context.Context, tx *sql.Tx) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_demand_quote_arbiters_fk_rebuild`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_demand_quote_arbiters RENAME TO biz_demand_quote_arbiters_fk_rebuild`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_demand_quote_arbiters(
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		quote_id INTEGER NOT NULL,
-		arbiter_pub_hex TEXT NOT NULL,
-		FOREIGN KEY(quote_id) REFERENCES biz_demand_quotes(id) ON DELETE CASCADE,
-		UNIQUE(quote_id, arbiter_pub_hex)
-	)`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `INSERT INTO biz_demand_quote_arbiters(
-			id,quote_id,arbiter_pub_hex
-		) SELECT
-			id,quote_id,arbiter_pub_hex
-		FROM biz_demand_quote_arbiters_fk_rebuild ORDER BY id ASC`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE biz_demand_quote_arbiters_fk_rebuild`); err != nil {
-		return err
-	}
-	return nil
-}
-
-func demandQuoteTableMissingFK(ctx context.Context, db *sql.DB, table string, fromColumn string, parentTable string, parentColumn string) (bool, error) {
-	if db == nil {
-		return false, fmt.Errorf("db is nil")
-	}
-	rows, err := QueryContext(ctx, db, fmt.Sprintf("PRAGMA foreign_key_list(%s)", strings.TrimSpace(table)))
-	if err != nil {
-		return false, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var (
-			id       int
-			seq      int
-			refTable string
-			from     string
-			to       string
-			onUpdate string
-			onDelete string
-			match    string
-		)
-		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &match); err != nil {
-			return false, err
-		}
-		if strings.EqualFold(strings.TrimSpace(refTable), parentTable) &&
-			strings.EqualFold(strings.TrimSpace(from), fromColumn) &&
-			strings.EqualFold(strings.TrimSpace(to), parentColumn) {
-			return false, nil
-		}
-	}
-	return true, rows.Err()
-}
-
-func normalizePubHexList(in []string) ([]string, error) {
-	if len(in) == 0 {
-		return nil, nil
-	}
-	out := make([]string, 0, len(in))
-	seen := map[string]struct{}{}
-	for _, raw := range in {
-		pubHex, err := normalizeCompressedPubKeyHex(raw)
-		if err != nil {
-			return nil, err
-		}
-		if _, ok := seen[pubHex]; ok {
-			continue
-		}
-		seen[pubHex] = struct{}{}
-		out = append(out, pubHex)
-	}
-	return out, nil
-}
-
-// ensureWorkspaceStorageSchema 迁移客户端本地库存的核心五张表。
-// 设计说明：
-// - 这里不做列级兼容补丁，直接按新模型重建；
-// - 老表里的历史数据会一次性搬走，再删除；
-// - 这样后续业务代码只面对唯一真相。
-func ensureWorkspaceStorageSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if err := ensureWorkspaceStorageBaseTables(ctx, db); err != nil {
-		return err
-	}
-	legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, err := legacyWorkspaceStoragePresent(ctx, db)
-	if err != nil {
-		return err
-	}
-	if !legacyWorkspaces && !legacyFiles && !legacySeeds && !legacySupply && !legacyPolicy {
-		return nil
-	}
-	return migrateWorkspaceStorageLegacy(ctx, db)
-}
-
-func ensureWorkspaceStorageBaseTables(ctx context.Context, db *sql.DB) error {
-	stmts := []string{
-		`CREATE TABLE IF NOT EXISTS biz_workspaces(
-			workspace_path TEXT PRIMARY KEY,
-			enabled INTEGER NOT NULL,
-			max_bytes INTEGER NOT NULL,
-			created_at_unix INTEGER NOT NULL
-		)`,
-		`CREATE TABLE IF NOT EXISTS biz_seeds(
-			seed_hash TEXT PRIMARY KEY,
-			chunk_count INTEGER NOT NULL,
-			file_size INTEGER NOT NULL,
-			seed_file_path TEXT NOT NULL,
-			recommended_file_name TEXT NOT NULL DEFAULT '',
-			mime_hint TEXT NOT NULL DEFAULT ''
-		)`,
-		`CREATE TABLE IF NOT EXISTS biz_workspace_files(
-			workspace_path TEXT NOT NULL,
-			file_path TEXT NOT NULL,
-			seed_hash TEXT NOT NULL,
-			seed_locked INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY(workspace_path,file_path),
-			FOREIGN KEY(workspace_path) REFERENCES biz_workspaces(workspace_path) ON DELETE CASCADE,
-			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
-		)`,
-		`CREATE TABLE IF NOT EXISTS biz_seed_chunk_supply(
-			seed_hash TEXT NOT NULL,
-			chunk_index INTEGER NOT NULL,
-			PRIMARY KEY(seed_hash,chunk_index),
-			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
-		)`,
-		`CREATE TABLE IF NOT EXISTS biz_seed_pricing_policy(
-			seed_hash TEXT PRIMARY KEY,
-			floor_unit_price_sat_per_64k INTEGER NOT NULL,
-			resale_discount_bps INTEGER NOT NULL,
-			pricing_source TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			FOREIGN KEY(seed_hash) REFERENCES biz_seeds(seed_hash) ON DELETE CASCADE
-		)`,
-	}
-	for _, stmt := range stmts {
-		if _, err := ExecContext(ctx, db, stmt); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func legacyWorkspaceStoragePresent(ctx context.Context, db *sql.DB) (bool, bool, bool, bool, bool, error) {
-	legacyWorkspaces := false
-	legacyFiles := false
-	legacySeeds := false
-	legacySupply := false
-	legacyPolicy := false
-
-	if cols, err := tableColumns(db, "biz_workspaces"); err != nil {
-		return false, false, false, false, false, err
-	} else if len(cols) > 0 {
-		if _, ok := cols["id"]; ok {
-			legacyWorkspaces = true
-		}
-		if _, ok := cols["path"]; ok {
-			legacyWorkspaces = true
-		}
-		if _, ok := cols["updated_at_unix"]; ok {
-			legacyWorkspaces = true
-		}
-	}
-	if cols, err := tableColumns(db, "biz_workspace_files"); err != nil {
-		return false, false, false, false, false, err
-	} else if len(cols) > 0 {
-		if _, ok := cols["path"]; ok {
-			legacyFiles = true
-		}
-		if _, ok := cols["file_size"]; ok {
-			legacyFiles = true
-		}
-		if _, ok := cols["mtime_unix"]; ok {
-			legacyFiles = true
-		}
-		if _, ok := cols["updated_at_unix"]; ok {
-			legacyFiles = true
-		}
-	}
-	if cols, err := tableColumns(db, "biz_seeds"); err != nil {
-		return false, false, false, false, false, err
-	} else if len(cols) > 0 {
-		if _, ok := cols["created_at_unix"]; ok {
-			legacySeeds = true
-		}
-	}
-	if exists, err := hasTable(db, "seed_available_chunks"); err != nil {
-		return false, false, false, false, false, err
-	} else if exists {
-		legacySupply = true
-	}
-	if exists, err := hasTable(db, "seed_price_state"); err != nil {
-		return false, false, false, false, false, err
-	} else if exists {
-		legacyPolicy = true
-	}
-	if exists, err := hasTable(db, "static_file_prices"); err != nil {
-		return false, false, false, false, false, err
-	} else if exists {
-		legacyPolicy = true
-	}
-	return legacyWorkspaces, legacyFiles, legacySeeds, legacySupply, legacyPolicy, nil
-}
-
-func migrateWorkspaceStorageLegacy(ctx context.Context, db *sql.DB) error {
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	rollback := func() {
-		_ = tx.Rollback()
-	}
-	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=OFF`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspaces_new`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspace_files_new`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seeds_new`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_chunk_supply_new`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_pricing_policy_new`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_workspaces_new(
-			workspace_path TEXT PRIMARY KEY,
-			enabled INTEGER NOT NULL,
-			max_bytes INTEGER NOT NULL,
-			created_at_unix INTEGER NOT NULL
-		)`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_workspace_files_new(
-			workspace_path TEXT NOT NULL,
-			file_path TEXT NOT NULL,
-			seed_hash TEXT NOT NULL,
-			seed_locked INTEGER NOT NULL DEFAULT 0,
-			PRIMARY KEY(workspace_path,file_path)
-		)`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_seeds_new(
-			seed_hash TEXT PRIMARY KEY,
-			chunk_count INTEGER NOT NULL,
-			file_size INTEGER NOT NULL,
-			seed_file_path TEXT NOT NULL,
-			recommended_file_name TEXT NOT NULL DEFAULT '',
-			mime_hint TEXT NOT NULL DEFAULT ''
-		)`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_seed_chunk_supply_new(
-			seed_hash TEXT NOT NULL,
-			chunk_index INTEGER NOT NULL,
-			PRIMARY KEY(seed_hash,chunk_index)
-		)`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `CREATE TABLE biz_seed_pricing_policy_new(
-			seed_hash TEXT PRIMARY KEY,
-			floor_unit_price_sat_per_64k INTEGER NOT NULL,
-			resale_discount_bps INTEGER NOT NULL,
-			pricing_source TEXT NOT NULL,
-			updated_at_unix INTEGER NOT NULL
-		)`); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateWorkspaceRowsLegacy(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateWorkspaceFileRowsLegacy(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateSeedRowsLegacy(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateSeedChunkSupplyLegacy(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	if err := migrateSeedPricingPolicyLegacy(ctx, tx); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspace_files`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_workspaces`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seeds`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_chunk_supply`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS biz_seed_pricing_policy`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS seed_available_chunks`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS seed_price_state`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `DROP TABLE IF EXISTS static_file_prices`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_workspaces_new RENAME TO biz_workspaces`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_workspace_files_new RENAME TO biz_workspace_files`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_seeds_new RENAME TO biz_seeds`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_seed_chunk_supply_new RENAME TO biz_seed_chunk_supply`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `ALTER TABLE biz_seed_pricing_policy_new RENAME TO biz_seed_pricing_policy`); err != nil {
-		rollback()
-		return err
-	}
-	if _, err := ExecContext(ctx, tx, `PRAGMA foreign_keys=ON`); err != nil {
-		rollback()
-		return err
-	}
-	if err := tx.Commit(); err != nil {
-		rollback()
-		return err
-	}
-	return nil
-}
-
-func migrateWorkspaceRowsLegacy(ctx context.Context, tx *sql.Tx) error {
-	cols, err := tableColumnsTx(ctx, tx, "biz_workspaces")
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-	if _, ok := cols["workspace_path"]; ok && !containsAny(cols, "id", "path", "updated_at_unix") {
-		_, err = ExecContext(ctx, tx, `INSERT OR IGNORE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) SELECT workspace_path,enabled,max_bytes,created_at_unix FROM biz_workspaces`)
-		return err
-	}
-	rows, err := QueryContext(ctx, tx, `SELECT path,max_bytes,enabled,created_at_unix FROM biz_workspaces`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var path string
-		var maxBytes int64
-		var enabled int64
-		var created int64
-		if err := rows.Scan(&path, &maxBytes, &enabled, &created); err != nil {
-			return err
-		}
-		abs, err := normalizeWorkspacePath(path)
-		if err != nil {
-			continue
-		}
-		if created <= 0 {
-			created = 1
-		}
-		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_workspaces_new(workspace_path,enabled,max_bytes,created_at_unix) VALUES(?,?,?,?)`, abs, enabled, maxBytes, created); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-func migrateWorkspaceFileRowsLegacy(ctx context.Context, tx *sql.Tx) error {
-	cols, err := tableColumnsTx(ctx, tx, "biz_workspace_files")
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-	if _, ok := cols["workspace_path"]; ok {
-		if _, ok2 := cols["file_path"]; ok2 && !containsAny(cols, "path", "file_size", "mtime_unix", "updated_at_unix") {
-			_, err = ExecContext(ctx, tx, `INSERT OR IGNORE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) SELECT workspace_path,file_path,lower(trim(seed_hash)),COALESCE(seed_locked,0) FROM biz_workspace_files`)
-			return err
-		}
-	}
-	rows, err := QueryContext(ctx, tx, `SELECT path,seed_hash,COALESCE(seed_locked,0) FROM biz_workspace_files`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	workspaceRoots, err := legacyWorkspaceRoots(ctx, tx)
-	if err != nil {
-		return err
-	}
-	for rows.Next() {
-		var absPath, seedHash string
-		var locked int64
-		if err := rows.Scan(&absPath, &seedHash, &locked); err != nil {
-			return err
-		}
-		resolved, ok := resolveWorkspaceRelativePath(absPath, workspaceRoots)
-		if !ok {
-			continue
-		}
-		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_workspace_files_new(workspace_path,file_path,seed_hash,seed_locked) VALUES(?,?,?,?)`, resolved.WorkspacePath, resolved.FilePath, normalizeSeedHashHex(seedHash), locked); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-func migrateSeedRowsLegacy(ctx context.Context, tx *sql.Tx) error {
-	cols, err := tableColumnsTx(ctx, tx, "biz_seeds")
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-	rows, err := QueryContext(ctx, tx, `SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint FROM biz_seeds`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var seedHash string
-		var chunkCount int64
-		var fileSize int64
-		var seedPath, recommendedName, mimeHint string
-		if err := rows.Scan(&seedHash, &chunkCount, &fileSize, &seedPath, &recommendedName, &mimeHint); err != nil {
-			return err
-		}
-		seedHash = normalizeSeedHashHex(seedHash)
-		if seedHash == "" {
-			continue
-		}
-		if chunkCount < 0 {
-			chunkCount = 0
-		}
-		if fileSize < 0 {
-			fileSize = 0
-		}
-		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seeds_new(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`, seedHash, chunkCount, fileSize, strings.TrimSpace(seedPath), sanitizeRecommendedFileName(recommendedName), sanitizeMIMEHint(mimeHint)); err != nil {
-			return err
-		}
-	}
-	return rows.Err()
-}
-
-// 迁移规则：
-// - 旧库有 seed_available_chunks 时，只信旧表记录；
-// - 某个 seed 在旧表里没有记录，就迁空；
-// - 只有旧库没有 seed_available_chunks 时，才按 chunk_count 补全。
-func migrateSeedChunkSupplyLegacy(ctx context.Context, tx *sql.Tx) error {
-	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_chunk_supply_new`); err != nil {
-		return err
-	}
-	haveLegacySupply := hasTableValue(ctx, tx, "seed_available_chunks")
-	rows, err := QueryContext(ctx, tx, `SELECT seed_hash,chunk_count FROM biz_seeds_new`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var seedHash string
-		var chunkCount int64
-		if err := rows.Scan(&seedHash, &chunkCount); err != nil {
-			return err
-		}
-		seedHash = normalizeSeedHashHex(seedHash)
-		if seedHash == "" {
-			continue
-		}
-		if haveLegacySupply {
-			supplyRows, err := QueryContext(ctx, tx, `SELECT chunk_index FROM seed_available_chunks WHERE seed_hash=? ORDER BY chunk_index ASC`, seedHash)
-			if err != nil {
-				return err
-			}
-			for supplyRows.Next() {
-				var idx int64
-				if err := supplyRows.Scan(&idx); err != nil {
-					_ = supplyRows.Close()
-					return err
-				}
-				if idx < 0 {
-					continue
-				}
-				if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, uint32(idx)); err != nil {
-					_ = supplyRows.Close()
-					return err
-				}
-			}
-			if err := supplyRows.Err(); err != nil {
-				_ = supplyRows.Close()
-				return err
-			}
-			_ = supplyRows.Close()
-			continue
-		}
-		if chunkCount < 0 {
-			chunkCount = 0
-		}
-		for _, idx := range contiguousChunkIndexes(uint32(chunkCount)) {
-			if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seed_chunk_supply_new(seed_hash,chunk_index) VALUES(?,?)`, seedHash, idx); err != nil {
-				return err
-			}
-		}
-	}
-	return rows.Err()
-}
-
-func migrateSeedPricingPolicyLegacy(ctx context.Context, tx *sql.Tx) error {
-	if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seed_pricing_policy_new`); err != nil {
-		return err
-	}
-	if !hasTableValue(ctx, tx, "seed_price_state") {
-		return nil
-	}
-	now := time.Now().Unix()
-	seedRows, err := QueryContext(ctx, tx, `SELECT seed_hash FROM biz_seeds_new`)
-	if err != nil {
-		return err
-	}
-	defer seedRows.Close()
-	for seedRows.Next() {
-		var seedHash string
-		if err := seedRows.Scan(&seedHash); err != nil {
-			return err
-		}
-		seedHash = normalizeSeedHashHex(seedHash)
-		if seedHash == "" {
-			continue
-		}
-		floor := uint64(0)
-		resale := uint64(0)
-		source := "system"
-		var lastBuy sql.NullInt64
-		var floorInt sql.NullInt64
-		var resaleInt sql.NullInt64
-		if err := QueryRowContext(ctx, tx, `SELECT last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&lastBuy, &floorInt, &resaleInt); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				continue
-			}
-			return err
-		}
-		if floorInt.Valid && floorInt.Int64 > 0 {
-			floor = uint64(floorInt.Int64)
-		}
-		if resaleInt.Valid && resaleInt.Int64 >= 0 {
-			resale = uint64(resaleInt.Int64)
-		}
-		if lastBuy.Valid && lastBuy.Int64 > 0 {
-			source = "user"
-		}
-		if floor == 0 {
-			continue
-		}
-		if resale > 10000 {
-			resale = 10000
-		}
-		if _, err := ExecContext(ctx, tx, `INSERT OR REPLACE INTO biz_seed_pricing_policy_new(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, seedHash, floor, resale, source, now); err != nil {
-			return err
-		}
-	}
-	return seedRows.Err()
-}
-
-func legacyWorkspaceRoots(ctx context.Context, tx *sql.Tx) ([]string, error) {
-	rows, err := QueryContext(ctx, tx, `SELECT workspace_path FROM biz_workspaces`)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]string, 0, 8)
-	for rows.Next() {
-		var root string
-		if err := rows.Scan(&root); err != nil {
-			return nil, err
-		}
-		if root, err = normalizeWorkspacePath(root); err == nil && root != "" {
-			out = append(out, root)
-		}
-	}
-	if len(out) == 0 {
-		rows, err = QueryContext(ctx, tx, `SELECT path FROM biz_workspaces`)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var root string
-			if err := rows.Scan(&root); err != nil {
-				return nil, err
-			}
-			if root, err = normalizeWorkspacePath(root); err == nil && root != "" {
-				out = append(out, root)
-			}
-		}
-	}
-	return out, nil
-}
-
-func tableColumnsTx(ctx context.Context, tx *sql.Tx, table string) (map[string]struct{}, error) {
-	rows, err := QueryContext(ctx, tx, fmt.Sprintf("PRAGMA table_info(%s)", strings.TrimSpace(table)))
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make(map[string]struct{})
-	for rows.Next() {
-		var cid int
-		var name string
-		var typ string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return nil, err
-		}
-		out[strings.ToLower(strings.TrimSpace(name))] = struct{}{}
-	}
-	return out, rows.Err()
-}
-
-func containsAny(cols map[string]struct{}, names ...string) bool {
-	for _, name := range names {
-		if _, ok := cols[strings.ToLower(strings.TrimSpace(name))]; ok {
-			return true
-		}
-	}
-	return false
-}
-
-func hasTableValue(ctx context.Context, tx *sql.Tx, table string) bool {
-	var one int
-	err := QueryRowContext(ctx, tx, `SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(table)).Scan(&one)
-	return err == nil
-}
-
-// ensureFileDownloadsSchema 处理 proc_file_downloads 表的历史列迁移
-func ensureFileDownloadsSchema(ctx context.Context, db *sql.DB) error {
-	rows, err := QueryContext(ctx, db, `PRAGMA table_info(proc_file_downloads)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	hasStatusJSON := false
-	for rows.Next() {
-		var cid int
-		var name string
-		var typ string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "status_json") {
-			hasStatusJSON = true
-			break
-		}
-	}
-
-	if hasStatusJSON {
-		return nil
-	}
-	_, err = ExecContext(ctx, db, `ALTER TABLE proc_file_downloads ADD COLUMN status_json TEXT NOT NULL DEFAULT '{}'`)
-	return err
-}
-
-// ensureLiveFollowsSchema 处理 proc_live_follows 表的历史列迁移
-func ensureLiveFollowsSchema(ctx context.Context, db *sql.DB) error {
-	rows, err := QueryContext(ctx, db, `PRAGMA table_info(proc_live_follows)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	hasLastQuoteSellerPubKey := false
-	for rows.Next() {
-		var cid int
-		var name string
-		var typ string
-		var notnull int
-		var dflt sql.NullString
-		var pk int
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if strings.EqualFold(strings.TrimSpace(name), "last_quote_seller_pubkey_hex") {
-			hasLastQuoteSellerPubKey = true
-			break
-		}
-	}
-
-	if hasLastQuoteSellerPubKey {
-		return nil
-	}
-	_, err = ExecContext(ctx, db, `ALTER TABLE proc_live_follows ADD COLUMN last_quote_seller_pubkey_hex TEXT NOT NULL DEFAULT ''`)
-	return err
-}
-
-// ensureWalletUTXOSchema 只做 wallet_utxo 的硬切校验。
-// 设计说明：
-// - 新库直接由基础 schema 创建；
-// - 旧库如果缺少脚本语义列，直接报错退出，不做迁移；
-// - 这样不会再把旧的 value=1 归一化逻辑留在初始化里。
-func ensureWalletUTXOSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-
-	cols, err := tableColumns(db, "wallet_utxo")
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return fmt.Errorf("wallet_utxo table is missing")
-	}
-
-	requiredCols := []string{
-		"script_type",
-		"script_type_reason",
-		"script_type_updated_at_unix",
-		"allocation_class",
-		"allocation_reason",
-	}
-	for _, col := range requiredCols {
-		if _, ok := cols[col]; !ok {
-			return fmt.Errorf("wallet_utxo missing required column %s, please rebuild DB", col)
-		}
-	}
-	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_script_type ON wallet_utxo(wallet_id, state, script_type, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
-		return err
-	}
-	return nil
-}
-
-func ensureFactChainPaymentTimingSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	for _, tableName := range []string{
-		"fact_settlement_channel_chain_quote_pay",
-		"fact_settlement_channel_chain_direct_pay",
-		"fact_settlement_channel_chain_asset_create",
-	} {
-		cols, err := tableColumns(db, tableName)
-		if err != nil {
-			return err
-		}
-		if len(cols) == 0 {
-			continue
-		}
-		if _, ok := cols["submitted_at_unix"]; !ok {
-			if _, err := ExecContext(ctx, db, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN submitted_at_unix INTEGER NOT NULL DEFAULT 0`, tableName)); err != nil {
-				return err
-			}
-		}
-		if _, ok := cols["wallet_observed_at_unix"]; !ok {
-			if _, err := ExecContext(ctx, db, fmt.Sprintf(`ALTER TABLE %s ADD COLUMN wallet_observed_at_unix INTEGER NOT NULL DEFAULT 0`, tableName)); err != nil {
-				return err
-			}
-		}
-	}
-	poolCols, err := tableColumns(db, "fact_settlement_channel_pool_session_quote_pay")
-	if err != nil {
-		return err
-	}
-	if len(poolCols) > 0 {
-		if _, ok := poolCols["txid"]; !ok {
-			if _, err := ExecContext(ctx, db, `ALTER TABLE fact_settlement_channel_pool_session_quote_pay ADD COLUMN txid TEXT NOT NULL DEFAULT ''`); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// ensureWalletUTXOSyncStateSchema 处理 wallet_utxo_sync_state 表的历史列迁移
-func ensureWalletUTXOSyncStateSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-
-	cols, err := tableColumns(db, "wallet_utxo_sync_state")
-	if err != nil {
-		return err
-	}
-	if len(cols) == 0 {
-		return nil
-	}
-
-	migrations := []struct {
-		col  string
-		stmt string
-	}{
-		{"last_sync_round_id", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_sync_round_id TEXT NOT NULL DEFAULT ''`},
-		{"last_failed_step", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_failed_step TEXT NOT NULL DEFAULT ''`},
-		{"last_upstream_path", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_upstream_path TEXT NOT NULL DEFAULT ''`},
-		{"last_http_status", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN last_http_status INTEGER NOT NULL DEFAULT 0`},
-		{"plain_bsv_utxo_count", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN plain_bsv_utxo_count INTEGER NOT NULL DEFAULT 0`},
-		{"plain_bsv_balance_satoshi", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN plain_bsv_balance_satoshi INTEGER NOT NULL DEFAULT 0`},
-		{"protected_utxo_count", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN protected_utxo_count INTEGER NOT NULL DEFAULT 0`},
-		{"protected_balance_satoshi", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN protected_balance_satoshi INTEGER NOT NULL DEFAULT 0`},
-		{"unknown_utxo_count", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN unknown_utxo_count INTEGER NOT NULL DEFAULT 0`},
-		{"unknown_balance_satoshi", `ALTER TABLE wallet_utxo_sync_state ADD COLUMN unknown_balance_satoshi INTEGER NOT NULL DEFAULT 0`},
-	}
-
-	for _, m := range migrations {
-		if _, ok := cols[m.col]; !ok {
-			if _, err := ExecContext(ctx, db, m.stmt); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// normalizeClientPubKeyColumns 把历史库里的旧格式公钥统一迁移为压缩公钥 hex（02/03）
-func normalizeClientPubKeyColumns(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-
-	targets := []struct {
-		table      string
-		column     string
-		allowEmpty bool
-	}{
-		{table: "proc_direct_deals", column: "buyer_pubkey_hex"},
-		{table: "proc_direct_deals", column: "seller_pubkey_hex"},
-		{table: "proc_direct_transfer_pools", column: "buyer_pubkey_hex"},
-		{table: "proc_direct_transfer_pools", column: "seller_pubkey_hex"},
-		{table: "fact_settlement_channel_pool_session_quote_pay", column: "counterparty_pubkey_hex", allowEmpty: true},
-		{table: "fact_settlement_channel_pool_session_quote_pay", column: "seller_pubkey_hex", allowEmpty: true},
-		{table: "fact_settlement_channel_pool_session_quote_pay", column: "arbiter_pubkey_hex", allowEmpty: true},
-		{table: "fact_settlement_channel_pool_session_quote_pay", column: "gateway_pubkey_hex", allowEmpty: true},
-		{table: "biz_live_quotes", column: "seller_pubkey_hex"},
-		{table: "proc_live_follows", column: "last_quote_seller_pubkey_hex", allowEmpty: true},
-		{table: "proc_file_download_chunks", column: "seller_pubkey_hex", allowEmpty: true},
-	}
-
-	for _, t := range targets {
-		exists, err := hasTable(db, t.table)
-		if err != nil {
-			return err
-		}
-		if !exists {
-			continue
-		}
-		if err := normalizeClientPubKeyColumn(db, t.table, t.column, t.allowEmpty); err != nil {
-			return fmt.Errorf("normalize %s.%s failed: %w", t.table, t.column, err)
-		}
-	}
-	return nil
-}
-
-func normalizeClientPubKeyColumn(db *sql.DB, table, column string, allowEmpty bool) error {
-	rows, err := db.Query(fmt.Sprintf("SELECT rowid,%s FROM %s", strings.TrimSpace(column), strings.TrimSpace(table)))
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var rowID int64
-		var raw string
-		if err := rows.Scan(&rowID, &raw); err != nil {
-			return err
-		}
-		raw = strings.TrimSpace(raw)
-		if raw == "" && allowEmpty {
-			continue
-		}
-		norm, err := normalizeCompressedPubKeyHexLegacyAware(raw)
-		if err != nil {
-			if allowEmpty && raw == "" {
-				continue
-			}
-			return err
-		}
-		if strings.EqualFold(raw, norm) {
-			continue
-		}
-		_, err = db.Exec(
-			fmt.Sprintf("UPDATE %s SET %s=? WHERE rowid=?", strings.TrimSpace(table), strings.TrimSpace(column)),
-			norm,
-			rowID,
-		)
-		if err == nil {
-			continue
-		}
-		// 处理唯一键冲突：同一业务行已存在新格式时，删除旧格式重复行
-		if strings.Contains(strings.ToLower(err.Error()), "unique constraint failed") {
-			if _, delErr := db.Exec(fmt.Sprintf("DELETE FROM %s WHERE rowid=?", strings.TrimSpace(table)), rowID); delErr != nil {
-				return delErr
-			}
-			continue
-		}
-		return err
-	}
-	return rows.Err()
-}
-
-// cleanupLegacyCyclePayFinanceRows 清理不应存在于财务主表的 cycle_pay 过程事件。
-// 这里只清理 settle_records 中不该保留的过程型残行，不碰旧表。
-func cleanupLegacyCyclePayFinanceRows(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-
-	// 第六次迭代：检查旧字段是否存在，不存在则跳过（全新数据库无旧数据需要清理）
-	cols, err := tableColumns(db, "settle_records")
-	if err != nil {
-		return fmt.Errorf("inspect settle_records columns: %w", err)
-	}
-	if _, hasOldSceneType := cols["scene_type"]; !hasOldSceneType {
-		// 全新数据库，无旧字段，无需清理
-		return nil
-	}
-
-	// 设计说明：
-	// - sqliteactor 把运行时压成单连接后，事务期间不能再回头走库级 Query；
-	// - 这里先在事务外判断旧表是否存在，避免同一函数里"持有 tx 又重新借 db"把自己堵死。
-	tx, err := db.Begin()
-	if err != nil {
-		return err
-	}
-	defer func() {
-		if err != nil {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err = ExecContext(ctx, tx,
-		`DELETE FROM settle_records
-		 WHERE business_id IN (
-			 SELECT business_id FROM settle_records
-			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
-		 )`,
-	); err != nil {
-		return err
-	}
-	if _, err = ExecContext(ctx, tx,
-		`DELETE FROM settle_records
-		 WHERE business_id IN (
-			 SELECT business_id FROM settle_records
-			 WHERE scene_type='fee_pool' AND scene_subtype='cycle_pay'
-		 )`,
-	); err != nil {
-		return err
-	}
-	if _, err = ExecContext(ctx, tx, `DELETE FROM settle_records WHERE source_type='fee_pool' AND accounting_subtype='cycle_pay'`); err != nil {
-		return err
-	}
-
-	err = tx.Commit()
-	return err
 }
 
 // ==================== 辅助函数 ====================
@@ -3175,6 +1879,10 @@ func rejectLegacyClientDBSchema(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 	legacyTables := []string{
+		"biz_front_orders",
+		"biz_business_triggers",
+		"settle_records",
+		"settle_process_events",
 		strings.Join([]string{"fact", "asset", "consumptions"}, "_"),
 		strings.Join([]string{"fact", "pool", "allocations"}, "_"),
 		strings.Join([]string{"fact", "tx", "history"}, "_"),
@@ -3189,7 +1897,7 @@ func rejectLegacyClientDBSchema(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 		if exists {
-			return fmt.Errorf("legacy database schema detected, please rebuild DB")
+			return fmt.Errorf("legacy settlement schema detected, please recreate db")
 		}
 	}
 	return nil
@@ -3207,10 +1915,9 @@ func hasSchemaObject(db *sql.DB, name string) (bool, error) {
 	return true, nil
 }
 
-// isSettleRecordsFinalized 判断结算主表是否已经完成硬切。
-// 说明：只要仍然能看到旧表、缺少唯一约束或缺少关键索引，就不能跳过。
-func isSettleRecordsFinalized(ctx context.Context, db *sql.DB) (bool, error) {
-	hasRecord, err := hasTable(db, "settle_records")
+// isOrderSettlementsFinalized 判断新结算主表是否已经就绪。
+func isOrderSettlementsFinalized(ctx context.Context, db *sql.DB) (bool, error) {
+	hasRecord, err := hasTable(db, "order_settlements")
 	if err != nil {
 		return false, err
 	}
@@ -3218,16 +1925,16 @@ func isSettleRecordsFinalized(ctx context.Context, db *sql.DB) (bool, error) {
 		return false, nil
 	}
 
-	cols, err := tableColumns(db, "settle_records")
+	cols, err := tableColumns(db, "order_settlements")
 	if err != nil {
 		return false, err
 	}
-	for _, col := range []string{"settlement_id", "business_role", "idempotency_key", "settlement_method", "settlement_status", "target_type", "target_id"} {
+	for _, col := range []string{"settlement_id", "order_id", "settlement_no", "settlement_method", "status", "amount_satoshi", "target_type", "target_id"} {
 		if _, ok := cols[col]; !ok {
 			return false, nil
 		}
 	}
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "settle_records", []string{"idempotency_key"})
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "order_settlements", []string{"order_id", "settlement_no"})
 	if err != nil {
 		return false, err
 	}
@@ -3236,14 +1943,12 @@ func isSettleRecordsFinalized(ctx context.Context, db *sql.DB) (bool, error) {
 	}
 
 	for _, indexName := range []string{
-		"idx_settle_records_role",
-		"idx_settle_records_source",
-		"idx_settle_records_accounting",
-		"idx_settle_records_status",
-		"idx_settle_records_method",
-		"idx_settle_records_target",
+		"idx_order_settlements_order",
+		"idx_order_settlements_status",
+		"idx_order_settlements_method",
+		"idx_order_settlements_target",
 	} {
-		hasIndex, err := tableHasIndex(db, "settle_records", indexName)
+		hasIndex, err := tableHasIndex(db, "order_settlements", indexName)
 		if err != nil {
 			return false, err
 		}

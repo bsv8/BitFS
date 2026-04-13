@@ -594,8 +594,8 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store Clien
 			return fmt.Errorf("resolve settlement payment attempt for chain payment: %w", err)
 		}
 		businessID := "biz_chain_payment_" + txID
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(tx, settlementPaymentAttemptID, finBusinessEntry{
-			BusinessID:        businessID,
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, tx, settlementPaymentAttemptID, finBusinessEntry{
+			OrderID:           businessID,
 			BusinessRole:      "process",
 			AccountingScene:   "peer_call",
 			AccountingSubType: strings.TrimSpace(processSubType),
@@ -611,10 +611,10 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store Clien
 				"process_subtype": processSubType,
 			},
 		}); err != nil {
-			return fmt.Errorf("append settle record failed: %w", err)
+			return fmt.Errorf("append order settlement failed: %w", err)
 		}
-		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 settle_records、chain_payment 和流程事件。
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(tx, settlementPaymentAttemptID, finProcessEventEntry{
+		// 旧 tx 拆解/UTXO 明细层已下线，这里只保留 order_settlements、chain_payment 和流程事件。
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_chain_payment_" + txID,
 			AccountingScene:   "peer_call",
 			AccountingSubType: strings.TrimSpace(processSubType),
@@ -629,7 +629,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store Clien
 				"process_subtype": processSubType,
 			},
 		}); err != nil {
-			return fmt.Errorf("append settle_process_events failed: %w", err)
+			return fmt.Errorf("append order_settlement_events failed: %w", err)
 		}
 		return nil
 	})

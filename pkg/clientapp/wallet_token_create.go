@@ -386,7 +386,7 @@ func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime,
 		FeeFundingTargetBSVSat:    walletTokenFundingNeed(0, fixedOutputSatoshi, fee),
 		SelectedFeeUTXOIDs:        append([]string(nil), selectedFee.SelectedUTXOIDs...),
 		TxID:                      txID,
-		PreviewHash:               walletBusinessPreviewHash(mustDecodeHex(txHex)),
+		PreviewHash:               walletOrderPreviewHash(mustDecodeHex(txHex)),
 		Changes: []walletAssetActionPreviewChange{
 			{
 				OwnerScope:    "wallet_self",

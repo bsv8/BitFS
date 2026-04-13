@@ -21,6 +21,7 @@ require (
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
+	github.com/bsv8/BFTP-contract v0.0.0
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.0 // indirect
@@ -119,3 +120,5 @@ replace github.com/bsv8/MultisigPool => ../MultisigPool
 replace github.com/bsv8/WOCProxy => ../WOCProxy
 
 replace github.com/libp2p/go-libp2p/core => github.com/libp2p/go-libp2p v0.45.0
+
+replace github.com/bsv8/BFTP-contract => ../BFTP-contract

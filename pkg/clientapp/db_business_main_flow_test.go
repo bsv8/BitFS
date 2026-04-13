@@ -50,7 +50,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 	// 步骤2：创建业务
 	businessID := "biz_domain_reg_001"
 	business := finBusinessEntry{
-		BusinessID:        businessID,
+		OrderID:           businessID,
 		BusinessRole:      "formal", // 正式收费对象
 		SourceType:        "front_order",
 		SourceID:          frontOrderID,
@@ -66,7 +66,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 			"amount_sat":  10000,
 		},
 	}
-	if err := dbAppendFinBusiness(db, business); err != nil {
+	if err := dbAppendFinBusiness(ctx, db, business); err != nil {
 		t.Fatalf("append business failed: %v", err)
 	}
 
@@ -74,7 +74,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 	triggerID := "trg_fo_domain_reg_001"
 	trigger := businessTriggerEntry{
 		TriggerID:      triggerID,
-		BusinessID:     businessID,
+		OrderID:        businessID,
 		TriggerType:    "front_order",
 		TriggerIDValue: frontOrderID,
 		TriggerRole:    "primary",
@@ -88,9 +88,9 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 	}
 
 	// 验证 trigger 已创建
-	triggers, err := dbListBusinessTriggersByBusinessID(ctx, store, businessID, 10, 0)
+	triggers, err := dbListBusinessTriggersByOrderID(ctx, store, businessID, 10, 0)
 	if err != nil {
-		t.Fatalf("list biz_business_triggers failed: %v", err)
+		t.Fatalf("list order_settlement_events failed: %v", err)
 	}
 	if len(triggers.Items) != 1 {
 		t.Fatalf("expected 1 trigger, got %d", len(triggers.Items))
@@ -112,7 +112,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 	settlementID := "set_domain_reg_001"
 	settlement := businessSettlementEntry{
 		SettlementID:     settlementID,
-		BusinessID:       businessID,
+		OrderID:          businessID,
 		SettlementMethod: string(SettlementMethodChain),
 		Status:           "pending",
 		TargetType:       "chain_quote_pay",
@@ -241,7 +241,7 @@ func TestBusinessBridgeFlow_CreateBusinessWithFrontTriggerAndPendingSettlement(t
 	}
 
 	// 验证 business_trigger 已创建
-	triggerPage, err := dbListBusinessTriggersByBusinessID(ctx, store, input.BusinessID, 10, 0)
+	triggerPage, err := dbListBusinessTriggersByOrderID(ctx, store, input.BusinessID, 10, 0)
 	if err != nil {
 		t.Fatalf("list triggers failed: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestBusinessBridgeFlow_IdempotentOnRetry(t *testing.T) {
 		FrontOrderID: input.FrontOrderID,
 	})
 	if err != nil {
-		t.Fatalf("list biz_front_orders failed: %v", err)
+		t.Fatalf("list orders failed: %v", err)
 	}
 	if foPage.Total != 1 {
 		t.Fatalf("expected 1 front_order, got %d", foPage.Total)
@@ -328,7 +328,7 @@ func TestBusinessBridgeFlow_IdempotentOnRetry(t *testing.T) {
 
 	// 验证只有一条 settlement（通过 business_id 唯一约束）
 	settlementPage, err := dbListBusinessSettlements(ctx, store, businessSettlementFilter{
-		BusinessID: input.BusinessID,
+		OrderID: input.BusinessID,
 	})
 	if err != nil {
 		t.Fatalf("list settlements failed: %v", err)
@@ -354,18 +354,18 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 	// 插入测试数据
 	for i := 0; i < 3; i++ {
 		businessID := fmt.Sprintf("biz_target_test_%d", i)
-		// 先插入 settle_records（第九阶段：必须带 business_role）
-		if _, err := db.Exec(`INSERT INTO settle_records(
-			settlement_id,business_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			fmt.Sprintf("set_target_test_%d", i), businessID, "formal", "test", "test", "test", "test", "client:self", "test:peer", "pending", 1700000000+int64(i), fmt.Sprintf("idem_%d", i), "test", `{}`,
+		// 先插入 order_settlements（必须带 business_role）
+		if _, err := db.Exec(`INSERT INTO order_settlements(
+			settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("set_target_test_%d", i), businessID, 1, "formal", "test", "test", "test", "test", "chain", "pending", "pending", "client:self", "test:peer", "", "", fmt.Sprintf("idem_%d", i), "test", `{}`, `{}`, 1700000000+int64(i), 1700000000+int64(i),
 		); err != nil {
-			t.Fatalf("insert settle_records failed: %v", err)
+			t.Fatalf("insert order_settlements failed: %v", err)
 		}
 
 		settlement := businessSettlementEntry{
 			SettlementID:     fmt.Sprintf("set_target_test_%d", i),
-			BusinessID:       businessID,
+			OrderID:          businessID,
 			SettlementMethod: string(SettlementMethodChain),
 			Status:           "pending",
 			TargetType:       "chain_quote_pay",

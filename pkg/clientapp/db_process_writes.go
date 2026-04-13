@@ -463,31 +463,25 @@ func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
 // 设计边界：
 // - 这里只负责把一条财务事实稳定落库，不判断业务链路归属；
 // - 结算出口字段由桥接层单独补，不在这里猜；
-// - settlement_records 已经是唯一主表，旧来源一律拒绝。
-func dbUpsertSettleRecord(db sqlConn, e finBusinessEntry) error {
-	return dbAppendFinBusiness(db, e)
+// - order_settlements 已经是唯一主表，旧来源一律拒绝。
+func dbUpsertSettleRecord(ctx context.Context, db sqlConn, e finBusinessEntry) error {
+	return dbAppendFinBusiness(ctx, db, e)
 }
 
-// dbAppendFinBusiness 是共享写入口，给前台业务和非结算主线复用。
-// 设计边界：
-// - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
-// - 结算链路必须走 dbAppendSettlementPaymentAttemptFinBusiness，不能绕回这个入口；
-// - 这里已经收口到 settlement_payment_attempt，旧来源一律拒绝。
-func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
+func dbAppendFinBusinessTx(ctx context.Context, db sqlConn, e finBusinessEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
 	if e.OccurredAtUnix <= 0 {
 		e.OccurredAtUnix = time.Now().Unix()
 	}
-	e.BusinessID = strings.TrimSpace(e.BusinessID)
-	if e.BusinessID == "" {
-		return fmt.Errorf("business_id is required")
+	e.OrderID = strings.TrimSpace(e.OrderID)
+	if e.OrderID == "" {
+		return fmt.Errorf("order_id is required")
 	}
 	if strings.TrimSpace(e.SettlementID) == "" {
-		e.SettlementID = e.BusinessID
+		e.SettlementID = e.OrderID
 	}
-	// 第七阶段：business_role 必须是正式约束，不允许空值
 	e.BusinessRole = strings.TrimSpace(e.BusinessRole)
 	if e.BusinessRole == "" {
 		return fmt.Errorf("business_role is required: must be 'formal' or 'process'")
@@ -508,50 +502,134 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 	}
 	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
 	if e.IdempotencyKey == "" {
-		e.IdempotencyKey = e.BusinessID
+		e.IdempotencyKey = e.OrderID
 	}
-	_, err := db.Exec(
-		`INSERT INTO settle_records(
-			business_id,settlement_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,occurred_at_unix,idempotency_key,note,payload_json,settlement_method,settlement_status,target_type,target_id,error_message,settlement_payload_json,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(business_id) DO UPDATE SET
-			status=excluded.status,
-			occurred_at_unix=excluded.occurred_at_unix,
-			note=excluded.note,
-			payload_json=excluded.payload_json,
-			source_type=excluded.source_type,
-			source_id=excluded.source_id,
-			accounting_scene=excluded.accounting_scene,
-			accounting_subtype=excluded.accounting_subtype,
-			business_role=excluded.business_role,
-			from_party_id=excluded.from_party_id,
-			to_party_id=excluded.to_party_id,
-			idempotency_key=excluded.idempotency_key,
-			updated_at_unix=excluded.updated_at_unix`,
-		e.BusinessID,
-		strings.TrimSpace(e.SettlementID),
-		strings.TrimSpace(e.BusinessRole),
-		strings.TrimSpace(e.SourceType),
-		strings.TrimSpace(e.SourceID),
+	settlementMethod := strings.TrimSpace(e.SettlementMethod)
+	settlementStatus := strings.TrimSpace(e.SettlementStatus)
+	if settlementStatus == "" {
+		settlementStatus = strings.TrimSpace(e.Status)
+	}
+	settlementTargetType := strings.TrimSpace(e.SettlementTargetType)
+	settlementTargetID := strings.TrimSpace(e.SettlementTargetID)
+	settlementErrorMessage := strings.TrimSpace(e.SettlementErrorMessage)
+
+	switch starter := db.(type) {
+	case *sql.Tx:
+		return dbAppendFinBusinessRowTx(ctx, starter, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
+	case sqlTxStarter:
+		return dbInTx(ctx, starter, func(tx *sql.Tx) error {
+			return dbAppendFinBusinessRowTx(ctx, tx, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
+		})
+	default:
+		return fmt.Errorf("db does not support transactions")
+	}
+}
+
+func dbAppendFinBusinessRowTx(ctx context.Context, tx sqlConn, e finBusinessEntry, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage string) error {
+	var existingOrderID string
+	err := QueryRowContext(ctx, tx,
+		`SELECT order_id,settlement_no FROM order_settlements WHERE settlement_id=?`,
+		e.SettlementID,
+	).Scan(&existingOrderID, new(int64))
+	if err == nil {
+		if strings.TrimSpace(existingOrderID) != "" && strings.TrimSpace(existingOrderID) != e.OrderID {
+			return fmt.Errorf("order_id mismatch for settlement_id=%s", e.SettlementID)
+		}
+		_, err = ExecContext(ctx, tx,
+			`UPDATE order_settlements SET
+				business_role=?,
+				source_type=?,
+				source_id=?,
+				accounting_scene=?,
+				accounting_subtype=?,
+				settlement_method=?,
+				status=?,
+				settlement_status=?,
+				amount_satoshi=?,
+				from_party_id=?,
+				to_party_id=?,
+				target_type=?,
+				target_id=?,
+				idempotency_key=?,
+				note=?,
+				error_message=?,
+				payload_json=?,
+				settlement_payload_json=?,
+				updated_at_unix=?
+			WHERE settlement_id=?`,
+			e.BusinessRole,
+			e.SourceType,
+			e.SourceID,
+			strings.TrimSpace(e.AccountingScene),
+			strings.TrimSpace(e.AccountingSubType),
+			settlementMethod,
+			strings.TrimSpace(e.Status),
+			settlementStatus,
+			int64(0),
+			strings.TrimSpace(e.FromPartyID),
+			strings.TrimSpace(e.ToPartyID),
+			settlementTargetType,
+			settlementTargetID,
+			e.IdempotencyKey,
+			strings.TrimSpace(e.Note),
+			settlementErrorMessage,
+			mustJSONString(e.Payload),
+			mustJSONString(e.SettlementPayload),
+			e.OccurredAtUnix,
+			e.SettlementID,
+		)
+		return err
+	}
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+
+	var nextSettlementNo int64
+	if err := QueryRowContext(ctx, tx,
+		`SELECT COALESCE(MAX(settlement_no),0)+1 FROM order_settlements WHERE order_id=?`,
+		e.OrderID,
+	).Scan(&nextSettlementNo); err != nil {
+		return err
+	}
+
+	_, err = ExecContext(ctx, tx,
+		`INSERT INTO order_settlements(
+			settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,amount_satoshi,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,error_message,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		e.SettlementID,
+		e.OrderID,
+		nextSettlementNo,
+		e.BusinessRole,
+		e.SourceType,
+		e.SourceID,
 		strings.TrimSpace(e.AccountingScene),
 		strings.TrimSpace(e.AccountingSubType),
+		settlementMethod,
+		strings.TrimSpace(e.Status),
+		settlementStatus,
+		int64(0),
 		strings.TrimSpace(e.FromPartyID),
 		strings.TrimSpace(e.ToPartyID),
-		strings.TrimSpace(e.Status),
-		e.OccurredAtUnix,
+		settlementTargetType,
+		settlementTargetID,
 		e.IdempotencyKey,
 		strings.TrimSpace(e.Note),
+		settlementErrorMessage,
 		mustJSONString(e.Payload),
-		"",
-		"",
-		"",
-		"",
-		"",
-		"{}",
+		mustJSONString(e.SettlementPayload),
 		e.OccurredAtUnix,
 		e.OccurredAtUnix,
 	)
 	return err
+}
+
+// dbAppendFinBusiness 是共享写入口，给前台业务和非结算主线复用。
+// 设计边界：
+// - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
+// - 结算链路必须走 dbAppendSettlementPaymentAttemptFinBusiness，不能绕回这个入口；
+// - 这里已经收口到 settlement_payment_attempt，旧来源一律拒绝。
+func dbAppendFinBusiness(ctx context.Context, db sqlConn, e finBusinessEntry) error {
+	return dbAppendFinBusinessTx(ctx, db, e)
 }
 
 // 结算写入专用入口只认 settlement_payment_attempt 主键，调用方不再有机会手填来源口径。
@@ -559,13 +637,13 @@ func dbAppendFinBusiness(db sqlConn, e finBusinessEntry) error {
 // - source_type/source_id 在这里统一生成；
 // - 结算链路只传 settlementPaymentAttemptID 和业务字段；
 // - 这样才能把“入口可用”和“入口可误用”彻底分开。
-func dbAppendSettlementPaymentAttemptFinBusiness(db sqlConn, settlementPaymentAttemptID int64, e finBusinessEntry) error {
+func dbAppendSettlementPaymentAttemptFinBusiness(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, e finBusinessEntry) error {
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
 	e.SourceType = "settlement_payment_attempt"
 	e.SourceID = fmt.Sprintf("%d", settlementPaymentAttemptID)
-	return dbAppendFinBusiness(db, e)
+	return dbAppendFinBusiness(ctx, db, e)
 }
 
 func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string) error {
@@ -577,17 +655,17 @@ func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string) error {
 		return fmt.Errorf("tx_role is required for business utxo fact")
 	}
 	// 旧的拆分/UTXO 明细表已硬切掉，这里只保留业务流程上的幂等占位。
-	// 需要更细的 tx 解释时，改查 settle_records / fact_* 事实表。
+	// 需要更细的 tx 解释时，改查 order_settlements / fact_* 事实表。
 	return nil
 }
 
 // dbAppendFinProcessEvent 是共享写入口，给前台业务和非结算主线复用。
 // 设计边界：
 // - 这里只负责落一条财务流程事件，不替调用方兜底来源口径；
-// - 结算链路必须走 dbAppendSettlementPaymentAttemptFinProcessEvent；
+// - 结算链路里，settlement_payment_attempt 继续走专用封装，biz_order_pay_bsv 直接用 settlement_id 作为来源；
 // - 不要在这里塞兼容分支，不然历史口径会重新污染主线；
-// - 这里已经只接受 settlement_payment_attempt。
-func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
+// - source_id 先按 settlement_id 使用，若是 settlement_payment_attempt 再反查真实 settlement。
+func dbAppendFinProcessEvent(ctx context.Context, db sqlConn, e finProcessEventEntry) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}
@@ -613,10 +691,26 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 	if e.SourceID == "" {
 		return fmt.Errorf("source_id is required")
 	}
+	settlementID := strings.TrimSpace(e.SourceID)
+	if settlementID == "" {
+		settlementID = strings.TrimSpace(e.ProcessID)
+	}
+	if strings.TrimSpace(e.SourceType) == "settlement_payment_attempt" {
+		var resolvedSettlementID string
+		if err := QueryRowContext(ctx, db, `SELECT settlement_id FROM order_settlements WHERE source_type=? AND source_id=? ORDER BY updated_at_unix DESC, settlement_no DESC LIMIT 1`, e.SourceType, e.SourceID).Scan(&resolvedSettlementID); err != nil {
+			return fmt.Errorf("settlement not found for source_id=%s", e.SourceID)
+		}
+		if strings.TrimSpace(resolvedSettlementID) == "" {
+			return fmt.Errorf("settlement not found for source_id=%s", e.SourceID)
+		}
+		settlementID = strings.TrimSpace(resolvedSettlementID)
+	}
 	_, err := db.Exec(
-		`INSERT INTO settle_process_events(process_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,occurred_at_unix,idempotency_key,note,payload_json)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(idempotency_key) DO UPDATE SET
+		`INSERT INTO order_settlement_events(process_id,settlement_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,idempotency_key,note,payload_json,occurred_at_unix)
+		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(settlement_id, event_type, idempotency_key) DO UPDATE SET
+			process_id=excluded.process_id,
+			settlement_id=excluded.settlement_id,
 			status=excluded.status,
 			occurred_at_unix=excluded.occurred_at_unix,
 			note=excluded.note,
@@ -626,28 +720,29 @@ func dbAppendFinProcessEvent(db sqlConn, e finProcessEventEntry) error {
 			accounting_scene=excluded.accounting_scene,
 			accounting_subtype=excluded.accounting_subtype`,
 		e.ProcessID,
+		settlementID,
 		strings.TrimSpace(e.SourceType),
 		strings.TrimSpace(e.SourceID),
 		strings.TrimSpace(e.AccountingScene),
 		strings.TrimSpace(e.AccountingSubType),
 		strings.TrimSpace(e.EventType),
 		strings.TrimSpace(e.Status),
-		e.OccurredAtUnix,
 		e.IdempotencyKey,
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
+		e.OccurredAtUnix,
 	)
 	return err
 }
 
 // 结算流程事件专用入口只认 settlement_payment_attempt 主键，避免调用方把旧来源带进来。
-func dbAppendSettlementPaymentAttemptFinProcessEvent(db sqlConn, settlementPaymentAttemptID int64, e finProcessEventEntry) error {
+func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, e finProcessEventEntry) error {
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
 	e.SourceType = "settlement_payment_attempt"
 	e.SourceID = fmt.Sprintf("%d", settlementPaymentAttemptID)
-	return dbAppendFinProcessEvent(db, e)
+	return dbAppendFinProcessEvent(ctx, db, e)
 }
 
 // dbApplyDirectTransferBizPoolAccountingTx 统一写 direct_transfer_pool 的业务层池账。
@@ -855,8 +950,8 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(db, settlementPaymentAttemptID, finBusinessEntry{
-			BusinessID:        businessID,
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, db, settlementPaymentAttemptID, finBusinessEntry{
+			OrderID:           businessID,
 			BusinessRole:      "process", // 过程财务对象
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
@@ -874,7 +969,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
-		// 旧 tx 拆解层已下线，业务主事实只保留 settle_records。
+		// 旧 tx 拆解层已下线，业务主事实只保留 order_settlements。
 	})
 }
 
@@ -887,7 +982,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 			return
 		}
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         processID,
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "cycle_pay",
@@ -1283,8 +1378,8 @@ func dbRecordFeePoolCloseAccounting(ctx context.Context, store *clientDB, sessio
 // 设计说明：
 // - 这是 direct_transfer_pool open 阶段的过程财务写入
 // - 第二阶段整改：open 不再是正式下载收费 business，改为过程型财务对象
-// - 前台业务完成状态以 settle_records（biz_download_pool_*）为准
-// - 本函数记录：settle_records(过程型) + fin_process_event + 过程事实
+// - 前台业务完成状态以 order_settlements（biz_download_pool_*）为准
+// - 本函数记录：order_settlements(过程型) + order_settlement_events + 过程事实
 // - ⚠️ 禁止用 process_id 充当 business_id，business_id 必须是稳定业务身份键
 func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in directPoolOpenAccountingInput) error {
 	if store == nil {
@@ -1336,8 +1431,8 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}
 		// 第二阶段整改：open 继续写业务记录，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(db, settlementPaymentAttemptID, finBusinessEntry{
-			BusinessID:        businessID,
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, db, settlementPaymentAttemptID, finBusinessEntry{
+			OrderID:           businessID,
 			BusinessRole:      "process",                 // 过程财务对象
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
 			AccountingSubType: "pool_open_lock",          // 明确是过程动作，不是收费
@@ -1358,7 +1453,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			obs.Error("bitcast-client", "direct_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
@@ -1377,7 +1472,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			obs.Error("bitcast-client", "direct_pool_open_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return err
 		}
-		// 旧 tx 拆解层已下线，过程事实只保留 settle_records 和流程事件。
+		// 旧 tx 拆解层已下线，过程事实只保留 order_settlements 和流程事件。
 		return nil
 	})
 }
@@ -1390,7 +1485,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 // - pay 是正式收费的事实来源，但不再单独新建并列 business
 // - pay 只保留：
 //   - fin_process_event（过程审计追踪）
-//   - settle_records（业务主事实）
+//   - order_settlements（业务主事实）
 //   - 必要的 fact / wallet 事实
 //
 // - settlement 回写由 triggerDirectTransferPoolPay 负责更新 biz_download_pool_* 的 settlement
@@ -1410,7 +1505,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 		}
 
 		// 过程事件：记录 pay 财务动作，供审计/对账/调试使用
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
@@ -1422,7 +1517,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 			Payload: map[string]any{
 				"sequence":      sequence,
 				"allocation_id": allocID,            // 保留业务键在 payload 中
-				"business_id":   downloadBusinessID, // 指向正式下载 business
+				"order_id":      downloadBusinessID, // 指向正式下载 order
 			},
 		}); err != nil {
 			obs.Error("bitcast-client", "direct_pool_pay_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
@@ -1438,8 +1533,8 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 // 设计说明：
 // - 这是 direct_transfer_pool close 阶段的过程财务写入
 // - 第二阶段整改：close 不再是正式收费 business，改为过程型财务对象
-// - 前台业务完成状态以 settle_records（biz_download_pool_*）为准（在 pay 阶段已更新）
-// - 本函数记录：settle_records(过程型) + fin_process_event + 过程事实
+// - 前台业务完成状态以 order_settlements（biz_download_pool_*）为准（在 pay 阶段已更新）
+// - 本函数记录：order_settlements(过程型) + order_settlement_events + 过程事实
 // - ⚠️ 禁止用 process_id 充当 business_id，business_id 必须是稳定业务身份键
 func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, sessionID string, sequence uint32, finalTxID string, finalTxHex string, sellerAmount uint64, buyerAmount uint64, sellerPeerID string) error {
 	if store == nil {
@@ -1472,8 +1567,8 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		}
 		// 第二阶段整改：close 继续写业务记录，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(db, settlementPaymentAttemptID, finBusinessEntry{
-			BusinessID:        businessID,
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, db, settlementPaymentAttemptID, finBusinessEntry{
+			OrderID:           businessID,
 			BusinessRole:      "process",                 // 过程财务对象
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
 			AccountingSubType: "pool_close_settle",       // 明确是过程动作，不是收费
@@ -1494,7 +1589,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			return err
 		}
 		// 过程事件继续使用统一的过程追踪 id
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
@@ -1512,7 +1607,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			obs.Error("bitcast-client", "direct_pool_close_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 			return err
 		}
-		// 旧 tx 拆解层已下线，过程事实只保留 settle_records 和流程事件。
+		// 旧 tx 拆解层已下线，过程事实只保留 order_settlements 和流程事件。
 		if parsedFinalTx == nil {
 			return nil
 		}

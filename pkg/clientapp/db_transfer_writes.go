@@ -98,7 +98,7 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 	// 第五步定性：proc_direct_deals 是【协议过程对象】
 	// - 只保存协议协商上下文（buyer/seller/seed_hash/price 等）
 	// - 不承载支付事实语义，不决定业务是否完成
-	// - 业务完成状态统一看 settle_records
+	// - 业务完成状态统一看 order_settlements
 	return store.Do(ctx, func(db *sql.DB) error {
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)

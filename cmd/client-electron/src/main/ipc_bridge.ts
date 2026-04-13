@@ -259,11 +259,11 @@ export function registerShellIPC(
     });
     return runtime.submitPublicWalletTokenCreate(payload || {});
   });
-  ipcMain.handle("bitfs-viewer:wallet-sign-business", async (_event, payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }) => {
-    const normalized = normalizeViewerWalletBusinessRequest(payload);
-    debugLogger.log("ipc", "viewer_wallet_sign_business", {
+  ipcMain.handle("bitfs-viewer:wallet-sign-order", async (_event, payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }) => {
+    const normalized = normalizeViewerWalletOrderRequest(payload);
+    debugLogger.log("ipc", "viewer_wallet_sign_order", {
       signer_pubkey_hex: normalized.signer_pubkey_hex,
-      signed_envelope_bytes: estimateViewerWalletBusinessBytes(normalized)
+      signed_envelope_bytes: estimateViewerWalletOrderBytes(normalized)
     });
     const preview = await supervisor.requestManagedJSON<{
       ok?: boolean;
@@ -279,7 +279,7 @@ export function registerShellIPC(
       };
     }>({
       method: "POST",
-      pathname: "/api/v1/wallet/business/preview",
+      pathname: "/api/v1/wallet/order/preview",
       body: normalized,
       timeout_ms: 30_000,
       headers: runtime.getCurrentVisitHeaders()
@@ -289,11 +289,11 @@ export function registerShellIPC(
       return {
         ok: false,
         code: String(preview?.code || "PREVIEW_FAILED"),
-        message: String(preview?.message || "wallet business preview failed"),
+        message: String(preview?.message || "wallet order preview failed"),
         preview: previewBody || null
       };
     }
-    const approved = await confirmViewerWalletBusiness(window, {
+    const approved = await confirmViewerWalletOrder(window, {
       title: String(previewBody.business_title || "钱包签名请求"),
       summary: String(previewBody.summary || ""),
       detailLines: Array.isArray(previewBody.detail_lines) ? previewBody.detail_lines.map((item) => String(item || "")) : [],
@@ -312,13 +312,13 @@ export function registerShellIPC(
       return {
         ok: false,
         code: "UNKNOWN_TEMPLATE",
-        message: "wallet business template not found",
+        message: "wallet order template not found",
         preview: previewBody
       };
     }
     return supervisor.requestManagedJSON({
       method: "POST",
-      pathname: "/api/v1/wallet/business/sign",
+      pathname: "/api/v1/wallet/order/sign",
       body: {
         ...normalized,
         expected_preview_hash: String(previewBody.preview_hash || "")
@@ -733,7 +733,7 @@ function normalizeViewerLocatorResolveRequest(payload: { locator?: string }): { 
   return { locator };
 }
 
-function normalizeViewerWalletBusinessRequest(payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }): {
+function normalizeViewerWalletOrderRequest(payload: { signer_pubkey_hex?: string; signed_envelope?: unknown }): {
   signer_pubkey_hex: string;
   signed_envelope: unknown;
 } {
@@ -786,15 +786,15 @@ async function confirmViewerPeerCall(
   return result.response === 0;
 }
 
-async function confirmViewerWalletBusiness(
+async function confirmViewerWalletOrder(
   window: BrowserWindow,
   payload: { title: string; summary: string; detailLines: string[]; canSign: boolean; warningLevel: string },
   e2eViewerPolicy: ElectronE2EViewerPolicyStore | null
 ): Promise<boolean> {
   const canSign = payload.canSign;
   const policy = e2eViewerPolicy?.snapshot();
-  if (policy?.auto_approve_wallet_business) {
-    debugLogger.log("ipc", "viewer_wallet_business_auto_approved", {
+  if (policy?.auto_approve_wallet_order) {
+    debugLogger.log("ipc", "viewer_wallet_order_auto_approved", {
       can_sign: canSign,
       warning_level: payload.warningLevel,
       title: payload.title
@@ -833,7 +833,7 @@ function estimateViewerPeerCallBodyBytes(payload: { body?: unknown; body_base64?
   }
 }
 
-function estimateViewerWalletBusinessBytes(payload: { signed_envelope?: unknown }): number {
+function estimateViewerWalletOrderBytes(payload: { signed_envelope?: unknown }): number {
   if (!Object.prototype.hasOwnProperty.call(payload, "signed_envelope")) {
     return 0;
   }

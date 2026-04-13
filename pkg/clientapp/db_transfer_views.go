@@ -348,7 +348,7 @@ func dbGetDirectTransferPoolItemDebug(ctx context.Context, store *clientDB, sess
 }
 
 // Deprecated: 保留给历史查询。
-// - biz_purchases 是历史过程表，新代码应走 biz_front_orders -> settle_records
+// - biz_purchases 是历史过程表，新代码应走 orders -> order_settlements
 func dbListPurchases(ctx context.Context, store *clientDB, f purchaseFilter) (purchasePage, error) {
 	if store == nil {
 		return purchasePage{}, fmt.Errorf("client db is nil")

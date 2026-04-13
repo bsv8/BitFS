@@ -49,14 +49,14 @@ type BitfsWalletHistoryQuery = {
   direction?: BitfsWalletHistoryDirection;
 };
 
-type BitfsWalletBusinessRequest = {
+type BitfsWalletOrderRequest = {
   signerPubkeyHex?: string;
   signer_pubkey_hex?: string;
   signedEnvelope?: unknown;
   signed_envelope?: unknown;
 };
 
-type BitfsWalletBusinessPreview = {
+type BitfsWalletOrderPreview = {
   recognized: boolean;
   can_sign: boolean;
   template_id?: string;
@@ -74,11 +74,11 @@ type BitfsWalletBusinessPreview = {
   preview_hash?: string;
 };
 
-type BitfsWalletBusinessSignResponse = {
+type BitfsWalletOrderSignResponse = {
   ok?: boolean;
   code?: string;
   message?: string;
-  preview?: BitfsWalletBusinessPreview | null;
+  preview?: BitfsWalletOrderPreview | null;
   signed_tx_hex?: string;
   txid?: string;
 };
@@ -284,7 +284,7 @@ type BitfsBridge = {
   wallet: {
     balance: () => Promise<BitfsWalletBalance>;
     addresses: () => Promise<BitfsWalletAddress[]>;
-    signBusinessRequest: (request: BitfsWalletBusinessRequest) => Promise<BitfsWalletBusinessSignResponse>;
+    signOrderRequest: (request: BitfsWalletOrderRequest) => Promise<BitfsWalletOrderSignResponse>;
     history: {
       list: (query?: BitfsWalletHistoryQuery) => Promise<BitfsWalletHistoryList>;
     };

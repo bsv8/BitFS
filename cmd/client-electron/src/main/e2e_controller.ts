@@ -24,12 +24,12 @@ type e2eOpenHomeRequest = {
 
 type e2eViewerPolicyPatch = {
   auto_approve_peer_call?: boolean;
-  auto_approve_wallet_business?: boolean;
+  auto_approve_wallet_order?: boolean;
 };
 
 export type ElectronE2EViewerPolicySnapshot = {
   auto_approve_peer_call: boolean;
-  auto_approve_wallet_business: boolean;
+  auto_approve_wallet_order: boolean;
 };
 
 // ElectronE2EViewerPolicyStore 让 e2e 用例显式控制 viewer 权限弹框策略。
@@ -39,12 +39,12 @@ export type ElectronE2EViewerPolicySnapshot = {
 // - 默认保持 false，避免 e2e 进程一启动就无条件放权。
 export class ElectronE2EViewerPolicyStore {
   private autoApprovePeerCall = false;
-  private autoApproveWalletBusiness = false;
+  private autoApproveWalletOrder = false;
 
   snapshot(): ElectronE2EViewerPolicySnapshot {
     return {
       auto_approve_peer_call: this.autoApprovePeerCall,
-      auto_approve_wallet_business: this.autoApproveWalletBusiness
+      auto_approve_wallet_order: this.autoApproveWalletOrder
     };
   }
 
@@ -52,8 +52,8 @@ export class ElectronE2EViewerPolicyStore {
     if (typeof patch.auto_approve_peer_call === "boolean") {
       this.autoApprovePeerCall = patch.auto_approve_peer_call;
     }
-    if (typeof patch.auto_approve_wallet_business === "boolean") {
-      this.autoApproveWalletBusiness = patch.auto_approve_wallet_business;
+    if (typeof patch.auto_approve_wallet_order === "boolean") {
+      this.autoApproveWalletOrder = patch.auto_approve_wallet_order;
     }
     return this.snapshot();
   }

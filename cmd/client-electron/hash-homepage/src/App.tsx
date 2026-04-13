@@ -33,7 +33,7 @@ export default function App() {
   const [domainLockResult, setDomainLockResult] = useState<BitfsDomainLockResponse | null>(null);
   const [domainRegisterSignBusy, setDomainRegisterSignBusy] = useState(false);
   const [domainRegisterSignError, setDomainRegisterSignError] = useState("");
-  const [domainRegisterSignResult, setDomainRegisterSignResult] = useState<BitfsWalletBusinessSignResponse | null>(null);
+  const [domainRegisterSignResult, setDomainRegisterSignResult] = useState<BitfsWalletOrderSignResponse | null>(null);
   const [domainRegisterSubmitBusy, setDomainRegisterSubmitBusy] = useState(false);
   const [domainRegisterSubmitError, setDomainRegisterSubmitError] = useState("");
   const [domainRegisterSubmitResult, setDomainRegisterSubmitResult] = useState<BitfsDomainRegisterSubmitResponse | null>(null);
@@ -447,7 +447,7 @@ export default function App() {
     setDomainRegisterSubmitResult(null);
     setDomainRegisterSubmitError("");
     try {
-      const signResp = await bridge.wallet.signBusinessRequest({
+      const signResp = await bridge.wallet.signOrderRequest({
         signerPubkeyHex: resolverPubkeyHex,
         signedEnvelope
       });

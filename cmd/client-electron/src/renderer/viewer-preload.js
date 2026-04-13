@@ -307,9 +307,9 @@
     return { locator };
   }
 
-  function normalizeWalletBusinessInput(input) {
+  function normalizeWalletOrderInput(input) {
     if (!input || typeof input !== "object" || Array.isArray(input)) {
-      throw new Error("wallet business payload is required");
+      throw new Error("wallet order payload is required");
     }
     const signerPubkeyHex = String(input.signerPubkeyHex || input.signer_pubkey_hex || "").trim().toLowerCase();
     if (!signerPubkeyHex) {
@@ -455,8 +455,8 @@
       async addresses() {
         return ipcRenderer.invoke("bitfs-viewer:wallet-addresses");
       },
-      async signBusinessRequest(input) {
-        return ipcRenderer.invoke("bitfs-viewer:wallet-sign-business", normalizeWalletBusinessInput(input));
+      async signOrderRequest(input) {
+        return ipcRenderer.invoke("bitfs-viewer:wallet-sign-order", normalizeWalletOrderInput(input));
       },
       history: {
         async list(query) {

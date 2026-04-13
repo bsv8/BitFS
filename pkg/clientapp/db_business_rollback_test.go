@@ -122,7 +122,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 	}
 
 	// 步骤2：第二次尝试，复用 business_id，但新的 front_order、trigger 和 settlement_id
-	// 这个模型下 business 行和 settlement 行都会按 business_id 收口更新，不再制造重复主行
+	// 这个模型下 business 仍归到同一 order，但新的 settlement 会追加成新执行单，不覆盖旧单
 	secondInput := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:     "fo_second_attempt", // 新的 front_order
 		FrontType:        "domain",
@@ -152,7 +152,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 		SettlementTargetID:   "tx_second",
 	}
 
-	// 第二次调用应该成功，并把同一 business 收口到新 settlement_id
+	// 第二次调用应该成功，并给同一 business 追加一条新的 settlement
 	err := CreateBusinessWithFrontTriggerAndPendingSettlement(ctx, store, secondInput)
 	if err != nil {
 		t.Fatalf("expected idempotent update, got error: %v", err)
@@ -165,17 +165,23 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 	}
 	newSettlement, _ := dbGetBusinessSettlement(ctx, store, "set_second")
 	if newSettlement.SettlementID == "" {
-		t.Fatal("new settlement should replace old settlement_id")
+		t.Fatal("new settlement should exist")
 	}
-	if newSettlement.BusinessID != "biz_shared" {
-		t.Fatalf("expected business_id biz_shared, got %s", newSettlement.BusinessID)
+	if newSettlement.OrderID != "biz_shared" {
+		t.Fatalf("expected order_id biz_shared, got %s", newSettlement.OrderID)
 	}
-	byBusiness, err := dbListBusinessSettlements(ctx, store, businessSettlementFilter{BusinessID: "biz_shared"})
+	byBusiness, err := dbListBusinessSettlements(ctx, store, businessSettlementFilter{OrderID: "biz_shared"})
 	if err != nil {
 		t.Fatalf("list business settlements failed: %v", err)
 	}
-	if byBusiness.Total != 1 {
-		t.Fatalf("expected 1 settlement row for biz_shared, got %d", byBusiness.Total)
+	if byBusiness.Total != 2 {
+		t.Fatalf("expected 2 settlement rows for biz_shared, got %d", byBusiness.Total)
+	}
+	if byBusiness.Items[0].SettlementID != "set_second" {
+		t.Fatalf("expected latest settlement set_second, got %s", byBusiness.Items[0].SettlementID)
+	}
+	if byBusiness.Items[1].SettlementID != "set_first" {
+		t.Fatalf("expected older settlement set_first, got %s", byBusiness.Items[1].SettlementID)
 	}
 
 	// 4.3 验证旧的 trigger 仍然存在

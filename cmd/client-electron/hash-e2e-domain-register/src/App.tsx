@@ -18,7 +18,7 @@ type DomainRegisterRunResult = {
   pricing?: BitfsDomainPricing | null;
   query?: BitfsDomainQueryResponse | null;
   lock?: BitfsDomainLockResponse | null;
-  sign?: BitfsWalletBusinessSignResponse | null;
+  sign?: BitfsWalletOrderSignResponse | null;
   submit?: BitfsDomainRegisterSubmitResponse | null;
   list_owned?: BitfsDomainListOwnedResponse | null;
   resolve_query?: BitfsDomainResolveResponse | null;
@@ -177,7 +177,7 @@ export default function App() {
         throw new Error("domain lock did not return signed quote");
       }
 
-      const sign = await bridge.wallet.signBusinessRequest({
+      const sign = await bridge.wallet.signOrderRequest({
         signerPubkeyHex: normalizedResolver,
         signedEnvelope: normalizeSignedEnvelope(lock.signed_quote_json)
       });
