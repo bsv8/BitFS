@@ -82,6 +82,9 @@ type directPoolOpenAccountingInput struct {
 	SellerPubHex      string
 }
 
+// rawJSONPayload 表示已经是 JSON 文本的字段，避免重复编码。
+type rawJSONPayload []byte
+
 func mustJSONString(v any) string {
 	if v == nil {
 		return "{}"

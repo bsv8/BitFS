@@ -74,7 +74,7 @@ type directTransferBizPoolAllocationInput struct {
 	CreatedAtUnix    int64
 }
 
-func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx *sql.Tx, in directTransferBizPoolSnapshotInput) error {
+func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx sqlConn, in directTransferBizPoolSnapshotInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -149,7 +149,7 @@ func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx *sql.Tx, in
 	return err
 }
 
-func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx *sql.Tx, in directTransferBizPoolAllocationInput) error {
+func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx sqlConn, in directTransferBizPoolAllocationInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -205,7 +205,7 @@ func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx *sql.Tx, 
 	return err
 }
 
-func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in directTransferPoolSessionFactInput) error {
+func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx sqlConn, in directTransferPoolSessionFactInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -305,7 +305,7 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *sql.Tx, in dir
 	return err
 }
 
-func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *sql.Tx, in directTransferPoolAllocationFactInput) error {
+func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx sqlConn, in directTransferPoolAllocationFactInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -435,7 +435,7 @@ func dbUpsertDirectTransferPoolSession(ctx context.Context, store *clientDB, in 
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		return dbUpsertDirectTransferPoolSessionTx(ctx, tx, in)
 	})
 }
@@ -444,7 +444,7 @@ func dbUpsertDirectTransferPoolAllocation(ctx context.Context, store *clientDB, 
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, in)
 	})
 }
@@ -473,7 +473,7 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 // 设计说明：
 // - 写入层和读层都只认事实表自增主键；
 // - allocation_id 只作为旧入口和 payload 保留，不再直接承担 source_id 语义。
-func dbGetPoolAllocationIDByAllocationIDDB(db *sql.DB, allocationID string) (int64, error) {
+func dbGetPoolAllocationIDByAllocationIDDB(db sqlConn, allocationID string) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -498,14 +498,14 @@ func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, a
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return dbGetPoolAllocationIDByAllocationIDDB(db, allocationID)
 	})
 }
 
 // dbGetPoolAllocationIDByAllocationIDTx 在事务内按 allocation_id 查自增 id
 // 用于财务写入时在同一事务内获取主键
-func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx *sql.Tx, allocationID string) (int64, error) {
+func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx sqlConn, allocationID string) (int64, error) {
 	if tx == nil {
 		return 0, fmt.Errorf("tx is nil")
 	}
@@ -528,7 +528,7 @@ func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx *sql.Tx, allo
 // 设计说明：
 // - snapshot 更新需要稳定地拿到 open allocation id；
 // - 不能拿当前 sequence 反推，否则重放时会漂。
-func dbGetPoolAllocationIDByKindTx(ctx context.Context, tx *sql.Tx, sessionID string, allocationKind string) (string, error) {
+func dbGetPoolAllocationIDByKindTx(ctx context.Context, tx sqlConn, sessionID string, allocationKind string) (string, error) {
 	if tx == nil {
 		return "", fmt.Errorf("tx is nil")
 	}

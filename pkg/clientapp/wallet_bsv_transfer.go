@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -176,7 +175,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"status":          "waiting_fund",
 				"error":           err.Error(),
 			}
-			if txErr := store.Tx(ctx, func(tx *sql.Tx) error {
+			if txErr := store.Tx(ctx, func(tx sqlConn) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",
@@ -227,7 +226,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			"status":          "failed",
 			"error":           err.Error(),
 		}
-		if txErr := store.Tx(ctx, func(tx *sql.Tx) error {
+		if txErr := store.Tx(ctx, func(tx sqlConn) error {
 			if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -303,7 +302,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	}
 
 	if finalStatus == "failed" {
-		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+		if err := store.Tx(ctx, func(tx sqlConn) error {
 			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -350,7 +349,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	if finalStatus == "submitted_unknown_projection" {
 		payload["status"] = "submitted_unknown_projection"
 		payload["error"] = submitted.Result.Message
-		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+		if err := store.Tx(ctx, func(tx sqlConn) error {
 			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -412,7 +411,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		if len(selectedUTXOIDs) == 0 {
 			return resp, fmt.Errorf("selected utxo ids are required for settlement records")
 		}
-		if err := store.Tx(ctx, func(tx *sql.Tx) error {
+		if err := store.Tx(ctx, func(tx sqlConn) error {
 			channelID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, chainPaymentEntry{
 				TxID:                 submitted.BroadcastTxID,
 				PaymentSubType:       "biz_order_pay_bsv",
@@ -485,7 +484,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"status":            "failed",
 				"error":             err.Error(),
 			}
-			_ = store.Tx(ctx, func(tx *sql.Tx) error {
+			_ = store.Tx(ctx, func(tx sqlConn) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",

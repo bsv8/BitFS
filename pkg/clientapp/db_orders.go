@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -81,8 +80,8 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.FrontOrderID
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := ExecContext(ctx, db, 
+	return store.Do(ctx, func(db sqlConn) error {
+		_, err := ExecContext(ctx, db,
 			`INSERT INTO orders(
 				order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,note,payload_json,created_at_unix,updated_at_unix
 			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
@@ -123,10 +122,10 @@ func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) 
 	if frontOrderID == "" {
 		return frontOrderItem{}, fmt.Errorf("order_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (frontOrderItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (frontOrderItem, error) {
 		var item frontOrderItem
 		var payload string
-		err := QueryRowContext(ctx, db, 
+		err := QueryRowContext(ctx, db,
 			`SELECT order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 			 FROM orders WHERE order_id=?`,
 			frontOrderID,
@@ -148,7 +147,7 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 	if store == nil {
 		return frontOrderPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (frontOrderPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (frontOrderPage, error) {
 		where := ""
 		args := make([]any, 0, 16)
 		if f.FrontOrderID != "" {
@@ -186,7 +185,7 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 		if f.Limit <= 0 {
 			f.Limit = 20
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
 			 FROM orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,order_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -225,8 +224,8 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 	if frontOrderID == "" {
 		return fmt.Errorf("order_id is required")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := ExecContext(ctx, db, 
+	return store.Do(ctx, func(db sqlConn) error {
+		_, err := ExecContext(ctx, db,
 			`UPDATE orders SET status=?, updated_at_unix=? WHERE order_id=?`,
 			strings.TrimSpace(status),
 			time.Now().Unix(),

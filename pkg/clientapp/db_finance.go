@@ -141,7 +141,7 @@ func resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx context.Context, 
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx, db, sourceID)
 	})
 }
@@ -151,7 +151,7 @@ func resolveChainPaymentSourceToSettlementPaymentAttempt(ctx context.Context, st
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx, db, sourceID)
 	})
 }
@@ -160,7 +160,7 @@ func dbGetSettlementPaymentAttemptStateByID(ctx context.Context, store *clientDB
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		return dbGetSettlementPaymentAttemptStateByIDDB(ctx, db, id)
 	})
 }
@@ -180,7 +180,7 @@ func normalizeSettlementStateFilter(state string) (string, error) {
 }
 
 // 财务查询只认 settlement_payment_attempt；这里把空输入收口到主口径。
-func resolveSettlementPaymentAttemptSourceDB(ctx context.Context, db *sql.DB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
+func resolveSettlementPaymentAttemptSourceDB(ctx context.Context, db sqlConn, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceType == "" && sourceID == "" {
@@ -234,7 +234,7 @@ func dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx context.Context, db sqlC
 	return settlementPaymentAttemptID, nil
 }
 
-func resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
+func resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx context.Context, db sqlConn, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
@@ -253,7 +253,7 @@ func resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx context.Context
 	return dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, db, poolSessionID)
 }
 
-func resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx context.Context, db *sql.DB, sourceID string) (int64, error) {
+func resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx context.Context, db sqlConn, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
 		return 0, fmt.Errorf("source_id is required")
@@ -300,7 +300,7 @@ func resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx context.Context, 
 	return 0, sql.ErrNoRows
 }
 
-func dbGetSettlementPaymentAttemptStateByIDDB(ctx context.Context, db *sql.DB, id int64) (string, error) {
+func dbGetSettlementPaymentAttemptStateByIDDB(ctx context.Context, db sqlConn, id int64) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
@@ -318,7 +318,7 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 	if store == nil {
 		return financeBusinessPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (financeBusinessPage, error) {
 		settlementState, err := normalizeSettlementStateFilter(f.SettlementState)
 		if err != nil {
 			return financeBusinessPage{}, err
@@ -428,7 +428,7 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 	if store == nil {
 		return financeBusinessItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (financeBusinessItem, error) {
 		var out financeBusinessItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -450,7 +450,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 	if store == nil {
 		return financeProcessEventPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeProcessEventPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (financeProcessEventPage, error) {
 		settlementState, err := normalizeSettlementStateFilter(f.SettlementState)
 		if err != nil {
 			return financeProcessEventPage{}, err
@@ -545,7 +545,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 	if store == nil {
 		return financeProcessEventItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeProcessEventItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (financeProcessEventItem, error) {
 		var out financeProcessEventItem
 		var payload string
 		err := QueryRowContext(ctx, db,

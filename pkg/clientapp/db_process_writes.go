@@ -31,7 +31,7 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	_ = store.Do(ctx, func(db sqlConn) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -95,7 +95,7 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		if strings.TrimSpace(e.DemandID) == "" {
 			return fmt.Errorf("demand_id is required")
 		}
@@ -156,7 +156,7 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 		obs.Error("bitcast-client", "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
 		return err
 	}
-	err := store.Do(ctx, func(db *sql.DB) error {
+	err := store.Do(ctx, func(db sqlConn) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -187,7 +187,7 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	_ = store.Do(ctx, func(db sqlConn) error {
 		_, err := db.Exec(
 			`INSERT INTO proc_orchestrator_logs(
 				created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
@@ -226,7 +226,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		obs.Error("bitcast-client", "proc_command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
 		return err
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		accepted := 0
 		if e.Accepted {
 			accepted = 1
@@ -273,7 +273,7 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 		obs.Error("bitcast-client", "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
 		return err
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := db.Exec(
 			`INSERT INTO proc_domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
@@ -301,7 +301,7 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 		obs.Error("bitcast-client", "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
 		return err
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := db.Exec(
 			`INSERT INTO proc_state_snapshots(
 				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
@@ -341,7 +341,7 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 	if store == nil {
 		return nil
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		observedAtUnix := e.ObservedAtUnix
 		if observedAtUnix <= 0 {
 			observedAtUnix = time.Now().Unix()
@@ -380,7 +380,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 		obs.Error("bitcast-client", "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
 		return err
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
 			time.Now().Unix(),
@@ -411,7 +411,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	_ = store.Do(ctx, func(db sqlConn) error {
 		if e.TriggeredAtUnix <= 0 {
 			e.TriggeredAtUnix = time.Now().Unix()
 		}
@@ -445,7 +445,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 	})
 }
 
-func dbTrimWorkerLogs(db *sql.DB, table string, keep int) {
+func dbTrimWorkerLogs(db sqlConn, table string, keep int) {
 	if db == nil || strings.TrimSpace(table) == "" || keep <= 0 {
 		return
 	}
@@ -514,10 +514,10 @@ func dbAppendFinBusinessTx(ctx context.Context, db sqlConn, e finBusinessEntry) 
 	settlementErrorMessage := strings.TrimSpace(e.SettlementErrorMessage)
 
 	switch starter := db.(type) {
-	case *sql.Tx:
+	case sqlConn:
 		return dbAppendFinBusinessRowTx(ctx, starter, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
 	case sqlTxStarter:
-		return dbInTx(ctx, starter, func(tx *sql.Tx) error {
+		return dbInTx(ctx, starter, func(tx sqlConn) error {
 			return dbAppendFinBusinessRowTx(ctx, tx, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
 		})
 	default:
@@ -750,7 +750,7 @@ func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, db sql
 // - 这里只负责 biz_pool_allocations 和 biz_pool 快照，不碰 fact 消耗主路径；
 // - 调用方仍然可以先写兼容 fact 事件，但真正的划拨账必须从这里落到业务层；
 // - 幂等性依赖 allocation_id + (pool_session_id, allocation_kind, sequence_num) 的唯一约束。
-func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx *sql.Tx, in directTransferPoolAllocationFactInput, allocationNo int64) error {
+func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx sqlConn, in directTransferPoolAllocationFactInput, allocationNo int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -898,7 +898,7 @@ func directTransferPoolAccountingSource(sessionID string, allocationKind string,
 }
 
 func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
-	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+	dbRecordAccounting(ctx, store, func(db sqlConn) {
 		businessID := strings.TrimSpace(in.BusinessID)
 		if businessID == "" {
 			businessID = "biz_feepool_open_" + randHex(8)
@@ -974,7 +974,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 }
 
 func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID string, sequence uint32, amount uint64, gatewayPeerID string) {
-	dbRecordAccounting(ctx, store, func(db *sql.DB) {
+	dbRecordAccounting(ctx, store, func(db sqlConn) {
 		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，保证写入和查询走同一条路。
 		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx, db, strings.TrimSpace(spendTxID))
@@ -1064,7 +1064,7 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		"lock_blocks":                 session.LockBlocks,
 		"fee_rate_sat_per_byte":       session.FeeRateSatPerByte,
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		var settlementPaymentAttemptID int64
 		var channelID int64
 		err := QueryRowContext(ctx, db, `SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID, &settlementPaymentAttemptID)
@@ -1226,7 +1226,7 @@ func dbRecordFeePoolCloseAccounting(ctx context.Context, store *clientDB, sessio
 	finalTxHex = strings.ToLower(strings.TrimSpace(finalTxHex))
 	gatewayPeerID = strings.ToLower(strings.TrimSpace(gatewayPeerID))
 	now := time.Now().Unix()
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		var existing struct {
 			SettlementPaymentAttemptID int64
 			PoolScheme                 string
@@ -1385,7 +1385,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		// 第二阶段整改：open 继续有自己的业务记录，但定性为过程型财务对象
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
@@ -1494,7 +1494,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
@@ -1540,7 +1540,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
 		txHex := strings.TrimSpace(finalTxHex)
 		var parsedFinalTx *transaction.Transaction
@@ -1639,11 +1639,11 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 	})
 }
 
-func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(*sql.DB)) {
+func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(sqlConn)) {
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db *sql.DB) error {
+	_ = store.Do(ctx, func(db sqlConn) error {
 		fn(db)
 		return nil
 	})

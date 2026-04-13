@@ -90,7 +90,7 @@ func dbQueryRowContext(ctx context.Context, q sqlQueryRower, query string, args 
 	return q.QueryRowContext(ctx, query, args...)
 }
 
-func dbInTx(ctx context.Context, db sqlTxStarter, fn func(*sql.Tx) error) error {
+func dbInTx(ctx context.Context, db sqlTxStarter, fn func(sqlConn) error) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}

@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseedpricingpolicy"
 )
 
 type seedPricingPolicyRow struct {
@@ -17,49 +20,52 @@ type seedPricingPolicyRow struct {
 }
 
 // 这里只放种子定价策略的读写，避免和运行流程混在一起。
-func dbLoadSeedPricingPolicy(db *sql.DB, seedHash string) (seedPricingPolicyRow, error) {
-	if db == nil {
-		return seedPricingPolicyRow{}, fmt.Errorf("db is nil")
+func dbLoadSeedPricingPolicy(ctx context.Context, store *clientDB, seedHash string) (seedPricingPolicyRow, error) {
+	if store == nil {
+		return seedPricingPolicyRow{}, fmt.Errorf("client db is nil")
 	}
-	return dbLoadSeedPricingPolicyQuery(context.Background(), db, seedHash)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (seedPricingPolicyRow, error) {
+		return dbLoadSeedPricingPolicyTx(ctx, tx, seedHash)
+	})
 }
 
-func dbLoadSeedPricingPolicyTx(tx *sql.Tx, seedHash string) (seedPricingPolicyRow, error) {
+func dbLoadSeedPricingPolicyTx(ctx context.Context, tx *gen.Tx, seedHash string) (seedPricingPolicyRow, error) {
 	if tx == nil {
 		return seedPricingPolicyRow{}, fmt.Errorf("tx is nil")
 	}
-	return dbLoadSeedPricingPolicyQuery(context.Background(), tx, seedHash)
-}
-
-func dbUpsertSeedPricingPolicy(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+	seedHash = normalizeSeedHashHex(seedHash)
+	if seedHash == "" {
+		return seedPricingPolicyRow{}, fmt.Errorf("seed_hash required")
 	}
-	return dbUpsertSeedPricingPolicyExec(context.Background(), db, seedHash, floorUnit, discountBPS, source, updatedAtUnix)
+	node, err := tx.BizSeedPricingPolicy.Query().Where(bizseedpricingpolicy.SeedHashEQ(seedHash)).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return seedPricingPolicyRow{}, sql.ErrNoRows
+		}
+		return seedPricingPolicyRow{}, err
+	}
+	return seedPricingPolicyRow{
+		SeedHash:            node.SeedHash,
+		FloorPriceSatPer64K: uint64(node.FloorUnitPriceSatPer64k),
+		ResaleDiscountBPS:   uint64(node.ResaleDiscountBps),
+		PricingSource:       node.PricingSource,
+		UpdatedAtUnix:       node.UpdatedAtUnix,
+	}, nil
 }
 
-func dbUpsertSeedPricingPolicyTx(tx *sql.Tx, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
+func dbUpsertSeedPricingPolicy(ctx context.Context, store *clientDB, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		return dbUpsertSeedPricingPolicyTx(ctx, tx, seedHash, floorUnit, discountBPS, source, updatedAtUnix)
+	})
+}
+
+func dbUpsertSeedPricingPolicyTx(ctx context.Context, tx *gen.Tx, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	return dbUpsertSeedPricingPolicyExec(context.Background(), tx, seedHash, floorUnit, discountBPS, source, updatedAtUnix)
-}
-
-func dbLoadSeedPricingPolicyQuery(ctx context.Context, queryer interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, seedHash string) (seedPricingPolicyRow, error) {
-	var out seedPricingPolicyRow
-	err := QueryRowContext(ctx, queryer, `SELECT seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix FROM biz_seed_pricing_policy WHERE seed_hash=?`, normalizeSeedHashHex(seedHash)).
-		Scan(&out.SeedHash, &out.FloorPriceSatPer64K, &out.ResaleDiscountBPS, &out.PricingSource, &out.UpdatedAtUnix)
-	if err != nil {
-		return seedPricingPolicyRow{}, err
-	}
-	return out, nil
-}
-
-func dbUpsertSeedPricingPolicyExec(ctx context.Context, execer interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}, seedHash string, floorUnit, discountBPS uint64, source string, updatedAtUnix int64) error {
 	seedHash = normalizeSeedHashHex(seedHash)
 	if seedHash == "" {
 		return fmt.Errorf("seed_hash required")
@@ -68,60 +74,53 @@ func dbUpsertSeedPricingPolicyExec(ctx context.Context, execer interface {
 	if source != "user" && source != "system" {
 		source = "system"
 	}
-	_, err := ExecContext(ctx, execer, 
-		`INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix)
-		 VALUES(?,?,?,?,?)
-		 ON CONFLICT(seed_hash) DO UPDATE SET
-		 floor_unit_price_sat_per_64k=CASE
-		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.floor_unit_price_sat_per_64k
-		   ELSE excluded.floor_unit_price_sat_per_64k
-		 END,
-		 resale_discount_bps=CASE
-		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.resale_discount_bps
-		   ELSE excluded.resale_discount_bps
-		 END,
-		 pricing_source=CASE
-		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.pricing_source
-		   ELSE excluded.pricing_source
-		 END,
-		 updated_at_unix=CASE
-		   WHEN biz_seed_pricing_policy.pricing_source='user' AND excluded.pricing_source='system' THEN biz_seed_pricing_policy.updated_at_unix
-		   ELSE excluded.updated_at_unix
-		 END`,
-		seedHash, floorUnit, discountBPS, source, updatedAtUnix,
-	)
+
+	existing, err := tx.BizSeedPricingPolicy.Query().Where(bizseedpricingpolicy.SeedHashEQ(seedHash)).Only(ctx)
+	if err != nil {
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.BizSeedPricingPolicy.Create().
+			SetSeedHash(seedHash).
+			SetFloorUnitPriceSatPer64k(int64(floorUnit)).
+			SetResaleDiscountBps(int64(discountBPS)).
+			SetPricingSource(source).
+			SetUpdatedAtUnix(updatedAtUnix).
+			Save(ctx)
+		return err
+	}
+	if existing.PricingSource == "user" && source == "system" {
+		return nil
+	}
+	_, err = existing.Update().
+		SetFloorUnitPriceSatPer64k(int64(floorUnit)).
+		SetResaleDiscountBps(int64(discountBPS)).
+		SetPricingSource(source).
+		SetUpdatedAtUnix(updatedAtUnix).
+		Save(ctx)
 	return err
 }
 
-func dbSyncSystemSeedPricingPolicies(ctx context.Context, db *sql.DB, floorUnit, discountBPS uint64) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func dbSyncSystemSeedPricingPolicies(ctx context.Context, store *clientDB, floorUnit, discountBPS uint64) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
 	}
-	rows, err := QueryContext(ctx, db, `SELECT seed_hash FROM biz_seeds`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	seedHashes := make([]string, 0, 64)
-	for rows.Next() {
-		var seedHash string
-		if err := rows.Scan(&seedHash); err != nil {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		var rows []struct {
+			SeedHash string `json:"seed_hash,omitempty"`
+		}
+		if err := tx.BizSeeds.Query().
+			Unique(true).
+			Select("seed_hash").
+			Scan(ctx, &rows); err != nil {
 			return err
 		}
-		seedHash = normalizeSeedHashHex(seedHash)
-		if seedHash == "" {
-			continue
+		now := time.Now().Unix()
+		for _, row := range rows {
+			if err := dbUpsertSeedPricingPolicyTx(ctx, tx, row.SeedHash, floorUnit, discountBPS, "system", now); err != nil {
+				return err
+			}
 		}
-		seedHashes = append(seedHashes, seedHash)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	for _, seedHash := range seedHashes {
-		if err := dbUpsertSeedPricingPolicy(db, seedHash, floorUnit, discountBPS, "system", now); err != nil {
-			return err
-		}
-	}
-	return nil
+		return nil
+	})
 }

@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -91,7 +90,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 	}
 	classifier := defaultWalletScriptClassifier(source)
 	var changes []confirmedUTXOChange
-	err := store.Tx(ctx, func(tx *sql.Tx) error {
+	err := store.Tx(ctx, func(tx sqlConn) error {
 		current, err := dbLoadWalletUTXOStateRowsTx(tx, walletID, address)
 		if err != nil {
 			return err
@@ -288,7 +287,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 		"change_count": len(changes),
 		"updated_at":   updatedAt,
 	})
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		addressWallet := make(map[string]string, len(changes))
 		for _, change := range changes {
 			// 从 wallet_id 提取 owner_pubkey_hex（去掉 "wallet:" 前缀）
@@ -342,7 +341,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 	})
 }
 
-func backfillFactSpentFromWalletUTXO(ctx context.Context, db *sql.DB, walletID string, address string, updatedAt int64) error {
+func backfillFactSpentFromWalletUTXO(ctx context.Context, db sqlConn, walletID string, address string, updatedAt int64) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
 	}

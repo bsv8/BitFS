@@ -3,6 +3,7 @@ module github.com/bsv8/BitFS
 go 1.26
 
 require (
+	entgo.io/ent v0.14.6
 	github.com/bsv-blockchain/go-sdk v1.2.18
 	github.com/bsv8/BFTP v0.0.0
 	github.com/bsv8/MultisigPool v0.0.0

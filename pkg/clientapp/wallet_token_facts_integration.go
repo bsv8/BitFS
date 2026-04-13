@@ -78,7 +78,7 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
 
 	var count int
-	err := store.Do(ctx, func(db *sql.DB) error {
+	err := store.Do(ctx, func(db sqlConn) error {
 		return QueryRowContext(ctx, db,
 			`SELECT COUNT(1) FROM fact_token_lots WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=?`,
 			ownerPubkeyHex, assetKind, tokenID,
@@ -265,7 +265,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 	walletID := walletIDByAddress(walletAddr)
 	now := time.Now().Unix()
 
-	return store.Tx(ctx, func(dbtx *sql.Tx) error {
+	return store.Tx(ctx, func(dbtx sqlConn) error {
 		lots, consumedText, err := collectBSV21TokenSendLotsForTx(ctx, dbtx, parsed, walletScriptHex)
 		if err != nil {
 			return err
@@ -636,7 +636,7 @@ func walletBSV21SendBusinessID(txID string) string {
 // 设计说明（硬切版）：
 // - 改为从 fact_token_carrier_links + fact_token_lots 查询
 func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string) (string, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		// 先查 carrier link 获取 lot_id
 		var lotID string
 		err := QueryRowContext(ctx, db,

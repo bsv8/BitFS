@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -14,7 +13,7 @@ import (
 type workspaceManager struct {
 	ctx     context.Context
 	cfg     *Config
-	db      *sql.DB
+	db      sqlConn
 	store   *clientDB
 	catalog *sellerCatalog
 	mu      sync.Mutex

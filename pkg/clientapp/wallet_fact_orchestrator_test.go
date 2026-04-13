@@ -457,7 +457,7 @@ func TestSQLTraceDebugGateAndCallerChain(t *testing.T) {
 		}
 	})
 	storeFalse := newClientDB(openedFalse.DB, openedFalse.Actor)
-	if err := storeFalse.Do(context.Background(), func(db *sql.DB) error {
+	if err := storeFalse.Do(context.Background(), func(db sqlConn) error {
 		_, err := db.Exec(`CREATE TABLE trace_gate(id INTEGER PRIMARY KEY, value TEXT)`)
 		return err
 	}); err != nil {
@@ -571,7 +571,7 @@ func TestSQLTraceDebugGateAndCallerChain(t *testing.T) {
 
 func runSQLTraceReplay(store *clientDB, roundID string, trigger string) error {
 	ctx := sqlTraceContextWithMeta(context.Background(), roundID, trigger, "sql_trace_replay", "wallet_fact_orchestrator_test.runSQLTraceReplay")
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS trace_gate(id INTEGER PRIMARY KEY, value TEXT)`); err != nil {
 			return err
 		}

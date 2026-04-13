@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -69,7 +68,7 @@ func upsertFactBSV21Create(ctx context.Context, store *clientDB, item factBSV21C
 	if item.PayloadJSON == "" {
 		item.PayloadJSON = "{}"
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db, `INSERT INTO fact_bsv21(
 			token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -125,7 +124,7 @@ func appendFactBSV21Event(ctx context.Context, store *clientDB, item factBSV21Ev
 	if item.PayloadJSON == "" {
 		item.PayloadJSON = "{}"
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db, `INSERT INTO fact_bsv21_events(
 			token_id,event_kind,event_at_unix,txid,note,payload_json
 		) VALUES(?,?,?,?,?,?)`,
@@ -141,7 +140,7 @@ func appendFactBSV21Event(ctx context.Context, store *clientDB, item factBSV21Ev
 }
 
 func getFactBSV21ByTokenID(ctx context.Context, store *clientDB, tokenID string) (factBSV21CreateItem, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (factBSV21CreateItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (factBSV21CreateItem, error) {
 		tokenID = strings.ToLower(strings.TrimSpace(tokenID))
 		if tokenID == "" {
 			return factBSV21CreateItem{}, fmt.Errorf("token_id is required")

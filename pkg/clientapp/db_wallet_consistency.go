@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, db *sql.DB, sourceType, channelTable, txid string, requireConfirmed bool) (int64, bool, error) {
+func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, db sqlConn, sourceType, channelTable, txid string, requireConfirmed bool) (int64, bool, error) {
 	if db == nil {
 		return 0, false, fmt.Errorf("db is nil")
 	}
@@ -78,7 +78,7 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 	if store == nil {
 		return TokenTxDualLineConsistency{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (TokenTxDualLineConsistency, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (TokenTxDualLineConsistency, error) {
 		out := TokenTxDualLineConsistency{TxID: txid}
 		var count int
 		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE spent_by_txid=? AND utxo_state='spent'`, txid).Scan(&count); err != nil {
@@ -124,7 +124,7 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	if store == nil {
 		return ConfirmedBSVSpendConsistency{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (ConfirmedBSVSpendConsistency, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (ConfirmedBSVSpendConsistency, error) {
 		out := ConfirmedBSVSpendConsistency{TxID: txid}
 		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
 		if err != nil {
@@ -174,7 +174,7 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
 		if err != nil {
 			return err

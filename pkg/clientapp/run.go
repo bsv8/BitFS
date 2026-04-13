@@ -360,8 +360,8 @@ type RunInput struct {
 // - 业务函数只拿能力，不拿底层连接；
 // - 真正的实现仍然是 clientDB。
 type ClientStore interface {
-	Do(ctx context.Context, fn func(*sql.DB) error) error
-	Tx(ctx context.Context, fn func(*sql.Tx) error) error
+	Do(ctx context.Context, fn func(SQLConn) error) error
+	Tx(ctx context.Context, fn func(SQLConn) error) error
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
@@ -769,7 +769,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	if err := dbSyncSystemSeedPricingPolicies(ctx, db, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
+	if err := dbSyncSystemSeedPricingPolicies(ctx, store, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()

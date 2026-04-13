@@ -104,32 +104,6 @@ func TestDefaultArbiterPubHexUsesPubHexFallback(t *testing.T) {
 	}
 }
 
-func TestDemandQuoteForeignKeysRejectOrphanRows(t *testing.T) {
-	db := newDemandQuoteFKTestDB(t)
-
-	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
-			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"missing_demand", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100, 10, 1, 1024, "x.bin", "text/plain", "ff", 1893427200, 1700000001,
-	); err == nil {
-		t.Fatalf("expected demand quote foreign key failure")
-	}
-
-	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_fk", "seed_fk", 1700000002); err != nil {
-		t.Fatalf("insert demand: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO biz_demand_quotes(
-			demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		"dmd_fk", "02bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", 100, 10, 1, 1024, "x.bin", "text/plain", "ff", 1893427200, 1700000001,
-	); err != nil {
-		t.Fatalf("insert valid quote: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO biz_demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)`, 999, "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"); err == nil {
-		t.Fatalf("expected arbiter foreign key failure")
-	}
-}
-
 func TestDemandQuoteSchemaRebuildAddsForeignKeys(t *testing.T) {
 	t.Skip("legacy migration test removed")
 }

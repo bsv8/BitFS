@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -258,7 +257,9 @@ func GetFullPoolSettlementChainByPoolSessionID(ctx context.Context, store *clien
 	}
 	out.PoolSession = &poolSession
 
-	paymentAttemptID, err := dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, store.db, poolSessionID)
+	paymentAttemptID, err := clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
+		return dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, db, poolSessionID)
+	})
 	if err != nil {
 		return out, fmt.Errorf("find settlement payment attempt: %w", err)
 	}
@@ -295,7 +296,7 @@ func GetSettlementByChainPaymentID(ctx context.Context, store *clientDB, chainPa
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
 		err := QueryRowContext(ctx, db,

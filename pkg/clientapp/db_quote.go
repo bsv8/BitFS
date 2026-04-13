@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -18,7 +17,7 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]LiveQuoteItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]LiveQuoteItem, error) {
 		rows, err := QueryContext(ctx, db, `SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM biz_live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
 		if err != nil {
 			return nil, err
@@ -51,7 +50,7 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 	if strings.TrimSpace(item.DemandID) == "" || strings.TrimSpace(item.SellerPubHex) == "" || strings.TrimSpace(item.StreamID) == "" {
 		return fmt.Errorf("live quote keys are required")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		recentJSON, err := json.Marshal(item.RecentSegments)
 		if err != nil {
 			return err

@@ -3,8 +3,17 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	bitfsproccommandjournal "github.com/bsv8/bitfs-contract/ent/v1/gen/proccommandjournal"
+	bitfsprocdomainevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procdomainevents"
+	bitfsproceffectlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/proceffectlogs"
+	bitfsprocgatewayevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procgatewayevents"
+	bitfsprocstatesnapshots "github.com/bsv8/bitfs-contract/ent/v1/gen/procstatesnapshots"
 )
 
 // 命令时间线是最终读模型，不让外层自己拼原表语义。
@@ -82,25 +91,25 @@ func dbGetCommandTimelineItem(ctx context.Context, store *clientDB, id int64) (c
 	if store == nil {
 		return commandTimelineItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (commandTimelineItem, error) {
-		journalRow := QueryRowContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			FROM proc_command_journal WHERE id=?`, id,
-		)
-		journal, err := scanCommandJournalItem(journalRow)
-		if err != nil {
-			return commandTimelineItem{}, err
+	if store.ent == nil {
+		return commandTimelineItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	journal, err := store.ent.ProcCommandJournal.Query().Where(bitfsproccommandjournal.IDEQ(int(id))).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return commandTimelineItem{}, sql.ErrNoRows
 		}
-		out := commandTimelineItem{commandJournalItem: journal}
-		if err := hydrateCommandTimelineRelations(ctx, db, &out); err != nil {
-			return commandTimelineItem{}, err
-		}
-		return out, nil
-	})
+		return commandTimelineItem{}, err
+	}
+	out := commandTimelineItem{commandJournalItem: commandJournalItemFromEnt(journal)}
+	if err := hydrateCommandTimelineRelationsEnt(ctx, store, &out); err != nil {
+		return commandTimelineItem{}, err
+	}
+	return out, nil
 }
 
-func hydrateCommandTimelineRelations(ctx context.Context, db *sql.DB, out *commandTimelineItem) error {
-	if db == nil || out == nil || strings.TrimSpace(out.CommandID) == "" {
+func hydrateCommandTimelineRelationsEnt(ctx context.Context, store *clientDB, out *commandTimelineItem) error {
+	if store == nil || store.ent == nil || out == nil || strings.TrimSpace(out.CommandID) == "" {
 		return nil
 	}
 	commandID := out.CommandID
@@ -109,104 +118,92 @@ func hydrateCommandTimelineRelations(ctx context.Context, db *sql.DB, out *comma
 	out.StateSnapshots = nil
 	out.EffectLogs = nil
 
-	if err := loadGatewayEventsByCommandID(ctx, db, commandID, &out.GatewayEvents); err != nil {
+	if err := loadGatewayEventsByCommandIDEnt(ctx, store, commandID, &out.GatewayEvents); err != nil {
 		return err
 	}
-	if err := loadDomainEventsByCommandID(ctx, db, commandID, &out.DomainEvents); err != nil {
+	if err := loadDomainEventsByCommandIDEnt(ctx, store, commandID, &out.DomainEvents); err != nil {
 		return err
 	}
-	if err := loadStateSnapshotsByCommandID(ctx, db, commandID, &out.StateSnapshots); err != nil {
+	if err := loadStateSnapshotsByCommandIDEnt(ctx, store, commandID, &out.StateSnapshots); err != nil {
 		return err
 	}
-	if err := loadEffectLogsByCommandID(ctx, db, commandID, &out.EffectLogs); err != nil {
+	if err := loadEffectLogsByCommandIDEnt(ctx, store, commandID, &out.EffectLogs); err != nil {
 		return err
 	}
 	return nil
 }
 
-func loadGatewayEventsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]gatewayEventItem) error {
-	rows, err := QueryContext(ctx, db, `SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
-		FROM proc_gateway_events WHERE command_id=? ORDER BY id ASC`, commandID)
+func loadGatewayEventsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]gatewayEventItem) error {
+	if store == nil || store.ent == nil {
+		return fmt.Errorf("client db ent client is nil")
+	}
+	nodes, err := store.ent.ProcGatewayEvents.Query().
+		Where(bitfsprocgatewayevents.CommandIDEQ(commandID)).
+		Order(bitfsprocgatewayevents.ByID(entsql.OrderAsc())).
+		All(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	items := make([]gatewayEventItem, 0, 4)
-	for rows.Next() {
-		it, err := scanGatewayEventItem(rows)
-		if err != nil {
-			return err
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
-		return err
+	items := make([]gatewayEventItem, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, gatewayEventItemFromEnt(node))
 	}
 	*out = items
 	return nil
 }
 
-func loadDomainEventsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]domainEventItem) error {
-	rows, err := QueryContext(ctx, db, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
-		FROM proc_domain_events WHERE command_id=? ORDER BY id ASC`, commandID)
+func loadDomainEventsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]domainEventItem) error {
+	if store == nil || store.ent == nil {
+		return fmt.Errorf("client db ent client is nil")
+	}
+	nodes, err := store.ent.ProcDomainEvents.Query().
+		Where(bitfsprocdomainevents.CommandIDEQ(commandID)).
+		Order(bitfsprocdomainevents.ByID(entsql.OrderAsc())).
+		All(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	items := make([]domainEventItem, 0, 4)
-	for rows.Next() {
-		it, err := scanDomainEventItem(rows)
-		if err != nil {
-			return err
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
-		return err
+	items := make([]domainEventItem, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, domainEventItemFromEnt(node))
 	}
 	*out = items
 	return nil
 }
 
-func loadStateSnapshotsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]stateSnapshotItem) error {
-	rows, err := QueryContext(ctx, db, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		FROM proc_state_snapshots WHERE command_id=? ORDER BY id ASC`, commandID)
+func loadStateSnapshotsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]stateSnapshotItem) error {
+	if store == nil || store.ent == nil {
+		return fmt.Errorf("client db ent client is nil")
+	}
+	nodes, err := store.ent.ProcStateSnapshots.Query().
+		Where(bitfsprocstatesnapshots.CommandIDEQ(commandID)).
+		Order(bitfsprocstatesnapshots.ByID(entsql.OrderAsc())).
+		All(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	items := make([]stateSnapshotItem, 0, 4)
-	for rows.Next() {
-		it, err := scanStateSnapshotItem(rows)
-		if err != nil {
-			return err
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
-		return err
+	items := make([]stateSnapshotItem, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, stateSnapshotItemFromEnt(node))
 	}
 	*out = items
 	return nil
 }
 
-func loadEffectLogsByCommandID(ctx context.Context, db *sql.DB, commandID string, out *[]effectLogItem) error {
-	rows, err := QueryContext(ctx, db, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-		FROM proc_effect_logs WHERE command_id=? ORDER BY id ASC`, commandID)
+func loadEffectLogsByCommandIDEnt(ctx context.Context, store *clientDB, commandID string, out *[]effectLogItem) error {
+	if store == nil || store.ent == nil {
+		return fmt.Errorf("client db ent client is nil")
+	}
+	nodes, err := store.ent.ProcEffectLogs.Query().
+		Where(bitfsproceffectlogs.CommandIDEQ(commandID)).
+		Order(bitfsproceffectlogs.ByID(entsql.OrderAsc())).
+		All(ctx)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	items := make([]effectLogItem, 0, 4)
-	for rows.Next() {
-		it, err := scanEffectLogItem(rows)
-		if err != nil {
-			return err
-		}
-		items = append(items, it)
-	}
-	if err := rows.Err(); err != nil {
-		return err
+	items := make([]effectLogItem, 0, len(nodes))
+	for _, node := range nodes {
+		items = append(items, effectLogItemFromEnt(node))
 	}
 	*out = items
 	return nil
@@ -232,6 +229,24 @@ func dbListObservedGatewayTimeline(ctx context.Context, store *clientDB, f obser
 		out.Items = append(out.Items, observedGatewayTimelineItem{observedGatewayStateItem: item})
 	}
 	return out, nil
+}
+
+func gatewayEventItemFromEnt(node *gen.ProcGatewayEvents) gatewayEventItem {
+	if node == nil {
+		return gatewayEventItem{}
+	}
+	return gatewayEventItem{
+		ID:            int64(node.ID),
+		CreatedAtUnix: node.CreatedAtUnix,
+		GatewayPeerID: node.GatewayPubkeyHex,
+		CommandID:     node.CommandID,
+		Action:        node.Action,
+		MsgID:         node.MsgID,
+		SequenceNum:   uint32(node.SequenceNum),
+		PoolID:        node.PoolID,
+		AmountSatoshi: node.AmountSatoshi,
+		Payload:       json.RawMessage(node.PayloadJSON),
+	}
 }
 
 func dbGetObservedGatewayTimelineItem(ctx context.Context, store *clientDB, id int64) (observedGatewayTimelineItem, error) {

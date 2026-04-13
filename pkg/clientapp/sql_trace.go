@@ -12,9 +12,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"runtime"
+
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
-	"runtime"
 )
 
 type sqlTraceContextKey string

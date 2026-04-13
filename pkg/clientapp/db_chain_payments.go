@@ -20,6 +20,12 @@ type sqlConn interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
+// SQLConn 是客户端运行时对外暴露的最小 SQL 能力。
+// 设计说明：
+// - 只暴露能力，不暴露具体实现；
+// - 外部调用方只能拿这个能力做读写回调，不能直接碰 *sql.DB。
+type SQLConn = sqlConn
+
 // chainPaymentEntry fact_settlement_channel_chain_quote_pay 写入条目
 // 设计说明：链支付事实只走显式业务提交入口，后续写入都靠事实表主键收口。
 type chainPaymentEntry struct {
@@ -61,7 +67,7 @@ func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEn
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return dbUpsertChainPaymentDB(ctx, db, e)
 	})
 }
@@ -71,7 +77,7 @@ func dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx context.Context, store
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return dbUpsertChainPaymentWithSettlementPaymentAttemptDB(ctx, db, e)
 	})
 }
@@ -402,7 +408,7 @@ func dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx context.Context, sto
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, db, e,
 			"chain_direct_pay",
 			"fact_settlement_channel_chain_direct_pay",
@@ -416,7 +422,7 @@ func dbUpsertChainAssetCreateWithSettlementPaymentAttempt(ctx context.Context, s
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		return dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, db, e,
 			"chain_asset_create",
 			"fact_settlement_channel_chain_asset_create",
@@ -431,7 +437,7 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
 		txid = strings.ToLower(strings.TrimSpace(txid))
 		if txid == "" {
 			return 0, fmt.Errorf("txid is required")
@@ -450,7 +456,7 @@ func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool
 	if store == nil {
 		return false, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (bool, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (bool, error) {
 		var exists int
 		err := QueryRowContext(ctx, db, `SELECT 1 FROM fact_settlement_channel_chain_quote_pay WHERE id=?`, id).Scan(&exists)
 		if err == sql.ErrNoRows {
@@ -538,7 +544,7 @@ func recordChainPaymentAccountingAfterBroadcast(ctx context.Context, store Clien
 		return fmt.Errorf("parse tx hex: %w", err)
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		inputFacts, grossInput, err := collectWalletInputFactsTx(ctx, tx, parsed, txID, "chain_payment input")
 		if err != nil {
 			return err

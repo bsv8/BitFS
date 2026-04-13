@@ -299,7 +299,7 @@ func TestApplyLocalBroadcastWalletProjection_SQLTraceRepeatUpdateTop(t *testing.
 	roundID := "round-local-projection-trace"
 	trigger := "test_local_projection_trace"
 	ctx := sqlTraceContextWithMeta(context.Background(), roundID, trigger, "wallet_local_projection", "wallet_local_projection_test.runLocalProjectionTraceReplay")
-	if err := store.Tx(ctx, func(tx *sql.Tx) error {
+	if err := store.Tx(ctx, func(tx sqlConn) error {
 		if err := applyWalletUTXODiffTx(ctx, tx, current, desired, walletID, addr, now); err != nil {
 			return err
 		}

@@ -41,14 +41,6 @@ func TestGatewayEventsSchemaHasCommandIDAndIndex(t *testing.T) {
 		t.Fatalf("proc_gateway_events.command_id should be NOT NULL")
 	}
 
-	hasFK, err := tableHasForeignKey(db, "proc_gateway_events", "command_id", "proc_command_journal", "command_id")
-	if err != nil {
-		t.Fatalf("inspect proc_gateway_events foreign key failed: %v", err)
-	}
-	if !hasFK {
-		t.Fatalf("proc_gateway_events missing foreign key to proc_command_journal.command_id")
-	}
-
 	unique, err := tableHasUniqueIndexOnColumns(db, "proc_command_journal", []string{"command_id"})
 	if err != nil {
 		t.Fatalf("inspect proc_command_journal unique failed: %v", err)

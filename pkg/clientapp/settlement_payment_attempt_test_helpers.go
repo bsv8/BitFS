@@ -1,13 +1,12 @@
 package clientapp
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 	"testing"
 )
 
-func mustSettlementPaymentAttemptIDByChainPaymentID(t *testing.T, db *sql.DB, chainPaymentID int64) int64 {
+func mustSettlementPaymentAttemptIDByChainPaymentID(t *testing.T, db sqlConn, chainPaymentID int64) int64 {
 	t.Helper()
 	var paymentAttemptID int64
 	if err := db.QueryRow(`SELECT id FROM fact_settlement_payment_attempts WHERE source_type=? AND source_id=?`, "chain_quote_pay", fmt.Sprintf("%d", chainPaymentID)).Scan(&paymentAttemptID); err != nil {
@@ -16,7 +15,7 @@ func mustSettlementPaymentAttemptIDByChainPaymentID(t *testing.T, db *sql.DB, ch
 	return paymentAttemptID
 }
 
-func mustSettlementPaymentAttemptIDByPoolAllocationID(t *testing.T, db *sql.DB, allocationID string) int64 {
+func mustSettlementPaymentAttemptIDByPoolAllocationID(t *testing.T, db sqlConn, allocationID string) int64 {
 	t.Helper()
 	allocationID = strings.TrimSpace(allocationID)
 	var poolSessionID string

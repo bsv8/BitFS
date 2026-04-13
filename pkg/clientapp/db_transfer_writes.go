@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -28,7 +27,7 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	if err != nil {
 		return err
 	}
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		_, err := ExecContext(ctx, tx,
 			`INSERT INTO biz_demand_quotes(
 				demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
@@ -79,7 +78,7 @@ func dbRecordDemand(ctx context.Context, store ClientStore, demandID string, see
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)
 			 ON CONFLICT(demand_id) DO NOTHING`,
@@ -99,7 +98,7 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 	// - 只保存协议协商上下文（buyer/seller/seed_hash/price 等）
 	// - 不承载支付事实语义，不决定业务是否完成
 	// - 业务完成状态统一看 order_settlements
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
 			 VALUES(?,?,?,?,?,?,?,?,?,?)`,

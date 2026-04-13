@@ -6,6 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	bitfsproccommandjournal "github.com/bsv8/bitfs-contract/ent/v1/gen/proccommandjournal"
+	bitfsprocdomainevents "github.com/bsv8/bitfs-contract/ent/v1/gen/procdomainevents"
+	bitfsproceffectlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/proceffectlogs"
+	bitfsprocobservedgatewaystates "github.com/bsv8/bitfs-contract/ent/v1/gen/procobservedgatewaystates"
+	bitfsprocstatesnapshots "github.com/bsv8/bitfs-contract/ent/v1/gen/procstatesnapshots"
 )
 
 type commandJournalFilter struct {
@@ -158,326 +166,385 @@ func dbListCommandJournal(ctx context.Context, store *clientDB, f commandJournal
 	if store == nil {
 		return commandJournalPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (commandJournalPage, error) {
-		where := ""
-		args := make([]any, 0, 16)
-		if len(f.CommandTypes) > 0 {
-			where += " AND command_type IN (" + sqlPlaceholders(len(f.CommandTypes)) + ")"
-			for _, item := range f.CommandTypes {
-				args = append(args, item)
-			}
-		}
-		if f.CommandType != "" {
-			where += " AND command_type=?"
-			args = append(args, f.CommandType)
-		}
-		if f.GatewayPeerID != "" {
-			where += " AND gateway_pubkey_hex=?"
-			args = append(args, f.GatewayPeerID)
-		}
-		if f.Status != "" {
-			where += " AND status=?"
-			args = append(args, f.Status)
-		}
-		if f.CommandID != "" {
-			where += " AND command_id=?"
-			args = append(args, f.CommandID)
-		}
-		if f.TriggerKey != "" {
-			where += " AND trigger_key=?"
-			args = append(args, f.TriggerKey)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (error_message LIKE ? OR command_id LIKE ? OR requested_by LIKE ? OR state_before LIKE ? OR state_after LIKE ?)"
-			args = append(args, like, like, like, like, like)
-		}
-		var out commandJournalPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_command_journal WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return commandJournalPage{}, err
-		}
-		rows, err := QueryContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			FROM proc_command_journal WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return commandJournalPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]commandJournalItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanCommandJournalItem(rows)
-			if err != nil {
-				return commandJournalPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return commandJournalPage{}, err
-		}
-		return out, nil
-	})
+	if store.ent == nil {
+		return commandJournalPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcCommandJournal.Query()
+	if len(f.CommandTypes) > 0 {
+		q = q.Where(bitfsproccommandjournal.CommandTypeIn(f.CommandTypes...))
+	}
+	if f.CommandType != "" {
+		q = q.Where(bitfsproccommandjournal.CommandTypeEQ(f.CommandType))
+	}
+	if f.GatewayPeerID != "" {
+		q = q.Where(bitfsproccommandjournal.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	}
+	if f.Status != "" {
+		q = q.Where(bitfsproccommandjournal.StatusEQ(f.Status))
+	}
+	if f.CommandID != "" {
+		q = q.Where(bitfsproccommandjournal.CommandIDEQ(f.CommandID))
+	}
+	if f.TriggerKey != "" {
+		q = q.Where(bitfsproccommandjournal.TriggerKeyEQ(f.TriggerKey))
+	}
+	if f.Query != "" {
+		q = q.Where(bitfsproccommandjournal.Or(
+			bitfsproccommandjournal.ErrorMessageContainsFold(f.Query),
+			bitfsproccommandjournal.CommandIDContainsFold(f.Query),
+			bitfsproccommandjournal.RequestedByContainsFold(f.Query),
+			bitfsproccommandjournal.StateBeforeContainsFold(f.Query),
+			bitfsproccommandjournal.StateAfterContainsFold(f.Query),
+		))
+	}
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return commandJournalPage{}, err
+	}
+	nodes, err := q.Order(bitfsproccommandjournal.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+	if err != nil {
+		return commandJournalPage{}, err
+	}
+	out := commandJournalPage{
+		Total: total,
+		Items: make([]commandJournalItem, 0, len(nodes)),
+	}
+	for _, node := range nodes {
+		out.Items = append(out.Items, commandJournalItemFromEnt(node))
+	}
+	return out, nil
 }
 
 func dbGetCommandJournalItem(ctx context.Context, store *clientDB, id int64) (commandJournalItem, error) {
 	if store == nil {
 		return commandJournalItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (commandJournalItem, error) {
-		row := QueryRowContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			FROM proc_command_journal WHERE id=?`, id,
-		)
-		return scanCommandJournalItem(row)
-	})
+	if store.ent == nil {
+		return commandJournalItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	node, err := store.ent.ProcCommandJournal.Query().Where(bitfsproccommandjournal.IDEQ(int(id))).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return commandJournalItem{}, sql.ErrNoRows
+		}
+		return commandJournalItem{}, err
+	}
+	return commandJournalItemFromEnt(node), nil
 }
 
 func dbListDomainEvents(ctx context.Context, store *clientDB, f domainEventFilter) (domainEventPage, error) {
 	if store == nil {
 		return domainEventPage{}, fmt.Errorf("client db is nil")
 	}
-	// 这里是命令口径，只查 command 事实；历史 observed 旧行会在迁移阶段搬走。
-	return clientDBValue(ctx, store, func(db *sql.DB) (domainEventPage, error) {
-		where := ""
-		args := make([]any, 0, 4)
-		if f.CommandID != "" {
-			where += " AND command_id=?"
-			args = append(args, f.CommandID)
-		}
-		if f.GatewayPeerID != "" {
-			where += " AND gateway_pubkey_hex=?"
-			args = append(args, f.GatewayPeerID)
-		}
-		if f.EventName != "" {
-			where += " AND event_name=?"
-			args = append(args, f.EventName)
-		}
-		var out domainEventPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_domain_events WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return domainEventPage{}, err
-		}
-		rows, err := QueryContext(ctx, db, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM proc_domain_events WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
-		if err != nil {
-			return domainEventPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]domainEventItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanDomainEventItem(rows)
-			if err != nil {
-				return domainEventPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return domainEventPage{}, err
-		}
-		return out, nil
-	})
+	if store.ent == nil {
+		return domainEventPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcDomainEvents.Query()
+	if f.CommandID != "" {
+		q = q.Where(bitfsprocdomainevents.CommandIDEQ(f.CommandID))
+	}
+	if f.GatewayPeerID != "" {
+		q = q.Where(bitfsprocdomainevents.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	}
+	if f.EventName != "" {
+		q = q.Where(bitfsprocdomainevents.EventNameEQ(f.EventName))
+	}
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return domainEventPage{}, err
+	}
+	nodes, err := q.Order(bitfsprocdomainevents.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+	if err != nil {
+		return domainEventPage{}, err
+	}
+	out := domainEventPage{
+		Total: total,
+		Items: make([]domainEventItem, 0, len(nodes)),
+	}
+	for _, node := range nodes {
+		out.Items = append(out.Items, domainEventItemFromEnt(node))
+	}
+	return out, nil
 }
 
 func dbGetDomainEventItem(ctx context.Context, store *clientDB, id int64) (domainEventItem, error) {
 	if store == nil {
 		return domainEventItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (domainEventItem, error) {
-		row := QueryRowContext(ctx, db, `SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json FROM proc_domain_events WHERE id=?`, id)
-		return scanDomainEventItem(row)
-	})
+	if store.ent == nil {
+		return domainEventItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	node, err := store.ent.ProcDomainEvents.Query().Where(bitfsprocdomainevents.IDEQ(int(id))).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return domainEventItem{}, sql.ErrNoRows
+		}
+		return domainEventItem{}, err
+	}
+	return domainEventItemFromEnt(node), nil
 }
 
 func dbListStateSnapshots(ctx context.Context, store *clientDB, f stateSnapshotFilter) (stateSnapshotPage, error) {
 	if store == nil {
 		return stateSnapshotPage{}, fmt.Errorf("client db is nil")
 	}
-	// 这里是命令口径，只查 command 事实；历史 observed 旧行会在迁移阶段搬走。
-	return clientDBValue(ctx, store, func(db *sql.DB) (stateSnapshotPage, error) {
-		where := ""
-		args := make([]any, 0, 4)
-		if f.CommandID != "" {
-			where += " AND command_id=?"
-			args = append(args, f.CommandID)
-		}
-		if f.GatewayPeerID != "" {
-			where += " AND gateway_pubkey_hex=?"
-			args = append(args, f.GatewayPeerID)
-		}
-		if f.State != "" {
-			where += " AND state=?"
-			args = append(args, f.State)
-		}
-		var out stateSnapshotPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_state_snapshots WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return stateSnapshotPage{}, err
-		}
-		rows, err := QueryContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM proc_state_snapshots WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return stateSnapshotPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]stateSnapshotItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanStateSnapshotItem(rows)
-			if err != nil {
-				return stateSnapshotPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return stateSnapshotPage{}, err
-		}
-		return out, nil
-	})
+	if store.ent == nil {
+		return stateSnapshotPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcStateSnapshots.Query()
+	if f.CommandID != "" {
+		q = q.Where(bitfsprocstatesnapshots.CommandIDEQ(f.CommandID))
+	}
+	if f.GatewayPeerID != "" {
+		q = q.Where(bitfsprocstatesnapshots.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	}
+	if f.State != "" {
+		q = q.Where(bitfsprocstatesnapshots.StateEQ(f.State))
+	}
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return stateSnapshotPage{}, err
+	}
+	nodes, err := q.Order(bitfsprocstatesnapshots.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+	if err != nil {
+		return stateSnapshotPage{}, err
+	}
+	out := stateSnapshotPage{
+		Total: total,
+		Items: make([]stateSnapshotItem, 0, len(nodes)),
+	}
+	for _, node := range nodes {
+		out.Items = append(out.Items, stateSnapshotItemFromEnt(node))
+	}
+	return out, nil
 }
 
 func dbGetStateSnapshotItem(ctx context.Context, store *clientDB, id int64) (stateSnapshotItem, error) {
 	if store == nil {
 		return stateSnapshotItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (stateSnapshotItem, error) {
-		row := QueryRowContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM proc_state_snapshots WHERE id=?`, id,
-		)
-		return scanStateSnapshotItem(row)
-	})
+	if store.ent == nil {
+		return stateSnapshotItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	node, err := store.ent.ProcStateSnapshots.Query().Where(bitfsprocstatesnapshots.IDEQ(int(id))).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return stateSnapshotItem{}, sql.ErrNoRows
+		}
+		return stateSnapshotItem{}, err
+	}
+	return stateSnapshotItemFromEnt(node), nil
 }
 
 func dbListObservedGatewayStates(ctx context.Context, store *clientDB, f observedGatewayStateFilter) (observedGatewayStatePage, error) {
 	if store == nil {
 		return observedGatewayStatePage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (observedGatewayStatePage, error) {
-		where := ""
-		args := make([]any, 0, 4)
-		if f.GatewayPeerID != "" {
-			where += " AND gateway_pubkey_hex=?"
-			args = append(args, f.GatewayPeerID)
-		}
-		if f.SourceRef != "" {
-			where += " AND source_ref=?"
-			args = append(args, f.SourceRef)
-		}
-		if f.EventName != "" {
-			where += " AND event_name=?"
-			args = append(args, f.EventName)
-		}
-		if f.State != "" {
-			where += " AND state_after=?"
-			args = append(args, f.State)
-		}
-		var out observedGatewayStatePage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_observed_gateway_states WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return observedGatewayStatePage{}, err
-		}
-		rows, err := QueryContext(ctx, db, 
-			`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM proc_observed_gateway_states WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return observedGatewayStatePage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]observedGatewayStateItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanObservedGatewayStateItem(rows)
-			if err != nil {
-				return observedGatewayStatePage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return observedGatewayStatePage{}, err
-		}
-		return out, nil
-	})
+	if store.ent == nil {
+		return observedGatewayStatePage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcObservedGatewayStates.Query()
+	if f.GatewayPeerID != "" {
+		q = q.Where(bitfsprocobservedgatewaystates.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	}
+	if f.SourceRef != "" {
+		q = q.Where(bitfsprocobservedgatewaystates.SourceRefEQ(f.SourceRef))
+	}
+	if f.EventName != "" {
+		q = q.Where(bitfsprocobservedgatewaystates.EventNameEQ(f.EventName))
+	}
+	if f.State != "" {
+		q = q.Where(bitfsprocobservedgatewaystates.StateAfterEQ(f.State))
+	}
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return observedGatewayStatePage{}, err
+	}
+	nodes, err := q.Order(bitfsprocobservedgatewaystates.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+	if err != nil {
+		return observedGatewayStatePage{}, err
+	}
+	out := observedGatewayStatePage{
+		Total: total,
+		Items: make([]observedGatewayStateItem, 0, len(nodes)),
+	}
+	for _, node := range nodes {
+		out.Items = append(out.Items, observedGatewayStateItemFromEnt(node))
+	}
+	return out, nil
 }
 
 func dbGetObservedGatewayStateItem(ctx context.Context, store *clientDB, id int64) (observedGatewayStateItem, error) {
 	if store == nil {
 		return observedGatewayStateItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (observedGatewayStateItem, error) {
-		row := QueryRowContext(ctx, db, 
-			`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			FROM proc_observed_gateway_states WHERE id=?`, id,
-		)
-		return scanObservedGatewayStateItem(row)
-	})
+	if store.ent == nil {
+		return observedGatewayStateItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	node, err := store.ent.ProcObservedGatewayStates.Query().Where(bitfsprocobservedgatewaystates.IDEQ(int(id))).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return observedGatewayStateItem{}, sql.ErrNoRows
+		}
+		return observedGatewayStateItem{}, err
+	}
+	return observedGatewayStateItemFromEnt(node), nil
 }
 
 func dbListEffectLogs(ctx context.Context, store *clientDB, f effectLogFilter) (effectLogPage, error) {
 	if store == nil {
 		return effectLogPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (effectLogPage, error) {
-		where := ""
-		args := make([]any, 0, 6)
-		if f.CommandID != "" {
-			where += " AND command_id=?"
-			args = append(args, f.CommandID)
-		}
-		if f.GatewayPeerID != "" {
-			where += " AND gateway_pubkey_hex=?"
-			args = append(args, f.GatewayPeerID)
-		}
-		if f.EffectType != "" {
-			where += " AND effect_type=?"
-			args = append(args, f.EffectType)
-		}
-		if f.Stage != "" {
-			where += " AND stage=?"
-			args = append(args, f.Stage)
-		}
-		if f.Status != "" {
-			where += " AND status=?"
-			args = append(args, f.Status)
-		}
-		var out effectLogPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_effect_logs WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return effectLogPage{}, err
-		}
-		rows, err := QueryContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-			FROM proc_effect_logs WHERE 1=1`+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return effectLogPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]effectLogItem, 0, f.Limit)
-		for rows.Next() {
-			it, err := scanEffectLogItem(rows)
-			if err != nil {
-				return effectLogPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return effectLogPage{}, err
-		}
-		return out, nil
-	})
+	if store.ent == nil {
+		return effectLogPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcEffectLogs.Query()
+	if f.CommandID != "" {
+		q = q.Where(bitfsproceffectlogs.CommandIDEQ(f.CommandID))
+	}
+	if f.GatewayPeerID != "" {
+		q = q.Where(bitfsproceffectlogs.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	}
+	if f.EffectType != "" {
+		q = q.Where(bitfsproceffectlogs.EffectTypeEQ(f.EffectType))
+	}
+	if f.Stage != "" {
+		q = q.Where(bitfsproceffectlogs.StageEQ(f.Stage))
+	}
+	if f.Status != "" {
+		q = q.Where(bitfsproceffectlogs.StatusEQ(f.Status))
+	}
+	total, err := q.Clone().Count(ctx)
+	if err != nil {
+		return effectLogPage{}, err
+	}
+	nodes, err := q.Order(bitfsproceffectlogs.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+	if err != nil {
+		return effectLogPage{}, err
+	}
+	out := effectLogPage{
+		Total: total,
+		Items: make([]effectLogItem, 0, len(nodes)),
+	}
+	for _, node := range nodes {
+		out.Items = append(out.Items, effectLogItemFromEnt(node))
+	}
+	return out, nil
 }
 
 func dbGetEffectLogItem(ctx context.Context, store *clientDB, id int64) (effectLogItem, error) {
 	if store == nil {
 		return effectLogItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (effectLogItem, error) {
-		row := QueryRowContext(ctx, db, 
-			`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-			FROM proc_effect_logs WHERE id=?`, id,
-		)
-		return scanEffectLogItem(row)
-	})
+	if store.ent == nil {
+		return effectLogItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	node, err := store.ent.ProcEffectLogs.Query().Where(bitfsproceffectlogs.IDEQ(int(id))).Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return effectLogItem{}, sql.ErrNoRows
+		}
+		return effectLogItem{}, err
+	}
+	return effectLogItemFromEnt(node), nil
+}
+
+func commandJournalItemFromEnt(node *gen.ProcCommandJournal) commandJournalItem {
+	if node == nil {
+		return commandJournalItem{}
+	}
+	return commandJournalItem{
+		ID:            int64(node.ID),
+		CreatedAtUnix: node.CreatedAtUnix,
+		CommandID:     node.CommandID,
+		CommandType:   node.CommandType,
+		GatewayPeerID: node.GatewayPubkeyHex,
+		AggregateID:   node.AggregateID,
+		RequestedBy:   node.RequestedBy,
+		RequestedAt:   node.RequestedAtUnix,
+		Accepted:      node.Accepted != 0,
+		Status:        node.Status,
+		ErrorCode:     node.ErrorCode,
+		ErrorMessage:  node.ErrorMessage,
+		StateBefore:   node.StateBefore,
+		StateAfter:    node.StateAfter,
+		DurationMS:    node.DurationMs,
+		TriggerKey:    node.TriggerKey,
+		Payload:       json.RawMessage(node.PayloadJSON),
+		Result:        json.RawMessage(node.ResultJSON),
+	}
+}
+
+func domainEventItemFromEnt(node *gen.ProcDomainEvents) domainEventItem {
+	if node == nil {
+		return domainEventItem{}
+	}
+	return domainEventItem{
+		ID:            int64(node.ID),
+		CreatedAtUnix: node.CreatedAtUnix,
+		CommandID:     node.CommandID,
+		GatewayPeerID: node.GatewayPubkeyHex,
+		EventName:     node.EventName,
+		StateBefore:   node.StateBefore,
+		StateAfter:    node.StateAfter,
+		Payload:       json.RawMessage(node.PayloadJSON),
+	}
+}
+
+func stateSnapshotItemFromEnt(node *gen.ProcStateSnapshots) stateSnapshotItem {
+	if node == nil {
+		return stateSnapshotItem{}
+	}
+	return stateSnapshotItem{
+		ID:            int64(node.ID),
+		CreatedAtUnix: node.CreatedAtUnix,
+		CommandID:     node.CommandID,
+		GatewayPeerID: node.GatewayPubkeyHex,
+		State:         node.State,
+		PauseReason:   node.PauseReason,
+		PauseNeedSat:  uint64(node.PauseNeedSatoshi),
+		PauseHaveSat:  uint64(node.PauseHaveSatoshi),
+		LastError:     node.LastError,
+		Payload:       json.RawMessage(node.PayloadJSON),
+	}
+}
+
+func observedGatewayStateItemFromEnt(node *gen.ProcObservedGatewayStates) observedGatewayStateItem {
+	if node == nil {
+		return observedGatewayStateItem{}
+	}
+	return observedGatewayStateItem{
+		ID:             int64(node.ID),
+		CreatedAtUnix:  node.CreatedAtUnix,
+		GatewayPeerID:  node.GatewayPubkeyHex,
+		SourceRef:      node.SourceRef,
+		ObservedAtUnix: node.ObservedAtUnix,
+		EventName:      node.EventName,
+		StateBefore:    node.StateBefore,
+		StateAfter:     node.StateAfter,
+		PauseReason:    node.PauseReason,
+		PauseNeedSat:   uint64(node.PauseNeedSatoshi),
+		PauseHaveSat:   uint64(node.PauseHaveSatoshi),
+		LastError:      node.LastError,
+		Payload:        json.RawMessage(node.PayloadJSON),
+	}
+}
+
+func effectLogItemFromEnt(node *gen.ProcEffectLogs) effectLogItem {
+	if node == nil {
+		return effectLogItem{}
+	}
+	return effectLogItem{
+		ID:            int64(node.ID),
+		CreatedAtUnix: node.CreatedAtUnix,
+		CommandID:     node.CommandID,
+		GatewayPeerID: node.GatewayPubkeyHex,
+		EffectType:    node.EffectType,
+		Stage:         node.Stage,
+		Status:        node.Status,
+		ErrorMessage:  node.ErrorMessage,
+		Payload:       json.RawMessage(node.PayloadJSON),
+	}
 }
 
 type scanCommandJournal interface {

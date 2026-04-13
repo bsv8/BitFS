@@ -639,11 +639,15 @@ func (d *managedDaemon) systemHomepageBootstrapHook() func(ctx context.Context, 
 		if store == nil {
 			return fmt.Errorf("runtime db not ready for system homepage bootstrap")
 		}
-		return store.Do(ctx, func(db *sql.DB) error {
-			if err := d.systemHomepage.ApplySeedMetadata(db); err != nil {
+		return store.Do(ctx, func(db clientapp.SQLConn) error {
+			rawDB, ok := db.(*sql.DB)
+			if !ok {
+				return fmt.Errorf("runtime db must be *sql.DB")
+			}
+			if err := d.systemHomepage.ApplySeedMetadata(rawDB); err != nil {
 				return err
 			}
-			return d.systemHomepage.EnsureSeedPrices(db, resaleDiscountBPS)
+			return d.systemHomepage.EnsureSeedPrices(rawDB, resaleDiscountBPS)
 		})
 	}
 }

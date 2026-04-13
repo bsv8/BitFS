@@ -16,7 +16,7 @@ func dbLoadChainTipState(ctx context.Context, store *clientDB) (chainTipState, e
 	if store == nil {
 		return chainTipState{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (chainTipState, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (chainTipState, error) {
 		var s chainTipState
 		err := QueryRowContext(ctx, db, `SELECT tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM proc_chain_tip_state WHERE id=1`).Scan(
 			&s.TipHeight, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS,
@@ -32,7 +32,7 @@ func dbUpsertChainTipState(ctx context.Context, store *clientDB, tip uint32, las
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		// 链高度在 DB 层按 signed integer 落库，避免把 uint32 原样送进 driver。
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
@@ -69,7 +69,7 @@ func dbResetWalletUTXOSyncStateOnStartup(ctx context.Context, store *clientDB) e
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`UPDATE wallet_utxo_sync_state SET
 				last_error='',
@@ -92,7 +92,7 @@ func dbLoadWalletUTXOSyncState(ctx context.Context, store *clientDB, address str
 	if address == "" {
 		return walletUTXOSyncState{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOSyncState, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOSyncState, error) {
 		var s walletUTXOSyncState
 		err := QueryRowContext(ctx, db,
 			`SELECT wallet_id,address,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status FROM wallet_utxo_sync_state WHERE address=?`,
@@ -113,7 +113,7 @@ func dbLoadWalletUTXOSyncCursor(ctx context.Context, store *clientDB, address st
 	if address == "" {
 		return walletUTXOSyncCursor{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOSyncCursor, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOSyncCursor, error) {
 		var s walletUTXOSyncCursor
 		err := QueryRowContext(ctx, db,
 			`SELECT wallet_id,address,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error
@@ -137,7 +137,7 @@ func dbLoadWalletUTXOAggregate(ctx context.Context, store *clientDB, address str
 		return stats, fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOAggregateStats, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOAggregateStats, error) {
 		rows, err := QueryContext(ctx, db,
 			`SELECT script_type,COUNT(1),COALESCE(SUM(value_satoshi),0)
 			 FROM wallet_utxo
@@ -190,7 +190,7 @@ func dbUpdateWalletUTXOSyncStateError(ctx context.Context, store *clientDB, addr
 		errMsg = err.Error()
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		zeroCount := int64(0)
 		lastHTTPStatus := int64(httpStatus)
 		_, execErr := ExecContext(ctx, db,
@@ -226,7 +226,7 @@ func dbUpdateWalletUTXOSyncCursorError(ctx context.Context, store *clientDB, add
 	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		zeroInt64 := int64(0)
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO wallet_utxo_sync_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)

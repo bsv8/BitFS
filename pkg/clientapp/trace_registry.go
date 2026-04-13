@@ -1,8 +1,11 @@
 package clientapp
 
-import contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-import contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
-import oldproto "github.com/golang/protobuf/proto"
+import (
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
+
+	oldproto "github.com/golang/protobuf/proto"
+)
 
 // NewTraceProtoMessage 为调试工具提供 client 私有 protobuf 类型实例。
 // 设计说明：

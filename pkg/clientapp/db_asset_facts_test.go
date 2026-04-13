@@ -1203,15 +1203,15 @@ func TestSettlementRecordBasic(t *testing.T) {
 
 	// 写入 BSV 结算记录
 	record := settlementRecordEntry{
-		RecordID:          "rec_bsv_001",
+		RecordID:                   "rec_bsv_001",
 		SettlementPaymentAttemptID: paymentAttemptDBID,
-		AssetType:         "BSV",
-		OwnerPubkeyHex:    ownerPubkey,
-		SourceUTXOID:      "tx_input_001:0",
-		UsedSatoshi:       5000,
-		State:             "confirmed",
-		OccurredAtUnix:    now,
-		Note:              "test bsv record",
+		AssetType:                  "BSV",
+		OwnerPubkeyHex:             ownerPubkey,
+		SourceUTXOID:               "tx_input_001:0",
+		UsedSatoshi:                5000,
+		State:                      "confirmed",
+		OccurredAtUnix:             now,
+		Note:                       "test bsv record",
 	}
 	if err := dbAppendSettlementRecord(ctx, store, record); err != nil {
 		t.Fatalf("append settlement record: %v", err)

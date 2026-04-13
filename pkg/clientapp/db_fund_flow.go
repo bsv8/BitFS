@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -85,7 +84,7 @@ func dbListWalletFundFlows(ctx context.Context, store *clientDB, f walletFundFlo
 	if store == nil {
 		return walletFundFlowPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletFundFlowPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (walletFundFlowPage, error) {
 		args := make([]any, 0, 12)
 		where := ""
 
@@ -262,7 +261,7 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 	if store == nil {
 		return walletFundFlowItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (walletFundFlowItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (walletFundFlowItem, error) {
 		var out walletFundFlowItem
 		var src unionSource
 
@@ -299,7 +298,7 @@ func dbGetWalletFundFlowItem(ctx context.Context, store *clientDB, refID string,
 // - 只支持新 schema 的 flow_type：chain_bsv_in, chain_bsv_out, chain_token_in
 // - 从 fact_bsv_utxos 和 fact_token_lots 查询
 // - 使用 ref_id（文本）替代 id（int64），因为新表使用 utxo_id/lot_id 作为主键
-func queryUnionSourceByRefID(ctx context.Context, db *sql.DB, refID string, flowType string, src *unionSource) error {
+func queryUnionSourceByRefID(ctx context.Context, db sqlConn, refID string, flowType string, src *unionSource) error {
 	var err error
 	switch flowType {
 	case "chain_bsv_in":

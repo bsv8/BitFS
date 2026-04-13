@@ -262,15 +262,15 @@ func TestCheckConfirmedBSVSpendConsistency_RepairByCycle(t *testing.T) {
 		t.Fatalf("lookup settlement payment attempt failed: %v", err)
 	}
 	if err := dbAppendSettlementRecord(ctx, store, settlementRecordEntry{
-		RecordID:          "rec_repair_" + txid,
+		RecordID:                   "rec_repair_" + txid,
 		SettlementPaymentAttemptID: paymentAttemptID,
-		AssetType:         "BSV",
-		OwnerPubkeyHex:    walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
-		SourceUTXOID:      utxoID,
-		UsedSatoshi:       1200,
-		State:             "confirmed",
-		OccurredAtUnix:    now,
-		Note:              "repair seed",
+		AssetType:                  "BSV",
+		OwnerPubkeyHex:             walletIDByAddress("mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf"),
+		SourceUTXOID:               utxoID,
+		UsedSatoshi:                1200,
+		State:                      "confirmed",
+		OccurredAtUnix:             now,
+		Note:                       "repair seed",
 	}); err != nil {
 		t.Fatalf("seed settlement record failed: %v", err)
 	}

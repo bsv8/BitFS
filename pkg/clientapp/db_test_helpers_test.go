@@ -27,12 +27,12 @@ func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-// initIndexDB 保留给现有测试调用，生产代码请直接走 ensureClientDBSchema。
+// initIndexDB 保留给现有测试调用，底层已经切到 contract 的 ent schema。
 func initIndexDB(db *sql.DB) error {
 	return initIndexDBCtx(context.Background(), db)
 }
 
-// ensureClientDBBaseSchema 保留给部分 schema 测试调用。
+// ensureClientDBBaseSchema 保留给部分 schema 测试调用，实际执行同一套 ent 建表。
 func ensureClientDBBaseSchema(db *sql.DB) error {
 	return ensureClientDBBaseSchemaCtx(context.Background(), db)
 }

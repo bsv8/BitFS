@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 )
 
@@ -19,7 +18,7 @@ func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*clientDB
 	return fn(store)
 }
 
-func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(*sql.DB) error) error {
+func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(sqlConn) error) error {
 	store := schedulerStore(s)
 	if store == nil {
 		return nil
@@ -37,7 +36,7 @@ func httpStore(s *httpAPIServer) *clientDB {
 	// 仅兼容旧测试夹具：很多单测直接构造 httpAPIServer{db:...}。
 	// 运行时主路径已在 run.go 注入 store，这里不走 newClientDB，避免新增构造入口。
 	if s.db != nil {
-		return &clientDB{db: s.db}
+		return clientDBFromDB(s.db)
 	}
 	return nil
 }

@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 )
@@ -115,7 +114,7 @@ func finalizeDomainRegisterSettlement(
 		status = "failed"
 	}
 
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`UPDATE order_settlements SET settlement_status=?, target_type='chain_quote_pay', target_id=?, error_message=?, updated_at_unix=strftime('%s','now') WHERE settlement_id=?`,
 			status,

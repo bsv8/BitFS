@@ -18,7 +18,7 @@ func dbStoreInboxMessage(ctx context.Context, store *clientDB, messageID, sender
 	if store == nil {
 		return ncall.CallResp{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (ncall.CallResp, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (ncall.CallResp, error) {
 		now := time.Now().Unix()
 		result, err := ExecContext(ctx, db,
 			`INSERT INTO proc_inbox_messages(message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix)
@@ -70,7 +70,7 @@ func dbPersistLiveFollowStatus(ctx context.Context, store *clientDB, st LiveFoll
 	if b, err := json.Marshal(st.LastDecision); err == nil {
 		decisionJSON = string(b)
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db, `INSERT INTO proc_live_follows(
 			stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
 		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
@@ -107,7 +107,7 @@ func dbLoadLiveFollowStatus(ctx context.Context, store *clientDB, streamID strin
 	if store == nil {
 		return LiveFollowStatus{}, false, nil
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (LiveFollowStatus, error) {
+	out, err := clientDBValue(ctx, store, func(db sqlConn) (LiveFollowStatus, error) {
 		var st LiveFollowStatus
 		var decisionJSON string
 		err := QueryRowContext(ctx, db, `SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
@@ -146,7 +146,7 @@ func dbListRunningLiveFollowStatuses(ctx context.Context, store *clientDB) ([]Li
 	if store == nil {
 		return nil, nil
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]LiveFollowStatus, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]LiveFollowStatus, error) {
 		rows, err := QueryContext(ctx, db, `SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
 			FROM proc_live_follows WHERE status='running' ORDER BY updated_at_unix ASC`)
 		if err != nil {
@@ -191,7 +191,7 @@ func dbLoadCachedNodeReachability(ctx context.Context, store *clientDB, targetNo
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (broadcastmodule.NodeReachabilityAnnouncement, error) {
+	out, err := clientDBValue(ctx, store, func(db sqlConn) (broadcastmodule.NodeReachabilityAnnouncement, error) {
 		var (
 			sourceGatewayPubkeyHex string
 			headHeight             uint64
@@ -243,7 +243,7 @@ func dbSaveNodeReachabilityCache(ctx context.Context, store *clientDB, sourceGat
 	if err != nil {
 		return err
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		now := time.Now().Unix()
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_node_reachability_cache(
@@ -276,7 +276,7 @@ func dbSaveSelfNodeReachabilityState(ctx context.Context, store *clientDB, state
 	if store == nil {
 		return nil
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_self_node_reachability_state(node_pubkey_hex,head_height,seq,updated_at_unix) VALUES(?,?,?,?)
 			 ON CONFLICT(node_pubkey_hex) DO UPDATE SET
@@ -296,7 +296,7 @@ func dbLoadSelfNodeReachabilityState(ctx context.Context, store *clientDB, nodeP
 	if store == nil {
 		return selfNodeReachabilityState{}, false, nil
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (selfNodeReachabilityState, error) {
+	out, err := clientDBValue(ctx, store, func(db sqlConn) (selfNodeReachabilityState, error) {
 		var out selfNodeReachabilityState
 		err := QueryRowContext(ctx, db, `SELECT node_pubkey_hex,head_height,seq FROM proc_self_node_reachability_state WHERE node_pubkey_hex=?`, strings.ToLower(strings.TrimSpace(nodePubkeyHex))).Scan(
 			&out.NodePubkeyHex,

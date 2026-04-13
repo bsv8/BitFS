@@ -59,10 +59,15 @@ func TestInitIndexDB_CreatesOrdersTable(t *testing.T) {
 		}
 	}
 
-	// 验证主键约束
+	// 验证主键和业务唯一键
 	pks := tablePrimaryKeyColumns(t, db, "orders")
-	if !containsString(pks, "order_id") {
-		t.Fatal("order_id should be PRIMARY KEY")
+	if !containsString(pks, "id") {
+		t.Fatal("id should be PRIMARY KEY")
+	}
+	if unique, err := tableHasUniqueIndexOnColumns(db, "orders", []string{"order_id"}); err != nil {
+		t.Fatalf("check order_id unique constraint failed: %v", err)
+	} else if !unique {
+		t.Fatal("order_id should be UNIQUE")
 	}
 }
 
@@ -194,10 +199,10 @@ func TestInitIndexDB_CreatesOrderSettlementsTable(t *testing.T) {
 		}
 	}
 
-	// 验证主键约束
+	// 验证主键和业务唯一键
 	pks := tablePrimaryKeyColumns(t, db, "order_settlements")
-	if !containsString(pks, "settlement_id") {
-		t.Fatal("settlement_id should be PRIMARY KEY")
+	if !containsString(pks, "id") {
+		t.Fatal("id should be PRIMARY KEY")
 	}
 	if hasUnique, err := tableHasUniqueIndexOnColumns(db, "order_settlements", []string{"settlement_id"}); err != nil {
 		t.Fatalf("check settlement_id unique constraint failed: %v", err)

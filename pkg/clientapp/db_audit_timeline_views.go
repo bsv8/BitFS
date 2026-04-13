@@ -49,19 +49,27 @@ func ListCommandAuditTimeline(ctx context.Context, store *clientDB, f AuditTimel
 // 设计说明：
 // - 运行时主路径统一传入 store 能力，不再让业务直接创建 db 适配器；
 // - 这里保留 DB 版本是为了避免跨仓改动耦合，不参与运行时依赖组装。
-func ListGatewayAuditTimelineDB(ctx context.Context, db *sql.DB, f AuditTimelineFilter) (AuditTimelinePage, error) {
+func ListGatewayAuditTimelineDB(ctx context.Context, db sqlConn, f AuditTimelineFilter) (AuditTimelinePage, error) {
 	if db == nil {
 		return AuditTimelinePage{}, fmt.Errorf("db is nil")
 	}
-	return dbListGatewayAuditTimeline(ctx, &clientDB{db: db}, f)
+	rawDB, ok := db.(*sql.DB)
+	if !ok {
+		return AuditTimelinePage{}, fmt.Errorf("db must be *sql.DB")
+	}
+	return dbListGatewayAuditTimeline(ctx, clientDBFromDB(rawDB), f)
 }
 
 // ListCommandAuditTimelineDB 仅给仓外调用方（如 e2e 协调层）保留的兼容入口。
-func ListCommandAuditTimelineDB(ctx context.Context, db *sql.DB, f AuditTimelineFilter) (AuditTimelinePage, error) {
+func ListCommandAuditTimelineDB(ctx context.Context, db sqlConn, f AuditTimelineFilter) (AuditTimelinePage, error) {
 	if db == nil {
 		return AuditTimelinePage{}, fmt.Errorf("db is nil")
 	}
-	return dbListCommandAuditTimeline(ctx, &clientDB{db: db}, f)
+	rawDB, ok := db.(*sql.DB)
+	if !ok {
+		return AuditTimelinePage{}, fmt.Errorf("db must be *sql.DB")
+	}
+	return dbListCommandAuditTimeline(ctx, clientDBFromDB(rawDB), f)
 }
 
 func dbListGatewayAuditTimeline(ctx context.Context, store *clientDB, f AuditTimelineFilter) (AuditTimelinePage, error) {
@@ -72,30 +80,28 @@ func dbListGatewayAuditTimeline(ctx context.Context, store *clientDB, f AuditTim
 	if gatewayPubkeyHex == "" {
 		return AuditTimelinePage{}, fmt.Errorf("gateway_pubkey_hex is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (AuditTimelinePage, error) {
-		items := make([]AuditTimelineItem, 0, 32)
-		var err error
-		if items, err = appendGatewayAuditTimelineFromCommandJournal(ctx, db, gatewayPubkeyHex, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendGatewayAuditTimelineFromGatewayEvents(ctx, db, gatewayPubkeyHex, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendGatewayAuditTimelineFromDomainEvents(ctx, db, gatewayPubkeyHex, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendGatewayAuditTimelineFromStateSnapshots(ctx, db, gatewayPubkeyHex, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendGatewayAuditTimelineFromEffectLogs(ctx, db, gatewayPubkeyHex, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendGatewayAuditTimelineFromObservedStates(ctx, db, gatewayPubkeyHex, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		sortAuditTimelineItems(items)
-		return pageAuditTimelineItems(items, f.Limit, f.Offset), nil
-	})
+	items := make([]AuditTimelineItem, 0, 32)
+	var err error
+	if items, err = appendGatewayAuditTimelineFromCommandJournal(ctx, store, gatewayPubkeyHex, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendGatewayAuditTimelineFromGatewayEvents(ctx, store, gatewayPubkeyHex, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendGatewayAuditTimelineFromDomainEvents(ctx, store, gatewayPubkeyHex, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendGatewayAuditTimelineFromStateSnapshots(ctx, store, gatewayPubkeyHex, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendGatewayAuditTimelineFromEffectLogs(ctx, store, gatewayPubkeyHex, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendGatewayAuditTimelineFromObservedStates(ctx, store, gatewayPubkeyHex, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	sortAuditTimelineItems(items)
+	return pageAuditTimelineItems(items, f.Limit, f.Offset), nil
 }
 
 func dbListCommandAuditTimeline(ctx context.Context, store *clientDB, f AuditTimelineFilter) (AuditTimelinePage, error) {
@@ -106,293 +112,161 @@ func dbListCommandAuditTimeline(ctx context.Context, store *clientDB, f AuditTim
 	if commandID == "" {
 		return AuditTimelinePage{}, fmt.Errorf("command_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (AuditTimelinePage, error) {
-		if _, _, err := loadCommandAuditTimelineRoot(ctx, db, commandID); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		items := make([]AuditTimelineItem, 0, 32)
-		var err error
-		if items, err = appendCommandAuditTimelineFromCommandJournal(ctx, db, commandID, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendCommandAuditTimelineFromGatewayEvents(ctx, db, commandID, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendCommandAuditTimelineFromDomainEvents(ctx, db, commandID, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendCommandAuditTimelineFromStateSnapshots(ctx, db, commandID, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		if items, err = appendCommandAuditTimelineFromEffectLogs(ctx, db, commandID, items); err != nil {
-			return AuditTimelinePage{}, err
-		}
-		sortAuditTimelineItems(items)
-		return pageAuditTimelineItems(items, f.Limit, f.Offset), nil
-	})
+	if _, _, err := loadCommandAuditTimelineRoot(ctx, store, commandID); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	items := make([]AuditTimelineItem, 0, 32)
+	var err error
+	if items, err = appendCommandAuditTimelineFromCommandJournal(ctx, store, commandID, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendCommandAuditTimelineFromGatewayEvents(ctx, store, commandID, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendCommandAuditTimelineFromDomainEvents(ctx, store, commandID, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendCommandAuditTimelineFromStateSnapshots(ctx, store, commandID, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	if items, err = appendCommandAuditTimelineFromEffectLogs(ctx, store, commandID, items); err != nil {
+		return AuditTimelinePage{}, err
+	}
+	sortAuditTimelineItems(items)
+	return pageAuditTimelineItems(items, f.Limit, f.Offset), nil
 }
 
-func appendGatewayAuditTimelineFromCommandJournal(ctx context.Context, db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-		 FROM proc_command_journal WHERE gateway_pubkey_hex=?`,
-		gatewayPubkeyHex,
-	)
+func appendGatewayAuditTimelineFromCommandJournal(ctx context.Context, store *clientDB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListCommandJournal(ctx, store, commandJournalFilter{GatewayPeerID: gatewayPubkeyHex, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		journal, err := scanCommandJournalItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, journal := range page.Items {
 		items = append(items, auditTimelineFromCommandJournal(journal))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendGatewayAuditTimelineFromGatewayEvents(ctx context.Context, db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
-		 FROM proc_gateway_events WHERE gateway_pubkey_hex=?`,
-		gatewayPubkeyHex,
-	)
+func appendGatewayAuditTimelineFromGatewayEvents(ctx context.Context, store *clientDB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListGatewayEvents(ctx, store, gatewayEventFilter{GatewayPeerID: gatewayPubkeyHex, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanGatewayEventItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromGatewayEvent(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendGatewayAuditTimelineFromDomainEvents(ctx context.Context, db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
-		 FROM proc_domain_events WHERE gateway_pubkey_hex=?`,
-		gatewayPubkeyHex,
-	)
+func appendGatewayAuditTimelineFromDomainEvents(ctx context.Context, store *clientDB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListDomainEvents(ctx, store, domainEventFilter{GatewayPeerID: gatewayPubkeyHex, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanDomainEventItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromDomainEvent(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendGatewayAuditTimelineFromStateSnapshots(ctx context.Context, db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		 FROM proc_state_snapshots WHERE gateway_pubkey_hex=?`,
-		gatewayPubkeyHex,
-	)
+func appendGatewayAuditTimelineFromStateSnapshots(ctx context.Context, store *clientDB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListStateSnapshots(ctx, store, stateSnapshotFilter{GatewayPeerID: gatewayPubkeyHex, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanStateSnapshotItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromStateSnapshot(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendGatewayAuditTimelineFromEffectLogs(ctx context.Context, db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-		 FROM proc_effect_logs WHERE gateway_pubkey_hex=?`,
-		gatewayPubkeyHex,
-	)
+func appendGatewayAuditTimelineFromEffectLogs(ctx context.Context, store *clientDB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListEffectLogs(ctx, store, effectLogFilter{GatewayPeerID: gatewayPubkeyHex, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanEffectLogItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromEffectLog(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendGatewayAuditTimelineFromObservedStates(ctx context.Context, db *sql.DB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		 FROM proc_observed_gateway_states WHERE gateway_pubkey_hex=?`,
-		gatewayPubkeyHex,
-	)
+func appendGatewayAuditTimelineFromObservedStates(ctx context.Context, store *clientDB, gatewayPubkeyHex string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListObservedGatewayStates(ctx, store, observedGatewayStateFilter{GatewayPeerID: gatewayPubkeyHex, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanObservedGatewayStateItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromObservedState(it, ""))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendCommandAuditTimelineFromCommandJournal(ctx context.Context, db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-		 FROM proc_command_journal WHERE command_id=?`,
-		commandID,
-	)
+func appendCommandAuditTimelineFromCommandJournal(ctx context.Context, store *clientDB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListCommandJournal(ctx, store, commandJournalFilter{CommandID: commandID, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		journal, err := scanCommandJournalItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, journal := range page.Items {
 		items = append(items, auditTimelineFromCommandJournal(journal))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendCommandAuditTimelineFromGatewayEvents(ctx context.Context, db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json
-		 FROM proc_gateway_events WHERE command_id=?`,
-		commandID,
-	)
+func appendCommandAuditTimelineFromGatewayEvents(ctx context.Context, store *clientDB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListGatewayEvents(ctx, store, gatewayEventFilter{CommandID: commandID, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanGatewayEventItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromGatewayEvent(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendCommandAuditTimelineFromDomainEvents(ctx context.Context, db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
-		 FROM proc_domain_events WHERE command_id=?`,
-		commandID,
-	)
+func appendCommandAuditTimelineFromDomainEvents(ctx context.Context, store *clientDB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListDomainEvents(ctx, store, domainEventFilter{CommandID: commandID, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanDomainEventItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromDomainEvent(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendCommandAuditTimelineFromStateSnapshots(ctx context.Context, db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-		 FROM proc_state_snapshots WHERE command_id=?`,
-		commandID,
-	)
+func appendCommandAuditTimelineFromStateSnapshots(ctx context.Context, store *clientDB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListStateSnapshots(ctx, store, stateSnapshotFilter{CommandID: commandID, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanStateSnapshotItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromStateSnapshot(it))
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
 	return items, nil
 }
 
-func appendCommandAuditTimelineFromEffectLogs(ctx context.Context, db *sql.DB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
-	rows, err := QueryContext(ctx, db,
-		`SELECT id,created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-		 FROM proc_effect_logs WHERE command_id=?`,
-		commandID,
-	)
+func appendCommandAuditTimelineFromEffectLogs(ctx context.Context, store *clientDB, commandID string, items []AuditTimelineItem) ([]AuditTimelineItem, error) {
+	page, err := dbListEffectLogs(ctx, store, effectLogFilter{CommandID: commandID, Limit: 1 << 30})
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		it, err := scanEffectLogItem(rows)
-		if err != nil {
-			return nil, err
-		}
+	for _, it := range page.Items {
 		items = append(items, auditTimelineFromEffectLog(it))
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	return items, nil
 }
 
-func loadCommandAuditTimelineRoot(ctx context.Context, db *sql.DB, commandID string) (int64, string, error) {
-	row := QueryRowContext(ctx, db, `SELECT created_at_unix,gateway_pubkey_hex FROM proc_command_journal WHERE command_id=? ORDER BY id ASC LIMIT 1`, commandID)
-	var createdAtUnix int64
-	var gatewayPubkeyHex string
-	if err := row.Scan(&createdAtUnix, &gatewayPubkeyHex); err != nil {
+func loadCommandAuditTimelineRoot(ctx context.Context, store *clientDB, commandID string) (int64, string, error) {
+	page, err := dbListCommandJournal(ctx, store, commandJournalFilter{CommandID: commandID, Limit: 1})
+	if err != nil {
 		return 0, "", err
 	}
-	return createdAtUnix, strings.TrimSpace(gatewayPubkeyHex), nil
+	if len(page.Items) == 0 {
+		return 0, "", sql.ErrNoRows
+	}
+	item := page.Items[0]
+	return item.CreatedAtUnix, strings.TrimSpace(item.GatewayPeerID), nil
 }
 
 func auditTimelineFromCommandJournal(it commandJournalItem) AuditTimelineItem {

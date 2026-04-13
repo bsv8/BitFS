@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -16,7 +15,7 @@ import (
 // - 只保留当前还在用的查询，不再带旧 create 状态逻辑。
 
 func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, address string) (map[string]utxoStateRow, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (map[string]utxoStateRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (map[string]utxoStateRow, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return map[string]utxoStateRow{}, fmt.Errorf("wallet address is empty")
@@ -49,7 +48,7 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 }
 
 func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]poolcore.UTXO, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]poolcore.UTXO, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []poolcore.UTXO{}, fmt.Errorf("wallet address is empty")
@@ -104,7 +103,7 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 }
 
 func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, address string) ([]fundalloc.Candidate, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]fundalloc.Candidate, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]fundalloc.Candidate, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []fundalloc.Candidate{}, nil
@@ -142,7 +141,7 @@ func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, addre
 }
 
 func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address string) ([]walletFundingCandidate, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletFundingCandidate, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]walletFundingCandidate, error) {
 		s, err := dbLoadWalletUTXOSyncState(ctx, store, address)
 		if err != nil {
 			return nil, err
@@ -183,7 +182,7 @@ func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address
 }
 
 func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address string) ([]walletUTXOBasicRow, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletUTXOBasicRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]walletUTXOBasicRow, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []walletUTXOBasicRow{}, nil
@@ -218,7 +217,7 @@ func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address
 }
 
 func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, walletID string, address string) ([]walletLocalBroadcastRow, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]walletLocalBroadcastRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]walletLocalBroadcastRow, error) {
 		walletID = strings.TrimSpace(walletID)
 		address = strings.TrimSpace(address)
 		if walletID == "" || address == "" {
@@ -253,7 +252,7 @@ func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, wallet
 }
 
 func dbResolveWalletAddress(ctx context.Context, store *clientDB) (string, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		var address string
 		err := QueryRowContext(ctx, db, `SELECT address FROM wallet_utxo_sync_state ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
 		if err == nil && strings.TrimSpace(address) != "" {

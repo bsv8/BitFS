@@ -58,7 +58,7 @@ type businessSettlementOutcomeEntry struct {
 }
 
 // dbUpdateBusinessSettlementOutcomeTx 在同一个事务里同步回写业务状态和结算出口状态。
-func dbUpdateBusinessSettlementOutcomeTx(ctx context.Context, tx *sql.Tx, e businessSettlementOutcomeEntry) error {
+func dbUpdateBusinessSettlementOutcomeTx(ctx context.Context, tx sqlConn, e businessSettlementOutcomeEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -100,7 +100,7 @@ func dbUpdateBusinessSettlementOutcomeTx(ctx context.Context, tx *sql.Tx, e busi
 // - settlement_id 精确定位，不再拿 order_id 整单覆盖；
 // - 新 settlement 按 order_id 追加 settlement_no；
 // - 已存在 settlement 只更新当前行，不改 settlement_no。
-func dbUpsertBusinessSettlementTx(ctx context.Context, tx *sql.Tx, e businessSettlementEntry) error {
+func dbUpsertBusinessSettlementTx(ctx context.Context, tx sqlConn, e businessSettlementEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -213,7 +213,7 @@ func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, or
 		Item    BusinessSettlementItem
 		Claimed bool
 	}
-	res, err := clientDBValue(ctx, store, func(db *sql.DB) (claimResult, error) {
+	res, err := clientDBValue(ctx, store, func(db sqlConn) (claimResult, error) {
 		var current BusinessSettlementItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -361,7 +361,7 @@ func dbUpsertBusinessSettlement(ctx context.Context, store *clientDB, e business
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = now
 	}
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		return dbUpsertBusinessSettlementTx(ctx, tx, e)
 	})
 }
@@ -375,7 +375,7 @@ func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID 
 	if settlementID == "" {
 		return BusinessSettlementItem{}, fmt.Errorf("settlement_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -404,7 +404,7 @@ func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, b
 	if businessID == "" {
 		return BusinessSettlementItem{}, fmt.Errorf("order_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -443,7 +443,7 @@ func dbListBusinessSettlements(ctx context.Context, store *clientDB, f businessS
 	if store == nil {
 		return businessSettlementPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (businessSettlementPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (businessSettlementPage, error) {
 		where := ""
 		args := make([]any, 0, 16)
 		if f.SettlementID != "" {
@@ -516,7 +516,7 @@ func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, sett
 	if settlementID == "" {
 		return fmt.Errorf("settlement_id is required")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`UPDATE order_settlements SET settlement_status=?, error_message=?, updated_at_unix=? WHERE settlement_id=?`,
 			strings.TrimSpace(status),
@@ -553,7 +553,7 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 	if settlementID == "" {
 		return fmt.Errorf("settlement_id is required")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`UPDATE order_settlements SET target_type=?, target_id=?, error_message='', updated_at_unix=? WHERE settlement_id=?`,
 			strings.TrimSpace(targetType),
@@ -581,7 +581,7 @@ func dbUpdateBusinessSettlementOutcome(ctx context.Context, store *clientDB, e b
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = time.Now().Unix()
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`UPDATE order_settlements SET
 				status=?,
@@ -639,7 +639,7 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 	}
 
 	// 第二步：按 order_id 查 order_settlements
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]financeBusinessItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]financeBusinessItem, error) {
 		var out []financeBusinessItem
 		for _, bizID := range businessIDs {
 			var item financeBusinessItem
@@ -685,7 +685,7 @@ func dbGetLatestBusinessBySettlementPaymentAttemptID(ctx context.Context, store 
 	if settlementPaymentAttemptID <= 0 {
 		return financeBusinessItem{}, fmt.Errorf("settlement_payment_attempt_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (financeBusinessItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (financeBusinessItem, error) {
 		var out financeBusinessItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -790,7 +790,7 @@ func GetChainPaymentByIDAndTargetType(ctx context.Context, store *clientDB, id i
 	if tableName == "" {
 		return ChainPaymentItem{}, fmt.Errorf("unsupported target_type: %s", targetType)
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (ChainPaymentItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (ChainPaymentItem, error) {
 		var item ChainPaymentItem
 		var payload string
 		query := fmt.Sprintf(`SELECT id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
@@ -933,7 +933,7 @@ func GetPoolAllocationByID(ctx context.Context, store *clientDB, id int64) (Pool
 	if store == nil {
 		return PoolAllocationItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (PoolAllocationItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (PoolAllocationItem, error) {
 		var item PoolAllocationItem
 		err := QueryRowContext(ctx, db,
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
@@ -961,7 +961,7 @@ func GetPoolSessionByID(ctx context.Context, store *clientDB, poolSessionID stri
 	if poolSessionID == "" {
 		return PoolSessionItem{}, fmt.Errorf("pool_session_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (PoolSessionItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (PoolSessionItem, error) {
 		var item PoolSessionItem
 		err := QueryRowContext(ctx, db,
 			`SELECT pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
@@ -990,7 +990,7 @@ func ListPoolAllocationsBySession(ctx context.Context, store *clientDB, poolSess
 	if poolSessionID == "" {
 		return nil, fmt.Errorf("pool_session_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]PoolAllocationItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]PoolAllocationItem, error) {
 		rows, err := QueryContext(ctx, db,
 			`SELECT id,allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,
 					payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
@@ -1074,7 +1074,7 @@ func GetSettlementByPoolAllocationID(ctx context.Context, store *clientDB, poolA
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (BusinessSettlementItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
 		var item BusinessSettlementItem
 		var payload string
 		err := QueryRowContext(ctx, db,

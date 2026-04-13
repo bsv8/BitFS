@@ -78,13 +78,13 @@ func (s *httpAPIServer) handleWalletSyncOnce(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                 true,
-		"wallet_address":     out.WalletAddress,
-		"tip_height":         out.TipHeight,
-		"utxo_count":         out.UTXOCount,
-		"balance_satoshi":    out.BalanceSatoshi,
-		"sync_round_id":      out.SyncRoundID,
-		"trigger":            out.Trigger,
-		"completed_at_unix":  out.CompletedAtUnix,
+		"ok":                true,
+		"wallet_address":    out.WalletAddress,
+		"tip_height":        out.TipHeight,
+		"utxo_count":        out.UTXOCount,
+		"balance_satoshi":   out.BalanceSatoshi,
+		"sync_round_id":     out.SyncRoundID,
+		"trigger":           out.Trigger,
+		"completed_at_unix": out.CompletedAtUnix,
 	})
 }

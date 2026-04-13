@@ -1,7 +1,6 @@
 package clientapp
 
 import (
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -9,7 +8,7 @@ import (
 	oldproto "github.com/golang/protobuf/proto"
 )
 
-func upsertPublishedRouteIndex(db *sql.DB, route string, seedHash string) (int64, error) {
+func upsertPublishedRouteIndex(db sqlConn, route string, seedHash string) (int64, error) {
 	if db == nil {
 		return 0, fmt.Errorf("db is nil")
 	}
@@ -32,7 +31,7 @@ func upsertPublishedRouteIndex(db *sql.DB, route string, seedHash string) (int64
 	return now, nil
 }
 
-func buildRouteIndexManifest(db *sql.DB, route string) ([]byte, error) {
+func buildRouteIndexManifest(db sqlConn, route string) ([]byte, error) {
 	if db == nil {
 		return nil, fmt.Errorf("db is nil")
 	}

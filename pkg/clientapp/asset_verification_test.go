@@ -1265,15 +1265,15 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 	// 第一次写入结算记录
 	recordID := fmt.Sprintf("rec_token_%d_%s", paymentAttemptIDInt, lotID)
 	err = dbAppendSettlementRecordDB(context.Background(), db, settlementRecordEntry{
-		RecordID:          recordID,
+		RecordID:                   recordID,
 		SettlementPaymentAttemptID: paymentAttemptIDInt,
-		AssetType:         "TOKEN",
-		OwnerPubkeyHex:    ownerPubkeyHex,
-		SourceLotID:       lotID,
-		UsedQuantityText:  "50",
-		State:             "confirmed",
-		OccurredAtUnix:    now,
-		Note:              "Token consumed by settlement payment attempt",
+		AssetType:                  "TOKEN",
+		OwnerPubkeyHex:             ownerPubkeyHex,
+		SourceLotID:                lotID,
+		UsedQuantityText:           "50",
+		State:                      "confirmed",
+		OccurredAtUnix:             now,
+		Note:                       "Token consumed by settlement payment attempt",
 	})
 	if err != nil {
 		t.Fatalf("first write: %v", err)
@@ -1281,15 +1281,15 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 
 	// 第二次写入结算记录（相同 record_id，应被幂等跳过）
 	err = dbAppendSettlementRecordDB(context.Background(), db, settlementRecordEntry{
-		RecordID:          recordID,
+		RecordID:                   recordID,
 		SettlementPaymentAttemptID: paymentAttemptIDInt,
-		AssetType:         "TOKEN",
-		OwnerPubkeyHex:    ownerPubkeyHex,
-		SourceLotID:       lotID,
-		UsedQuantityText:  "50",
-		State:             "confirmed",
-		OccurredAtUnix:    now,
-		Note:              "Token consumed by settlement payment attempt",
+		AssetType:                  "TOKEN",
+		OwnerPubkeyHex:             ownerPubkeyHex,
+		SourceLotID:                lotID,
+		UsedQuantityText:           "50",
+		State:                      "confirmed",
+		OccurredAtUnix:             now,
+		Note:                       "Token consumed by settlement payment attempt",
 	})
 	if err != nil {
 		t.Fatalf("second write (idempotent): %v", err)

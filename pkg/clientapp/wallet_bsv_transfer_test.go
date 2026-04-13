@@ -294,7 +294,7 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	}
 	assertBizOrderPayBSVSettlementFacts(t, db, first.OrderID, 2)
 	var chainCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_direct_pay WHERE settlement_payment_attempt_id=(SELECT settlement_payment_attempt_id FROM fact_settlement_channel_chain_direct_pay WHERE id=(SELECT target_id FROM order_settlements WHERE order_id=?))`, first.OrderID).Scan(&chainCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM fact_settlement_channel_chain_direct_pay WHERE settlement_payment_attempt_id=(SELECT settlement_payment_attempt_id FROM fact_settlement_channel_chain_direct_pay WHERE id=(SELECT target_id FROM order_settlements WHERE order_id=? ORDER BY settlement_no DESC, updated_at_unix DESC, settlement_id DESC LIMIT 1))`, first.OrderID).Scan(&chainCount); err != nil {
 		t.Fatalf("count fact_settlement_channel_chain_direct_pay failed: %v", err)
 	}
 	if chainCount != 1 {
@@ -580,7 +580,7 @@ func seedWalletBSVTransferTestRows(t *testing.T, db *sql.DB, address string, own
 func assertBizOrderPayBSVSettlementFacts(t *testing.T, db *sql.DB, orderID string, wantCount int) {
 	t.Helper()
 	var targetID string
-	if err := db.QueryRow(`SELECT target_id FROM order_settlements WHERE order_id=?`, orderID).Scan(&targetID); err != nil {
+	if err := db.QueryRow(`SELECT target_id FROM order_settlements WHERE order_id=? ORDER BY settlement_no DESC, updated_at_unix DESC, settlement_id DESC LIMIT 1`, orderID).Scan(&targetID); err != nil {
 		t.Fatalf("query order_settlements target_id failed: %v", err)
 	}
 	if strings.TrimSpace(targetID) == "" {

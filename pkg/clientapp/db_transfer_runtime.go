@@ -27,7 +27,7 @@ import (
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
 	// 运行期辅助查询：只给 direct transfer 串 buyer / seller / arbiter 上下文。
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
+	out, err := clientDBValue(ctx, store, func(db sqlConn) (struct {
 		buyer   string
 		seller  string
 		arbiter string
@@ -47,7 +47,7 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 // dbLoadDirectSessionDealID 【协议运行层专用】按 session_id 查 deal_id
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		var dealID string
 		err := QueryRowContext(ctx, db, `SELECT deal_id FROM proc_direct_transfer_pools WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
 		return strings.TrimSpace(dealID), err
@@ -58,7 +58,7 @@ func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID s
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
 	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
-	return clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		var seedHash string
 		err := QueryRowContext(ctx, db, `SELECT seed_hash FROM proc_direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
 		return strings.ToLower(strings.TrimSpace(seedHash)), err
@@ -70,7 +70,7 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 // - 返回值中的 Status 是协议运行时状态，不代表业务结算状态
 // - 业务状态请查 order_settlements
 func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
-	return clientDBValue(ctx, store, func(db *sql.DB) (directTransferPoolRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (directTransferPoolRow, error) {
 		return loadDirectTransferPoolRowDB(ctx, db, sessionID)
 	})
 }
@@ -103,7 +103,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		if row, err := loadDirectTransferPoolRowDB(ctx, tx, sessionID); err == nil {
 			if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
 				return fmt.Errorf("transfer pool is closed")
@@ -197,7 +197,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		row, err := loadDirectTransferPoolRowDB(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -280,7 +280,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx *sql.Tx) error {
+	return store.Tx(ctx, func(tx sqlConn) error {
 		row, err := loadDirectTransferPoolRowDB(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -355,7 +355,7 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 }
 
 func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string) ([]byte, error) {
-	seedPath, err := clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	seedPath, err := clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		var seedPath string
 		err := QueryRowContext(ctx, db, `SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedPath)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -370,7 +370,7 @@ func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash st
 }
 
 func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) ([]byte, error) {
-	meta, err := clientDBValue(ctx, store, func(db *sql.DB) (struct {
+	meta, err := clientDBValue(ctx, store, func(db sqlConn) (struct {
 		workspacePath string
 		filePath      string
 		chunkCount    uint32

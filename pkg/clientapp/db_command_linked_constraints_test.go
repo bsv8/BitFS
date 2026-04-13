@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestCommandLinkedTablesFinalSchemaHasFkAndIndexes(t *testing.T) {
+func TestCommandLinkedTablesFinalSchemaHasIndexes(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -45,13 +45,6 @@ func TestCommandLinkedTablesFinalSchemaHasFkAndIndexes(t *testing.T) {
 		if !hasCheck {
 			t.Fatalf("%s missing CHECK(trim(command_id) <> '')", table)
 		}
-		hasFK, err := tableHasForeignKey(db, table, "command_id", "proc_command_journal", "command_id")
-		if err != nil {
-			t.Fatalf("inspect %s foreign key failed: %v", table, err)
-		}
-		if !hasFK {
-			t.Fatalf("%s missing foreign key to proc_command_journal.command_id", table)
-		}
 		hasIndex, err := tableHasIndex(db, table, wantIndexByTable[table])
 		if err != nil {
 			t.Fatalf("inspect %s index failed: %v", table, err)
@@ -62,14 +55,11 @@ func TestCommandLinkedTablesFinalSchemaHasFkAndIndexes(t *testing.T) {
 	}
 }
 
-func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
+func TestCommandLinkedTablesRejectBlankWrites(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
 	db.SetMaxOpenConns(1)
-	if err := enableForeignKeys(db); err != nil {
-		t.Fatalf("enable foreign keys failed: %v", err)
-	}
 	store := newClientDB(db, nil)
 	if err := dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "cmd-linked-1",
@@ -87,15 +77,11 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 	testCases := []struct {
 		table        string
 		blankSQL     string
-		orphanSQL    string
 		requiredArgs []any
 	}{
 		{
 			table: "proc_domain_events",
 			blankSQL: `INSERT INTO proc_domain_events(
-				created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
-			) VALUES(?,?,?,?,?,?,?)`,
-			orphanSQL: `INSERT INTO proc_domain_events(
 				created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json
 			) VALUES(?,?,?,?,?,?,?)`,
 			requiredArgs: []any{int64(1700002002), "   ", "gw1", "fee_pool_opened", "idle", "open", `{"scene":"reject"}`},
@@ -105,17 +91,11 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 			blankSQL: `INSERT INTO proc_state_snapshots(
 				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
 			) VALUES(?,?,?,?,?,?,?,?,?)`,
-			orphanSQL: `INSERT INTO proc_state_snapshots(
-				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?)`,
 			requiredArgs: []any{int64(1700002003), "   ", "gw1", "paused_insufficient", "wallet_insufficient", int64(100000), int64(12345), "not enough balance", `{"scene":"reject"}`},
 		},
 		{
 			table: "proc_effect_logs",
 			blankSQL: `INSERT INTO proc_effect_logs(
-				created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
-			) VALUES(?,?,?,?,?,?,?,?)`,
-			orphanSQL: `INSERT INTO proc_effect_logs(
 				created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json
 			) VALUES(?,?,?,?,?,?,?,?)`,
 			requiredArgs: []any{int64(1700002004), "   ", "gw1", "chain", "fee_pool_open", "paused", "blocked", `{"scene":"reject"}`},
@@ -127,23 +107,6 @@ func TestCommandLinkedTablesRejectBlankAndOrphanWrites(t *testing.T) {
 			_, err := db.Exec(tc.blankSQL, tc.requiredArgs...)
 			if err == nil {
 				t.Fatalf("expected %s blank command_id write to fail", tc.table)
-			}
-		})
-		t.Run(tc.table+"/orphan", func(t *testing.T) {
-			args := make([]any, len(tc.requiredArgs))
-			copy(args, tc.requiredArgs)
-			switch tc.table {
-			case "proc_domain_events":
-				args[1] = "missing_parent_domain"
-			case "proc_state_snapshots":
-				args[1] = "missing_parent_state"
-			case "proc_effect_logs":
-				args[1] = "missing_parent_effect"
-			}
-			args[2] = "gw1"
-			_, err := db.Exec(tc.orphanSQL, args...)
-			if err == nil {
-				t.Fatalf("expected %s orphan command_id write to fail", tc.table)
 			}
 		})
 	}

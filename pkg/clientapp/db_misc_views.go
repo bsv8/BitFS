@@ -6,6 +6,14 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procinboxmessages"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procpublishedrouteindexes"
 )
 
 type inboxMessageListItem struct {
@@ -41,26 +49,23 @@ func dbListInboxMessages(ctx context.Context, store *clientDB) ([]inboxMessageLi
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]inboxMessageListItem, error) {
-		rows, err := QueryContext(ctx, db, 
-			`SELECT id,message_id,sender_pubkey_hex,target_input,route,content_type,body_size_bytes,received_at_unix
-			   FROM proc_inbox_messages
-			  ORDER BY received_at_unix DESC,id DESC`,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]inboxMessageListItem, error) {
+		rows, err := tx.ProcInboxMessages.Query().Order(procinboxmessages.ByReceivedAtUnix(entsql.OrderDesc()), procinboxmessages.ByID(entsql.OrderDesc())).All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		items := make([]inboxMessageListItem, 0)
-		for rows.Next() {
-			var it inboxMessageListItem
-			if err := rows.Scan(&it.ID, &it.MessageID, &it.SenderPubKey, &it.TargetInput, &it.Route, &it.ContentType, &it.BodySizeBytes, &it.ReceivedAtUnix); err != nil {
-				return nil, err
-			}
-			items = append(items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
+		items := make([]inboxMessageListItem, 0, len(rows))
+		for _, row := range rows {
+			items = append(items, inboxMessageListItem{
+				ID:             int64(row.ID),
+				MessageID:      row.MessageID,
+				SenderPubKey:   row.SenderPubkeyHex,
+				TargetInput:    row.TargetInput,
+				Route:          row.Route,
+				ContentType:    row.ContentType,
+				BodySizeBytes:  row.BodySizeBytes,
+				ReceivedAtUnix: row.ReceivedAtUnix,
+			})
 		}
 		return items, nil
 	})
@@ -70,17 +75,25 @@ func dbGetInboxMessageDetail(ctx context.Context, store *clientDB, id int64) (in
 	if store == nil {
 		return inboxMessageDetailItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (inboxMessageDetailItem, error) {
-		var out inboxMessageDetailItem
-		err := QueryRowContext(ctx, db, 
-			`SELECT message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix
-			   FROM proc_inbox_messages WHERE id=?`,
-			id,
-		).Scan(&out.MessageID, &out.SenderPubKey, &out.TargetInput, &out.Route, &out.ContentType, &out.BodyBytes, &out.BodySizeBytes, &out.ReceivedAtUnix)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (inboxMessageDetailItem, error) {
+		row, err := tx.ProcInboxMessages.Query().Where(procinboxmessages.IDEQ(int(id))).Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return inboxMessageDetailItem{}, sql.ErrNoRows
+			}
 			return inboxMessageDetailItem{}, err
 		}
-		out.ID = id
+		out := inboxMessageDetailItem{
+			ID:             int64(row.ID),
+			MessageID:      row.MessageID,
+			SenderPubKey:   row.SenderPubkeyHex,
+			TargetInput:    row.TargetInput,
+			Route:          row.Route,
+			ContentType:    row.ContentType,
+			BodyBytes:      row.BodyBytes,
+			BodySizeBytes:  row.BodySizeBytes,
+			ReceivedAtUnix: row.ReceivedAtUnix,
+		}
 		return out, nil
 	})
 }
@@ -89,22 +102,30 @@ func dbListRouteIndexes(ctx context.Context, store *clientDB) ([]routeIndexItem,
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]routeIndexItem, error) {
-		rows, err := QueryContext(ctx, db, `SELECT route,seed_hash,updated_at_unix FROM proc_published_route_indexes ORDER BY route ASC`)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]routeIndexItem, error) {
+		var rows []struct {
+			Route         string `json:"route,omitempty"`
+			SeedHash      string `json:"seed_hash,omitempty"`
+			UpdatedAtUnix int64  `json:"updated_at_unix,omitempty"`
+		}
+		err := tx.ProcPublishedRouteIndexes.Query().
+			Order(procpublishedrouteindexes.ByRoute()).
+			Select(
+				procpublishedrouteindexes.FieldRoute,
+				procpublishedrouteindexes.FieldSeedHash,
+				procpublishedrouteindexes.FieldUpdatedAtUnix,
+			).
+			Scan(ctx, &rows)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		items := make([]routeIndexItem, 0)
-		for rows.Next() {
-			var it routeIndexItem
-			if err := rows.Scan(&it.Route, &it.SeedHash, &it.UpdatedAtUnix); err != nil {
-				return nil, err
-			}
-			items = append(items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
+		items := make([]routeIndexItem, 0, len(rows))
+		for _, row := range rows {
+			items = append(items, routeIndexItem{
+				Route:         row.Route,
+				SeedHash:      row.SeedHash,
+				UpdatedAtUnix: row.UpdatedAtUnix,
+			})
 		}
 		return items, nil
 	})
@@ -114,8 +135,8 @@ func dbDeleteRouteIndex(ctx context.Context, store *clientDB, route string) erro
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
-		_, err := ExecContext(ctx, db, `DELETE FROM proc_published_route_indexes WHERE route=?`, route)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.ProcPublishedRouteIndexes.Delete().Where(procpublishedrouteindexes.RouteEQ(route)).Exec(ctx)
 		return err
 	})
 }
@@ -124,21 +145,49 @@ func dbUpsertRouteIndex(ctx context.Context, store *clientDB, route string, seed
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int64, error) {
-		return upsertPublishedRouteIndex(db, route, seedHash)
-	})
+	now := time.Now().Unix()
+	route = strings.TrimSpace(route)
+	seedHash = normalizeSeedHashHex(seedHash)
+	if route == "" || seedHash == "" {
+		return 0, fmt.Errorf("route and seed_hash are required")
+	}
+	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		count, err := tx.ProcPublishedRouteIndexes.Update().
+			Where(procpublishedrouteindexes.RouteEQ(route)).
+			SetSeedHash(seedHash).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
+		if err != nil {
+			return err
+		}
+		if count > 0 {
+			return nil
+		}
+		_, err = tx.ProcPublishedRouteIndexes.Create().
+			SetRoute(route).
+			SetSeedHash(seedHash).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
+		return err
+	}); err != nil {
+		return 0, err
+	}
+	return now, nil
 }
 
 func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) (uint32, bool) {
 	if store == nil {
 		return 0, false
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (uint32, error) {
-		var chunkCount uint32
-		if err := QueryRowContext(ctx, db, `SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (uint32, error) {
+		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(normalizeSeedHashHex(seedHash))).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return 0, sql.ErrNoRows
+			}
 			return 0, err
 		}
-		return chunkCount, nil
+		return uint32(row.ChunkCount), nil
 	})
 	if err != nil {
 		return 0, false
@@ -152,12 +201,19 @@ func dbGetSeedChunkCountForPricing(ctx context.Context, store *clientDB, seedHas
 	if store == nil {
 		return 0, fmt.Errorf("store is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (uint32, error) {
-		var chunkCount uint32
-		if err := QueryRowContext(ctx, db, `SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+	seedHash = normalizeSeedHashHex(seedHash)
+	if seedHash == "" {
+		return 0, fmt.Errorf("seed_hash is required")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (uint32, error) {
+		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return 0, sql.ErrNoRows
+			}
 			return 0, err
 		}
-		return chunkCount, nil
+		return uint32(row.ChunkCount), nil
 	})
 }
 
@@ -165,22 +221,24 @@ func dbRecommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedH
 	if store == nil {
 		return ""
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		seedHash = normalizeSeedHashHex(seedHash)
 		if seedHash == "" {
 			return "", nil
 		}
-		var stored string
-		if err := QueryRowContext(ctx, db, `SELECT recommended_file_name FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err == nil {
-			if normalized := sanitizeRecommendedFileName(stored); normalized != "" {
+		if row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx); err == nil {
+			if normalized := sanitizeRecommendedFileName(row.RecommendedFileName); normalized != "" {
 				return normalized, nil
 			}
 		}
-		var workspacePath, filePath string
-		if err := QueryRowContext(ctx, db, `SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
+		row, err := tx.BizWorkspaceFiles.Query().
+			Where(bizworkspacefiles.SeedHashEQ(seedHash)).
+			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
+			First(ctx)
+		if err != nil {
 			return "", nil
 		}
-		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(workspacePathJoin(workspacePath, filePath)))), nil
+		return sanitizeRecommendedFileName(filepath.Base(strings.TrimSpace(workspacePathJoin(row.WorkspacePath, row.FilePath)))), nil
 	})
 	if err != nil {
 		return ""
@@ -192,16 +250,16 @@ func dbMimeHintBySeedHash(ctx context.Context, store *clientDB, seedHash string)
 	if store == nil {
 		return ""
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
-		seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		seedHash = normalizeSeedHashHex(seedHash)
 		if seedHash == "" {
 			return "", nil
 		}
-		var stored string
-		if err := QueryRowContext(ctx, db, `SELECT mime_hint FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&stored); err != nil {
+		row, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(seedHash)).Only(ctx)
+		if err != nil {
 			return "", nil
 		}
-		return sanitizeMIMEHint(stored), nil
+		return sanitizeMIMEHint(row.MimeHint), nil
 	})
 	if err != nil {
 		return ""

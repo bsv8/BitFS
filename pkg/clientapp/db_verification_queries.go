@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"sync"
@@ -94,7 +93,7 @@ func dbGetVerificationQueueSummary(ctx context.Context, store *clientDB) (*Verif
 	if store == nil {
 		return nil, fmt.Errorf("store is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (*VerificationQueueSummary, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (*VerificationQueueSummary, error) {
 		var summary VerificationQueueSummary
 		row := QueryRowContext(ctx, db, `
 			SELECT
@@ -126,7 +125,7 @@ func dbListFailedVerificationItems(ctx context.Context, store *clientDB, limit i
 	if limit <= 0 {
 		limit = 50
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]VerificationFailureDetail, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]VerificationFailureDetail, error) {
 		statusClause := "status='failed'"
 		if includePending {
 			statusClause = "status IN ('pending', 'failed')"
@@ -177,7 +176,7 @@ func dbListVerificationItems(ctx context.Context, store *clientDB, f verificatio
 	if f.Limit <= 0 {
 		f.Limit = 100
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]VerificationQueueItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]VerificationQueueItem, error) {
 		// 动态构建查询
 		where := make([]string, 0, 4)
 		args := make([]any, 0, 6)
@@ -246,7 +245,7 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 	if store == nil {
 		return nil, fmt.Errorf("store is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (*VerificationReconcileReport, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (*VerificationReconcileReport, error) {
 		report := &VerificationReconcileReport{
 			Summary: make(map[string]int),
 		}
@@ -322,7 +321,7 @@ func dbResetVerificationToPending(ctx context.Context, store *clientDB, utxoID s
 	if utxoID == "" {
 		return fmt.Errorf("utxo_id is required")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		now := time.Now().Unix()
 		res, err := ExecContext(ctx, db, `
 			UPDATE wallet_utxo_token_verification
@@ -354,7 +353,7 @@ func dbBatchRetryFailed(ctx context.Context, store *clientDB, walletID string, a
 		return 0, fmt.Errorf("store is nil")
 	}
 	var result int
-	if err := store.Do(ctx, func(db *sql.DB) error {
+	if err := store.Do(ctx, func(db sqlConn) error {
 		now := time.Now().Unix()
 		where := make([]string, 0, 4)
 		where = append(where, "status='failed'")
@@ -404,7 +403,7 @@ func dbAutoFailExhaustedRetries(ctx context.Context, store *clientDB) (int, erro
 	if store == nil {
 		return 0, fmt.Errorf("store is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (int, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (int, error) {
 		now := time.Now().Unix()
 		res, err := ExecContext(ctx, db, `
 			UPDATE wallet_utxo_token_verification

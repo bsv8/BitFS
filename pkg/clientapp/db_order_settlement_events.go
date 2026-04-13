@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -123,7 +122,7 @@ func dbAppendOrderSettlementEvent(ctx context.Context, store *clientDB, e orderS
 	if e.OccurredAtUnix <= 0 {
 		e.OccurredAtUnix = time.Now().Unix()
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO order_settlement_events(
 				process_id,settlement_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,idempotency_key,note,payload_json,occurred_at_unix
@@ -163,7 +162,7 @@ func dbGetOrderSettlementEvent(ctx context.Context, store *clientDB, id int64) (
 	if id <= 0 {
 		return orderSettlementEventItem{}, fmt.Errorf("id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (orderSettlementEventItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (orderSettlementEventItem, error) {
 		var item orderSettlementEventItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -188,7 +187,7 @@ func dbListOrderSettlementEvents(ctx context.Context, store *clientDB, f orderSe
 	if store == nil {
 		return orderSettlementEventPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (orderSettlementEventPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (orderSettlementEventPage, error) {
 		where := ""
 		args := make([]any, 0, 16)
 		if f.ID > 0 {
@@ -314,7 +313,7 @@ func dbGetBusinessTrigger(ctx context.Context, store *clientDB, triggerID string
 	if triggerID == "" {
 		return businessTriggerItem{}, fmt.Errorf("trigger_id is required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (businessTriggerItem, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (businessTriggerItem, error) {
 		var event orderSettlementEventItem
 		var payload string
 		err := QueryRowContext(ctx, db,
@@ -348,7 +347,7 @@ func settlementOrderIDFromSettlementID(ctx context.Context, store *clientDB, set
 		return ""
 	}
 	settlementID = strings.TrimSpace(settlementID)
-	orderID, err := clientDBValue(ctx, store, func(db *sql.DB) (string, error) {
+	orderID, err := clientDBValue(ctx, store, func(db sqlConn) (string, error) {
 		var out string
 		err := QueryRowContext(ctx, db, `SELECT order_id FROM order_settlements WHERE settlement_id=?`, settlementID).Scan(&out)
 		if err != nil {
@@ -383,7 +382,7 @@ func dbListBusinessTriggers(ctx context.Context, store *clientDB, f businessTrig
 	if store == nil {
 		return businessTriggerPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (businessTriggerPage, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (businessTriggerPage, error) {
 		where := ""
 		args := make([]any, 0, 16)
 		if f.TriggerID != "" {
@@ -462,7 +461,7 @@ func dbListBusinessesByTrigger(ctx context.Context, store *clientDB, triggerType
 	if triggerType == "" || triggerIDValue == "" {
 		return nil, fmt.Errorf("trigger_type and trigger_id_value are required")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]string, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]string, error) {
 		rows, err := QueryContext(ctx, db,
 			`SELECT DISTINCT os.order_id
 			 FROM order_settlement_events e

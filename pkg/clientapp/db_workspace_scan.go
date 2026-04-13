@@ -12,6 +12,10 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspaces"
 )
 
 // 设计说明：
@@ -22,8 +26,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	catalog := map[string]sellerSeed{}
-	err := store.Tx(ctx, func(tx *sql.Tx) error {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (map[string]sellerSeed, error) {
 		now := time.Now().Unix()
 		seedsDir := filepath.Join(cfg.Storage.DataDir, "biz_seeds")
 		type existingRef struct {
@@ -32,30 +35,22 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 		}
 		existing := map[string]existingRef{}
 
-		rowsExists, err := QueryContext(ctx, tx, `SELECT workspace_path,file_path,seed_hash,seed_locked FROM biz_workspace_files`)
+		rowsExists, err := tx.BizWorkspaceFiles.Query().All(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		defer rowsExists.Close()
-		for rowsExists.Next() {
-			var workspacePath, filePath, seedHash string
-			var locked int64
-			if err := rowsExists.Scan(&workspacePath, &filePath, &seedHash, &locked); err != nil {
-				return err
-			}
-			key := workspacePath + "\x00" + filePath
-			existing[key] = existingRef{SeedHash: normalizeSeedHashHex(seedHash), Locked: locked != 0}
-		}
-		if err := rowsExists.Err(); err != nil {
-			return err
+		for _, row := range rowsExists {
+			key := row.WorkspacePath + "\x00" + row.FilePath
+			existing[key] = existingRef{SeedHash: normalizeSeedHashHex(row.SeedHash), Locked: row.SeedLocked != 0}
 		}
 
-		biz_workspaces, err := listEnabledWorkspacePaths(ctx, tx, cfg.Storage.WorkspaceDir)
+		bizWorkspaces, err := listEnabledWorkspacePaths(ctx, tx, cfg.Storage.WorkspaceDir)
 		if err != nil {
-			return err
+			return nil, err
 		}
+		catalog := map[string]sellerSeed{}
 		seen := map[string]struct{}{}
-		for _, workspace := range biz_workspaces {
+		for _, workspace := range bizWorkspaces {
 			workspace = filepath.Clean(strings.TrimSpace(workspace))
 			err = filepath.WalkDir(workspace, func(path string, d fs.DirEntry, err error) error {
 				if err != nil {
@@ -86,34 +81,27 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 					return err
 				}
 				if ref, ok := existing[key]; ok && ref.Locked && ref.SeedHash != "" {
-					if _, err := ExecContext(ctx, tx, 
-						`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
-						 VALUES(?,?,?,?)
-						 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
-						workspace, fileRel, ref.SeedHash, 1,
-					); err != nil {
+					if err := dbUpsertWorkspaceFileTx(ctx, tx, workspace, fileRel, ref.SeedHash, 1); err != nil {
 						return err
 					}
-					var chunkCount uint32
-					var recommendedName, mimeHint string
-					var unitPrice uint64
-					if err := QueryRowContext(ctx, tx, `SELECT chunk_count,recommended_file_name,mime_hint FROM biz_seeds WHERE seed_hash=?`, ref.SeedHash).
-						Scan(&chunkCount, &recommendedName, &mimeHint); err == nil {
-						policy, err := dbLoadSeedPricingPolicyTx(tx, ref.SeedHash)
+					seedRow, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(ref.SeedHash)).Only(ctx)
+					if err == nil {
+						policy, err := dbLoadSeedPricingPolicyTx(ctx, tx, ref.SeedHash)
 						if err != nil && !errors.Is(err, sql.ErrNoRows) {
 							return err
 						}
-						unitPrice = policy.FloorPriceSatPer64K
+						unitPrice := policy.FloorPriceSatPer64K
 						catalog[ref.SeedHash] = sellerSeed{
 							SeedHash:            ref.SeedHash,
-							ChunkCount:          chunkCount,
+							ChunkCount:          uint32(seedRow.ChunkCount),
 							ChunkPrice:          unitPrice,
-							SeedPrice:           unitPrice * uint64(chunkCount),
-							RecommendedFileName: sanitizeRecommendedFileName(recommendedName),
-							MIMEHint:            sanitizeMIMEHint(mimeHint),
+							SeedPrice:           unitPrice * uint64(seedRow.ChunkCount),
+							RecommendedFileName: sanitizeRecommendedFileName(seedRow.RecommendedFileName),
+							MIMEHint:            sanitizeMIMEHint(seedRow.MimeHint),
 						}
 						return nil
-					} else if !errors.Is(err, sql.ErrNoRows) {
+					}
+					if !errors.Is(err, sql.ErrNoRows) {
 						return err
 					}
 				}
@@ -127,31 +115,16 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				}
 				recommendedName := sanitizeRecommendedFileName(filepath.Base(abs))
 				mimeHint := sanitizeMIMEHint(guessContentType(abs, nil))
-				if _, err := ExecContext(ctx, tx, 
-					`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint)
-					 VALUES(?,?,?,?,?,?)
-					 ON CONFLICT(seed_hash) DO UPDATE SET
-					 chunk_count=excluded.chunk_count,
-					 file_size=excluded.file_size,
-					 seed_file_path=excluded.seed_file_path,
-					 recommended_file_name=excluded.recommended_file_name,
-					 mime_hint=excluded.mime_hint`,
-					seedHash, chunkCount, st.Size(), seedPath, recommendedName, mimeHint,
-				); err != nil {
+				if err := dbUpsertBizSeedTx(ctx, tx, seedHash, chunkCount, uint64(st.Size()), seedPath, recommendedName, mimeHint); err != nil {
 					return err
 				}
-				if _, err := ExecContext(ctx, tx,
-					`INSERT INTO biz_workspace_files(workspace_path,file_path,seed_hash,seed_locked)
-					 VALUES(?,?,?,?)
-					 ON CONFLICT(workspace_path,file_path) DO UPDATE SET seed_hash=excluded.seed_hash,seed_locked=excluded.seed_locked`,
-					workspace, fileRel, seedHash, 0,
-				); err != nil {
+				if err := dbUpsertWorkspaceFileTx(ctx, tx, workspace, fileRel, seedHash, 0); err != nil {
 					return err
 				}
 				if err := dbReplaceSeedChunkSupplyTx(ctx, tx, seedHash, contiguousChunkIndexes(chunkCount)); err != nil {
 					return err
 				}
-				if err := dbUpsertSeedPricingPolicyTx(tx, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, "system", now); err != nil {
+				if err := dbUpsertSeedPricingPolicyTx(ctx, tx, seedHash, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS, "system", now); err != nil {
 					return err
 				}
 				catalog[seedHash] = sellerSeed{
@@ -165,85 +138,81 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				return nil
 			})
 			if err != nil {
-				return err
+				return nil, err
 			}
 		}
 
-		rows, err := QueryContext(ctx, tx, `SELECT workspace_path,file_path FROM biz_workspace_files`)
+		rows, err := tx.BizWorkspaceFiles.Query().All(ctx)
 		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		for rows.Next() {
-			var workspacePath, filePath string
-			if err := rows.Scan(&workspacePath, &filePath); err != nil {
-				return err
-			}
-			if _, ok := seen[workspacePath+"\x00"+filePath]; ok {
-				continue
-			}
-			if _, err := ExecContext(ctx, tx, `DELETE FROM biz_workspace_files WHERE workspace_path=? AND file_path=?`, workspacePath, filePath); err != nil {
-				return err
-			}
-		}
-		if err := rows.Err(); err != nil {
-			return err
-		}
-
-		orphanRows, err := QueryContext(ctx, tx, `SELECT seed_hash,seed_file_path FROM biz_seeds WHERE seed_hash NOT IN (SELECT DISTINCT seed_hash FROM biz_workspace_files)`)
-		if err != nil {
-			return err
-		}
-		defer orphanRows.Close()
-		for orphanRows.Next() {
-			var seedHash, seedPath string
-			if err := orphanRows.Scan(&seedHash, &seedPath); err != nil {
-				return err
-			}
-			_ = os.Remove(seedPath)
-			if _, err := ExecContext(ctx, tx, `DELETE FROM biz_seeds WHERE seed_hash=?`, seedHash); err != nil {
-				return err
-			}
-			delete(catalog, seedHash)
-		}
-		if err := orphanRows.Err(); err != nil {
-			return err
-		}
-
-		obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(biz_workspaces)})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return catalog, nil
-}
-
-func listEnabledWorkspacePaths(ctx context.Context, queryer interface {
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-}, fallback string) ([]string, error) {
-	if queryer == nil {
-		return nil, fmt.Errorf("db is nil")
-	}
-	rows, err := QueryContext(ctx, queryer, `SELECT workspace_path FROM biz_workspaces WHERE enabled=1 ORDER BY workspace_path ASC`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := make([]string, 0, 8)
-	for rows.Next() {
-		var p string
-		if err := rows.Scan(&p); err != nil {
 			return nil, err
 		}
-		p = filepath.Clean(strings.TrimSpace(p))
-		if p == "" {
+		for _, row := range rows {
+			if _, ok := seen[row.WorkspacePath+"\x00"+row.FilePath]; ok {
+				continue
+			}
+			if _, err := tx.BizWorkspaceFiles.Delete().
+				Where(
+					bizworkspacefiles.WorkspacePathEQ(row.WorkspacePath),
+					bizworkspacefiles.FilePathEQ(row.FilePath),
+				).
+				Exec(ctx); err != nil {
+				return nil, err
+			}
+		}
+
+		orphanRows, err := tx.BizSeeds.Query().All(ctx)
+		if err != nil {
+			return nil, err
+		}
+		activeSeedHashes, err := dbListActiveSeedHashesTx(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		activeSet := map[string]struct{}{}
+		for _, seedHash := range activeSeedHashes {
+			activeSet[seedHash] = struct{}{}
+		}
+		for _, row := range orphanRows {
+			if _, ok := activeSet[normalizeSeedHashHex(row.SeedHash)]; ok {
+				continue
+			}
+			_ = os.Remove(row.SeedFilePath)
+			if _, err := tx.BizSeeds.Delete().Where(bizseeds.SeedHashEQ(row.SeedHash)).Exec(ctx); err != nil {
+				return nil, err
+			}
+			delete(catalog, normalizeSeedHashHex(row.SeedHash))
+		}
+		if err := dbCleanupOrphanSeedStateTx(ctx, tx); err != nil {
+			return nil, err
+		}
+
+		obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(bizWorkspaces)})
+		return catalog, nil
+	})
+}
+
+func listEnabledWorkspacePaths(ctx context.Context, tx *gen.Tx, fallback string) ([]string, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
+	var rows []struct {
+		WorkspacePath string `json:"workspace_path,omitempty"`
+	}
+	err := tx.BizWorkspaces.Query().
+		Where(bizworkspaces.EnabledEQ(1)).
+		Order(bizworkspaces.ByWorkspacePath()).
+		Select(bizworkspaces.FieldWorkspacePath).
+		Scan(ctx, &rows)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, 0, len(rows))
+	for _, row := range rows {
+		p, err := normalizeWorkspacePath(row.WorkspacePath)
+		if err != nil || p == "" {
 			continue
 		}
 		out = append(out, p)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	if len(out) > 0 {
 		return out, nil

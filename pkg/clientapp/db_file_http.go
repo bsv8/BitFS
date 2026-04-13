@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,7 +36,7 @@ func fileHTTPStore(s *fileHTTPServer) *clientDB {
 	}
 	// 仅兼容旧测试夹具：fileHTTPServer 测试有 db 直塞场景。
 	if s.db != nil {
-		return &clientDB{db: s.db}
+		return clientDBFromDB(s.db)
 	}
 	return nil
 }
@@ -46,7 +45,7 @@ func dbGetFileDownloadState(ctx context.Context, store *clientDB, seedHash strin
 	if store == nil {
 		return fileDownloadStateRow{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (fileDownloadStateRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
 		err := QueryRowContext(ctx, db, `SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,updated_at_unix FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
 			Scan(&out.FilePath, &out.FileSize, &out.ChunkCount, &out.Completed, &out.PaidSats, &out.Status, &out.DemandID, &out.LastError, &out.StatusJSON, &out.UpdatedAtUnix)
@@ -61,7 +60,7 @@ func dbGetFileDownloadStateNoUpdated(ctx context.Context, store *clientDB, seedH
 	if store == nil {
 		return fileDownloadStateRow{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (fileDownloadStateRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
 		err := QueryRowContext(ctx, db, `SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
 			Scan(&out.FilePath, &out.FileSize, &out.ChunkCount, &out.Completed, &out.PaidSats, &out.Status, &out.DemandID, &out.LastError, &out.StatusJSON)
@@ -76,7 +75,7 @@ func dbEnsureFileDownloadQueued(ctx context.Context, store *clientDB, seedHash s
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		now := time.Now().Unix()
 		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
 			seedHash, partPath, 0, 0, 0, 0, "queued", "", "", statusJSON, now, now)
@@ -88,7 +87,7 @@ func dbListFileDownloadChunks(ctx context.Context, store *clientDB, seedHash str
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) ([]fileDownloadChunkRow, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) ([]fileDownloadChunkRow, error) {
 		rows, err := QueryContext(ctx, db, `SELECT chunk_index,status FROM proc_file_download_chunks WHERE seed_hash=?`, seedHash)
 		if err != nil {
 			return nil, err
@@ -113,7 +112,7 @@ func dbUpsertFileDownloadState(ctx context.Context, store *clientDB, seedHash st
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		now := time.Now().Unix()
 		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix)
 			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
@@ -137,7 +136,7 @@ func dbUpsertFileDownloadChunkDone(ctx context.Context, store *clientDB, seedHas
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db *sql.DB) error {
+	return store.Do(ctx, func(db sqlConn) error {
 		now := time.Now().Unix()
 		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_download_chunks(seed_hash,chunk_index,status,seller_pubkey_hex,price_sats,updated_at_unix)
 			VALUES(?,?,?,?,?,?)
@@ -159,7 +158,7 @@ func dbFindLatestWorkspaceFileBySeedHash(ctx context.Context, store *clientDB, s
 		path string
 		size uint64
 	}
-	out, err := clientDBValue(ctx, store, func(db *sql.DB) (result, error) {
+	out, err := clientDBValue(ctx, store, func(db sqlConn) (result, error) {
 		var out result
 		var workspacePath, filePath string
 		if err := QueryRowContext(ctx, db, `SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {

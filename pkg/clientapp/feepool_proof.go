@@ -14,15 +14,15 @@ import (
 )
 
 type feePoolProofArgs struct {
-	Session              *feePoolSession
-	ClientActor          *poolcore.Actor
-	GatewayPub           *ec.PublicKey
-	ServiceQuoteRaw      []byte
-	ServiceQuote         payflow.ServiceQuote
-	ChargeReason         string
-	NextSequence         uint32
-	NextServerAmount     uint64
-	ServiceDeadlineUnix  int64
+	Session             *feePoolSession
+	ClientActor         *poolcore.Actor
+	GatewayPub          *ec.PublicKey
+	ServiceQuoteRaw     []byte
+	ServiceQuote        payflow.ServiceQuote
+	ChargeReason        string
+	NextSequence        uint32
+	NextServerAmount    uint64
+	ServiceDeadlineUnix int64
 }
 
 type feePoolProofBuilt struct {

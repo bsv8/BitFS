@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -416,7 +415,7 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 	if strings.TrimSpace(status) == "" {
 		status = "active"
 	}
-	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
 		intervalSeconds := int64(spec.Interval / time.Second)
 		createdAtUnix := int64(now)
 		closedAtUnix := int64(closedAt)
@@ -477,7 +476,7 @@ func (s *taskScheduler) markTaskStoppedWithCtx(ctx context.Context, name string)
 		return fmt.Errorf("ctx is required")
 	}
 	now := time.Now().Unix()
-	return schedulerDBDo(s, ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, ctx, func(db sqlConn) error {
 		closedAtUnix := int64(now)
 		updatedAtUnix := int64(now)
 		_, err := ExecContext(ctx, db,
@@ -495,7 +494,7 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 	if s.ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
-	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
 		updatedAtUnix := int64(time.Now().Unix())
 		_, err := ExecContext(s.ctx, db,
 			`UPDATE proc_scheduler_tasks SET
@@ -528,7 +527,7 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	} else {
 		incFailure = 1
 	}
-	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
 		updatedAtUnix := int64(time.Now().Unix())
 		_, err := ExecContext(s.ctx, db,
 			`UPDATE proc_scheduler_tasks SET
@@ -562,7 +561,7 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 	if s.ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
-	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
 		createdAtUnix := int64(time.Now().Unix())
 		_, err := ExecContext(s.ctx, db,
 			`INSERT INTO proc_scheduler_task_runs(
@@ -632,7 +631,7 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	}
 	placeholders := strings.TrimRight(strings.Repeat("?,", len(filtered)), ",")
 	args = append([]any{startupUnix, startupUnix}, args...)
-	return schedulerDBDo(s, s.ctx, func(db *sql.DB) error {
+	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
 		_, err := ExecContext(s.ctx, db,
 			`UPDATE proc_scheduler_tasks SET
 				status='stopped',

@@ -733,12 +733,12 @@ func dbLoadSchedulerTaskSnapshot(ctx context.Context, store *clientDB, taskName 
 	if store == nil {
 		return schedulerTaskSnapshot{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db *sql.DB) (schedulerTaskSnapshot, error) {
+	return clientDBValue(ctx, store, func(db sqlConn) (schedulerTaskSnapshot, error) {
 		return loadSchedulerTaskSnapshot(ctx, db, taskName)
 	})
 }
 
-func loadSchedulerTaskSnapshot(ctx context.Context, db *sql.DB, taskName string) (schedulerTaskSnapshot, error) {
+func loadSchedulerTaskSnapshot(ctx context.Context, db sqlConn, taskName string) (schedulerTaskSnapshot, error) {
 	if db == nil {
 		return schedulerTaskSnapshot{}, fmt.Errorf("db is nil")
 	}
@@ -2619,7 +2619,7 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	unit, total, err := func() (uint64, uint64, error) {
-		if err := dbUpsertSeedPricingPolicy(store.db, seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
+		if err := dbUpsertSeedPricingPolicy(r.Context(), store, seedHash, req.FloorPriceSatPer64K, req.ResaleDiscountBPS, "user", time.Now().Unix()); err != nil {
 			return 0, 0, err
 		}
 		// 从种子元数据获取 chunk_count（使用 db 抽象层）

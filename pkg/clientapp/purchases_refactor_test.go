@@ -64,9 +64,6 @@ func TestPurchaseSchemaExists(t *testing.T) {
 		}
 	}
 
-	if !tableHasFK(db, "biz_purchases", "demand_id", "biz_demands", "demand_id") {
-		t.Fatalf("biz_purchases foreign key mismatch")
-	}
 }
 
 func TestPurchaseWritesAndSummary(t *testing.T) {

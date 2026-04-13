@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"strings"
@@ -49,7 +48,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 
 	roundID := strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey)))
 	ctx = sqlTraceContextWithMeta(ctx, roundID, trigger, "wallet_local_projection", "dbApplyLocalBroadcastWalletProjection")
-	if err := store.Tx(ctx, func(dbtx *sql.Tx) error {
+	if err := store.Tx(ctx, func(dbtx sqlConn) error {
 		current, err := dbLoadWalletUTXOStateRowsTx(dbtx, walletID, addr)
 		if err != nil {
 			return err
@@ -151,7 +150,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 	return nil
 }
 
-func dbLoadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (map[string]utxoStateRow, error) {
+func dbLoadWalletUTXOStateRowsTx(tx sqlConn, walletID string, address string) (map[string]utxoStateRow, error) {
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
@@ -201,7 +200,7 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 	return stats
 }
 
-func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, tx *sql.Tx, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
+func dbUpsertWalletLocalBroadcastStoreTx(ctx context.Context, tx sqlConn, walletID string, address string, txid string, txHex string, observedAtUnix int64, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -253,7 +252,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 	if err != nil {
 		return err
 	}
-	if err := store.Tx(ctx, func(tx *sql.Tx) error {
+	if err := store.Tx(ctx, func(tx sqlConn) error {
 		updatedAt := time.Now().Unix()
 		for utxoID, row := range current {
 			if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
@@ -288,7 +287,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 	return nil
 }
 
-func dbLoadWalletUTXOAggregateTx(tx *sql.Tx, address string) (walletUTXOAggregateStats, error) {
+func dbLoadWalletUTXOAggregateTx(tx sqlConn, address string) (walletUTXOAggregateStats, error) {
 	if tx == nil {
 		return walletUTXOAggregateStats{}, fmt.Errorf("tx is nil")
 	}
@@ -338,7 +337,7 @@ func dbLoadWalletUTXOAggregateTx(tx *sql.Tx, address string) (walletUTXOAggregat
 	return stats, nil
 }
 
-func dbUpdateWalletUTXOSyncStateStatsTx(tx *sql.Tx, address string, stats walletUTXOAggregateStats, updatedAt int64) error {
+func dbUpdateWalletUTXOSyncStateStatsTx(tx sqlConn, address string, stats walletUTXOAggregateStats, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
