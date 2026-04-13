@@ -315,7 +315,7 @@ func listLocalLiveQuoteSegments(store *clientDB, streamID string, window int) ([
 		if err != nil {
 			continue
 		}
-		if data.SegmentIndex > 0 && !strings.EqualFold(strings.TrimSpace(data.StreamID), streamID) {
+		if data.SegmentIndex > 0 && !strings.EqualFold(strings.TrimSpace(data.StreamId), streamID) {
 			continue
 		}
 		seq := data.MediaSequence
@@ -356,38 +356,38 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 	h := rt.Host
 	trace := rt.rpcTrace
 	pproto.HandleProto[liveSubscribeReq, liveSubscribeResp](h, ProtoLiveSubscribe, clientSec(trace), func(_ context.Context, req liveSubscribeReq) (liveSubscribeResp, error) {
-		streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
-		if streamID == "" && strings.TrimSpace(req.StreamURI) != "" {
-			parsed, err := ParseLiveSubscribeURI(req.StreamURI)
+		streamID := strings.ToLower(strings.TrimSpace(req.StreamId))
+		if streamID == "" && strings.TrimSpace(req.StreamUri) != "" {
+			parsed, err := ParseLiveSubscribeURI(req.StreamUri)
 			if err != nil {
 				return liveSubscribeResp{}, err
 			}
 			streamID = parsed.StreamID
 		}
-		if !isSeedHashHex(streamID) || strings.TrimSpace(req.SubscriberPeerID) == "" {
+		if !isSeedHashHex(streamID) || strings.TrimSpace(req.SubscriberPubkeyHex) == "" {
 			return liveSubscribeResp{}, fmt.Errorf("invalid params")
 		}
 		window := clampLiveWindow(req.Window)
 		publisherPubKey, recent := rt.live.subscribe(streamID, liveSubscriberTarget{
-			PeerID: strings.TrimSpace(req.SubscriberPeerID),
+			PeerID: strings.TrimSpace(req.SubscriberPubkeyHex),
 			Addrs:  append([]string(nil), req.SubscriberAddrs...),
 			Window: window,
 		})
 		obs.Business("bitcast-client", "live_subscriber_registered", map[string]any{
 			"stream_id":       streamID,
-			"subscriber_peer": req.SubscriberPeerID,
+			"subscriber_peer": req.SubscriberPubkeyHex,
 			"recent_count":    len(recent),
 		})
 		return liveSubscribeResp{
 			Status:          "subscribed",
-			StreamID:        streamID,
-			PublisherPubKey: publisherPubKey,
+			StreamId:        streamID,
+			PublisherPubkey: publisherPubKey,
 			RecentSegments:  liveSegmentRefsToPB(recent),
 		}, nil
 	})
 	pproto.HandleProto[liveHeadPushReq, liveHeadPushResp](h, ProtoLiveHeadPush, clientSec(trace), func(_ context.Context, req liveHeadPushReq) (liveHeadPushResp, error) {
-		streamID := strings.ToLower(strings.TrimSpace(req.StreamID))
-		publisherPubKey := strings.ToLower(strings.TrimSpace(req.PublisherPubKey))
+		streamID := strings.ToLower(strings.TrimSpace(req.StreamId))
+		publisherPubKey := strings.ToLower(strings.TrimSpace(req.PublisherPubkey))
 		if !isSeedHashHex(streamID) || publisherPubKey == "" {
 			return liveHeadPushResp{}, fmt.Errorf("invalid params")
 		}
@@ -399,7 +399,7 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 		return liveHeadPushResp{Status: "stored"}, nil
 	})
 	pproto.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(_ context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
-		if store == nil || strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamID))) || len(req.RecentSegments) == 0 {
+		if store == nil || strings.TrimSpace(req.DemandId) == "" || strings.TrimSpace(req.SellerPubkeyHex) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamId))) || len(req.RecentSegments) == 0 {
 			return liveQuoteSubmitResp{}, fmt.Errorf("invalid live quote")
 		}
 		recent := make([]LiveQuoteSegment, 0, len(req.RecentSegments))
@@ -417,9 +417,9 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 			return liveQuoteSubmitResp{}, fmt.Errorf("empty live quote segments")
 		}
 		if err := dbUpsertLiveQuote(context.Background(), store, LiveQuoteItem{
-			DemandID:           strings.TrimSpace(req.DemandID),
-			SellerPubHex:       strings.ToLower(strings.TrimSpace(req.SellerPeerID)),
-			StreamID:           strings.ToLower(strings.TrimSpace(req.StreamID)),
+			DemandID:           strings.TrimSpace(req.DemandId),
+			SellerPubHex:       strings.ToLower(strings.TrimSpace(req.SellerPubkeyHex)),
+			StreamID:           strings.ToLower(strings.TrimSpace(req.StreamId)),
 			LatestSegmentIndex: req.LatestSegmentIndex,
 			RecentSegments:     recent,
 			ExpiresAtUnix:      req.ExpiresAtUnix,
@@ -438,19 +438,19 @@ func BuildLiveSegment(ctx context.Context, rt *Runtime, data liveSegmentDataPB, 
 	if rt == nil || rt.Host == nil {
 		return nil, "", fmt.Errorf("runtime not initialized")
 	}
-	data.PublisherPubKey = strings.ToLower(strings.TrimSpace(data.PublisherPubKey))
-	if data.PublisherPubKey == "" {
+	data.PublisherPubkey = strings.ToLower(strings.TrimSpace(data.PublisherPubkey))
+	if data.PublisherPubkey == "" {
 		pubHex, err := localPubKeyHex(rt.Host)
 		if err != nil {
 			return nil, "", err
 		}
-		data.PublisherPubKey = strings.ToLower(strings.TrimSpace(pubHex))
+		data.PublisherPubkey = strings.ToLower(strings.TrimSpace(pubHex))
 	}
-	data.StreamID = strings.ToLower(strings.TrimSpace(data.StreamID))
+	data.StreamId = strings.ToLower(strings.TrimSpace(data.StreamId))
 	data.PrevSeedHash = strings.ToLower(strings.TrimSpace(data.PrevSeedHash))
 	data.InitSeedHash = strings.ToLower(strings.TrimSpace(data.InitSeedHash))
-	data.MIMEType = strings.TrimSpace(data.MIMEType)
-	data.PlaylistURIHint = strings.TrimSpace(data.PlaylistURIHint)
+	data.MimeType = strings.TrimSpace(data.MimeType)
+	data.PlaylistUriHint = strings.TrimSpace(data.PlaylistUriHint)
 	if data.MediaSequence == 0 && data.SegmentIndex > 0 {
 		data.MediaSequence = data.SegmentIndex
 	}
@@ -490,7 +490,7 @@ func VerifyLiveSegment(segmentBytes []byte) (liveSegmentDataPB, []byte, string, 
 	if err := oldproto.Unmarshal(seg.Data, &data); err != nil {
 		return liveSegmentDataPB{}, nil, "", err
 	}
-	pubHex := strings.ToLower(strings.TrimSpace(data.PublisherPubKey))
+	pubHex := strings.ToLower(strings.TrimSpace(data.PublisherPubkey))
 	if pubHex == "" {
 		return liveSegmentDataPB{}, nil, "", fmt.Errorf("publisher_pubkey required")
 	}
@@ -513,11 +513,11 @@ func VerifyLiveSegment(segmentBytes []byte) (liveSegmentDataPB, []byte, string, 
 	if !ok {
 		return liveSegmentDataPB{}, nil, "", fmt.Errorf("invalid signature")
 	}
-	data.StreamID = strings.ToLower(strings.TrimSpace(data.StreamID))
+	data.StreamId = strings.ToLower(strings.TrimSpace(data.StreamId))
 	data.PrevSeedHash = strings.ToLower(strings.TrimSpace(data.PrevSeedHash))
 	data.InitSeedHash = strings.ToLower(strings.TrimSpace(data.InitSeedHash))
-	data.MIMEType = strings.TrimSpace(data.MIMEType)
-	data.PlaylistURIHint = strings.TrimSpace(data.PlaylistURIHint)
+	data.MimeType = strings.TrimSpace(data.MimeType)
+	data.PlaylistUriHint = strings.TrimSpace(data.PlaylistUriHint)
 	hash := sha256.Sum256(seg.MediaBytes)
 	if !strings.EqualFold(hex.EncodeToString(hash[:]), hex.EncodeToString(data.MediaHash)) {
 		return liveSegmentDataPB{}, nil, "", fmt.Errorf("media_hash mismatch")
@@ -552,11 +552,11 @@ func TriggerLiveSubscribe(ctx context.Context, rt *Runtime, rawURI string, windo
 	}
 	var resp liveSubscribeResp
 	if err := pproto.CallProto(ctx, rt.Host, publisherID, ProtoLiveSubscribe, clientSec(rt.rpcTrace), liveSubscribeReq{
-		StreamURI:        rawURI,
-		StreamID:         parsed.StreamID,
-		Window:           uint32(clampLiveWindow(window)),
-		SubscriberPeerID: rt.Host.ID().String(),
-		SubscriberAddrs:  localAdvertiseAddrs(rt),
+		StreamUri:           rawURI,
+		StreamId:            parsed.StreamID,
+		Window:              uint32(clampLiveWindow(window)),
+		SubscriberPubkeyHex: rt.Host.ID().String(),
+		SubscriberAddrs:     localAdvertiseAddrs(rt),
 	}, &resp); err != nil {
 		return LiveSubscribeResult{}, err
 	}
@@ -607,8 +607,8 @@ func TriggerLivePublishLatest(ctx context.Context, rt *Runtime, streamID string,
 			rt.Host.Peerstore().AddAddrs(ai.ID, ai.Addrs, 10*time.Minute)
 		}
 		req := liveHeadPushReq{
-			StreamID:        streamID,
-			PublisherPubKey: strings.ToLower(strings.TrimSpace(pubHex)),
+			StreamId:        streamID,
+			PublisherPubkey: strings.ToLower(strings.TrimSpace(pubHex)),
 			RecentSegments:  liveSegmentRefsToPB(trimLiveSegmentRefs(windowed, target.Window)),
 			SentAtUnix:      nowUnix,
 		}

@@ -43,7 +43,7 @@ type businessSettlementEntry struct {
 // businessSettlementOutcomeEntry 用来一次性回写业务状态和结算出口状态。
 // 设计说明：
 // - 结算执行时不能只改 settlement_status，否则前台看到的 biz_ 状态会飘；
-// - 这里把 biz_ 状态和 settle_ 状态收口到同一行，避免两套口径打架。
+// - 这里把业务状态和结算状态收口到同一行，避免两套口径打架。
 type businessSettlementOutcomeEntry struct {
 	OrderID           string
 	SettlementID      string
@@ -565,7 +565,7 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 	})
 }
 
-// dbUpdateBusinessSettlementOutcome 同步回写 biz_ 状态和 settle_ 状态。
+// dbUpdateBusinessSettlementOutcome 同步回写业务状态和结算状态。
 // 设计说明：
 // - 这是结算层的主回写入口；
 // - 业务状态、结算状态、目标链上事实必须一起更新；

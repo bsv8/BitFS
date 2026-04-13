@@ -3,7 +3,6 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"testing"
 )
 
@@ -196,7 +195,7 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	}
 }
 
-func TestInitIndexDB_RejectsLegacyPoolSchema(t *testing.T) {
+func TestInitIndexDB_AllowsLegacyPoolSchemaTables(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -212,10 +211,8 @@ func TestInitIndexDB_RejectsLegacyPoolSchema(t *testing.T) {
 		t.Fatalf("create legacy tx table failed: %v", err)
 	}
 
-	if err := initIndexDB(db); err == nil {
-		t.Fatal("expected initIndexDB to reject legacy pool schema")
-	} else if !strings.Contains(err.Error(), "legacy settlement schema detected, please recreate db") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB should allow legacy pool schema tables: %v", err)
 	}
 }
 

@@ -361,15 +361,15 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	seedPrice := uint64(111)
 	chunkPrice := uint64(22)
 	if err := dbUpsertDirectQuote(context.Background(), store, directQuoteSubmitReq{
-		DemandID:             demandID,
+		DemandId:             demandID,
 		SeedPrice:            seedPrice,
 		ChunkPrice:           chunkPrice,
 		ChunkCount:           chunkCount,
 		FileSize:             uint64(len(full)),
 		ExpiresAtUnix:        time.Now().Add(10 * time.Minute).Unix(),
 		RecommendedFileName:  "sample.bin",
-		MIMEHint:             "application/octet-stream",
-		ArbiterPeerIDs:       []string{arbPubHex},
+		MimeHint:             "application/octet-stream",
+		ArbiterPubkeyHexes:   []string{arbPubHex},
 		AvailableChunkBitmap: []byte{0xff},
 	}, sellerPubHex); err != nil {
 		t.Fatalf("upsert quote: %v", err)

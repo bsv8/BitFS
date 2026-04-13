@@ -255,11 +255,11 @@ func (s *fileHTTPServer) handleLiveSegmentMedia(w http.ResponseWriter, r *http.R
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "segment index mismatch"})
 		return
 	}
-	if segmentIndex > 0 && !strings.EqualFold(strings.TrimSpace(data.StreamID), streamID) {
+	if segmentIndex > 0 && !strings.EqualFold(strings.TrimSpace(data.StreamId), streamID) {
 		s.writeJSON(w, http.StatusConflict, map[string]any{"error": "stream_id mismatch"})
 		return
 	}
-	contentType := strings.TrimSpace(data.MIMEType)
+	contentType := strings.TrimSpace(data.MimeType)
 	if contentType == "" {
 		contentType = http.DetectContentType(mediaBytes)
 	}
@@ -983,10 +983,10 @@ func (s *fileHTTPServer) listLocalLiveSegmentFiles(streamID string) ([]localLive
 		if err != nil {
 			continue
 		}
-		if data.SegmentIndex > 0 && !strings.EqualFold(data.StreamID, streamID) {
+		if data.SegmentIndex > 0 && !strings.EqualFold(data.StreamId, streamID) {
 			continue
 		}
-		playlistURI := strings.TrimSpace(data.PlaylistURIHint)
+		playlistURI := strings.TrimSpace(data.PlaylistUriHint)
 		if playlistURI == "" {
 			playlistURI = fmt.Sprintf("/live/%s/%d", streamID, data.SegmentIndex)
 		}

@@ -15,7 +15,7 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	demandID := strings.TrimSpace(req.DemandID)
+	demandID := strings.TrimSpace(req.DemandId)
 	sellerPubHex = strings.ToLower(strings.TrimSpace(sellerPubHex))
 	if demandID == "" || sellerPubHex == "" {
 		return fmt.Errorf("demand_id and seller_pub_hex are required")
@@ -23,8 +23,8 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	now := time.Now().Unix()
 	availableChunkBitmapHex := normalizeChunkBitmapBytes(req.AvailableChunkBitmap)
 	recommendedName := sanitizeRecommendedFileName(req.RecommendedFileName)
-	mimeType := sanitizeMIMEHint(req.MIMEHint)
-	arbiterPubHexes, err := normalizePubHexList(req.ArbiterPeerIDs)
+	mimeType := sanitizeMIMEHint(req.MimeHint)
+	arbiterPubHexes, err := normalizePubHexList(req.ArbiterPubkeyHexes)
 	if err != nil {
 		return err
 	}
@@ -104,13 +104,13 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 			`INSERT INTO proc_direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
 			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
 			strings.TrimSpace(dealID),
-			strings.TrimSpace(req.DemandID),
+			strings.TrimSpace(req.DemandId),
 			strings.ToLower(strings.TrimSpace(buyerPubHex)),
 			strings.ToLower(strings.TrimSpace(sellerPubHex)),
 			strings.ToLower(strings.TrimSpace(req.SeedHash)),
 			req.SeedPrice,
 			req.ChunkPrice,
-			strings.TrimSpace(req.ArbiterPeerID),
+			strings.TrimSpace(req.ArbiterPubkeyHex),
 			"accepted",
 			time.Now().Unix(),
 		)

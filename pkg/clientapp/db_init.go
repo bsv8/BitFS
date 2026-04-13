@@ -478,11 +478,11 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			last_error TEXT NOT NULL
 		)`,
 
-			// 新结算主线
-			// - orders 记录“这次要办什么事”
-			// - order_settlements 记录拆出来的每笔支付执行单
-			// - order_settlement_events 记录 settlement 生命周期事件
-			`CREATE TABLE IF NOT EXISTS orders(
+		// 新结算主线
+		// - orders 记录“这次要办什么事”
+		// - order_settlements 记录拆出来的每笔支付执行单
+		// - order_settlement_events 记录 settlement 生命周期事件
+		`CREATE TABLE IF NOT EXISTS orders(
 				order_id TEXT PRIMARY KEY,
 				order_type TEXT NOT NULL,
 				order_subtype TEXT NOT NULL,
@@ -497,7 +497,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 				updated_at_unix INTEGER NOT NULL,
 				UNIQUE(order_type, idempotency_key)
 			)`,
-			`CREATE TABLE IF NOT EXISTS order_settlements(
+		`CREATE TABLE IF NOT EXISTS order_settlements(
 				settlement_id TEXT PRIMARY KEY,
 				order_id TEXT NOT NULL,
 				settlement_no INTEGER NOT NULL,
@@ -523,7 +523,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 				updated_at_unix INTEGER NOT NULL,
 				UNIQUE(order_id, settlement_no)
 			)`,
-			`CREATE TABLE IF NOT EXISTS order_settlement_events(
+		`CREATE TABLE IF NOT EXISTS order_settlement_events(
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				process_id TEXT NOT NULL DEFAULT '',
 				settlement_id TEXT NOT NULL,
@@ -1860,47 +1860,6 @@ func normalizeClientDBData(ctx context.Context, db *sql.DB) error {
 // hasTable 检查表是否存在
 func hasTable(db *sql.DB, name string) (bool, error) {
 	return hasSchemaObject(db, name)
-}
-
-func hasRealTable(db *sql.DB, name string) (bool, error) {
-	var one int
-	err := db.QueryRow(`SELECT 1 FROM sqlite_master WHERE type='table' AND name=? LIMIT 1`, strings.TrimSpace(name)).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return true, nil
-}
-
-func rejectLegacyClientDBSchema(ctx context.Context, db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	legacyTables := []string{
-		"biz_front_orders",
-		"biz_business_triggers",
-		"settle_records",
-		"settle_process_events",
-		strings.Join([]string{"fact", "asset", "consumptions"}, "_"),
-		strings.Join([]string{"fact", "pool", "allocations"}, "_"),
-		strings.Join([]string{"fact", "tx", "history"}, "_"),
-		strings.Join([]string{"fact", "chain", "asset", "flows"}, "_"),
-		strings.Join([]string{"fact", "bsv", "consumptions"}, "_"),
-		strings.Join([]string{"fact", "token", "consumptions"}, "_"),
-		strings.Join([]string{"fact", "token", "utxo", "links"}, "_"),
-	}
-	for _, table := range legacyTables {
-		exists, err := hasRealTable(db, table)
-		if err != nil {
-			return err
-		}
-		if exists {
-			return fmt.Errorf("legacy settlement schema detected, please recreate db")
-		}
-	}
-	return nil
 }
 
 func hasSchemaObject(db *sql.DB, name string) (bool, error) {

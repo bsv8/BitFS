@@ -2849,16 +2849,16 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 	}
 	segData := liveSegmentDataPB{
 		Version:           1,
-		StreamID:          streamID,
+		StreamId:          streamID,
 		SegmentIndex:      segmentIndex,
 		PrevSeedHash:      prevSeedHash,
-		PublisherPubKey:   pubHex,
+		PublisherPubkey:   pubHex,
 		DurationMs:        req.DurationMs,
 		PublishedAtUnixMs: publishedAtUnixMs,
 		IsDiscontinuity:   req.IsDiscontinuity,
-		MIMEType:          req.MIMEType,
+		MimeType:          req.MIMEType,
 		InitSeedHash:      req.InitSeedHash,
-		PlaylistURIHint:   req.PlaylistURIHint,
+		PlaylistUriHint:   req.PlaylistURIHint,
 		MediaSequence:     mediaSequence,
 		IsEnd:             req.IsEnd,
 	}
@@ -2874,7 +2874,7 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 	}
 	if streamID == "" {
 		streamID = seedHash
-		segData.StreamID = ""
+		segData.StreamId = ""
 		recent = nil
 	}
 	outPath, err := s.rt.Workspace.SelectLiveSegmentOutputPath(streamID, segmentIndex, uint64(len(segmentBytes)))

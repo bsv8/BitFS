@@ -132,7 +132,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 				lock_blocks=excluded.lock_blocks,
 				updated_at_unix=excluded.updated_at_unix`,
 			sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex,
-			req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxID), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
+			req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxid), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
 		); err != nil {
 			return err
 		}
@@ -146,7 +146,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 			SpendTxFeeSat:      req.SpendTxFee,
 			FeeRateSatByte:     req.FeeRateSatByte,
 			LockBlocks:         req.LockBlocks,
-			OpenBaseTxID:       strings.TrimSpace(req.BaseTxID),
+			OpenBaseTxID:       strings.TrimSpace(req.BaseTxid),
 			Status:             "active",
 			CreatedAtUnix:      now,
 			UpdatedAtUnix:      now,
@@ -166,7 +166,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 			AvailableSat:       req.PoolAmount,
 			NextSequenceNum:    req.Sequence + 1,
 			Status:             "active",
-			OpenBaseTxID:       strings.TrimSpace(req.BaseTxID),
+			OpenBaseTxID:       strings.TrimSpace(req.BaseTxid),
 			OpenAllocationID:   directTransferPoolAllocationID(sessionID, PoolBusinessActionOpen, req.Sequence),
 			CreatedAtUnix:      now,
 			UpdatedAtUnix:      now,
@@ -184,7 +184,7 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 			SequenceNum:      req.Sequence,
 			PayeeAmountAfter: 0,
 			PayerAmountAfter: req.PoolAmount,
-			TxID:             strings.TrimSpace(req.BaseTxID),
+			TxID:             strings.TrimSpace(req.BaseTxid),
 			TxHex:            baseTxHex,
 			CreatedAtUnix:    now,
 			UTXOFacts:        utxoFacts,

@@ -37,9 +37,9 @@ func TestBuildAndVerifyLiveSegment(t *testing.T) {
 		DurationMs:        2345,
 		PublishedAtUnixMs: 1_700_000_123_000,
 		IsDiscontinuity:   true,
-		MIMEType:          "video/mp2t",
+		MimeType:          "video/mp2t",
 		InitSeedHash:      strings.Repeat("ab", 32),
-		PlaylistURIHint:   "/custom/seg0.ts",
+		PlaylistUriHint:   "/custom/seg0.ts",
 		IsEnd:             true,
 	}, []byte("hello-live"))
 	if err != nil {
@@ -67,16 +67,16 @@ func TestBuildAndVerifyLiveSegment(t *testing.T) {
 	if !data.IsDiscontinuity || !data.IsEnd {
 		t.Fatalf("expected discontinuity and end flags")
 	}
-	if data.MIMEType != "video/mp2t" {
-		t.Fatalf("unexpected mime_type: %s", data.MIMEType)
+	if data.MimeType != "video/mp2t" {
+		t.Fatalf("unexpected mime_type: %s", data.MimeType)
 	}
 	if data.InitSeedHash != strings.Repeat("ab", 32) {
 		t.Fatalf("unexpected init_seed_hash: %s", data.InitSeedHash)
 	}
-	if data.PlaylistURIHint != "/custom/seg0.ts" {
-		t.Fatalf("unexpected playlist_uri_hint: %s", data.PlaylistURIHint)
+	if data.PlaylistUriHint != "/custom/seg0.ts" {
+		t.Fatalf("unexpected playlist_uri_hint: %s", data.PlaylistUriHint)
 	}
-	if strings.TrimSpace(data.PublisherPubKey) == "" {
+	if strings.TrimSpace(data.PublisherPubkey) == "" {
 		t.Fatalf("publisher_pubkey missing")
 	}
 }

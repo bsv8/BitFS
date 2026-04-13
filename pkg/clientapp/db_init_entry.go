@@ -29,11 +29,6 @@ func ensureClientDBSchemaOnDB(ctx context.Context, db *sql.DB) error {
 		return fmt.Errorf("db is nil")
 	}
 
-	// 先挡住旧结构，避免在错误地基上继续跑。
-	if err := rejectLegacyClientDBSchema(ctx, db); err != nil {
-		return err
-	}
-
 	// 1. 基础表和索引（新库直接建）
 	if err := ensureClientDBBaseSchemaCtx(ctx, db); err != nil {
 		return fmt.Errorf("base schema: %w", err)

@@ -555,14 +555,12 @@ func TestInitIndexDB_RejectsLegacyAssetSchema(t *testing.T) {
 		t.Fatalf("create legacy table failed: %v", err)
 	}
 
-	if err := initIndexDB(db); err == nil {
-		t.Fatal("expected initIndexDB to reject legacy asset schema")
-	} else if !strings.Contains(err.Error(), "legacy settlement schema detected, please recreate db") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB should allow legacy asset schema tables: %v", err)
 	}
 }
 
-func TestInitIndexDB_RejectsOldAssetFlowTable(t *testing.T) {
+func TestInitIndexDB_AllowsOldAssetFlowTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
@@ -573,9 +571,7 @@ func TestInitIndexDB_RejectsOldAssetFlowTable(t *testing.T) {
 		t.Fatalf("create legacy fact_chain_asset_flows table failed: %v", err)
 	}
 
-	if err := initIndexDB(db); err == nil {
-		t.Fatal("expected initIndexDB to reject legacy fact_chain_asset_flows table")
-	} else if !strings.Contains(err.Error(), "legacy settlement schema detected, please recreate db") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := initIndexDB(db); err != nil {
+		t.Fatalf("initIndexDB should allow legacy fact_chain_asset_flows table: %v", err)
 	}
 }

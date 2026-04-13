@@ -661,7 +661,7 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 	}
 	var resp seedGetResp
 	err = pproto.CallProto(ctx, rt.Host, seller, ProtoSeedGet, clientSec(rt.rpcTrace), seedGetReq{
-		SessionID: sessionID,
+		SessionId: sessionID,
 		SeedHash:  seedHash,
 	}, &resp)
 	if err != nil {
@@ -749,7 +749,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 		if err != nil {
 			return directTransferPoolOpenResult{}, err
 		}
-		dealID = strings.TrimSpace(deal.DealID)
+		dealID = strings.TrimSpace(deal.DealId)
 	}
 	sessionID := strings.TrimSpace(p.SessionID)
 	if sessionID == "" {
@@ -951,26 +951,26 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			spendFee = 1
 		}
 		req := directTransferPoolOpenReq{
-			SessionID:      curSessionID,
-			DealID:         dealID,
-			BuyerPeerID:    strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
-			ArbiterPeerID:  strings.TrimSpace(p.ArbiterPubHex),
-			ArbiterPubKey:  arbiterPubHex,
-			PoolAmount:     baseResp.Amount,
-			SpendTxFee:     spendFee,
-			Sequence:       1,
-			SellerAmount:   0,
-			BuyerAmount:    buyerAmount,
-			CurrentTx:      spendTxBytes,
-			BuyerSig:       append([]byte(nil), (*buyerOpenSig)...),
-			BaseTx:         baseTxBytes,
-			BaseTxID:       baseResp.Tx.TxID().String(),
-			FeeRateSatByte: 0.5,
-			LockBlocks:     lockBlocks,
+			SessionId:        curSessionID,
+			DealId:           dealID,
+			BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+			ArbiterPubkeyHex: strings.TrimSpace(p.ArbiterPubHex),
+			ArbiterPubkey:    arbiterPubHex,
+			PoolAmount:       baseResp.Amount,
+			SpendTxFee:       spendFee,
+			Sequence:         1,
+			SellerAmount:     0,
+			BuyerAmount:      buyerAmount,
+			CurrentTx:        spendTxBytes,
+			BuyerSig:         append([]byte(nil), (*buyerOpenSig)...),
+			BaseTx:           baseTxBytes,
+			BaseTxid:         baseResp.Tx.TxID().String(),
+			FeeRateSatByte:   0.5,
+			LockBlocks:       lockBlocks,
 		}
 		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_begin", map[string]any{
-			"session_id": req.SessionID,
-			"deal_id":    req.DealID,
+			"session_id": req.SessionId,
+			"deal_id":    req.DealId,
 			"attempt":    attempt,
 		})
 		var openResp directTransferPoolOpenResp
@@ -992,8 +992,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 				lastErr = err
 				wait := time.Duration(attempt) * 800 * time.Millisecond
 				obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_retry", map[string]any{
-					"session_id": req.SessionID,
-					"deal_id":    req.DealID,
+					"session_id": req.SessionId,
+					"deal_id":    req.DealId,
 					"attempt":    attempt,
 					"wait_ms":    wait.Milliseconds(),
 					"error":      err.Error(),
@@ -1017,7 +1017,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			BusinessID:       businessID, // 正式下载 business_id，供 pay 挂 tx_breakdown
 			SettlementID:     settlementID,
 			SellerPubHex:     strings.TrimSpace(p.SellerPubHex),
-			ArbiterPubHex:    req.ArbiterPeerID,
+			ArbiterPubHex:    req.ArbiterPubkeyHex,
 			PoolAmountSat:    req.PoolAmount,
 			SpendTxFeeSat:    req.SpendTxFee,
 			OpenSequence:     req.Sequence,
@@ -1041,7 +1041,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"deal_id":                 dealID,
 			"session_id":              curSessionID,
 			"seller_pubkey_hex":       strings.TrimSpace(p.SellerPubHex),
-			"arbiter_pubkey_hex":      req.ArbiterPeerID,
+			"arbiter_pubkey_hex":      req.ArbiterPubkeyHex,
 			"open_sequence":           req.Sequence,
 			"open_base_txid":          baseTxID,
 			"pool_amount_satoshi":     req.PoolAmount,
@@ -1064,7 +1064,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			return directTransferPoolOpenResult{}, err
 		}
 		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_end", map[string]any{
-			"session_id": req.SessionID,
+			"session_id": req.SessionId,
 			"base_txid":  baseTxID,
 			"status":     openResp.Status,
 			"attempt":    attempt,
@@ -1251,7 +1251,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		return directTransferPoolPayResult{}, fmt.Errorf("encode updated tx bytes failed: %w", err)
 	}
 	req := directTransferPoolPayReq{
-		SessionID:    session.SessionID,
+		SessionId:    session.SessionID,
 		SeedHash:     seedHash,
 		ChunkHash:    chunkHash,
 		ChunkIndex:   p.ChunkIndex,
@@ -1262,7 +1262,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_begin", map[string]any{
-		"session_id":    req.SessionID,
+		"session_id":    req.SessionId,
 		"sequence":      req.Sequence,
 		"seller_amount": req.SellerAmount,
 		"chunk_hash":    chunkHash,
@@ -1353,7 +1353,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	}
 
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
-		"session_id":    req.SessionID,
+		"session_id":    req.SessionId,
 		"sequence":      req.Sequence,
 		"seller_amount": req.SellerAmount,
 		"status":        payResp.Status,
@@ -1414,7 +1414,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		return directTransferPoolCloseResult{}, fmt.Errorf("encode final tx bytes failed: %w", err)
 	}
 	req := directTransferPoolCloseReq{
-		SessionID:    session.SessionID,
+		SessionId:    session.SessionID,
 		Sequence:     session.Sequence,
 		SellerAmount: session.SellerAmount,
 		BuyerAmount:  session.BuyerAmount,
@@ -1422,7 +1422,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
 	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_close_begin", map[string]any{
-		"session_id": req.SessionID,
+		"session_id": req.SessionId,
 		"sequence":   req.Sequence,
 	})
 	var closeResp directTransferPoolCloseResp
@@ -1715,13 +1715,13 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 	}
 	var resp directDealAcceptResp
 	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
-		DemandID:      strings.TrimSpace(p.DemandID),
-		BuyerPeerID:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
-		SeedHash:      strings.ToLower(strings.TrimSpace(p.SeedHash)),
-		SeedPrice:     p.SeedPrice,
-		ChunkPrice:    p.ChunkPrice,
-		ExpiresAtUnix: p.ExpiresAtUnix,
-		ArbiterPeerID: strings.TrimSpace(p.ArbiterPubHex),
+		DemandId:         strings.TrimSpace(p.DemandID),
+		BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+		SeedHash:         strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		SeedPrice:        p.SeedPrice,
+		ChunkPrice:       p.ChunkPrice,
+		ExpiresAtUnix:    p.ExpiresAtUnix,
+		ArbiterPubkeyHex: strings.TrimSpace(p.ArbiterPubHex),
 	}, &resp)
 	if err != nil {
 		return directDealAcceptResp{}, err

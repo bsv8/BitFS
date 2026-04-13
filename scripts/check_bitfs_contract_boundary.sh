@@ -20,5 +20,15 @@ if ! rg -q 'bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"' pkg/cl
   exit 1
 fi
 
-echo "[bitfs-boundary] ok"
+echo "[bitfs-boundary] checking protocol message ownership..."
+if rg -n --glob '!**/*_test.go' '^type (seedGetReq|seedGetResp|directQuoteSubmitReq|directQuoteSubmitResp|directDealAcceptReq|directDealAcceptResp|directTransferPoolOpenReq|directTransferPoolOpenResp|directTransferPoolPayReq|directTransferPoolPayResp|directTransferPoolCloseReq|directTransferPoolCloseResp|liveSegmentDataPB|liveSegmentPB|liveSegmentRefPB|liveSubscribeReq|liveSubscribeResp|liveHeadPushReq|liveHeadPushResp|liveQuoteSegmentPB|liveQuoteSubmitReq|liveQuoteSubmitResp) struct' pkg/clientapp; then
+  echo "[bitfs-boundary] boundary violated: direct/live/seed protocol messages must come from bitfs-contract generated types" >&2
+  exit 1
+fi
 
+if ! rg -q 'bitfsv1 "github.com/bsv8/bitfs-contract/gen/go/v1"' pkg/clientapp/run.go; then
+  echo "[bitfs-boundary] missing bitfs-contract generated type bridge in run.go" >&2
+  exit 1
+fi
+
+echo "[bitfs-boundary] ok"

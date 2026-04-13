@@ -3,11 +3,11 @@ module github.com/bsv8/BitFS
 go 1.26
 
 require (
-	github.com/bsv8/bitfs-contract v0.0.0
 	github.com/bsv-blockchain/go-sdk v1.2.18
 	github.com/bsv8/BFTP v0.0.0
 	github.com/bsv8/MultisigPool v0.0.0
 	github.com/bsv8/WOCProxy v0.0.0
+	github.com/bsv8/bitfs-contract v0.0.0
 	github.com/golang/protobuf v1.5.0
 	github.com/libp2p/go-libp2p v0.45.0
 	github.com/multiformats/go-multiaddr v0.16.0
@@ -18,6 +18,8 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.47.0
 )
+
+require github.com/adraffy/go-ens-normalize v0.1.1 // indirect
 
 require (
 	github.com/benbjohnson/clock v1.3.5 // indirect
@@ -124,4 +126,4 @@ replace github.com/libp2p/go-libp2p/core => github.com/libp2p/go-libp2p v0.45.0
 
 replace github.com/bsv8/BFTP-contract => ../BFTP-contract
 
-replace github.com/bsv8/bitfs-contract => ../bitfs-contract
+replace github.com/bsv8/bitfs-contract => ../BitFS-contract

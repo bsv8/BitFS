@@ -71,7 +71,7 @@ type BizOrderPayBSVRequest struct {
 // BizOrderPayBSVResponse 是新的 BSV 业务下单结果。
 // 设计说明：
 // - ok=false 不一定是技术错误，很多时候只是业务上还没付成；
-// - status 直接给前台看，方便按 biz_ + settle_ 聚合展示；
+// - status 直接给前台看，方便按业务主表聚合展示；
 // - summary 里会带出这张订单下所有 payment 单的汇总。
 type BizOrderPayBSVResponse struct {
 	Ok                   bool                         `json:"ok"`

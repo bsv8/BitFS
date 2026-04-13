@@ -134,19 +134,19 @@ func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
 	baseTxHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 
 	if err := dbUpsertDirectTransferPoolOpen(ctx, store, directTransferPoolOpenReq{
-		SessionID:      sessionID,
-		DealID:         dealID,
-		BuyerPeerID:    buyerPubHex,
-		ArbiterPeerID:  arbiterPubHex,
-		ArbiterPubKey:  arbiterPubHex,
-		PoolAmount:     990,
-		SpendTxFee:     10,
-		Sequence:       1,
-		SellerAmount:   0,
-		BuyerAmount:    990,
-		BaseTxID:       "base_tx_third_iter_1",
-		FeeRateSatByte: 0.5,
-		LockBlocks:     6,
+		SessionId:        sessionID,
+		DealId:           dealID,
+		BuyerPubkeyHex:   buyerPubHex,
+		ArbiterPubkeyHex: arbiterPubHex,
+		ArbiterPubkey:    arbiterPubHex,
+		PoolAmount:       990,
+		SpendTxFee:       10,
+		Sequence:         1,
+		SellerAmount:     0,
+		BuyerAmount:      990,
+		BaseTxid:         "base_tx_third_iter_1",
+		FeeRateSatByte:   0.5,
+		LockBlocks:       6,
 	}, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
 		t.Fatalf("seed direct transfer open facts failed: %v", err)
 	}

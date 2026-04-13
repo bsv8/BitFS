@@ -26,6 +26,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
+	bitfsv1 "github.com/bsv8/bitfs-contract/gen/go/v1"
 	bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
@@ -75,179 +76,30 @@ type healthReq struct{}
 type healthResp struct {
 	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
 }
-type seedGetReq struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	SeedHash  string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
-}
-type seedGetResp struct {
-	Seed []byte `protobuf:"bytes,1,opt,name=seed,proto3" json:"seed"`
-}
-type directQuoteSubmitReq struct {
-	DemandID             string   `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
-	SellerPeerID         string   `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
-	SeedPrice            uint64   `protobuf:"varint,3,opt,name=seed_price,json=seedPrice,proto3" json:"seed_price"`
-	ChunkPrice           uint64   `protobuf:"varint,4,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
-	ExpiresAtUnix        int64    `protobuf:"varint,5,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
-	RecommendedFileName  string   `protobuf:"bytes,6,opt,name=recommended_file_name,json=recommendedFileName,proto3" json:"recommended_file_name,omitempty"`
-	ArbiterPeerIDs       []string `protobuf:"bytes,7,rep,name=arbiter_pubkey_hexes,json=arbiterPeerIds,proto3" json:"arbiter_pubkey_hexes,omitempty"`
-	AvailableChunkBitmap []byte   `protobuf:"bytes,8,opt,name=available_chunk_bitmap,json=availableChunkBitmap,proto3" json:"available_chunk_bitmap,omitempty"`
-	ChunkCount           uint32   `protobuf:"varint,9,opt,name=chunk_count,json=chunkCount,proto3" json:"chunk_count,omitempty"`
-	FileSize             uint64   `protobuf:"varint,10,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"`
-	MIMEHint             string   `protobuf:"bytes,11,opt,name=mime_hint,json=mimeHint,proto3" json:"mime_hint,omitempty"`
-}
-type directQuoteSubmitResp struct {
-	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
-}
-type directDealAcceptReq struct {
-	DemandID      string `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
-	BuyerPeerID   string `protobuf:"bytes,2,opt,name=buyer_pubkey_hex,json=buyerPeerId,proto3" json:"buyer_pubkey_hex"`
-	SeedHash      string `protobuf:"bytes,3,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
-	SeedPrice     uint64 `protobuf:"varint,4,opt,name=seed_price,json=seedPrice,proto3" json:"seed_price"`
-	ChunkPrice    uint64 `protobuf:"varint,5,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
-	ExpiresAtUnix int64  `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
-	ArbiterPeerID string `protobuf:"bytes,7,opt,name=arbiter_pubkey_hex,json=arbiterPeerId,proto3" json:"arbiter_pubkey_hex,omitempty"`
-}
-type directDealAcceptResp struct {
-	DealID       string `protobuf:"bytes,1,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
-	SellerPeerID string `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
-	ChunkPrice   uint64 `protobuf:"varint,3,opt,name=chunk_price,json=chunkPrice,proto3" json:"chunk_price"`
-	Status       string `protobuf:"bytes,4,opt,name=status,proto3" json:"status"`
-}
 
-type directTransferPoolOpenReq struct {
-	SessionID      string  `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	DealID         string  `protobuf:"bytes,2,opt,name=deal_id,json=dealId,proto3" json:"deal_id"`
-	BuyerPeerID    string  `protobuf:"bytes,3,opt,name=buyer_pubkey_hex,json=buyerPeerId,proto3" json:"buyer_pubkey_hex"`
-	ArbiterPeerID  string  `protobuf:"bytes,4,opt,name=arbiter_pubkey_hex,json=arbiterPeerId,proto3" json:"arbiter_pubkey_hex"`
-	ArbiterPubKey  string  `protobuf:"bytes,5,opt,name=arbiter_pubkey,json=arbiterPubkey,proto3" json:"arbiter_pubkey_hex"`
-	PoolAmount     uint64  `protobuf:"varint,6,opt,name=pool_amount,json=poolAmount,proto3" json:"pool_amount"`
-	SpendTxFee     uint64  `protobuf:"varint,7,opt,name=spend_tx_fee,json=spendTxFee,proto3" json:"spend_tx_fee"`
-	Sequence       uint32  `protobuf:"varint,8,opt,name=sequence,proto3" json:"sequence"`
-	SellerAmount   uint64  `protobuf:"varint,9,opt,name=seller_amount,json=sellerAmount,proto3" json:"seller_amount"`
-	BuyerAmount    uint64  `protobuf:"varint,10,opt,name=buyer_amount,json=buyerAmount,proto3" json:"buyer_amount"`
-	CurrentTx      []byte  `protobuf:"bytes,11,opt,name=current_tx,json=currentTx,proto3" json:"current_tx"`
-	BuyerSig       []byte  `protobuf:"bytes,12,opt,name=buyer_sig,json=buyerSig,proto3" json:"buyer_sig"`
-	BaseTx         []byte  `protobuf:"bytes,13,opt,name=base_tx,json=baseTx,proto3" json:"base_tx"`
-	BaseTxID       string  `protobuf:"bytes,14,opt,name=base_txid,json=baseTxid,proto3" json:"base_txid"`
-	FeeRateSatByte float64 `protobuf:"fixed64,15,opt,name=fee_rate_sat_byte,json=feeRateSatByte,proto3" json:"fee_rate_sat_byte"`
-	LockBlocks     uint32  `protobuf:"varint,16,opt,name=lock_blocks,json=lockBlocks,proto3" json:"lock_blocks"`
-}
-
-type directTransferPoolOpenResp struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
-	SellerSig []byte `protobuf:"bytes,3,opt,name=seller_sig,json=sellerSig,proto3" json:"seller_sig,omitempty"`
-	Error     string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
-}
-
-type directTransferPoolPayReq struct {
-	SessionID    string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	SeedHash     string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
-	ChunkHash    string `protobuf:"bytes,3,opt,name=chunk_hash,json=chunkHash,proto3" json:"chunk_hash"`
-	ChunkIndex   uint32 `protobuf:"varint,4,opt,name=chunk_index,json=chunkIndex,proto3" json:"chunk_index"`
-	Sequence     uint32 `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence"`
-	SellerAmount uint64 `protobuf:"varint,6,opt,name=seller_amount,json=sellerAmount,proto3" json:"seller_amount"`
-	BuyerAmount  uint64 `protobuf:"varint,7,opt,name=buyer_amount,json=buyerAmount,proto3" json:"buyer_amount"`
-	CurrentTx    []byte `protobuf:"bytes,8,opt,name=current_tx,json=currentTx,proto3" json:"current_tx"`
-	BuyerSig     []byte `protobuf:"bytes,9,opt,name=buyer_sig,json=buyerSig,proto3" json:"buyer_sig"`
-}
-
-type directTransferPoolPayResp struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
-	SellerSig []byte `protobuf:"bytes,3,opt,name=seller_sig,json=sellerSig,proto3" json:"seller_sig,omitempty"`
-	Chunk     []byte `protobuf:"bytes,4,opt,name=chunk,proto3" json:"chunk,omitempty"`
-	Error     string `protobuf:"bytes,5,opt,name=error,proto3" json:"error,omitempty"`
-}
-
-type directTransferPoolCloseReq struct {
-	SessionID    string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	Sequence     uint32 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence"`
-	SellerAmount uint64 `protobuf:"varint,3,opt,name=seller_amount,json=sellerAmount,proto3" json:"seller_amount"`
-	BuyerAmount  uint64 `protobuf:"varint,4,opt,name=buyer_amount,json=buyerAmount,proto3" json:"buyer_amount"`
-	CurrentTx    []byte `protobuf:"bytes,5,opt,name=current_tx,json=currentTx,proto3" json:"current_tx"`
-	BuyerSig     []byte `protobuf:"bytes,6,opt,name=buyer_sig,json=buyerSig,proto3" json:"buyer_sig"`
-}
-
-type directTransferPoolCloseResp struct {
-	SessionID string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id"`
-	Status    string `protobuf:"bytes,2,opt,name=status,proto3" json:"status"`
-	SellerSig []byte `protobuf:"bytes,3,opt,name=seller_sig,json=sellerSig,proto3" json:"seller_sig,omitempty"`
-	Error     string `protobuf:"bytes,4,opt,name=error,proto3" json:"error,omitempty"`
-}
-
-type liveSegmentDataPB struct {
-	Version           uint32 `protobuf:"varint,1,opt,name=version,proto3" json:"version"`
-	StreamID          string `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id,omitempty"`
-	SegmentIndex      uint64 `protobuf:"varint,3,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index"`
-	PrevSeedHash      string `protobuf:"bytes,4,opt,name=prev_seed_hash,json=prevSeedHash,proto3" json:"prev_seed_hash,omitempty"`
-	PublisherPubKey   string `protobuf:"bytes,5,opt,name=publisher_pubkey,json=publisherPubkey,proto3" json:"publisher_pubkey"`
-	MediaHash         []byte `protobuf:"bytes,6,opt,name=media_hash,json=mediaHash,proto3" json:"media_hash"`
-	DurationMs        uint64 `protobuf:"varint,7,opt,name=duration_ms,json=durationMs,proto3" json:"duration_ms,omitempty"`
-	PublishedAtUnixMs int64  `protobuf:"varint,8,opt,name=published_at_unix_ms,json=publishedAtUnixMs,proto3" json:"published_at_unix_ms,omitempty"`
-	IsDiscontinuity   bool   `protobuf:"varint,9,opt,name=is_discontinuity,json=isDiscontinuity,proto3" json:"is_discontinuity,omitempty"`
-	MIMEType          string `protobuf:"bytes,10,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
-	InitSeedHash      string `protobuf:"bytes,11,opt,name=init_seed_hash,json=initSeedHash,proto3" json:"init_seed_hash,omitempty"`
-	PlaylistURIHint   string `protobuf:"bytes,12,opt,name=playlist_uri_hint,json=playlistUriHint,proto3" json:"playlist_uri_hint,omitempty"`
-	MediaSequence     uint64 `protobuf:"varint,13,opt,name=media_sequence,json=mediaSequence,proto3" json:"media_sequence,omitempty"`
-	IsEnd             bool   `protobuf:"varint,14,opt,name=is_end,json=isEnd,proto3" json:"is_end,omitempty"`
-}
-
-type liveSegmentPB struct {
-	Data       []byte `protobuf:"bytes,1,opt,name=data,proto3" json:"data"`
-	MediaBytes []byte `protobuf:"bytes,2,opt,name=media_bytes,json=mediaBytes,proto3" json:"media_bytes"`
-	Signature  []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature"`
-}
-
-type liveSegmentRefPB struct {
-	SegmentIndex    uint64 `protobuf:"varint,1,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index"`
-	SeedHash        string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
-	PublishedAtUnix int64  `protobuf:"varint,3,opt,name=published_at_unix,json=publishedAtUnix,proto3" json:"published_at_unix,omitempty"`
-}
-
-type liveSubscribeReq struct {
-	StreamURI        string   `protobuf:"bytes,1,opt,name=stream_uri,json=streamUri,proto3" json:"stream_uri"`
-	StreamID         string   `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
-	Window           uint32   `protobuf:"varint,3,opt,name=window,proto3" json:"window"`
-	SubscriberPeerID string   `protobuf:"bytes,4,opt,name=subscriber_pubkey_hex,json=subscriberPeerId,proto3" json:"subscriber_pubkey_hex"`
-	SubscriberAddrs  []string `protobuf:"bytes,5,rep,name=subscriber_addrs,json=subscriberAddrs,proto3" json:"subscriber_addrs,omitempty"`
-}
-
-type liveSubscribeResp struct {
-	Status          string              `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
-	StreamID        string              `protobuf:"bytes,2,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
-	PublisherPubKey string              `protobuf:"bytes,3,opt,name=publisher_pubkey,json=publisherPubkey,proto3" json:"publisher_pubkey"`
-	RecentSegments  []*liveSegmentRefPB `protobuf:"bytes,4,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
-}
-
-type liveHeadPushReq struct {
-	StreamID        string              `protobuf:"bytes,1,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
-	PublisherPubKey string              `protobuf:"bytes,2,opt,name=publisher_pubkey,json=publisherPubkey,proto3" json:"publisher_pubkey"`
-	RecentSegments  []*liveSegmentRefPB `protobuf:"bytes,3,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
-	SentAtUnix      int64               `protobuf:"varint,4,opt,name=sent_at_unix,json=sentAtUnix,proto3" json:"sent_at_unix"`
-}
-
-type liveHeadPushResp struct {
-	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
-}
-
-type liveQuoteSegmentPB struct {
-	SegmentIndex uint64 `protobuf:"varint,1,opt,name=segment_index,json=segmentIndex,proto3" json:"segment_index"`
-	SeedHash     string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
-}
-
-type liveQuoteSubmitReq struct {
-	DemandID           string                `protobuf:"bytes,1,opt,name=demand_id,json=demandId,proto3" json:"demand_id"`
-	SellerPeerID       string                `protobuf:"bytes,2,opt,name=seller_pubkey_hex,json=sellerPeerId,proto3" json:"seller_pubkey_hex"`
-	StreamID           string                `protobuf:"bytes,3,opt,name=stream_id,json=streamId,proto3" json:"stream_id"`
-	LatestSegmentIndex uint64                `protobuf:"varint,4,opt,name=latest_segment_index,json=latestSegmentIndex,proto3" json:"latest_segment_index"`
-	RecentSegments     []*liveQuoteSegmentPB `protobuf:"bytes,5,rep,name=recent_segments,json=recentSegments,proto3" json:"recent_segments,omitempty"`
-	ExpiresAtUnix      int64                 `protobuf:"varint,6,opt,name=expires_at_unix,json=expiresAtUnix,proto3" json:"expires_at_unix"`
-}
-
-type liveQuoteSubmitResp struct {
-	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
-}
+// bitfs-contract v0：协议结构体由 contract 生成类型接管。
+type seedGetReq = bitfsv1.SeedGetReq
+type seedGetResp = bitfsv1.SeedGetResp
+type directQuoteSubmitReq = bitfsv1.DirectQuoteSubmitReq
+type directQuoteSubmitResp = bitfsv1.DirectQuoteSubmitResp
+type directDealAcceptReq = bitfsv1.DirectDealAcceptReq
+type directDealAcceptResp = bitfsv1.DirectDealAcceptResp
+type directTransferPoolOpenReq = bitfsv1.DirectTransferPoolOpenReq
+type directTransferPoolOpenResp = bitfsv1.DirectTransferPoolOpenResp
+type directTransferPoolPayReq = bitfsv1.DirectTransferPoolPayReq
+type directTransferPoolPayResp = bitfsv1.DirectTransferPoolPayResp
+type directTransferPoolCloseReq = bitfsv1.DirectTransferPoolCloseReq
+type directTransferPoolCloseResp = bitfsv1.DirectTransferPoolCloseResp
+type liveSegmentDataPB = bitfsv1.LiveSegmentData
+type liveSegmentPB = bitfsv1.LiveSegment
+type liveSegmentRefPB = bitfsv1.LiveSegmentRef
+type liveSubscribeReq = bitfsv1.LiveSubscribeReq
+type liveSubscribeResp = bitfsv1.LiveSubscribeResp
+type liveHeadPushReq = bitfsv1.LiveHeadPushReq
+type liveHeadPushResp = bitfsv1.LiveHeadPushResp
+type liveQuoteSegmentPB = bitfsv1.LiveSegmentRef
+type liveQuoteSubmitReq = bitfsv1.LiveQuoteSubmitReq
+type liveQuoteSubmitResp = bitfsv1.LiveQuoteSubmitResp
 
 type Config struct {
 	ClientID string `yaml:"-" toml:"-"`
@@ -1745,10 +1597,10 @@ func cfgBool(v *bool, def bool) bool {
 // - 该入口只负责落库 biz_demand_quotes 和 biz_demand_quote_arbiters，不涉及卖方资源读取，因此可全端默认启用。
 func registerDirectQuoteSubmitHandler(h host.Host, store *clientDB, trace pproto.TraceSink) {
 	pproto.HandleProto[directQuoteSubmitReq, directQuoteSubmitResp](h, ProtoQuoteDirectSubmit, clientSec(trace), func(ctx context.Context, req directQuoteSubmitReq) (directQuoteSubmitResp, error) {
-		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.SellerPeerID) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
+		if strings.TrimSpace(req.DemandId) == "" || strings.TrimSpace(req.SellerPubkeyHex) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directQuoteSubmitResp{}, fmt.Errorf("invalid direct quote")
 		}
-		sellerPubHex, err := normalizeCompressedPubKeyHex(req.SellerPeerID)
+		sellerPubHex, err := normalizeCompressedPubKeyHex(req.SellerPubkeyHex)
 		if err != nil {
 			return directQuoteSubmitResp{}, fmt.Errorf("invalid seller pubkey")
 		}
@@ -1885,10 +1737,10 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 
 	pproto.HandleProto[seedGetReq, seedGetResp](h, ProtoSeedGet, clientSec(trace), func(ctx context.Context, req seedGetReq) (seedGetResp, error) {
 		seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
-		if strings.TrimSpace(req.SessionID) == "" || seedHash == "" {
+		if strings.TrimSpace(req.SessionId) == "" || seedHash == "" {
 			return seedGetResp{}, fmt.Errorf("invalid params")
 		}
-		row, err := dbLoadDirectTransferPoolRow(ctx, store, strings.TrimSpace(req.SessionID))
+		row, err := dbLoadDirectTransferPoolRow(ctx, store, strings.TrimSpace(req.SessionId))
 		if err != nil {
 			return seedGetResp{}, fmt.Errorf("session not found")
 		}
@@ -1906,10 +1758,10 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		return seedGetResp{Seed: append([]byte(nil), seedBytes...)}, nil
 	})
 	pproto.HandleProto[directDealAcceptReq, directDealAcceptResp](h, ProtoDirectDealAccept, clientSec(trace), func(ctx context.Context, req directDealAcceptReq) (directDealAcceptResp, error) {
-		if strings.TrimSpace(req.DemandID) == "" || strings.TrimSpace(req.BuyerPeerID) == "" || strings.TrimSpace(req.SeedHash) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
+		if strings.TrimSpace(req.DemandId) == "" || strings.TrimSpace(req.BuyerPubkeyHex) == "" || strings.TrimSpace(req.SeedHash) == "" || req.SeedPrice == 0 || req.ChunkPrice == 0 {
 			return directDealAcceptResp{}, fmt.Errorf("invalid direct deal accept")
 		}
-		buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPeerID)
+		buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPubkeyHex)
 		if err != nil {
 			return directDealAcceptResp{}, fmt.Errorf("invalid buyer pubkey")
 		}
@@ -1925,10 +1777,10 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			return directDealAcceptResp{}, err
 		}
 		return directDealAcceptResp{
-			DealID:       dealID,
-			SellerPeerID: sellerPubHex,
-			ChunkPrice:   req.ChunkPrice,
-			Status:       "accepted",
+			DealId:          dealID,
+			SellerPubkeyHex: sellerPubHex,
+			ChunkPrice:      req.ChunkPrice,
+			Status:          "accepted",
 		}, nil
 	})
 	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
@@ -1987,16 +1839,16 @@ func submitDirectQuote(ctx context.Context, h host.Host, trace pproto.TraceSink,
 		return err
 	}
 	if err := pproto.CallProto(ctx, h, buyerID, ProtoQuoteDirectSubmit, clientSec(trace), directQuoteSubmitReq{
-		DemandID:             strings.TrimSpace(p.DemandID),
-		SellerPeerID:         strings.ToLower(strings.TrimSpace(sellerClientID)),
+		DemandId:             strings.TrimSpace(p.DemandID),
+		SellerPubkeyHex:      strings.ToLower(strings.TrimSpace(sellerClientID)),
 		SeedPrice:            p.SeedPrice,
 		ChunkPrice:           p.ChunkPrice,
 		ChunkCount:           p.ChunkCount,
 		FileSize:             p.FileSizeBytes,
 		ExpiresAtUnix:        p.ExpiresAtUnix,
 		RecommendedFileName:  sanitizeRecommendedFileName(p.RecommendedFileName),
-		MIMEHint:             sanitizeMIMEHint(p.MimeType),
-		ArbiterPeerIDs:       arbiterPubHexes,
+		MimeHint:             sanitizeMIMEHint(p.MimeType),
+		ArbiterPubkeyHexes:   arbiterPubHexes,
 		AvailableChunkBitmap: bitmapBytes,
 	}, &resp); err != nil {
 		return err
@@ -2048,9 +1900,9 @@ func submitLiveQuote(ctx context.Context, h host.Host, trace pproto.TraceSink, p
 	}
 	var resp liveQuoteSubmitResp
 	if err := pproto.CallProto(ctx, h, buyerID, ProtoLiveQuoteSubmit, clientSec(trace), liveQuoteSubmitReq{
-		DemandID:           strings.TrimSpace(p.DemandID),
-		SellerPeerID:       strings.ToLower(strings.TrimSpace(sellerClientID)),
-		StreamID:           strings.ToLower(strings.TrimSpace(p.StreamID)),
+		DemandId:           strings.TrimSpace(p.DemandID),
+		SellerPubkeyHex:    strings.ToLower(strings.TrimSpace(sellerClientID)),
+		StreamId:           strings.ToLower(strings.TrimSpace(p.StreamID)),
 		LatestSegmentIndex: p.LatestSegmentIndex,
 		RecentSegments:     recent,
 		ExpiresAtUnix:      p.ExpiresAtUnix,

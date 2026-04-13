@@ -38,16 +38,16 @@ func TestDemandQuoteCurrentSchema(t *testing.T) {
 		t.Fatalf("insert demand: %v", err)
 	}
 	quoteReq := directQuoteSubmitReq{
-		DemandID:            "dmd_overwrite",
-		SellerPeerID:        seller,
+		DemandId:            "dmd_overwrite",
+		SellerPubkeyHex:     seller,
 		SeedPrice:           100,
 		ChunkPrice:          10,
 		ChunkCount:          4,
 		FileSize:            1234,
 		ExpiresAtUnix:       1893427200,
 		RecommendedFileName: "first.bin",
-		MIMEHint:            "application/octet-stream",
-		ArbiterPeerIDs: []string{
+		MimeHint:            "application/octet-stream",
+		ArbiterPubkeyHexes: []string{
 			"02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 			"03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		},
@@ -60,8 +60,8 @@ func TestDemandQuoteCurrentSchema(t *testing.T) {
 	quoteReq.ChunkPrice = 12
 	quoteReq.FileSize = 4321
 	quoteReq.RecommendedFileName = "second.bin"
-	quoteReq.MIMEHint = "text/plain"
-	quoteReq.ArbiterPeerIDs = []string{
+	quoteReq.MimeHint = "text/plain"
+	quoteReq.ArbiterPubkeyHexes = []string{
 		"03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
 		"02eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
 		"03dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",

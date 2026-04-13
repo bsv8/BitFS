@@ -61,7 +61,7 @@ type walletBSVTransferSubmissionResult struct {
 // 设计说明：
 // - 这不是新的业务入口，外层不能直接拿它当“下单”；
 // - 它只负责把一笔已经准备好的普通 BSV 转账广播出去，并回写本地钱包视图；
-// - 结算层要先写 biz_/settle_，再调用这里完成实际链上动作。
+// - 结算层要先写业务结算主表，再调用这里完成实际链上动作。
 func TriggerWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime, req WalletBSVTransferRequest) (WalletBSVTransferResult, error) {
 	prepared, err := prepareWalletBSVTransfer(ctx, store, rt, req)
 	if err != nil {
@@ -116,7 +116,7 @@ func submitWalletBSVTransferPrepared(ctx context.Context, store *clientDB, rt *R
 // 设计说明：
 // - 先跑真实钱包转账，再把链上结果回写到 order_settlements / order_settlement_events；
 // - 同一个 order_id + idempotency_key 重复提交时，不会再生成第二笔支付；
-// - 前台最终看的是 biz_ + settle_ 聚合，不再看钱包直发结果。
+// - 前台最终看的是业务主表聚合，不再看钱包直发结果。
 func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *Runtime, orderID string, businessID string, settlementID string, idempotencyKey string, toAddress string, amountSatoshi uint64, fromPartyID string, toPartyID string) (BizOrderPayBSVResponse, error) {
 	resp := BizOrderPayBSVResponse{
 		Ok:             false,

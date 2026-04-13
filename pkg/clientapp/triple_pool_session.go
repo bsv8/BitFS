@@ -154,53 +154,53 @@ func (r *Runtime) releaseTransferPoolSessionMutex(sessionID string) {
 }
 
 func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
-	sessionID := strings.TrimSpace(req.SessionID)
-	dealID := strings.TrimSpace(req.DealID)
-	buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPeerID)
+	sessionID := strings.TrimSpace(req.SessionId)
+	dealID := strings.TrimSpace(req.DealId)
+	buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPubkeyHex)
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: strings.TrimSpace(req.SessionID), Status: "rejected", Error: "invalid buyer pubkey"}, nil
+		return directTransferPoolOpenResp{SessionId: strings.TrimSpace(req.SessionId), Status: "rejected", Error: "invalid buyer pubkey"}, nil
 	}
-	arbiterPeerID := strings.TrimSpace(req.ArbiterPeerID)
-	arbiterPubHex := strings.ToLower(strings.TrimSpace(req.ArbiterPubKey))
+	arbiterPeerID := strings.TrimSpace(req.ArbiterPubkeyHex)
+	arbiterPubHex := strings.ToLower(strings.TrimSpace(req.ArbiterPubkey))
 	if sessionID == "" || dealID == "" || buyerPubHex == "" || arbiterPeerID == "" || arbiterPubHex == "" {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid open request"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "invalid open request"}, nil
 	}
 	if req.Sequence == 0 {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "sequence must be >= 1"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "sequence must be >= 1"}, nil
 	}
 	if req.PoolAmount == 0 || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 || len(req.BaseTx) == 0 {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "missing tx payload"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "missing tx payload"}, nil
 	}
 	if req.SellerAmount+req.BuyerAmount+req.SpendTxFee != req.PoolAmount {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "amounts do not match pool"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "amounts do not match pool"}, nil
 	}
 
 	sellerPubHex := strings.ToLower(strings.TrimSpace(localPubHex(h)))
 	dealBuyerPubHex, dealSellerPubHex, dealArbiterPubHex, err := dbLoadDirectDealParties(context.Background(), store, dealID)
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "deal not found"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
 	if buyerPubHex != strings.ToLower(strings.TrimSpace(dealBuyerPubHex)) {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "buyer mismatch"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "buyer mismatch"}, nil
 	}
 	if sellerPubHex == "" || sellerPubHex != strings.ToLower(strings.TrimSpace(dealSellerPubHex)) {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "seller mismatch"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "seller mismatch"}, nil
 	}
 	if arbiterPeerID != strings.TrimSpace(dealArbiterPubHex) {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "arbiter mismatch"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "arbiter mismatch"}, nil
 	}
 
 	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
 	}
 	buyerPub, err := ec.PublicKeyFromString(buyerPubHex)
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer secp256k1 pubkey"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "invalid buyer secp256k1 pubkey"}, nil
 	}
 	arbiterPub, err := ec.PublicKeyFromString(arbiterPubHex)
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid arbiter secp256k1 pubkey"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "invalid arbiter secp256k1 pubkey"}, nil
 	}
 	currentTxHex := strings.ToLower(hex.EncodeToString(req.CurrentTx))
 	baseTxHex := strings.ToLower(hex.EncodeToString(req.BaseTx))
@@ -215,20 +215,20 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 		req.PoolAmount,
 	)
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
 	buyerSig := append([]byte(nil), req.BuyerSig...)
 	ok, err := te.ServerVerifyClientASig(parsedTx, req.PoolAmount, arbiterPub, buyerPub, sellerPriv.PubKey(), &buyerSig)
 	if err != nil || !ok {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
 	}
 	sellerSig, err := te.ClientBTripleFeePoolSpendTXUpdateSign(parsedTx, arbiterPub, buyerPub, sellerPriv)
 	if err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
 
 	if err := dbUpsertDirectTransferPoolOpen(context.Background(), store, req, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, currentTxHex, baseTxHex); err != nil {
-		return directTransferPoolOpenResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_open_ok", map[string]any{
 		"session_id":    sessionID,
@@ -238,70 +238,70 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 		"seller_amount": req.SellerAmount,
 	})
 	return directTransferPoolOpenResp{
-		SessionID: sessionID,
+		SessionId: sessionID,
 		Status:    "active",
 		SellerSig: append([]byte(nil), (*sellerSig)...),
 	}, nil
 }
 
 func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
-	sessionID := strings.TrimSpace(req.SessionID)
+	sessionID := strings.TrimSpace(req.SessionId)
 	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
 	if sessionID == "" || seedHash == "" || chunkHash == "" || req.Sequence == 0 || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid pay request"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid pay request"}, nil
 	}
 	row, err := dbLoadDirectTransferPoolRow(context.Background(), store, sessionID)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
 	if row.Status != "active" {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool not active"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not active"}, nil
 	}
 	if req.Sequence <= row.SequenceNum {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "sequence must increase"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "sequence must increase"}, nil
 	}
 	if req.SellerAmount <= row.SellerAmount {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "seller amount must increase"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "seller amount must increase"}, nil
 	}
 	dealSeedHash, err := dbLoadDirectDealSeedHash(context.Background(), store, row.DealID)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "deal not found"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
 	if seedHash != strings.ToLower(strings.TrimSpace(dealSeedHash)) {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "seed hash mismatch"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "seed hash mismatch"}, nil
 	}
 	seedBytes, err := dbLoadSeedBytesBySeedHash(context.Background(), store, seedHash)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	resolvedChunkIndex, err := resolveChunkIndexByHashInSeed(seedBytes, chunkHash)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	if req.ChunkIndex != resolvedChunkIndex {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "chunk index mismatch"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "chunk index mismatch"}, nil
 	}
 	chunk, err := dbLoadChunkBytesBySeedHash(context.Background(), store, seedHash, resolvedChunkIndex)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	sum := sha256.Sum256(chunk)
 	if hex.EncodeToString(sum[:]) != chunkHash {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "chunk hash verify failed"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "chunk hash verify failed"}, nil
 	}
 
 	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
 	}
 	buyerPub, err := ec.PublicKeyFromString(row.BuyerPubKeyHex)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer pubkey"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid buyer pubkey"}, nil
 	}
 	arbiterPub, err := ec.PublicKeyFromString(row.ArbiterPubKeyHex)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
 	}
 	currentTxHex := strings.ToLower(hex.EncodeToString(req.CurrentTx))
 	parsedTx, err := te.TripleFeePoolLoadTx(
@@ -315,21 +315,21 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 		row.PoolAmount,
 	)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
 	buyerSig := append([]byte(nil), req.BuyerSig...)
 	ok, err := te.ServerVerifyClientASig(parsedTx, row.PoolAmount, arbiterPub, buyerPub, sellerPriv.PubKey(), &buyerSig)
 	if err != nil || !ok {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
 	}
 	sellerSig, err := te.ClientBTripleFeePoolSpendTXUpdateSign(parsedTx, arbiterPub, buyerPub, sellerPriv)
 	if err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
 
 	delta := req.SellerAmount - row.SellerAmount
 	if err := dbUpdateDirectTransferPoolPay(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta); err != nil {
-		return directTransferPoolPayResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_pay_ok", map[string]any{
 		"session_id":    sessionID,
@@ -340,7 +340,7 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 		"chunk_index":   resolvedChunkIndex,
 	})
 	return directTransferPoolPayResp{
-		SessionID: sessionID,
+		SessionId: sessionID,
 		Status:    "active",
 		SellerSig: append([]byte(nil), (*sellerSig)...),
 		Chunk:     append([]byte(nil), chunk...),
@@ -378,38 +378,38 @@ func shortHash(s string) string {
 }
 
 func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
-	sessionID := strings.TrimSpace(req.SessionID)
+	sessionID := strings.TrimSpace(req.SessionId)
 	if sessionID == "" || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid close request"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid close request"}, nil
 	}
 	row, err := dbLoadDirectTransferPoolRow(context.Background(), store, sessionID)
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
 	// 关单要支持丢包重试：第一次成功后库里会落成 closed，第二次还要能按同一请求重放。
 	if row.Status != "active" && row.Status != "closing" && row.Status != "closed" {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 	}
 	if req.SellerAmount != row.SellerAmount {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "seller amount mismatch"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "seller amount mismatch"}, nil
 	}
 
 	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
 	}
 	buyerPub, err := ec.PublicKeyFromString(row.BuyerPubKeyHex)
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid buyer pubkey"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid buyer pubkey"}, nil
 	}
 	arbiterPub, err := ec.PublicKeyFromString(row.ArbiterPubKeyHex)
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
 	}
 	currentTxHex := strings.ToLower(hex.EncodeToString(req.CurrentTx))
 	rawTx, err := tx.NewTransactionFromHex(currentTxHex)
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
 	seq := req.Sequence
 	if len(rawTx.Inputs) > 0 && rawTx.Inputs[0].SequenceNumber != 0 {
@@ -417,7 +417,7 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	}
 	if row.Status == "closed" {
 		if strings.TrimSpace(row.CurrentTxHex) != currentTxHex || row.SequenceNum != req.Sequence || row.BuyerAmount != req.BuyerAmount {
-			return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
+			return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 		}
 	}
 	locktime := rawTx.LockTime
@@ -432,26 +432,26 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 		row.PoolAmount,
 	)
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid current tx"}, nil
 	}
 	buyerSig := append([]byte(nil), req.BuyerSig...)
 	ok, err := te.ServerVerifyClientASig(parsedTx, row.PoolAmount, arbiterPub, buyerPub, sellerPriv.PubKey(), &buyerSig)
 	if err != nil || !ok {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "buyer signature verify failed"}, nil
 	}
 	sellerSig, err := te.ClientBTripleFeePoolSpendTXUpdateSign(parsedTx, arbiterPub, buyerPub, sellerPriv)
 	if err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
 	if err := dbUpdateDirectTransferPoolClosing(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex); err != nil {
-		return directTransferPoolCloseResp{SessionID: sessionID, Status: "rejected", Error: err.Error()}, nil
+		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_close_sign_ok", map[string]any{
 		"session_id": sessionID,
 		"sequence":   req.Sequence,
 	})
 	return directTransferPoolCloseResp{
-		SessionID: sessionID,
+		SessionId: sessionID,
 		Status:    "closed",
 		SellerSig: append([]byte(nil), (*sellerSig)...),
 	}, nil
