@@ -21,3 +21,21 @@ type walletChainClient interface {
 	GetTxHash(ctx context.Context, txid string) (whatsonchain.TxDetail, error)
 	GetTxHex(ctx context.Context, txid string) (string, error)
 }
+
+// walletScriptEvidenceSource 给脚本分类模块提供统一的预取能力。
+// 设计说明：
+// - 模块只拿能力，不直接碰运行时结构；
+// - 所有外部查询都必须走这里，避免模块自己拉外网。
+type walletScriptEvidenceSource interface {
+	GetTxHex(ctx context.Context, txid string) (string, error)
+	GetAddressBSV20TokenUnspent(ctx context.Context, address string) ([]walletBSV20WOCCandidate, error)
+	GetAddressBSV21TokenUnspent(ctx context.Context, address string) ([]walletBSV21WOCCandidate, error)
+}
+
+type runtimeWalletScriptEvidenceSource struct {
+	rt *Runtime
+}
+
+func newRuntimeWalletScriptEvidenceSource(rt *Runtime) runtimeWalletScriptEvidenceSource {
+	return runtimeWalletScriptEvidenceSource{rt: rt}
+}

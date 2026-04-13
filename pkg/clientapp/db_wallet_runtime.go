@@ -22,7 +22,7 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 			return map[string]utxoStateRow{}, fmt.Errorf("wallet address is empty")
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=?
 			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
@@ -33,10 +33,11 @@ func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, addr
 		out := map[string]utxoStateRow{}
 		for rows.Next() {
 			var row utxoStateRow
-			if err := rows.Scan(&row.UTXOID, &row.TxID, &row.Vout, &row.Value, &row.State, &row.AllocationClass, &row.AllocationReason, &row.CreatedTxID, &row.SpentTxID, &row.CreatedAtUnix, &row.SpentAtUnix); err != nil {
+			if err := rows.Scan(&row.UTXOID, &row.TxID, &row.Vout, &row.Value, &row.State, &row.ScriptType, &row.ScriptTypeReason, &row.ScriptTypeUpdatedAtUnix, &row.AllocationClass, &row.AllocationReason, &row.CreatedTxID, &row.SpentTxID, &row.CreatedAtUnix, &row.SpentAtUnix); err != nil {
 				return nil, err
 			}
-			row.AllocationClass = normalizeWalletUTXOAllocationClass(row.AllocationClass)
+			row.ScriptType = string(normalizeWalletScriptType(row.ScriptType))
+			row.AllocationClass = walletScriptTypeAllocationClass(row.ScriptType)
 			row.AllocationReason = strings.TrimSpace(row.AllocationReason)
 			out[strings.ToLower(strings.TrimSpace(row.UTXOID))] = row
 		}
@@ -153,7 +154,7 @@ func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address
 			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,allocation_class,allocation_reason
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,script_type,script_type_reason,allocation_class,allocation_reason
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=? AND state='unspent'
 			ORDER BY created_at_unix ASC, value_satoshi ASC, txid ASC, vout ASC`, walletID, address)
@@ -164,11 +165,12 @@ func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address
 		out := make([]walletFundingCandidate, 0, s.UTXOCount)
 		for rows.Next() {
 			var item walletFundingCandidate
-			if err := rows.Scan(&item.UTXOID, &item.UTXO.TxID, &item.UTXO.Vout, &item.UTXO.Value, &item.CreatedAtUnix, &item.AllocationClass, &item.AllocationReason); err != nil {
+			if err := rows.Scan(&item.UTXOID, &item.UTXO.TxID, &item.UTXO.Vout, &item.UTXO.Value, &item.CreatedAtUnix, &item.ScriptType, &item.ScriptTypeReason, &item.AllocationClass, &item.AllocationReason); err != nil {
 				return nil, err
 			}
 			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
 			item.UTXO.TxID = strings.ToLower(strings.TrimSpace(item.UTXO.TxID))
+			item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
 			item.AllocationClass = normalizeWalletUTXOAllocationClass(item.AllocationClass)
 			item.AllocationReason = strings.TrimSpace(item.AllocationReason)
 			out = append(out, item)
@@ -187,7 +189,7 @@ func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address
 			return []walletUTXOBasicRow{}, nil
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,allocation_class,allocation_reason,created_at_unix
+		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,script_type,script_type_reason,allocation_class,allocation_reason,created_at_unix
 			FROM wallet_utxo
 			WHERE wallet_id=? AND address=? AND state='unspent' AND value_satoshi=1
 			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
@@ -198,11 +200,12 @@ func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address
 		out := make([]walletUTXOBasicRow, 0, 16)
 		for rows.Next() {
 			var item walletUTXOBasicRow
-			if err := rows.Scan(&item.UTXOID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.AllocationClass, &item.AllocationReason, &item.CreatedAtUnix); err != nil {
+			if err := rows.Scan(&item.UTXOID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.ScriptType, &item.ScriptTypeReason, &item.AllocationClass, &item.AllocationReason, &item.CreatedAtUnix); err != nil {
 				return nil, err
 			}
 			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
 			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
+			item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
 			item.AllocationClass = normalizeWalletUTXOAllocationClass(item.AllocationClass)
 			item.AllocationReason = strings.TrimSpace(item.AllocationReason)
 			out = append(out, item)

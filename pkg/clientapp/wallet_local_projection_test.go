@@ -161,8 +161,8 @@ func TestApplyLocalBroadcastWalletProjection_UpdatesWalletUTXOView(t *testing.T)
 	if changeClass != walletUTXOAllocationPlainBSV {
 		t.Fatalf("change output allocation_class mismatch: got=%s want=%s", changeClass, walletUTXOAllocationPlainBSV)
 	}
-	if changeReason != "" {
-		t.Fatalf("change output allocation_reason mismatch: got=%q want empty", changeReason)
+	if changeReason != "pure P2PKH script" {
+		t.Fatalf("change output allocation_reason mismatch: got=%q want %q", changeReason, "pure P2PKH script")
 	}
 	if changeValue != 59 {
 		t.Fatalf("change output value mismatch: got=%d want=59", changeValue)
@@ -441,7 +441,7 @@ func TestReconcileWalletUTXOSet_PreservesPendingLocalBroadcastWhenUpstreamLags(t
 		Count:              1,
 	}
 	cursor := walletUTXOSyncCursor{WalletID: walletID, NextConfirmedHeight: 1, RoundTipHeight: 1}
-	if err := SyncWalletAndApplyFacts(context.Background(), newClientDB(db, nil), addr, staleSnapshot, nil, cursor, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), newClientDB(db, nil), addr, staleSnapshot, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-stale", "", "periodic_tick", now+1, 5); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
 	}
 

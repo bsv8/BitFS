@@ -40,6 +40,8 @@ type walletUTXOBasicRow struct {
 	TxID             string
 	Vout             uint32
 	ValueSatoshi     uint64
+	ScriptType       string
+	ScriptTypeReason string
 	AllocationClass  string
 	AllocationReason string
 	CreatedAtUnix    int64
@@ -256,6 +258,13 @@ func queryWalletBSV21WOCUnspent(ctx context.Context, rt *Runtime, address string
 		return nil, err
 	}
 	return parsed.Tokens, nil
+}
+
+func (s runtimeWalletScriptEvidenceSource) GetAddressBSV21TokenUnspent(ctx context.Context, address string) ([]walletBSV21WOCCandidate, error) {
+	if s.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return queryWalletBSV21WOCUnspent(ctx, s.rt, address)
 }
 
 func listWalletUnspentOneSatRows(store *clientDB, address string) ([]walletUTXOBasicRow, error) {

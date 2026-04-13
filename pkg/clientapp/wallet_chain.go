@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
@@ -29,4 +30,11 @@ func NewWalletChainClientWithBaseURL(route chainbridge.Route, baseURL string, au
 		return nil, fmt.Errorf("wallet chain only supports provider %s", chainbridge.WhatsOnChainProvider)
 	}
 	return whatsonchain.NewClient(baseURL, auth), nil
+}
+
+func (s runtimeWalletScriptEvidenceSource) GetTxHex(ctx context.Context, txid string) (string, error) {
+	if s.rt == nil || s.rt.WalletChain == nil {
+		return "", fmt.Errorf("wallet chain not initialized")
+	}
+	return s.rt.WalletChain.GetTxHex(ctx, txid)
 }

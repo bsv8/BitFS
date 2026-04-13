@@ -45,6 +45,7 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 	}
 	walletID := walletIDByAddress(addr)
 	updatedAt := time.Now().Unix()
+	classifier := defaultWalletScriptClassifier(newRuntimeWalletScriptEvidenceSource(rt))
 
 	roundID := strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey)))
 	ctx = sqlTraceContextWithMeta(ctx, roundID, trigger, "wallet_local_projection", "dbApplyLocalBroadcastWalletProjection")
@@ -68,15 +69,12 @@ func dbApplyLocalBroadcastWalletProjection(ctx context.Context, store ClientStor
 			if out == nil || out.LockingScript == nil {
 				continue
 			}
-			// 设计说明：
-			// - 本地广播投影不能只认纯 p2pkh，因为 token change 常常是“协议前缀 + 钱包 p2pkh 后缀”；
-			// - 这里只判断“最终是否仍由本钱包控制”，和链同步保持同一套脚本匹配口径；
-			// - 这样 submit 成功后，钱包不会把自己的 1sat 找零误看成外部输出。
 			if !walletScriptHexMatchesAddressControl(hex.EncodeToString(out.LockingScript.Bytes()), walletScriptHex) {
 				continue
 			}
 			utxoID := txid + ":" + fmt.Sprint(idx)
-			_ = applyWalletUTXOUpsertState(desired, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", updatedAt)
+			classified := classifyWalletUTXOWithClassifier(ctx, classifier, newRuntimeWalletScriptEvidenceSource(rt), addr, utxoID, txid, uint32(idx), out.Satoshis, hex.EncodeToString(out.LockingScript.Bytes()), txHex)
+			_ = applyWalletUTXOUpsertState(desired, walletID, addr, utxoID, txid, uint32(idx), out.Satoshis, "unspent", "", string(classified.ScriptType), classified.Reason, updatedAt, updatedAt)
 			if err := dbUpsertBSVUTXODB(ctx, dbtx, bsvUTXOEntry{
 				UTXOID:         utxoID,
 				OwnerPubkeyHex: strings.ToLower(strings.TrimSpace(addr)),
@@ -157,7 +155,7 @@ func dbLoadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (m
 	if tx == nil {
 		return nil, fmt.Errorf("tx is nil")
 	}
-	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
+	rows, err := tx.Query(`SELECT utxo_id,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix FROM wallet_utxo WHERE wallet_id=? AND address=?`, walletID, address)
 	if err != nil {
 		return nil, err
 	}
@@ -165,10 +163,11 @@ func dbLoadWalletUTXOStateRowsTx(tx *sql.Tx, walletID string, address string) (m
 	out := map[string]utxoStateRow{}
 	for rows.Next() {
 		var r utxoStateRow
-		if err := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.AllocationClass, &r.AllocationReason, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix, &r.SpentAtUnix); err != nil {
+		if err := rows.Scan(&r.UTXOID, &r.TxID, &r.Vout, &r.Value, &r.State, &r.ScriptType, &r.ScriptTypeReason, &r.ScriptTypeUpdatedAtUnix, &r.AllocationClass, &r.AllocationReason, &r.CreatedTxID, &r.SpentTxID, &r.CreatedAtUnix, &r.SpentAtUnix); err != nil {
 			return nil, err
 		}
-		r.AllocationClass = normalizeWalletUTXOAllocationClass(r.AllocationClass)
+		r.ScriptType = string(normalizeWalletScriptType(r.ScriptType))
+		r.AllocationClass = walletScriptTypeAllocationClass(r.ScriptType)
 		r.AllocationReason = strings.TrimSpace(r.AllocationReason)
 		out[strings.ToLower(strings.TrimSpace(r.UTXOID))] = r
 	}
@@ -187,7 +186,7 @@ func summarizeWalletUTXOState(existing map[string]utxoStateRow) walletUTXOAggreg
 		}
 		stats.UTXOCount++
 		stats.BalanceSatoshi += row.Value
-		switch normalizeWalletUTXOAllocationClass(row.AllocationClass) {
+		switch walletScriptTypeAllocationClass(row.ScriptType) {
 		case walletUTXOAllocationPlainBSV:
 			stats.PlainBSVUTXOCount++
 			stats.PlainBSVBalanceSatoshi += row.Value
@@ -260,8 +259,11 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 			if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
 				continue
 			}
-			allocationClass, allocationReason := defaultWalletUTXOProtectionForValue(row.Value)
-			allocationClass = normalizeWalletUTXOAllocationClass(allocationClass)
+			allocationClass := walletScriptTypeAllocationClass(row.ScriptType)
+			allocationReason := strings.TrimSpace(row.ScriptTypeReason)
+			if allocationReason == "" {
+				allocationReason = strings.TrimSpace(row.AllocationReason)
+			}
 			if _, err := ExecContext(ctx, tx, `UPDATE wallet_utxo SET allocation_class=?,allocation_reason=? WHERE utxo_id=?`, allocationClass, allocationReason, utxoID); err != nil {
 				return err
 			}
@@ -296,10 +298,10 @@ func dbLoadWalletUTXOAggregateTx(tx *sql.Tx, address string) (walletUTXOAggregat
 	}
 	walletID := walletIDByAddress(address)
 	rows, err := tx.Query(
-		`SELECT allocation_class,COUNT(1),COALESCE(SUM(value_satoshi),0)
+		`SELECT script_type,COUNT(1),COALESCE(SUM(value_satoshi),0)
 		 FROM wallet_utxo
 		 WHERE wallet_id=? AND address=? AND state='unspent'
-		 GROUP BY allocation_class`,
+		 GROUP BY script_type`,
 		walletID,
 		address,
 	)
@@ -315,10 +317,10 @@ func dbLoadWalletUTXOAggregateTx(tx *sql.Tx, address string) (walletUTXOAggregat
 		if err := rows.Scan(&class, &count, &balance); err != nil {
 			return walletUTXOAggregateStats{}, err
 		}
-		class = normalizeWalletUTXOAllocationClass(class)
+		class = string(normalizeWalletScriptType(class))
 		stats.UTXOCount += count
 		stats.BalanceSatoshi += balance
-		switch class {
+		switch walletScriptTypeAllocationClass(class) {
 		case walletUTXOAllocationPlainBSV:
 			stats.PlainBSVUTXOCount += count
 			stats.PlainBSVBalanceSatoshi += balance

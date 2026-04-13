@@ -412,6 +412,9 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 			vout INTEGER NOT NULL,
 			value_satoshi INTEGER NOT NULL,
 			state TEXT NOT NULL,
+			script_type TEXT NOT NULL DEFAULT 'unknown',
+			script_type_reason TEXT NOT NULL DEFAULT '',
+			script_type_updated_at_unix INTEGER NOT NULL DEFAULT 0,
 			allocation_class TEXT NOT NULL DEFAULT 'plain_bsv',
 			allocation_reason TEXT NOT NULL DEFAULT '',
 			created_txid TEXT NOT NULL,
@@ -750,6 +753,7 @@ func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
 		`CREATE INDEX IF NOT EXISTS idx_proc_orchestrator_logs_idempotency ON proc_orchestrator_logs(idempotency_key, id DESC)`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`,
+		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_script_type ON wallet_utxo(wallet_id, state, script_type, created_at_unix ASC, value_satoshi ASC, txid, vout)`,
 		`CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`,
 		// 前台业务主身份层索引（第七次迭代新增）
 		`CREATE INDEX IF NOT EXISTS idx_biz_front_orders_type_status ON biz_front_orders(front_type, status, updated_at_unix DESC)`,
@@ -2888,7 +2892,11 @@ func ensureLiveFollowsSchema(ctx context.Context, db *sql.DB) error {
 	return err
 }
 
-// ensureWalletUTXOSchema 处理 wallet_utxo 表的历史列迁移和表结构重构
+// ensureWalletUTXOSchema 只做 wallet_utxo 的硬切校验。
+// 设计说明：
+// - 新库直接由基础 schema 创建；
+// - 旧库如果缺少脚本语义列，直接报错退出，不做迁移；
+// - 这样不会再把旧的 value=1 归一化逻辑留在初始化里。
 func ensureWalletUTXOSchema(ctx context.Context, db *sql.DB) error {
 	if db == nil {
 		return fmt.Errorf("db is nil")
@@ -2899,102 +2907,22 @@ func ensureWalletUTXOSchema(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	if len(cols) == 0 {
-		return nil
+		return fmt.Errorf("wallet_utxo table is missing")
 	}
 
-	// 检测旧版本表结构（有 origin_type 列的是旧版）
-	if _, hasOrigin := cols["origin_type"]; hasOrigin {
-		tx, err := db.Begin()
-		if err != nil {
-			return err
-		}
-		defer func() {
-			if err != nil {
-				_ = tx.Rollback()
-			}
-		}()
-
-		if _, err = ExecContext(ctx, tx, `ALTER TABLE wallet_utxo RENAME TO wallet_utxo_legacy_v2`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `CREATE TABLE wallet_utxo(
-			utxo_id TEXT PRIMARY KEY,
-			wallet_id TEXT NOT NULL,
-			address TEXT NOT NULL,
-			txid TEXT NOT NULL,
-			vout INTEGER NOT NULL,
-			value_satoshi INTEGER NOT NULL,
-			state TEXT NOT NULL,
-			allocation_class TEXT NOT NULL DEFAULT 'plain_bsv',
-			allocation_reason TEXT NOT NULL DEFAULT '',
-			created_txid TEXT NOT NULL,
-			spent_txid TEXT NOT NULL,
-			created_at_unix INTEGER NOT NULL,
-			updated_at_unix INTEGER NOT NULL,
-			spent_at_unix INTEGER NOT NULL
-		)`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx,
-			`INSERT INTO wallet_utxo(
-				utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-			)
-			SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,
-				CASE WHEN lower(trim(state))='reserved' THEN 'unspent' ELSE state END,
-				CASE WHEN value_satoshi=1 THEN 'unknown' ELSE 'plain_bsv' END,
-				CASE WHEN value_satoshi=1 THEN 'awaiting external token evidence' ELSE '' END,
-				created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-			FROM wallet_utxo_legacy_v2`,
-		); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `DROP TABLE wallet_utxo_legacy_v2`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `DROP INDEX IF EXISTS idx_wallet_utxo_origin`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `CREATE UNIQUE INDEX IF NOT EXISTS uq_wallet_utxo_key ON wallet_utxo(address, txid, vout)`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_state ON wallet_utxo(wallet_id, state, value_satoshi DESC, txid, vout)`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
-			return err
-		}
-		if _, err = ExecContext(ctx, tx, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_txid ON wallet_utxo(txid, vout)`); err != nil {
-			return err
-		}
-		if err = tx.Commit(); err != nil {
-			return err
+	requiredCols := []string{
+		"script_type",
+		"script_type_reason",
+		"script_type_updated_at_unix",
+		"allocation_class",
+		"allocation_reason",
+	}
+	for _, col := range requiredCols {
+		if _, ok := cols[col]; !ok {
+			return fmt.Errorf("wallet_utxo missing required column %s, please rebuild DB", col)
 		}
 	}
-
-	// 确保新列存在
-	cols, err = tableColumns(db, "wallet_utxo")
-	if err != nil {
-		return err
-	}
-	if _, ok := cols["allocation_class"]; !ok {
-		if _, err := ExecContext(ctx, db, `ALTER TABLE wallet_utxo ADD COLUMN allocation_class TEXT NOT NULL DEFAULT 'plain_bsv'`); err != nil {
-			return err
-		}
-	}
-	if _, ok := cols["allocation_reason"]; !ok {
-		if _, err := ExecContext(ctx, db, `ALTER TABLE wallet_utxo ADD COLUMN allocation_reason TEXT NOT NULL DEFAULT ''`); err != nil {
-			return err
-		}
-	}
-
-	// 数据修复
-	if _, err := ExecContext(ctx, db, `UPDATE wallet_utxo SET allocation_class=CASE WHEN value_satoshi=1 THEN 'unknown' ELSE 'plain_bsv' END WHERE trim(allocation_class)=''`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, db, `UPDATE wallet_utxo SET allocation_reason='awaiting external token evidence' WHERE state='unspent' AND value_satoshi=1 AND allocation_class='unknown' AND trim(allocation_reason)=''`); err != nil {
-		return err
-	}
-	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_alloc ON wallet_utxo(wallet_id, address, state, allocation_class, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
+	if _, err := ExecContext(ctx, db, `CREATE INDEX IF NOT EXISTS idx_wallet_utxo_script_type ON wallet_utxo(wallet_id, state, script_type, created_at_unix ASC, value_satoshi ASC, txid, vout)`); err != nil {
 		return err
 	}
 	return nil

@@ -63,7 +63,7 @@ func TestSyncWalletAndApplyFacts_NormalCase(t *testing.T) {
 	}
 	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 100}
 
-	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-1", "", "test", now, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
 	}
 
@@ -118,7 +118,7 @@ func TestSyncWalletAndApplyFacts_WritesSyncStateWithoutSQLiteTypeError(t *testin
 	}
 	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 1}
 
-	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-sqlite", "", "periodic_tick", time.Now().Unix(), 1); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-sqlite", "", "periodic_tick", time.Now().Unix(), 1); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts: %v", err)
 	}
 
@@ -164,7 +164,7 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 200}
 
 	// 第一次同步
-	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-1", "", "test", now, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts round-1: %v", err)
 	}
 
@@ -182,7 +182,7 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 	}
 
 	// 第二次同步（重复触发）
-	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, "round-2", "", "test", now+1, 10); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-2", "", "test", now+1, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts round-2: %v", err)
 	}
 
@@ -248,7 +248,7 @@ func TestSyncWalletAndApplyFacts_WalletUTXOUpdatedAtMovesOnStateChange(t *testin
 	}
 	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address, NextConfirmedHeight: 400}
 
-	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot1, nil, cursor, "round-1", "", "test", now, 10); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot1, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-1", "", "test", now, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts round-1: %v", err)
 	}
 
@@ -285,7 +285,7 @@ func TestSyncWalletAndApplyFacts_WalletUTXOUpdatedAtMovesOnStateChange(t *testin
 			},
 		},
 	}
-	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot2, history, cursor, "round-2", "", "test", now+1, 10); err != nil {
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot2, history, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-2", "", "test", now+1, 10); err != nil {
 		t.Fatalf("SyncWalletAndApplyFacts round-2: %v", err)
 	}
 
@@ -353,7 +353,7 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 
 	// 步骤1：分步执行第一阶段，获取 changes
 	changes, err := reconcileWalletUTXOSetAndReturnChanges(
-		context.Background(), store, address, snapshot, nil, cursor, "round-1", "", "test", now, 10,
+		context.Background(), store, address, snapshot, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-1", "", "test", now, 10,
 	)
 	if err != nil {
 		t.Fatalf("reconcileWalletUTXOSetAndReturnChanges: %v", err)

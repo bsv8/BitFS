@@ -19,6 +19,8 @@ type walletFundingCandidate struct {
 	UTXOID           string
 	UTXO             poolcore.UTXO
 	CreatedAtUnix    int64
+	ScriptType       string
+	ScriptTypeReason string
 	AllocationClass  string
 	AllocationReason string
 }
@@ -55,6 +57,8 @@ func listWalletFundingCandidates(ctx context.Context, store *clientDB, rt *Runti
 			UTXOID:           item.UTXOID,
 			UTXO:             item.UTXO,
 			CreatedAtUnix:    item.CreatedAtUnix,
+			ScriptType:       item.ScriptType,
+			ScriptTypeReason: item.ScriptTypeReason,
 			AllocationClass:  item.AllocationClass,
 			AllocationReason: item.AllocationReason,
 		})

@@ -81,8 +81,9 @@ func cloneWalletUTXOStateRows(src map[string]utxoStateRow) map[string]utxoStateR
 // applyWalletUTXOUpsertState 只改目标态，不直接落库。
 // 设计说明：
 // - 先在内存里把最终态算出来，再由统一的 diff 落库；
+// - 脚本语义只认 script_type，不再靠 value=1 推导；
 // - 这样同一轮里的中间态不会把 updated_at_unix 顶上去。
-func applyWalletUTXOUpsertState(target map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, updatedAt int64) bool {
+func applyWalletUTXOUpsertState(target map[string]utxoStateRow, walletID string, address string, utxoID string, txid string, vout uint32, value uint64, state string, spentTxID string, scriptType string, scriptTypeReason string, scriptTypeUpdatedAtUnix int64, updatedAt int64) bool {
 	if target == nil {
 		return false
 	}
@@ -90,14 +91,37 @@ func applyWalletUTXOUpsertState(target map[string]utxoStateRow, walletID string,
 	txid = strings.ToLower(strings.TrimSpace(txid))
 	spentTxID = strings.ToLower(strings.TrimSpace(spentTxID))
 	state = strings.ToLower(strings.TrimSpace(state))
+	scriptType = string(normalizeWalletScriptType(scriptType))
+	scriptTypeReason = strings.TrimSpace(scriptTypeReason)
+	if scriptTypeUpdatedAtUnix <= 0 {
+		scriptTypeUpdatedAtUnix = updatedAt
+	}
 	row, ok := target[utxoID]
 	createdAtUnix := updatedAt
 	if ok && row.CreatedAtUnix > 0 {
 		createdAtUnix = row.CreatedAtUnix
 	}
-	allocationClass, allocationReason := defaultWalletUTXOProtectionForValue(value)
 	if ok {
-		allocationClass = normalizeWalletUTXOAllocationClass(row.AllocationClass)
+		currentScriptType := normalizeWalletScriptType(row.ScriptType)
+		currentScriptTypeReason := strings.TrimSpace(row.ScriptTypeReason)
+		if currentScriptType == normalizeWalletScriptType(scriptType) && currentScriptTypeReason == scriptTypeReason && row.ScriptTypeUpdatedAtUnix > 0 {
+			scriptTypeUpdatedAtUnix = row.ScriptTypeUpdatedAtUnix
+		}
+		if currentScriptType != walletScriptTypeUnknown && normalizeWalletScriptType(scriptType) == walletScriptTypeUnknown {
+			scriptType = string(currentScriptType)
+			scriptTypeReason = currentScriptTypeReason
+			scriptTypeUpdatedAtUnix = row.ScriptTypeUpdatedAtUnix
+		}
+		if scriptTypeReason == "" && currentScriptTypeReason != "" && normalizeWalletScriptType(scriptType) == currentScriptType {
+			scriptTypeReason = currentScriptTypeReason
+		}
+		if scriptTypeUpdatedAtUnix <= 0 && row.ScriptTypeUpdatedAtUnix > 0 {
+			scriptTypeUpdatedAtUnix = row.ScriptTypeUpdatedAtUnix
+		}
+	}
+	allocationClass := walletScriptTypeAllocationClass(scriptType)
+	allocationReason := scriptTypeReason
+	if ok && allocationReason == "" {
 		allocationReason = strings.TrimSpace(row.AllocationReason)
 	}
 	spentAtUnix := int64(0)
@@ -113,6 +137,9 @@ func applyWalletUTXOUpsertState(target map[string]utxoStateRow, walletID string,
 		currentSpentTxID := strings.ToLower(strings.TrimSpace(row.SpentTxID))
 		currentAllocationClass := normalizeWalletUTXOAllocationClass(row.AllocationClass)
 		currentAllocationReason := strings.TrimSpace(row.AllocationReason)
+		currentScriptType := normalizeWalletScriptType(row.ScriptType)
+		currentScriptTypeReason := strings.TrimSpace(row.ScriptTypeReason)
+		currentScriptTypeUpdatedAtUnix := row.ScriptTypeUpdatedAtUnix
 		currentCreatedTxID := strings.ToLower(strings.TrimSpace(row.CreatedTxID))
 		// 旧行已经被判定为 spent 时，不再允许被“回滚”为 unspent。
 		if state == "unspent" && currentState == "spent" && currentSpentTxID != "" {
@@ -122,6 +149,9 @@ func applyWalletUTXOUpsertState(target map[string]utxoStateRow, walletID string,
 			currentSpentTxID == spentTxID &&
 			currentAllocationClass == allocationClass &&
 			currentAllocationReason == allocationReason &&
+			currentScriptType == normalizeWalletScriptType(scriptType) &&
+			currentScriptTypeReason == scriptTypeReason &&
+			currentScriptTypeUpdatedAtUnix == scriptTypeUpdatedAtUnix &&
 			currentCreatedTxID == txid &&
 			strings.ToLower(strings.TrimSpace(row.TxID)) == txid &&
 			row.Vout == vout &&
@@ -131,17 +161,20 @@ func applyWalletUTXOUpsertState(target map[string]utxoStateRow, walletID string,
 		}
 	}
 	target[utxoID] = utxoStateRow{
-		UTXOID:           utxoID,
-		TxID:             txid,
-		Vout:             vout,
-		Value:            value,
-		State:            state,
-		AllocationClass:  allocationClass,
-		AllocationReason: allocationReason,
-		CreatedTxID:      txid,
-		SpentTxID:        spentTxID,
-		CreatedAtUnix:    createdAtUnix,
-		SpentAtUnix:      spentAtUnix,
+		UTXOID:                  utxoID,
+		TxID:                    txid,
+		Vout:                    vout,
+		Value:                   value,
+		State:                   state,
+		ScriptType:              normalizeWalletScriptType(scriptType).String(),
+		ScriptTypeReason:        scriptTypeReason,
+		ScriptTypeUpdatedAtUnix: scriptTypeUpdatedAtUnix,
+		AllocationClass:         allocationClass,
+		AllocationReason:        allocationReason,
+		CreatedTxID:             txid,
+		SpentTxID:               spentTxID,
+		CreatedAtUnix:           createdAtUnix,
+		SpentAtUnix:             spentAtUnix,
 	}
 	return true
 }
@@ -178,6 +211,9 @@ func walletUTXOBusinessEqual(current utxoStateRow, desired utxoStateRow) bool {
 		current.Vout == desired.Vout &&
 		current.Value == desired.Value &&
 		strings.ToLower(strings.TrimSpace(current.State)) == strings.ToLower(strings.TrimSpace(desired.State)) &&
+		normalizeWalletScriptType(current.ScriptType) == normalizeWalletScriptType(desired.ScriptType) &&
+		strings.TrimSpace(current.ScriptTypeReason) == strings.TrimSpace(desired.ScriptTypeReason) &&
+		current.ScriptTypeUpdatedAtUnix == desired.ScriptTypeUpdatedAtUnix &&
 		normalizeWalletUTXOAllocationClass(current.AllocationClass) == normalizeWalletUTXOAllocationClass(desired.AllocationClass) &&
 		strings.TrimSpace(current.AllocationReason) == strings.TrimSpace(desired.AllocationReason) &&
 		strings.ToLower(strings.TrimSpace(current.CreatedTxID)) == strings.ToLower(strings.TrimSpace(desired.CreatedTxID)) &&
@@ -212,9 +248,9 @@ func applyWalletUTXODiffTx(ctx context.Context, tx *sql.Tx, current map[string]u
 			sqliteactor.WithTraceScope(updateScope, func() {
 				_, writeErr = ExecContext(ctx, tx,
 					`UPDATE wallet_utxo
-					 SET txid=?,vout=?,value_satoshi=?,state=?,allocation_class=?,allocation_reason=?,created_txid=?,spent_txid=?,updated_at_unix=?,spent_at_unix=?
+					 SET txid=?,vout=?,value_satoshi=?,state=?,script_type=?,script_type_reason=?,script_type_updated_at_unix=?,allocation_class=?,allocation_reason=?,created_txid=?,spent_txid=?,updated_at_unix=?,spent_at_unix=?
 					 WHERE utxo_id=? AND wallet_id=? AND address=?`,
-					target.TxID, int64(target.Vout), int64(target.Value), target.State, target.AllocationClass, target.AllocationReason, target.CreatedTxID, target.SpentTxID, updatedAt, target.SpentAtUnix,
+					target.TxID, int64(target.Vout), int64(target.Value), target.State, target.ScriptType, target.ScriptTypeReason, target.ScriptTypeUpdatedAtUnix, target.AllocationClass, target.AllocationReason, target.CreatedTxID, target.SpentTxID, updatedAt, target.SpentAtUnix,
 					utxoID, walletID, address,
 				)
 			})
@@ -233,9 +269,9 @@ func applyWalletUTXODiffTx(ctx context.Context, tx *sql.Tx, current map[string]u
 		sqliteactor.WithTraceScope(insertScope, func() {
 			_, writeErr = ExecContext(ctx, tx,
 				`INSERT INTO wallet_utxo(
-					utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				utxoID, walletID, address, target.TxID, int64(target.Vout), int64(target.Value), target.State, target.AllocationClass, target.AllocationReason, target.CreatedTxID, target.SpentTxID, createdAtUnix, updatedAt, target.SpentAtUnix,
+					utxo_id,wallet_id,address,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+				) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				utxoID, walletID, address, target.TxID, int64(target.Vout), int64(target.Value), target.State, target.ScriptType, target.ScriptTypeReason, target.ScriptTypeUpdatedAtUnix, target.AllocationClass, target.AllocationReason, target.CreatedTxID, target.SpentTxID, createdAtUnix, updatedAt, target.SpentAtUnix,
 			)
 		})
 		if writeErr != nil {
@@ -245,7 +281,7 @@ func applyWalletUTXODiffTx(ctx context.Context, tx *sql.Tx, current map[string]u
 	return nil
 }
 
-func overlayPendingLocalBroadcastsTx(ctx context.Context, target map[string]utxoStateRow, walletID string, address string, scriptHex string, rows []walletLocalBroadcastRow, observedTxIDs map[string]struct{}, updatedAt int64) error {
+func overlayPendingLocalBroadcastsTx(ctx context.Context, classifier *walletScriptClassifier, target map[string]utxoStateRow, walletID string, address string, scriptHex string, rows []walletLocalBroadcastRow, observedTxIDs map[string]struct{}, updatedAt int64) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -279,7 +315,8 @@ func overlayPendingLocalBroadcastsTx(ctx context.Context, target map[string]utxo
 				continue
 			}
 			utxoID := row.TxID + ":" + fmt.Sprint(idx)
-			_ = applyWalletUTXOUpsertState(target, walletID, address, utxoID, row.TxID, uint32(idx), out.Satoshis, "unspent", "", updatedAt)
+			classified := classifyWalletUTXOWithClassifier(ctx, classifier, nil, address, utxoID, row.TxID, uint32(idx), out.Satoshis, hex.EncodeToString(out.LockingScript.Bytes()), row.TxHex)
+			_ = applyWalletUTXOUpsertState(target, walletID, address, utxoID, row.TxID, uint32(idx), out.Satoshis, "unspent", "", string(classified.ScriptType), classified.Reason, updatedAt, updatedAt)
 		}
 	}
 	return nil

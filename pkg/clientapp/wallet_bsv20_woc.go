@@ -48,7 +48,7 @@ func queryWalletBSV20WOCUnspent(ctx context.Context, rt *Runtime, address string
 	if baseURL == "" {
 		return nil, fmt.Errorf("wallet chain base url is empty")
 	}
-	
+
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodGet,
@@ -58,7 +58,7 @@ func queryWalletBSV20WOCUnspent(ctx context.Context, rt *Runtime, address string
 	if err != nil {
 		return nil, err
 	}
-	
+
 	auth := whatsonchain.AuthConfig{
 		Mode:  "bearer",
 		Value: strings.TrimSpace(rt.runIn.ExternalAPI.WOC.APIKey),
@@ -69,13 +69,13 @@ func queryWalletBSV20WOCUnspent(ctx context.Context, rt *Runtime, address string
 	if err := auth.Apply(req); err != nil {
 		return nil, err
 	}
-	
+
 	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	
+
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode == http.StatusNotFound {
 		return []walletBSV20WOCCandidate{}, nil
@@ -83,12 +83,19 @@ func queryWalletBSV20WOCUnspent(ctx context.Context, rt *Runtime, address string
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return nil, fmt.Errorf("woc bsv20 unspent http %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
-	
+
 	var parsed walletBSV20WOCUnspentResp
 	if err := json.Unmarshal(raw, &parsed); err != nil {
 		return nil, err
 	}
 	return parsed.Tokens, nil
+}
+
+func (s runtimeWalletScriptEvidenceSource) GetAddressBSV20TokenUnspent(ctx context.Context, address string) ([]walletBSV20WOCCandidate, error) {
+	if s.rt == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return queryWalletBSV20WOCUnspent(ctx, s.rt, address)
 }
 
 // matchBSV20VoutByScriptHash 通过 scriptHash 匹配 BSV20 token 的 vout
@@ -100,23 +107,23 @@ func matchBSV20VoutByScriptHash(ctx context.Context, txHex string, targetScriptH
 	if targetScriptHash == "" || txHex == "" {
 		return false, nil
 	}
-	
+
 	// 解析交易获取输出脚本
 	scriptHexes, err := extractOutputScriptsFromTxHex(txHex)
 	if err != nil {
 		return false, err
 	}
-	
+
 	if int(targetVout) >= len(scriptHexes) {
 		return false, nil
 	}
-	
+
 	// 计算目标 vout 的 scriptHash
 	scriptBytes, err := hex.DecodeString(scriptHexes[targetVout])
 	if err != nil {
 		return false, err
 	}
-	
+
 	hash := sha256.Sum256(scriptBytes)
 	calculatedHash := strings.ToLower(hex.EncodeToString(hash[:]))
 	if calculatedHash == targetScriptHash {
@@ -143,7 +150,7 @@ func extractOutputScriptsFromTxHex(txHex string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse tx hex: %w", err)
 	}
-	
+
 	scripts := make([]string, len(tx.Outputs))
 	for i, out := range tx.Outputs {
 		if out != nil && out.LockingScript != nil {

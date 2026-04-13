@@ -38,6 +38,9 @@ func ensureClientDBSchemaOnDB(ctx context.Context, db *sql.DB) error {
 	if err := ensureClientDBBaseSchemaCtx(ctx, db); err != nil {
 		return fmt.Errorf("base schema: %w", err)
 	}
+	if err := ensureWalletUTXOSchema(ctx, db); err != nil {
+		return fmt.Errorf("wallet utxo schema: %w", err)
+	}
 	if err := normalizeClientDBData(ctx, db); err != nil {
 		return fmt.Errorf("normalize client db data: %w", err)
 	}

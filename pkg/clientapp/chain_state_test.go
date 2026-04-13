@@ -30,14 +30,14 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 		t.Fatalf("seed wallet_utxo_sync_state: %v", err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
+		`INSERT INTO wallet_utxo(utxo_id,wallet_id,address,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix)
 		 VALUES
-		 ('a:0',?,?,?,?,?,'unspent','plain_bsv','','a','',?,?,0),
-		 ('b:1',?,?,?,?,?,'unspent','protected_asset','detected by indexer','b','',?,?,0),
-		 ('c:2',?,?,?,?,?,'spent','plain_bsv','','c','',?,?,?)`,
-		walletID, addr, "a", 0, 100, now, now,
-		walletID, addr, "b", 1, 200, now, now,
-		walletID, addr, "c", 2, 300, now, now, now,
+		 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+		 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?),
+		 (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"a:0", walletID, addr, "a", 0, 100, "unspent", "P2PKH", "", now, "plain_bsv", "", "a", "", now, now, int64(0),
+		"b:1", walletID, addr, "b", 1, 200, "unspent", "bsv20", "detected by indexer", now, "protected_asset", "detected by indexer", "b", "", now, now, int64(0),
+		"c:2", walletID, addr, "c", 2, 300, "spent", "P2PKH", "", now, "plain_bsv", "", "c", "", now, now, now,
 	); err != nil {
 		t.Fatalf("seed wallet_utxo: %v", err)
 	}

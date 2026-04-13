@@ -189,20 +189,23 @@ type walletUTXOPage struct {
 }
 
 type walletUTXOItem struct {
-	UTXOID           string `json:"utxo_id"`
-	WalletID         string `json:"wallet_id"`
-	Address          string `json:"address"`
-	TxID             string `json:"txid"`
-	Vout             uint32 `json:"vout"`
-	ValueSatoshi     uint64 `json:"value_satoshi"`
-	State            string `json:"state"`
-	AllocationClass  string `json:"allocation_class"`
-	AllocationReason string `json:"allocation_reason"`
-	CreatedTxID      string `json:"created_txid"`
-	SpentTxID        string `json:"spent_txid"`
-	CreatedAtUnix    int64  `json:"created_at_unix"`
-	UpdatedAtUnix    int64  `json:"updated_at_unix"`
-	SpentAtUnix      int64  `json:"spent_at_unix"`
+	UTXOID                  string `json:"utxo_id"`
+	WalletID                string `json:"wallet_id"`
+	Address                 string `json:"address"`
+	TxID                    string `json:"txid"`
+	Vout                    uint32 `json:"vout"`
+	ValueSatoshi            uint64 `json:"value_satoshi"`
+	State                   string `json:"state"`
+	ScriptType              string `json:"script_type"`
+	ScriptTypeReason        string `json:"script_type_reason"`
+	ScriptTypeUpdatedAtUnix int64  `json:"script_type_updated_at_unix"`
+	AllocationClass         string `json:"allocation_class"`
+	AllocationReason        string `json:"allocation_reason"`
+	CreatedTxID             string `json:"created_txid"`
+	SpentTxID               string `json:"spent_txid"`
+	CreatedAtUnix           int64  `json:"created_at_unix"`
+	UpdatedAtUnix           int64  `json:"updated_at_unix"`
+	SpentAtUnix             int64  `json:"spent_at_unix"`
 }
 
 func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestratorLogFilter) (orchestratorLogPage, error) {
@@ -298,12 +301,12 @@ func dbGetOrchestratorLogDetail(ctx context.Context, store *clientDB, eventID st
 			if perr != nil || id <= 0 {
 				return orchestratorLogDetail{}, fmt.Errorf("invalid event_id")
 			}
-			rows, err = QueryContext(ctx, db, 
+			rows, err = QueryContext(ctx, db,
 				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 				FROM proc_orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
 			)
 		} else {
-			rows, err = QueryContext(ctx, db, 
+			rows, err = QueryContext(ctx, db,
 				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
 				FROM proc_orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
 			)
@@ -406,7 +409,7 @@ func dbListSchedulerTasks(ctx context.Context, store *clientDB, f schedulerTaskF
 		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM proc_scheduler_tasks`).Scan(&out.EnabledTaskCount); err != nil {
 			return schedulerTaskPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT
 				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
 				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
@@ -508,7 +511,7 @@ func dbListSchedulerRuns(ctx context.Context, store *clientDB, f schedulerRunFil
 		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_scheduler_task_runs"+whereSQL, args...).Scan(&out.Total); err != nil {
 			return schedulerRunPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT id,task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
 			 FROM proc_scheduler_task_runs`+whereSQL+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -569,7 +572,7 @@ func dbListChainWorkerLogsByTable(ctx context.Context, store *clientDB, table st
 		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM "+table+where, args...).Scan(&out.Total); err != nil {
 			return chainWorkerLogPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
+		rows, err := QueryContext(ctx, db,
 			`SELECT id,triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json
 			 FROM `+table+where+` ORDER BY id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
@@ -627,9 +630,9 @@ func dbListWalletUTXOs(ctx context.Context, store *clientDB, f walletUTXOFilter)
 		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM wallet_utxo WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
 			return walletUTXOPage{}, err
 		}
-		rows, err := QueryContext(ctx, db, 
-			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-			 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
+		rows, err := QueryContext(ctx, db,
+			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+				 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
 			append(args, f.Limit, f.Offset)...,
 		)
 		if err != nil {
@@ -640,11 +643,13 @@ func dbListWalletUTXOs(ctx context.Context, store *clientDB, f walletUTXOFilter)
 		for rows.Next() {
 			var it walletUTXOItem
 			if err := rows.Scan(
-				&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.AllocationClass, &it.AllocationReason,
+				&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.ScriptType, &it.ScriptTypeReason, &it.ScriptTypeUpdatedAtUnix, &it.AllocationClass, &it.AllocationReason,
 				&it.CreatedTxID, &it.SpentTxID, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
 			); err != nil {
 				return walletUTXOPage{}, err
 			}
+			it.ScriptType = string(normalizeWalletScriptType(it.ScriptType))
+			it.AllocationClass = walletScriptTypeAllocationClass(it.ScriptType)
 			out.Items = append(out.Items, it)
 		}
 		if err := rows.Err(); err != nil {
@@ -660,14 +665,16 @@ func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walle
 	}
 	return clientDBValue(ctx, store, func(db *sql.DB) (walletUTXOItem, error) {
 		var item walletUTXOItem
-		err := QueryRowContext(ctx, db, 
-			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-			 FROM wallet_utxo WHERE utxo_id=?`,
+		err := QueryRowContext(ctx, db,
+			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
+				 FROM wallet_utxo WHERE utxo_id=?`,
 			utxoID,
 		).Scan(
-			&item.UTXOID, &item.WalletID, &item.Address, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.State, &item.AllocationClass, &item.AllocationReason,
+			&item.UTXOID, &item.WalletID, &item.Address, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.State, &item.ScriptType, &item.ScriptTypeReason, &item.ScriptTypeUpdatedAtUnix, &item.AllocationClass, &item.AllocationReason,
 			&item.CreatedTxID, &item.SpentTxID, &item.CreatedAtUnix, &item.UpdatedAtUnix, &item.SpentAtUnix,
 		)
+		item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
+		item.AllocationClass = walletScriptTypeAllocationClass(item.ScriptType)
 		return item, err
 	})
 }

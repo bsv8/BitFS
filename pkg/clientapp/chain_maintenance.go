@@ -727,7 +727,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	// 设计说明：
 	// - 两阶段错误处理：同步失败直接返回，fact 失败可重试
 	// - fact 写入是幂等的，失败后下次同步会重新尝试
-	if err := SyncWalletAndApplyFacts(ctx, m.store, addr, snapshot, history, nextCursor, meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
+	if err := SyncWalletAndApplyFacts(ctx, m.store, addr, snapshot, history, nextCursor, newRuntimeWalletScriptEvidenceSource(m.rt), meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "sync_wallet_and_apply_facts", "", err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
 		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
@@ -762,28 +762,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 	}
-	// 触发 unknown 1-sat 资产确认流程
-	// 设计说明：
-	// - 在链同步成功后，异步确认 unknown 资产的类型
-	// - 受并发保护，不会与正在执行的确认任务冲突
-	// - 失败不影响主同步流程，仅记录日志
-	stepStart = time.Now()
-	if verifyErr := runUnknownAssetVerification(ctx, m.rt, m.store, addr, task.TriggerSource); verifyErr != nil {
-		logWalletSyncStepError(meta, "unknown_asset_verification", verifyErr, map[string]any{
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-	} else {
-		logWalletSyncStepInfo(meta, "unknown_asset_verification", map[string]any{
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-		// Step 11: 链同步完成后，固定触发 verification 运维日志
-		// 设计说明：
-		// - 不阻塞主流程，仅增强可观测性
-		// - 包含队列汇总 + 对账报告 + 阈值告警
-		emitVerificationQueueSummaryLog(ctx, m.store, "chain_sync")
-		emitVerificationReconcileReportLog(ctx, m.store, "chain_sync")
-		emitVerificationThresholdAlerts(ctx, m.store, "chain_sync")
-	}
+	// unknown 资产不再自动进入确认流程；这里只保留统计与日志。
 
 	select {
 	case <-ctx.Done():
@@ -843,17 +822,20 @@ func clientWalletAddress(rt *Runtime) (string, error) {
 }
 
 type utxoStateRow struct {
-	UTXOID           string
-	TxID             string
-	Vout             uint32
-	Value            uint64
-	State            string
-	AllocationClass  string
-	AllocationReason string
-	CreatedTxID      string
-	SpentTxID        string
-	CreatedAtUnix    int64
-	SpentAtUnix      int64
+	UTXOID                  string
+	TxID                    string
+	Vout                    uint32
+	Value                   uint64
+	State                   string
+	ScriptType              string
+	ScriptTypeReason        string
+	ScriptTypeUpdatedAtUnix int64
+	AllocationClass         string
+	AllocationReason        string
+	CreatedTxID             string
+	SpentTxID               string
+	CreatedAtUnix           int64
+	SpentAtUnix             int64
 }
 
 func walletIDByAddress(address string) string {

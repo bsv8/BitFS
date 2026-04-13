@@ -151,6 +151,7 @@ func seedWalletUTXOsForKernelTest(db *sql.DB, address string, utxos []poolcore.U
 			NextConfirmedHeight: 1,
 			UpdatedAtUnix:       time.Now().Unix(),
 		},
+		&testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex},
 		"kernel-seed",
 		"",
 		"test",
