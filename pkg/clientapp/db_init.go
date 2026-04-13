@@ -8,14 +8,6 @@ import (
 	"strings"
 )
 
-// ensureClientDBBaseSchemaCtx 只保留给测试和旧入口的薄壳。
-// 设计说明：
-// - 真正的建表口径已经收口到 BitFS-contract 的 ent schema；
-// - 这里不再写任何手工 DDL，只转交给统一 schema 入口。
-func ensureClientDBBaseSchemaCtx(ctx context.Context, db *sql.DB) error {
-	return ensureClientDBSchemaOnDB(ctx, db)
-}
-
 // tableHasForeignKeyCtx 检查表是否已经有指定外键。
 func tableHasForeignKeyCtx(ctx context.Context, db *sql.DB, table, fromColumn, parentTable, parentColumn string) (bool, error) {
 	if db == nil {

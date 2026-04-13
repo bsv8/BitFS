@@ -1575,7 +1575,7 @@ func applySQLitePragmas(db *sql.DB) error {
 }
 
 // 注意：数据库初始化与迁移逻辑已统一移至 db_init.go，通过 ensureClientDBSchema 入口调用。
-// 该文件不再包含 initIndexDB 及其相关迁移函数，以保持 run.go 只保留启动顺序。
+// 该文件不再包含数据库初始化逻辑，只保留启动顺序。
 
 func errString(err error) string {
 	if err == nil {

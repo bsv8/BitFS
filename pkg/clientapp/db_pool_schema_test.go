@@ -10,8 +10,8 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	for _, table := range []string{
@@ -112,8 +112,8 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), nil, directTransferPoolSessionFactInput{}); err == nil {
@@ -211,8 +211,8 @@ func TestInitIndexDB_AllowsLegacyPoolSchemaTables(t *testing.T) {
 		t.Fatalf("create legacy tx table failed: %v", err)
 	}
 
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB should allow legacy pool schema tables: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init should allow legacy pool schema tables: %v", err)
 	}
 }
 

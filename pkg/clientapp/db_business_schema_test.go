@@ -13,8 +13,8 @@ func TestInitIndexDB_CreatesOrdersTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	// 验证表存在
@@ -76,8 +76,8 @@ func TestInitIndexDB_CreatesOrderSettlementEventsTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	// 验证表存在
@@ -141,8 +141,8 @@ func TestInitIndexDB_CreatesOrderSettlementsTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	// 验证表存在
@@ -216,8 +216,8 @@ func TestGetLatestBusinessByFrontOrderID_EmptyReturnsNoRows(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	_, err := GetLatestBusinessByFrontOrderID(context.Background(), &clientDB{db: db}, "fo_empty_1")
 	if !errors.Is(err, sql.ErrNoRows) {
@@ -260,8 +260,8 @@ func TestInitIndexDB_OrdersIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	// 第一次插入
@@ -298,8 +298,8 @@ func TestInitIndexDB_OrderSettlementEventsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	if _, err := db.Exec(`INSERT INTO orders(
@@ -332,8 +332,8 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	if _, err := db.Exec(`INSERT INTO order_settlements(

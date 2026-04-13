@@ -21,20 +21,10 @@ func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	return db
-}
-
-// initIndexDB 保留给现有测试调用，底层已经切到 contract 的 ent schema。
-func initIndexDB(db *sql.DB) error {
-	return initIndexDBCtx(context.Background(), db)
-}
-
-// ensureClientDBBaseSchema 保留给部分 schema 测试调用，实际执行同一套 ent 建表。
-func ensureClientDBBaseSchema(db *sql.DB) error {
-	return ensureClientDBBaseSchemaCtx(context.Background(), db)
 }
 
 // dbUpsertSettlementPaymentAttempt 是测试用的薄包装。

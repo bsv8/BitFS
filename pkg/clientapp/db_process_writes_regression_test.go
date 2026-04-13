@@ -9,8 +9,8 @@ func TestChainWorkerLogTrimKeepsLimitWithoutTypeMismatch(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
 

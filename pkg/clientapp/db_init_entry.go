@@ -45,9 +45,3 @@ func ensureClientDBSchemaOnDB(ctx context.Context, db *sql.DB) error {
 	}
 	return nil
 }
-
-// initIndexDB 是数据库初始化的测试入口。
-// 设计说明：这里只是给现有测试保留的薄包装。
-func initIndexDBCtx(ctx context.Context, db *sql.DB) error {
-	return ensureClientDBSchemaOnDB(ctx, db)
-}

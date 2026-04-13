@@ -16,8 +16,8 @@ func TestBusinessBridge_MultipleBusinessesFromOneFrontOrder(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := &clientDB{db: db}
 
@@ -144,8 +144,8 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := &clientDB{db: db}
 
@@ -297,8 +297,8 @@ func TestBusinessBridge_TransactionAtomicity(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := &clientDB{db: db}
 
@@ -354,8 +354,8 @@ func TestBusinessBridge_MissingBusinessRole_Fails(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := &clientDB{db: db}
 
@@ -408,8 +408,8 @@ func TestBusinessBridge_InvalidBusinessRole_Fails(t *testing.T) {
 
 	ctx := context.Background()
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := &clientDB{db: db}
 

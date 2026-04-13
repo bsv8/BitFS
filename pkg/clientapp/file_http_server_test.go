@@ -332,8 +332,8 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("sqlite pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	cfg := &Config{}
 	cfg.Storage.DataDir = t.TempDir()
@@ -387,8 +387,8 @@ func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("sqlite pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	cfg := &Config{}

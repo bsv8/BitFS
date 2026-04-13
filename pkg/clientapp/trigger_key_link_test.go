@@ -27,8 +27,8 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	store := newClientDB(db, nil)
@@ -236,8 +236,8 @@ func TestDirectCommandTriggerKeyEmpty(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	store := newClientDB(db, nil)
@@ -304,8 +304,8 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	store := newClientDB(db, nil)

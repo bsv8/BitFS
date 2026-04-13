@@ -77,8 +77,8 @@ func TestTaskSchedulerWritesProfileAndRunRows(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
 	scheduler := newTestTaskScheduler(context.Background(), store)
@@ -146,8 +146,8 @@ func TestTaskSchedulerShutdownAfterRootCancelStillStopsTask(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
 	rootCtx, rootCancel := context.WithCancel(context.Background())

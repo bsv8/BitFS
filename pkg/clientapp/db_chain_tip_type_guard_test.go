@@ -16,7 +16,7 @@ func TestDBUpsertChainTipStateDoesNotTriggerDriverTypeError(t *testing.T) {
 	}
 	defer func() { _ = opened.Actor.Close() }()
 
-	if err := ensureClientDBBaseSchema(opened.DB); err != nil {
+	if err := ensureClientDBSchemaOnDB(context.Background(), opened.DB); err != nil {
 		t.Fatalf("ensure schema failed: %v", err)
 	}
 

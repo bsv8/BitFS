@@ -29,8 +29,8 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	wantCols := []string{"source_type", "source_id", "accounting_scene", "accounting_subtype"}
@@ -91,8 +91,8 @@ func TestInitIndexDB_CreatesFinanceReadIndexes(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	// 第六次迭代：只检查主口径索引
@@ -357,11 +357,11 @@ func TestInitIndexDB_IsIdempotentOnRepeatedRun(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("first initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("first schema init failed: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("second initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("second schema init failed: %v", err)
 	}
 }
 

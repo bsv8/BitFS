@@ -129,8 +129,8 @@ func newDemandQuoteFKTestDB(t *testing.T) *sql.DB {
 	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
 		t.Fatalf("enable foreign keys: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	return db
 }

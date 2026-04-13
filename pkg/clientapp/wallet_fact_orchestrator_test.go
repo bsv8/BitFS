@@ -26,8 +26,8 @@ func newOrchestratorTestDB(t *testing.T) (*sql.DB, string) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	return db, dbPath
 }
@@ -322,8 +322,8 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	store := newClientDB(db, nil)
 
@@ -397,8 +397,8 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	if err := applySQLitePragmas(db2); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db2); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db2); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	// 更新 store 指向新连接

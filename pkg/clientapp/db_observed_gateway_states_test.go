@@ -16,8 +16,8 @@ func TestObservedGatewayStatesSchemaAndIndexes(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	cols, err := tableColumns(db, "proc_observed_gateway_states")

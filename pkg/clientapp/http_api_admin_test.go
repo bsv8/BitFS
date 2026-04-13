@@ -28,8 +28,8 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	cfg := Config{}
@@ -116,8 +116,8 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	cfg := Config{}
@@ -234,8 +234,8 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	now := time.Now().Unix()
 	_, err = db.Exec(
@@ -297,8 +297,8 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	_, err = db.Exec(
 		`INSERT INTO proc_scheduler_task_runs(task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix)
@@ -354,8 +354,8 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
@@ -460,8 +460,8 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	dbAppendOrchestratorLog(context.Background(), newClientDB(db, nil), orchestratorLogEntry{
@@ -586,8 +586,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	cfg := Config{}
@@ -728,8 +728,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	pubHost, _ := newSecpHost(t)
@@ -852,8 +852,8 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	h, _ := newSecpHost(t)
@@ -952,8 +952,8 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	pubHost, _ := newSecpHost(t)
@@ -1098,8 +1098,8 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("init db: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	store := newClientDB(db, nil)

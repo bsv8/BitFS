@@ -7,8 +7,8 @@ func TestInitIndexDB_CreatesCommandJournalTriggerKeyIndexOnFreshDB(t *testing.T)
 
 	db := openSchemaTestDB(t)
 
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	cols, err := tableColumns(db, "proc_command_journal")
@@ -40,8 +40,8 @@ func TestProcCommandJournalRejectsDuplicateCommandIDOnFreshSchema(t *testing.T) 
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO proc_command_journal(
 		created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json

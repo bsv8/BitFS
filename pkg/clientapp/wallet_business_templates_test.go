@@ -117,8 +117,8 @@ func newWalletOrderTestRuntime(t *testing.T) (*Runtime, *clientDB) {
 	if err := applySQLitePragmas(db); err != nil {
 		t.Fatalf("apply pragmas failed: %v", err)
 	}
-	if err := initIndexDB(db); err != nil {
-		t.Fatalf("initIndexDB failed: %v", err)
+	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
+		t.Fatalf("schema init failed: %v", err)
 	}
 
 	const clientPrivHex = "1111111111111111111111111111111111111111111111111111111111111111"
