@@ -13,7 +13,6 @@ import (
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/predicate"
 )
 
 // BusinessSettlementItem 业务结算出口记录
@@ -103,89 +102,7 @@ func orderSettlementToFinanceBusinessItem(n *gen.OrderSettlements) financeBusine
 	}
 }
 
-func orderSettlementQueryPredicates(f businessSettlementFilter) []predicate.OrderSettlements {
-	preds := make([]predicate.OrderSettlements, 0, 6)
-	if f.SettlementID != "" {
-		preds = append(preds, ordersettlements.SettlementIDEQ(strings.TrimSpace(f.SettlementID)))
-	}
-	if f.OrderID != "" {
-		preds = append(preds, ordersettlements.OrderIDEQ(strings.TrimSpace(f.OrderID)))
-	}
-	if f.SettlementMethod != "" {
-		preds = append(preds, ordersettlements.SettlementMethodEQ(strings.TrimSpace(f.SettlementMethod)))
-	}
-	if f.Status != "" {
-		preds = append(preds, ordersettlements.SettlementStatusEQ(strings.TrimSpace(f.Status)))
-	}
-	if f.TargetType != "" {
-		preds = append(preds, ordersettlements.TargetTypeEQ(strings.TrimSpace(f.TargetType)))
-	}
-	if f.TargetID != "" {
-		preds = append(preds, ordersettlements.TargetIDEQ(strings.TrimSpace(f.TargetID)))
-	}
-	return preds
-}
-
-func orderSettlementBusinessPredicates(f businessSettlementFilter) []predicate.OrderSettlements {
-	preds := make([]predicate.OrderSettlements, 0, 8)
-	if f.SettlementID != "" {
-		preds = append(preds, ordersettlements.SettlementIDEQ(strings.TrimSpace(f.SettlementID)))
-	}
-	if f.OrderID != "" {
-		preds = append(preds, ordersettlements.OrderIDEQ(strings.TrimSpace(f.OrderID)))
-	}
-	if f.SettlementMethod != "" {
-		preds = append(preds, ordersettlements.SettlementMethodEQ(strings.TrimSpace(f.SettlementMethod)))
-	}
-	if f.Status != "" {
-		preds = append(preds, ordersettlements.StatusEQ(strings.TrimSpace(f.Status)))
-	}
-	if f.TargetType != "" {
-		preds = append(preds, ordersettlements.TargetTypeEQ(strings.TrimSpace(f.TargetType)))
-	}
-	if f.TargetID != "" {
-		preds = append(preds, ordersettlements.TargetIDEQ(strings.TrimSpace(f.TargetID)))
-	}
-	return preds
-}
-
 // dbUpdateBusinessSettlementOutcomeTx 在同一个事务里同步回写业务状态和结算出口状态。
-func dbUpdateBusinessSettlementOutcomeTx(ctx context.Context, tx sqlConn, e businessSettlementOutcomeEntry) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	e.SettlementID = strings.TrimSpace(e.SettlementID)
-	if e.SettlementID == "" {
-		return fmt.Errorf("settlement_id is required")
-	}
-	if e.UpdatedAtUnix <= 0 {
-		e.UpdatedAtUnix = time.Now().Unix()
-	}
-	_, err := ExecContext(ctx, tx,
-		`UPDATE order_settlements SET
-			status=?,
-			settlement_status=?,
-			settlement_method=?,
-			target_type=?,
-			target_id=?,
-			error_message=?,
-			payload_json=?,
-			settlement_payload_json=?,
-			updated_at_unix=?
-		WHERE settlement_id=?`,
-		strings.TrimSpace(e.BusinessStatus),
-		strings.TrimSpace(e.SettlementStatus),
-		strings.TrimSpace(e.SettlementMethod),
-		strings.TrimSpace(e.TargetType),
-		strings.TrimSpace(e.TargetID),
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSONString(e.SettlementPayload),
-		mustJSONString(e.SettlementPayload),
-		e.UpdatedAtUnix,
-		e.SettlementID,
-	)
-	return err
-}
 
 // dbUpdateBusinessSettlementOutcomeEntTx 在 ent 事务里同步回写业务状态和结算出口状态。
 // 设计说明：
@@ -227,101 +144,6 @@ func dbUpdateBusinessSettlementOutcomeEntTx(ctx context.Context, tx *gen.Tx, e b
 // - settlement_id 精确定位，不再拿 order_id 整单覆盖；
 // - 新 settlement 按 order_id 追加 settlement_no；
 // - 已存在 settlement 只更新当前行，不改 settlement_no。
-func dbUpsertBusinessSettlementTx(ctx context.Context, tx sqlConn, e businessSettlementEntry) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	e.SettlementID = strings.TrimSpace(e.SettlementID)
-	if e.SettlementID == "" {
-		return fmt.Errorf("settlement_id is required")
-	}
-	e.OrderID = strings.TrimSpace(e.OrderID)
-	if e.OrderID == "" {
-		return fmt.Errorf("order_id is required")
-	}
-	if err := validateSettlementMethod(e.SettlementMethod); err != nil {
-		return err
-	}
-	if e.CreatedAtUnix <= 0 {
-		e.CreatedAtUnix = time.Now().Unix()
-	}
-	if e.UpdatedAtUnix <= 0 {
-		e.UpdatedAtUnix = e.CreatedAtUnix
-	}
-
-	var existingOrderID string
-	err := QueryRowContext(ctx, tx,
-		`SELECT order_id,settlement_no FROM order_settlements WHERE settlement_id=?`,
-		e.SettlementID,
-	).Scan(&existingOrderID, new(int64))
-	if err == nil {
-		if strings.TrimSpace(existingOrderID) != "" && strings.TrimSpace(existingOrderID) != e.OrderID {
-			return fmt.Errorf("order_id mismatch for settlement_id=%s", e.SettlementID)
-		}
-		_, err = ExecContext(ctx, tx,
-			`UPDATE order_settlements SET
-				settlement_method=?,
-				settlement_status=?,
-				target_type=?,
-				target_id=?,
-				error_message=?,
-				payload_json=?,
-				settlement_payload_json=?,
-				updated_at_unix=?
-			WHERE settlement_id=?`,
-			strings.TrimSpace(e.SettlementMethod),
-			strings.TrimSpace(e.Status),
-			strings.TrimSpace(e.TargetType),
-			strings.TrimSpace(e.TargetID),
-			strings.TrimSpace(e.ErrorMessage),
-			mustJSONString(e.Payload),
-			mustJSONString(e.Payload),
-			e.UpdatedAtUnix,
-			e.SettlementID,
-		)
-		return err
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return err
-	}
-
-	var nextSettlementNo int64
-	if err := QueryRowContext(ctx, tx,
-		`SELECT COALESCE(MAX(settlement_no),0)+1 FROM order_settlements WHERE order_id=?`,
-		e.OrderID,
-	).Scan(&nextSettlementNo); err != nil {
-		return err
-	}
-	_, err = ExecContext(ctx, tx,
-		`INSERT INTO order_settlements(
-			settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,amount_satoshi,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,error_message,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		e.SettlementID,
-		e.OrderID,
-		nextSettlementNo,
-		"",
-		"",
-		"",
-		"",
-		"",
-		strings.TrimSpace(e.SettlementMethod),
-		strings.TrimSpace(e.Status),
-		strings.TrimSpace(e.Status),
-		int64(0),
-		"",
-		"",
-		strings.TrimSpace(e.TargetType),
-		strings.TrimSpace(e.TargetID),
-		"",
-		"",
-		strings.TrimSpace(e.ErrorMessage),
-		mustJSONString(e.Payload),
-		mustJSONString(e.Payload),
-		e.CreatedAtUnix,
-		e.UpdatedAtUnix,
-	)
-	return err
-}
 
 // dbUpsertBusinessSettlementEntTx 在 ent 事务里统一处理结算行写入。
 // 设计说明：
@@ -545,55 +367,8 @@ func validateSettlementMethod(method string) error {
 // 幂等设计：同一 settlement_id 重复写入时更新非主键字段
 // 约束：order_id 唯一，一条 business 只对应一条主 settlement
 // 校验：settlement_method 只允许 'pool' 或 'chain'
-func dbUpsertBusinessSettlement(ctx context.Context, store *clientDB, e businessSettlementEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	e.SettlementID = strings.TrimSpace(e.SettlementID)
-	if e.SettlementID == "" {
-		return fmt.Errorf("settlement_id is required")
-	}
-	e.OrderID = strings.TrimSpace(e.OrderID)
-	if e.OrderID == "" {
-		return fmt.Errorf("order_id is required")
-	}
-	if err := validateSettlementMethod(e.SettlementMethod); err != nil {
-		return err
-	}
-	now := time.Now().Unix()
-	if e.CreatedAtUnix <= 0 {
-		e.CreatedAtUnix = now
-	}
-	if e.UpdatedAtUnix <= 0 {
-		e.UpdatedAtUnix = now
-	}
-	return store.Tx(ctx, func(tx sqlConn) error {
-		return dbUpsertBusinessSettlementTx(ctx, tx, e)
-	})
-}
 
 // dbGetBusinessSettlement 按 settlement_id 查询业务结算出口
-func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID string) (BusinessSettlementItem, error) {
-	if store == nil {
-		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
-	}
-	settlementID = strings.TrimSpace(settlementID)
-	if settlementID == "" {
-		return BusinessSettlementItem{}, fmt.Errorf("settlement_id is required")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
-		node, err := tx.OrderSettlements.Query().
-			Where(ordersettlements.SettlementIDEQ(settlementID)).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return BusinessSettlementItem{}, sql.ErrNoRows
-			}
-			return BusinessSettlementItem{}, err
-		}
-		return orderSettlementToBusinessSettlementItem(node), nil
-	})
-}
 
 // dbGetBusinessSettlementByBusinessID 按 order_id 查询业务结算出口
 func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, businessID string) (BusinessSettlementItem, error) {
@@ -620,53 +395,8 @@ func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, b
 }
 
 // dbListBusinessSettlementsByTarget 按 target_type + target_id 查询业务结算出口列表
-func dbListBusinessSettlementsByTarget(ctx context.Context, store *clientDB, targetType, targetID string, limit, offset int) (businessSettlementPage, error) {
-	if store == nil {
-		return businessSettlementPage{}, fmt.Errorf("client db is nil")
-	}
-	return dbListBusinessSettlements(ctx, store, businessSettlementFilter{
-		TargetType: targetType,
-		TargetID:   targetID,
-		Limit:      limit,
-		Offset:     offset,
-	})
-}
 
 // dbListBusinessSettlements 查询业务结算出口列表
-func dbListBusinessSettlements(ctx context.Context, store *clientDB, f businessSettlementFilter) (businessSettlementPage, error) {
-	if store == nil {
-		return businessSettlementPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (businessSettlementPage, error) {
-		preds := orderSettlementQueryPredicates(f)
-		var out businessSettlementPage
-		query := tx.OrderSettlements.Query().Where(preds...)
-		total, err := query.Count(ctx)
-		if err != nil {
-			return businessSettlementPage{}, err
-		}
-		out.Total = total
-		if f.Limit <= 0 {
-			f.Limit = 20
-		}
-		if f.Offset < 0 {
-			f.Offset = 0
-		}
-		nodes, err := query.
-			Order(ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
-			Limit(f.Limit).
-			Offset(f.Offset).
-			All(ctx)
-		if err != nil {
-			return businessSettlementPage{}, err
-		}
-		out.Items = make([]BusinessSettlementItem, 0, len(nodes))
-		for _, node := range nodes {
-			out.Items = append(out.Items, orderSettlementToBusinessSettlementItem(node))
-		}
-		return out, nil
-	})
-}
 
 // dbUpdateBusinessSettlementStatus 更新业务结算出口状态
 func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, settlementID string, status string, errorMessage string) error {
@@ -689,20 +419,6 @@ func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, sett
 }
 
 // dbUpdateBusinessSettlementStatusByBusinessID 按 order_id 更新业务结算出口状态
-func dbUpdateBusinessSettlementStatusByBusinessID(ctx context.Context, store *clientDB, businessID string, status string, errorMessage string) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	businessID = strings.TrimSpace(businessID)
-	if businessID == "" {
-		return fmt.Errorf("order_id is required")
-	}
-	settlement, err := dbGetBusinessSettlementByBusinessID(ctx, store, businessID)
-	if err != nil {
-		return err
-	}
-	return dbUpdateBusinessSettlementStatus(ctx, store, settlement.SettlementID, status, errorMessage)
-}
 
 // dbUpdateBusinessSettlementTarget 回写 settlement 的 target_type 和 target_id
 func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, settlementID string, targetType string, targetID string) error {
@@ -730,33 +446,6 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 // - 这是结算层的主回写入口；
 // - 业务状态、结算状态、目标链上事实必须一起更新；
 // - 这样前台不需要猜“这笔单到底算到哪一步了”。
-func dbUpdateBusinessSettlementOutcome(ctx context.Context, store *clientDB, e businessSettlementOutcomeEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	e.SettlementID = strings.TrimSpace(e.SettlementID)
-	if e.SettlementID == "" {
-		return fmt.Errorf("settlement_id is required")
-	}
-	if e.UpdatedAtUnix <= 0 {
-		e.UpdatedAtUnix = time.Now().Unix()
-	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		_, err := tx.OrderSettlements.Update().
-			Where(ordersettlements.SettlementIDEQ(e.SettlementID)).
-			SetStatus(strings.TrimSpace(e.BusinessStatus)).
-			SetSettlementStatus(strings.TrimSpace(e.SettlementStatus)).
-			SetSettlementMethod(strings.TrimSpace(e.SettlementMethod)).
-			SetTargetType(strings.TrimSpace(e.TargetType)).
-			SetTargetID(strings.TrimSpace(e.TargetID)).
-			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
-			SetPayloadJSON(mustJSONString(e.SettlementPayload)).
-			SetSettlementPayloadJSON(mustJSONString(e.SettlementPayload)).
-			SetUpdatedAtUnix(e.UpdatedAtUnix).
-			Save(ctx)
-		return err
-	})
-}
 
 // ============================================================
 // 查询辅助函数：第二步补充，让真实接口和后台读取摆脱旧散查方式

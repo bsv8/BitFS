@@ -851,14 +851,6 @@ func buildDomainRegisterTxDetailed(store *clientDB, rt *Runtime, signedQuoteJSON
 	return builtDomainRegisterTx{}, fmt.Errorf("insufficient wallet utxos for register payment")
 }
 
-func buildDomainRegisterTxWithUTXOs(actor *poolcore.Actor, selected []poolcore.UTXO, payToAddress string, payAmount uint64, signedQuoteJSON []byte) ([]byte, string, error) {
-	built, err := buildDomainRegisterTxWithUTXOsDetailed(actor, selected, payToAddress, payAmount, signedQuoteJSON)
-	if err != nil {
-		return nil, "", err
-	}
-	return built.RawTx, built.TxID, nil
-}
-
 func buildDomainRegisterTxWithUTXOsDetailed(actor *poolcore.Actor, selected []poolcore.UTXO, payToAddress string, payAmount uint64, signedQuoteJSON []byte) (builtDomainRegisterTx, error) {
 	if actor == nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("client actor not initialized")

@@ -20,14 +20,6 @@ type seedPricingPolicyRow struct {
 }
 
 // 这里只放种子定价策略的读写，避免和运行流程混在一起。
-func dbLoadSeedPricingPolicy(ctx context.Context, store *clientDB, seedHash string) (seedPricingPolicyRow, error) {
-	if store == nil {
-		return seedPricingPolicyRow{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (seedPricingPolicyRow, error) {
-		return dbLoadSeedPricingPolicyTx(ctx, tx, seedHash)
-	})
-}
 
 func dbLoadSeedPricingPolicyTx(ctx context.Context, tx *gen.Tx, seedHash string) (seedPricingPolicyRow, error) {
 	if tx == nil {

@@ -53,18 +53,6 @@ func normalizeLiveFollowStatus(st LiveFollowStatus) LiveFollowStatus {
 	return st
 }
 
-func persistLiveFollowStatus(store *clientDB, st LiveFollowStatus) error {
-	return dbPersistLiveFollowStatus(context.Background(), store, st)
-}
-
-func loadLiveFollowStatus(store *clientDB, streamID string) (LiveFollowStatus, bool, error) {
-	return dbLoadLiveFollowStatus(context.Background(), store, streamID)
-}
-
-func listRunningLiveFollowStatuses(store *clientDB) ([]LiveFollowStatus, error) {
-	return dbListRunningLiveFollowStatuses(context.Background(), store)
-}
-
 func (lr *liveRuntime) setFollowStatus(streamID string, update func(*LiveFollowStatus)) {
 	if lr == nil {
 		return

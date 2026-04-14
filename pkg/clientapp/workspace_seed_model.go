@@ -1,9 +1,7 @@
 package clientapp
 
 import (
-	"encoding/binary"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -119,57 +117,3 @@ func workspacePathJoin(root, rel string) string {
 }
 
 // parseSeedBytesV1 解析 seed 文件头，拿到块数与文件大小。
-func parseSeedBytesV1(seedBytes []byte) (chunkCount uint32, fileSize uint64, err error) {
-	if len(seedBytes) < 1+4+8+4 {
-		return 0, 0, fmt.Errorf("invalid seed bytes")
-	}
-	if seedBytes[0] != 0x01 {
-		return 0, 0, fmt.Errorf("unsupported seed version")
-	}
-	blockSize := binary.BigEndian.Uint32(seedBytes[1:5])
-	if blockSize != uint32(seedBlockSize) {
-		return 0, 0, fmt.Errorf("invalid seed block size")
-	}
-	fileSize = binary.BigEndian.Uint64(seedBytes[5:13])
-	chunkCount = binary.BigEndian.Uint32(seedBytes[13:17])
-	wantLen := 1 + 4 + 8 + 4 + int(chunkCount)*32
-	if len(seedBytes) < wantLen {
-		return 0, 0, fmt.Errorf("invalid seed bytes")
-	}
-	return chunkCount, fileSize, nil
-}
-
-func seedChunkSupplyRowsFromSeedBytes(seedHash string, seedBytes []byte, available []uint32) ([]seedChunkSupplyRow, uint32, uint64, error) {
-	seedHash = normalizeSeedHashHex(seedHash)
-	if seedHash == "" {
-		return nil, 0, 0, fmt.Errorf("seed_hash required")
-	}
-	chunkCount, fileSize, err := parseSeedBytesV1(seedBytes)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	indexes := available
-	if len(indexes) == 0 {
-		indexes = contiguousChunkIndexes(chunkCount)
-	}
-	indexes = normalizeChunkIndexes(indexes, chunkCount)
-	out := make([]seedChunkSupplyRow, 0, len(indexes))
-	for _, idx := range indexes {
-		if idx >= chunkCount {
-			continue
-		}
-		out = append(out, seedChunkSupplyRow{
-			SeedHash:   seedHash,
-			ChunkIndex: idx,
-		})
-	}
-	return out, chunkCount, fileSize, nil
-}
-
-func seedChunkSupplyRowsFromFile(seedHash string, seedPath string, available []uint32) ([]seedChunkSupplyRow, uint32, uint64, error) {
-	seedBytes, err := os.ReadFile(seedPath)
-	if err != nil {
-		return nil, 0, 0, err
-	}
-	return seedChunkSupplyRowsFromSeedBytes(seedHash, seedBytes, available)
-}

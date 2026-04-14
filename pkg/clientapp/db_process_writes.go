@@ -499,9 +499,6 @@ func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep i
 // - 这里只负责把一条财务事实稳定落库，不判断业务链路归属；
 // - 结算出口字段由桥接层单独补，不在这里猜；
 // - order_settlements 已经是唯一主表，旧来源一律拒绝。
-func dbUpsertSettleRecord(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
-	return dbAppendFinBusinessTx(ctx, tx, e)
-}
 
 func dbAppendFinBusinessTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
 	if tx == nil {
@@ -630,14 +627,6 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx *gen.Tx, e finBusinessEntr
 // - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
 // - 结算链路必须走 dbAppendSettlementPaymentAttemptFinBusiness，不能绕回这个入口；
 // - 这里已经收口到 settlement_payment_attempt，旧来源一律拒绝。
-func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		return dbAppendFinBusinessTx(ctx, tx, e)
-	})
-}
 
 // 结算写入专用入口只认 settlement_payment_attempt 主键，调用方不再有机会手填来源口径。
 // 设计边界：

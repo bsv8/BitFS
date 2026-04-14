@@ -14,23 +14,6 @@ import (
 // - 所有入口先统一 seed_hash 规范化，再进 ent；
 // - 这张表只表达“哪些 chunk 可用”，不再夹带别的库存语义。
 
-func dbMergeSeedChunkSupply(ctx context.Context, store *clientDB, seedHash string, incoming []uint32, chunkCount uint32) ([]uint32, error) {
-	if store == nil {
-		return nil, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]uint32, error) {
-		existing, err := dbListSeedChunkSupplyTx(ctx, tx, seedHash)
-		if err != nil {
-			return nil, err
-		}
-		merged := normalizeChunkIndexes(append(existing, incoming...), chunkCount)
-		if err := dbReplaceSeedChunkSupplyTx(ctx, tx, seedHash, merged); err != nil {
-			return nil, err
-		}
-		return merged, nil
-	})
-}
-
 func dbReplaceSeedChunkSupply(ctx context.Context, store *clientDB, seedHash string, availableChunkIndexes []uint32) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")

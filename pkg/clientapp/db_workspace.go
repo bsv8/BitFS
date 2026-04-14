@@ -648,18 +648,6 @@ func deleteSeedScopedOrphansTx(ctx context.Context, tx *gen.Tx, activeSeedHashes
 	return nil
 }
 
-func workspaceItemFromEnt(row *gen.BizWorkspaces) workspaceItem {
-	if row == nil {
-		return workspaceItem{}
-	}
-	return workspaceItem{
-		WorkspacePath: row.WorkspacePath,
-		MaxBytes:      uint64(row.MaxBytes),
-		Enabled:       row.Enabled != 0,
-		CreatedAtUnix: row.CreatedAtUnix,
-	}
-}
-
 func boolToInt64(v bool) int64 {
 	if v {
 		return 1

@@ -1549,25 +1549,14 @@ func ensureMinFreeSpace(path string, minBytes uint64) error {
 	return nil
 }
 
-func applySQLitePragmas(db *sql.DB) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	// 设计说明：
-	// - 运行时正式入口统一走 infra/sqliteactor.Open；
-	// - 这里保留给直接 sql.Open("sqlite", ...) 的测试库做最小 WAL 初始化；
-	// - 不再在这里叠加 busy_timeout 之类并发补丁，避免测试口径和正式口径分裂。
-	if _, err := db.Exec(`PRAGMA journal_mode=WAL`); err != nil {
-		return fmt.Errorf("sqlite pragma journal_mode: %w", err)
-	}
-	// 启用外键约束（硬切版 schema 依赖外键约束）
-	if _, err := db.Exec(`PRAGMA foreign_keys=ON`); err != nil {
-		return fmt.Errorf("sqlite pragma foreign_keys: %w", err)
-	}
-	return nil
-}
+// 设计说明：
+// - 运行时正式入口统一走 infra/sqliteactor.Open；
+// - 这里保留给直接 sql.Open("sqlite", ...) 的测试库做最小 WAL 初始化；
+// - 不再在这里叠加 busy_timeout 之类并发补丁，避免测试口径和正式口径分裂。
 
-	// 注意：数据库结构由 contract 的 ent schema 管理，通过 ensureClientDBSchema 入口调用。
+// 启用外键约束（硬切版 schema 依赖外键约束）
+
+// 注意：数据库结构由 contract 的 ent schema 管理，通过 ensureClientDBSchema 入口调用。
 // 该文件不再包含数据库初始化逻辑，只保留启动顺序。
 
 func errString(err error) string {
@@ -1936,13 +1925,6 @@ func sanitizeMIMEHint(raw string) string {
 	return mediaType
 }
 
-func recommendedFileNameBySeedHash(ctx context.Context, store *clientDB, seedHash string) string {
-	if store == nil {
-		return ""
-	}
-	return dbRecommendedFileNameBySeedHash(ctx, store, seedHash)
-}
-
 func mimeHintBySeedHash(ctx context.Context, store *clientDB, seedHash string) string {
 	if store == nil {
 		return ""
@@ -1967,29 +1949,6 @@ func configuredArbiterPubHexes(cfg Config) []string {
 		return nil
 	}
 	return normalized
-}
-
-func normalizePeerIDList(in []string) []string {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]string, 0, len(in))
-	seen := map[string]struct{}{}
-	for _, raw := range in {
-		s := strings.TrimSpace(raw)
-		if s == "" {
-			continue
-		}
-		if _, err := peer.Decode(s); err != nil {
-			continue
-		}
-		if _, ok := seen[s]; ok {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
-	return out
 }
 
 func randHex(n int) string {
@@ -2347,9 +2306,7 @@ func arbSec(trace pproto.TraceSink) pproto.SecurityConfig {
 func clientSec(trace pproto.TraceSink) pproto.SecurityConfig {
 	return pproto.SecurityConfig{Domain: "bitcast-client", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
-func nodeSec(trace pproto.TraceSink) pproto.SecurityConfig {
-	return pproto.SecurityConfig{Domain: "bitfs-node", Network: "test", TTL: 30 * time.Second, Trace: trace}
-}
+
 func nodeSecForRuntime(rt *Runtime) pproto.SecurityConfig {
 	network := "test"
 	trace := pproto.TraceSink(nil)
@@ -2407,24 +2364,6 @@ func normalizeRawSecp256k1PrivKeyHex(s string) (string, error) {
 		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(raw))
 	}
 	return strings.ToLower(hex.EncodeToString(raw)), nil
-}
-
-func buildClientActorFromConfig(cfg Config) (*poolcore.Actor, error) {
-	privHex, err := normalizeRawSecp256k1PrivKeyHex(cfg.Keys.PrivkeyHex)
-	if err != nil {
-		return nil, err
-	}
-	if cid := strings.TrimSpace(cfg.ClientID); cid != "" {
-		derivedID, err := clientIDFromPrivHex(privHex)
-		if err != nil {
-			return nil, fmt.Errorf("derive client_pubkey_hex from signing key failed: %w", err)
-		}
-		if !strings.EqualFold(cid, derivedID) {
-			return nil, fmt.Errorf("client_pubkey_hex and signing key mismatch")
-		}
-	}
-	isMainnet := strings.EqualFold(strings.TrimSpace(cfg.BSV.Network), "main")
-	return poolcore.BuildActor("client", privHex, isMainnet)
 }
 
 func buildClientActorFromRunInput(in RunInput) (*poolcore.Actor, error) {

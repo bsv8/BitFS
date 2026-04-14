@@ -130,22 +130,6 @@ func flushSQLTraceRoundSummary(roundID string) {
 	}
 }
 
-func currentSQLTracePath() string {
-	mgr := currentSQLTraceManager()
-	if mgr == nil {
-		return ""
-	}
-	return mgr.TracePath()
-}
-
-func currentSQLTraceSummaryPath() string {
-	mgr := currentSQLTraceManager()
-	if mgr == nil {
-		return ""
-	}
-	return mgr.SummaryPath()
-}
-
 func newSQLTraceManager(logFile string, ringSize int) (*sqlTraceManager, error) {
 	logFile = strings.TrimSpace(logFile)
 	if logFile == "" {

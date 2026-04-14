@@ -447,27 +447,6 @@ func dbBatchRetryFailed(ctx context.Context, store *clientDB, walletID string, a
 // - 在 runUnknownAssetVerification 每次执行前调用
 // - 先把超重试项转 failed，避免无效查询
 // - 返回转 failed 的数量
-func dbAutoFailExhaustedRetries(ctx context.Context, store *clientDB) (int, error) {
-	if store == nil {
-		return 0, fmt.Errorf("store is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
-		now := time.Now().Unix()
-		affected, err := tx.WalletUtxoTokenVerification.Update().
-			Where(
-				walletutxotokenverification.StatusEQ("pending"),
-				walletutxotokenverification.RetryCountGTE(int64(assetVerificationMaxRetries)),
-			).
-			SetStatus("failed").
-			SetErrorMessage("max retries exceeded").
-			SetUpdatedAtUnix(now).
-			Save(ctx)
-		if err != nil {
-			return 0, err
-		}
-		return affected, nil
-	})
-}
 
 // ==================== 阈值告警 ====================
 
@@ -480,53 +459,10 @@ const (
 // 设计说明：
 // - 仅日志级别，不阻断业务流程
 // - failed 超阈值、confirmed_without_fact 非 0 时产生 Warning/Error 日志
-func emitVerificationThresholdAlerts(ctx context.Context, store *clientDB, trigger string) {
-	if store == nil {
-		return
-	}
-	summary, err := dbGetVerificationQueueSummary(ctx, store)
-	if err != nil {
-		return
-	}
-	// failed 超阈值
-	if summary.Failed > verificationAlertFailedThreshold {
-		obs.Error("bitcast-client", "verification_alert_failed_threshold", map[string]any{
-			"failed_count":   summary.Failed,
-			"threshold":      verificationAlertFailedThreshold,
-			"trigger":        trigger,
-			"alert_severity": "high",
-		})
-	} else if summary.Failed > 0 {
-		obs.Info("bitcast-client", "verification_alert_failed_warning", map[string]any{
-			"failed_count":   summary.Failed,
-			"threshold":      verificationAlertFailedThreshold,
-			"trigger":        trigger,
-			"alert_severity": "low",
-		})
-	}
 
-	// confirmed_without_fact 非 0
-	report, err := dbCheckVerificationReconciliation(ctx, store)
-	if err != nil {
-		return
-	}
-	if report.Summary["confirmed_without_fact"] > 0 {
-		obs.Error("bitcast-client", "verification_alert_confirmed_without_fact", map[string]any{
-			"confirmed_without_fact": report.Summary["confirmed_without_fact"],
-			"trigger":                trigger,
-			"alert_severity":         "high",
-			"affected_items":         report.ConfirmedNoFact,
-		})
-	}
-	if report.Summary["fact_pending_or_missing"] > 0 {
-		obs.Error("bitcast-client", "verification_alert_fact_pending", map[string]any{
-			"fact_pending_count": report.Summary["fact_pending_or_missing"],
-			"trigger":            trigger,
-			"alert_severity":     "medium",
-			"affected_items":     report.FactNoConfirmation,
-		})
-	}
-}
+// failed 超阈值
+
+// confirmed_without_fact 非 0
 
 // ==================== 审计日志 ====================
 
@@ -669,10 +605,3 @@ func (c *consecutiveCounter) Reset() {
 // ==================== 辅助：短 hex 显示 ====================
 
 // shortHex 取字符串前4...后4，用于日志和 API 显示长 ID
-func shortHex(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) <= 8 {
-		return s
-	}
-	return s[:4] + "..." + s[len(s)-4:]
-}

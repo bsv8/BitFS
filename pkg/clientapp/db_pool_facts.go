@@ -488,24 +488,6 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *gen.Tx, in 
 	return nil
 }
 
-func dbUpsertDirectTransferPoolSession(ctx context.Context, store *clientDB, in directTransferPoolSessionFactInput) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		return dbUpsertDirectTransferPoolSessionTx(ctx, tx, in)
-	})
-}
-
-func dbUpsertDirectTransferPoolAllocation(ctx context.Context, store *clientDB, in directTransferPoolAllocationFactInput) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, in)
-	})
-}
-
 func directTransferPoolAllocationID(sessionID string, allocationKind string, sequenceNum uint32) string {
 	sessionID = strings.TrimSpace(sessionID)
 	allocationKind = strings.TrimSpace(allocationKind)
@@ -560,9 +542,6 @@ func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, a
 
 // dbGetPoolAllocationIDByAllocationIDTx 在事务内按 allocation_id 查自增 id
 // 用于财务写入时在同一事务内获取主键
-func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx *gen.Tx, allocationID string) (int64, error) {
-	return dbGetPoolAllocationIDByAllocationIDEntTx(ctx, tx, allocationID)
-}
 
 // dbGetPoolAllocationIDByKindTx 在事务内按 session + kind 取第一条 allocation_id。
 // 设计说明：

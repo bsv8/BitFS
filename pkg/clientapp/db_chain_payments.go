@@ -68,24 +68,8 @@ type chainPaymentUTXOLinkEntry struct {
 
 // dbUpsertChainPayment 按 txid  upsert fact_settlement_channel_chain_quote_pay
 // 同一个 txid 重复写入不会生成多条记录
-func dbUpsertChainPayment(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		return dbUpsertChainPaymentEntTx(ctx, tx, e, true)
-	})
-}
 
 // dbUpsertChainPaymentWithSettlementPaymentAttempt 走同一个上下文包装，但会补 settlement_payment_attempt。
-func dbUpsertChainPaymentWithSettlementPaymentAttempt(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		return dbUpsertChainPaymentEntTx(ctx, tx, e, true)
-	})
-}
 
 // settlementPaymentAttemptStateForChainPayment 把 payment 状态收口到 settlement payment attempt 状态。
 // 设计说明：
@@ -425,34 +409,6 @@ func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, tx *g
 	}
 }
 
-func dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		channelID, _, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, e,
-			"chain_direct_pay",
-			"payment_attempt_chain_direct_pay",
-			"bind chain direct pay channel id",
-		)
-		return channelID, err
-	})
-}
-
-func dbUpsertChainAssetCreateWithSettlementPaymentAttempt(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		channelID, _, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, e,
-			"chain_asset_create",
-			"payment_attempt_chain_asset_create",
-			"bind chain asset create channel id",
-		)
-		return channelID, err
-	})
-}
-
 // dbGetChainPaymentByTxID 按 txid 查 fact_settlement_channel_chain_quote_pay
 func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) (int64, error) {
 	if store == nil {
@@ -474,46 +430,6 @@ func dbGetChainPaymentByTxID(ctx context.Context, store *clientDB, txid string) 
 }
 
 // dbGetChainPaymentByID 按 id 查 fact_settlement_channel_chain_quote_pay（验证存在性）
-func dbGetChainPaymentByID(ctx context.Context, store *clientDB, id int64) (bool, error) {
-	if store == nil {
-		return false, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (bool, error) {
-		if id <= 0 {
-			return false, fmt.Errorf("id is required")
-		}
-		_, err := tx.FactSettlementChannelChainQuotePay.Query().
-			Where(factsettlementchannelchainquotepay.IDEQ(int(id))).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return false, nil
-			}
-			return false, err
-		}
-		return true, nil
-	})
-}
-
-func dbWalletUTXOExistsConn(ctx context.Context, tx *gen.Tx, utxoID string) (bool, error) {
-	if tx == nil {
-		return false, fmt.Errorf("tx is nil")
-	}
-	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
-	if utxoID == "" {
-		return false, fmt.Errorf("utxo_id is required")
-	}
-	_, err := tx.WalletUtxo.Query().
-		Where(walletutxo.UtxoIDEQ(utxoID)).
-		Only(ctx)
-	if err != nil {
-		if gen.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	return true, nil
-}
 
 func dbWalletUTXOValueConn(ctx context.Context, tx *gen.Tx, utxoID string) (int64, bool, error) {
 	if tx == nil {

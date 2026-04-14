@@ -139,49 +139,6 @@ func appendFactBSV21Event(ctx context.Context, store *clientDB, item factBSV21Ev
 	})
 }
 
-func getFactBSV21ByTokenID(ctx context.Context, store *clientDB, tokenID string) (factBSV21CreateItem, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) (factBSV21CreateItem, error) {
-		tokenID = strings.ToLower(strings.TrimSpace(tokenID))
-		if tokenID == "" {
-			return factBSV21CreateItem{}, fmt.Errorf("token_id is required")
-		}
-		var item factBSV21CreateItem
-		err := QueryRowContext(ctx, db, `SELECT token_id,create_txid,wallet_id,address,token_standard,symbol,max_supply,decimals,icon,created_at_unix,submitted_at_unix,updated_at_unix,payload_json
-			FROM fact_bsv21
-			WHERE token_id=?`, tokenID).Scan(
-			&item.TokenID,
-			&item.CreateTxID,
-			&item.WalletID,
-			&item.Address,
-			&item.TokenStandard,
-			&item.Symbol,
-			&item.MaxSupply,
-			&item.Decimals,
-			&item.Icon,
-			&item.CreatedAtUnix,
-			&item.SubmittedAtUnix,
-			&item.UpdatedAtUnix,
-			&item.PayloadJSON,
-		)
-		if err != nil {
-			return factBSV21CreateItem{}, err
-		}
-		item.TokenID = strings.ToLower(strings.TrimSpace(item.TokenID))
-		item.CreateTxID = strings.ToLower(strings.TrimSpace(item.CreateTxID))
-		item.WalletID = strings.TrimSpace(item.WalletID)
-		item.Address = strings.TrimSpace(item.Address)
-		item.TokenStandard = strings.TrimSpace(item.TokenStandard)
-		item.Symbol = strings.TrimSpace(item.Symbol)
-		item.MaxSupply = strings.TrimSpace(item.MaxSupply)
-		item.Icon = strings.TrimSpace(item.Icon)
-		item.PayloadJSON = strings.TrimSpace(item.PayloadJSON)
-		if item.PayloadJSON == "" {
-			item.PayloadJSON = "{}"
-		}
-		return item, nil
-	})
-}
-
 func marshalFactBSV21Payload(values map[string]any) string {
 	if len(values) == 0 {
 		return "{}"

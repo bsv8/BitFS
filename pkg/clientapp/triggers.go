@@ -1493,23 +1493,6 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 	return directTransferPoolCloseResult{FinalTxID: finalTxID}, nil
 }
 
-func pickUTXOsForTarget(all []poolcore.UTXO, target uint64) ([]poolcore.UTXO, error) {
-	if len(all) == 0 {
-		return nil, fmt.Errorf("no utxos available")
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].Value < all[j].Value })
-	selected := make([]poolcore.UTXO, 0, 4)
-	var sum uint64
-	for _, u := range all {
-		selected = append(selected, u)
-		sum += u.Value
-		if sum >= target {
-			return selected, nil
-		}
-	}
-	return nil, fmt.Errorf("insufficient balance for transfer pool target=%d", target)
-}
-
 func isRetryableTransferPoolBaseTxBroadcastErr(err error) bool {
 	if err == nil {
 		return false
@@ -1687,13 +1670,6 @@ func ownArbiterPubHexes(rt *Runtime) []string {
 // 设计说明：
 // - 只返回 pub hex，不再把 peer ID 当成系统内 ID 继续传下去；
 // - 优先用配置里显式启用的仲裁者，再退回到已连通仲裁者的 pub hex。
-func defaultArbiterPubHex(rt *Runtime) string {
-	ids := ownArbiterPubHexes(rt)
-	if len(ids) == 0 {
-		return ""
-	}
-	return ids[0]
-}
 
 type DirectDealAcceptParams struct {
 	SellerPubHex  string `json:"seller_pubkey_hex"`

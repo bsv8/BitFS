@@ -369,14 +369,6 @@ func resolveChunkIndexByHashInSeed(seed []byte, chunkHash string) (uint32, error
 	return 0, fmt.Errorf("chunk hash not found")
 }
 
-func shortHash(s string) string {
-	s = strings.TrimSpace(strings.ToLower(s))
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:12]
-}
-
 func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 	sessionID := strings.TrimSpace(req.SessionId)
 	if sessionID == "" || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {

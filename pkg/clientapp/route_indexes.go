@@ -4,50 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"strings"
-	"time"
 
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/procpublishedrouteindexes"
 	oldproto "github.com/golang/protobuf/proto"
 )
-
-func upsertPublishedRouteIndex(ctx context.Context, store *clientDB, route string, seedHash string) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("store is nil")
-	}
-	normalizedRoute := normalizeResolveRoute(route)
-	normalizedSeedHash := strings.ToLower(strings.TrimSpace(seedHash))
-	if normalizedSeedHash == "" {
-		return 0, fmt.Errorf("seed_hash is required")
-	}
-	now := time.Now().Unix()
-	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		existing, err := tx.ProcPublishedRouteIndexes.Query().
-			Where(procpublishedrouteindexes.RouteEQ(normalizedRoute)).
-			Only(ctx)
-		if err == nil {
-			_, err = existing.Update().
-				SetSeedHash(normalizedSeedHash).
-				SetUpdatedAtUnix(now).
-				Save(ctx)
-			return err
-		}
-		if !gen.IsNotFound(err) {
-			return err
-		}
-		_, err = tx.ProcPublishedRouteIndexes.Create().
-			SetRoute(normalizedRoute).
-			SetSeedHash(normalizedSeedHash).
-			SetUpdatedAtUnix(now).
-			Save(ctx)
-		return err
-	}); err != nil {
-		return 0, err
-	}
-	return now, nil
-}
 
 func buildRouteIndexManifest(ctx context.Context, store *clientDB, route string) ([]byte, error) {
 	if store == nil {

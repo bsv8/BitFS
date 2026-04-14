@@ -29,42 +29,6 @@ type walletFundingCandidate struct {
 // 设计说明：
 // - 这里保留“识别结果 + 金额”一起读出的方式，让后续分配器先看保护分类，再谈选币；
 // - 不再从 Runtime 里回退取 DB，依赖必须由上游显式传入。
-func listWalletFundingCandidates(ctx context.Context, store *clientDB, rt *Runtime) ([]walletFundingCandidate, error) {
-	if rt == nil {
-		return nil, fmt.Errorf("runtime not initialized")
-	}
-	addr, err := clientWalletAddress(rt)
-	if err != nil {
-		return nil, err
-	}
-	if store == nil {
-		return nil, fmt.Errorf("store not initialized")
-	}
-	items, err := dbListWalletFundingCandidates(ctx, store, addr)
-	if err != nil {
-		return nil, err
-	}
-	s, err := dbLoadWalletUTXOSyncState(ctx, store, addr)
-	if err != nil {
-		return nil, err
-	}
-	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-		return nil, fmt.Errorf("wallet utxo sync state stale for current runtime")
-	}
-	out := make([]walletFundingCandidate, 0, len(items))
-	for _, item := range items {
-		out = append(out, walletFundingCandidate{
-			UTXOID:           item.UTXOID,
-			UTXO:             item.UTXO,
-			CreatedAtUnix:    item.CreatedAtUnix,
-			ScriptType:       item.ScriptType,
-			ScriptTypeReason: item.ScriptTypeReason,
-			AllocationClass:  item.AllocationClass,
-			AllocationReason: item.AllocationReason,
-		})
-	}
-	return out, nil
-}
 
 // allocatePlainBSVWalletUTXOs 为普通 BSV 支出选择一组输入。
 // Step 6：改为从 fact 口径选源，不再扫 wallet_utxo

@@ -233,24 +233,6 @@ func dbGetStaticFilePrice(ctx context.Context, store *clientDB, path string) (st
 	})
 }
 
-func dbUpsertStaticFilePrice(ctx context.Context, store *clientDB, path string, floor uint64, bps uint64) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	seedHash, err := dbGetWorkspaceFileSeedHash(ctx, store, path)
-	if err != nil || seedHash == "" {
-		if err == nil {
-			err = fmt.Errorf("seed not found")
-		}
-		return 0, err
-	}
-	now := time.Now().Unix()
-	if err := dbUpsertSeedPricingPolicy(ctx, store, seedHash, floor, bps, "user", now); err != nil {
-		return 0, err
-	}
-	return now, nil
-}
-
 func dbBindStaticPriceToSeed2(ctx context.Context, store *clientDB, path string, floor uint64, bps uint64) (string, uint64, uint64, bool, error) {
 	if store == nil {
 		return "", 0, 0, false, fmt.Errorf("client db is nil")

@@ -366,22 +366,6 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, r
 	return resp, nil
 }
 
-func loadCachedNodeReachability(store *clientDB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
-	return dbLoadCachedNodeReachability(context.Background(), store, targetNodePubkeyHex, nowUnix)
-}
-
-func saveNodeReachabilityCache(store *clientDB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
-	return dbSaveNodeReachabilityCache(context.Background(), store, sourceGatewayPubkeyHex, ann)
-}
-
-func saveSelfNodeReachabilityState(store *clientDB, state selfNodeReachabilityState) error {
-	return dbSaveSelfNodeReachabilityState(context.Background(), store, state)
-}
-
-func loadSelfNodeReachabilityState(store *clientDB, nodePubkeyHex string) (selfNodeReachabilityState, bool, error) {
-	return dbLoadSelfNodeReachabilityState(context.Background(), store, nodePubkeyHex)
-}
-
 func announcementFromQueryResp(resp contractmessage.NodeReachabilityQueryPaidResp) (broadcastmodule.NodeReachabilityAnnouncement, error) {
 	ann, err := broadcastmodule.UnmarshalSignedNodeReachabilityAnnouncement(resp.SignedAnnouncement)
 	if err != nil {

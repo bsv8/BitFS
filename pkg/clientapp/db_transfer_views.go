@@ -623,15 +623,6 @@ type scanDemandQuote interface {
 	Scan(dest ...any) error
 }
 
-func scanDemandQuoteItem(row scanDemandQuote) (demandQuoteItem, error) {
-	var out demandQuoteItem
-	err := row.Scan(&out.ID, &out.DemandID, &out.SellerPubHex, &out.SeedPriceSatoshi, &out.ChunkPriceSatoshi, &out.ChunkCount, &out.FileSizeBytes, &out.RecommendedFileName, &out.MimeType, &out.AvailableChunkBitmapHex, &out.ExpiresAtUnix, &out.CreatedAtUnix)
-	if err != nil {
-		return demandQuoteItem{}, err
-	}
-	return out, nil
-}
-
 type scanDirectTransferPool interface {
 	Scan(dest ...any) error
 }
@@ -654,35 +645,6 @@ type scanTxHistory interface {
 	Scan(dest ...any) error
 }
 
-func scanTxHistoryItem(row scanTxHistory) (txHistoryItem, error) {
-	var out txHistoryItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.EventType, &out.Direction, &out.AmountSatoshi, &out.Purpose, &out.Note, &out.PoolID, &out.MsgID, &out.SequenceNum, &out.PaymentAttemptIndex, &payload)
-	if err != nil {
-		return txHistoryItem{}, err
-	}
-	if strings.TrimSpace(out.EventType) == PoolFactEventKindTxHistory && strings.TrimSpace(payload) != "" {
-		var body map[string]any
-		if json.Unmarshal([]byte(payload), &body) == nil {
-			if eventType, ok := body["event_type"].(string); ok && strings.TrimSpace(eventType) != "" {
-				out.EventType = eventType
-			}
-		}
-	}
-	return out, nil
-}
-
 type scanGatewayEvent interface {
 	Scan(dest ...any) error
-}
-
-func scanGatewayEventItem(row scanGatewayEvent) (gatewayEventItem, error) {
-	var out gatewayEventItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.CommandID, &out.Action, &out.MsgID, &out.SequenceNum, &out.PoolID, &out.AmountSatoshi, &payload)
-	if err != nil {
-		return gatewayEventItem{}, err
-	}
-	out.Payload = json.RawMessage(payload)
-	return out, nil
 }

@@ -1443,26 +1443,6 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 // 设计说明：
 // - 命中时表示这笔交易应交给 BSV21 专用事实入口，不再走钱包同步辅助层；
 // - 这里只做轻量识别，不展开资产事实。
-func hasBSV21TransferOutput(detail whatsonchain.TxDetail) bool {
-	for _, out := range detail.Vout {
-		scriptHex := strings.TrimSpace(out.ScriptPubKey.Hex)
-		if scriptHex == "" {
-			continue
-		}
-		lockingScript, err := script.NewFromHex(scriptHex)
-		if err != nil {
-			continue
-		}
-		payload, ok := decodeWalletTokenTransferPayload(lockingScript)
-		if !ok {
-			continue
-		}
-		if strings.EqualFold(firstNonEmptyStringField(payload, "op"), "transfer") {
-			return true
-		}
-	}
-	return false
-}
 
 func matchWalletOutput(txid string, out whatsonchain.TxOutput, scriptHex string) (string, uint64, bool) {
 	if strings.TrimSpace(txid) == "" {

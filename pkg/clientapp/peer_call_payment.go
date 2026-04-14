@@ -615,13 +615,3 @@ func decorateQuotedPeerCallPaymentOption(option *ncall.PaymentOption, amountSato
 	copyItem.QuoteStatus = strings.TrimSpace(quoteStatus)
 	return &copyItem
 }
-
-func nonEmptyPeerCallPurpose(chargeReason string, route string) string {
-	if strings.TrimSpace(chargeReason) != "" {
-		return strings.TrimSpace(chargeReason)
-	}
-	if strings.TrimSpace(route) != "" {
-		return strings.TrimSpace(route)
-	}
-	return "peer_call_fee"
-}

@@ -346,14 +346,6 @@ func previewWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 // - 这里收口的是领域概念“可发送持仓”，不是某个具体外部实现；
 // - 对 bsv21 而言，候选来源分成“本地自有事实”与“外来资产验真结果”两路；
 // - 当前外来资产的唯一验真渠道仍是 WOC，但调用方不应该直接依赖这个实现名。
-func loadWalletTokenSpendableCandidates(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) ([]walletTokenPreviewCandidate, error) {
-	switch normalizeWalletTokenStandard(standard) {
-	case "bsv21":
-		return loadWalletBSV21SpendableCandidates(ctx, store, rt, address, assetKey)
-	default:
-		return nil, fmt.Errorf("invalid token standard")
-	}
-}
 
 func selectWalletTokenPreviewCandidates(candidates []walletTokenPreviewCandidate, requested decimalTextValue) ([]walletTokenPreviewCandidate, string, string, string, error) {
 	selected := make([]walletTokenPreviewCandidate, 0, len(candidates))
@@ -462,13 +454,6 @@ func previewPlainBSVFunding(store *clientDB, address string, assetInputSatoshi u
 		SelectedUTXOIDs: ids,
 		TotalSatoshi:    totalSelected,
 	}, fee, fundingNeed, nil
-}
-
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
 }
 
 func listPlainBSVFundingCandidatesFromDB(store *clientDB, address string) ([]fundalloc.Candidate, error) {

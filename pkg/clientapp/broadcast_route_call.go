@@ -10,24 +10,6 @@ import (
 	oldproto "github.com/golang/protobuf/proto"
 )
 
-func marshalFeePoolPaymentPayload(session *feePoolSession, quoted feePoolServiceQuoteBuilt, clientSignature []byte, proofIntent []byte, signedProofCommit []byte) ([]byte, error) {
-	if session == nil {
-		return nil, fmt.Errorf("fee pool session missing")
-	}
-	return oldproto.Marshal(&ncall.FeePool2of2Payment{
-		SpendTxID:           strings.TrimSpace(session.SpendTxID),
-		SequenceNumber:      quoted.NextSequence,
-		ServerAmount:        quoted.NextServerAmount,
-		ChargeAmountSatoshi: quoted.ServiceQuote.ChargeAmountSatoshi,
-		Fee:                 session.SpendTxFeeSat,
-		ClientSignature:     append([]byte(nil), clientSignature...),
-		ChargeReason:        strings.TrimSpace(quoted.ChargeReason),
-		ProofIntent:         append([]byte(nil), proofIntent...),
-		SignedProofCommit:   append([]byte(nil), signedProofCommit...),
-		ServiceQuote:        append([]byte(nil), quoted.ServiceQuoteRaw...),
-	})
-}
-
 func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runtime, to string, route string, body oldproto.Message, decode func(ncall.CallResp) (T, error)) (T, ncall.CallResp, error) {
 	var zero T
 	if decode == nil {

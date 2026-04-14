@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/hex"
 	"fmt"
 	"math/big"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokencarrierlinks"
 )
@@ -96,36 +94,10 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 // 设计说明（硬切版）：
 // - 改为查询 fact_token_lots 表
 // - unknown 不参与 fact，不影响余额
-func loadWalletTokenBalance(ctx context.Context, store *clientDB, rt *Runtime, address string, standard string, assetKey string) (string, error) {
-	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(address))
-	assetKind := strings.ToUpper(strings.TrimSpace(standard))
 
-	// 直接计算余额
-	balance, err := dbCalcTokenBalance(ctx, store, ownerPubkeyHex, assetKind, assetKey)
-	if err != nil {
-		return "", fmt.Errorf("calc token balance: %w", err)
-	}
-
-	if balance == "" || balance == "0" {
-		logTokenBalanceSuccess(ctx, "wallet:"+ownerPubkeyHex, assetKind, assetKey, "0")
-		return "0", nil
-	}
-
-	logTokenBalanceSuccess(ctx, "wallet:"+ownerPubkeyHex, assetKind, assetKey, balance)
-	return balance, nil
-}
+// 直接计算余额
 
 // logTokenBalanceSuccess 记录主路径成功日志
-func logTokenBalanceSuccess(ctx context.Context, walletID string, assetKind string, tokenID string, balance string) {
-	_ = ctx
-	obs.Info("bitcast-client", "token_balance_fact_ok", map[string]any{
-		"wallet_id":       walletID,
-		"asset_kind":      assetKind,
-		"token_id":        tokenID,
-		"balance":         balance,
-		"source_of_truth": "fact_token_lots",
-	})
-}
 
 // loadWalletTokenSpendableCandidatesFromFact 从 fact 表加载 token 可花费候选
 // 设计说明（硬切版）：
@@ -634,33 +606,7 @@ func walletBSV21SendBusinessID(txID string) string {
 // dbGetUTXOTokenQuantity 查询 UTXO 上的 token quantity_text（兼容性函数）
 // 设计说明（硬切版）：
 // - 改为从 fact_token_carrier_links + fact_token_lots 查询
-func dbGetUTXOTokenQuantity(ctx context.Context, store *clientDB, utxoID string) (string, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		// 先查 carrier link 获取 lot_id
-		var lotID string
-		err := QueryRowContext(ctx, db,
-			`SELECT lot_id FROM fact_token_carrier_links WHERE carrier_utxo_id=? AND link_state='active' LIMIT 1`,
-			utxoID,
-		).Scan(&lotID)
-		if err == sql.ErrNoRows {
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
 
-		// 再查 lot 获取 quantity
-		var qty string
-		err = QueryRowContext(ctx, db,
-			`SELECT quantity_text FROM fact_token_lots WHERE lot_id=?`,
-			lotID,
-		).Scan(&qty)
-		if err == sql.ErrNoRows {
-			return "", nil
-		}
-		if err != nil {
-			return "", err
-		}
-		return qty, nil
-	})
-}
+// 先查 carrier link 获取 lot_id
+
+// 再查 lot 获取 quantity

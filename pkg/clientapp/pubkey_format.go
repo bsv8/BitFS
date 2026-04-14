@@ -4,8 +4,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
-
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 )
 
 // normalizeCompressedPubKeyHex 统一系统内公钥格式为 secp256k1 压缩公钥 hex（33 字节，前缀 02/03）。
@@ -29,17 +27,6 @@ func normalizeCompressedPubKeyHex(in string) (string, error) {
 
 // normalizeCompressedPubKeyHexLegacyAware 仅用于历史数据迁移：
 // 允许把旧 libp2p MarshalPublicKey hex（080212...）转换成压缩公钥 hex。
-func normalizeCompressedPubKeyHexLegacyAware(in string) (string, error) {
-	pubHex, err := normalizeCompressedPubKeyHex(in)
-	if err == nil {
-		return pubHex, nil
-	}
-	converted, convErr := poolcore.Libp2pMarshalPubHexToSecpCompressedHex(strings.TrimSpace(in))
-	if convErr != nil {
-		return "", err
-	}
-	return normalizeCompressedPubKeyHex(converted)
-}
 
 // normalizePubHexList 统一整理一组公钥 hex。
 // 设计说明：

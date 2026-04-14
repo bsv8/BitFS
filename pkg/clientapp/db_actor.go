@@ -18,14 +18,6 @@ func httpDBValue[T any](ctx context.Context, s *httpAPIServer, fn func(*clientDB
 	return fn(store)
 }
 
-func schedulerDBDo(s *taskScheduler, ctx context.Context, fn func(sqlConn) error) error {
-	store := schedulerStore(s)
-	if store == nil {
-		return nil
-	}
-	return store.Do(ctx, fn)
-}
-
 func httpStore(s *httpAPIServer) *clientDB {
 	if s == nil {
 		return nil
@@ -39,11 +31,4 @@ func httpStore(s *httpAPIServer) *clientDB {
 		return clientDBFromDB(s.db)
 	}
 	return nil
-}
-
-func schedulerStore(s *taskScheduler) *clientDB {
-	if s == nil {
-		return nil
-	}
-	return s.store
 }

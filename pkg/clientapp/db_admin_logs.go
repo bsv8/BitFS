@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
@@ -551,86 +550,18 @@ type scanCommandJournal interface {
 	Scan(dest ...any) error
 }
 
-func scanCommandJournalItem(row scanCommandJournal) (commandJournalItem, error) {
-	var out commandJournalItem
-	var accepted int
-	var payload string
-	var result string
-	err := row.Scan(
-		&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.CommandType, &out.GatewayPeerID, &out.AggregateID, &out.RequestedBy, &out.RequestedAt, &accepted, &out.Status, &out.ErrorCode, &out.ErrorMessage, &out.StateBefore, &out.StateAfter, &out.DurationMS, &out.TriggerKey, &payload, &result,
-	)
-	if err != nil {
-		return commandJournalItem{}, err
-	}
-	out.Accepted = accepted != 0
-	out.Payload = json.RawMessage(payload)
-	out.Result = json.RawMessage(result)
-	return out, nil
-}
-
 type scanDomainEvent interface {
 	Scan(dest ...any) error
-}
-
-func scanDomainEventItem(row scanDomainEvent) (domainEventItem, error) {
-	var out domainEventItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.GatewayPeerID, &out.EventName, &out.StateBefore, &out.StateAfter, &payload)
-	if err != nil {
-		return domainEventItem{}, err
-	}
-	out.Payload = json.RawMessage(payload)
-	return out, nil
 }
 
 type scanStateSnapshot interface {
 	Scan(dest ...any) error
 }
 
-func scanStateSnapshotItem(row scanStateSnapshot) (stateSnapshotItem, error) {
-	var out stateSnapshotItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.GatewayPeerID, &out.State, &out.PauseReason, &out.PauseNeedSat, &out.PauseHaveSat, &out.LastError, &payload)
-	if err != nil {
-		return stateSnapshotItem{}, err
-	}
-	out.Payload = json.RawMessage(payload)
-	return out, nil
-}
-
 type scanObservedGatewayState interface {
 	Scan(dest ...any) error
 }
 
-func scanObservedGatewayStateItem(row scanObservedGatewayState) (observedGatewayStateItem, error) {
-	var out observedGatewayStateItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.GatewayPeerID, &out.SourceRef, &out.ObservedAtUnix, &out.EventName, &out.StateBefore, &out.StateAfter, &out.PauseReason, &out.PauseNeedSat, &out.PauseHaveSat, &out.LastError, &payload)
-	if err != nil {
-		return observedGatewayStateItem{}, err
-	}
-	out.Payload = json.RawMessage(payload)
-	return out, nil
-}
-
 type scanEffectLog interface {
 	Scan(dest ...any) error
-}
-
-func scanEffectLogItem(row scanEffectLog) (effectLogItem, error) {
-	var out effectLogItem
-	var payload string
-	err := row.Scan(&out.ID, &out.CreatedAtUnix, &out.CommandID, &out.GatewayPeerID, &out.EffectType, &out.Stage, &out.Status, &out.ErrorMessage, &payload)
-	if err != nil {
-		return effectLogItem{}, err
-	}
-	out.Payload = json.RawMessage(payload)
-	return out, nil
-}
-
-func sqlPlaceholders(n int) string {
-	if n <= 0 {
-		return ""
-	}
-	return strings.TrimRight(strings.Repeat("?,", n), ",")
 }

@@ -89,24 +89,3 @@ func dbQueryRowContext(ctx context.Context, q sqlQueryRower, query string, args 
 	}
 	return q.QueryRowContext(ctx, query, args...)
 }
-
-func dbInTx(ctx context.Context, db sqlTxStarter, fn func(sqlConn) error) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	if fn == nil {
-		return fmt.Errorf("tx func is nil")
-	}
-	if ctx == nil {
-		return fmt.Errorf("ctx is required")
-	}
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = tx.Rollback() }()
-	if err := fn(tx); err != nil {
-		return err
-	}
-	return tx.Commit()
-}

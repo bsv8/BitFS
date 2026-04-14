@@ -3,14 +3,8 @@ package clientapp
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
-	"fmt"
-	"math"
-	"strings"
 	"sync"
 	"time"
-
-	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // ==================== Unknown 资产确认流程 ====================
@@ -53,43 +47,13 @@ type unknownUTXORow struct {
 // 设计说明：
 // - 在 reconcileWalletUTXOSet 发现新 UTXO 且 classification 为 unknown 时调用
 // - 幂等：已存在的记录不会重复插入
-func enqueueUnknownUTXOToVerification(ctx context.Context, store *clientDB, walletID string, address string, utxoID string, txid string, vout uint32, value uint64) error {
-	if store == nil {
-		return fmt.Errorf("store is nil")
-	}
-	return store.Do(ctx, func(db sqlConn) error {
-		return enqueueUnknownUTXOToVerificationSQL(db, walletID, address, utxoID, txid, vout, value)
-	})
-}
 
 // enqueueUnknownUTXOToVerificationTx 在已有事务内入队 unknown UTXO。
 // 设计说明：
 // - 事务闭包中禁止再次走 store.Do/store.Tx，避免 actor/事务重入导致超时。
-func enqueueUnknownUTXOToVerificationTx(tx sqlConn, walletID string, address string, utxoID string, txid string, vout uint32, value uint64) error {
-	if tx == nil {
-		return fmt.Errorf("tx is nil")
-	}
-	return enqueueUnknownUTXOToVerificationSQL(tx, walletID, address, utxoID, txid, vout, value)
-}
 
 type verificationSQLExec interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
-}
-
-func enqueueUnknownUTXOToVerificationSQL(exec verificationSQLExec, walletID string, address string, utxoID string, txid string, vout uint32, value uint64) error {
-	if exec == nil {
-		return fmt.Errorf("verification sql exec is nil")
-	}
-	now := time.Now().Unix()
-	_, err := ExecContext(context.Background(), exec,
-		`INSERT OR IGNORE INTO wallet_utxo_token_verification(
-			utxo_id,wallet_id,address,txid,vout,value_satoshi,status,woc_response_json,
-			last_check_at_unix,next_retry_at_unix,retry_count,error_message,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		utxoID, walletID, address, txid, int64(vout), int64(value), "pending", "{}",
-		int64(0), now, int64(0), "", now,
-	)
-	return err
 }
 
 // wocTokenEvidence WOC 返回的 token 证据
@@ -102,405 +66,70 @@ type wocTokenEvidence struct {
 }
 
 // dbListPendingVerificationItems 从队列表查询待处理项（支持指数退避）
-func dbListPendingVerificationItems(ctx context.Context, store *clientDB, limit int) ([]unknownUTXORow, error) {
-	if store == nil {
-		return nil, fmt.Errorf("client db is nil")
-	}
-	if limit <= 0 {
-		limit = assetVerificationMaxBatch
-	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]unknownUTXORow, error) {
-		now := time.Now().Unix()
-		rows, err := QueryContext(ctx, db,
-			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,0
-			 FROM wallet_utxo_token_verification
-			 WHERE status='pending' AND next_retry_at_unix <= ?
-			 ORDER BY next_retry_at_unix ASC, retry_count ASC
-			 LIMIT ?`,
-			now, int64(limit),
-		)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		out := make([]unknownUTXORow, 0, limit)
-		for rows.Next() {
-			var row unknownUTXORow
-			if err := rows.Scan(&row.UTXOID, &row.WalletID, &row.Address,
-				&row.TxID, &row.Vout, &row.ValueSatoshi, &row.CreatedAtUnix); err != nil {
-				return nil, err
-			}
-			row.UTXOID = strings.ToLower(strings.TrimSpace(row.UTXOID))
-			row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
-			out = append(out, row)
-		}
-		return out, rows.Err()
-	})
-}
 
 // dbUpdateUTXOAllocationClass 更新 UTXO 的 allocation_class
-func dbUpdateUTXOAllocationClass(ctx context.Context, store *clientDB, utxoID string, newClass string, reason string) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return store.Do(ctx, func(db sqlConn) error {
-		utxoID = strings.ToLower(strings.TrimSpace(utxoID))
-		newClass = normalizeWalletUTXOAllocationClass(newClass)
-		if utxoID == "" {
-			return fmt.Errorf("utxo_id is required")
-		}
-		var currentClass string
-		var currentReason string
-		err := QueryRowContext(ctx, db, `SELECT allocation_class, allocation_reason FROM wallet_utxo WHERE utxo_id=?`, utxoID).Scan(&currentClass, &currentReason)
-		if err != nil && err != sql.ErrNoRows {
-			return err
-		}
-		if err == nil && normalizeWalletUTXOAllocationClass(currentClass) == newClass && strings.TrimSpace(currentReason) == strings.TrimSpace(reason) {
-			return nil
-		}
-		_, execErr := ExecContext(ctx, db,
-			`UPDATE wallet_utxo 
-			 SET allocation_class=?, allocation_reason=?, updated_at_unix=?
-			 WHERE utxo_id=?`,
-			newClass, strings.TrimSpace(reason), time.Now().Unix(), utxoID,
-		)
-		return execErr
-	})
-}
 
 // runUnknownAssetVerification 执行 unknown 资产确认流程
 // 在链同步成功后调用，受并发保护
-func runUnknownAssetVerification(ctx context.Context, rt *Runtime, store *clientDB, address string, trigger string) error {
-	if rt == nil || store == nil {
-		return fmt.Errorf("runtime or store is nil")
-	}
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return fmt.Errorf("wallet address is empty")
-	}
 
-	// 并发保护：同一时刻只执行一个确认任务
-	assetVerificationTask.mu.Lock()
-	if assetVerificationTask.inFlight {
-		assetVerificationTask.mu.Unlock()
-		obs.Info("bitcast-client", "asset_verification_skipped", map[string]any{
-			"reason":  "already_in_flight",
-			"address": address,
-		})
-		return nil
-	}
-	// 简单节流：距离上次执行至少 5 秒
-	now := time.Now().Unix()
-	if now-assetVerificationTask.lastRunAt < 5 {
-		assetVerificationTask.mu.Unlock()
-		return nil
-	}
-	assetVerificationTask.inFlight = true
-	assetVerificationTask.lastRunAt = now
-	assetVerificationTask.mu.Unlock()
+// 并发保护：同一时刻只执行一个确认任务
 
-	defer func() {
-		assetVerificationTask.mu.Lock()
-		assetVerificationTask.inFlight = false
-		assetVerificationTask.mu.Unlock()
-	}()
+// 简单节流：距离上次执行至少 5 秒
 
-	taskCtx, cancel := context.WithTimeout(ctx, assetVerificationTimeout)
-	defer cancel()
+// 0. 自动将超过最大重试次数的 pending 项转 failed
 
-	// 0. 自动将超过最大重试次数的 pending 项转 failed
-	if autoFailed, err := dbAutoFailExhaustedRetries(taskCtx, store); err == nil && autoFailed > 0 {
-		obs.Info("bitcast-client", "verification_auto_failed_max_retries", map[string]any{
-			"auto_failed_count": autoFailed,
-		})
-	}
+// 1. 从队列表获取待处理项
 
-	// 1. 从队列表获取待处理项
-	rows, err := dbListPendingVerificationItems(taskCtx, store, assetVerificationMaxBatch)
-	if err != nil {
-		obs.Error("bitcast-client", "asset_verification_list_failed", map[string]any{
-			"error":   err.Error(),
-			"address": address,
-		})
-		return err
-	}
-	if len(rows) == 0 {
-		return nil
-	}
+// 2. 批量查询 WOC 获取 token 证据
 
-	obs.Info("bitcast-client", "asset_verification_started", map[string]any{
-		"address":       address,
-		"unknown_count": len(rows),
-		"trigger":       trigger,
-	})
+// WOC 查询失败：指数退避
 
-	// 2. 批量查询 WOC 获取 token 证据
-	verifiedCount := 0
-	failedCount := 0
-	skippedCount := 0
-
-	for _, row := range rows {
-		select {
-		case <-taskCtx.Done():
-			obs.Info("bitcast-client", "asset_verification_cancelled", map[string]any{
-				"address": address,
-			})
-			return taskCtx.Err()
-		default:
-		}
-
-		evidence, err := queryWOCTokenEvidence(taskCtx, rt, row.Address, row.TxID, row.Vout)
-		if err != nil {
-			// WOC 查询失败：指数退避
-			_ = updateVerificationBackoff(ctx, store, row.UTXOID, err.Error())
-			obs.Error("bitcast-client", "asset_verification_woc_failed", map[string]any{
-				"utxo_id": row.UTXOID,
-				"error":   err.Error(),
-			})
-			failedCount++
-			continue
-		}
-
-		// 3. 根据证据更新分类并写入 fact
-		if err := processAssetVerificationResult(ctx, store, row, evidence, trigger); err != nil {
-			obs.Error("bitcast-client", "asset_verification_process_failed", map[string]any{
-				"utxo_id": row.UTXOID,
-				"error":   err.Error(),
-			})
-			failedCount++
-			continue
-		}
-		verifiedCount++
-	}
-
-	obs.Info("bitcast-client", "asset_verification_completed", map[string]any{
-		"address":        address,
-		"verified_count": verifiedCount,
-		"failed_count":   failedCount,
-		"skipped_count":  skippedCount,
-		"total_count":    len(rows),
-	})
-	return nil
-}
+// 3. 根据证据更新分类并写入 fact
 
 // processAssetVerificationResult 处理单个 UTXO 的确认结果
-func processAssetVerificationResult(ctx context.Context, store *clientDB, row unknownUTXORow, evidence *wocTokenEvidence, trigger string) error {
-	if evidence == nil {
-		return fmt.Errorf("evidence is nil")
-	}
 
-	// 判定新的 allocation_class 和 verification 状态
-	var newClass, assetKind, note, verifyStatus string
-	var tokenID, symbol, quantityText string
+// 判定新的 allocation_class 和 verification 状态
 
-	switch {
-	case evidence.IsToken && evidence.TokenStandard == "bsv21":
-		newClass = walletUTXOAllocationProtectedAsset
-		assetKind = "BSV21"
-		verifyStatus = "confirmed_bsv21"
-		tokenID = evidence.TokenID
-		symbol = evidence.Symbol
-		quantityText = evidence.QuantityText
-		note = "verified as BSV21 token by WOC"
+// 非 token，回落为 BSV
 
-	case evidence.IsToken && evidence.TokenStandard == "bsv20":
-		newClass = walletUTXOAllocationProtectedAsset
-		assetKind = "BSV20"
-		verifyStatus = "confirmed_bsv20"
-		tokenID = evidence.TokenID
-		symbol = evidence.Symbol
-		quantityText = evidence.QuantityText
-		note = "verified as BSV20 token by WOC"
+// 更新 wallet_utxo 分类
 
-	default:
-		// 非 token，回落为 BSV
-		newClass = walletUTXOAllocationPlainBSV
-		assetKind = "BSV"
-		verifyStatus = "confirmed_plain_bsv"
-		note = "verified as plain BSV by WOC"
-	}
+// 调用统一 fact 入口写入 verified 资产事实
+// 设计说明：
+// - 通过 ApplyVerifiedAssetFlow 封装 fact 写入细节
+// - 幂等写入，同一 UTXO 不会重复写入
 
-	// 更新 wallet_utxo 分类
-	if err := dbUpdateUTXOAllocationClass(ctx, store, row.UTXOID, newClass, note); err != nil {
-		return fmt.Errorf("update allocation class: %w", err)
-	}
+// 更新 verification 队列表状态（闭环关键）
+// 设计说明：
+// - 成功后必须更新 status 为 confirmed_*，否则会被反复重试
+// - 记录 woc_response_json 和 last_check_at_unix 用于审计
 
-	// 调用统一 fact 入口写入 verified 资产事实
-	// 设计说明：
-	// - 通过 ApplyVerifiedAssetFlow 封装 fact 写入细节
-	// - 幂等写入，同一 UTXO 不会重复写入
-	if err := ApplyVerifiedAssetFlow(ctx, store, verifiedAssetFlowParams{
-		WalletID:      row.WalletID,
-		Address:       row.Address,
-		UTXOID:        row.UTXOID,
-		TxID:          row.TxID,
-		Vout:          row.Vout,
-		ValueSatoshi:  row.ValueSatoshi,
-		AssetKind:     assetKind,
-		TokenID:       tokenID,
-		QuantityText:  quantityText,
-		CreatedAtUnix: row.CreatedAtUnix,
-		Trigger:       trigger,
-		Symbol:        symbol,
-	}); err != nil {
-		return fmt.Errorf("apply verified asset flow: %w", err)
-	}
-
-	// 更新 verification 队列表状态（闭环关键）
-	// 设计说明：
-	// - 成功后必须更新 status 为 confirmed_*，否则会被反复重试
-	// - 记录 woc_response_json 和 last_check_at_unix 用于审计
-	if err := updateVerificationQueueSuccess(ctx, store, row.UTXOID, verifyStatus, evidence); err != nil {
-		// 队列状态更新失败不阻塞主流程，仅记录日志
-		obs.Error("bitcast-client", "verification_queue_update_failed", map[string]any{
-			"utxo_id": row.UTXOID,
-			"error":   err.Error(),
-		})
-	}
-
-	return nil
-}
+// 队列状态更新失败不阻塞主流程，仅记录日志
 
 // queryWOCTokenEvidence 查询 WOC 获取指定 outpoint 的 token 证据
 // 按优先级：BSV21 > BSV20 > 非 token
-func queryWOCTokenEvidence(ctx context.Context, rt *Runtime, address string, txid string, vout uint32) (*wocTokenEvidence, error) {
-	if rt == nil || rt.WalletChain == nil {
-		return nil, fmt.Errorf("wallet chain not initialized")
-	}
 
-	// 首先查询 BSV21
-	bsv21Evidence, err := queryBSV21TokenEvidence(ctx, rt, address, txid, vout)
-	if err != nil {
-		return nil, fmt.Errorf("query BSV21 evidence: %w", err)
-	}
-	if bsv21Evidence != nil {
-		return bsv21Evidence, nil
-	}
+// 首先查询 BSV21
 
-	// 然后查询 BSV20
-	bsv20Evidence, err := queryBSV20TokenEvidence(ctx, rt, address, txid, vout)
-	if err != nil {
-		return nil, fmt.Errorf("query BSV20 evidence: %w", err)
-	}
-	if bsv20Evidence != nil {
-		return bsv20Evidence, nil
-	}
+// 然后查询 BSV20
 
-	// 非 token
-	return &wocTokenEvidence{IsToken: false}, nil
-}
+// 非 token
 
 // queryBSV21TokenEvidence 查询 BSV21 token 证据
-func queryBSV21TokenEvidence(ctx context.Context, rt *Runtime, address string, txid string, vout uint32) (*wocTokenEvidence, error) {
-	// 复用 wallet_bsv21_woc.go 中的查询
-	candidates, err := queryWalletBSV21WOCUnspent(ctx, rt, address)
-	if err != nil {
-		return nil, err
-	}
 
-	targetTxID := strings.ToLower(strings.TrimSpace(txid))
-	for _, c := range candidates {
-		if strings.ToLower(strings.TrimSpace(c.Current.TxID)) != targetTxID {
-			continue
-		}
-		// 通过 scriptHash 匹配 vout
-		txHex, err := rt.WalletChain.GetTxHex(ctx, txid)
-		if err != nil {
-			continue
-		}
-		matched, err := matchBSV21VoutByScriptHash(ctx, txHex, c.ScriptHash, vout)
-		if err != nil || !matched {
-			continue
-		}
+// 复用 wallet_bsv21_woc.go 中的查询
 
-		return &wocTokenEvidence{
-			IsToken:       true,
-			TokenStandard: "bsv21",
-			TokenID:       strings.ToLower(strings.TrimSpace(c.Data.BSV20.ID)),
-			Symbol:        strings.TrimSpace(c.Data.BSV20.Symbol),
-			QuantityText:  c.Data.BSV20.Amount.String(),
-		}, nil
-	}
-	return nil, nil
-}
+// 通过 scriptHash 匹配 vout
 
 // queryBSV20TokenEvidence 查询 BSV20 token 证据
-func queryBSV20TokenEvidence(ctx context.Context, rt *Runtime, address string, txid string, vout uint32) (*wocTokenEvidence, error) {
-	// 复用 wallet_bsv20_woc.go 中的查询
-	candidates, err := queryWalletBSV20WOCUnspent(ctx, rt, address)
-	if err != nil {
-		return nil, err
-	}
 
-	targetTxID := strings.ToLower(strings.TrimSpace(txid))
-	for _, c := range candidates {
-		if strings.ToLower(strings.TrimSpace(c.Current.TxID)) != targetTxID {
-			continue
-		}
-		// 通过 scriptHash 匹配 vout
-		txHex, err := rt.WalletChain.GetTxHex(ctx, txid)
-		if err != nil {
-			continue
-		}
-		matched, err := matchBSV20VoutByScriptHash(ctx, txHex, c.ScriptHash, vout)
-		if err != nil || !matched {
-			continue
-		}
+// 复用 wallet_bsv20_woc.go 中的查询
 
-		return &wocTokenEvidence{
-			IsToken:       true,
-			TokenStandard: "bsv20",
-			TokenID:       strings.ToLower(strings.TrimSpace(c.Data.BSV20.ID)),
-			Symbol:        strings.TrimSpace(c.Data.BSV20.Symbol),
-			QuantityText:  c.Data.BSV20.Amount.String(),
-		}, nil
-	}
-	return nil, nil
-}
+// 通过 scriptHash 匹配 vout
 
 // updateVerificationQueueSuccess 更新 verification 队列表为成功状态
 // 设计说明：
 // - 必须调用，否则 pending 项会被无限重试
 // - 记录证据快照和检查时间
-func updateVerificationQueueSuccess(ctx context.Context, store *clientDB, utxoID string, status string, evidence *wocTokenEvidence) error {
-	if store == nil {
-		return fmt.Errorf("store is nil")
-	}
-	return store.Do(ctx, func(db sqlConn) error {
-		now := time.Now().Unix()
-		wocJSON := "{}"
-		if evidence != nil {
-			if b, err := json.Marshal(evidence); err == nil {
-				wocJSON = string(b)
-			}
-		}
-		_, err := ExecContext(ctx, db,
-			`UPDATE wallet_utxo_token_verification
-			 SET status=?, woc_response_json=?, last_check_at_unix=?, next_retry_at_unix=?, retry_count=?, error_message=?, updated_at_unix=?
-			 WHERE utxo_id=?`,
-			status, wocJSON, now, now+int64(86400*30), int64(0), "", now, utxoID,
-		)
-		return err
-	})
-}
 
 // updateVerificationBackoff 更新重试时间（指数退避）
-func updateVerificationBackoff(ctx context.Context, store *clientDB, utxoID string, errMsg string) error {
-	if store == nil {
-		return fmt.Errorf("store is nil")
-	}
-	return store.Do(ctx, func(db sqlConn) error {
-		var retryCount int
-		err := QueryRowContext(ctx, db, `SELECT retry_count FROM wallet_utxo_token_verification WHERE utxo_id=?`, utxoID).Scan(&retryCount)
-		if err != nil {
-			return err
-		}
-		retryCount++
-		nextRetry := time.Now().Unix() + int64(math.Min(float64(assetVerificationBaseDelay*int(math.Pow(2, float64(retryCount)))), float64(assetVerificationMaxDelay)))
-		_, err = ExecContext(ctx, db,
-			`UPDATE wallet_utxo_token_verification SET retry_count=?, next_retry_at_unix=?, last_check_at_unix=?, error_message=?, updated_at_unix=? WHERE utxo_id=?`,
-			int64(retryCount), nextRetry, time.Now().Unix(), errMsg, time.Now().Unix(), utxoID,
-		)
-		return err
-	})
-}

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/orders"
 )
@@ -157,69 +156,6 @@ func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) 
 }
 
 // dbListFrontOrders 查询前台业务单列表
-func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter) (frontOrderPage, error) {
-	if store == nil {
-		return frontOrderPage{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (frontOrderPage, error) {
-		q := tx.Orders.Query()
-		if f.FrontOrderID != "" {
-			q = q.Where(orders.OrderIDEQ(f.FrontOrderID))
-		}
-		if f.FrontType != "" {
-			q = q.Where(orders.OrderTypeEQ(f.FrontType))
-		}
-		if f.FrontSubtype != "" {
-			q = q.Where(orders.OrderSubtypeEQ(f.FrontSubtype))
-		}
-		if f.OwnerPubkeyHex != "" {
-			q = q.Where(orders.OwnerPubkeyHexEQ(strings.ToLower(strings.TrimSpace(f.OwnerPubkeyHex))))
-		}
-		if f.TargetObjectType != "" {
-			q = q.Where(orders.TargetObjectTypeEQ(f.TargetObjectType))
-		}
-		if f.TargetObjectID != "" {
-			q = q.Where(orders.TargetObjectIDEQ(f.TargetObjectID))
-		}
-		if f.Status != "" {
-			q = q.Where(orders.StatusEQ(f.Status))
-		}
-		var out frontOrderPage
-		total, err := q.Count(ctx)
-		if err != nil {
-			return frontOrderPage{}, err
-		}
-		out.Total = total
-		if f.Limit <= 0 {
-			f.Limit = 20
-		}
-		rows, err := q.Order(orders.ByUpdatedAtUnix(entsql.OrderDesc()), orders.ByOrderID(entsql.OrderDesc())).
-			Limit(f.Limit).
-			Offset(f.Offset).
-			All(ctx)
-		if err != nil {
-			return frontOrderPage{}, err
-		}
-		out.Items = make([]frontOrderItem, 0, f.Limit)
-		for _, row := range rows {
-			item := frontOrderItem{
-				FrontOrderID:     row.OrderID,
-				FrontType:        row.OrderType,
-				FrontSubtype:     row.OrderSubtype,
-				OwnerPubkeyHex:   row.OwnerPubkeyHex,
-				TargetObjectType: row.TargetObjectType,
-				TargetObjectID:   row.TargetObjectID,
-				Status:           row.Status,
-				CreatedAtUnix:    row.CreatedAtUnix,
-				UpdatedAtUnix:    row.UpdatedAtUnix,
-				Note:             row.Note,
-				Payload:          json.RawMessage(row.PayloadJSON),
-			}
-			out.Items = append(out.Items, item)
-		}
-		return out, nil
-	})
-}
 
 // dbUpdateFrontOrderStatus 更新前台业务单状态
 func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID string, status string) error {

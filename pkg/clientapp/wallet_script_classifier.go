@@ -59,14 +59,6 @@ func defaultWalletScriptClassifier(source walletScriptEvidenceSource) *walletScr
 	)
 }
 
-func classifyWalletUTXO(ctx context.Context, source walletScriptEvidenceSource, address string, utxoID string, txid string, vout uint32, value uint64, txHex string) walletScriptClassificationResult {
-	return classifyWalletUTXOWithScriptHex(ctx, source, address, utxoID, txid, vout, value, "", txHex)
-}
-
-func classifyWalletUTXOWithScriptHex(ctx context.Context, source walletScriptEvidenceSource, address string, utxoID string, txid string, vout uint32, value uint64, scriptHex string, txHex string) walletScriptClassificationResult {
-	return classifyWalletUTXOWithClassifier(ctx, defaultWalletScriptClassifier(source), source, address, utxoID, txid, vout, value, scriptHex, txHex)
-}
-
 func classifyWalletUTXOWithClassifier(ctx context.Context, classifier *walletScriptClassifier, source walletScriptEvidenceSource, address string, utxoID string, txid string, vout uint32, value uint64, scriptHex string, txHex string) walletScriptClassificationResult {
 	round := walletScriptClassifierRound{
 		Address:   strings.TrimSpace(address),

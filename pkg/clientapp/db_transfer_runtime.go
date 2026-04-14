@@ -62,20 +62,6 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 
 // dbLoadDirectSessionDealID 【协议运行层专用】按 session_id 查 deal_id
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
-func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
-		row, err := tx.ProcDirectTransferPools.Query().
-			Where(procdirecttransferpools.SessionIDEQ(strings.TrimSpace(sessionID))).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return "", sql.ErrNoRows
-			}
-			return "", err
-		}
-		return strings.TrimSpace(row.DealID), nil
-	})
-}
 
 // dbLoadDirectDealSeedHash 【协议运行层专用】恢复 deal 关联的 seed
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断

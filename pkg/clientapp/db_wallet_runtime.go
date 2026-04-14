@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -10,7 +9,6 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletlocalbroadcasttxs"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
 )
@@ -136,125 +134,13 @@ func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, addre
 		out := make([]fundalloc.Candidate, 0, len(rows))
 		for _, row := range rows {
 			item := fundalloc.Candidate{
-				ID:             row.UtxoID,
-				TxID:           strings.ToLower(strings.TrimSpace(row.Txid)),
-				Vout:           uint32(row.Vout),
-				ValueSatoshi:   uint64(row.ValueSatoshi),
-				CreatedAtUnix:  row.CreatedAtUnix,
-				ProtectionClass: fundalloc.ProtectionClass(walletUTXOAllocationPlainBSV),
-				ProtectionReason: strings.TrimSpace(row.Note),
-			}
-			out = append(out, item)
-		}
-		return out, nil
-	})
-}
-
-func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address string) ([]walletFundingCandidate, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]walletFundingCandidate, error) {
-		address = strings.TrimSpace(address)
-		s, err := tx.WalletUtxoSyncState.Query().
-			Where(walletutxosyncstate.AddressEQ(address)).
-			Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return nil, fmt.Errorf("wallet utxo sync state not ready")
-			}
-			return nil, err
-		}
-		if s.UpdatedAtUnix <= 0 {
-			return nil, fmt.Errorf("wallet utxo sync state not ready")
-		}
-		if strings.TrimSpace(s.LastError) != "" {
-			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
-		}
-		walletID := walletIDByAddress(address)
-		rows, err := tx.WalletUtxo.Query().
-			Where(walletutxo.WalletIDEQ(walletID), walletutxo.AddressEQ(address), walletutxo.StateEQ("unspent")).
-			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByValueSatoshi(), walletutxo.ByTxid(), walletutxo.ByVout()).
-			All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]walletFundingCandidate, 0, len(rows))
-		for _, row := range rows {
-			item := walletFundingCandidate{
-				UTXOID:       row.UtxoID,
-				CreatedAtUnix: row.CreatedAtUnix,
-				ScriptType:   string(normalizeWalletScriptType(row.ScriptType)),
-				ScriptTypeReason: row.ScriptTypeReason,
-				AllocationClass: normalizeWalletUTXOAllocationClass(row.AllocationClass),
-				AllocationReason: strings.TrimSpace(row.AllocationReason),
-			}
-			item.UTXO.TxID = strings.ToLower(strings.TrimSpace(row.Txid))
-			item.UTXO.Vout = uint32(row.Vout)
-			item.UTXO.Value = uint64(row.ValueSatoshi)
-			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-			out = append(out, item)
-		}
-		return out, nil
-	})
-}
-
-func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address string) ([]walletUTXOBasicRow, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]walletUTXOBasicRow, error) {
-		address = strings.TrimSpace(address)
-		if address == "" {
-			return []walletUTXOBasicRow{}, nil
-		}
-		walletID := walletIDByAddress(address)
-		rows, err := tx.WalletUtxo.Query().
-			Where(walletutxo.WalletIDEQ(walletID), walletutxo.AddressEQ(address), walletutxo.StateEQ("unspent"), walletutxo.ValueSatoshiEQ(1)).
-			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByUtxoID()).
-			All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]walletUTXOBasicRow, 0, len(rows))
-		for _, row := range rows {
-			item := walletUTXOBasicRow{
-				UTXOID:           row.UtxoID,
+				ID:               row.UtxoID,
 				TxID:             strings.ToLower(strings.TrimSpace(row.Txid)),
 				Vout:             uint32(row.Vout),
 				ValueSatoshi:     uint64(row.ValueSatoshi),
-				ScriptType:       string(normalizeWalletScriptType(row.ScriptType)),
-				ScriptTypeReason: row.ScriptTypeReason,
-				AllocationClass:   normalizeWalletUTXOAllocationClass(row.AllocationClass),
-				AllocationReason:  strings.TrimSpace(row.AllocationReason),
-				CreatedAtUnix:     row.CreatedAtUnix,
-			}
-			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-			out = append(out, item)
-		}
-		return out, nil
-	})
-}
-
-func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, walletID string, address string) ([]walletLocalBroadcastRow, error) {
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]walletLocalBroadcastRow, error) {
-		walletID = strings.TrimSpace(walletID)
-		address = strings.TrimSpace(address)
-		if walletID == "" || address == "" {
-			return []walletLocalBroadcastRow{}, nil
-		}
-		rows, err := tx.WalletLocalBroadcastTxs.Query().
-			Where(walletlocalbroadcasttxs.WalletIDEQ(walletID), walletlocalbroadcasttxs.AddressEQ(address)).
-			Order(walletlocalbroadcasttxs.ByCreatedAtUnix(), walletlocalbroadcasttxs.ByUpdatedAtUnix(), walletlocalbroadcasttxs.ByTxid()).
-			All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		out := make([]walletLocalBroadcastRow, 0, len(rows))
-		for _, row := range rows {
-			item := walletLocalBroadcastRow{
-				TxID:          strings.ToLower(strings.TrimSpace(row.Txid)),
-				TxHex:         strings.ToLower(strings.TrimSpace(row.TxHex)),
-				CreatedAtUnix: row.CreatedAtUnix,
-				ObservedAtUnix: row.ObservedAtUnix,
-				UpdatedAtUnix: row.UpdatedAtUnix,
-			}
-			if item.TxHex == "" {
-				return nil, fmt.Errorf("wallet local broadcast tx_hex is empty for txid=%s", item.TxID)
+				CreatedAtUnix:    row.CreatedAtUnix,
+				ProtectionClass:  fundalloc.ProtectionClass(walletUTXOAllocationPlainBSV),
+				ProtectionReason: strings.TrimSpace(row.Note),
 			}
 			out = append(out, item)
 		}
@@ -279,20 +165,4 @@ func dbResolveWalletAddress(ctx context.Context, store *clientDB) (string, error
 		}
 		return "", fmt.Errorf("wallet address not found")
 	})
-}
-
-func factChainPaymentPayloadTxHex(payloadJSON string) (string, error) {
-	payloadJSON = strings.TrimSpace(payloadJSON)
-	if payloadJSON == "" || payloadJSON == "{}" {
-		return "", fmt.Errorf("fact chain payment payload is empty")
-	}
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		return "", err
-	}
-	txHex := strings.ToLower(strings.TrimSpace(firstNonEmptyStringField(payload, "tx_hex", "txHex")))
-	if txHex == "" {
-		return "", fmt.Errorf("fact chain payment payload missing tx_hex")
-	}
-	return txHex, nil
 }
