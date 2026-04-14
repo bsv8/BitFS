@@ -13,6 +13,7 @@ import (
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementrecords"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokencarrierlinks"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokenlots"
 )
 
@@ -489,11 +490,24 @@ func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentB
 	if updatedAt <= 0 {
 		updatedAt = time.Now().Unix()
 	}
-	_, err := ExecContext(ctx, db,
+	result, err := ExecContext(ctx, db,
 		`UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=?`,
 		spentByTxid, updatedAt, updatedAt, utxoID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(spentByTxid) == "" {
+		return nil
+	}
+	if result != nil {
+		if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
+			if address, addrErr := dbLoadBSVUTXOAddressByIDTx(ctx, db, utxoID); addrErr == nil {
+				emitFactBSVSpentAppliedEventConn(ctx, db, address, spentByTxid)
+			}
+		}
+	}
+	return nil
 }
 
 // dbListSpendableBSVUTXOs 查询可花费的本币UTXO列表
@@ -504,75 +518,93 @@ func dbListSpendableBSVUTXOs(ctx context.Context, store *clientDB, ownerPubkeyHe
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]bsvUTXOEntry, error) {
-		return dbListSpendableBSVUTXOsDB(ctx, db, ownerPubkeyHex)
+	if store.ent == nil {
+		return nil, fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]bsvUTXOEntry, error) {
+		return dbListSpendableBSVUTXOsEntTx(ctx, tx, ownerPubkeyHex)
 	})
 }
 
-func dbListSpendableBSVUTXOsDB(ctx context.Context, db sqlConn, ownerPubkeyHex string) ([]bsvUTXOEntry, error) {
+func dbListSpendableBSVUTXOsEntTx(ctx context.Context, tx *gen.Tx, ownerPubkeyHex string) ([]bsvUTXOEntry, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
 	}
-	rows, err := QueryContext(ctx, db,
-		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, carrier_type,
-			created_at_unix, updated_at_unix, note, payload_json
-		 FROM fact_bsv_utxos
-		 WHERE owner_pubkey_hex=? AND utxo_state='unspent' AND carrier_type='plain_bsv'
-		 ORDER BY value_satoshi ASC, created_at_unix ASC`,
-		ownerPubkeyHex,
-	)
+	rows, err := tx.FactBsvUtxos.Query().
+		Where(
+			factbsvutxos.OwnerPubkeyHexEQ(ownerPubkeyHex),
+			factbsvutxos.UtxoStateEQ("unspent"),
+			factbsvutxos.CarrierTypeEQ("plain_bsv"),
+		).
+		Order(factbsvutxos.ByValueSatoshi(), factbsvutxos.ByCreatedAtUnix()).
+		All(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := make([]bsvUTXOEntry, 0, 16)
-	for rows.Next() {
-		var e bsvUTXOEntry
-		var payloadJSON string
-		e.UTXOState = "unspent"
-		if err := rows.Scan(&e.UTXOID, &e.OwnerPubkeyHex, &e.Address, &e.TxID, &e.Vout,
-			&e.ValueSatoshi, &e.CarrierType, &e.CreatedAtUnix, &e.UpdatedAtUnix, &e.Note, &payloadJSON); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	out := make([]bsvUTXOEntry, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, bsvUTXOEntry{
+			UTXOID:         row.UtxoID,
+			OwnerPubkeyHex: row.OwnerPubkeyHex,
+			Address:        row.Address,
+			TxID:           row.Txid,
+			Vout:           uint32(row.Vout),
+			ValueSatoshi:   row.ValueSatoshi,
+			UTXOState:      row.UtxoState,
+			CarrierType:    row.CarrierType,
+			SpentByTxid:    row.SpentByTxid,
+			CreatedAtUnix:  row.CreatedAtUnix,
+			UpdatedAtUnix:  row.UpdatedAtUnix,
+			SpentAtUnix:    row.SpentAtUnix,
+			Note:           row.Note,
+			Payload:        json.RawMessage(row.PayloadJSON),
+		})
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+func dbListSpendableBSVUTXOsDB(ctx context.Context, db sqlConn, ownerPubkeyHex string) ([]bsvUTXOEntry, error) {
+	return nil, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // dbCalcBSVBalance 计算本币余额
 // 返回：confirmed（已确认可用余额）、total（包含pending的总余额）
 
-func dbCalcBSVBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string) (uint64, uint64, error) {
+func dbCalcBSVBalanceEntTx(ctx context.Context, tx *gen.Tx, ownerPubkeyHex string) (uint64, uint64, error) {
+	if tx == nil {
+		return 0, 0, fmt.Errorf("tx is nil")
+	}
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return 0, 0, fmt.Errorf("owner_pubkey_hex is required")
 	}
-
-	// 已确认可用余额：unspent + plain_bsv
-	var confirmed int64
-	err := QueryRowContext(ctx, db,
-		`SELECT COALESCE(SUM(value_satoshi),0) FROM fact_bsv_utxos
-		 WHERE owner_pubkey_hex=? AND utxo_state='unspent' AND carrier_type='plain_bsv'`,
-		ownerPubkeyHex,
-	).Scan(&confirmed)
+	rows, err := tx.FactBsvUtxos.Query().
+		Where(
+			factbsvutxos.OwnerPubkeyHexEQ(ownerPubkeyHex),
+			factbsvutxos.UtxoStateEQ("unspent"),
+		).
+		All(ctx)
 	if err != nil {
 		return 0, 0, err
 	}
-
-	// 总余额（包含token载体和费用找零等）
-	var total int64
-	err = QueryRowContext(ctx, db,
-		`SELECT COALESCE(SUM(value_satoshi),0) FROM fact_bsv_utxos
-		 WHERE owner_pubkey_hex=? AND utxo_state='unspent'`,
-		ownerPubkeyHex,
-	).Scan(&total)
-	if err != nil {
-		return 0, 0, err
+	var confirmed uint64
+	var total uint64
+	for _, row := range rows {
+		v := uint64(row.ValueSatoshi)
+		total += v
+		if strings.EqualFold(strings.TrimSpace(row.CarrierType), "plain_bsv") {
+			confirmed += v
+		}
 	}
+	return confirmed, total, nil
+}
 
-	return uint64(confirmed), uint64(total), nil
+func dbCalcBSVBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string) (uint64, uint64, error) {
+	return 0, 0, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // ========== Token Lot 读写 ==========
@@ -767,12 +799,18 @@ func dbListSpendableTokenLots(ctx context.Context, store *clientDB, ownerPubkeyH
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]tokenLotEntry, error) {
-		return dbListSpendableTokenLotsDB(ctx, db, ownerPubkeyHex, tokenStandard, tokenID)
+	if store.ent == nil {
+		return nil, fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]tokenLotEntry, error) {
+		return dbListSpendableTokenLotsEntTx(ctx, tx, ownerPubkeyHex, tokenStandard, tokenID)
 	})
 }
 
-func dbListSpendableTokenLotsDB(ctx context.Context, db sqlConn, ownerPubkeyHex string, tokenStandard string, tokenID string) ([]tokenLotEntry, error) {
+func dbListSpendableTokenLotsEntTx(ctx context.Context, tx *gen.Tx, ownerPubkeyHex string, tokenStandard string, tokenID string) ([]tokenLotEntry, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("owner_pubkey_hex is required")
@@ -785,38 +823,50 @@ func dbListSpendableTokenLotsDB(ctx context.Context, db sqlConn, ownerPubkeyHex 
 	if tokenID == "" {
 		return nil, fmt.Errorf("token_id is required")
 	}
-
-	rows, err := QueryContext(ctx, db,
-		`SELECT lot_id, owner_pubkey_hex, token_id, token_standard, quantity_text, used_quantity_text,
-			lot_state, mint_txid, last_spend_txid, created_at_unix, updated_at_unix, note, payload_json
-		 FROM fact_token_lots
-		 WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=? AND lot_state='unspent'
-		 ORDER BY created_at_unix ASC`,
-		ownerPubkeyHex, tokenStandard, tokenID,
-	)
+	rows, err := tx.FactTokenLots.Query().
+		Where(
+			facttokenlots.OwnerPubkeyHexEQ(ownerPubkeyHex),
+			facttokenlots.TokenStandardEQ(tokenStandard),
+			facttokenlots.TokenIDEQ(tokenID),
+			facttokenlots.LotStateEQ("unspent"),
+		).
+		Order(facttokenlots.ByCreatedAtUnix()).
+		All(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	out := make([]tokenLotEntry, 0, 16)
-	for rows.Next() {
-		var e tokenLotEntry
-		var payloadJSON string
-		if err := rows.Scan(&e.LotID, &e.OwnerPubkeyHex, &e.TokenID, &e.TokenStandard,
-			&e.QuantityText, &e.UsedQuantityText, &e.LotState, &e.MintTxid, &e.LastSpendTxid,
-			&e.CreatedAtUnix, &e.UpdatedAtUnix, &e.Note, &payloadJSON); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
+	out := make([]tokenLotEntry, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, tokenLotEntry{
+			LotID:            row.LotID,
+			OwnerPubkeyHex:   row.OwnerPubkeyHex,
+			TokenID:          row.TokenID,
+			TokenStandard:    row.TokenStandard,
+			QuantityText:     row.QuantityText,
+			UsedQuantityText: row.UsedQuantityText,
+			LotState:         row.LotState,
+			MintTxid:         row.MintTxid,
+			LastSpendTxid:    row.LastSpendTxid,
+			CreatedAtUnix:    row.CreatedAtUnix,
+			UpdatedAtUnix:    row.UpdatedAtUnix,
+			Note:             row.Note,
+			Payload:          json.RawMessage(row.PayloadJSON),
+		})
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+func dbListSpendableTokenLotsDB(ctx context.Context, db sqlConn, ownerPubkeyHex string, tokenStandard string, tokenID string) ([]tokenLotEntry, error) {
+	return nil, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // dbCalcTokenBalance 计算单个 Token 的余额
 // 返回：余额数量（十进制字符串）、误差信息
 
-func dbCalcTokenBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string, tokenStandard string, tokenID string) (string, error) {
+func dbCalcTokenBalanceEntTx(ctx context.Context, tx *gen.Tx, ownerPubkeyHex string, tokenStandard string, tokenID string) (string, error) {
+	if tx == nil {
+		return "", fmt.Errorf("tx is nil")
+	}
 	ownerPubkeyHex = strings.ToLower(strings.TrimSpace(ownerPubkeyHex))
 	if ownerPubkeyHex == "" {
 		return "", fmt.Errorf("owner_pubkey_hex is required")
@@ -829,69 +879,53 @@ func dbCalcTokenBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string
 	if tokenID == "" {
 		return "", fmt.Errorf("token_id is required")
 	}
-
-	// 获取所有 unspent lot 的 quantity 和 used_quantity
-	rows, err := QueryContext(ctx, db,
-		`SELECT quantity_text, used_quantity_text FROM fact_token_lots
-		 WHERE owner_pubkey_hex=? AND token_standard=? AND token_id=? AND lot_state='unspent'`,
-		ownerPubkeyHex, tokenStandard, tokenID,
-	)
+	rows, err := tx.FactTokenLots.Query().
+		Where(
+			facttokenlots.OwnerPubkeyHexEQ(ownerPubkeyHex),
+			facttokenlots.TokenStandardEQ(tokenStandard),
+			facttokenlots.TokenIDEQ(tokenID),
+			facttokenlots.LotStateEQ("unspent"),
+		).
+		All(ctx)
 	if err != nil {
 		return "", err
 	}
-	defer rows.Close()
-
-	// 使用 big.Int 进行高精度计算
 	var totalBalance big.Int
-	for rows.Next() {
-		var qtyText, usedText string
-		if err := rows.Scan(&qtyText, &usedText); err != nil {
-			return "", err
-		}
-
-		// 解析数量
-		qtyParsed, err := parseDecimalText(qtyText)
+	for _, row := range rows {
+		qtyParsed, err := parseDecimalText(row.QuantityText)
 		if err != nil {
 			continue
 		}
-		usedParsed, err := parseDecimalText(usedText)
+		usedParsed, err := parseDecimalText(row.UsedQuantityText)
 		if err != nil {
 			usedParsed = struct {
 				intValue *big.Int
 				scale    int
 			}{intValue: big.NewInt(0), scale: 0}
 		}
-
-		// 对齐精度
 		scale := qtyParsed.scale
 		if usedParsed.scale > scale {
 			scale = usedParsed.scale
 		}
 		qtyVal := new(big.Int).Set(qtyParsed.intValue)
 		usedVal := new(big.Int).Set(usedParsed.intValue)
-
 		for i := qtyParsed.scale; i < scale; i++ {
-			qtyVal = new(big.Int).Mul(qtyVal, big.NewInt(10))
+			qtyVal.Mul(qtyVal, big.NewInt(10))
 		}
 		for i := usedParsed.scale; i < scale; i++ {
-			usedVal = new(big.Int).Mul(usedVal, big.NewInt(10))
+			usedVal.Mul(usedVal, big.NewInt(10))
 		}
-
-		// 减法
 		diff := new(big.Int).Sub(qtyVal, usedVal)
 		if diff.Sign() < 0 {
 			diff = big.NewInt(0)
 		}
-
-		// 加总
 		totalBalance.Add(&totalBalance, diff)
 	}
-
-	if err := rows.Err(); err != nil {
-		return "", err
-	}
-
 	return totalBalance.String(), nil
+}
+
+func dbCalcTokenBalanceDB(ctx context.Context, db sqlConn, ownerPubkeyHex string, tokenStandard string, tokenID string) (string, error) {
+	return "", fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // ========== Token Carrier Link 读写 ==========
@@ -955,37 +989,130 @@ func dbUpsertTokenCarrierLinkDB(ctx context.Context, db sqlConn, e tokenCarrierL
 	return err
 }
 
+func dbUpsertTokenCarrierLinkEntTx(ctx context.Context, tx *gen.Tx, e tokenCarrierLinkEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	linkID := strings.TrimSpace(e.LinkID)
+	if linkID == "" {
+		return fmt.Errorf("link_id is required")
+	}
+	lotID := strings.TrimSpace(e.LotID)
+	if lotID == "" {
+		return fmt.Errorf("lot_id is required")
+	}
+	carrierUTXOID := strings.ToLower(strings.TrimSpace(e.CarrierUTXOID))
+	if carrierUTXOID == "" {
+		return fmt.Errorf("carrier_utxo_id is required")
+	}
+	ownerPubkey := strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))
+	if ownerPubkey == "" {
+		return fmt.Errorf("owner_pubkey_hex is required")
+	}
+	linkState := strings.ToLower(strings.TrimSpace(e.LinkState))
+	if linkState == "" {
+		linkState = "active"
+	}
+	if linkState != "active" && linkState != "released" && linkState != "moved" {
+		return fmt.Errorf("link_state must be active/released/moved, got %s", linkState)
+	}
+	now := time.Now().Unix()
+	createdAt := e.CreatedAtUnix
+	if createdAt <= 0 {
+		createdAt = now
+	}
+	updatedAt := e.UpdatedAtUnix
+	if updatedAt <= 0 {
+		updatedAt = now
+	}
+	row, err := tx.FactTokenCarrierLinks.Query().
+		Where(facttokencarrierlinks.LinkIDEQ(linkID)).
+		Only(ctx)
+	if err == nil {
+		upd := row.Update().
+			SetLotID(lotID).
+			SetCarrierUtxoID(carrierUTXOID).
+			SetOwnerPubkeyHex(ownerPubkey).
+			SetLinkState(linkState).
+			SetBindTxid(strings.TrimSpace(e.BindTxid)).
+			SetUpdatedAtUnix(updatedAt).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload))
+		if nextUnbind := strings.TrimSpace(e.UnbindTxid); nextUnbind != "" {
+			upd = upd.SetUnbindTxid(nextUnbind)
+		}
+		_, err = upd.Save(ctx)
+		return err
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.FactTokenCarrierLinks.Create().
+		SetLinkID(linkID).
+		SetLotID(lotID).
+		SetCarrierUtxoID(carrierUTXOID).
+		SetOwnerPubkeyHex(ownerPubkey).
+		SetLinkState(linkState).
+		SetBindTxid(strings.TrimSpace(e.BindTxid)).
+		SetUnbindTxid(strings.TrimSpace(e.UnbindTxid)).
+		SetCreatedAtUnix(createdAt).
+		SetUpdatedAtUnix(updatedAt).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		Save(ctx)
+	return err
+}
+
 // dbGetActiveCarrierForLot 查询 Lot 的 active carrier
 func dbGetActiveCarrierForLot(ctx context.Context, store *clientDB, lotID string) (*tokenCarrierLinkEntry, error) {
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (*tokenCarrierLinkEntry, error) {
-		return dbGetActiveCarrierForLotDB(ctx, db, lotID)
+	if store.ent == nil {
+		return nil, fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (*tokenCarrierLinkEntry, error) {
+		return dbGetActiveCarrierForLotEntTx(ctx, tx, lotID)
 	})
 }
 
-func dbGetActiveCarrierForLotDB(ctx context.Context, db sqlConn, lotID string) (*tokenCarrierLinkEntry, error) {
+func dbGetActiveCarrierForLotEntTx(ctx context.Context, tx *gen.Tx, lotID string) (*tokenCarrierLinkEntry, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
 	lotID = strings.TrimSpace(lotID)
 	if lotID == "" {
 		return nil, fmt.Errorf("lot_id is required")
 	}
-	var e tokenCarrierLinkEntry
-	var payloadJSON string
-	err := QueryRowContext(ctx, db,
-		`SELECT link_id, lot_id, carrier_utxo_id, owner_pubkey_hex, link_state, bind_txid, unbind_txid,
-			created_at_unix, updated_at_unix, note, payload_json
-		 FROM fact_token_carrier_links WHERE lot_id=? AND link_state='active' LIMIT 1`,
-		lotID,
-	).Scan(&e.LinkID, &e.LotID, &e.CarrierUTXOID, &e.OwnerPubkeyHex, &e.LinkState,
-		&e.BindTxid, &e.UnbindTxid, &e.CreatedAtUnix, &e.UpdatedAtUnix, &e.Note, &payloadJSON)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	row, err := tx.FactTokenCarrierLinks.Query().
+		Where(
+			facttokencarrierlinks.LotIDEQ(lotID),
+			facttokencarrierlinks.LinkStateEQ("active"),
+		).
+		Only(ctx)
 	if err != nil {
+		if gen.IsNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	return &e, nil
+	return &tokenCarrierLinkEntry{
+		LinkID:         row.LinkID,
+		LotID:          row.LotID,
+		CarrierUTXOID:  row.CarrierUtxoID,
+		OwnerPubkeyHex: row.OwnerPubkeyHex,
+		LinkState:      row.LinkState,
+		BindTxid:       row.BindTxid,
+		UnbindTxid:     row.UnbindTxid,
+		CreatedAtUnix:  row.CreatedAtUnix,
+		UpdatedAtUnix:  row.UpdatedAtUnix,
+		Note:           row.Note,
+		Payload:        json.RawMessage(row.PayloadJSON),
+	}, nil
+}
+
+func dbGetActiveCarrierForLotDB(ctx context.Context, db sqlConn, lotID string) (*tokenCarrierLinkEntry, error) {
+	return nil, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // dbListActiveCarrierLinksByOwner 查询某用户的所有 active carrier links
@@ -1152,82 +1279,63 @@ func dbListSpendableSourceFlows(ctx context.Context, store ClientStore, walletID
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
+	dbStore, ok := store.(*clientDB)
+	if !ok {
+		return nil, fmt.Errorf("client store type unsupported")
+	}
+	if dbStore.ent == nil {
+		return nil, fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, dbStore, func(tx *gen.Tx) ([]spendableSourceFlow, error) {
+		return dbListSpendableSourceFlowsEntTx(ctx, tx, walletID, assetKind, tokenID)
+	})
+}
+
+func dbListSpendableSourceFlowsEntTx(ctx context.Context, tx *gen.Tx, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	if ownerPubkeyHex == "" {
 		return nil, fmt.Errorf("wallet_id is required")
 	}
 	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
 	walletOwnerKey := walletIDByAddress(ownerPubkeyHex)
-	rows, err := store.QueryContext(ctx,
-		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
-			created_at_unix
-		 FROM fact_bsv_utxos
-		 WHERE (owner_pubkey_hex=? OR owner_pubkey_hex=?)
-		   AND utxo_state='unspent' AND carrier_type='plain_bsv'
-		 ORDER BY value_satoshi ASC, created_at_unix ASC`,
-		ownerPubkeyHex,
-		walletOwnerKey,
-	)
+	rows, err := tx.FactBsvUtxos.Query().
+		Where(
+			factbsvutxos.OwnerPubkeyHexIn(ownerPubkeyHex, walletOwnerKey),
+			factbsvutxos.UtxoStateEQ("unspent"),
+			factbsvutxos.CarrierTypeEQ("plain_bsv"),
+		).
+		Order(factbsvutxos.ByValueSatoshi(), factbsvutxos.ByCreatedAtUnix()).
+		All(ctx)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	return scanSpendableSourceFlowRows(rows, walletID)
+	out := make([]spendableSourceFlow, 0, len(rows))
+	var flowID int64 = 1
+	for _, row := range rows {
+		out = append(out, spendableSourceFlow{
+			FlowID:         flowID,
+			WalletID:       walletID,
+			Address:        row.Address,
+			AssetKind:      "BSV",
+			TokenID:        "",
+			UTXOID:         row.UtxoID,
+			TxID:           row.Txid,
+			Vout:           uint32(row.Vout),
+			TotalInSatoshi: row.ValueSatoshi,
+			TotalUsed:      0,
+			Remaining:      row.ValueSatoshi,
+			OccurredAtUnix: row.CreatedAtUnix,
+		})
+		flowID++
+	}
+	return out, nil
 }
 
 func dbListSpendableSourceFlowsDB(ctx context.Context, db sqlConn, walletID string, assetKind string, tokenID string) ([]spendableSourceFlow, error) {
-	// walletID 实际上是 owner_pubkey_hex 或可以从中提取
-	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
-	if ownerPubkeyHex == "" {
-		return nil, fmt.Errorf("wallet_id is required")
-	}
-
-	// 移除 "wallet:" 前缀（如果存在）
-	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
-	walletOwnerKey := walletIDByAddress(ownerPubkeyHex)
-
-	// 查询新表
-	rows, err := QueryContext(ctx, db,
-		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi,
-			created_at_unix
-		 FROM fact_bsv_utxos
-		 WHERE (owner_pubkey_hex=? OR owner_pubkey_hex=?)
-		   AND utxo_state='unspent' AND carrier_type='plain_bsv'
-		 ORDER BY value_satoshi ASC, created_at_unix ASC`,
-		ownerPubkeyHex, walletOwnerKey,
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	out := make([]spendableSourceFlow, 0, 16)
-	var flowID int64 = 1 // 模拟 flow_id
-	for rows.Next() {
-		var s spendableSourceFlow
-		var utxoID, addr, txid string
-		var vout uint32
-		var value int64
-		var createdAt int64
-		if err := rows.Scan(&utxoID, new(string), &addr, &txid, &vout, &value, &createdAt); err != nil {
-			return nil, err
-		}
-		s.FlowID = flowID
-		s.WalletID = walletID
-		s.Address = addr
-		s.AssetKind = "BSV"
-		s.TokenID = ""
-		s.UTXOID = utxoID
-		s.TxID = txid
-		s.Vout = vout
-		s.TotalInSatoshi = value
-		s.TotalUsed = 0 // 新表模式下，已花费的会标记为 spent，不会出现在这里
-		s.Remaining = value
-		s.OccurredAtUnix = createdAt
-		out = append(out, s)
-		flowID++
-	}
-	return out, rows.Err()
+	return nil, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // dbSelectSourceFlowsForTarget 保持旧接口但查询新表
@@ -1235,16 +1343,23 @@ func dbSelectSourceFlowsForTarget(ctx context.Context, store *clientDB, walletID
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]selectedSourceFlow, error) {
-		return dbSelectSourceFlowsForTargetDB(ctx, db, walletID, assetKind, tokenID, target)
+	if store.ent == nil {
+		return nil, fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]selectedSourceFlow, error) {
+		flows, err := dbListSpendableSourceFlowsEntTx(ctx, tx, walletID, assetKind, tokenID)
+		if err != nil {
+			return nil, fmt.Errorf("list spendable flows: %w", err)
+		}
+		return selectSourceFlowsForTarget(flows, target)
 	})
 }
 
 func dbSelectSourceFlowsForTargetDB(ctx context.Context, db sqlConn, walletID string, assetKind string, tokenID string, target uint64) ([]selectedSourceFlow, error) {
-	flows, err := dbListSpendableSourceFlowsDB(ctx, db, walletID, assetKind, tokenID)
-	if err != nil {
-		return nil, fmt.Errorf("list spendable flows: %w", err)
-	}
+	return nil, fmt.Errorf("sql fallback removed: use ent path")
+}
+
+func selectSourceFlowsForTarget(flows []spendableSourceFlow, target uint64) ([]selectedSourceFlow, error) {
 	if len(flows) == 0 {
 		return nil, fmt.Errorf("no spendable source flows available")
 	}
@@ -1279,36 +1394,7 @@ func dbSelectSourceFlowsForTargetDB(ctx context.Context, db sqlConn, walletID st
 }
 
 func scanSpendableSourceFlowRows(rows *sql.Rows, walletID string) ([]spendableSourceFlow, error) {
-	out := make([]spendableSourceFlow, 0, 16)
-	var flowID int64 = 1
-	for rows.Next() {
-		var s spendableSourceFlow
-		var utxoID, addr, txid string
-		var vout uint32
-		var value int64
-		var createdAt int64
-		if err := rows.Scan(&utxoID, new(string), &addr, &txid, &vout, &value, &createdAt); err != nil {
-			return nil, err
-		}
-		s.FlowID = flowID
-		s.WalletID = walletID
-		s.Address = addr
-		s.AssetKind = "BSV"
-		s.TokenID = ""
-		s.UTXOID = utxoID
-		s.TxID = txid
-		s.Vout = vout
-		s.TotalInSatoshi = value
-		s.TotalUsed = 0
-		s.Remaining = value
-		s.OccurredAtUnix = createdAt
-		out = append(out, s)
-		flowID++
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return out, nil
+	return nil, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // tokenSourceFlow Token源流（保持旧结构）
@@ -1359,15 +1445,20 @@ func dbLoadWalletAssetBalanceFact(ctx context.Context, store *clientDB, walletID
 	if store == nil {
 		return walletAssetBalance{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletAssetBalance, error) {
-		return dbLoadWalletAssetBalanceFactDB(ctx, db, walletID, assetKind, tokenID)
+	if store.ent == nil {
+		return walletAssetBalance{}, fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletAssetBalance, error) {
+		return dbLoadWalletAssetBalanceFactEntTx(ctx, tx, walletID, assetKind, tokenID)
 	})
 }
 
-func dbLoadWalletAssetBalanceFactDB(ctx context.Context, db sqlConn, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
+func dbLoadWalletAssetBalanceFactEntTx(ctx context.Context, tx *gen.Tx, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
+	if tx == nil {
+		return walletAssetBalance{}, fmt.Errorf("tx is nil")
+	}
 	ownerPubkeyHex := strings.ToLower(strings.TrimSpace(walletID))
 	ownerPubkeyHex = strings.TrimPrefix(ownerPubkeyHex, "wallet:")
-
 	assetKind = strings.ToUpper(strings.TrimSpace(assetKind))
 	if assetKind == "" {
 		assetKind = "BSV"
@@ -1380,28 +1471,27 @@ func dbLoadWalletAssetBalanceFactDB(ctx context.Context, db sqlConn, walletID st
 	result.TokenID = tokenID
 
 	if assetKind == "BSV" {
-		// 查询本币余额
-		confirmed, _, err := dbCalcBSVBalanceDB(ctx, db, ownerPubkeyHex)
+		confirmed, _, err := dbCalcBSVBalanceEntTx(ctx, tx, ownerPubkeyHex)
 		if err != nil {
 			return result, err
 		}
 		result.TotalInSatoshi = int64(confirmed)
 		result.Remaining = int64(confirmed)
-	} else {
-		// 查询 token 余额
-		balance, err := dbCalcTokenBalanceDB(ctx, db, ownerPubkeyHex, assetKind, tokenID)
-		if err != nil {
-			return result, err
-		}
-		// Token 余额以字符串形式返回，这里转为 int64 可能溢出
-		// 但为了兼容性，我们只记录是否有余额
-		if balance != "" && balance != "0" {
-			result.TotalInSatoshi = 1 // 标记有余额
-			result.Remaining = 1
-		}
+		return result, nil
 	}
-
+	balance, err := dbCalcTokenBalanceEntTx(ctx, tx, ownerPubkeyHex, assetKind, tokenID)
+	if err != nil {
+		return result, err
+	}
+	if balance != "" && balance != "0" {
+		result.TotalInSatoshi = 1
+		result.Remaining = 1
+	}
 	return result, nil
+}
+
+func dbLoadWalletAssetBalanceFactDB(ctx context.Context, db sqlConn, walletID string, assetKind string, tokenID string) (walletAssetBalance, error) {
+	return walletAssetBalance{}, fmt.Errorf("sql fallback removed: use ent path")
 }
 
 // verifiedAssetFlowParams 兼容性类型（旧结构，新实现忽略）
@@ -1459,9 +1549,9 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 			now = p.CreatedAtUnix
 		}
 
-		return store.Do(ctx, func(db sqlConn) error {
+		return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 			// 0. 先写入载体 UTXO，carrier link 依赖它做外键约束。
-			if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
+			if err := dbUpsertBSVUTXOTx(ctx, tx, bsvUTXOEntry{
 				UTXOID:         p.UTXOID,
 				OwnerPubkeyHex: ownerPubkeyHex,
 				Address:        p.Address,
@@ -1478,7 +1568,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 				return fmt.Errorf("upsert token carrier utxo: %w", err)
 			}
 			// 1. 写入 Token Lot
-			if err := dbUpsertTokenLotDB(ctx, db, tokenLotEntry{
+			if err := dbUpsertTokenLotEntTx(ctx, tx, tokenLotEntry{
 				LotID:            lotID,
 				OwnerPubkeyHex:   ownerPubkeyHex,
 				TokenID:          p.TokenID,
@@ -1496,7 +1586,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 			}
 
 			// 2. 写入 Carrier Link（绑定 Lot 到 UTXO）
-			if err := dbUpsertTokenCarrierLinkDB(ctx, db, tokenCarrierLinkEntry{
+			if err := dbUpsertTokenCarrierLinkEntTx(ctx, tx, tokenCarrierLinkEntry{
 				LinkID:         linkID,
 				LotID:          lotID,
 				CarrierUTXOID:  p.UTXOID,

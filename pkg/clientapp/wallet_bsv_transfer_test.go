@@ -226,10 +226,9 @@ func TestTriggerBizOrderPayBSV_Success(t *testing.T) {
 	}
 
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
-		OrderID:        "order_biz_pay_bsv_1",
-		ToAddress:      "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		AmountSatoshi:  6,
-		IdempotencyKey: "idem_biz_pay_bsv_1",
+		OrderID:       "order_biz_pay_bsv_1",
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
 	})
 	if err != nil {
 		t.Fatalf("TriggerBizOrderPayBSV failed: %v", err)
@@ -267,10 +266,9 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	}
 
 	req := BizOrderPayBSVRequest{
-		OrderID:        "order_biz_pay_bsv_2",
-		ToAddress:      "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		AmountSatoshi:  6,
-		IdempotencyKey: "idem_biz_pay_bsv_2",
+		OrderID:       "order_biz_pay_bsv_2",
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
 	}
 	first, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, req)
 	if err != nil {
@@ -296,6 +294,32 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	}
 }
 
+func TestTriggerBizOrderPayBSV_EmptyOrderIDAutoCreate(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	rt := newWalletBSVTransferTestRuntime(t)
+	fromAddress, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	actor := walletBSVTransferTestActor(t, rt)
+	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
+		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
+	}
+	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
+		OrderID:       "",
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
+	})
+	if err != nil {
+		t.Fatalf("TriggerBizOrderPayBSV failed: %v", err)
+	}
+	if strings.TrimSpace(resp.OrderID) == "" || strings.TrimSpace(resp.SettlementID) == "" {
+		t.Fatalf("auto generated ids should not be empty: %+v", resp)
+	}
+}
+
 func TestTriggerBizOrderPayBSV_InsufficientBalance(t *testing.T) {
 	t.Parallel()
 
@@ -311,10 +335,9 @@ func TestTriggerBizOrderPayBSV_InsufficientBalance(t *testing.T) {
 	}
 
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
-		OrderID:        "order_biz_pay_bsv_3",
-		ToAddress:      "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		AmountSatoshi:  6,
-		IdempotencyKey: "idem_biz_pay_bsv_3",
+		OrderID:       "order_biz_pay_bsv_3",
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
 	})
 	if err != nil {
 		t.Fatalf("TriggerBizOrderPayBSV should not return technical error: %v", err)
@@ -346,10 +369,9 @@ func TestTriggerBizOrderPayBSV_WaitingFundCanRetry(t *testing.T) {
 
 	store := newClientDB(db, nil)
 	req := BizOrderPayBSVRequest{
-		OrderID:        "order_biz_pay_bsv_retry_waiting_fund",
-		ToAddress:      "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		AmountSatoshi:  6,
-		IdempotencyKey: "idem_biz_pay_bsv_retry_waiting_fund",
+		OrderID:       "order_biz_pay_bsv_retry_waiting_fund",
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
 	}
 	first, err := TriggerBizOrderPayBSV(context.Background(), store, rt, req)
 	if err != nil {
@@ -432,10 +454,9 @@ func TestTriggerBizOrderPayBSV_BroadcastFailed(t *testing.T) {
 	}
 
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
-		OrderID:        "order_biz_pay_bsv_4",
-		ToAddress:      "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-		AmountSatoshi:  6,
-		IdempotencyKey: "idem_biz_pay_bsv_4",
+		OrderID:       "order_biz_pay_bsv_4",
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
 	})
 	if err != nil {
 		t.Fatalf("TriggerBizOrderPayBSV should not return technical error: %v", err)
@@ -448,7 +469,7 @@ func TestTriggerBizOrderPayBSV_BroadcastFailed(t *testing.T) {
 	}
 }
 
-func TestTriggerBizOrderPayBSV_MultiplePaymentsSameOrder(t *testing.T) {
+func TestTriggerBizOrderPayBSV_RepeatedSameOrderKeepsSingleBusiness(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
@@ -466,10 +487,9 @@ func TestTriggerBizOrderPayBSV_MultiplePaymentsSameOrder(t *testing.T) {
 	orderID := "order_biz_pay_bsv_5"
 	for i := 0; i < 2; i++ {
 		if _, err := TriggerBizOrderPayBSV(context.Background(), store, rt, BizOrderPayBSVRequest{
-			OrderID:        orderID,
-			ToAddress:      "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
-			AmountSatoshi:  6,
-			IdempotencyKey: fmt.Sprintf("idem_biz_pay_bsv_5_%d", i),
+			OrderID:       orderID,
+			ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+			AmountSatoshi: 6,
 		}); err != nil {
 			t.Fatalf("trigger %d failed: %v", i+1, err)
 		}
@@ -479,11 +499,11 @@ func TestTriggerBizOrderPayBSV_MultiplePaymentsSameOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetFrontOrderSettlementSummary failed: %v", err)
 	}
-	if len(summary.Businesses) != 2 {
-		t.Fatalf("expected two businesses, got %d", len(summary.Businesses))
+	if len(summary.Businesses) != 1 {
+		t.Fatalf("expected one business, got %d", len(summary.Businesses))
 	}
-	if summary.Summary.TotalTargetSatoshi != 12 {
-		t.Fatalf("expected total target 12, got %d", summary.Summary.TotalTargetSatoshi)
+	if summary.Summary.TotalTargetSatoshi != 6 {
+		t.Fatalf("expected total target 6, got %d", summary.Summary.TotalTargetSatoshi)
 	}
 }
 

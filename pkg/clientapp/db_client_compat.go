@@ -556,16 +556,24 @@ func dbCalcBSVBalance(ctx context.Context, store *clientDB, ownerPubkeyHex strin
 	if store == nil {
 		return 0, 0, fmt.Errorf("client db is nil")
 	}
-	type balanceResult struct {
+	if store.ent == nil {
+		return 0, 0, fmt.Errorf("client db ent client is nil")
+	}
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct {
 		confirmed uint64
 		total     uint64
-	}
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (balanceResult, error) {
-		confirmed, total, err := dbCalcBSVBalanceDB(ctx, db, ownerPubkeyHex)
+	}, error) {
+		confirmed, total, err := dbCalcBSVBalanceEntTx(ctx, tx, ownerPubkeyHex)
 		if err != nil {
-			return balanceResult{}, err
+			return struct {
+				confirmed uint64
+				total     uint64
+			}{}, err
 		}
-		return balanceResult{confirmed: confirmed, total: total}, nil
+		return struct {
+			confirmed uint64
+			total     uint64
+		}{confirmed: confirmed, total: total}, nil
 	})
 	return out.confirmed, out.total, err
 }
@@ -575,8 +583,11 @@ func dbCalcTokenBalance(ctx context.Context, store *clientDB, ownerPubkeyHex str
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		return dbCalcTokenBalanceDB(ctx, db, ownerPubkeyHex, tokenStandard, tokenID)
+	if store.ent == nil {
+		return "", fmt.Errorf("client db ent client is nil")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		return dbCalcTokenBalanceEntTx(ctx, tx, ownerPubkeyHex, tokenStandard, tokenID)
 	})
 }
 

@@ -80,18 +80,14 @@ func TriggerWorkspaceSyncOnce(ctx context.Context, rt *Runtime) (WorkspaceSyncRe
 func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, req BizOrderPayBSVRequest) (BizOrderPayBSVResponse, error) {
 	orderID := strings.ToLower(strings.TrimSpace(req.OrderID))
 	toAddress := strings.TrimSpace(req.ToAddress)
-	idempotencyKey := strings.TrimSpace(req.IdempotencyKey)
 	if orderID == "" {
-		return BizOrderPayBSVResponse{}, fmt.Errorf("order_id is required")
+		orderID = "order_biz_pay_bsv_" + fmt.Sprintf("%d_%s", time.Now().UnixNano(), randHex(4))
 	}
 	if err := validatePreviewAddress(toAddress); err != nil {
 		return BizOrderPayBSVResponse{}, err
 	}
 	if req.AmountSatoshi == 0 {
 		return BizOrderPayBSVResponse{}, fmt.Errorf("amount_satoshi must be greater than zero")
-	}
-	if idempotencyKey == "" {
-		return BizOrderPayBSVResponse{}, fmt.Errorf("idempotency_key is required")
 	}
 	if store == nil {
 		return BizOrderPayBSVResponse{}, fmt.Errorf("client db is nil")
@@ -110,13 +106,12 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 	fromPubHex := strings.ToLower(strings.TrimSpace(actor.PubHex))
 	fromAddress := strings.TrimSpace(actor.Addr)
 	toAddress = strings.TrimSpace(toAddress)
-	frontOrderID, businessID, settlementID, triggerID := bizOrderPayBSVIdentity(orderID, idempotencyKey)
+	frontOrderID, businessID, settlementID, triggerID := bizOrderPayBSVIdentity(orderID)
 	nowNote := fmt.Sprintf("BSV payment order %s", orderID)
 	payload := map[string]any{
-		"order_id":        orderID,
-		"to_address":      toAddress,
-		"amount_satoshi":  req.AmountSatoshi,
-		"idempotency_key": idempotencyKey,
+		"order_id":       orderID,
+		"to_address":     toAddress,
+		"amount_satoshi": req.AmountSatoshi,
 		"from_pubkey_hex": fromPubHex,
 		"from_address":    fromAddress,
 	}
@@ -163,7 +158,7 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 		}
 	}
 
-	resp, execErr := executeBizOrderPayBSVSettlement(ctx, store, rt, frontOrderID, businessID, settlementID, idempotencyKey, toAddress, req.AmountSatoshi, fromPubHex, toAddress)
+	resp, execErr := executeBizOrderPayBSVSettlement(ctx, store, rt, frontOrderID, businessID, settlementID, toAddress, req.AmountSatoshi, fromPubHex, toAddress)
 	if execErr != nil {
 		return resp, execErr
 	}

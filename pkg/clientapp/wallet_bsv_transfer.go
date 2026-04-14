@@ -115,16 +115,15 @@ func submitWalletBSVTransferPrepared(ctx context.Context, store *clientDB, rt *R
 // executeBizOrderPayBSVSettlement 结算层内部执行器。
 // 设计说明：
 // - 先跑真实钱包转账，再把链上结果回写到 order_settlements / order_settlement_events；
-// - 同一个 order_id + idempotency_key 重复提交时，不会再生成第二笔支付；
+// - 同一个 order_id 重复提交时，不会再生成第二笔支付；
 // - 前台最终看的是业务主表聚合，不再看钱包直发结果。
-func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *Runtime, orderID string, businessID string, settlementID string, idempotencyKey string, toAddress string, amountSatoshi uint64, fromPartyID string, toPartyID string) (BizOrderPayBSVResponse, error) {
+func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *Runtime, orderID string, businessID string, settlementID string, toAddress string, amountSatoshi uint64, fromPartyID string, toPartyID string) (BizOrderPayBSVResponse, error) {
 	resp := BizOrderPayBSVResponse{
-		Ok:             false,
-		Code:           "PENDING",
-		OrderID:        strings.TrimSpace(businessID),
-		SettlementID:   strings.TrimSpace(settlementID),
-		IdempotencyKey: strings.TrimSpace(idempotencyKey),
-		Status:         "pending",
+		Ok:           false,
+		Code:         "PENDING",
+		OrderID:      strings.TrimSpace(businessID),
+		SettlementID: strings.TrimSpace(settlementID),
+		Status:       "pending",
 	}
 	if ctx == nil {
 		return resp, fmt.Errorf("context is required")
@@ -168,13 +167,12 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		if strings.Contains(msg, "insufficient plain bsv balance") {
 			now := time.Now().Unix()
 			eventPayload := map[string]any{
-				"order_id":        orderID,
-				"settlement_id":   settlementID,
-				"idempotency_key": idempotencyKey,
-				"to_address":      toAddress,
-				"amount_satoshi":  amountSatoshi,
-				"status":          "waiting_fund",
-				"error":           err.Error(),
+				"order_id":       orderID,
+				"settlement_id":  settlementID,
+				"to_address":     toAddress,
+				"amount_satoshi": amountSatoshi,
+				"status":         "waiting_fund",
+				"error":          err.Error(),
 			}
 			if txErr := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
@@ -186,7 +184,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 					EventType:         "wallet_transfer_prepare",
 					Status:            "failed",
 					OccurredAtUnix:    now,
-					IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+					IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
 					Note:              "wallet transfer waiting for funds",
 					Payload:           eventPayload,
 				}); writeErr != nil {
@@ -219,13 +217,12 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		}
 		now := time.Now().Unix()
 		failedPayload := map[string]any{
-			"order_id":        orderID,
-			"settlement_id":   settlementID,
-			"idempotency_key": idempotencyKey,
-			"to_address":      toAddress,
-			"amount_satoshi":  amountSatoshi,
-			"status":          "failed",
-			"error":           err.Error(),
+			"order_id":       orderID,
+			"settlement_id":  settlementID,
+			"to_address":     toAddress,
+			"amount_satoshi": amountSatoshi,
+			"status":         "failed",
+			"error":          err.Error(),
 		}
 		if txErr := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 			if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
@@ -237,7 +234,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				EventType:         "wallet_transfer_prepare",
 				Status:            "failed",
 				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
 				Note:              "wallet transfer prepare failed",
 				Payload:           failedPayload,
 			}); writeErr != nil {
@@ -291,14 +288,13 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	}
 
 	payload := map[string]any{
-		"order_id":          orderID,
-		"settlement_id":     settlementID,
-		"idempotency_key":   idempotencyKey,
-		"amount_satoshi":    amountSatoshi,
-		"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
-		"change_sat":        submitted.Result.ChangeSatoshi,
-		"to_address":        toAddress,
-		"txid":              submitted.BroadcastTxID,
+		"order_id":       orderID,
+		"settlement_id":  settlementID,
+		"amount_satoshi": amountSatoshi,
+		"miner_fee_sat":  submitted.Result.MinerFeeSatoshi,
+		"change_sat":     submitted.Result.ChangeSatoshi,
+		"to_address":     toAddress,
+		"txid":           submitted.BroadcastTxID,
 		"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
 	}
 
@@ -313,7 +309,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				EventType:         "wallet_transfer_submit",
 				Status:            processStatus,
 				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
 				Note:              finalMessage,
 				Payload:           payload,
 			}); err != nil {
@@ -360,7 +356,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				EventType:         "wallet_transfer_submit",
 				Status:            "submitted_unknown_projection",
 				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
 				Note:              "broadcast succeeded but local projection failed",
 				Payload:           payload,
 			}); err != nil {
@@ -387,14 +383,13 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		processStatus = "submitted_unknown_projection"
 	} else {
 		chainPaymentPayload := map[string]any{
-			"order_id":          orderID,
-			"settlement_id":     settlementID,
-			"idempotency_key":   idempotencyKey,
-			"amount_satoshi":    amountSatoshi,
-			"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
-			"change_sat":        submitted.Result.ChangeSatoshi,
-			"to_address":        toAddress,
-			"txid":              submitted.BroadcastTxID,
+			"order_id":       orderID,
+			"settlement_id":  settlementID,
+			"amount_satoshi": amountSatoshi,
+			"miner_fee_sat":  submitted.Result.MinerFeeSatoshi,
+			"change_sat":     submitted.Result.ChangeSatoshi,
+			"to_address":     toAddress,
+			"txid":           submitted.BroadcastTxID,
 			"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
 		}
 		ownerPubkeyHex := strings.ToLower(strings.TrimSpace(rt.ClientID()))
@@ -452,7 +447,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				EventType:         "wallet_transfer_submit",
 				Status:            processStatus,
 				OccurredAtUnix:    now,
-				IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+				IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
 				Note:              finalMessage,
 				Payload:           payload,
 			}); err != nil {
@@ -472,17 +467,16 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			})
 		}); err != nil {
 			failedPayload := map[string]any{
-				"order_id":          orderID,
-				"settlement_id":     settlementID,
-				"idempotency_key":   idempotencyKey,
-				"amount_satoshi":    amountSatoshi,
-				"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
-				"change_sat":        submitted.Result.ChangeSatoshi,
-				"to_address":        toAddress,
-				"txid":              submitted.BroadcastTxID,
+				"order_id":       orderID,
+				"settlement_id":  settlementID,
+				"amount_satoshi": amountSatoshi,
+				"miner_fee_sat":  submitted.Result.MinerFeeSatoshi,
+				"change_sat":     submitted.Result.ChangeSatoshi,
+				"to_address":     toAddress,
+				"txid":           submitted.BroadcastTxID,
 				"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
-				"status":            "failed",
-				"error":             err.Error(),
+				"status":         "failed",
+				"error":          err.Error(),
 			}
 			_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
@@ -494,7 +488,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 					EventType:         "wallet_transfer_submit",
 					Status:            "failed",
 					OccurredAtUnix:    now,
-					IdempotencyKey:    "biz_order_pay_bsv:" + idempotencyKey,
+					IdempotencyKey:    "biz_order_pay_bsv:" + orderID,
 					Note:              "write settlement outcome failed",
 					Payload:           failedPayload,
 				}); writeErr != nil {

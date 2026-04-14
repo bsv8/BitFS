@@ -58,14 +58,12 @@ type WalletOrderSignResp struct {
 
 // BizOrderPayBSVRequest 是新的 BSV 业务下单输入。
 // 设计说明：
-// - order_id 是业务主单号，业务状态都围绕它聚合；
-// - idempotency_key 用于重复提交去重，不能靠金额兜底；
+// - order_id 是业务主单号，也是重复提交去重键；为空时由 BitFS 自动创建；
 // - 这里只描述“要付什么”，真正的链上支付留给 settle 层执行。
 type BizOrderPayBSVRequest struct {
-	OrderID        string `json:"order_id"`
-	ToAddress      string `json:"to_address"`
-	AmountSatoshi  uint64 `json:"amount_satoshi"`
-	IdempotencyKey string `json:"idempotency_key"`
+	OrderID       string `json:"order_id"`
+	ToAddress     string `json:"to_address"`
+	AmountSatoshi uint64 `json:"amount_satoshi"`
 }
 
 // BizOrderPayBSVResponse 是新的 BSV 业务下单结果。
@@ -79,7 +77,6 @@ type BizOrderPayBSVResponse struct {
 	Message              string                       `json:"message,omitempty"`
 	OrderID              string                       `json:"order_id,omitempty"`
 	SettlementID         string                       `json:"settlement_id,omitempty"`
-	IdempotencyKey       string                       `json:"idempotency_key,omitempty"`
 	Status               string                       `json:"status,omitempty"`
 	TxID                 string                       `json:"txid,omitempty"`
 	TargetAmountSatoshi  uint64                       `json:"target_amount_satoshi,omitempty"`
@@ -235,12 +232,11 @@ func walletOrderPreviewHash(rawTx []byte) string {
 
 // bizOrderPayBSVIdentity 生成业务下单、结算单、触发器使用的稳定主键。
 // 设计说明：
-// - 同一个 order_id + idempotency_key 必须落到同一组主键；
+// - 同一个 order_id 必须落到同一组主键；
 // - 这样重复提交只会回到同一条业务线，不会再生一张新单。
-func bizOrderPayBSVIdentity(orderID, idempotencyKey string) (frontOrderID string, businessID string, settlementID string, triggerID string) {
+func bizOrderPayBSVIdentity(orderID string) (frontOrderID string, businessID string, settlementID string, triggerID string) {
 	orderID = strings.ToLower(strings.TrimSpace(orderID))
-	idempotencyKey = strings.ToLower(strings.TrimSpace(idempotencyKey))
-	sum := sha256.Sum256([]byte(orderID + "\n" + idempotencyKey))
+	sum := sha256.Sum256([]byte(orderID))
 	suffix := hex.EncodeToString(sum[:12])
 	frontOrderID = orderID
 	businessID = "biz_order_pay_bsv_" + suffix
