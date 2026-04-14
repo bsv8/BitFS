@@ -177,12 +177,13 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 type httpAPIServer struct {
 	ctx       context.Context
 	rt        *Runtime
-	cfg       *Config
+	cfgSource configSnapshotter
 	db        *sql.DB
 	store     *clientDB
 	h         host.Host
 	gateways  []peer.AddrInfo
 	workspace *workspaceManager
+	srvMu     sync.RWMutex
 	srv       *http.Server
 	startedAt time.Time
 	jobsMu    sync.RWMutex
@@ -218,11 +219,19 @@ type fileGetJob struct {
 	cancel          context.CancelFunc `json:"-"`
 }
 
-func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, store *clientDB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
+func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, store *clientDB, h host.Host, gateways []peer.AddrInfo, workspace *workspaceManager, trace pproto.TraceSink) *httpAPIServer {
+	if cfgSource == nil && rt != nil {
+		cfgSource = rt
+	}
 	return &httpAPIServer{
-		ctx:       rt.ctx,
+		ctx: func() context.Context {
+			if rt != nil {
+				return rt.ctx
+			}
+			return nil
+		}(),
 		rt:        rt,
-		cfg:       cfg,
+		cfgSource: cfgSource,
 		db:        db,
 		store:     store,
 		h:         h,
@@ -232,6 +241,19 @@ func newHTTPAPIServer(rt *Runtime, cfg *Config, db *sql.DB, store *clientDB, h h
 		getJobs:   map[string]*fileGetJob{},
 		rpcTrace:  trace,
 	}
+}
+
+func (s *httpAPIServer) runtimeConfigSnapshot() Config {
+	if s == nil {
+		return Config{}
+	}
+	if s.rt != nil {
+		return s.rt.ConfigSnapshot()
+	}
+	if s.cfgSource != nil {
+		return s.cfgSource.ConfigSnapshot()
+	}
+	return Config{}
 }
 
 func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
@@ -391,17 +413,21 @@ func (s *httpAPIServer) Start() error {
 	if err != nil {
 		return err
 	}
+	cfg := s.runtimeConfigSnapshot()
 
-	s.srv = &http.Server{
-		Addr:              s.cfg.HTTP.ListenAddr,
+	srv := &http.Server{
+		Addr:              cfg.HTTP.ListenAddr,
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	obs.Important("bitcast-client", "http_api_started", map[string]any{"listen_addr": s.cfg.HTTP.ListenAddr})
-	err = s.srv.ListenAndServe()
+	s.srvMu.Lock()
+	s.srv = srv
+	s.srvMu.Unlock()
+	obs.Important("bitcast-client", "http_api_started", map[string]any{"listen_addr": cfg.HTTP.ListenAddr})
+	err = srv.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
@@ -409,12 +435,18 @@ func (s *httpAPIServer) Start() error {
 }
 
 func (s *httpAPIServer) Shutdown(ctx context.Context) error {
-	if s.srv == nil {
+	s.srvMu.RLock()
+	srv := s.srv
+	s.srvMu.RUnlock()
+	if srv == nil {
 		return nil
 	}
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return s.srv.Shutdown(shutdownCtx)
+	s.srvMu.Lock()
+	s.srv = nil
+	s.srvMu.Unlock()
+	return srv.Shutdown(shutdownCtx)
 }
 
 func (s *httpAPIServer) withAuth(next http.HandlerFunc) http.HandlerFunc {
@@ -428,6 +460,7 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	cfg := s.runtimeConfigSnapshot()
 	startedAtUnix := int64(0)
 	if s != nil && s.rt != nil && s.rt.StartedAtUnix > 0 {
 		startedAtUnix = s.rt.StartedAtUnix
@@ -435,15 +468,15 @@ func (s *httpAPIServer) handleInfo(w http.ResponseWriter, r *http.Request) {
 		startedAtUnix = s.startedAt.Unix()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"client_pubkey_hex":   s.cfg.ClientID,
+		"client_pubkey_hex":   cfg.ClientID,
 		"transport_peer_id":   s.h.ID().String(),
-		"pubkey_hex":          s.cfg.ClientID,
-		"seller_enabled":      s.cfg.Seller.Enabled,
-		"workspace_dir":       s.cfg.Storage.WorkspaceDir,
-		"data_dir":            s.cfg.Storage.DataDir,
+		"pubkey_hex":          cfg.ClientID,
+		"seller_enabled":      cfg.Seller.Enabled,
+		"workspace_dir":       cfg.Storage.WorkspaceDir,
+		"data_dir":            cfg.Storage.DataDir,
 		"gateway_count":       len(s.gateways),
-		"arbiter_count":       len(s.cfg.Network.Arbiters),
-		"rescan_interval_sec": s.cfg.Scan.RescanIntervalSeconds,
+		"arbiter_count":       len(cfg.Network.Arbiters),
+		"rescan_interval_sec": cfg.Scan.RescanIntervalSeconds,
 		"started_at_unix":     startedAtUnix,
 	})
 }
@@ -1630,7 +1663,7 @@ func (s *httpAPIServer) handleAdminSchedulerTasks(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1719,7 +1752,7 @@ func (s *httpAPIServer) handleAdminSchedulerRuns(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1760,7 +1793,7 @@ func (s *httpAPIServer) handleAdminChainTipStatus(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1777,7 +1810,7 @@ func (s *httpAPIServer) handleAdminChainUTXOStatus(w http.ResponseWriter, r *htt
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil || s.rt == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1816,7 +1849,7 @@ func (s *httpAPIServer) handleAdminChainTipLogs(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1840,7 +1873,7 @@ func (s *httpAPIServer) handleAdminChainUTXOLogs(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1864,7 +1897,7 @@ func (s *httpAPIServer) handleAdminWalletUTXOs(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -1938,7 +1971,7 @@ func (s *httpAPIServer) handleAdminFinanceBusinesses(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -2093,7 +2126,7 @@ func (s *httpAPIServer) handleAdminFinanceProcessEvents(w http.ResponseWriter, r
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.db == nil {
+	if s == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -2378,6 +2411,7 @@ func (s *httpAPIServer) runGetFileJob(parentCtx context.Context, jobID, seedHash
 		fail(err.Error())
 		return
 	}
+	cfg := s.runtimeConfigSnapshot()
 	s.jobsMu.Lock()
 	s.getJobs[jobID].GatewayPeerID = gw.ID.String()
 	s.jobsMu.Unlock()
@@ -2389,7 +2423,7 @@ func (s *httpAPIServer) runGetFileJob(parentCtx context.Context, jobID, seedHash
 		GatewayPeerID:      gw.ID.String(),
 		QuoteMaxRetry:      10,
 		QuoteInterval:      2 * time.Second,
-		MaxChunkPrice:      s.cfg.FSHTTP.MaxChunkPriceSatPer64K,
+		MaxChunkPrice:      cfg.FSHTTP.MaxChunkPriceSatPer64K,
 		Strategy:           TransferStrategySmart,
 	}, directDownloadCoreHooks{
 		OnStepStart: func(name string, detail map[string]string) {
@@ -2481,12 +2515,13 @@ func (s *httpAPIServer) handleFileHash(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
+	cfg := s.runtimeConfigSnapshot()
 	path := strings.TrimSpace(r.URL.Query().Get("path"))
 	if path == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "path is required"})
 		return
 	}
-	resolved, err := resolveWorkspacePath(s.cfg.Storage.WorkspaceDir, path)
+	resolved, err := resolveWorkspacePath(cfg.Storage.WorkspaceDir, path)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
@@ -2524,11 +2559,12 @@ func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	cfg := s.runtimeConfigSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                  true,
 		"seed_count":          len(biz_seeds),
 		"synced_at_unix":      time.Now().Unix(),
-		"workspace_dir":       s.cfg.Storage.WorkspaceDir,
+		"workspace_dir":       cfg.Storage.WorkspaceDir,
 		"biz_workspace_files": len(biz_seeds),
 	})
 }
@@ -2600,7 +2636,7 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if req.ResaleDiscountBPS == 0 {
-		req.ResaleDiscountBPS = s.cfg.Seller.Pricing.ResaleDiscountBPS
+		req.ResaleDiscountBPS = s.runtimeConfigSnapshot().Seller.Pricing.ResaleDiscountBPS
 	}
 	if req.ResaleDiscountBPS > 10000 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "resale_discount_bps must be <= 10000"})
@@ -2645,10 +2681,11 @@ func (s *httpAPIServer) handleLiveSubscribeURI(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.rt.Host == nil || s.cfg == nil {
+	if s == nil || s.rt == nil || s.rt.Host == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
+	cfg := s.runtimeConfigSnapshot()
 	streamID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream_id")))
 	if !isSeedHashHex(streamID) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
@@ -2668,8 +2705,8 @@ func (s *httpAPIServer) handleLiveSubscribeURI(w http.ResponseWriter, r *http.Re
 		"stream_id":                  streamID,
 		"publisher_pubkey":           pubHex,
 		"subscribe_uri":              uri,
-		"broadcast_window":           s.cfg.Live.Publish.BroadcastWindow,
-		"broadcast_interval_seconds": s.cfg.Live.Publish.BroadcastIntervalSec,
+		"broadcast_window":           cfg.Live.Publish.BroadcastWindow,
+		"broadcast_interval_seconds": cfg.Live.Publish.BroadcastIntervalSec,
 	})
 }
 
@@ -2727,7 +2764,7 @@ func (s *httpAPIServer) handleLiveDemandPublish(w http.ResponseWriter, r *http.R
 		return
 	}
 	if req.Window == 0 {
-		req.Window = s.cfg.Live.Publish.BroadcastWindow
+		req.Window = s.runtimeConfigSnapshot().Live.Publish.BroadcastWindow
 		if req.Window == 0 {
 			req.Window = 10
 		}
@@ -2898,7 +2935,8 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if err := s.rt.Workspace.EnforceLiveCacheLimit(s.cfg.Live.CacheMaxBytes); err != nil {
+	cfg := s.runtimeConfigSnapshot()
+	if err := s.rt.Workspace.EnforceLiveCacheLimit(cfg.Live.CacheMaxBytes); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -2907,7 +2945,7 @@ func (s *httpAPIServer) handleLivePublishSegment(w http.ResponseWriter, r *http.
 		SeedHash:        seedHash,
 		PublishedAtUnix: publishedAtUnixMs / 1000,
 	})
-	recent = trimLiveSegmentRefs(normalizeLiveSegmentRefs(recent), clampLiveWindow(s.cfg.Live.Publish.BroadcastWindow))
+	recent = trimLiveSegmentRefs(normalizeLiveSegmentRefs(recent), clampLiveWindow(cfg.Live.Publish.BroadcastWindow))
 	if err := TriggerLivePublishLatest(r.Context(), s.rt, streamID, recent); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2958,7 +2996,8 @@ func (s *httpAPIServer) handleLivePublishLatest(w http.ResponseWriter, r *http.R
 }
 
 func (s *httpAPIServer) buildSeedForLiveSegment(segmentBytes []byte) ([]byte, string, uint32, error) {
-	tmpDir := filepath.Join(s.cfg.Storage.DataDir, "live-publish")
+	cfg := s.runtimeConfigSnapshot()
+	tmpDir := filepath.Join(cfg.Storage.DataDir, "live-publish")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		return nil, "", 0, err
 	}
@@ -3002,7 +3041,8 @@ func (s *httpAPIServer) currentLivePublishWindow(streamID string) ([]LiveSegment
 			PublishedAtUnix: row.UpdatedAtUnix,
 		})
 	}
-	recent = trimLiveSegmentRefs(normalizeLiveSegmentRefs(recent), clampLiveWindow(s.cfg.Live.Publish.BroadcastWindow))
+	cfg := s.runtimeConfigSnapshot()
+	recent = trimLiveSegmentRefs(normalizeLiveSegmentRefs(recent), clampLiveWindow(cfg.Live.Publish.BroadcastWindow))
 	if len(recent) == 0 {
 		return nil, nil, nil
 	}
@@ -3294,7 +3334,8 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// 检查重复
-		for i, g := range s.rt.runIn.Network.Gateways {
+		snapshot := s.runtimeConfigSnapshot()
+		for i, g := range snapshot.Network.Gateways {
 			if strings.EqualFold(g.Pubkey, req.Pubkey) {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("pubkey already exists at index %d", i)})
 				return
@@ -3306,10 +3347,6 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
-		}
-		// 保存配置
-		if err := gm.SaveConfig(); err != nil {
-			obs.Error("bitcast-client", "gateway_add_save_failed", map[string]any{"error": err.Error()})
 		}
 		// 更新 HealthyGWs
 		s.rt.HealthyGWs = gm.GetConnectedGateways()
@@ -3356,10 +3393,6 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 			}
 			return
 		}
-		// 保存配置
-		if err := gm.SaveConfig(); err != nil {
-			obs.Error("bitcast-client", "gateway_update_save_failed", map[string]any{"error": err.Error()})
-		}
 		// 更新 HealthyGWs
 		s.rt.HealthyGWs = gm.GetConnectedGateways()
 		s.gateways = s.rt.HealthyGWs
@@ -3388,10 +3421,6 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			}
 			return
-		}
-		// 保存配置
-		if err := gm.SaveConfig(); err != nil {
-			obs.Error("bitcast-client", "gateway_delete_save_failed", map[string]any{"error": err.Error()})
 		}
 		// 更新 HealthyGWs
 		s.rt.HealthyGWs = gm.GetConnectedGateways()
@@ -3468,10 +3497,7 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 			return
 		}
 
-		old := gm.GetMasterGateway()
-		s.rt.masterGWMu.Lock()
-		s.rt.masterGW = targetID
-		s.rt.masterGWMu.Unlock()
+		old := s.rt.SetMasterGateway(targetID)
 		changed := old != targetID
 		if changed {
 			obs.Business("bitcast-client", "master_gateway_set_by_admin", map[string]any{
@@ -3583,14 +3609,15 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
+		snapshot := s.runtimeConfigSnapshot()
 		type arbResp struct {
 			ID      int    `json:"id"`
 			Addr    string `json:"addr"`
 			Pubkey  string `json:"pubkey"`
 			Enabled bool   `json:"enabled"`
 		}
-		items := make([]arbResp, len(s.rt.runIn.Network.Arbiters))
-		for i, a := range s.rt.runIn.Network.Arbiters {
+		items := make([]arbResp, len(snapshot.Network.Arbiters))
+		for i, a := range snapshot.Network.Arbiters {
 			items[i] = arbResp{ID: i, Addr: a.Addr, Pubkey: a.Pubkey, Enabled: a.Enabled}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items, "total": len(items)})
@@ -3609,8 +3636,14 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		cfgSvc := s.rt.RuntimeConfigService()
+		if cfgSvc == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
+			return
+		}
+		snapshot := s.runtimeConfigSnapshot()
 		newAI, _ := parseAddr(node.Addr)
-		for i, a := range s.rt.runIn.Network.Arbiters {
+		for i, a := range snapshot.Network.Arbiters {
 			if strings.EqualFold(strings.TrimSpace(a.Pubkey), node.Pubkey) {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("pubkey already exists at index %d", i)})
 				return
@@ -3621,14 +3654,11 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		next := s.rt.runIn
+		next := snapshot
 		next.Network.Arbiters = append(next.Network.Arbiters, node)
-		s.rt.runIn = next
-		if s.cfg != nil {
-			*s.cfg = next.toConfig()
-		}
-		if err := SaveConfigFile(s.rt.runIn.ConfigPath, next.toConfig()); err != nil {
-			obs.Error("bitcast-client", "arbiter_add_save_failed", map[string]any{"error": err.Error()})
+		if err := cfgSvc.UpdateAndPersist(next); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
 		}
 		s.refreshHealthyArbiters(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{"id": len(next.Network.Arbiters) - 1, "success": true})
@@ -3643,7 +3673,8 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 			return
 		}
-		if id >= len(s.rt.runIn.Network.Arbiters) {
+		snapshot := s.runtimeConfigSnapshot()
+		if id >= len(snapshot.Network.Arbiters) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
 			return
 		}
@@ -3661,8 +3692,13 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		cfgSvc := s.rt.RuntimeConfigService()
+		if cfgSvc == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
+			return
+		}
 		newAI, _ := parseAddr(node.Addr)
-		for i, a := range s.rt.runIn.Network.Arbiters {
+		for i, a := range snapshot.Network.Arbiters {
 			if i == id {
 				continue
 			}
@@ -3676,14 +3712,11 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		next := s.rt.runIn
+		next := snapshot
 		next.Network.Arbiters[id] = node
-		s.rt.runIn = next
-		if s.cfg != nil {
-			*s.cfg = next.toConfig()
-		}
-		if err := SaveConfigFile(s.rt.runIn.ConfigPath, next.toConfig()); err != nil {
-			obs.Error("bitcast-client", "arbiter_update_save_failed", map[string]any{"error": err.Error()})
+		if err := cfgSvc.UpdateAndPersist(next); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
 		}
 		s.refreshHealthyArbiters(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "success": true})
@@ -3698,22 +3731,25 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 			return
 		}
-		if id >= len(s.rt.runIn.Network.Arbiters) {
+		snapshot := s.runtimeConfigSnapshot()
+		if id >= len(snapshot.Network.Arbiters) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
 			return
 		}
-		if s.rt.runIn.Network.Arbiters[id].Enabled {
+		if snapshot.Network.Arbiters[id].Enabled {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cannot delete enabled arbiter, please disable it first"})
 			return
 		}
-		next := s.rt.runIn
-		next.Network.Arbiters = append(next.Network.Arbiters[:id], next.Network.Arbiters[id+1:]...)
-		s.rt.runIn = next
-		if s.cfg != nil {
-			*s.cfg = next.toConfig()
+		cfgSvc := s.rt.RuntimeConfigService()
+		if cfgSvc == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
+			return
 		}
-		if err := SaveConfigFile(s.rt.runIn.ConfigPath, next.toConfig()); err != nil {
-			obs.Error("bitcast-client", "arbiter_delete_save_failed", map[string]any{"error": err.Error()})
+		next := snapshot
+		next.Network.Arbiters = append(next.Network.Arbiters[:id], next.Network.Arbiters[id+1:]...)
+		if err := cfgSvc.UpdateAndPersist(next); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
 		}
 		s.refreshHealthyArbiters(r.Context())
 		writeJSON(w, http.StatusOK, map[string]any{"id": id, "success": true, "deleted": true})
@@ -3749,7 +3785,7 @@ func (s *httpAPIServer) refreshHealthyArbiters(ctx context.Context) {
 	if ctx == nil {
 		return
 	}
-	cfgArbs := s.rt.runIn.Network.Arbiters
+	cfgArbs := s.runtimeConfigSnapshot().Network.Arbiters
 	infos := make([]peer.AddrInfo, 0, len(cfgArbs))
 	for i, a := range cfgArbs {
 		if !a.Enabled {
@@ -3794,7 +3830,7 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 		InHealthyArbs bool   `json:"in_healthy_arbiters"`
 		Error         string `json:"error,omitempty"`
 	}
-	nodes := s.rt.runIn.Network.Arbiters
+	nodes := s.runtimeConfigSnapshot().Network.Arbiters
 	items := make([]healthItem, 0, len(nodes))
 	connectedCount := 0
 	for i, a := range nodes {
@@ -3948,17 +3984,23 @@ func (s *httpAPIServer) handleAdminResumeDownload(w http.ResponseWriter, r *http
 // handleAdminStrategyDebugLog 动态查询/更新 fs_http.strategy_debug_log_enabled。
 // 设计约束：
 // - POST 成功后立即影响运行态，无需重启；
-// - 同步写回 config.yaml，保证重启后状态一致；
-// - 文件持久化失败时回滚内存配置，避免运行态与持久态分叉。
+// - 统一走 runtime config service 落盘，不再同步镜像整份配置；
+// - 持久化失败时直接返回错误，不切换内存态。
 func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *http.Request) {
-	if s == nil || s.rt == nil || s.cfg == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	cfgSvc := s.rt.RuntimeConfigService()
+	if cfgSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
+		snapshot := s.runtimeConfigSnapshot()
 		writeJSON(w, http.StatusOK, map[string]any{
-			"strategy_debug_log_enabled": s.cfg.FSHTTP.StrategyDebugLogEnabled,
+			"strategy_debug_log_enabled": snapshot.FSHTTP.StrategyDebugLogEnabled,
 		})
 	case http.MethodPost:
 		var req struct {
@@ -3968,16 +4010,13 @@ func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 			return
 		}
-		oldEnabled := s.cfg.FSHTTP.StrategyDebugLogEnabled
-		s.cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
-		cfg := s.rt.runIn
-		cfg.FSHTTP.StrategyDebugLogEnabled = req.Enabled
-		if err := SaveConfigFile(s.rt.runIn.ConfigPath, cfg.toConfig()); err != nil {
-			s.cfg.FSHTTP.StrategyDebugLogEnabled = oldEnabled
+		next := s.runtimeConfigSnapshot()
+		oldEnabled := next.FSHTTP.StrategyDebugLogEnabled
+		next.FSHTTP.StrategyDebugLogEnabled = req.Enabled
+		if err := cfgSvc.UpdateAndPersist(next); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		s.rt.runIn = cfg
 		obs.Business("bitcast-client", "admin_strategy_debug_log_updated", map[string]any{
 			"enabled": req.Enabled,
 		})
@@ -4006,7 +4045,7 @@ func (s *httpAPIServer) handleAdminLiveStreams(w http.ResponseWriter, r *http.Re
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
 			return
 		}
-		root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+		root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 		if root == "" {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 			return
@@ -4082,7 +4121,7 @@ func (s *httpAPIServer) handleAdminLiveStreamDetail(w http.ResponseWriter, r *ht
 		"file_count":      len(out),
 		"total_bytes":     totalBytes,
 		"last_updated":    newest,
-		"live_root_path":  filepath.Join(strings.TrimSpace(s.cfg.Storage.WorkspaceDir), "live", streamID),
+		"live_root_path":  filepath.Join(strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir), "live", streamID),
 		"segment_entries": out,
 	})
 }
@@ -4128,8 +4167,9 @@ func (s *httpAPIServer) queryLiveStreamStats() ([]adminLiveStreamStat, error) {
 		return nil, err
 	}
 	out := make([]adminLiveStreamStat, 0, len(rows))
+	cfg := s.runtimeConfigSnapshot()
 	for _, row := range rows {
-		liveFolder := filepath.Join(strings.TrimSpace(s.cfg.Storage.WorkspaceDir), "live", row.StreamID)
+		liveFolder := filepath.Join(strings.TrimSpace(cfg.Storage.WorkspaceDir), "live", row.StreamID)
 		out = append(out, adminLiveStreamStat{
 			StreamID:         row.StreamID,
 			FileCount:        row.FileCount,
@@ -4170,7 +4210,7 @@ func (s *httpAPIServer) handleAdminStaticTree(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4298,7 +4338,7 @@ func (s *httpAPIServer) handleAdminStaticMkdir(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4327,7 +4367,7 @@ func (s *httpAPIServer) handleAdminStaticUpload(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4407,7 +4447,7 @@ func (s *httpAPIServer) handleAdminStaticMove(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4498,7 +4538,7 @@ func (s *httpAPIServer) handleAdminStaticEntry(w http.ResponseWriter, r *http.Re
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4548,7 +4588,7 @@ func (s *httpAPIServer) handleAdminStaticPriceSet(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4567,7 +4607,7 @@ func (s *httpAPIServer) handleAdminStaticPriceSet(w http.ResponseWriter, r *http
 		return
 	}
 	if req.ResaleDiscountBPS == 0 {
-		req.ResaleDiscountBPS = s.cfg.Seller.Pricing.ResaleDiscountBPS
+		req.ResaleDiscountBPS = s.runtimeConfigSnapshot().Seller.Pricing.ResaleDiscountBPS
 	}
 	if req.ResaleDiscountBPS > 10000 {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "resale_discount_bps must be <= 10000"})
@@ -4613,7 +4653,7 @@ func (s *httpAPIServer) handleAdminStaticPriceGet(w http.ResponseWriter, r *http
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	root := strings.TrimSpace(s.cfg.Storage.WorkspaceDir)
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
 	if root == "" {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
 		return
@@ -4677,21 +4717,22 @@ const (
 )
 
 type adminConfigRule struct {
-	Key         string
-	Type        adminConfigValueType
-	MinInt      int64
-	MaxInt      int64
-	MinFloat    float64
-	MaxFloat    float64
-	MinLen      int
-	MaxLen      int
-	Description string
+	Key             string
+	Type            adminConfigValueType
+	MinInt          int64
+	MaxInt          int64
+	MinFloat        float64
+	MaxFloat        float64
+	MinLen          int
+	MaxLen          int
+	Description     string
+	RestartRequired bool
 }
 
 func adminConfigRules() []adminConfigRule {
 	return []adminConfigRule{
-		{Key: "http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "管理 API 监听地址"},
-		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址"},
+		{Key: "http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "管理 API 监听地址", RestartRequired: true},
+		{Key: "fs_http.listen_addr", Type: adminConfigString, MinLen: 3, MaxLen: 128, Description: "文件 HTTP 监听地址", RestartRequired: true},
 		{Key: "external_api.woc.api_key", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "WOC API key（统一纳入外部 API 保护器）"},
 		{Key: "external_api.woc.min_interval_ms", Type: adminConfigInt, MinInt: 1, MaxInt: 60000, Description: "WOC 最小请求间隔毫秒"},
 		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
@@ -4703,7 +4744,10 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
+		{Key: "storage.workspace_dir", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "工作目录", RestartRequired: true},
+		{Key: "storage.data_dir", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "数据目录", RestartRequired: true},
 		{Key: "storage.min_free_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "最小空闲空间"},
+		{Key: "index.sqlite_path", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "SQLite 路径", RestartRequired: true},
 		{Key: "live.cache_max_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "直播缓存上限"},
 		{Key: "live.publish.broadcast_window", Type: adminConfigInt, MinInt: 1, MaxInt: maxLiveWindowSize, Description: "直播广播窗口"},
 		{Key: "live.publish.broadcast_interval_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "直播广播间隔秒"},
@@ -4734,41 +4778,48 @@ func (s *httpAPIServer) handleAdminConfigSchema(w http.ResponseWriter, r *http.R
 	}
 	rules := adminConfigRules()
 	type item struct {
-		Key         string  `json:"key"`
-		Type        string  `json:"type"`
-		MinInt      int64   `json:"min_int,omitempty"`
-		MaxInt      int64   `json:"max_int,omitempty"`
-		MinFloat    float64 `json:"min_float,omitempty"`
-		MaxFloat    float64 `json:"max_float,omitempty"`
-		MinLen      int     `json:"min_len,omitempty"`
-		MaxLen      int     `json:"max_len,omitempty"`
-		Description string  `json:"description,omitempty"`
+		Key             string  `json:"key"`
+		Type            string  `json:"type"`
+		MinInt          int64   `json:"min_int,omitempty"`
+		MaxInt          int64   `json:"max_int,omitempty"`
+		MinFloat        float64 `json:"min_float,omitempty"`
+		MaxFloat        float64 `json:"max_float,omitempty"`
+		MinLen          int     `json:"min_len,omitempty"`
+		MaxLen          int     `json:"max_len,omitempty"`
+		Description     string  `json:"description,omitempty"`
+		RestartRequired bool    `json:"restart_required,omitempty"`
 	}
 	out := make([]item, 0, len(rules))
 	for _, it := range rules {
 		out = append(out, item{
-			Key:         it.Key,
-			Type:        string(it.Type),
-			MinInt:      it.MinInt,
-			MaxInt:      it.MaxInt,
-			MinFloat:    it.MinFloat,
-			MaxFloat:    it.MaxFloat,
-			MinLen:      it.MinLen,
-			MaxLen:      it.MaxLen,
-			Description: it.Description,
+			Key:             it.Key,
+			Type:            string(it.Type),
+			MinInt:          it.MinInt,
+			MaxInt:          it.MaxInt,
+			MinFloat:        it.MinFloat,
+			MaxFloat:        it.MaxFloat,
+			MinLen:          it.MinLen,
+			MaxLen:          it.MaxLen,
+			Description:     it.Description,
+			RestartRequired: it.RestartRequired,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": out, "total": len(out)})
 }
 
 func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request) {
-	if s == nil || s.rt == nil || s.cfg == nil || s.db == nil {
+	if s == nil || s.rt == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	cfgSvc := s.rt.RuntimeConfigService()
+	if cfgSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
 		return
 	}
 	switch r.Method {
 	case http.MethodGet:
-		writeJSON(w, http.StatusOK, map[string]any{"config": adminConfigSnapshot(s.rt.runIn.toConfig())})
+		writeJSON(w, http.StatusOK, map[string]any{"config": adminConfigSnapshot(s.runtimeConfigSnapshot())})
 	case http.MethodPost:
 		var req struct {
 			ValidateOnly bool `json:"validate_only"`
@@ -4785,8 +4836,7 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "items is required"})
 			return
 		}
-		next := s.rt.runIn
-		nextCfg := next.toConfig()
+		nextCfg := s.runtimeConfigSnapshot()
 		ruleMap := adminConfigRuleMap()
 		applied := make([]string, 0, len(req.Items))
 		for _, it := range req.Items {
@@ -4796,6 +4846,10 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported key: " + key})
 				return
 			}
+			if rule.RestartRequired {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "restart required for this key", "key": key})
+				return
+			}
 			if err := adminConfigApplyOne(&nextCfg, rule, it.Value); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "key": key})
 				return
@@ -4803,11 +4857,10 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			applied = append(applied, key)
 		}
 		// 全局校验兜底，避免单字段校验通过但组合非法。
-		if err := validateConfigForMode(&nextCfg, s.rt.runIn.StartupMode); err != nil {
+		if err := validateConfigForMode(&nextCfg, cfgSvc.StartupMode()); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
-		next.applyConfig(nextCfg)
 		if req.ValidateOnly {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":            true,
@@ -4817,12 +4870,14 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			})
 			return
 		}
-		if err := SaveConfigFile(s.rt.runIn.ConfigPath, nextCfg); err != nil {
+		if err := cfgSvc.UpdateAndPersist(nextCfg); err != nil {
+			obs.Error("bitcast-client", "admin_config_update_failed", map[string]any{
+				"error":        err.Error(),
+				"applied_keys": applied,
+			})
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		s.rt.runIn = next
-		*s.cfg = next.toConfig()
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":            true,
 			"validate_only": false,
@@ -4849,7 +4904,10 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"reachability.auto_announce_enabled":          cfgBool(cfg.Reachability.AutoAnnounceEnabled, true),
 		"reachability.announce_ttl_seconds":           cfg.Reachability.AnnounceTTLSeconds,
 		"scan.rescan_interval_seconds":                cfg.Scan.RescanIntervalSeconds,
+		"storage.workspace_dir":                       cfg.Storage.WorkspaceDir,
+		"storage.data_dir":                            cfg.Storage.DataDir,
 		"storage.min_free_bytes":                      cfg.Storage.MinFreeBytes,
+		"index.sqlite_path":                           cfg.Index.SQLitePath,
 		"live.cache_max_bytes":                        cfg.Live.CacheMaxBytes,
 		"live.publish.broadcast_window":               cfg.Live.Publish.BroadcastWindow,
 		"live.publish.broadcast_interval_seconds":     cfg.Live.Publish.BroadcastIntervalSec,
@@ -5091,7 +5149,7 @@ func (s *httpAPIServer) handleAdminVerificationSummary(w http.ResponseWriter, r 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -5116,7 +5174,7 @@ func (s *httpAPIServer) handleAdminVerificationFailed(w http.ResponseWriter, r *
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -5155,7 +5213,7 @@ func (s *httpAPIServer) handleAdminVerificationItems(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -5210,7 +5268,7 @@ func (s *httpAPIServer) handleAdminVerificationReconcile(w http.ResponseWriter, 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -5235,7 +5293,7 @@ func (s *httpAPIServer) handleAdminVerificationReset(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
@@ -5283,7 +5341,7 @@ func (s *httpAPIServer) handleAdminVerificationBatchRetry(w http.ResponseWriter,
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if s == nil || s.rt == nil || s.db == nil {
+	if s == nil || s.rt == nil || httpStore(s) == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}

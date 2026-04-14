@@ -228,132 +228,6 @@ type sellerCatalog struct {
 	biz_seeds map[string]sellerSeed
 }
 
-type RunInput struct {
-	ClientID   string
-	ConfigPath string
-	// StartupMode 控制本次运行是否允许“网关/仲裁为空”。
-	// 默认按产品模式执行；e2e 需要显式切到 test。
-	StartupMode StartupMode
-	Debug       bool
-	BSV         struct {
-		Network string
-	}
-	Network struct {
-		Gateways []PeerNode
-		Arbiters []PeerNode
-	}
-	Storage struct {
-		WorkspaceDir string
-		DataDir      string
-		MinFreeBytes uint64
-	}
-	Seller struct {
-		Enabled bool
-		Pricing struct {
-			FloorPriceSatPer64K     uint64
-			ResaleDiscountBPS       uint64
-			LiveBasePriceSatPer64K  uint64
-			LiveFloorPriceSatPer64K uint64
-			LiveDecayPerMinuteBPS   uint64
-		}
-	}
-	Live struct {
-		CacheMaxBytes uint64
-		Buyer         struct {
-			TargetLagSegments   uint32
-			MaxBudgetPerMinute  uint64
-			PreferOlderSegments bool
-		}
-		Publish struct {
-			BroadcastWindow      uint32
-			BroadcastIntervalSec uint32
-		}
-	}
-	Listen struct {
-		Enabled               *bool
-		RenewThresholdSeconds uint32
-		AutoRenewRounds       uint64
-		OfferPaymentSatoshi   uint64
-		TickSeconds           uint32
-	}
-	Payment struct {
-		PreferredScheme string
-	}
-	Reachability struct {
-		AutoAnnounceEnabled *bool
-		AnnounceTTLSeconds  uint32
-	}
-	Scan struct {
-		StartupFullScan       bool
-		FSWatchEnabled        bool
-		RescanIntervalSeconds uint32
-	}
-	Index struct {
-		Backend    string
-		SQLitePath string
-	}
-	HTTP struct {
-		Enabled    bool
-		ListenAddr string
-	}
-	FSHTTP struct {
-		Enabled                    bool
-		ListenAddr                 string
-		DownloadWaitTimeoutSeconds uint32
-		MaxConcurrentSessions      uint32
-		MaxChunkPriceSatPer64K     uint64
-		QuoteWaitSeconds           uint32
-		QuotePollSeconds           uint32
-		PrefetchDistanceChunks     uint32
-		StrategyDebugLogEnabled    bool
-	}
-	ExternalAPI struct {
-		WOC struct {
-			APIKey        string
-			MinIntervalMS uint32
-		}
-	}
-	Log struct {
-		File            string
-		ConsoleMinLevel string
-	}
-
-	// DisableHTTPServer 仅影响本次 Run 的启动行为，不会持久化到配置。
-	// managed 模式使用单入口时设为 true，避免 runtime 内部再开启 HTTP 监听。
-	DisableHTTPServer bool
-
-	// FSHTTPListener 仅用于桌面托管模式：
-	// - 解锁前主进程先把 fs_http 端口真实监听住，提前暴露端口占用错误；
-	// - 解锁后把同一个 listener 交给真正文件服务，避免“先说可启动，解锁时才 bind 失败”。
-	FSHTTPListener net.Listener
-
-	// EffectivePrivKeyHex 是启动前已确定的“唯一运行时私钥”。
-	// 设计约束：Host 身份与费用池签名必须都来自这把私钥。
-	EffectivePrivKeyHex string
-	ObsSink             obs.Sink
-
-	// ActionChain 承载真实上链动作与费用池最小读能力。
-	// 生产环境默认使用 chainbridge 的嵌入式费用池客户端。
-	ActionChain poolcore.ChainClient
-
-	// WalletChain 只服务钱包同步与历史扫描。
-	// 设计约束：
-	// - 钱包同步明确接受 whatsonchain 语义，不再复制一层同构接口；
-	// - 运行时只持有已装配好的最小 WOC 客户端，不再依赖历史中间层。
-	WalletChain walletChainClient
-
-	// RPCTrace 仅用于集成测试：记录 client 自己的 pproto 收发报文（JSONL）。
-	// 正常运行默认不启用（nil）。
-	RPCTrace pproto.TraceSink
-
-	// PostWorkspaceBootstrap 在 workspace 初始化完成后、运行期后台协程启动前执行。
-	// 设计说明：
-	// - 这里给上层产品壳预留“本次启动专属”的 DB 引导钩子；
-	// - 典型用途是桌面版把系统首页的元信息/默认价格固化进索引；
-	// - 放在这个时机可以复用 startup_full_scan 的结果，同时避开运行期并发写数据库带来的锁竞争。
-	PostWorkspaceBootstrap func(ctx context.Context, store ClientStore) error
-}
-
 // ClientStore 是业务层可见的最小数据库能力。
 // 设计约束：
 // - 这里不暴露 *sql.DB 给上层拼装逻辑；
@@ -379,144 +253,26 @@ type RunDeps struct {
 	OwnsDB  bool
 }
 
-// NewRunInputFromConfig 在 Run 外完成配置复制，避免 RunInput 直接携带 Config。
-func NewRunInputFromConfig(cfg Config, effectivePrivKeyHex string) RunInput {
-	in := RunInput{
-		ClientID:            cfg.ClientID,
-		EffectivePrivKeyHex: effectivePrivKeyHex,
-	}
-	in.Debug = cfg.Debug
-	in.BSV.Network = cfg.BSV.Network
-	in.Network.Gateways = append([]PeerNode(nil), cfg.Network.Gateways...)
-	in.Network.Arbiters = append([]PeerNode(nil), cfg.Network.Arbiters...)
-	in.Storage.WorkspaceDir = cfg.Storage.WorkspaceDir
-	in.Storage.DataDir = cfg.Storage.DataDir
-	in.Storage.MinFreeBytes = cfg.Storage.MinFreeBytes
-	in.Seller.Enabled = cfg.Seller.Enabled
-	in.Seller.Pricing.FloorPriceSatPer64K = cfg.Seller.Pricing.FloorPriceSatPer64K
-	in.Seller.Pricing.ResaleDiscountBPS = cfg.Seller.Pricing.ResaleDiscountBPS
-	in.Seller.Pricing.LiveBasePriceSatPer64K = cfg.Seller.Pricing.LiveBasePriceSatPer64K
-	in.Seller.Pricing.LiveFloorPriceSatPer64K = cfg.Seller.Pricing.LiveFloorPriceSatPer64K
-	in.Seller.Pricing.LiveDecayPerMinuteBPS = cfg.Seller.Pricing.LiveDecayPerMinuteBPS
-	in.Live.CacheMaxBytes = cfg.Live.CacheMaxBytes
-	in.Live.Buyer.TargetLagSegments = cfg.Live.Buyer.TargetLagSegments
-	in.Live.Buyer.MaxBudgetPerMinute = cfg.Live.Buyer.MaxBudgetPerMinute
-	in.Live.Buyer.PreferOlderSegments = cfg.Live.Buyer.PreferOlderSegments
-	in.Live.Publish.BroadcastWindow = cfg.Live.Publish.BroadcastWindow
-	in.Live.Publish.BroadcastIntervalSec = cfg.Live.Publish.BroadcastIntervalSec
-	if cfg.Listen.Enabled != nil {
-		v := *cfg.Listen.Enabled
-		in.Listen.Enabled = &v
-	}
-	in.Listen.RenewThresholdSeconds = cfg.Listen.RenewThresholdSeconds
-	in.Listen.AutoRenewRounds = cfg.Listen.AutoRenewRounds
-	in.Listen.OfferPaymentSatoshi = cfg.Listen.OfferPaymentSatoshi
-	in.Listen.TickSeconds = cfg.Listen.TickSeconds
-	in.Payment.PreferredScheme = cfg.Payment.PreferredScheme
-	if cfg.Reachability.AutoAnnounceEnabled != nil {
-		v := *cfg.Reachability.AutoAnnounceEnabled
-		in.Reachability.AutoAnnounceEnabled = &v
-	}
-	in.Reachability.AnnounceTTLSeconds = cfg.Reachability.AnnounceTTLSeconds
-	in.Scan.StartupFullScan = cfg.Scan.StartupFullScan
-	in.Scan.FSWatchEnabled = cfg.Scan.FSWatchEnabled
-	in.Scan.RescanIntervalSeconds = cfg.Scan.RescanIntervalSeconds
-	in.Index.Backend = cfg.Index.Backend
-	in.Index.SQLitePath = cfg.Index.SQLitePath
-	in.HTTP.Enabled = cfg.HTTP.Enabled
-	in.HTTP.ListenAddr = cfg.HTTP.ListenAddr
-	in.FSHTTP.Enabled = cfg.FSHTTP.Enabled
-	in.FSHTTP.ListenAddr = cfg.FSHTTP.ListenAddr
-	in.FSHTTP.DownloadWaitTimeoutSeconds = cfg.FSHTTP.DownloadWaitTimeoutSeconds
-	in.FSHTTP.MaxConcurrentSessions = cfg.FSHTTP.MaxConcurrentSessions
-	in.FSHTTP.MaxChunkPriceSatPer64K = cfg.FSHTTP.MaxChunkPriceSatPer64K
-	in.FSHTTP.QuoteWaitSeconds = cfg.FSHTTP.QuoteWaitSeconds
-	in.FSHTTP.QuotePollSeconds = cfg.FSHTTP.QuotePollSeconds
-	in.FSHTTP.PrefetchDistanceChunks = cfg.FSHTTP.PrefetchDistanceChunks
-	in.FSHTTP.StrategyDebugLogEnabled = cfg.FSHTTP.StrategyDebugLogEnabled
-	in.ExternalAPI.WOC.APIKey = cfg.ExternalAPI.WOC.APIKey
-	in.ExternalAPI.WOC.MinIntervalMS = cfg.ExternalAPI.WOC.MinIntervalMS
-	in.Log.File = cfg.Log.File
-	in.Log.ConsoleMinLevel = cfg.Log.ConsoleMinLevel
-	return in
-}
+// RunOptions 只承载本次启动专属的能力和开关。
+// 设计约束：
+// - 这里放的是“启动参数”，不是运行期配置；
+// - 运行期配置统一进入 runtimeConfigService；
+// - 桌面托管模式需要的 listener、bootstrap 钩子等继续走这里，不进快照。
+type RunOptions struct {
+	ConfigPath  string
+	StartupMode StartupMode
 
-func (in *RunInput) applyConfig(cfg Config) {
-	if in == nil {
-		return
-	}
-	disableHTTPServer := in.DisableHTTPServer
-	next := NewRunInputFromConfig(cfg, in.EffectivePrivKeyHex)
-	next.ConfigPath = in.ConfigPath
-	next.StartupMode = in.StartupMode
-	next.ObsSink = in.ObsSink
-	next.ActionChain = in.ActionChain
-	next.WalletChain = in.WalletChain
-	next.RPCTrace = in.RPCTrace
-	next.DisableHTTPServer = disableHTTPServer
-	next.FSHTTPListener = in.FSHTTPListener
-	*in = next
-}
+	DisableHTTPServer bool
+	FSHTTPListener    net.Listener
 
-func (in RunInput) toConfig() Config {
-	cfg := Config{
-		ClientID: in.ClientID,
-	}
-	cfg.Debug = in.Debug
-	cfg.BSV.Network = in.BSV.Network
-	cfg.Network.Gateways = append([]PeerNode(nil), in.Network.Gateways...)
-	cfg.Network.Arbiters = append([]PeerNode(nil), in.Network.Arbiters...)
-	cfg.Storage.WorkspaceDir = in.Storage.WorkspaceDir
-	cfg.Storage.DataDir = in.Storage.DataDir
-	cfg.Storage.MinFreeBytes = in.Storage.MinFreeBytes
-	cfg.Seller.Enabled = in.Seller.Enabled
-	cfg.Seller.Pricing.FloorPriceSatPer64K = in.Seller.Pricing.FloorPriceSatPer64K
-	cfg.Seller.Pricing.ResaleDiscountBPS = in.Seller.Pricing.ResaleDiscountBPS
-	cfg.Seller.Pricing.LiveBasePriceSatPer64K = in.Seller.Pricing.LiveBasePriceSatPer64K
-	cfg.Seller.Pricing.LiveFloorPriceSatPer64K = in.Seller.Pricing.LiveFloorPriceSatPer64K
-	cfg.Seller.Pricing.LiveDecayPerMinuteBPS = in.Seller.Pricing.LiveDecayPerMinuteBPS
-	cfg.Live.CacheMaxBytes = in.Live.CacheMaxBytes
-	cfg.Live.Buyer.TargetLagSegments = in.Live.Buyer.TargetLagSegments
-	cfg.Live.Buyer.MaxBudgetPerMinute = in.Live.Buyer.MaxBudgetPerMinute
-	cfg.Live.Buyer.PreferOlderSegments = in.Live.Buyer.PreferOlderSegments
-	cfg.Live.Publish.BroadcastWindow = in.Live.Publish.BroadcastWindow
-	cfg.Live.Publish.BroadcastIntervalSec = in.Live.Publish.BroadcastIntervalSec
-	if in.Listen.Enabled != nil {
-		v := *in.Listen.Enabled
-		cfg.Listen.Enabled = &v
-	}
-	cfg.Listen.RenewThresholdSeconds = in.Listen.RenewThresholdSeconds
-	cfg.Listen.AutoRenewRounds = in.Listen.AutoRenewRounds
-	cfg.Listen.OfferPaymentSatoshi = in.Listen.OfferPaymentSatoshi
-	cfg.Listen.TickSeconds = in.Listen.TickSeconds
-	cfg.Payment.PreferredScheme = in.Payment.PreferredScheme
-	if in.Reachability.AutoAnnounceEnabled != nil {
-		v := *in.Reachability.AutoAnnounceEnabled
-		cfg.Reachability.AutoAnnounceEnabled = &v
-	}
-	cfg.Reachability.AnnounceTTLSeconds = in.Reachability.AnnounceTTLSeconds
-	cfg.Scan.StartupFullScan = in.Scan.StartupFullScan
-	cfg.Scan.FSWatchEnabled = in.Scan.FSWatchEnabled
-	cfg.Scan.RescanIntervalSeconds = in.Scan.RescanIntervalSeconds
-	cfg.Index.Backend = in.Index.Backend
-	cfg.Index.SQLitePath = in.Index.SQLitePath
-	cfg.HTTP.Enabled = in.HTTP.Enabled
-	cfg.HTTP.ListenAddr = in.HTTP.ListenAddr
-	cfg.FSHTTP.Enabled = in.FSHTTP.Enabled
-	cfg.FSHTTP.ListenAddr = in.FSHTTP.ListenAddr
-	cfg.FSHTTP.DownloadWaitTimeoutSeconds = in.FSHTTP.DownloadWaitTimeoutSeconds
-	cfg.FSHTTP.MaxConcurrentSessions = in.FSHTTP.MaxConcurrentSessions
-	cfg.FSHTTP.MaxChunkPriceSatPer64K = in.FSHTTP.MaxChunkPriceSatPer64K
-	cfg.FSHTTP.QuoteWaitSeconds = in.FSHTTP.QuoteWaitSeconds
-	cfg.FSHTTP.QuotePollSeconds = in.FSHTTP.QuotePollSeconds
-	cfg.FSHTTP.PrefetchDistanceChunks = in.FSHTTP.PrefetchDistanceChunks
-	cfg.FSHTTP.StrategyDebugLogEnabled = in.FSHTTP.StrategyDebugLogEnabled
-	cfg.ExternalAPI.WOC.APIKey = in.ExternalAPI.WOC.APIKey
-	cfg.ExternalAPI.WOC.MinIntervalMS = in.ExternalAPI.WOC.MinIntervalMS
-	cfg.Log.File = in.Log.File
-	cfg.Log.ConsoleMinLevel = in.Log.ConsoleMinLevel
-	cfg.Keys.PrivkeyHex = strings.TrimSpace(in.EffectivePrivKeyHex)
-	return cfg
+	EffectivePrivKeyHex string
+	ObsSink             obs.Sink
+
+	ActionChain poolcore.ChainClient
+	WalletChain walletChainClient
+	RPCTrace    pproto.TraceSink
+
+	PostWorkspaceBootstrap func(ctx context.Context, store ClientStore) error
 }
 
 type Runtime struct {
@@ -526,7 +282,7 @@ type Runtime struct {
 	// DBActor         *sqliteactor.Actor
 	store           *clientDB
 	identity        *clientIdentityCaps
-	runIn           RunInput
+	config          *runtimeConfigService
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
 	HealthyArbiters []peer.AddrInfo
@@ -613,7 +369,7 @@ func (r *Runtime) ClientID() string {
 }
 
 // runtimeIdentity 返回运行时只读身份能力。
-// 设计约束：身份只在启动装配一次，业务侧只读，不再回看 runIn。
+// 设计约束：身份只在启动装配一次，业务侧只读，不再回看旧启动配置。
 func (r *Runtime) runtimeIdentity() (*clientIdentityCaps, error) {
 	if r == nil || r.identity == nil {
 		return nil, fmt.Errorf("runtime not initialized")
@@ -636,25 +392,67 @@ func (r *Runtime) DB() *clientDB {
 	return r.store
 }
 
+// ConfigSnapshot 返回运行期配置的不可变快照。
+// 设计约束：业务层只读快照，不直接碰可变内存对象。
+func (r *Runtime) ConfigSnapshot() Config {
+	if r == nil || r.config == nil {
+		return Config{}
+	}
+	return r.config.Snapshot()
+}
+
+// RuntimeConfigService 返回运行期配置服务。
+// 设计说明：管理面写配置时使用它，业务读取优先用 Snapshot 或更小的能力接口。
+func (r *Runtime) RuntimeConfigService() *runtimeConfigService {
+	if r == nil {
+		return nil
+	}
+	return r.config
+}
+
+// MasterGateway 返回当前主网关。
+// 设计说明：主网关单独加锁，避免和配置快照锁混用。
+func (r *Runtime) MasterGateway() peer.ID {
+	if r == nil {
+		return ""
+	}
+	r.masterGWMu.RLock()
+	defer r.masterGWMu.RUnlock()
+	return r.masterGW
+}
+
+// SetMasterGateway 切换主网关并返回旧值。
+// 设计说明：统一由 Runtime 自己持有主网关锁，外部不再直接摸字段。
+func (r *Runtime) SetMasterGateway(next peer.ID) peer.ID {
+	if r == nil {
+		return ""
+	}
+	r.masterGWMu.Lock()
+	defer r.masterGWMu.Unlock()
+	old := r.masterGW
+	r.masterGW = next
+	return old
+}
+
 func (r *Runtime) HTTPListenAddr() string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.runIn.HTTP.ListenAddr)
+	return strings.TrimSpace(r.ConfigSnapshot().HTTP.ListenAddr)
 }
 
 func (r *Runtime) FSHTTPListenAddr() string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.runIn.FSHTTP.ListenAddr)
+	return strings.TrimSpace(r.ConfigSnapshot().FSHTTP.ListenAddr)
 }
 
 func (r *Runtime) WorkspaceDir() string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.runIn.Storage.WorkspaceDir)
+	return strings.TrimSpace(r.ConfigSnapshot().Storage.WorkspaceDir)
 }
 
 func (r *Runtime) BSVNetwork() string {
@@ -675,8 +473,9 @@ func (r *Runtime) NetworkArbiters() []PeerNode {
 	if r == nil {
 		return nil
 	}
-	out := make([]PeerNode, len(r.runIn.Network.Arbiters))
-	copy(out, r.runIn.Network.Arbiters)
+	cfg := r.ConfigSnapshot()
+	out := make([]PeerNode, len(cfg.Network.Arbiters))
+	copy(out, cfg.Network.Arbiters)
 	return out
 }
 
@@ -684,7 +483,7 @@ func (r *Runtime) SellerEnabled() bool {
 	if r == nil {
 		return false
 	}
-	return r.runIn.Seller.Enabled
+	return r.ConfigSnapshot().Seller.Enabled
 }
 
 func (r *Runtime) SQLTraceDir() string {
@@ -701,43 +500,53 @@ func (r *Runtime) SQLTraceSummaryPath() string {
 	return strings.TrimSpace(r.sqlTraceSummaryPath)
 }
 
-func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
+func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtime, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
 	}
 	if deps.Store == nil || deps.RawDB == nil {
 		return nil, fmt.Errorf("runtime deps are required")
 	}
-	cfg := in.toConfig()
-	if err := applyConfigDefaultsForMode(&cfg, in.StartupMode); err != nil {
+	startupMode, err := normalizeStartupMode(opt.StartupMode)
+	if err != nil {
+		return nil, err
+	}
+	runtimeCfg := cloneConfig(cfg)
+	if err := applyConfigDefaultsForMode(&runtimeCfg, startupMode); err != nil {
 		return nil, err
 	}
 
 	var removeObs func()
-	if in.ObsSink != nil {
+	if opt.ObsSink != nil {
 		removeObs = obs.AddListener(func(ev obs.Event) {
 			if ev.Service != "bitcast-client" {
 				return
 			}
-			in.ObsSink.Handle(ev)
+			opt.ObsSink.Handle(ev)
 		})
 	}
 
-	if err := validateConfigForMode(&cfg, in.StartupMode); err != nil {
+	if err := validateConfigForMode(&runtimeCfg, startupMode); err != nil {
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	if err := initDataDirs(&cfg); err != nil {
+	if runtimeCfg.HTTP.Enabled && strings.TrimSpace(opt.ConfigPath) == "" {
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, fmt.Errorf("config path is required when HTTP management is enabled")
+	}
+	if err := initDataDirs(&runtimeCfg); err != nil {
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	dbPath := cfg.Index.SQLitePath
+	dbPath := runtimeCfg.Index.SQLitePath
 	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(cfg.Storage.DataDir, dbPath)
+		dbPath = filepath.Join(runtimeCfg.Storage.DataDir, dbPath)
 	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		if removeObs != nil {
@@ -745,11 +554,11 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	logFile, logConsoleMinLevel := ResolveLogConfig(&cfg)
+	logFile, logConsoleMinLevel := ResolveLogConfig(&runtimeCfg)
 	// 设计说明：
 	// - 日志路径只认这一份解析结果，SQL trace 和 raw trace 必须共用；
 	// - 先回填 cfg，再进入 trace 初始化，避免空路径和两套来源分叉。
-	cfg.Log.File = logFile
+	runtimeCfg.Log.File = logFile
 	var sqlTraceDir string
 	var sqlTraceSummaryPath string
 	var sqlTraceEnabledOnce bool
@@ -758,7 +567,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 			_ = closeSQLTrace()
 		}
 	}()
-	sqlTraceMgr, err := initSQLTrace(logFile, cfg.Debug)
+	sqlTraceMgr, err := initSQLTrace(logFile, runtimeCfg.Debug)
 	if err != nil {
 		if removeObs != nil {
 			removeObs()
@@ -789,7 +598,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	// - BitFS 正式运行时不再做任何 DB 建表/迁移；
 	// - 运行入口只负责拿到“已准备好的”库；
 	// - 结构就绪由外部流程保证，入口只做能力组装。
-	if err := dbSyncSystemSeedPricingPolicies(ctx, store, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
+	if err := dbSyncSystemSeedPricingPolicies(ctx, store, runtimeCfg.Seller.Pricing.FloorPriceSatPer64K, runtimeCfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
@@ -800,7 +609,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	catalog := &sellerCatalog{biz_seeds: map[string]sellerSeed{}}
 	workspaceMgr := &workspaceManager{
 		ctx:     ctx,
-		cfg:     &cfg,
+		cfg:     &runtimeCfg,
 		db:      db,
 		store:   store,
 		catalog: catalog,
@@ -812,14 +621,14 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	if err := workspaceMgr.ValidateLiveCacheCapacity(cfg.Live.CacheMaxBytes); err != nil {
+	if err := workspaceMgr.ValidateLiveCacheCapacity(runtimeCfg.Live.CacheMaxBytes); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	if cfg.Scan.StartupFullScan {
+	if runtimeCfg.Scan.StartupFullScan {
 		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
 			closeOwnedDB()
 			if removeObs != nil {
@@ -828,15 +637,15 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 			return nil, err
 		}
 	}
-	if err := workspaceMgr.EnforceLiveCacheLimit(cfg.Live.CacheMaxBytes); err != nil {
+	if err := workspaceMgr.EnforceLiveCacheLimit(runtimeCfg.Live.CacheMaxBytes); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	if in.PostWorkspaceBootstrap != nil {
-		if err := in.PostWorkspaceBootstrap(ctx, store); err != nil {
+	if opt.PostWorkspaceBootstrap != nil {
+		if err := opt.PostWorkspaceBootstrap(ctx, store); err != nil {
 			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
@@ -851,7 +660,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		libp2p.NoTransports,
 		libp2p.Transport(libp2ptcp.NewTCPTransport),
 	}
-	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
+	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(opt.EffectivePrivKeyHex)
 	if err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
@@ -868,8 +677,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	}
 	// 设计约束：client_pubkey_hex 与费用池签名必须来自同一私钥。
 	// 运行时有效私钥作为唯一真源，后续签名路径统一读取 cfg.Keys.PrivkeyHex。
-	cfg.Keys.PrivkeyHex = effectivePrivHex
-	in.EffectivePrivKeyHex = effectivePrivHex
+	runtimeCfg.Keys.PrivkeyHex = effectivePrivHex
 	priv, err := parsePrivHex(effectivePrivHex)
 	if err != nil {
 		closeOwnedDB()
@@ -896,12 +704,11 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	if cfg.ClientID != "" && !strings.EqualFold(strings.TrimSpace(cfg.ClientID), clientPubHex) {
-		obs.Info("bitcast-client", "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": cfg.ClientID, "effective_client_pubkey_hex": clientPubHex})
+	if runtimeCfg.ClientID != "" && !strings.EqualFold(strings.TrimSpace(runtimeCfg.ClientID), clientPubHex) {
+		obs.Info("bitcast-client", "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": runtimeCfg.ClientID, "effective_client_pubkey_hex": clientPubHex})
 	}
-	cfg.ClientID = clientPubHex
-	in.applyConfig(cfg)
-	identity, err := buildClientIdentityCaps(in)
+	runtimeCfg.ClientID = clientPubHex
+	identity, err := buildClientIdentityCaps(runtimeCfg, effectivePrivHex)
 	if err != nil {
 		_ = h.Close()
 		closeOwnedDB()
@@ -911,7 +718,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		return nil, err
 	}
 
-	activeGWs, err := connectGateways(ctx, h, cfg.Network.Gateways)
+	activeGWs, err := connectGateways(ctx, h, runtimeCfg.Network.Gateways)
 	if err != nil {
 		_ = h.Close()
 		closeOwnedDB()
@@ -923,7 +730,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	if len(activeGWs) == 0 {
 		obs.Business("bitcast-client", "waiting_gateway_config", map[string]any{"message": "no enabled gateway, waiting for HTTP API configuration"})
 	}
-	arbInfo, err := connectArbiters(ctx, h, cfg.Network.Arbiters)
+	arbInfo, err := connectArbiters(ctx, h, runtimeCfg.Network.Arbiters)
 	if err != nil {
 		_ = h.Close()
 		closeOwnedDB()
@@ -932,9 +739,9 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 		return nil, err
 	}
-	trace := in.RPCTrace
+	trace := opt.RPCTrace
 	var closeTrace func() error
-	if trace == nil && cfg.Debug {
+	if trace == nil && runtimeCfg.Debug {
 		localTrace, err := pproto.NewLocalRawTraceSink(logFile)
 		if err != nil {
 			_ = h.Close()
@@ -965,9 +772,9 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	obs.Important("bitcast-client", "started", map[string]any{
 		"transport_peer_id": h.ID().String(),
 		"pubkey_hex":        clientPubHex,
-		"client_pubkey_hex": cfg.ClientID,
-		"seller_enabled":    cfg.Seller.Enabled,
-		"listen_enabled":    cfgBool(cfg.Listen.Enabled, true),
+		"client_pubkey_hex": runtimeCfg.ClientID,
+		"seller_enabled":    runtimeCfg.Seller.Enabled,
+		"listen_enabled":    cfgBool(runtimeCfg.Listen.Enabled, true),
 		"gateway_count":     len(healthyGWs),
 		"arbiter_count":     len(healthyArbiters),
 		"db":                dbPath,
@@ -976,19 +783,28 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		"protocol_suite":    BBroadcastSuiteVersion,
 		"protocol_doc_name": BBroadcastProtocolName,
 	})
+	runtimeCfgSvc, err := newRuntimeConfigService(runtimeCfg, opt.ConfigPath, startupMode)
+	if err != nil {
+		_ = h.Close()
+		closeOwnedDB()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
 	rt := &Runtime{
 		Host:                     h,
 		ctx:                      ctx,
 		store:                    store,
 		identity:                 identity,
-		runIn:                    in,
+		config:                   runtimeCfgSvc,
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,
 		HealthyArbiters:          healthyArbiters,
 		Workspace:                workspaceMgr,
 		Catalog:                  catalog,
-		ActionChain:              in.ActionChain,
-		WalletChain:              in.WalletChain,
+		ActionChain:              opt.ActionChain,
+		WalletChain:              opt.WalletChain,
 		live:                     newLiveRuntime(),
 		sqlTraceDir:              sqlTraceDir,
 		sqlTraceSummaryPath:      sqlTraceSummaryPath,
@@ -1008,13 +824,13 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	registerNodeRouteHandlers(rt, store)
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, store, trace)
-	if cfg.Seller.Enabled {
-		registerSellerHandlers(h, store, rt.live, trace, cfg)
+	if runtimeCfg.Seller.Enabled {
+		registerSellerHandlers(h, store, rt.live, trace, runtimeCfg)
 	}
 	if rt.ActionChain == nil {
 		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
 			Provider: chainbridge.WhatsOnChainProvider,
-			Network:  in.BSV.Network,
+			Network:  runtimeCfg.BSV.Network,
 		})
 		if err != nil {
 			closeOwnedDB()
@@ -1031,7 +847,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	if rt.WalletChain == nil {
 		walletChain, err := NewWalletChainClient(chainbridge.Route{
 			Provider: chainbridge.WhatsOnChainProvider,
-			Network:  in.BSV.Network,
+			Network:  runtimeCfg.BSV.Network,
 		})
 		if err != nil {
 			closeOwnedDB()
@@ -1048,7 +864,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 
 	// 初始化网关管理器
 	rt.gwManager = newGatewayManager(rt, h)
-	_ = rt.gwManager.InitFromConfig(rtCtx, cfg.Network.Gateways)
+	_ = rt.gwManager.InitFromConfig(rtCtx, runtimeCfg.Network.Gateways)
 	// 更新 HealthyGWs 为已连接的网关
 	rt.HealthyGWs = rt.gwManager.GetConnectedGateways()
 
@@ -1064,8 +880,8 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 	// - listen 解决“我是否持续监听网关广播”；
 	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
 	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt, store)
-	if cfg.HTTP.Enabled && !in.DisableHTTPServer {
-		rt.HTTP = newHTTPAPIServer(rt, &cfg, db, store, h, healthyGWs, workspaceMgr, trace)
+	if runtimeCfg.HTTP.Enabled && !opt.DisableHTTPServer {
+		rt.HTTP = newHTTPAPIServer(rt, runtimeCfgSvc, db, store, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -1074,10 +890,9 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 			}
 		}()
 	}
-	if cfg.FSHTTP.Enabled {
-		rt.FSHTTP = newFileHTTPServer(rt, &cfg, store, workspaceMgr)
-		fsHTTPListener := in.FSHTTPListener
-		in.FSHTTPListener = nil
+	if runtimeCfg.FSHTTP.Enabled {
+		rt.FSHTTP = newFileHTTPServer(rt, runtimeCfgSvc, store, workspaceMgr)
+		fsHTTPListener := opt.FSHTTPListener
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -2369,7 +2184,7 @@ func resolvePrivKeyHex(cfg Config, cliPrivHex string) (string, error) {
 }
 
 // ResolveEffectivePrivKeyHex 在启动前统一解析“唯一运行时私钥”。
-// 调用方应在进入 Run 之前完成该解析，再通过 RunInput.EffectivePrivKeyHex 传入。
+// 调用方应在进入 Run 之前完成该解析，再通过 RunOptions.EffectivePrivKeyHex 传入。
 func ResolveEffectivePrivKeyHex(cfg Config, overridePrivHex string) (string, error) {
 	return resolvePrivKeyHex(cfg, overridePrivHex)
 }

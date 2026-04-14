@@ -48,12 +48,11 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		t.Fatalf("save cfg: %v", err)
 	}
 
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	rt.runIn.ConfigPath = configPath
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeConfigPath(configPath))
 	srv := &httpAPIServer{
-		rt:  rt,
-		cfg: &cfg,
-		db:  db,
+		rt:        rt,
+		cfgSource: staticConfigSnapshot(cfg),
+		db:        db,
 	}
 
 	{
@@ -88,10 +87,10 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		}
 	}
 
-	if !rt.runIn.FSHTTP.StrategyDebugLogEnabled {
+	if !rt.ConfigSnapshot().FSHTTP.StrategyDebugLogEnabled {
 		t.Fatalf("cfg pointer should be updated")
 	}
-	if !rt.runIn.FSHTTP.StrategyDebugLogEnabled {
+	if !rt.ConfigSnapshot().FSHTTP.StrategyDebugLogEnabled {
 		t.Fatalf("runtime config should be updated")
 	}
 
@@ -129,7 +128,7 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	store := newClientDB(db, nil)
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
+	rt := newRuntimeForTest(t, cfg, "")
 	scheduler := ensureRuntimeTaskScheduler(rt, store)
 	if scheduler == nil {
 		t.Fatalf("scheduler not initialized")
@@ -163,7 +162,7 @@ func TestHandleAdminSchedulerTasks(t *testing.T) {
 	if _, err := db.Exec(`UPDATE proc_scheduler_tasks SET last_error='mock error', failure_count=2 WHERE task_name=?`, "listen_billing_tick:gw-1"); err != nil {
 		t.Fatalf("update scheduler task mock error: %v", err)
 	}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, store: newClientDB(db, nil)}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
@@ -259,8 +258,8 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "")
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminSchedulerTasks(rec, req)
@@ -315,8 +314,8 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "")
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/runs?status=failed&mode=dynamic", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminSchedulerRuns(rec, req)
@@ -395,8 +394,8 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "")
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
@@ -499,8 +498,8 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "")
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs?event_type=signal_received&limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
@@ -601,9 +600,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if err := SaveConfigFile(configPath, cfg); err != nil {
 		t.Fatalf("save cfg: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	rt.runIn.ConfigPath = configPath
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeConfigPath(configPath))
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 
 	schemaReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)
 	schemaRec := httptest.NewRecorder()
@@ -613,7 +611,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	}
 	var schemaBody struct {
 		Items []struct {
-			Key string `json:"key"`
+			Key             string `json:"key"`
+			RestartRequired bool   `json:"restart_required"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(schemaRec.Body.Bytes(), &schemaBody); err != nil {
@@ -624,6 +623,8 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		hasKey[it.Key] = true
 	}
 	for _, key := range []string{
+		"http.listen_addr",
+		"fs_http.listen_addr",
 		"listen.enabled",
 		"listen.renew_threshold_seconds",
 		"listen.auto_renew_rounds",
@@ -632,9 +633,19 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		"payment.preferred_scheme",
 		"reachability.auto_announce_enabled",
 		"reachability.announce_ttl_seconds",
+		"storage.workspace_dir",
+		"storage.data_dir",
+		"index.sqlite_path",
 	} {
 		if !hasKey[key] {
 			t.Fatalf("schema missing key: %s", key)
+		}
+	}
+	for _, it := range schemaBody.Items {
+		if it.Key == "http.listen_addr" || it.Key == "fs_http.listen_addr" || it.Key == "storage.workspace_dir" || it.Key == "storage.data_dir" || it.Key == "index.sqlite_path" {
+			if !it.RestartRequired {
+				t.Fatalf("%s should require restart", it.Key)
+			}
 		}
 	}
 
@@ -648,13 +659,27 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if validateRec.Code != http.StatusOK {
 		t.Fatalf("validate_only status mismatch: got=%d want=%d body=%s", validateRec.Code, http.StatusOK, validateRec.Body.String())
 	}
-	if rt.runIn.Scan.RescanIntervalSeconds == 30 {
+	if rt.ConfigSnapshot().Scan.RescanIntervalSeconds == 30 {
 		t.Fatalf("validate_only should not mutate runtime config")
+	}
+
+	restartReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
+		"items": [{"key":"http.listen_addr","value":"127.0.0.1:19999"}]
+	}`))
+	restartRec := httptest.NewRecorder()
+	srv.handleAdminConfig(restartRec, restartReq)
+	if restartRec.Code != http.StatusBadRequest {
+		t.Fatalf("restart-required status mismatch: got=%d want=%d body=%s", restartRec.Code, http.StatusBadRequest, restartRec.Body.String())
+	}
+	if !strings.Contains(restartRec.Body.String(), "restart required for this key") {
+		t.Fatalf("restart-required error mismatch: %s", restartRec.Body.String())
+	}
+	if rt.ConfigSnapshot().HTTP.ListenAddr != cfg.HTTP.ListenAddr {
+		t.Fatalf("http.listen_addr should stay unchanged: %s", rt.ConfigSnapshot().HTTP.ListenAddr)
 	}
 
 	updateReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
 		"items": [
-			{"key":"http.listen_addr","value":"127.0.0.1:19999"},
 			{"key":"listen.enabled","value":false},
 			{"key":"listen.renew_threshold_seconds","value":77},
 			{"key":"listen.auto_renew_rounds","value":12345},
@@ -672,38 +697,35 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 	if updateRec.Code != http.StatusOK {
 		t.Fatalf("update status mismatch: got=%d want=%d body=%s", updateRec.Code, http.StatusOK, updateRec.Body.String())
 	}
-	if rt.runIn.HTTP.ListenAddr != "127.0.0.1:19999" {
-		t.Fatalf("http.listen_addr not updated: %s", rt.runIn.HTTP.ListenAddr)
+	if rt.ConfigSnapshot().Scan.RescanIntervalSeconds != 120 {
+		t.Fatalf("scan interval not updated: %d", rt.ConfigSnapshot().Scan.RescanIntervalSeconds)
 	}
-	if rt.runIn.Scan.RescanIntervalSeconds != 120 {
-		t.Fatalf("scan interval not updated: %d", rt.runIn.Scan.RescanIntervalSeconds)
-	}
-	if cfgBool(rt.runIn.Listen.Enabled, true) {
+	if cfgBool(rt.ConfigSnapshot().Listen.Enabled, true) {
 		t.Fatalf("listen.enabled not updated: got=true want=false")
 	}
-	if rt.runIn.Listen.RenewThresholdSeconds != 77 {
-		t.Fatalf("listen.renew_threshold_seconds not updated: %d", rt.runIn.Listen.RenewThresholdSeconds)
+	if rt.ConfigSnapshot().Listen.RenewThresholdSeconds != 77 {
+		t.Fatalf("listen.renew_threshold_seconds not updated: %d", rt.ConfigSnapshot().Listen.RenewThresholdSeconds)
 	}
-	if rt.runIn.Listen.AutoRenewRounds != 12345 {
-		t.Fatalf("listen.auto_renew_rounds not updated: %d", rt.runIn.Listen.AutoRenewRounds)
+	if rt.ConfigSnapshot().Listen.AutoRenewRounds != 12345 {
+		t.Fatalf("listen.auto_renew_rounds not updated: %d", rt.ConfigSnapshot().Listen.AutoRenewRounds)
 	}
-	if rt.runIn.Listen.OfferPaymentSatoshi != 888 {
-		t.Fatalf("listen.offer_payment_satoshi not updated: %d", rt.runIn.Listen.OfferPaymentSatoshi)
+	if rt.ConfigSnapshot().Listen.OfferPaymentSatoshi != 888 {
+		t.Fatalf("listen.offer_payment_satoshi not updated: %d", rt.ConfigSnapshot().Listen.OfferPaymentSatoshi)
 	}
-	if rt.runIn.Listen.TickSeconds != 9 {
-		t.Fatalf("listen.tick_seconds not updated: %d", rt.runIn.Listen.TickSeconds)
+	if rt.ConfigSnapshot().Listen.TickSeconds != 9 {
+		t.Fatalf("listen.tick_seconds not updated: %d", rt.ConfigSnapshot().Listen.TickSeconds)
 	}
-	if rt.runIn.Payment.PreferredScheme != "chain_tx_v1" {
-		t.Fatalf("payment.preferred_scheme not updated: %s", rt.runIn.Payment.PreferredScheme)
+	if rt.ConfigSnapshot().Payment.PreferredScheme != "chain_tx_v1" {
+		t.Fatalf("payment.preferred_scheme not updated: %s", rt.ConfigSnapshot().Payment.PreferredScheme)
 	}
-	if cfgBool(rt.runIn.Reachability.AutoAnnounceEnabled, true) {
+	if cfgBool(rt.ConfigSnapshot().Reachability.AutoAnnounceEnabled, true) {
 		t.Fatalf("reachability.auto_announce_enabled not updated: got=true want=false")
 	}
-	if rt.runIn.Reachability.AnnounceTTLSeconds != 7200 {
-		t.Fatalf("reachability.announce_ttl_seconds not updated: %d", rt.runIn.Reachability.AnnounceTTLSeconds)
+	if rt.ConfigSnapshot().Reachability.AnnounceTTLSeconds != 7200 {
+		t.Fatalf("reachability.announce_ttl_seconds not updated: %d", rt.ConfigSnapshot().Reachability.AnnounceTTLSeconds)
 	}
-	if rt.runIn.Seller.Pricing.ResaleDiscountBPS != 7500 {
-		t.Fatalf("resale_discount_bps mismatch: got=%d want=7500", rt.runIn.Seller.Pricing.ResaleDiscountBPS)
+	if rt.ConfigSnapshot().Seller.Pricing.ResaleDiscountBPS != 7500 {
+		t.Fatalf("resale_discount_bps mismatch: got=%d want=7500", rt.ConfigSnapshot().Seller.Pricing.ResaleDiscountBPS)
 	}
 
 	badReq := httptest.NewRequest(http.MethodPost, "/api/v1/admin/config", strings.NewReader(`{
@@ -752,8 +774,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subCfg.Storage.WorkspaceDir = t.TempDir()
 	subCfg.Storage.DataDir = t.TempDir()
 
-	pubRT := &Runtime{ctx: context.Background(), Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
-	subRT := &Runtime{ctx: context.Background(), Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), live: newLiveRuntime()}
+	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
+	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeLiveRuntime(newLiveRuntime()))
 	pubStore := newClientDB(db, nil)
 	subStore := newClientDB(db, nil)
 	pubRT.kernel = newClientKernel(pubRT, pubStore)
@@ -762,8 +784,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
 
-	pubSrv := &httpAPIServer{rt: pubRT, cfg: &pubCfg}
-	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg, db: db, store: newClientDB(db, nil)}
+	pubSrv := &httpAPIServer{rt: pubRT, cfgSource: staticConfigSnapshot(pubCfg)}
+	subSrv := &httpAPIServer{rt: subRT, cfgSource: staticConfigSnapshot(subCfg), db: db, store: newClientDB(db, nil)}
 
 	streamID := strings.Repeat("ab", 32)
 
@@ -874,9 +896,9 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	if err := workspace.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), Host: h, runIn: NewRunInputFromConfig(cfg, ""), Workspace: workspace, live: newLiveRuntime()}
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(workspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	registerLiveHandlers(newClientDB(db, nil), rt)
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db, workspace: workspace}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, workspace: workspace}
 
 	req0 := httptest.NewRequest(http.MethodPost, "/api/v1/live/publish/segment", strings.NewReader(`{
 		"duration_ms": 2000,
@@ -984,8 +1006,8 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 
 	pubStore := newClientDB(db, nil)
 	subStore := newClientDB(db, nil)
-	pubRT := &Runtime{ctx: context.Background(), Host: pubHost, runIn: NewRunInputFromConfig(pubCfg, ""), live: newLiveRuntime()}
-	subRT := &Runtime{ctx: context.Background(), Host: subHost, runIn: NewRunInputFromConfig(subCfg, ""), Workspace: subWorkspace, live: newLiveRuntime()}
+	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
+	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeWorkspace(subWorkspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	subRT.kernel = newClientKernel(subRT, subStore)
 	registerLiveHandlers(nil, pubRT)
 	registerLiveHandlers(subStore, subRT)
@@ -1002,8 +1024,8 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 		}, nil
 	}
 
-	pubSrv := &httpAPIServer{rt: pubRT, cfg: &pubCfg, store: pubStore}
-	subSrv := &httpAPIServer{rt: subRT, cfg: &subCfg, store: subStore}
+	pubSrv := &httpAPIServer{rt: pubRT, cfgSource: staticConfigSnapshot(pubCfg), store: pubStore}
+	subSrv := &httpAPIServer{rt: subRT, cfgSource: staticConfigSnapshot(subCfg), store: subStore}
 	reqURI := httptest.NewRequest(http.MethodGet, "/api/v1/live/subscribe-uri?stream_id="+streamID, nil)
 	recURI := httptest.NewRecorder()
 	pubSrv.handleLiveSubscribeURI(recURI, reqURI)
@@ -1147,8 +1169,8 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "")
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 
 	// 测试 1：按匹配的 trigger_key 过滤，应该查到 orchestrator 命令
 	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?trigger_key=workspace_sync:12345", nil)

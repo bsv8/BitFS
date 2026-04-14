@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
+	libp2p "github.com/libp2p/go-libp2p"
+	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
 
 type capturedManagedControlStream struct {
@@ -128,6 +132,117 @@ func TestHandleNonAPIRequest_ReturnsNotFound(t *testing.T) {
 	}
 	if payload.Error != "not found" {
 		t.Fatalf("error=%q, want %q", payload.Error, "not found")
+	}
+}
+
+func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: &capturedManagedControlStream{},
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+	d.chainAccess = d.resolveChainAccessState()
+
+	env, err := EncryptPrivateKeyEnvelope("1111111111111111111111111111111111111111111111111111111111111111", "pass")
+	if err != nil {
+		t.Fatalf("encrypt private key envelope: %v", err)
+	}
+	if err := SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
+		t.Fatalf("save encrypted key envelope: %v", err)
+	}
+
+	oldRun := runClientRuntime
+	oldBuild := buildRuntimeAPIHandler
+	defer func() {
+		runClientRuntime = oldRun
+		buildRuntimeAPIHandler = oldBuild
+		if d.rt != nil && d.rt.Host != nil {
+			_ = d.rt.Host.Close()
+		}
+	}()
+
+	built := make(chan struct{}, 1)
+	runClientRuntime = func(ctx context.Context, runCfg clientapp.Config, deps clientapp.RunDeps, opt clientapp.RunOptions) (*clientapp.Runtime, error) {
+		if ctx == nil {
+			return nil, fmt.Errorf("ctx is required")
+		}
+		if !opt.DisableHTTPServer {
+			return nil, fmt.Errorf("disable http server should stay enabled in managed mode")
+		}
+		if strings.TrimSpace(opt.EffectivePrivKeyHex) == "" {
+			return nil, fmt.Errorf("effective priv key is required")
+		}
+		if deps.DBActor != nil {
+			_ = deps.DBActor.Close()
+		}
+		if opt.FSHTTPListener != nil {
+			_ = opt.FSHTTPListener.Close()
+		}
+		h, err := libp2p.New(libp2p.NoListenAddrs)
+		if err != nil {
+			return nil, err
+		}
+		return &clientapp.Runtime{Host: h}, nil
+	}
+	buildRuntimeAPIHandler = func(rt *clientapp.Runtime) (http.Handler, error) {
+		if rt == nil || rt.Host == nil {
+			return nil, fmt.Errorf("runtime host is nil")
+		}
+		select {
+		case built <- struct{}{}:
+		default:
+		}
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", strings.NewReader(`{"password":"pass"}`))
+	rec := httptest.NewRecorder()
+	d.handleKeyUnlock(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for d.currentRuntimePhase() != managedRuntimePhaseReady {
+		if time.Now().After(deadline) {
+			t.Fatalf("runtime phase did not become ready, got=%s", d.currentRuntimePhase())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	select {
+	case <-built:
+	default:
+		t.Fatal("runtime api handler was not built")
+	}
+	if d.rt == nil || d.rtAPI == nil {
+		t.Fatal("runtime or runtime api handler not committed")
 	}
 }
 
@@ -347,5 +462,107 @@ func TestEmitBackendSnapshot_ReportsKeyPresence(t *testing.T) {
 	}
 	if got, want := last.Payload["step"], "key_material_ready"; got != want {
 		t.Fatalf("step=%v, want %v", got, want)
+	}
+}
+
+func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+	workspaceDir := filepath.Join(root, "workspace")
+	dataDir := filepath.Join(root, "data")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.Enabled = false
+	cfg.FSHTTP.Enabled = false
+	cfg.Storage.WorkspaceDir = workspaceDir
+	cfg.Storage.DataDir = dataDir
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	cfg.HTTP.Enabled = false
+	cfg.FSHTTP.Enabled = false
+	if err := clientapp.SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	h, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new host: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+
+	d := &managedDaemon{
+		initNetwork:          "test",
+		cfg:                  cfg,
+		startup:              StartupSummary{ConfigPath: configPath, IndexDBPath: "client-index.sqlite"},
+		rootCtx:              rootCtx,
+		rootCancel:           rootCancel,
+		controlStream:        noopManagedControlStream{},
+		backendPhase:         managedBackendPhaseAvailable,
+		runtimePhase:         managedRuntimePhaseStopped,
+		unlockedPrivHex:      strings.Repeat("a", 64),
+		unlockPasswordPrompt: "Unlock password: ",
+	}
+	d.startup.VaultPath = root
+	d.startup.KeyPath = filepath.Join(root, "key.json")
+	d.chainAccess = d.resolveChainAccessState()
+
+	runCalled := make(chan struct{}, 1)
+	buildCalled := make(chan struct{}, 1)
+	origRunClientRuntime := runClientRuntime
+	origBuildRuntimeAPIHandler := buildRuntimeAPIHandler
+	runClientRuntime = func(ctx context.Context, runCfg clientapp.Config, deps clientapp.RunDeps, opt clientapp.RunOptions) (*clientapp.Runtime, error) {
+		select {
+		case runCalled <- struct{}{}:
+		default:
+		}
+		return &clientapp.Runtime{
+			Host: h,
+		}, nil
+	}
+	buildRuntimeAPIHandler = func(rt *clientapp.Runtime) (http.Handler, error) {
+		select {
+		case buildCalled <- struct{}{}:
+		default:
+		}
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+	}
+	defer func() {
+		runClientRuntime = origRunClientRuntime
+		buildRuntimeAPIHandler = origBuildRuntimeAPIHandler
+	}()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", nil)
+	rec := httptest.NewRecorder()
+	d.handleKeyUnlock(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	select {
+	case <-runCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime did not start")
+	}
+	select {
+	case <-buildCalled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runtime api handler was not built")
+	}
+	if phase := d.currentRuntimePhase(); phase != managedRuntimePhaseReady {
+		t.Fatalf("runtime phase mismatch: got=%s want=%s", phase, managedRuntimePhaseReady)
+	}
+	if d.rtAPI == nil {
+		t.Fatal("runtime api handler not committed")
 	}
 }

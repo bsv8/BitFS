@@ -22,12 +22,13 @@ import (
 
 type fileHTTPServer struct {
 	rt        *Runtime
-	cfg       *Config
+	cfgSource configSnapshotter
 	db        *sql.DB
 	store     *clientDB
 	workspace *workspaceManager
 
-	srv *http.Server
+	srvMu sync.RWMutex
+	srv   *http.Server
 
 	mu       sync.Mutex
 	sessions map[string]*fileDownloadSession
@@ -72,19 +73,32 @@ type localLiveSegmentFile struct {
 	IsEnd           bool
 }
 
-func newFileHTTPServer(rt *Runtime, cfg *Config, store *clientDB, workspace *workspaceManager) *fileHTTPServer {
+func newFileHTTPServer(rt *Runtime, cfgSource configSnapshotter, store *clientDB, workspace *workspaceManager) *fileHTTPServer {
 	db := (*sql.DB)(nil)
 	if store != nil {
 		db = store.db
 	}
 	return &fileHTTPServer{
 		rt:        rt,
-		cfg:       cfg,
+		cfgSource: cfgSource,
 		db:        db,
 		store:     store,
 		workspace: workspace,
 		sessions:  map[string]*fileDownloadSession{},
 	}
+}
+
+func (s *fileHTTPServer) runtimeConfigSnapshot() Config {
+	if s == nil {
+		return Config{}
+	}
+	if s.rt != nil {
+		return s.rt.ConfigSnapshot()
+	}
+	if s.cfgSource != nil {
+		return s.cfgSource.ConfigSnapshot()
+	}
+	return Config{}
 }
 
 func (s *fileHTTPServer) Start() error {
@@ -96,22 +110,26 @@ func (s *fileHTTPServer) StartOnListener(ln net.Listener) error {
 }
 
 func (s *fileHTTPServer) startOnListener(ln net.Listener) error {
+	cfg := s.runtimeConfigSnapshot()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRoot)
-	s.srv = &http.Server{
-		Addr:              s.cfg.FSHTTP.ListenAddr,
+	srv := &http.Server{
+		Addr:              cfg.FSHTTP.ListenAddr,
 		Handler:           mux,
 		ReadTimeout:       10 * time.Second,
 		ReadHeaderTimeout: 5 * time.Second,
 		WriteTimeout:      0,
 		IdleTimeout:       60 * time.Second,
 	}
-	obs.Important("bitcast-client", "fs_http_started", map[string]any{"listen_addr": s.cfg.FSHTTP.ListenAddr})
+	s.srvMu.Lock()
+	s.srv = srv
+	s.srvMu.Unlock()
+	obs.Important("bitcast-client", "fs_http_started", map[string]any{"listen_addr": cfg.FSHTTP.ListenAddr})
 	var err error
 	if ln != nil {
-		err = s.srv.Serve(ln)
+		err = srv.Serve(ln)
 	} else {
-		err = s.srv.ListenAndServe()
+		err = srv.ListenAndServe()
 	}
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -120,12 +138,18 @@ func (s *fileHTTPServer) startOnListener(ln net.Listener) error {
 }
 
 func (s *fileHTTPServer) Shutdown(ctx context.Context) error {
-	if s.srv == nil {
+	s.srvMu.RLock()
+	srv := s.srv
+	s.srvMu.RUnlock()
+	if srv == nil {
 		return nil
 	}
 	shutdownCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return s.srv.Shutdown(shutdownCtx)
+	s.srvMu.Lock()
+	s.srv = nil
+	s.srvMu.Unlock()
+	return srv.Shutdown(shutdownCtx)
 }
 
 func (s *fileHTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
@@ -347,12 +371,13 @@ func (s *fileHTTPServer) handleDownload(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *fileHTTPServer) ensureSession(seedHash string) (*fileDownloadSession, error) {
+	cfg := s.runtimeConfigSnapshot()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if sess, ok := s.sessions[seedHash]; ok {
 		return sess, nil
 	}
-	if s.activeSessionCountLocked() >= int(s.cfg.FSHTTP.MaxConcurrentSessions) {
+	if s.activeSessionCountLocked() >= int(cfg.FSHTTP.MaxConcurrentSessions) {
 		return nil, fmt.Errorf("concurrent file sessions limit exceeded")
 	}
 	sess := &fileDownloadSession{
@@ -360,13 +385,13 @@ func (s *fileHTTPServer) ensureSession(seedHash string) (*fileDownloadSession, e
 		server:       s,
 		status:       "queued",
 		completed:    map[uint32]bool{},
-		partPath:     filepath.Join(s.cfg.Storage.DataDir, "downloads", seedHash+".part"),
+		partPath:     filepath.Join(cfg.Storage.DataDir, "downloads", seedHash+".part"),
 		runtimeState: defaultFileDownloadRuntimeState(),
 	}
 	sess.cond = sync.NewCond(&sess.mu)
 	sess.chunkPolicy = newDemandPrefetchBackfillPolicy(demandPrefetchBackfillPolicyConfig{
-		PrefetchDistance: s.cfg.FSHTTP.PrefetchDistanceChunks,
-		DebugLogEnabled:  s.cfg.FSHTTP.StrategyDebugLogEnabled,
+		PrefetchDistance: cfg.FSHTTP.PrefetchDistanceChunks,
+		DebugLogEnabled:  cfg.FSHTTP.StrategyDebugLogEnabled,
 		Logf:             sess.strategyLog,
 	})
 	sess.refreshChunkPolicySnapshotLocked()
@@ -519,7 +544,7 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 			StrategyName:    TransferStrategySmart,
 			SelectChunk:     sess.nextPendingChunk,
 			OnState:         sess.updateStrategyRuntimeState,
-			DebugLogEnabled: sess.server.cfg.FSHTTP.StrategyDebugLogEnabled,
+			DebugLogEnabled: sess.server.runtimeConfigSnapshot().FSHTTP.StrategyDebugLogEnabled,
 			Logf:            sess.strategyLog,
 			OnChunk: func(chunkIndex uint32, chunk []byte, w *transferSellerWorker, elapsed time.Duration) (uint64, error) {
 				off := int64(chunkIndex) * seedBlockSize
@@ -576,12 +601,13 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 }
 
 func (sess *fileDownloadSession) waitQuotes(ctx context.Context, demandID string) ([]DirectQuoteItem, error) {
-	deadline := time.Now().Add(time.Duration(sess.server.cfg.FSHTTP.QuoteWaitSeconds) * time.Second)
-	poll := time.Duration(sess.server.cfg.FSHTTP.QuotePollSeconds) * time.Second
+	cfg := sess.server.runtimeConfigSnapshot()
+	deadline := time.Now().Add(time.Duration(cfg.FSHTTP.QuoteWaitSeconds) * time.Second)
+	poll := time.Duration(cfg.FSHTTP.QuotePollSeconds) * time.Second
 	if poll <= 0 {
 		poll = 2 * time.Second
 	}
-	maxChunk := sess.server.cfg.FSHTTP.MaxChunkPriceSatPer64K
+	maxChunk := cfg.FSHTTP.MaxChunkPriceSatPer64K
 	for {
 		quotes, err := TriggerClientListDirectQuotes(ctx, sess.server.store, demandID)
 		if err != nil {
@@ -628,7 +654,7 @@ func (sess *fileDownloadSession) loadStateFromDB() error {
 	sess.mu.Lock()
 	sess.partPath = strings.TrimSpace(state.FilePath)
 	if sess.partPath == "" {
-		sess.partPath = filepath.Join(sess.server.cfg.Storage.DataDir, "downloads", sess.seedHash+".part")
+		sess.partPath = filepath.Join(sess.server.runtimeConfigSnapshot().Storage.DataDir, "downloads", sess.seedHash+".part")
 	}
 	sess.fileSize = state.FileSize
 	sess.chunkCount = state.ChunkCount
@@ -701,7 +727,8 @@ func (sess *fileDownloadSession) nextPendingChunk(pending map[uint32]bool, infli
 }
 
 func (s *fileHTTPServer) serveFromSession(w http.ResponseWriter, r *http.Request, sess *fileDownloadSession, pr parsedRange) error {
-	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(s.cfg.FSHTTP.DownloadWaitTimeoutSeconds)*time.Second)
+	cfg := s.runtimeConfigSnapshot()
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(cfg.FSHTTP.DownloadWaitTimeoutSeconds)*time.Second)
 	defer cancel()
 
 	if err := sess.waitMeta(ctx); err != nil {
@@ -1143,10 +1170,10 @@ func (sess *fileDownloadSession) refreshChunkPolicySnapshotLocked() {
 }
 
 func (sess *fileDownloadSession) strategyLog(event string, fields map[string]any) {
-	if sess == nil || sess.server == nil || sess.server.cfg == nil {
+	if sess == nil || sess.server == nil {
 		return
 	}
-	if !sess.server.cfg.FSHTTP.StrategyDebugLogEnabled {
+	if !sess.server.runtimeConfigSnapshot().FSHTTP.StrategyDebugLogEnabled {
 		return
 	}
 	if fields == nil {
