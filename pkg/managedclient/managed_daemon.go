@@ -533,15 +533,12 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	if d.controlStream != nil {
 		obsSink = d.controlStream.ObsSink()
 	}
-	runOpt := clientapp.RunOptions{
-		ConfigPath:             d.startup.ConfigPath,
-		StartupMode:            clientapp.StartupModeProduct,
-		PostWorkspaceBootstrap: d.systemHomepageBootstrapHook(),
-		DisableHTTPServer:      true,
-		FSHTTPListener:         d.takeReservedFSHTTPListener(),
-		ObsSink:                obsSink,
-		EffectivePrivKeyHex:    privHex,
-	}
+	configPath := d.startup.ConfigPath
+	startupMode := clientapp.StartupModeProduct
+	postWorkspaceBootstrap := d.systemHomepageBootstrapHook()
+	disableHTTPServer := true
+	fsHTTPListener := d.takeReservedFSHTTPListener()
+	effectivePrivKeyHex := privHex
 	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
 	if !filepath.IsAbs(indexDBPath) {
 		indexDBPath = filepath.Join(strings.TrimSpace(runCfg.Storage.DataDir), indexDBPath)
@@ -553,12 +550,9 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	if err != nil {
 		return err
 	}
-	deps := clientapp.RunDeps{
-		Store:   clientapp.NewClientStore(openedDB.DB, openedDB.Actor),
-		RawDB:   openedDB.DB,
-		DBActor: openedDB.Actor,
-		OwnsDB:  true,
-	}
+	store := clientapp.NewClientStore(openedDB.DB, openedDB.Actor)
+	rawDB := openedDB.DB
+	closeOwnedDB := openedDB.Actor.Close
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
 		Network:  d.cfg.BSV.Network,
@@ -566,8 +560,8 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		Auth:     d.chainAccess.RouteAuth,
 	})
 	if err != nil {
-		if runOpt.FSHTTPListener != nil {
-			_ = runOpt.FSHTTPListener.Close()
+		if fsHTTPListener != nil {
+			_ = fsHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		_ = openedDB.Actor.Close()
@@ -578,21 +572,35 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		Network:  d.cfg.BSV.Network,
 	}, d.chainAccess.BaseURL, d.chainAccess.WalletAuth)
 	if err != nil {
-		if runOpt.FSHTTPListener != nil {
-			_ = runOpt.FSHTTPListener.Close()
+		if fsHTTPListener != nil {
+			_ = fsHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		_ = openedDB.Actor.Close()
 		return err
 	}
-	runOpt.ActionChain = actionChain
-	runOpt.WalletChain = walletChain
 
 	runCtx, cancel := context.WithCancel(d.rootCtx)
-	rt, err := runClientRuntime(runCtx, runCfg, deps, runOpt)
+	rt, err := runClientRuntime(
+		runCtx,
+		runCfg,
+		store,
+		rawDB,
+		closeOwnedDB,
+		configPath,
+		startupMode,
+		disableHTTPServer,
+		fsHTTPListener,
+		effectivePrivKeyHex,
+		obsSink,
+		actionChain,
+		walletChain,
+		nil,
+		postWorkspaceBootstrap,
+	)
 	if err != nil {
-		if runOpt.FSHTTPListener != nil {
-			_ = runOpt.FSHTTPListener.Close()
+		if fsHTTPListener != nil {
+			_ = fsHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		cancel()

@@ -2,8 +2,11 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 )
 
 // StartupPhase 表示 Run 启动生命周期里的阶段名。
@@ -13,26 +16,24 @@ import (
 type StartupPhase string
 
 const (
-	StartupPhasePreflight      StartupPhase = "preflight"
-	StartupPhaseBuildCore      StartupPhase = "build_core"
+	StartupPhasePreflight       StartupPhase = "preflight"
+	StartupPhaseBuildCore       StartupPhase = "build_core"
 	StartupPhaseConnectExternal StartupPhase = "connect_external"
-	StartupPhaseStartServices  StartupPhase = "start_services"
-	StartupPhaseBindShutdown   StartupPhase = "bind_shutdown"
+	StartupPhaseStartServices   StartupPhase = "start_services"
+	StartupPhaseBindShutdown    StartupPhase = "bind_shutdown"
 )
 
 // StartupContractItem 描述一条启动依赖契约。
 // 设计说明：
 // - 依赖是否必需由 Required 明确表达；
-// - MissingError 固定英文错误文案，便于 e2e 和单测稳定断言；
-// - AllowFallback=true 只表示“允许在 Run 内兜底创建”，不是推荐做法。
+// - MissingError 固定英文错误文案，便于 e2e 和单测稳定断言。
 type StartupContractItem struct {
-	Name          string
-	Required      bool
-	Owner         string
-	Phase         StartupPhase
-	Usage         string
-	MissingError  string
-	AllowFallback bool
+	Name         string
+	Required     bool
+	Owner        string
+	Phase        StartupPhase
+	Usage        string
+	MissingError string
 }
 
 // StartupContractTable 返回当前 Run 的启动契约表快照。
@@ -42,91 +43,105 @@ type StartupContractItem struct {
 func StartupContractTable() []StartupContractItem {
 	return []StartupContractItem{
 		{
-			Name:          "ctx",
-			Required:      true,
-			Owner:         "process_entry",
-			Phase:         StartupPhasePreflight,
-			Usage:         "root cancellation and lifecycle propagation",
-			MissingError:  "ctx is required",
-			AllowFallback: false,
+			Name:         "ctx",
+			Required:     true,
+			Owner:        "process_entry",
+			Phase:        StartupPhasePreflight,
+			Usage:        "root cancellation and lifecycle propagation",
+			MissingError: "ctx is required",
 		},
 		{
-			Name:          "deps.store",
-			Required:      true,
-			Owner:         "runtime_assembler",
-			Phase:         StartupPhasePreflight,
-			Usage:         "client business store capability",
-			MissingError:  "runtime deps are required",
-			AllowFallback: false,
+			Name:         "store",
+			Required:     true,
+			Owner:        "runtime_assembler",
+			Phase:        StartupPhasePreflight,
+			Usage:        "client business store capability",
+			MissingError: "store is required",
 		},
 		{
-			Name:          "deps.raw_db",
-			Required:      true,
-			Owner:         "runtime_assembler",
-			Phase:         StartupPhasePreflight,
-			Usage:         "db lifecycle close ownership",
-			MissingError:  "runtime deps are required",
-			AllowFallback: false,
+			Name:         "raw_db",
+			Required:     true,
+			Owner:        "runtime_assembler",
+			Phase:        StartupPhasePreflight,
+			Usage:        "db handle for runtime wiring",
+			MissingError: "raw db is required",
 		},
 		{
-			Name:          "opt.effective_privkey_hex",
-			Required:      true,
-			Owner:         "key_workflow",
-			Phase:         StartupPhaseBuildCore,
-			Usage:         "build libp2p identity and onchain signer actor",
-			MissingError:  "effective private key is required",
-			AllowFallback: false,
+			Name:         "effective_privkey_hex",
+			Required:     true,
+			Owner:        "key_workflow",
+			Phase:        StartupPhaseBuildCore,
+			Usage:        "build libp2p identity and onchain signer actor",
+			MissingError: "effective private key is required",
 		},
 		{
-			Name:          "opt.config_path_when_http_enabled",
-			Required:      true,
-			Owner:         "managed_client",
-			Phase:         StartupPhasePreflight,
-			Usage:         "runtime config persistence path for HTTP management",
-			MissingError:  "config path is required when HTTP management is enabled",
-			AllowFallback: false,
+			Name:         "config_path_when_http_enabled",
+			Required:     true,
+			Owner:        "managed_client",
+			Phase:        StartupPhasePreflight,
+			Usage:        "runtime config persistence path for HTTP management",
+			MissingError: "config path is required when HTTP management is enabled",
 		},
 		{
-			Name:          "opt.action_chain",
-			Required:      false,
-			Owner:         "runtime_assembler",
-			Phase:         StartupPhaseConnectExternal,
-			Usage:         "fee pool chain querying and broadcast",
-			MissingError:  "action chain is required",
-			AllowFallback: true,
+			Name:         "action_chain",
+			Required:     true,
+			Owner:        "runtime_assembler",
+			Phase:        StartupPhaseConnectExternal,
+			Usage:        "fee pool chain querying and broadcast",
+			MissingError: "action chain is required",
 		},
 		{
-			Name:          "opt.wallet_chain",
-			Required:      false,
-			Owner:         "runtime_assembler",
-			Phase:         StartupPhaseConnectExternal,
-			Usage:         "wallet read-side chain API",
-			MissingError:  "wallet chain is required",
-			AllowFallback: true,
+			Name:         "wallet_chain",
+			Required:     true,
+			Owner:        "runtime_assembler",
+			Phase:        StartupPhaseConnectExternal,
+			Usage:        "wallet read-side chain API",
+			MissingError: "wallet chain is required",
 		},
 	}
 }
 
 // runStartupPhases 是 Run 的阶段骨架。
 // 设计说明：
-// - 当前只把 preflight 真正落地，其余阶段先给边界；
-// - 这样可以在不改业务行为前提下，先把“入口结构”固定下来。
+// - 当前把 preflight 真正落地，其余阶段先给边界；
+// - Run 签名硬显式后，preflight 负责统一 fail-fast。
 type runStartupPhases struct {
-	ctx context.Context
-	cfg Config
-	deps RunDeps
-	opt RunOptions
+	ctx                 context.Context
+	cfg                 Config
+	store               ClientStore
+	rawDB               *sql.DB
+	configPath          string
+	startupMode         StartupMode
+	effectivePrivKeyHex string
+	actionChain         poolcore.ChainClient
+	walletChain         WalletChainClient
 
-	startupMode StartupMode
-	runtimeCfg  Config
+	normalizedMode       StartupMode
+	runtimeCfg           Config
+	normalizedPrivKeyHex string
 }
 
-func newRunStartupPhases(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) *runStartupPhases {
+func newRunStartupPhases(
+	ctx context.Context,
+	cfg Config,
+	store ClientStore,
+	rawDB *sql.DB,
+	configPath string,
+	startupMode StartupMode,
+	effectivePrivKeyHex string,
+	actionChain poolcore.ChainClient,
+	walletChain WalletChainClient,
+) *runStartupPhases {
 	return &runStartupPhases{
-		ctx:  ctx,
-		cfg:  cfg,
-		deps: deps,
-		opt:  opt,
+		ctx:                 ctx,
+		cfg:                 cfg,
+		store:               store,
+		rawDB:               rawDB,
+		configPath:          configPath,
+		startupMode:         startupMode,
+		effectivePrivKeyHex: effectivePrivKeyHex,
+		actionChain:         actionChain,
+		walletChain:         walletChain,
 	}
 }
 
@@ -141,10 +156,13 @@ func (p *runStartupPhases) Preflight() error {
 	if p.ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
-	if p.deps.Store == nil || p.deps.RawDB == nil {
-		return fmt.Errorf("runtime deps are required")
+	if p.store == nil {
+		return fmt.Errorf("store is required")
 	}
-	mode, err := normalizeStartupMode(p.opt.StartupMode)
+	if p.rawDB == nil {
+		return fmt.Errorf("raw db is required")
+	}
+	mode, err := normalizeStartupMode(p.startupMode)
 	if err != nil {
 		return err
 	}
@@ -155,11 +173,25 @@ func (p *runStartupPhases) Preflight() error {
 	if err := validateConfigForMode(&runtimeCfg, mode); err != nil {
 		return err
 	}
-	if runtimeCfg.HTTP.Enabled && strings.TrimSpace(p.opt.ConfigPath) == "" {
+	if runtimeCfg.HTTP.Enabled && strings.TrimSpace(p.configPath) == "" {
 		return fmt.Errorf("config path is required when HTTP management is enabled")
 	}
-	p.startupMode = mode
+	if strings.TrimSpace(p.effectivePrivKeyHex) == "" {
+		return fmt.Errorf("effective private key is required")
+	}
+	privHex, err := normalizeRawSecp256k1PrivKeyHex(p.effectivePrivKeyHex)
+	if err != nil {
+		return err
+	}
+	if p.actionChain == nil {
+		return fmt.Errorf("action chain is required")
+	}
+	if p.walletChain == nil {
+		return fmt.Errorf("wallet chain is required")
+	}
+	p.normalizedMode = mode
 	p.runtimeCfg = runtimeCfg
+	p.normalizedPrivKeyHex = privHex
 	return nil
 }
 
@@ -207,5 +239,12 @@ func (p *runStartupPhases) StartupMode() StartupMode {
 	if p == nil {
 		return StartupModeProduct
 	}
-	return p.startupMode
+	return p.normalizedMode
+}
+
+func (p *runStartupPhases) EffectivePrivKeyHex() string {
+	if p == nil {
+		return ""
+	}
+	return strings.TrimSpace(p.normalizedPrivKeyHex)
 }

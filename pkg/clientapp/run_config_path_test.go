@@ -56,15 +56,23 @@ func TestRun_RejectsEmptyConfigPathWhenHTTPManagementIsEnabled(t *testing.T) {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
-	_, err = Run(ctx, cfg, RunDeps{
-		Store:   NewClientStore(openedDB.DB, openedDB.Actor),
-		RawDB:   openedDB.DB,
-		DBActor: openedDB.Actor,
-		OwnsDB:  true,
-	}, RunOptions{
-		StartupMode:         StartupModeTest,
-		EffectivePrivKeyHex: cfg.Keys.PrivkeyHex,
-	})
+	_, err = Run(
+		ctx,
+		cfg,
+		NewClientStore(openedDB.DB, openedDB.Actor),
+		openedDB.DB,
+		nil,
+		"",
+		StartupModeTest,
+		false,
+		nil,
+		cfg.Keys.PrivkeyHex,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
 	if err == nil {
 		t.Fatal("expected Run to reject empty config path")
 	}
