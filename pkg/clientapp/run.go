@@ -481,7 +481,7 @@ func Run(
 	rpcTrace pproto.TraceSink,
 	postWorkspaceBootstrap func(ctx context.Context, store ClientStore) error,
 ) (*Runtime, error) {
-	preflight, err := preflightRunArgs(
+	phasePlan := newRunStartupPhases(
 		ctx,
 		cfg,
 		storeCap,
@@ -492,13 +492,16 @@ func Run(
 		actionChain,
 		walletChain,
 	)
-	if err != nil {
+	if err := phasePlan.Preflight(); err != nil {
 		return nil, err
 	}
-	startupMode = preflight.startupMode
-	runtimeCfg := preflight.runtimeCfg
-	effectivePrivKeyHex = preflight.effectivePrivKeyHex
-	store := preflight.store
+	startupMode = phasePlan.StartupMode()
+	runtimeCfg := phasePlan.RuntimeConfig()
+	effectivePrivKeyHex = phasePlan.EffectivePrivKeyHex()
+	store, ok := storeCap.(*clientDB)
+	if !ok {
+		return nil, fmt.Errorf("store must come from clientapp.NewClientStore")
+	}
 
 	var removeObs func()
 	if obsSink != nil {
