@@ -25,6 +25,27 @@ func ensureClientDBSchema(ctx context.Context, store *clientDB) error {
 	return ensureClientDBSchemaOnDB(ctx, store.db)
 }
 
+// EnsureClientStoreSchema 给运行入口做一次数据库结构准备。
+// 设计说明：
+// - 只用于入口组装阶段，业务流程不应直接调用；
+// - 依赖边界保持在 store 能力，不向上暴露 newClientDB 或内部构造；
+// - 真正建表仍由 contract 的 ent schema 执行，避免多份真源。
+func EnsureClientStoreSchema(ctx context.Context, store ClientStore) error {
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	if store == nil {
+		return fmt.Errorf("store is required")
+	}
+	return store.Do(ctx, func(conn SQLConn) error {
+		raw, ok := conn.(*sql.DB)
+		if !ok {
+			return fmt.Errorf("schema bootstrap requires *sql.DB capability, got %T", conn)
+		}
+		return ensureClientDBSchemaOnDB(ctx, raw)
+	})
+}
+
 // ensureClientDBSchemaOnDB 从原始 sql.DB 初始化数据库结构。
 // 设计说明：
 // - 用于测试场景，测试代码直接持有 *sql.DB 而无 actor；
