@@ -30,7 +30,7 @@ func TestInitIndexDB_CreatesOrdersTable(t *testing.T) {
 	wantCols := []string{
 		"order_id", "order_type", "order_subtype", "owner_pubkey_hex",
 		"target_object_type", "target_object_id", "status",
-		"idempotency_key", "created_at_unix", "updated_at_unix", "note", "payload_json",
+		"created_at_unix", "updated_at_unix", "note", "payload_json",
 	}
 	cols, err := tableColumns(db, "orders")
 	if err != nil {
@@ -91,9 +91,9 @@ func TestInitIndexDB_CreatesOrderSettlementEventsTable(t *testing.T) {
 
 	// 验证列存在
 	wantCols := []string{
-		"id", "process_id", "settlement_id", "source_type", "source_id",
+		"id", "process_id", "settlement_id", "order_id", "source_type", "source_id",
 		"accounting_scene", "accounting_subtype", "event_type", "status",
-		"idempotency_key", "note", "payload_json", "occurred_at_unix",
+		"note", "payload_json", "occurred_at_unix",
 	}
 	cols, err := tableColumns(db, "order_settlement_events")
 	if err != nil {
@@ -126,13 +126,13 @@ func TestInitIndexDB_CreatesOrderSettlementEventsTable(t *testing.T) {
 		t.Fatal("id should be PRIMARY KEY")
 	}
 
-	// 验证幂等约束：(settlement_id, event_type, idempotency_key)
-	hasUnique, err := tableHasUniqueIndexOnColumns(db, "order_settlement_events", []string{"settlement_id", "event_type", "idempotency_key"})
+	// 验证幂等约束：(settlement_id, event_type, order_id)
+	hasUnique, err := tableHasUniqueIndexOnColumns(db, "order_settlement_events", []string{"settlement_id", "event_type", "order_id"})
 	if err != nil {
 		t.Fatalf("check unique constraint failed: %v", err)
 	}
 	if !hasUnique {
-		t.Fatal("order_settlement_events should have unique constraint on (settlement_id, event_type, idempotency_key)")
+		t.Fatal("order_settlement_events should have unique constraint on (settlement_id, event_type, order_id)")
 	}
 }
 
@@ -160,7 +160,7 @@ func TestInitIndexDB_CreatesOrderSettlementsTable(t *testing.T) {
 		"source_type", "source_id", "accounting_scene", "accounting_subtype",
 		"settlement_method", "status", "settlement_status", "amount_satoshi",
 		"from_party_id", "to_party_id", "target_type", "target_id",
-		"idempotency_key", "note", "error_message", "payload_json", "settlement_payload_json",
+		"note", "error_message", "payload_json", "settlement_payload_json",
 		"created_at_unix", "updated_at_unix",
 	}
 	cols, err := tableColumns(db, "order_settlements")
@@ -266,19 +266,19 @@ func TestInitIndexDB_OrdersIdempotent(t *testing.T) {
 
 	// 第一次插入
 	if _, err := db.Exec(`INSERT INTO orders(
-		order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,created_at_unix,updated_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"ord_test_1", "domain", "register", "owner1", "domain", "example.com", "pending", "idem_ord_1", 1700000001, 1700000001, "test", `{}`,
+		order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"ord_test_1", "domain", "register", "owner1", "domain", "example.com", "pending", 1700000001, 1700000001, "test", `{}`,
 	); err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
 	// 第二次更新同一记录
 	if _, err := db.Exec(`INSERT INTO orders(
-		order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,created_at_unix,updated_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+		order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)
 	ON CONFLICT(order_id) DO UPDATE SET status=excluded.status, updated_at_unix=excluded.updated_at_unix`,
-		"ord_test_1", "domain", "register", "owner1", "domain", "example.com", "completed", "idem_ord_1", 1700000001, 1700000002, "test", `{}`,
+		"ord_test_1", "domain", "register", "owner1", "domain", "example.com", "completed", 1700000001, 1700000002, "test", `{}`,
 	); err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
@@ -303,23 +303,23 @@ func TestInitIndexDB_OrderSettlementEventsIdempotent(t *testing.T) {
 	}
 
 	if _, err := db.Exec(`INSERT INTO orders(
-		order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,created_at_unix,updated_at_unix,note,payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"ord_test_2", "domain", "register", "owner1", "domain", "example.com", "pending", "idem_ord_2", 1700000001, 1700000001, "test", `{}`,
+		order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"ord_test_2", "domain", "register", "owner1", "domain", "example.com", "pending", 1700000001, 1700000001, "test", `{}`,
 	); err != nil {
 		t.Fatalf("insert orders failed: %v", err)
 	}
 
 	if _, err := db.Exec(`INSERT INTO order_settlement_events(
-		process_id,settlement_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,idempotency_key,note,payload_json,occurred_at_unix
+		process_id,settlement_id,order_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,note,payload_json,occurred_at_unix
 	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"proc_test_1", "set_test_1", "settlement_payment_attempt", "77", "wallet_transfer", "open", "state_change", "applied", "idem_evt_1", "test", `{}`, 1700000001,
+		"proc_test_1", "set_test_1", "ord_test_2", "settlement_payment_attempt", "77", "wallet_transfer", "open", "state_change", "applied", "test", `{}`, 1700000001,
 	); err != nil {
 		t.Fatalf("first insert failed: %v", err)
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM order_settlement_events WHERE settlement_id=? AND event_type=? AND idempotency_key=?`, "set_test_1", "state_change", "idem_evt_1").Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM order_settlement_events WHERE settlement_id=? AND event_type=? AND order_id=?`, "set_test_1", "state_change", "ord_test_2").Scan(&count); err != nil {
 		t.Fatalf("count failed: %v", err)
 	}
 	if count != 1 {
@@ -337,9 +337,9 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 	}
 
 	if _, err := db.Exec(`INSERT INTO order_settlements(
-		settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"set_test_2", "ord_test_2", 1, "formal", "settlement_payment_attempt", "77", "domain", "register", "chain", "pending", "pending", "client:self", "gateway:peer", "", "", "idem_test_2", "test", "{}", "{}", 1700000001, 1700000001,
+		settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_test_2", "ord_test_2", 1, "formal", "settlement_payment_attempt", "77", "domain", "register", "chain", "pending", "pending", "client:self", "gateway:peer", "", "", "test", "{}", "{}", 1700000001, 1700000001,
 	); err != nil {
 		t.Fatalf("insert order_settlements failed: %v", err)
 	}
@@ -385,9 +385,9 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 
 	// 尝试插入同一 order_id + 同一 settlement_no 仍然应该失败
 	_, err = db.Exec(`INSERT INTO order_settlements(
-		settlement_id,order_id,settlement_no,business_role,settlement_method,status,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,idempotency_key,payload_json,from_party_id,to_party_id,source_type,source_id,accounting_scene,accounting_subtype,settlement_payload_json
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"set_test_4", "ord_test_2", 1, "formal", "chain", "completed", "completed", "chain_quote_pay", "", "", 1700000001, 1700000001, "idem_set_test_4", `{}`, "client:self", "gateway:peer", "settlement_payment_attempt", "77", "domain", "register", `{}`,
+		settlement_id,order_id,settlement_no,business_role,settlement_method,status,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json,from_party_id,to_party_id,source_type,source_id,accounting_scene,accounting_subtype,settlement_payload_json
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_test_4", "ord_test_2", 1, "formal", "chain", "completed", "completed", "chain_quote_pay", "", "", 1700000001, 1700000001, `{}`, "client:self", "gateway:peer", "settlement_payment_attempt", "77", "domain", "register", `{}`,
 	)
 	if err == nil {
 		t.Fatal("expected unique constraint violation for duplicate order_id + settlement_no")

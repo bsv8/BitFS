@@ -57,13 +57,13 @@ type orderSettlementEventItem struct {
 	ID                int64           `json:"id"`
 	ProcessID         string          `json:"process_id"`
 	SettlementID      string          `json:"settlement_id"`
+	OrderID           string          `json:"order_id"`
 	SourceType        string          `json:"source_type"`
 	SourceID          string          `json:"source_id"`
 	AccountingScene   string          `json:"accounting_scene"`
 	AccountingSubtype string          `json:"accounting_subtype"`
 	EventType         string          `json:"event_type"`
 	Status            string          `json:"status"`
-	IdempotencyKey    string          `json:"idempotency_key"`
 	Note              string          `json:"note"`
 	OccurredAtUnix    int64           `json:"occurred_at_unix"`
 	Payload           json.RawMessage `json:"payload"`
@@ -73,13 +73,13 @@ type orderSettlementEventItem struct {
 type orderSettlementEventEntry struct {
 	ProcessID         string
 	SettlementID      string
+	OrderID           string
 	SourceType        string
 	SourceID          string
 	AccountingScene   string
 	AccountingSubtype string
 	EventType         string
 	Status            string
-	IdempotencyKey    string
 	Note              string
 	OccurredAtUnix    int64
 	Payload           any

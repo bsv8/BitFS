@@ -96,7 +96,7 @@ func orderSettlementToFinanceBusinessItem(n *gen.OrderSettlements) financeBusine
 		ToPartyID:         strings.TrimSpace(n.ToPartyID),
 		Status:            strings.TrimSpace(n.Status),
 		OccurredAtUnix:    n.CreatedAtUnix,
-		IdempotencyKey:    strings.TrimSpace(n.IdempotencyKey),
+		IdempotencyKey:    strings.TrimSpace(n.OrderID),
 		Note:              strings.TrimSpace(n.Note),
 		Payload:           json.RawMessage(n.PayloadJSON),
 	}
@@ -223,7 +223,6 @@ func dbUpsertBusinessSettlementEntTx(ctx context.Context, tx *gen.Tx, e business
 		SetToPartyID("").
 		SetTargetType(strings.TrimSpace(e.TargetType)).
 		SetTargetID(strings.TrimSpace(e.TargetID)).
-		SetIdempotencyKey("").
 		SetNote("").
 		SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
 		SetPayloadJSON(mustJSONString(e.Payload)).
@@ -461,6 +460,9 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
+	if store.ent == nil {
+		return nil, fmt.Errorf("client db ent client is nil")
+	}
 	frontOrderID = strings.TrimSpace(frontOrderID)
 	if frontOrderID == "" {
 		return nil, fmt.Errorf("front_order_id is required")
@@ -476,26 +478,22 @@ func ListBusinessesByFrontOrderID(ctx context.Context, store *clientDB, frontOrd
 		return []financeBusinessItem{}, nil
 	}
 
-	// 第二步：按 order_id 查 order_settlements
-	return clientDBValue(ctx, store, func(db sqlConn) ([]financeBusinessItem, error) {
-		var out []financeBusinessItem
+	// 第二步：按 order_id 查 order_settlements（ent 主路径）
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]financeBusinessItem, error) {
+		out := make([]financeBusinessItem, 0, len(businessIDs))
 		for _, bizID := range businessIDs {
-			var item financeBusinessItem
-			var payload string
-			err := QueryRowContext(ctx, db,
-				`SELECT order_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,created_at_unix,idempotency_key,note,payload_json
-				 FROM order_settlements WHERE order_id=?
-				 ORDER BY settlement_no DESC,updated_at_unix DESC,settlement_id DESC LIMIT 1`,
-				bizID,
-			).Scan(
-				&item.OrderID, &item.BusinessRole, &item.SourceType, &item.SourceID, &item.AccountingScene, &item.AccountingSubtype,
-				&item.FromPartyID, &item.ToPartyID, &item.Status, &item.OccurredAtUnix, &item.IdempotencyKey, &item.Note, &payload,
-			)
+			row, err := tx.OrderSettlements.Query().
+				Where(ordersettlements.OrderIDEQ(bizID)).
+				Order(
+					ordersettlements.BySettlementNo(entsql.OrderDesc()),
+					ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()),
+					ordersettlements.BySettlementID(entsql.OrderDesc()),
+				).
+				First(ctx)
 			if err != nil {
 				return nil, err
 			}
-			item.Payload = json.RawMessage(payload)
-			out = append(out, item)
+			out = append(out, orderSettlementToFinanceBusinessItem(row))
 		}
 		return out, nil
 	})
@@ -520,27 +518,27 @@ func dbGetLatestBusinessBySettlementPaymentAttemptID(ctx context.Context, store 
 	if store == nil {
 		return financeBusinessItem{}, fmt.Errorf("client db is nil")
 	}
+	if store.ent == nil {
+		return financeBusinessItem{}, fmt.Errorf("client db ent client is nil")
+	}
 	if settlementPaymentAttemptID <= 0 {
 		return financeBusinessItem{}, fmt.Errorf("settlement_payment_attempt_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (financeBusinessItem, error) {
-		var out financeBusinessItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT order_id,business_role,source_type,source_id,accounting_scene,accounting_subtype,from_party_id,to_party_id,status,created_at_unix,idempotency_key,note,payload_json
-			 FROM order_settlements
-			 WHERE source_type='settlement_payment_attempt' AND source_id=?
-			 ORDER BY created_at_unix DESC,order_id DESC LIMIT 1`,
-			fmt.Sprintf("%d", settlementPaymentAttemptID),
-		).Scan(
-			&out.OrderID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype,
-			&out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (financeBusinessItem, error) {
+		row, err := tx.OrderSettlements.Query().
+			Where(
+				ordersettlements.SourceTypeEQ("settlement_payment_attempt"),
+				ordersettlements.SourceIDEQ(fmt.Sprintf("%d", settlementPaymentAttemptID)),
+			).
+			Order(ordersettlements.ByCreatedAtUnix(entsql.OrderDesc()), ordersettlements.ByOrderID(entsql.OrderDesc())).
+			First(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return financeBusinessItem{}, sql.ErrNoRows
+			}
 			return financeBusinessItem{}, err
 		}
-		out.Payload = json.RawMessage(payload)
-		return out, nil
+		return orderSettlementToFinanceBusinessItem(row), nil
 	})
 }
 

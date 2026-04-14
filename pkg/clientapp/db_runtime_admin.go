@@ -43,7 +43,7 @@ type orchestratorLogItem struct {
 	EndedAtUnix      int64  `json:"ended_at_unix"`
 	StepsCount       int    `json:"steps_count"`
 	LatestLogID      int64  `json:"latest_log_id"`
-	IdempotencyKey   string `json:"idempotency_key"`
+	IdempotencyKey   string `json:"aggregate_key"`
 	AggregateKey     string `json:"aggregate_key"`
 	CommandType      string `json:"command_type"`
 	GatewayPeerID    string `json:"gateway_pubkey_hex"`
@@ -63,7 +63,7 @@ type orchestratorLogStep struct {
 	Source         string          `json:"source"`
 	SignalType     string          `json:"signal_type"`
 	AggregateKey   string          `json:"aggregate_key"`
-	IdempotencyKey string          `json:"idempotency_key"`
+	IdempotencyKey string          `json:"aggregate_key"`
 	CommandType    string          `json:"command_type"`
 	GatewayPeerID  string          `json:"gateway_pubkey_hex"`
 	TaskStatus     string          `json:"task_status"`
@@ -75,7 +75,7 @@ type orchestratorLogStep struct {
 
 type orchestratorLogDetail struct {
 	EventID          string                `json:"event_id"`
-	IdempotencyKey   string                `json:"idempotency_key"`
+	IdempotencyKey   string                `json:"aggregate_key"`
 	AggregateKey     string                `json:"aggregate_key"`
 	CommandType      string                `json:"command_type"`
 	GatewayPeerID    string                `json:"gateway_pubkey_hex"`
@@ -222,341 +222,180 @@ func dbListOrchestratorLogs(ctx context.Context, store *clientDB, f orchestrator
 	if store == nil {
 		return orchestratorLogPage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent != nil {
-		q := store.ent.ProcOrchestratorLogs.Query()
-		if f.EventType != "" {
-			q = q.Where(bitfsprocorchestratorlogs.EventTypeEQ(f.EventType))
-		}
-		if f.SignalType != "" {
-			q = q.Where(bitfsprocorchestratorlogs.SignalTypeEQ(f.SignalType))
-		}
-		if f.Source != "" {
-			q = q.Where(bitfsprocorchestratorlogs.SourceEQ(f.Source))
-		}
-		if f.GatewayPeerID != "" {
-			q = q.Where(bitfsprocorchestratorlogs.GatewayPubkeyHexEQ(f.GatewayPeerID))
-		}
-		if f.IdempotencyKey != "" {
-			q = q.Where(bitfsprocorchestratorlogs.IdempotencyKeyEQ(f.IdempotencyKey))
-		}
-		if f.TaskStatus != "" {
-			q = q.Where(bitfsprocorchestratorlogs.TaskStatusEQ(f.TaskStatus))
-		}
-		rows, err := q.Order(bitfsprocorchestratorlogs.ByID(entsql.OrderDesc())).All(ctx)
-		if err != nil {
-			return orchestratorLogPage{}, err
-		}
-		type groupedItem struct {
-			item orchestratorLogItem
-		}
-		grouped := make(map[string]*groupedItem, len(rows))
-		for _, row := range rows {
-			eventID := strings.TrimSpace(row.IdempotencyKey)
-			if eventID == "" {
-				eventID = singleStepOrchestratorEventPrefix + strconv.Itoa(row.ID)
-			}
-			grp := grouped[eventID]
-			if grp == nil {
-				grp = &groupedItem{item: orchestratorLogItem{
-					EventID:          eventID,
-					StartedAtUnix:    row.CreatedAtUnix,
-					EndedAtUnix:      row.CreatedAtUnix,
-					StepsCount:       0,
-					LatestLogID:      int64(row.ID),
-					IdempotencyKey:   strings.TrimSpace(row.IdempotencyKey),
-					AggregateKey:     strings.TrimSpace(row.AggregateKey),
-					CommandType:      strings.TrimSpace(row.CommandType),
-					GatewayPeerID:    strings.TrimSpace(row.GatewayPubkeyHex),
-					Source:           strings.TrimSpace(row.Source),
-					SignalType:       strings.TrimSpace(row.SignalType),
-					LatestEventType:  strings.TrimSpace(row.EventType),
-					LatestTaskStatus: strings.TrimSpace(row.TaskStatus),
-					LatestRetryCount: int(row.RetryCount),
-					LatestQueueLen:   int(row.QueueLength),
-					LastErrorMessage: strings.TrimSpace(row.ErrorMessage),
-				}}
-				grouped[eventID] = grp
-			}
-			grp.item.StepsCount++
-			if int64(row.ID) > grp.item.LatestLogID {
-				grp.item.LatestLogID = int64(row.ID)
-				grp.item.IdempotencyKey = strings.TrimSpace(row.IdempotencyKey)
-				grp.item.AggregateKey = strings.TrimSpace(row.AggregateKey)
-				grp.item.CommandType = strings.TrimSpace(row.CommandType)
-				grp.item.GatewayPeerID = strings.TrimSpace(row.GatewayPubkeyHex)
-				grp.item.Source = strings.TrimSpace(row.Source)
-				grp.item.SignalType = strings.TrimSpace(row.SignalType)
-				grp.item.LatestEventType = strings.TrimSpace(row.EventType)
-				grp.item.LatestTaskStatus = strings.TrimSpace(row.TaskStatus)
-				grp.item.LatestRetryCount = int(row.RetryCount)
-				grp.item.LatestQueueLen = int(row.QueueLength)
-				grp.item.LastErrorMessage = strings.TrimSpace(row.ErrorMessage)
-			}
-			if row.CreatedAtUnix < grp.item.StartedAtUnix {
-				grp.item.StartedAtUnix = row.CreatedAtUnix
-			}
-			if row.CreatedAtUnix > grp.item.EndedAtUnix {
-				grp.item.EndedAtUnix = row.CreatedAtUnix
-			}
-		}
-		groupedItems := make([]orchestratorLogItem, 0, len(grouped))
-		for _, grp := range grouped {
-			groupedItems = append(groupedItems, grp.item)
-		}
-		sort.Slice(groupedItems, func(i, j int) bool {
-			if groupedItems[i].LatestLogID == groupedItems[j].LatestLogID {
-				return groupedItems[i].EventID > groupedItems[j].EventID
-			}
-			return groupedItems[i].LatestLogID > groupedItems[j].LatestLogID
-		})
-		total := len(groupedItems)
-		start := f.Offset
-		if start < 0 {
-			start = 0
-		}
-		if start > total {
-			start = total
-		}
-		end := total
-		if f.Limit >= 0 && start+f.Limit < end {
-			end = start + f.Limit
-		}
-		out := orchestratorLogPage{Total: total, Items: make([]orchestratorLogItem, 0, end-start)}
-		out.Items = append(out.Items, groupedItems[start:end]...)
-		return out, nil
+	if store.ent == nil {
+		return orchestratorLogPage{}, fmt.Errorf("client db ent client is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (orchestratorLogPage, error) {
-		where := ""
-		args := make([]any, 0, 8)
-		if f.EventType != "" {
-			where += " AND event_type=?"
-			args = append(args, f.EventType)
+	q := store.ent.ProcOrchestratorLogs.Query()
+	if f.EventType != "" {
+		q = q.Where(bitfsprocorchestratorlogs.EventTypeEQ(f.EventType))
+	}
+	if f.SignalType != "" {
+		q = q.Where(bitfsprocorchestratorlogs.SignalTypeEQ(f.SignalType))
+	}
+	if f.Source != "" {
+		q = q.Where(bitfsprocorchestratorlogs.SourceEQ(f.Source))
+	}
+	if f.GatewayPeerID != "" {
+		q = q.Where(bitfsprocorchestratorlogs.GatewayPubkeyHexEQ(f.GatewayPeerID))
+	}
+	if f.IdempotencyKey != "" {
+		q = q.Where(bitfsprocorchestratorlogs.AggregateKeyEQ(f.IdempotencyKey))
+	}
+	if f.TaskStatus != "" {
+		q = q.Where(bitfsprocorchestratorlogs.TaskStatusEQ(f.TaskStatus))
+	}
+	rows, err := q.Order(bitfsprocorchestratorlogs.ByID(entsql.OrderDesc())).All(ctx)
+	if err != nil {
+		return orchestratorLogPage{}, err
+	}
+	type groupedItem struct {
+		item orchestratorLogItem
+	}
+	grouped := make(map[string]*groupedItem, len(rows))
+	for _, row := range rows {
+		eventID := strings.TrimSpace(row.AggregateKey)
+		if eventID == "" {
+			eventID = singleStepOrchestratorEventPrefix + strconv.Itoa(row.ID)
 		}
-		if f.SignalType != "" {
-			where += " AND signal_type=?"
-			args = append(args, f.SignalType)
+		grp := grouped[eventID]
+		if grp == nil {
+			grp = &groupedItem{item: orchestratorLogItem{
+				EventID:          eventID,
+				StartedAtUnix:    row.CreatedAtUnix,
+				EndedAtUnix:      row.CreatedAtUnix,
+				StepsCount:       0,
+				LatestLogID:      int64(row.ID),
+				IdempotencyKey:   strings.TrimSpace(row.AggregateKey),
+				AggregateKey:     strings.TrimSpace(row.AggregateKey),
+				CommandType:      strings.TrimSpace(row.CommandType),
+				GatewayPeerID:    strings.TrimSpace(row.GatewayPubkeyHex),
+				Source:           strings.TrimSpace(row.Source),
+				SignalType:       strings.TrimSpace(row.SignalType),
+				LatestEventType:  strings.TrimSpace(row.EventType),
+				LatestTaskStatus: strings.TrimSpace(row.TaskStatus),
+				LatestRetryCount: int(row.RetryCount),
+				LatestQueueLen:   int(row.QueueLength),
+				LastErrorMessage: strings.TrimSpace(row.ErrorMessage),
+			}}
+			grouped[eventID] = grp
 		}
-		if f.Source != "" {
-			where += " AND source=?"
-			args = append(args, f.Source)
+		grp.item.StepsCount++
+		if int64(row.ID) > grp.item.LatestLogID {
+			grp.item.LatestLogID = int64(row.ID)
+			grp.item.IdempotencyKey = strings.TrimSpace(row.AggregateKey)
+			grp.item.AggregateKey = strings.TrimSpace(row.AggregateKey)
+			grp.item.CommandType = strings.TrimSpace(row.CommandType)
+			grp.item.GatewayPeerID = strings.TrimSpace(row.GatewayPubkeyHex)
+			grp.item.Source = strings.TrimSpace(row.Source)
+			grp.item.SignalType = strings.TrimSpace(row.SignalType)
+			grp.item.LatestEventType = strings.TrimSpace(row.EventType)
+			grp.item.LatestTaskStatus = strings.TrimSpace(row.TaskStatus)
+			grp.item.LatestRetryCount = int(row.RetryCount)
+			grp.item.LatestQueueLen = int(row.QueueLength)
+			grp.item.LastErrorMessage = strings.TrimSpace(row.ErrorMessage)
 		}
-		if f.GatewayPeerID != "" {
-			where += " AND gateway_pubkey_hex=?"
-			args = append(args, f.GatewayPeerID)
+		if row.CreatedAtUnix < grp.item.StartedAtUnix {
+			grp.item.StartedAtUnix = row.CreatedAtUnix
 		}
-		if f.IdempotencyKey != "" {
-			where += " AND idempotency_key=?"
-			args = append(args, f.IdempotencyKey)
+		if row.CreatedAtUnix > grp.item.EndedAtUnix {
+			grp.item.EndedAtUnix = row.CreatedAtUnix
 		}
-		if f.TaskStatus != "" {
-			where += " AND task_status=?"
-			args = append(args, f.TaskStatus)
+	}
+	groupedItems := make([]orchestratorLogItem, 0, len(grouped))
+	for _, grp := range grouped {
+		groupedItems = append(groupedItems, grp.item)
+	}
+	sort.Slice(groupedItems, func(i, j int) bool {
+		if groupedItems[i].LatestLogID == groupedItems[j].LatestLogID {
+			return groupedItems[i].EventID > groupedItems[j].EventID
 		}
-		eventIDExpr := "CASE WHEN TRIM(idempotency_key)<>'' THEN idempotency_key ELSE '" + singleStepOrchestratorEventPrefix + "' || CAST(id AS TEXT) END"
-		countSQL := "SELECT COUNT(1) FROM (SELECT " + eventIDExpr + " AS event_id FROM proc_orchestrator_logs WHERE 1=1" + where + " GROUP BY 1)"
-		var out orchestratorLogPage
-		if err := QueryRowContext(ctx, db, countSQL, args...).Scan(&out.Total); err != nil {
-			return orchestratorLogPage{}, err
-		}
-		rows, err := QueryContext(ctx, db, `WITH grouped AS (
-			SELECT
-				`+eventIDExpr+` AS event_id,
-				MIN(created_at_unix) AS started_at_unix,
-				MAX(created_at_unix) AS ended_at_unix,
-				COUNT(1) AS steps_count,
-				MAX(id) AS latest_log_id
-			FROM proc_orchestrator_logs
-			WHERE 1=1`+where+`
-			GROUP BY 1
-		)
-		SELECT
-			g.event_id,g.started_at_unix,g.ended_at_unix,g.steps_count,g.latest_log_id,
-			l.idempotency_key,l.aggregate_key,l.command_type,l.gateway_pubkey_hex,l.source,l.signal_type,l.event_type,l.task_status,l.retry_count,l.queue_length,l.error_message
-		FROM grouped g
-		JOIN proc_orchestrator_logs l ON l.id=g.latest_log_id
-		ORDER BY g.latest_log_id DESC
-		LIMIT ? OFFSET ?`, append(args, f.Limit, f.Offset)...)
-		if err != nil {
-			return orchestratorLogPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]orchestratorLogItem, 0, f.Limit)
-		for rows.Next() {
-			var it orchestratorLogItem
-			if err := rows.Scan(
-				&it.EventID, &it.StartedAtUnix, &it.EndedAtUnix, &it.StepsCount, &it.LatestLogID, &it.IdempotencyKey, &it.AggregateKey,
-				&it.CommandType, &it.GatewayPeerID, &it.Source, &it.SignalType, &it.LatestEventType, &it.LatestTaskStatus,
-				&it.LatestRetryCount, &it.LatestQueueLen, &it.LastErrorMessage,
-			); err != nil {
-				return orchestratorLogPage{}, err
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return orchestratorLogPage{}, err
-		}
-		return out, nil
+		return groupedItems[i].LatestLogID > groupedItems[j].LatestLogID
 	})
+	total := len(groupedItems)
+	start := f.Offset
+	if start < 0 {
+		start = 0
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if f.Limit >= 0 && start+f.Limit < end {
+		end = start + f.Limit
+	}
+	out := orchestratorLogPage{Total: total, Items: make([]orchestratorLogItem, 0, end-start)}
+	out.Items = append(out.Items, groupedItems[start:end]...)
+	return out, nil
 }
 
 func dbGetOrchestratorLogDetail(ctx context.Context, store *clientDB, eventID string) (orchestratorLogDetail, error) {
 	if store == nil {
 		return orchestratorLogDetail{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent != nil {
-		if strings.HasPrefix(eventID, singleStepOrchestratorEventPrefix) {
-			rawID := strings.TrimPrefix(eventID, singleStepOrchestratorEventPrefix)
-			id, perr := strconv.ParseInt(rawID, 10, 64)
-			if perr != nil || id <= 0 {
-				return orchestratorLogDetail{}, fmt.Errorf("invalid event_id")
-			}
-			rows, err := store.ent.ProcOrchestratorLogs.Query().Where(bitfsprocorchestratorlogs.IDEQ(int(id))).Order(bitfsprocorchestratorlogs.ByID()).All(ctx)
-			if err != nil {
-				return orchestratorLogDetail{}, err
-			}
-			if len(rows) == 0 {
-				return orchestratorLogDetail{}, sql.ErrNoRows
-			}
-			steps := make([]orchestratorLogStep, 0, len(rows))
-			for _, row := range rows {
-				steps = append(steps, orchestratorLogStep{
-					ID:             int64(row.ID),
-					CreatedAtUnix:  row.CreatedAtUnix,
-					EventType:      row.EventType,
-					Source:         row.Source,
-					SignalType:     row.SignalType,
-					AggregateKey:   row.AggregateKey,
-					IdempotencyKey: row.IdempotencyKey,
-					CommandType:    row.CommandType,
-					GatewayPeerID:  row.GatewayPubkeyHex,
-					TaskStatus:     row.TaskStatus,
-					RetryCount:     int(row.RetryCount),
-					QueueLength:    int(row.QueueLength),
-					ErrorMessage:   row.ErrorMessage,
-					Payload:        json.RawMessage(row.PayloadJSON),
-				})
-			}
-			first := steps[0]
-			last := steps[len(steps)-1]
-			return orchestratorLogDetail{
-				EventID:          eventID,
-				IdempotencyKey:   strings.TrimSpace(last.IdempotencyKey),
-				AggregateKey:     strings.TrimSpace(last.AggregateKey),
-				CommandType:      strings.TrimSpace(last.CommandType),
-				GatewayPeerID:    strings.TrimSpace(last.GatewayPeerID),
-				StartedAtUnix:    first.CreatedAtUnix,
-				EndedAtUnix:      last.CreatedAtUnix,
-				StepsCount:       len(steps),
-				LatestEventType:  strings.TrimSpace(last.EventType),
-				LatestTaskStatus: strings.TrimSpace(last.TaskStatus),
-				LastErrorMessage: strings.TrimSpace(last.ErrorMessage),
-				Steps:            steps,
-			}, nil
-		}
-		rows, err := store.ent.ProcOrchestratorLogs.Query().Where(bitfsprocorchestratorlogs.IdempotencyKeyEQ(eventID)).Order(bitfsprocorchestratorlogs.ByID()).All(ctx)
-		if err != nil {
-			return orchestratorLogDetail{}, err
-		}
-		if len(rows) == 0 {
-			return orchestratorLogDetail{}, sql.ErrNoRows
-		}
-		steps := make([]orchestratorLogStep, 0, len(rows))
-		for _, row := range rows {
-			steps = append(steps, orchestratorLogStep{
-				ID:             int64(row.ID),
-				CreatedAtUnix:  row.CreatedAtUnix,
-				EventType:      row.EventType,
-				Source:         row.Source,
-				SignalType:     row.SignalType,
-				AggregateKey:   row.AggregateKey,
-				IdempotencyKey: row.IdempotencyKey,
-				CommandType:    row.CommandType,
-				GatewayPeerID:  row.GatewayPubkeyHex,
-				TaskStatus:     row.TaskStatus,
-				RetryCount:     int(row.RetryCount),
-				QueueLength:    int(row.QueueLength),
-				ErrorMessage:   row.ErrorMessage,
-				Payload:        json.RawMessage(row.PayloadJSON),
-			})
-		}
-		first := steps[0]
-		last := steps[len(steps)-1]
-		return orchestratorLogDetail{
-			EventID:          eventID,
-			IdempotencyKey:   strings.TrimSpace(last.IdempotencyKey),
-			AggregateKey:     strings.TrimSpace(last.AggregateKey),
-			CommandType:      strings.TrimSpace(last.CommandType),
-			GatewayPeerID:    strings.TrimSpace(last.GatewayPeerID),
-			StartedAtUnix:    first.CreatedAtUnix,
-			EndedAtUnix:      last.CreatedAtUnix,
-			StepsCount:       len(steps),
-			LatestEventType:  strings.TrimSpace(last.EventType),
-			LatestTaskStatus: strings.TrimSpace(last.TaskStatus),
-			LastErrorMessage: strings.TrimSpace(last.ErrorMessage),
-			Steps:            steps,
-		}, nil
+	if store.ent == nil {
+		return orchestratorLogDetail{}, fmt.Errorf("client db ent client is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (orchestratorLogDetail, error) {
-		var (
-			rows *sql.Rows
-			err  error
-		)
-		if strings.HasPrefix(eventID, singleStepOrchestratorEventPrefix) {
-			rawID := strings.TrimPrefix(eventID, singleStepOrchestratorEventPrefix)
-			id, perr := strconv.ParseInt(rawID, 10, 64)
-			if perr != nil || id <= 0 {
-				return orchestratorLogDetail{}, fmt.Errorf("invalid event_id")
-			}
-			rows, err = QueryContext(ctx, db,
-				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
-				FROM proc_orchestrator_logs WHERE id=? ORDER BY id ASC`, id,
-			)
-		} else {
-			rows, err = QueryContext(ctx, db,
-				`SELECT id,created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
-				FROM proc_orchestrator_logs WHERE idempotency_key=? ORDER BY id ASC`, eventID,
-			)
+	var (
+		rows []*gen.ProcOrchestratorLogs
+		err  error
+	)
+	if strings.HasPrefix(eventID, singleStepOrchestratorEventPrefix) {
+		rawID := strings.TrimPrefix(eventID, singleStepOrchestratorEventPrefix)
+		id, perr := strconv.ParseInt(rawID, 10, 64)
+		if perr != nil || id <= 0 {
+			return orchestratorLogDetail{}, fmt.Errorf("invalid event_id")
 		}
-		if err != nil {
-			return orchestratorLogDetail{}, err
-		}
-		defer rows.Close()
-		steps := make([]orchestratorLogStep, 0, 8)
-		for rows.Next() {
-			var it orchestratorLogStep
-			var payload string
-			if err := rows.Scan(
-				&it.ID, &it.CreatedAtUnix, &it.EventType, &it.Source, &it.SignalType, &it.AggregateKey, &it.IdempotencyKey,
-				&it.CommandType, &it.GatewayPeerID, &it.TaskStatus, &it.RetryCount, &it.QueueLength, &it.ErrorMessage, &payload,
-			); err != nil {
-				return orchestratorLogDetail{}, err
-			}
-			it.Payload = json.RawMessage(payload)
-			steps = append(steps, it)
-		}
-		if err := rows.Err(); err != nil {
-			return orchestratorLogDetail{}, err
-		}
-		if len(steps) == 0 {
-			return orchestratorLogDetail{}, sql.ErrNoRows
-		}
-		first := steps[0]
-		last := steps[len(steps)-1]
-		return orchestratorLogDetail{
-			EventID:          eventID,
-			IdempotencyKey:   strings.TrimSpace(last.IdempotencyKey),
-			AggregateKey:     strings.TrimSpace(last.AggregateKey),
-			CommandType:      strings.TrimSpace(last.CommandType),
-			GatewayPeerID:    strings.TrimSpace(last.GatewayPeerID),
-			StartedAtUnix:    first.CreatedAtUnix,
-			EndedAtUnix:      last.CreatedAtUnix,
-			StepsCount:       len(steps),
-			LatestEventType:  strings.TrimSpace(last.EventType),
-			LatestTaskStatus: strings.TrimSpace(last.TaskStatus),
-			LastErrorMessage: strings.TrimSpace(last.ErrorMessage),
-			Steps:            steps,
-		}, nil
-	})
+		rows, err = store.ent.ProcOrchestratorLogs.Query().
+			Where(bitfsprocorchestratorlogs.IDEQ(int(id))).
+			Order(bitfsprocorchestratorlogs.ByID()).
+			All(ctx)
+	} else {
+		rows, err = store.ent.ProcOrchestratorLogs.Query().
+			Where(bitfsprocorchestratorlogs.AggregateKeyEQ(eventID)).
+			Order(bitfsprocorchestratorlogs.ByID()).
+			All(ctx)
+	}
+	if err != nil {
+		return orchestratorLogDetail{}, err
+	}
+	if len(rows) == 0 {
+		return orchestratorLogDetail{}, sql.ErrNoRows
+	}
+	steps := make([]orchestratorLogStep, 0, len(rows))
+	for _, row := range rows {
+		steps = append(steps, orchestratorLogStep{
+			ID:             int64(row.ID),
+			CreatedAtUnix:  row.CreatedAtUnix,
+			EventType:      row.EventType,
+			Source:         row.Source,
+			SignalType:     row.SignalType,
+			AggregateKey:   row.AggregateKey,
+			IdempotencyKey: row.AggregateKey,
+			CommandType:    row.CommandType,
+			GatewayPeerID:  row.GatewayPubkeyHex,
+			TaskStatus:     row.TaskStatus,
+			RetryCount:     int(row.RetryCount),
+			QueueLength:    int(row.QueueLength),
+			ErrorMessage:   row.ErrorMessage,
+			Payload:        json.RawMessage(row.PayloadJSON),
+		})
+	}
+	first := steps[0]
+	last := steps[len(steps)-1]
+	return orchestratorLogDetail{
+		EventID:          eventID,
+		IdempotencyKey:   strings.TrimSpace(last.IdempotencyKey),
+		AggregateKey:     strings.TrimSpace(last.AggregateKey),
+		CommandType:      strings.TrimSpace(last.CommandType),
+		GatewayPeerID:    strings.TrimSpace(last.GatewayPeerID),
+		StartedAtUnix:    first.CreatedAtUnix,
+		EndedAtUnix:      last.CreatedAtUnix,
+		StepsCount:       len(steps),
+		LatestEventType:  strings.TrimSpace(last.EventType),
+		LatestTaskStatus: strings.TrimSpace(last.TaskStatus),
+		LastErrorMessage: strings.TrimSpace(last.ErrorMessage),
+		Steps:            steps,
+	}, nil
 }
 
 func dbListSchedulerTasks(ctx context.Context, store *clientDB, f schedulerTaskFilter) (schedulerTaskPage, error) {

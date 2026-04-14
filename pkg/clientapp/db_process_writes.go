@@ -201,7 +201,6 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 			SetSource(strings.TrimSpace(e.Source)).
 			SetSignalType(strings.TrimSpace(e.SignalType)).
 			SetAggregateKey(strings.TrimSpace(e.AggregateKey)).
-			SetIdempotencyKey(strings.TrimSpace(e.IdempotencyKey)).
 			SetCommandType(strings.TrimSpace(e.CommandType)).
 			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
 			SetTaskStatus(strings.TrimSpace(e.TaskStatus)).
@@ -532,10 +531,6 @@ func dbAppendFinBusinessTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) 
 	if e.SourceID == "" {
 		return fmt.Errorf("source_id is required")
 	}
-	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
-	if e.IdempotencyKey == "" {
-		e.IdempotencyKey = e.OrderID
-	}
 	settlementMethod := strings.TrimSpace(e.SettlementMethod)
 	settlementStatus := strings.TrimSpace(e.SettlementStatus)
 	if settlementStatus == "" {
@@ -570,7 +565,6 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx *gen.Tx, e finBusinessEntr
 			SetToPartyID(strings.TrimSpace(e.ToPartyID)).
 			SetTargetType(settlementTargetType).
 			SetTargetID(settlementTargetID).
-			SetIdempotencyKey(e.IdempotencyKey).
 			SetNote(strings.TrimSpace(e.Note)).
 			SetErrorMessage(settlementErrorMessage).
 			SetPayloadJSON(mustJSONString(e.Payload)).
@@ -611,7 +605,6 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx *gen.Tx, e finBusinessEntr
 		SetToPartyID(strings.TrimSpace(e.ToPartyID)).
 		SetTargetType(settlementTargetType).
 		SetTargetID(settlementTargetID).
-		SetIdempotencyKey(e.IdempotencyKey).
 		SetNote(strings.TrimSpace(e.Note)).
 		SetErrorMessage(settlementErrorMessage).
 		SetPayloadJSON(mustJSONString(e.Payload)).
@@ -669,10 +662,6 @@ func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventE
 	if e.ProcessID == "" {
 		return fmt.Errorf("process_id is required")
 	}
-	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
-	if e.IdempotencyKey == "" {
-		e.IdempotencyKey = e.ProcessID + ":" + strings.TrimSpace(e.EventType)
-	}
 	e.SourceType = strings.ToLower(strings.TrimSpace(e.SourceType))
 	e.SourceID = strings.TrimSpace(e.SourceID)
 	switch e.SourceType {
@@ -685,6 +674,7 @@ func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventE
 		return fmt.Errorf("source_id is required")
 	}
 	settlementID := strings.TrimSpace(e.SourceID)
+	orderID := ""
 	if settlementID == "" {
 		settlementID = strings.TrimSpace(e.ProcessID)
 	}
@@ -706,19 +696,34 @@ func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventE
 		if settlementID == "" {
 			return fmt.Errorf("settlement not found for source_id=%s", e.SourceID)
 		}
+		orderID = strings.TrimSpace(resolved.OrderID)
+	}
+	if orderID == "" {
+		settleRow, err := tx.OrderSettlements.Query().Where(ordersettlements.SettlementIDEQ(settlementID)).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("order_settlement not found for settlement_id=%s", settlementID)
+			}
+			return err
+		}
+		orderID = strings.TrimSpace(settleRow.OrderID)
+		if orderID == "" {
+			return fmt.Errorf("order_id is empty for settlement_id=%s", settlementID)
+		}
 	}
 
 	existing, err := tx.OrderSettlementEvents.Query().
 		Where(
 			ordersettlementevents.SettlementIDEQ(settlementID),
 			ordersettlementevents.EventTypeEQ(strings.TrimSpace(e.EventType)),
-			ordersettlementevents.IdempotencyKeyEQ(e.IdempotencyKey),
+			ordersettlementevents.OrderIDEQ(orderID),
 		).
 		Only(ctx)
 	if err == nil {
 		_, err = tx.OrderSettlementEvents.UpdateOneID(existing.ID).
 			SetProcessID(strings.TrimSpace(e.ProcessID)).
 			SetSettlementID(settlementID).
+			SetOrderID(orderID).
 			SetSourceType(strings.TrimSpace(e.SourceType)).
 			SetSourceID(strings.TrimSpace(e.SourceID)).
 			SetAccountingScene(strings.TrimSpace(e.AccountingScene)).
@@ -736,13 +741,13 @@ func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventE
 	_, err = tx.OrderSettlementEvents.Create().
 		SetProcessID(strings.TrimSpace(e.ProcessID)).
 		SetSettlementID(settlementID).
+		SetOrderID(orderID).
 		SetSourceType(strings.TrimSpace(e.SourceType)).
 		SetSourceID(strings.TrimSpace(e.SourceID)).
 		SetAccountingScene(strings.TrimSpace(e.AccountingScene)).
 		SetAccountingSubtype(strings.TrimSpace(e.AccountingSubType)).
 		SetEventType(strings.TrimSpace(e.EventType)).
 		SetStatus(strings.TrimSpace(e.Status)).
-		SetIdempotencyKey(e.IdempotencyKey).
 		SetNote(strings.TrimSpace(e.Note)).
 		SetPayloadJSON(mustJSONString(e.Payload)).
 		SetOccurredAtUnix(e.OccurredAtUnix).

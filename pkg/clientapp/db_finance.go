@@ -803,7 +803,7 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 				EventType:         strings.TrimSpace(n.EventType),
 				Status:            strings.TrimSpace(n.Status),
 				OccurredAtUnix:    n.OccurredAtUnix,
-				IdempotencyKey:    strings.TrimSpace(n.IdempotencyKey),
+				IdempotencyKey:    strings.TrimSpace(n.OrderID),
 				Note:              strings.TrimSpace(n.Note),
 				Payload:           json.RawMessage(n.PayloadJSON),
 			}
@@ -895,7 +895,7 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 			EventType:         strings.TrimSpace(node.EventType),
 			Status:            strings.TrimSpace(node.Status),
 			OccurredAtUnix:    node.OccurredAtUnix,
-			IdempotencyKey:    strings.TrimSpace(node.IdempotencyKey),
+			IdempotencyKey:    strings.TrimSpace(node.OrderID),
 			Note:              strings.TrimSpace(node.Note),
 			Payload:           json.RawMessage(node.PayloadJSON),
 		}, nil

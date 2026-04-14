@@ -36,7 +36,6 @@ type frontOrderEntry struct {
 	TargetObjectType string
 	TargetObjectID   string
 	Status           string
-	IdempotencyKey   string
 	CreatedAtUnix    int64
 	UpdatedAtUnix    int64
 	Note             string
@@ -79,10 +78,6 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = now
 	}
-	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
-	if e.IdempotencyKey == "" {
-		e.IdempotencyKey = e.FrontOrderID
-	}
 	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		existing, err := tx.Orders.Query().
 			Where(orders.OrderIDEQ(e.FrontOrderID)).
@@ -95,7 +90,6 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 				SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
 				SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
 				SetStatus(strings.TrimSpace(e.Status)).
-				SetIdempotencyKey(e.IdempotencyKey).
 				SetUpdatedAtUnix(e.UpdatedAtUnix).
 				SetNote(strings.TrimSpace(e.Note)).
 				SetPayloadJSON(mustJSONString(e.Payload)).
@@ -113,7 +107,6 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 			SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
 			SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
 			SetStatus(strings.TrimSpace(e.Status)).
-			SetIdempotencyKey(e.IdempotencyKey).
 			SetNote(strings.TrimSpace(e.Note)).
 			SetPayloadJSON(mustJSONString(e.Payload)).
 			SetCreatedAtUnix(e.CreatedAtUnix).

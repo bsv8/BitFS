@@ -249,10 +249,6 @@ func dbUpsertFrontOrderEntTx(ctx context.Context, tx *gen.Tx, e frontOrderEntry)
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = e.CreatedAtUnix
 	}
-	e.IdempotencyKey = strings.TrimSpace(e.IdempotencyKey)
-	if e.IdempotencyKey == "" {
-		e.IdempotencyKey = e.FrontOrderID
-	}
 	existing, err := tx.Orders.Query().
 		Where(orders.OrderIDEQ(e.FrontOrderID)).
 		Only(ctx)
@@ -264,7 +260,6 @@ func dbUpsertFrontOrderEntTx(ctx context.Context, tx *gen.Tx, e frontOrderEntry)
 			SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
 			SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
 			SetStatus(strings.TrimSpace(e.Status)).
-			SetIdempotencyKey(e.IdempotencyKey).
 			SetUpdatedAtUnix(e.UpdatedAtUnix).
 			SetNote(strings.TrimSpace(e.Note)).
 			SetPayloadJSON(mustJSONString(e.Payload)).
@@ -285,7 +280,6 @@ func dbUpsertFrontOrderEntTx(ctx context.Context, tx *gen.Tx, e frontOrderEntry)
 		SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
 		SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
 		SetStatus(strings.TrimSpace(e.Status)).
-		SetIdempotencyKey(e.IdempotencyKey).
 		SetNote(strings.TrimSpace(e.Note)).
 		SetPayloadJSON(mustJSONString(e.Payload)).
 		SetCreatedAtUnix(e.CreatedAtUnix).
@@ -335,13 +329,14 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx *gen.Tx, e businessTrigge
 		Where(
 			ordersettlementevents.SettlementIDEQ(e.SettlementID),
 			ordersettlementevents.EventTypeEQ("bridge_trigger"),
-			ordersettlementevents.IdempotencyKeyEQ(e.TriggerID+":"+e.OrderID+":"+strings.TrimSpace(e.TriggerType)+":"+strings.TrimSpace(e.TriggerIDValue)+":"+strings.TrimSpace(e.TriggerRole)),
+			ordersettlementevents.OrderIDEQ(e.OrderID),
 		).
 		Only(ctx)
 	if err == nil {
 		_, err = existing.Update().
 			SetProcessID(e.TriggerID).
 			SetSettlementID(e.SettlementID).
+			SetOrderID(e.OrderID).
 			SetSourceType(strings.TrimSpace(e.TriggerType)).
 			SetSourceID(strings.TrimSpace(e.TriggerIDValue)).
 			SetAccountingScene("").
@@ -359,13 +354,13 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx *gen.Tx, e businessTrigge
 	_, err = tx.OrderSettlementEvents.Create().
 		SetProcessID(e.TriggerID).
 		SetSettlementID(e.SettlementID).
+		SetOrderID(e.OrderID).
 		SetSourceType(strings.TrimSpace(e.TriggerType)).
 		SetSourceID(strings.TrimSpace(e.TriggerIDValue)).
 		SetAccountingScene("").
 		SetAccountingSubtype(strings.TrimSpace(e.TriggerRole)).
 		SetEventType("bridge_trigger").
 		SetStatus("linked").
-		SetIdempotencyKey(e.TriggerID + ":" + e.OrderID + ":" + strings.TrimSpace(e.TriggerType) + ":" + strings.TrimSpace(e.TriggerIDValue) + ":" + strings.TrimSpace(e.TriggerRole)).
 		SetNote(strings.TrimSpace(e.Note)).
 		SetPayloadJSON(mustJSONString(e.Payload)).
 		SetOccurredAtUnix(e.CreatedAtUnix).
