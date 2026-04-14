@@ -149,6 +149,7 @@ func TestObservedGatewayStateResumeChainWritesBeforeAndAfter(t *testing.T) {
 		},
 	}
 	rt.runIn.BSV.Network = "test"
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 
 	addr, err := clientWalletAddress(rt)
 	if err != nil {

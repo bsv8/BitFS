@@ -79,6 +79,7 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_Success(t *testing.T) {
 		runIn:       NewRunInputFromConfig(cfg, clientPrivHex),
 		ActionChain: gatewayDemandPublishMockChain{},
 	}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	rt.HealthyGWs = []peer.AddrInfo{{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}}
 	if err := clientHost.Connect(context.Background(), peer.AddrInfo{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}); err != nil {
 		t.Fatalf("connect client to gateway failed: %v", err)
@@ -158,10 +159,14 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_Success(t *testing.T) {
 func TestTriggerGatewayDemandPublishChainTxQuotePay_NoHealthyGateway(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	store := newClientDB(db, nil)
-	clientHost, _ := newFixedSecpHost(t, "5555555555555555555555555555555555555555555555555555555555555555")
+	clientPrivHex := "5555555555555555555555555555555555555555555555555555555555555555"
+	clientHost, _ := newFixedSecpHost(t, clientPrivHex)
 	defer clientHost.Close()
-	rt := &Runtime{Host: clientHost}
-	rt.runIn.BSV.Network = "test"
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = clientPrivHex
+	rt := &Runtime{Host: clientHost, runIn: NewRunInputFromConfig(cfg, clientPrivHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	if _, err := TriggerGatewayDemandPublishChainTxQuotePay(context.Background(), store, rt, PublishDemandParams{
 		SeedHash:   strings.Repeat("ab", 32),
 		ChunkCount: 1,
@@ -204,6 +209,7 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_PayAfterValidationFailure(t 
 		runIn:       NewRunInputFromConfig(cfg, clientPrivHex),
 		ActionChain: gatewayDemandPublishMockChain{},
 	}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	rt.HealthyGWs = []peer.AddrInfo{{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}}
 	if err := clientHost.Connect(context.Background(), peer.AddrInfo{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}); err != nil {
 		t.Fatalf("connect client to gateway failed: %v", err)

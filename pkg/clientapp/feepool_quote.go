@@ -40,6 +40,10 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if rt == nil || rt.Host == nil {
 		return feePoolServiceQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return feePoolServiceQuoteBuilt{}, err
+	}
 	quotedResp, err := callNodeRoute(ctx, rt, args.GatewayPeerID, ncall.CallReq{
 		To:          gatewayBusinessID(rt, args.GatewayPeerID),
 		Route:       strings.TrimSpace(args.Route),
@@ -74,7 +78,7 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	offer := payflow.ServiceOffer{
 		ServiceType:          peerCallQuotedServiceType(args.Route),
 		ServiceNodePubkeyHex: strings.ToLower(hex.EncodeToString(rawGatewayPub)),
-		ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
+		ClientPubkeyHex:      identity.ClientIDLower,
 		RequestParams:        append([]byte(nil), serviceParamsPayload...),
 		CreatedAtUnix:        time.Now().Unix(),
 	}
@@ -82,7 +86,7 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, rt.runIn.ClientID, peerCallQuotedServiceType(args.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
+	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, identity.ClientID, peerCallQuotedServiceType(args.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
 	chargeReason := strings.TrimSpace(quotedResp.PaymentSchemes[0].Description)

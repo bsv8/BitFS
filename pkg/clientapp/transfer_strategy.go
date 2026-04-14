@@ -484,7 +484,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		FrontOrderID:     frontOrderID,
 		FrontType:        "download",
 		FrontSubtype:     "direct_transfer",
-		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
 		TargetObjectType: "demand",
 		TargetObjectID:   strings.TrimSpace(p.DemandID),
 		Status:           "pending",

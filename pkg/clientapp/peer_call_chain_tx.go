@@ -84,10 +84,14 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return peerCallChainTxQuoteBuilt{}, err
+	}
 	offer := payflow.ServiceOffer{
 		ServiceType:          peerCallQuotedServiceType(req.Route),
 		ServiceNodePubkeyHex: strings.ToLower(hex.EncodeToString(gatewayPub.Compressed())),
-		ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
+		ClientPubkeyHex:      identity.ClientIDLower,
 		RequestParams:        append([]byte(nil), serviceParamsPayload...),
 		CreatedAtUnix:        time.Now().Unix(),
 	}
@@ -98,7 +102,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
-	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, rt.runIn.ClientID, peerCallQuotedServiceType(req.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
+	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, identity.ClientID, peerCallQuotedServiceType(req.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
 	chargeReason := strings.TrimSpace(req.Route)
@@ -174,9 +178,13 @@ func buildPeerCallChainTx(ctx context.Context, store ClientStore, rt *Runtime, g
 	if rt == nil || rt.ActionChain == nil {
 		return builtPeerCallChainTx{}, fmt.Errorf("runtime not initialized")
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return builtPeerCallChainTx{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return builtPeerCallChainTx{}, fmt.Errorf("runtime not initialized")
 	}
 	utxos, err := getWalletUTXOsFromDB(ctx, store, rt)
 	if err != nil {
@@ -188,7 +196,7 @@ func buildPeerCallChainTx(ctx context.Context, store ClientStore, rt *Runtime, g
 	selected := make([]poolcore.UTXO, 0, len(utxos))
 	for _, u := range utxos {
 		selected = append(selected, u)
-		built, buildErr := buildPeerCallChainTxWithUTXOs(clientActor, selected, gatewayPub, rawQuote, quote.ChargeAmountSatoshi, strings.EqualFold(strings.TrimSpace(rt.runIn.BSV.Network), "main"))
+		built, buildErr := buildPeerCallChainTxWithUTXOs(clientActor, selected, gatewayPub, rawQuote, quote.ChargeAmountSatoshi, identity.IsMainnet)
 		if buildErr == nil {
 			return built, nil
 		}

@@ -399,8 +399,12 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		}
 		ownerPubkeyHex := strings.ToLower(strings.TrimSpace(rt.ClientID()))
 		if ownerPubkeyHex == "" {
-			clientActor, actorErr := buildClientActorFromRunInput(rt.runIn)
+			identity, actorErr := rt.runtimeIdentity()
 			if actorErr != nil {
+				return resp, fmt.Errorf("client id is required for settlement records")
+			}
+			clientActor := identity.Actor
+			if clientActor == nil {
 				return resp, fmt.Errorf("client id is required for settlement records")
 			}
 			ownerPubkeyHex = strings.ToLower(strings.TrimSpace(clientActor.PubHex))
@@ -551,9 +555,13 @@ func prepareWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime,
 	if err := validatePreviewAddress(toAddress); err != nil {
 		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "INVALID_ADDRESS", Message: err.Error(), ToAddress: toAddress, AmountSatoshi: req.AmountSatoshi}}, err
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "RUNTIME_NOT_INITIALIZED", Message: err.Error()}}, err
+	}
+	actor := identity.Actor
+	if actor == nil {
+		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "RUNTIME_NOT_INITIALIZED", Message: "runtime not initialized"}}, fmt.Errorf("runtime not initialized")
 	}
 	fromAddress := strings.TrimSpace(actor.Addr)
 	if fromAddress == "" {

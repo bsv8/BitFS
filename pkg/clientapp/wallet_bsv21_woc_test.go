@@ -116,20 +116,22 @@ func newWalletBSV21LocalCandidateTestRuntime(t *testing.T, db *sql.DB, baseURL s
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = strings.Repeat("1", 64)
-	return &Runtime{
+	rt := &Runtime{
 		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
 		WalletChain: testWalletChainClient{baseURL: baseURL},
 	}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
+	return rt
 }
 
 func seedWalletBSV21LocalCreateCandidate(t *testing.T, db *sql.DB, rt *Runtime, address string, symbol string, amount string) (string, string) {
 	t.Helper()
 
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
+	identity := rt.mustIdentity()
+	if identity == nil || identity.Actor == nil {
+		t.Fatal("runtime identity not initialized")
 	}
-	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(actor.Addr))
+	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(identity.Actor.Addr))
 	if err != nil {
 		t.Fatalf("NewAddressFromString: %v", err)
 	}

@@ -109,6 +109,22 @@ func currentSQLTraceManager() *sqlTraceManager {
 	return sqlTraceState.mgr.Load()
 }
 
+func currentSQLTracePath() string {
+	mgr := currentSQLTraceManager()
+	if mgr == nil {
+		return ""
+	}
+	return mgr.TracePath()
+}
+
+func currentSQLTraceSummaryPath() string {
+	mgr := currentSQLTraceManager()
+	if mgr == nil {
+		return ""
+	}
+	return mgr.SummaryPath()
+}
+
 func flushSQLTraceRoundSummary(roundID string) {
 	mgr := currentSQLTraceManager()
 	if mgr == nil {

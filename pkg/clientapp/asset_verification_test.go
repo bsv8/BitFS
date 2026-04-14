@@ -462,12 +462,13 @@ func seedTestAddressWithKey(t *testing.T, db *sql.DB, privKeyHex string) string 
 		runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
 	}
 
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("build actor: %v", err)
+	mustSetRuntimeIdentityFromRunIn(t, rt)
+	identity := rt.mustIdentity()
+	if identity == nil || identity.Actor == nil {
+		t.Fatal("runtime identity not initialized")
 	}
 
-	return strings.TrimSpace(actor.Addr)
+	return strings.TrimSpace(identity.Actor.Addr)
 }
 
 // TestVerificationQueue_StateTransitionSuccess 验证成功后 status 正确迁移且不再被查到

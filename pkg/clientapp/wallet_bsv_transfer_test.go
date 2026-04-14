@@ -39,6 +39,15 @@ func (walletBSVTransferFailChain) Broadcast(txHex string) (string, error) {
 	return "", fmt.Errorf("broadcast failed")
 }
 
+func walletBSVTransferTestActor(t *testing.T, rt *Runtime) *poolcore.Actor {
+	t.Helper()
+	identity := rt.mustIdentity()
+	if identity == nil || identity.Actor == nil {
+		t.Fatal("runtime identity not initialized")
+	}
+	return identity.Actor
+}
+
 func TestTriggerWalletBSVTransfer_Success(t *testing.T) {
 	t.Parallel()
 
@@ -48,10 +57,7 @@ func TestTriggerWalletBSVTransfer_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -108,10 +114,7 @@ func TestTriggerWalletBSVTransfer_InsufficientBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 1); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRowsWithAmount: %v", err)
 	}
@@ -172,10 +175,7 @@ func TestTriggerWalletBSVTransfer_InvalidAddress(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -220,10 +220,7 @@ func TestTriggerBizOrderPayBSV_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -264,10 +261,7 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -311,10 +305,7 @@ func TestTriggerBizOrderPayBSV_InsufficientBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 1); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -348,10 +339,7 @@ func TestTriggerBizOrderPayBSV_WaitingFundCanRetry(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 1); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -432,18 +420,13 @@ func TestTriggerBizOrderPayBSV_BroadcastFailed(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
-	rt := &Runtime{
-		runIn:       newWalletBSVTransferTestRuntime(t).runIn,
-		ActionChain: walletBSVTransferFailChain{},
-	}
+	rt := newWalletBSVTransferTestRuntime(t)
+	rt.ActionChain = walletBSVTransferFailChain{}
 	fromAddress, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -474,10 +457,7 @@ func TestTriggerBizOrderPayBSV_MultiplePaymentsSameOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
-	}
+	actor := walletBSVTransferTestActor(t, rt)
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 20); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
@@ -513,10 +493,12 @@ func newWalletBSVTransferTestRuntime(t *testing.T) *Runtime {
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = privHex
-	return &Runtime{
+	rt := &Runtime{
 		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
 		ActionChain: walletBSVTransferMockChain{},
 	}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
+	return rt
 }
 
 func seedWalletBSVTransferTestRows(t *testing.T, db *sql.DB, address string, ownerPubkeyHex string, amounts ...uint64) error {

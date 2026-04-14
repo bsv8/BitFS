@@ -379,9 +379,13 @@ func buildWalletBSV21SendTx(ctx context.Context, store *clientDB, rt *Runtime, s
 	if tokenID == "" {
 		return "", "", 0, 0, fmt.Errorf("bsv21 token id is required")
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return "", "", 0, 0, err
+	}
+	actor := identity.Actor
+	if actor == nil {
+		return "", "", 0, 0, fmt.Errorf("runtime not initialized")
 	}
 	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(actor.Addr))
 	if err != nil {

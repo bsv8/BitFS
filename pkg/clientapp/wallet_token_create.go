@@ -222,7 +222,10 @@ func buildWalletTokenCreateSubmit(r *http.Request, s *httpAPIServer, req walletA
 	if err := applyLocalBroadcastWalletTx(r.Context(), s.store, s.rt, txHex, "wallet_token_create_submit"); err != nil {
 		return walletAssetActionSubmitResp{}, fmt.Errorf("project token create failed: %w", err)
 	}
-	addr, _ := clientWalletAddress(s.rt)
+	addr, err := clientWalletAddress(s.rt)
+	if err != nil {
+		return walletAssetActionSubmitResp{}, err
+	}
 	walletID := walletIDByAddress(addr)
 	nowUnix := time.Now().Unix()
 	factPayload := marshalFactBSV21Payload(map[string]any{
@@ -443,9 +446,13 @@ func buildWalletBSV21CreateTx(ctx context.Context, store *clientDB, rt *Runtime,
 	if rt == nil {
 		return "", "", 0, 0, fmt.Errorf("runtime not initialized")
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return "", "", 0, 0, err
+	}
+	actor := identity.Actor
+	if actor == nil {
+		return "", "", 0, 0, fmt.Errorf("runtime not initialized")
 	}
 	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(actor.Addr))
 	if err != nil {

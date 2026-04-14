@@ -175,6 +175,11 @@ func dbUpsertRouteIndex(ctx context.Context, store *clientDB, route string, seed
 	return now, nil
 }
 
+// upsertPublishedRouteIndex 兼容旧测试入口。
+func upsertPublishedRouteIndex(ctx context.Context, store *clientDB, route string, seedHash string) (int64, error) {
+	return dbUpsertRouteIndex(ctx, store, route, seedHash)
+}
+
 func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) (uint32, bool) {
 	if store == nil {
 		return 0, false

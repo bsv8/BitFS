@@ -376,7 +376,9 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		t.Fatalf("seed chain tip state: %v", err)
 	}
 	buyUTXOID := strings.Repeat("11", 32)
-	buyerAddr, err := clientWalletAddress(&Runtime{runIn: RunInput{EffectivePrivKeyHex: buyerPrivHex, BSV: struct{ Network string }{Network: "test"}}})
+	buyerRT := &Runtime{runIn: RunInput{EffectivePrivKeyHex: buyerPrivHex, BSV: struct{ Network string }{Network: "test"}}}
+	mustSetRuntimeIdentityFromRunIn(t, buyerRT)
+	buyerAddr, err := clientWalletAddress(buyerRT)
 	if err != nil {
 		t.Fatalf("derive buyer wallet address: %v", err)
 	}
@@ -418,6 +420,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 			BSV:                 struct{ Network string }{Network: "test"},
 		},
 	}
+	mustSetRuntimeIdentityFromRunIn(t, buyer)
 	buyer.runIn.Network.Arbiters = []PeerNode{{Enabled: true, Addr: arbHost.Addrs()[0].String() + "/p2p/" + arbHost.ID().String(), Pubkey: arbPubHex}}
 
 	quotes, err := TriggerClientListDirectQuotes(context.Background(), store, demandID)

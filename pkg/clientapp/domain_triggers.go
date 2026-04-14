@@ -283,7 +283,11 @@ func TriggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	if strings.TrimSpace(rt.runIn.ClientID) == "" {
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(identity.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
 	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
@@ -305,7 +309,7 @@ func TriggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 	}
 	queryResp := queryOut.Response
 	out.Name = name
-	out.OwnerPubkeyHex = strings.TrimSpace(rt.runIn.ClientID)
+	out.OwnerPubkeyHex = strings.TrimSpace(identity.ClientID)
 	out.QueryFeeChargedSatoshi = queryResp.ChargedAmount
 	if !queryResp.Success {
 		out.Code = strings.ToUpper(strings.TrimSpace(queryResp.Status))
@@ -353,7 +357,7 @@ func TriggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 	if !strings.EqualFold(quote.Name, name) {
 		return out, fmt.Errorf("register quote name mismatch")
 	}
-	if !strings.EqualFold(quote.OwnerPubkeyHex, rt.runIn.ClientID) {
+	if !strings.EqualFold(quote.OwnerPubkeyHex, identity.ClientID) {
 		return out, fmt.Errorf("register quote owner mismatch")
 	}
 	if !strings.EqualFold(quote.TargetPubkeyHex, targetPubkeyHex) {
@@ -361,7 +365,7 @@ func TriggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 	}
 	out.Ok = true
 	out.Code = "LOCKED"
-	out.OwnerPubkeyHex = strings.TrimSpace(rt.runIn.ClientID)
+	out.OwnerPubkeyHex = strings.TrimSpace(identity.ClientID)
 	out.TargetPubkeyHex = targetPubkeyHex
 	out.RegisterPriceSatoshi = quote.RegisterPriceSatoshi
 	out.RegisterSubmitFeeSatoshi = quote.RegisterSubmitFeeSatoshi
@@ -378,7 +382,11 @@ func TriggerDomainPrepareRegister(ctx context.Context, store *clientDB, rt *Runt
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	if strings.TrimSpace(rt.runIn.ClientID) == "" {
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(identity.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
 	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
@@ -400,7 +408,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, store *clientDB, rt *Runt
 	}
 	queryResp := queryOut.Response
 	out.Name = name
-	out.OwnerPubkeyHex = strings.TrimSpace(rt.runIn.ClientID)
+	out.OwnerPubkeyHex = strings.TrimSpace(identity.ClientID)
 	out.QueryFeeChargedSatoshi = queryResp.ChargedAmount
 	if !queryResp.Success {
 		out.Code = strings.ToUpper(strings.TrimSpace(queryResp.Status))
@@ -449,7 +457,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, store *clientDB, rt *Runt
 	if !strings.EqualFold(quote.Name, name) {
 		return out, fmt.Errorf("register quote name mismatch")
 	}
-	if !strings.EqualFold(quote.OwnerPubkeyHex, rt.runIn.ClientID) {
+	if !strings.EqualFold(quote.OwnerPubkeyHex, identity.ClientID) {
 		return out, fmt.Errorf("register quote owner mismatch")
 	}
 	if !strings.EqualFold(quote.TargetPubkeyHex, targetPubkeyHex) {
@@ -484,7 +492,11 @@ func TriggerDomainSubmitPreparedRegister(ctx context.Context, store *clientDB, r
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	if strings.TrimSpace(rt.runIn.ClientID) == "" {
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(identity.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
 	resolverPubkeyHex, _, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
@@ -556,7 +568,11 @@ func TriggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, p
 	if rt == nil || rt.Host == nil || rt.ActionChain == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	if strings.TrimSpace(rt.runIn.ClientID) == "" {
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return out, err
+	}
+	if strings.TrimSpace(identity.ClientID) == "" {
 		return out, fmt.Errorf("client identity not initialized")
 	}
 	resolverPubkeyHex, resolverPeerID, err := ensureDomainPeerConnected(ctx, store, rt, p.ResolverPubkeyHex, p.ResolverAddr)
@@ -592,7 +608,7 @@ func TriggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, p
 		out.Message = "domain not registered"
 		return out, nil
 	}
-	if !strings.EqualFold(queryResp.OwnerPubkeyHex, rt.runIn.ClientID) {
+	if !strings.EqualFold(queryResp.OwnerPubkeyHex, identity.ClientID) {
 		out.Code = "FORBIDDEN"
 		out.Message = "only owner can update target"
 		out.OwnerPubkeyHex = strings.TrimSpace(queryResp.OwnerPubkeyHex)
@@ -826,9 +842,13 @@ func buildDomainRegisterTxDetailed(store *clientDB, rt *Runtime, signedQuoteJSON
 	if rt == nil || rt.ActionChain == nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("runtime chain not initialized")
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return builtDomainRegisterTx{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return builtDomainRegisterTx{}, fmt.Errorf("runtime not initialized")
 	}
 	utxos, err := getWalletUTXOsFromDB(context.Background(), store, rt)
 	if err != nil {

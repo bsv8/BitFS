@@ -17,6 +17,7 @@ func TestWalletTokenSendSubmit_FailWhenAppendTokenConsumptionFailed(t *testing.T
 		ActionChain: &feePoolKernelMockChain{},
 	}
 	rt.runIn.BSV.Network = "test"
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	srv := &httpAPIServer{
 		rt:    rt,
 		store: newClientDB(db, nil),
@@ -47,6 +48,7 @@ func TestAppendBSV21TokenSendAccountingAfterBroadcast_ErrorWhenNoTokenCarrierInp
 		},
 	}
 	rt.runIn.BSV.Network = "test"
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	err := appendBSV21TokenSendAccountingAfterBroadcast(
 		httptest.NewRequest("POST", "/api/v1/wallet/tokens/send/submit", nil).Context(),
 		store,

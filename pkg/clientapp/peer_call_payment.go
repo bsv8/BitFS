@@ -227,6 +227,10 @@ func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, store *clien
 	if err != nil {
 		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, err
 	}
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, err
+	}
 	quote, quoteHash, err := poolcore.ParseAndVerifyServiceQuote(quotedResp.ServiceQuote, gatewayPub)
 	if err != nil {
 		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, err
@@ -234,11 +238,11 @@ func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, store *clien
 	offer := payflow.ServiceOffer{
 		ServiceType:          peerCallQuotedServiceType(req.Route),
 		ServiceNodePubkeyHex: strings.ToLower(gatewayPub.ToDERHex()),
-		ClientPubkeyHex:      strings.ToLower(strings.TrimSpace(rt.runIn.ClientID)),
+		ClientPubkeyHex:      identity.ClientIDLower,
 		RequestParams:        append([]byte(nil), serviceParamsPayload...),
 		CreatedAtUnix:        time.Now().Unix(),
 	}
-	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, rt.runIn.ClientID, peerCallQuotedServiceType(req.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
+	if err := poolcore.ValidateServiceQuoteBinding(quote, offer, offer.ServiceNodePubkeyHex, identity.ClientID, peerCallQuotedServiceType(req.Route), serviceParamsPayload, time.Now().Unix()); err != nil {
 		return ncall.CallResp{}, feePoolServiceQuoteBuilt{}, poolcore.InfoResp{}, err
 	}
 	chargeReason := strings.TrimSpace(option.Description)
@@ -498,9 +502,13 @@ func prepareFeePoolChargeFromQuote(rt *Runtime, targetPeerID peer.ID, quoted fee
 	if !ok || session == nil || strings.TrimSpace(session.SpendTxID) == "" {
 		return feePoolChargeContext{}, fmt.Errorf("fee pool session missing for peer=%s", targetPeerID)
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return feePoolChargeContext{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return feePoolChargeContext{}, fmt.Errorf("runtime not initialized")
 	}
 	built, err := buildFeePoolUpdatedTxWithProof(feePoolProofArgs{
 		Session:             session,

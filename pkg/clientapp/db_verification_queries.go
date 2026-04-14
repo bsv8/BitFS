@@ -463,6 +463,37 @@ const (
 // failed 超阈值
 
 // confirmed_without_fact 非 0
+func emitVerificationThresholdAlerts(ctx context.Context, store *clientDB, trigger string) {
+	if store == nil {
+		return
+	}
+	summary, err := dbGetVerificationQueueSummary(ctx, store)
+	if err != nil {
+		obs.Error("bitcast-client", "verification_threshold_alert", map[string]any{
+			"error":   err.Error(),
+			"trigger": trigger,
+		})
+		return
+	}
+	report, err := dbCheckVerificationReconciliation(ctx, store)
+	if err != nil {
+		obs.Error("bitcast-client", "verification_threshold_alert", map[string]any{
+			"error":   err.Error(),
+			"trigger": trigger,
+		})
+		return
+	}
+	fields := map[string]any{
+		"failed":                 summary.Failed,
+		"confirmed_without_fact": report.Summary["confirmed_without_fact"],
+		"trigger":                trigger,
+	}
+	if summary.Failed > verificationAlertFailedThreshold || report.Summary["confirmed_without_fact"] > 0 {
+		obs.Error("bitcast-client", "verification_threshold_alert", fields)
+		return
+	}
+	obs.Info("bitcast-client", "verification_threshold_alert", fields)
+}
 
 // ==================== 审计日志 ====================
 

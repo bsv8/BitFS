@@ -41,24 +41,24 @@ func TestValidateClientIdentityConsistency_Mismatch(t *testing.T) {
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
 	cfg.ClientID, _ = clientIDFromPrivHex("2222222222222222222222222222222222222222222222222222222222222222")
 
-	if err := validateClientIdentityConsistency(cfg); err == nil {
+	if _, err := buildClientIdentityCaps(NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)); err == nil {
 		t.Fatalf("expected mismatch error, got nil")
 	}
 }
 
-func TestBuildClientActorFromConfig_MismatchRejected(t *testing.T) {
+func TestBuildClientIdentityCaps_MismatchRejected(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{}
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
 	cfg.ClientID, _ = clientIDFromPrivHex("2222222222222222222222222222222222222222222222222222222222222222")
 
-	if _, err := buildClientActorFromConfig(cfg); err == nil {
+	if _, err := buildClientIdentityCaps(NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)); err == nil {
 		t.Fatalf("expected mismatch error, got nil")
 	}
 }
 
-func TestBuildClientActorFromConfig_MatchAccepted(t *testing.T) {
+func TestBuildClientIdentityCaps_MatchAccepted(t *testing.T) {
 	t.Parallel()
 
 	cfg := Config{}
@@ -70,11 +70,26 @@ func TestBuildClientActorFromConfig_MatchAccepted(t *testing.T) {
 	}
 	cfg.ClientID = id
 
-	actor, err := buildClientActorFromConfig(cfg)
+	identity, err := buildClientIdentityCaps(NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex))
 	if err != nil {
-		t.Fatalf("build actor: %v", err)
+		t.Fatalf("build identity: %v", err)
 	}
-	if actor == nil {
-		t.Fatalf("actor should not be nil")
+	if identity == nil || identity.Actor == nil {
+		t.Fatalf("identity should not be nil")
+	}
+	if identity.ClientID != id {
+		t.Fatalf("client id mismatch: got=%s want=%s", identity.ClientID, id)
+	}
+	if identity.ClientIDLower != id {
+		t.Fatalf("client id lower mismatch: got=%s want=%s", identity.ClientIDLower, id)
+	}
+}
+
+func TestRuntimeIdentityMissingFails(t *testing.T) {
+	t.Parallel()
+
+	rt := &Runtime{}
+	if _, err := rt.runtimeIdentity(); err == nil {
+		t.Fatalf("expected runtime identity missing error, got nil")
 	}
 }

@@ -16,6 +16,7 @@ func TestHandleAdminChainUTXOStatus_UsesWalletUTXORows(t *testing.T) {
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
 	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)

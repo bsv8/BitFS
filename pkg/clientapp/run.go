@@ -525,6 +525,7 @@ type Runtime struct {
 	// DB              *sql.DB
 	// DBActor         *sqliteactor.Actor
 	store           *clientDB
+	identity        *clientIdentityCaps
 	runIn           RunInput
 	StartedAtUnix   int64
 	HealthyGWs      []peer.AddrInfo
@@ -604,7 +605,26 @@ func (r *Runtime) ClientID() string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.runIn.ClientID)
+	identity, err := r.runtimeIdentity()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(identity.ClientID)
+}
+
+// runtimeIdentity 返回运行时只读身份能力。
+// 设计约束：身份只在启动装配一次，业务侧只读，不再回看 runIn。
+func (r *Runtime) runtimeIdentity() (*clientIdentityCaps, error) {
+	if r == nil || r.identity == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	return r.identity, nil
+}
+
+// mustIdentity 是内部快捷入口，调用方仍然要判空并在需要时返回业务错误。
+func (r *Runtime) mustIdentity() *clientIdentityCaps {
+	identity, _ := r.runtimeIdentity()
+	return identity
 }
 
 // DB 返回运行时底层 clientDB 指针，供 e2e 测试和内部桥接函数访问。
@@ -641,7 +661,14 @@ func (r *Runtime) BSVNetwork() string {
 	if r == nil {
 		return ""
 	}
-	return strings.TrimSpace(r.runIn.BSV.Network)
+	identity, err := r.runtimeIdentity()
+	if err != nil || identity == nil {
+		return "test"
+	}
+	if identity.IsMainnet {
+		return "main"
+	}
+	return "test"
 }
 
 func (r *Runtime) NetworkArbiters() []PeerNode {
@@ -873,7 +900,9 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		obs.Info("bitcast-client", "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": cfg.ClientID, "effective_client_pubkey_hex": clientPubHex})
 	}
 	cfg.ClientID = clientPubHex
-	if err := validateClientIdentityConsistency(cfg); err != nil {
+	in.applyConfig(cfg)
+	identity, err := buildClientIdentityCaps(in)
+	if err != nil {
 		_ = h.Close()
 		closeOwnedDB()
 		if removeObs != nil {
@@ -933,7 +962,6 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		})
 	}
 
-	in.applyConfig(cfg)
 	obs.Important("bitcast-client", "started", map[string]any{
 		"transport_peer_id": h.ID().String(),
 		"pubkey_hex":        clientPubHex,
@@ -952,6 +980,7 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		Host:                     h,
 		ctx:                      ctx,
 		store:                    store,
+		identity:                 identity,
 		runIn:                    in,
 		StartedAtUnix:            time.Now().Unix(),
 		HealthyGWs:               healthyGWs,
@@ -2312,8 +2341,10 @@ func nodeSecForRuntime(rt *Runtime) pproto.SecurityConfig {
 	trace := pproto.TraceSink(nil)
 	if rt != nil {
 		trace = rt.rpcTrace
-		if strings.TrimSpace(rt.runIn.BSV.Network) != "" {
-			network = strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network))
+		if identity, err := rt.runtimeIdentity(); err == nil && identity != nil {
+			if identity.IsMainnet {
+				network = "main"
+			}
 		}
 	}
 	return pproto.SecurityConfig{Domain: "bitfs-node", Network: network, TTL: 30 * time.Second, Trace: trace}
@@ -2364,40 +2395,6 @@ func normalizeRawSecp256k1PrivKeyHex(s string) (string, error) {
 		return "", fmt.Errorf("invalid secp256k1 private key length: got=%d want=32", len(raw))
 	}
 	return strings.ToLower(hex.EncodeToString(raw)), nil
-}
-
-func buildClientActorFromRunInput(in RunInput) (*poolcore.Actor, error) {
-	privHex, err := normalizeRawSecp256k1PrivKeyHex(in.EffectivePrivKeyHex)
-	if err != nil {
-		return nil, err
-	}
-	if cid := strings.TrimSpace(in.ClientID); cid != "" {
-		derivedID, err := clientIDFromPrivHex(privHex)
-		if err != nil {
-			return nil, fmt.Errorf("derive client_pubkey_hex from signing key failed: %w", err)
-		}
-		if !strings.EqualFold(cid, derivedID) {
-			return nil, fmt.Errorf("client_pubkey_hex and signing key mismatch")
-		}
-	}
-	isMainnet := strings.EqualFold(strings.TrimSpace(in.BSV.Network), "main")
-	return poolcore.BuildActor("client", privHex, isMainnet)
-}
-
-func validateClientIdentityConsistency(cfg Config) error {
-	privHex := strings.TrimSpace(cfg.Keys.PrivkeyHex)
-	clientID := strings.TrimSpace(cfg.ClientID)
-	if privHex == "" || clientID == "" {
-		return nil
-	}
-	derivedID, err := clientIDFromPrivHex(privHex)
-	if err != nil {
-		return fmt.Errorf("derive client_pubkey_hex from signing key failed: %w", err)
-	}
-	if !strings.EqualFold(clientID, derivedID) {
-		return fmt.Errorf("client_pubkey_hex and signing key mismatch")
-	}
-	return nil
 }
 
 func clientIDFromPrivHex(privHex string) (string, error) {

@@ -45,7 +45,7 @@ func TestTriggerWalletOrderSign_DomainRegisterTemplateBuildsSignedTx(t *testing.
 	t.Parallel()
 
 	rt, store := newWalletOrderTestRuntime(t)
-	clientPubkeyHex := rt.runIn.ClientID
+	clientPubkeyHex := rt.ClientID()
 	targetPubkeyHex, err := clientIDFromPrivHex("3333333333333333333333333333333333333333333333333333333333333333")
 	if err != nil {
 		t.Fatalf("derive target pubkey failed: %v", err)
@@ -133,6 +133,7 @@ func newWalletOrderTestRuntime(t *testing.T) (*Runtime, *clientDB) {
 		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
 		ActionChain: &feePoolKernelMockChain{},
 	}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress failed: %v", err)

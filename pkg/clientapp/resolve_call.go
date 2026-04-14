@@ -166,8 +166,10 @@ func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.C
 
 func clientCapabilitiesShowBody(rt *Runtime) contractmessage.CapabilitiesShowBody {
 	nodePubkeyHex := ""
-	if rt != nil && rt.runIn.ClientID != "" {
-		nodePubkeyHex = strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
+	if rt != nil {
+		if identity := rt.mustIdentity(); identity != nil {
+			nodePubkeyHex = strings.TrimSpace(identity.ClientIDLower)
+		}
 	}
 	return contractmessage.CapabilitiesShowBody{
 		NodePubkeyHex: nodePubkeyHex,

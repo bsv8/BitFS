@@ -99,9 +99,13 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 	if rt == nil || rt.ActionChain == nil {
 		return BizOrderPayBSVResponse{}, fmt.Errorf("runtime not initialized")
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return BizOrderPayBSVResponse{}, err
+	}
+	actor := identity.Actor
+	if actor == nil {
+		return BizOrderPayBSVResponse{}, fmt.Errorf("runtime not initialized")
 	}
 	fromPubHex := strings.ToLower(strings.TrimSpace(actor.PubHex))
 	fromAddress := strings.TrimSpace(actor.Addr)
@@ -768,7 +772,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 		FrontOrderID:     frontOrderID,
 		FrontType:        "download",
 		FrontSubtype:     "direct_transfer",
-		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
 		TargetObjectType: "demand",
 		TargetObjectID:   strings.TrimSpace(p.DemandID),
 		FrontOrderNote:   "下载: " + strings.TrimSpace(p.DemandID),
@@ -850,14 +854,16 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 		return directTransferPoolOpenResult{}, err
 	}
 
-	clientPrivHex := strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex)
-	clientActor, err := poolcore.BuildActor("buyer", clientPrivHex, strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
+	identity, err := buyer.runtimeIdentity()
 	if err != nil {
 		return directTransferPoolOpenResult{}, err
 	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")
+	}
 	clientLockScript := ""
-	isMainnet := strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main"
-	if addr, addrErr := kmlibs.GetAddressFromPubKey(clientActor.PubKey, isMainnet); addrErr == nil {
+	if addr, addrErr := kmlibs.GetAddressFromPubKey(clientActor.PubKey, identity.IsMainnet); addrErr == nil {
 		if lock, lockErr := p2pkh.Lock(addr); lockErr == nil {
 			clientLockScript = strings.TrimSpace(lock.String())
 		}
@@ -953,7 +959,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 		req := directTransferPoolOpenReq{
 			SessionId:        curSessionID,
 			DealId:           dealID,
-			BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+			BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
 			ArbiterPubkeyHex: strings.TrimSpace(p.ArbiterPubHex),
 			ArbiterPubkey:    arbiterPubHex,
 			PoolAmount:       baseResp.Amount,
@@ -1095,7 +1101,11 @@ func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt *Runtime, flowI
 		return selected, "", nil
 	}
 
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network)) == "main"
+	identity, err := rt.runtimeIdentity()
+	if err != nil {
+		return nil, "", err
+	}
+	isMainnet := identity.IsMainnet
 	clientAddr, err := kmlibs.GetAddressFromPubKey(actor.PubKey, isMainnet)
 	if err != nil {
 		return nil, "", fmt.Errorf("derive client address failed: %w", err)
@@ -1215,9 +1225,13 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	if err != nil {
 		return directTransferPoolPayResult{}, err
 	}
-	clientActor, err := poolcore.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
+	identity, err := buyer.runtimeIdentity()
 	if err != nil {
 		return directTransferPoolPayResult{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return directTransferPoolPayResult{}, fmt.Errorf("runtime not initialized")
 	}
 	sellerPub, err := ec.PublicKeyFromString(session.SellerPubKeyHex)
 	if err != nil {
@@ -1379,9 +1393,13 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
-	clientActor, err := poolcore.BuildActor("buyer", strings.TrimSpace(buyer.runIn.EffectivePrivKeyHex), strings.ToLower(strings.TrimSpace(buyer.runIn.BSV.Network)) == "main")
+	identity, err := buyer.runtimeIdentity()
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return directTransferPoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
 	sellerPub, err := ec.PublicKeyFromString(session.SellerPubKeyHex)
 	if err != nil {
@@ -1508,7 +1526,7 @@ func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
 		fields = map[string]any{}
 	}
 	if rt != nil {
-		clientID := strings.ToLower(strings.TrimSpace(rt.runIn.ClientID))
+		clientID := strings.ToLower(strings.TrimSpace(rt.ClientID()))
 		if clientID != "" {
 			if _, ok := fields["client_pubkey_hex"]; !ok {
 				fields["client_pubkey_hex"] = clientID
@@ -1692,7 +1710,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 	var resp directDealAcceptResp
 	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
 		DemandId:         strings.TrimSpace(p.DemandID),
-		BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.runIn.ClientID)),
+		BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
 		SeedHash:         strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		SeedPrice:        p.SeedPrice,
 		ChunkPrice:       p.ChunkPrice,

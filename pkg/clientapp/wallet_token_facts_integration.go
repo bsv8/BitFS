@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokencarrierlinks"
 )
@@ -98,6 +100,14 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 // 直接计算余额
 
 // logTokenBalanceSuccess 记录主路径成功日志
+func logTokenBalanceSuccess(ctx context.Context, walletID string, assetKind string, tokenID string, quantityText string) {
+	obs.Info("bitcast-client", "wallet_token_balance_success", map[string]any{
+		"wallet_id":     strings.TrimSpace(walletID),
+		"asset_kind":    strings.TrimSpace(assetKind),
+		"token_id":      strings.TrimSpace(tokenID),
+		"quantity_text": strings.TrimSpace(quantityText),
+	})
+}
 
 // loadWalletTokenSpendableCandidatesFromFact 从 fact 表加载 token 可花费候选
 // 设计说明（硬切版）：
@@ -123,7 +133,7 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 
 	if len(lots) == 0 {
 		// 检查是否有历史记录
-		hasHistory, err := hasFactTokenHistory(ctx, store, "wallet:"+ownerPubkeyHex, assetKind, tokenID)
+		hasHistory, err := hasFactTokenHistory(ctx, store, ownerPubkeyHex, assetKind, tokenID)
 		if err != nil {
 			return nil, fmt.Errorf("check token fact history: %w", err)
 		}
@@ -184,6 +194,207 @@ func loadWalletTokenSpendableCandidatesFromFact(ctx context.Context, store *clie
 	}
 
 	return out, nil
+}
+
+// loadWalletBSV21SpendableCandidates 兼容旧测试的 BSV21 入口。
+// 设计说明：
+// - 生产主路径先走 fact 口径；
+// - 旧测试还会种本地广播投影，所以这里保留“fact 优先、本地回落”的兼容层；
+// - 这样不会把主路径重新拉回旧表，只是给测试留最后一层入口。
+func loadWalletBSV21SpendableCandidates(ctx context.Context, store *clientDB, rt *Runtime, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+	items, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, "BSV21", assetKey)
+	if err == nil && len(items) > 0 {
+		return items, nil
+	}
+	localItems, localErr := loadWalletBSV21LocalSpendableCandidates(ctx, store, address, assetKey)
+	if len(localItems) > 0 || localErr == nil {
+		return localItems, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nil, localErr
+}
+
+// loadWalletBSV21LocalSpendableCandidates 从本地广播投影里找旧测试的 BSV21 候选。
+// 设计说明：
+// - 这里只服务“本地已广播、尚未上链确认”的测试场景；
+// - 真实业务不应再依赖这条路径，只保留给老测试和最小夹具使用；
+// - 候选要同时满足：本地广播表里有 tx_hex，wallet_utxo 里有对应输出。
+func loadWalletBSV21LocalSpendableCandidates(ctx context.Context, store *clientDB, address string, assetKey string) ([]walletTokenPreviewCandidate, error) {
+	if store == nil {
+		return nil, fmt.Errorf("client db is nil")
+	}
+	address = strings.TrimSpace(address)
+	if address == "" {
+		return nil, fmt.Errorf("address is required")
+	}
+	tokenID := walletBSV21TokenIDFromAssetKey(assetKey)
+	if tokenID == "" {
+		return []walletTokenPreviewCandidate{}, nil
+	}
+	walletID := walletIDByAddress(address)
+	type txRow struct {
+		TxHex     string
+		UpdatedAt int64
+	}
+	type utxoRow struct {
+		UTXOID           string
+		TxID             string
+		Vout             uint32
+		ValueSatoshi     uint64
+		State            string
+		AllocationClass  string
+		AllocationReason string
+		UpdatedAt        int64
+	}
+	return clientDBValue(ctx, store, func(db sqlConn) ([]walletTokenPreviewCandidate, error) {
+		txRows := map[string]txRow{}
+		records, err := QueryContext(ctx, db, `
+			SELECT txid, tx_hex, updated_at_unix
+			  FROM wallet_local_broadcast_txs
+			 WHERE wallet_id=? AND address=?
+			 ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`,
+			walletID, address,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for records.Next() {
+			var row struct {
+				TxID      string
+				TxHex     string
+				UpdatedAt int64
+			}
+			if err := records.Scan(&row.TxID, &row.TxHex, &row.UpdatedAt); err != nil {
+				_ = records.Close()
+				return nil, err
+			}
+			row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
+			row.TxHex = strings.ToLower(strings.TrimSpace(row.TxHex))
+			if row.TxID == "" || row.TxHex == "" {
+				continue
+			}
+			txRows[row.TxID] = txRow{TxHex: row.TxHex, UpdatedAt: row.UpdatedAt}
+		}
+		if err := records.Err(); err != nil {
+			_ = records.Close()
+			return nil, err
+		}
+		_ = records.Close()
+		if len(txRows) == 0 {
+			return []walletTokenPreviewCandidate{}, nil
+		}
+
+		utxoRows := make([]utxoRow, 0, 8)
+		utxos, err := QueryContext(ctx, db, `
+			SELECT utxo_id, txid, vout, value_satoshi, state, allocation_class, allocation_reason, updated_at_unix
+			  FROM wallet_utxo
+			 WHERE wallet_id=? AND address=?
+			 ORDER BY created_at_unix ASC, updated_at_unix ASC, utxo_id ASC`,
+			walletID, address,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for utxos.Next() {
+			var row utxoRow
+			var vout int64
+			if err := utxos.Scan(&row.UTXOID, &row.TxID, &vout, &row.ValueSatoshi, &row.State, &row.AllocationClass, &row.AllocationReason, &row.UpdatedAt); err != nil {
+				_ = utxos.Close()
+				return nil, err
+			}
+			row.UTXOID = strings.ToLower(strings.TrimSpace(row.UTXOID))
+			row.TxID = strings.ToLower(strings.TrimSpace(row.TxID))
+			row.State = strings.ToLower(strings.TrimSpace(row.State))
+			row.AllocationClass = strings.ToLower(strings.TrimSpace(row.AllocationClass))
+			row.AllocationReason = strings.TrimSpace(row.AllocationReason)
+			row.Vout = uint32(vout)
+			if row.UTXOID == "" || row.TxID == "" {
+				continue
+			}
+			utxoRows = append(utxoRows, row)
+		}
+		if err := utxos.Err(); err != nil {
+			_ = utxos.Close()
+			return nil, err
+		}
+		_ = utxos.Close()
+
+		out := make([]walletTokenPreviewCandidate, 0, len(utxoRows))
+		for _, row := range utxoRows {
+			if row.State != "unspent" {
+				continue
+			}
+			if row.AllocationClass != walletUTXOAllocationProtectedAsset {
+				continue
+			}
+			txRowData, ok := txRows[row.TxID]
+			if !ok {
+				continue
+			}
+			tx, err := txsdk.NewTransactionFromHex(strings.TrimSpace(txRowData.TxHex))
+			if err != nil {
+				continue
+			}
+			var payload map[string]any
+			found := false
+			for _, output := range tx.Outputs {
+				if output == nil || output.LockingScript == nil {
+					continue
+				}
+				p, ok := decodeWalletTokenEnvelopePayload(output.LockingScript)
+				if !ok {
+					continue
+				}
+				if !strings.EqualFold(firstNonEmptyStringField(p, "p"), "bsv-20") {
+					continue
+				}
+				if !strings.EqualFold(firstNonEmptyStringField(p, "op"), "deploy+mint") {
+					continue
+				}
+				payload = p
+				found = true
+				break
+			}
+			if !found {
+				continue
+			}
+			rowTokenID := walletTokenCreateTokenIDFromTxID(row.TxID, row.Vout)
+			if !strings.EqualFold(rowTokenID, tokenID) {
+				continue
+			}
+			quantityText := strings.TrimSpace(firstNonEmptyStringField(payload, "amt"))
+			if quantityText == "" {
+				continue
+			}
+			assetSymbol := strings.TrimSpace(firstNonEmptyStringField(payload, "sym"))
+			rawPayload, err := json.Marshal(payload)
+			if err != nil {
+				rawPayload = []byte(`{}`)
+			}
+			out = append(out, walletTokenPreviewCandidate{
+				Item: walletTokenOutputItem{
+					UTXOID:           row.UTXOID,
+					WalletAddress:    address,
+					TxID:             row.TxID,
+					Vout:             row.Vout,
+					ValueSatoshi:     row.ValueSatoshi,
+					AllocationClass:  row.AllocationClass,
+					AllocationReason: row.AllocationReason,
+					TokenStandard:    "BSV21",
+					AssetKey:         "bsv21:" + rowTokenID,
+					AssetSymbol:      assetSymbol,
+					QuantityText:     quantityText,
+					SourceName:       "local",
+					UpdatedAtUnix:    txRowData.UpdatedAt,
+					Payload:          json.RawMessage(rawPayload),
+				},
+				CreatedAtUnix: txRowData.UpdatedAt,
+			})
+		}
+		return out, nil
+	})
 }
 
 func splitUTXOID(utxoID string) (string, uint32, bool) {

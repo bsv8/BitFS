@@ -600,8 +600,7 @@ func walletUTXOBalanceSatoshi(store *clientDB, rt *Runtime) (uint64, error) {
 	if rt == nil {
 		return 0, fmt.Errorf("runtime not initialized")
 	}
-	_, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
+	if _, err := rt.runtimeIdentity(); err != nil {
 		return 0, err
 	}
 	_, bal, err := getWalletBalanceFromDB(context.Background(), store, rt)

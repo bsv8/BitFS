@@ -814,11 +814,14 @@ func clientWalletAddress(rt *Runtime) (string, error) {
 	if rt == nil {
 		return "", fmt.Errorf("runtime not initialized")
 	}
-	actor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(actor.Addr), nil
+	if identity.Actor == nil {
+		return "", fmt.Errorf("runtime not initialized")
+	}
+	return strings.TrimSpace(identity.Actor.Addr), nil
 }
 
 type utxoStateRow struct {

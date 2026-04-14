@@ -102,6 +102,14 @@ func requestVisitMetaFromRequest(r *http.Request) requestVisitMeta {
 	}
 }
 
+func requestVisitMetaFromContext(ctx context.Context) requestVisitMeta {
+	if ctx == nil {
+		return requestVisitMeta{}
+	}
+	meta, _ := ctx.Value(requestVisitMetaContextKey).(requestVisitMeta)
+	return meta
+}
+
 func withRequestVisitMeta(r *http.Request) *http.Request {
 	if r == nil {
 		return r

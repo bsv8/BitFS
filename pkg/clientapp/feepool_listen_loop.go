@@ -349,13 +349,16 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 		return nil, fmt.Errorf("invalid gateway secp256k1 pubkey: %w", err)
 	}
 
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return nil, err
 	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
 	clientLockScript := ""
-	isMainnet := strings.ToLower(strings.TrimSpace(rt.runIn.BSV.Network)) == "main"
-	if addr, addrErr := kmlibs.GetAddressFromPubKey(clientActor.PubKey, isMainnet); addrErr == nil {
+	if addr, addrErr := kmlibs.GetAddressFromPubKey(clientActor.PubKey, identity.IsMainnet); addrErr == nil {
 		if lock, lockErr := p2pkh.Lock(addr); lockErr == nil {
 			clientLockScript = strings.TrimSpace(lock.String())
 		}
@@ -471,7 +474,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 	}
 
 	createReq := poolcore.CreateReq{
-		ClientID:       rt.runIn.ClientID,
+		ClientID:       identity.ClientID,
 		SpendTx:        spendTxBytes,
 		InputAmount:    baseResp.Amount,
 		SequenceNumber: 1,
@@ -491,7 +494,7 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 	}
 
 	baseReq := poolcore.BaseTxReq{
-		ClientID:  rt.runIn.ClientID,
+		ClientID:  identity.ClientID,
 		SpendTxID: createResp.SpendTxID,
 		BaseTx:    baseTxBytes,
 		ClientSig: append([]byte(nil), (*clientOpenSig)...),

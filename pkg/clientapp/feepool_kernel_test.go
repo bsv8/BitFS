@@ -45,6 +45,7 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	}
 	rt.runIn.Listen.AutoRenewRounds = 100
 	rt.runIn.BSV.Network = "test"
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)
@@ -82,6 +83,7 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	}
 	rt.runIn.Listen.AutoRenewRounds = 1
 	rt.runIn.BSV.Network = "test"
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)

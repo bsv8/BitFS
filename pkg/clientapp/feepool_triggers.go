@@ -195,9 +195,13 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, store *client
 		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("session current tx missing")
 	}
 
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return FeePoolListenUnderpayProbeResult{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return FeePoolListenUnderpayProbeResult{}, fmt.Errorf("runtime not initialized")
 	}
 
 	underpay := sess.SingleCycleFeeSatoshi - 1
@@ -244,7 +248,7 @@ func TriggerGatewayFeePoolListenUnderpayProbe(ctx context.Context, store *client
 	}
 
 	req := poolcore.PayConfirmReq{
-		ClientID:            rt.runIn.ClientID,
+		ClientID:            identity.ClientID,
 		SpendTxID:           spendTxID,
 		SequenceNumber:      nextSeq,
 		ServerAmount:        nextServerAmount,
@@ -338,9 +342,13 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
-	clientActor, err := buildClientActorFromRunInput(rt.runIn)
+	identity, err := rt.runtimeIdentity()
 	if err != nil {
 		return FeePoolCloseResult{}, err
+	}
+	clientActor := identity.Actor
+	if clientActor == nil {
+		return FeePoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
 
 	finalLock := uint32(0xffffffff)
@@ -358,7 +366,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		"spend_txid":         spendTxID,
 	})
 	resp, err := callNodePoolClose(ctx, rt, gw.ID, poolcore.CloseReq{
-		ClientID:     rt.runIn.ClientID,
+		ClientID:     identity.ClientID,
 		SpendTxID:    spendTxID,
 		ServerAmount: st.ServerAmountSat,
 		Fee:          st.SpendTxFeeSat,

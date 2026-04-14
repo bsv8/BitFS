@@ -34,11 +34,11 @@ func buildTestWalletScriptTokenEnvelopeTxHex(t *testing.T) (string, string, stri
 	t.Helper()
 
 	rt := newWalletBSV21LocalCandidateTestRuntime(t, nil, "http://127.0.0.1:1")
-	actor, err := buildClientActorFromRunInput(rt.runIn)
-	if err != nil {
-		t.Fatalf("buildClientActorFromRunInput: %v", err)
+	identity := rt.mustIdentity()
+	if identity == nil || identity.Actor == nil {
+		t.Fatal("runtime identity not initialized")
 	}
-	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(actor.Addr))
+	walletAddr, err := bsvscript.NewAddressFromString(strings.TrimSpace(identity.Actor.Addr))
 	if err != nil {
 		t.Fatalf("NewAddressFromString: %v", err)
 	}

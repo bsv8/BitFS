@@ -43,6 +43,7 @@ func TestSyncWalletAndApplyFacts_NormalCase(t *testing.T) {
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
 	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	address, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -100,6 +101,7 @@ func TestSyncWalletAndApplyFacts_WritesSyncStateWithoutSQLiteTypeError(t *testin
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
 	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	address, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -143,6 +145,7 @@ func TestSyncWalletAndApplyFacts_Idempotent(t *testing.T) {
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
 	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	address, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -228,6 +231,7 @@ func TestSyncWalletAndApplyFacts_WalletUTXOUpdatedAtMovesOnStateChange(t *testin
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
 	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	address, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)
@@ -331,6 +335,7 @@ func TestSyncWalletAndApplyFacts_FactFailureAndRecovery(t *testing.T) {
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
 	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)}
+	mustSetRuntimeIdentityFromRunIn(t, rt)
 	address, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress: %v", err)

@@ -4,6 +4,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	"github.com/libp2p/go-libp2p/core/crypto"
 )
 
 // normalizeCompressedPubKeyHex 统一系统内公钥格式为 secp256k1 压缩公钥 hex（33 字节，前缀 02/03）。
@@ -27,6 +29,24 @@ func normalizeCompressedPubKeyHex(in string) (string, error) {
 
 // normalizeCompressedPubKeyHexLegacyAware 仅用于历史数据迁移：
 // 允许把旧 libp2p MarshalPublicKey hex（080212...）转换成压缩公钥 hex。
+func normalizeCompressedPubKeyHexLegacyAware(in string) (string, error) {
+	if got, err := normalizeCompressedPubKeyHex(in); err == nil {
+		return got, nil
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(in))
+	if err != nil {
+		return "", fmt.Errorf("invalid pubkey hex")
+	}
+	pub, err := crypto.UnmarshalPublicKey(raw)
+	if err != nil {
+		return "", fmt.Errorf("invalid pubkey hex")
+	}
+	rawPub, err := pub.Raw()
+	if err != nil {
+		return "", fmt.Errorf("invalid pubkey hex")
+	}
+	return normalizeCompressedPubKeyHex(hex.EncodeToString(rawPub))
+}
 
 // normalizePubHexList 统一整理一组公钥 hex。
 // 设计说明：
