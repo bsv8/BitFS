@@ -6,6 +6,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/orders"
 )
 
 // frontOrderItem 前台业务单记录
@@ -80,35 +84,42 @@ func dbUpsertFrontOrder(ctx context.Context, store *clientDB, e frontOrderEntry)
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.FrontOrderID
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO orders(
-				order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,note,payload_json,created_at_unix,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(order_id) DO UPDATE SET
-				order_type=excluded.order_type,
-				order_subtype=excluded.order_subtype,
-				owner_pubkey_hex=excluded.owner_pubkey_hex,
-				target_object_type=excluded.target_object_type,
-				target_object_id=excluded.target_object_id,
-				status=excluded.status,
-				idempotency_key=excluded.idempotency_key,
-				updated_at_unix=excluded.updated_at_unix,
-				note=excluded.note,
-				payload_json=excluded.payload_json`,
-			e.FrontOrderID,
-			strings.TrimSpace(e.FrontType),
-			strings.TrimSpace(e.FrontSubtype),
-			strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex)),
-			strings.TrimSpace(e.TargetObjectType),
-			strings.TrimSpace(e.TargetObjectID),
-			strings.TrimSpace(e.Status),
-			e.IdempotencyKey,
-			strings.TrimSpace(e.Note),
-			mustJSONString(e.Payload),
-			e.CreatedAtUnix,
-			e.UpdatedAtUnix,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.Orders.Query().
+			Where(orders.OrderIDEQ(e.FrontOrderID)).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetOrderType(strings.TrimSpace(e.FrontType)).
+				SetOrderSubtype(strings.TrimSpace(e.FrontSubtype)).
+				SetOwnerPubkeyHex(strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))).
+				SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
+				SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
+				SetStatus(strings.TrimSpace(e.Status)).
+				SetIdempotencyKey(e.IdempotencyKey).
+				SetUpdatedAtUnix(e.UpdatedAtUnix).
+				SetNote(strings.TrimSpace(e.Note)).
+				SetPayloadJSON(mustJSONString(e.Payload)).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.Orders.Create().
+			SetOrderID(e.FrontOrderID).
+			SetOrderType(strings.TrimSpace(e.FrontType)).
+			SetOrderSubtype(strings.TrimSpace(e.FrontSubtype)).
+			SetOwnerPubkeyHex(strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))).
+			SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
+			SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetIdempotencyKey(e.IdempotencyKey).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			SetCreatedAtUnix(e.CreatedAtUnix).
+			SetUpdatedAtUnix(e.UpdatedAtUnix).
+			Save(ctx)
 		return err
 	})
 }
@@ -122,22 +133,25 @@ func dbGetFrontOrder(ctx context.Context, store *clientDB, frontOrderID string) 
 	if frontOrderID == "" {
 		return frontOrderItem{}, fmt.Errorf("order_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (frontOrderItem, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (frontOrderItem, error) {
 		var item frontOrderItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			 FROM orders WHERE order_id=?`,
-			frontOrderID,
-		).Scan(
-			&item.FrontOrderID, &item.FrontType, &item.FrontSubtype, &item.OwnerPubkeyHex,
-			&item.TargetObjectType, &item.TargetObjectID, &item.Status,
-			&item.CreatedAtUnix, &item.UpdatedAtUnix, &item.Note, &payload,
-		)
+		row, err := tx.Orders.Query().
+			Where(orders.OrderIDEQ(frontOrderID)).
+			Only(ctx)
 		if err != nil {
 			return frontOrderItem{}, err
 		}
-		item.Payload = json.RawMessage(payload)
+		item.FrontOrderID = row.OrderID
+		item.FrontType = row.OrderType
+		item.FrontSubtype = row.OrderSubtype
+		item.OwnerPubkeyHex = row.OwnerPubkeyHex
+		item.TargetObjectType = row.TargetObjectType
+		item.TargetObjectID = row.TargetObjectID
+		item.Status = row.Status
+		item.CreatedAtUnix = row.CreatedAtUnix
+		item.UpdatedAtUnix = row.UpdatedAtUnix
+		item.Note = row.Note
+		item.Payload = json.RawMessage(row.PayloadJSON)
 		return item, nil
 	})
 }
@@ -147,69 +161,61 @@ func dbListFrontOrders(ctx context.Context, store *clientDB, f frontOrderFilter)
 	if store == nil {
 		return frontOrderPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (frontOrderPage, error) {
-		where := ""
-		args := make([]any, 0, 16)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (frontOrderPage, error) {
+		q := tx.Orders.Query()
 		if f.FrontOrderID != "" {
-			where += " AND order_id=?"
-			args = append(args, f.FrontOrderID)
+			q = q.Where(orders.OrderIDEQ(f.FrontOrderID))
 		}
 		if f.FrontType != "" {
-			where += " AND order_type=?"
-			args = append(args, f.FrontType)
+			q = q.Where(orders.OrderTypeEQ(f.FrontType))
 		}
 		if f.FrontSubtype != "" {
-			where += " AND order_subtype=?"
-			args = append(args, f.FrontSubtype)
+			q = q.Where(orders.OrderSubtypeEQ(f.FrontSubtype))
 		}
 		if f.OwnerPubkeyHex != "" {
-			where += " AND owner_pubkey_hex=?"
-			args = append(args, strings.ToLower(strings.TrimSpace(f.OwnerPubkeyHex)))
+			q = q.Where(orders.OwnerPubkeyHexEQ(strings.ToLower(strings.TrimSpace(f.OwnerPubkeyHex))))
 		}
 		if f.TargetObjectType != "" {
-			where += " AND target_object_type=?"
-			args = append(args, f.TargetObjectType)
+			q = q.Where(orders.TargetObjectTypeEQ(f.TargetObjectType))
 		}
 		if f.TargetObjectID != "" {
-			where += " AND target_object_id=?"
-			args = append(args, f.TargetObjectID)
+			q = q.Where(orders.TargetObjectIDEQ(f.TargetObjectID))
 		}
 		if f.Status != "" {
-			where += " AND status=?"
-			args = append(args, f.Status)
+			q = q.Where(orders.StatusEQ(f.Status))
 		}
 		var out frontOrderPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM orders WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return frontOrderPage{}, err
-		}
-		if f.Limit <= 0 {
-			f.Limit = 20
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,created_at_unix,updated_at_unix,note,payload_json
-			 FROM orders WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,order_id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
+		total, err := q.Count(ctx)
 		if err != nil {
 			return frontOrderPage{}, err
 		}
-		defer rows.Close()
-		out.Items = make([]frontOrderItem, 0, f.Limit)
-		for rows.Next() {
-			var item frontOrderItem
-			var payload string
-			if err := rows.Scan(
-				&item.FrontOrderID, &item.FrontType, &item.FrontSubtype, &item.OwnerPubkeyHex,
-				&item.TargetObjectType, &item.TargetObjectID, &item.Status,
-				&item.CreatedAtUnix, &item.UpdatedAtUnix, &item.Note, &payload,
-			); err != nil {
-				return frontOrderPage{}, err
-			}
-			item.Payload = json.RawMessage(payload)
-			out.Items = append(out.Items, item)
+		out.Total = total
+		if f.Limit <= 0 {
+			f.Limit = 20
 		}
-		if err := rows.Err(); err != nil {
+		rows, err := q.Order(orders.ByUpdatedAtUnix(entsql.OrderDesc()), orders.ByOrderID(entsql.OrderDesc())).
+			Limit(f.Limit).
+			Offset(f.Offset).
+			All(ctx)
+		if err != nil {
 			return frontOrderPage{}, err
+		}
+		out.Items = make([]frontOrderItem, 0, f.Limit)
+		for _, row := range rows {
+			item := frontOrderItem{
+				FrontOrderID:     row.OrderID,
+				FrontType:        row.OrderType,
+				FrontSubtype:     row.OrderSubtype,
+				OwnerPubkeyHex:   row.OwnerPubkeyHex,
+				TargetObjectType: row.TargetObjectType,
+				TargetObjectID:   row.TargetObjectID,
+				Status:           row.Status,
+				CreatedAtUnix:    row.CreatedAtUnix,
+				UpdatedAtUnix:    row.UpdatedAtUnix,
+				Note:             row.Note,
+				Payload:          json.RawMessage(row.PayloadJSON),
+			}
+			out.Items = append(out.Items, item)
 		}
 		return out, nil
 	})
@@ -224,13 +230,18 @@ func dbUpdateFrontOrderStatus(ctx context.Context, store *clientDB, frontOrderID
 	if frontOrderID == "" {
 		return fmt.Errorf("order_id is required")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`UPDATE orders SET status=?, updated_at_unix=? WHERE order_id=?`,
-			strings.TrimSpace(status),
-			time.Now().Unix(),
-			frontOrderID,
-		)
-		return err
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		affected, err := tx.Orders.Update().
+			Where(orders.OrderIDEQ(frontOrderID)).
+			SetStatus(strings.TrimSpace(status)).
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(ctx)
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return fmt.Errorf("order_id %s not found", frontOrderID)
+		}
+		return nil
 	})
 }

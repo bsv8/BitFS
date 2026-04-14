@@ -277,7 +277,7 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 			return fmt.Errorf("no token transfer outputs found in txid %s", txID)
 		}
 
-		channelID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, dbtx, chainPaymentEntry{
+		_, settlementPaymentAttemptID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, dbtx, chainPaymentEntry{
 			TxID:                 txID,
 			PaymentSubType:       "bsv21_transfer",
 			Status:               "confirmed",
@@ -301,10 +301,6 @@ func appendBSV21TokenSendAccountingAfterBroadcast(ctx context.Context, store *cl
 		}, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", "payment_attempt_chain_direct_pay", "bind chain direct pay channel id")
 		if err != nil {
 			return fmt.Errorf("upsert direct pay channel for token send: %w", err)
-		}
-		settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, dbtx, "chain_direct_pay", fmt.Sprintf("%d", channelID))
-		if err != nil {
-			return fmt.Errorf("resolve settlement payment attempt for token send: %w", err)
 		}
 
 		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, dbtx, settlementPaymentAttemptID, finBusinessEntry{

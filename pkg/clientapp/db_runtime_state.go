@@ -11,6 +11,11 @@ import (
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procinboxmessages"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/proclivefollows"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procnodereachabilitycache"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procselfnodereachabilitystate"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
@@ -18,33 +23,37 @@ func dbStoreInboxMessage(ctx context.Context, store *clientDB, messageID, sender
 	if store == nil {
 		return ncall.CallResp{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (ncall.CallResp, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (ncall.CallResp, error) {
 		now := time.Now().Unix()
-		result, err := ExecContext(ctx, db,
-			`INSERT INTO proc_inbox_messages(message_id,sender_pubkey_hex,target_input,route,content_type,body_bytes,body_size_bytes,received_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?)`,
-			strings.TrimSpace(messageID),
-			strings.TrimSpace(senderPubKeyHex),
-			strings.TrimSpace(targetInput),
-			strings.TrimSpace(route),
-			strings.TrimSpace(contentType),
-			append([]byte(nil), body...),
-			len(body),
-			now,
-		)
-		var inboxID int64
+		messageID = strings.TrimSpace(messageID)
+		senderPubKeyHex = strings.TrimSpace(senderPubKeyHex)
+		targetInput = strings.TrimSpace(targetInput)
+		route = strings.TrimSpace(route)
+		contentType = strings.TrimSpace(contentType)
+		row, err := tx.ProcInboxMessages.Query().Where(
+			procinboxmessages.SenderPubkeyHexEQ(senderPubKeyHex),
+			procinboxmessages.MessageIDEQ(messageID),
+		).Only(ctx)
+		inboxID := int64(0)
 		switch {
 		case err == nil:
-			inboxID, _ = result.LastInsertId()
-		case strings.Contains(strings.ToLower(err.Error()), "unique constraint failed"):
-			row := QueryRowContext(ctx, db,
-				`SELECT id,received_at_unix FROM proc_inbox_messages WHERE sender_pubkey_hex=? AND message_id=?`,
-				strings.TrimSpace(senderPubKeyHex),
-				strings.TrimSpace(messageID),
-			)
-			if scanErr := row.Scan(&inboxID, &now); scanErr != nil {
-				return ncall.CallResp{}, scanErr
+			inboxID = int64(row.ID)
+			now = row.ReceivedAtUnix
+		case gen.IsNotFound(err):
+			row, err := tx.ProcInboxMessages.Create().
+				SetMessageID(messageID).
+				SetSenderPubkeyHex(senderPubKeyHex).
+				SetTargetInput(targetInput).
+				SetRoute(route).
+				SetContentType(contentType).
+				SetBodyBytes(append([]byte(nil), body...)).
+				SetBodySizeBytes(int64(len(body))).
+				SetReceivedAtUnix(now).
+				Save(ctx)
+			if err != nil {
+				return ncall.CallResp{}, err
 			}
+			inboxID = int64(row.ID)
 		default:
 			return ncall.CallResp{}, err
 		}
@@ -70,35 +79,42 @@ func dbPersistLiveFollowStatus(ctx context.Context, store *clientDB, st LiveFoll
 	if b, err := json.Marshal(st.LastDecision); err == nil {
 		decisionJSON = string(b)
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db, `INSERT INTO proc_live_follows(
-			stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(stream_id) DO UPDATE SET
-			stream_uri=excluded.stream_uri,
-			publisher_pubkey=excluded.publisher_pubkey,
-			have_segment_index=excluded.have_segment_index,
-			last_bought_segment_index=excluded.last_bought_segment_index,
-			last_bought_seed_hash=excluded.last_bought_seed_hash,
-			last_output_file_path=excluded.last_output_file_path,
-			last_quote_seller_pubkey_hex=excluded.last_quote_seller_pubkey_hex,
-			last_decision_json=excluded.last_decision_json,
-			status=excluded.status,
-			last_error=excluded.last_error,
-			updated_at_unix=excluded.updated_at_unix`,
-			st.StreamID,
-			strings.TrimSpace(st.StreamURI),
-			st.PublisherPubKey,
-			st.HaveSegmentIndex,
-			st.LastBoughtSegmentIndex,
-			st.LastBoughtSeedHash,
-			strings.TrimSpace(st.LastOutputFilePath),
-			st.LastQuoteSellerPubHex,
-			decisionJSON,
-			strings.TrimSpace(st.Status),
-			strings.TrimSpace(st.LastError),
-			st.UpdatedAtUnix,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		st.StreamID = strings.TrimSpace(st.StreamID)
+		existing, err := tx.ProcLiveFollows.Query().Where(proclivefollows.StreamIDEQ(st.StreamID)).Only(ctx)
+		if err != nil {
+			if !gen.IsNotFound(err) {
+				return err
+			}
+			_, err = tx.ProcLiveFollows.Create().
+				SetStreamID(st.StreamID).
+				SetStreamURI(strings.TrimSpace(st.StreamURI)).
+				SetPublisherPubkey(st.PublisherPubKey).
+				SetHaveSegmentIndex(int64(st.HaveSegmentIndex)).
+				SetLastBoughtSegmentIndex(int64(st.LastBoughtSegmentIndex)).
+				SetLastBoughtSeedHash(st.LastBoughtSeedHash).
+				SetLastOutputFilePath(strings.TrimSpace(st.LastOutputFilePath)).
+				SetLastQuoteSellerPubkeyHex(st.LastQuoteSellerPubHex).
+				SetLastDecisionJSON(decisionJSON).
+				SetStatus(strings.TrimSpace(st.Status)).
+				SetLastError(strings.TrimSpace(st.LastError)).
+				SetUpdatedAtUnix(st.UpdatedAtUnix).
+				Save(ctx)
+			return err
+		}
+		_, err = existing.Update().
+			SetStreamURI(strings.TrimSpace(st.StreamURI)).
+			SetPublisherPubkey(st.PublisherPubKey).
+			SetHaveSegmentIndex(int64(st.HaveSegmentIndex)).
+			SetLastBoughtSegmentIndex(int64(st.LastBoughtSegmentIndex)).
+			SetLastBoughtSeedHash(st.LastBoughtSeedHash).
+			SetLastOutputFilePath(strings.TrimSpace(st.LastOutputFilePath)).
+			SetLastQuoteSellerPubkeyHex(st.LastQuoteSellerPubHex).
+			SetLastDecisionJSON(decisionJSON).
+			SetStatus(strings.TrimSpace(st.Status)).
+			SetLastError(strings.TrimSpace(st.LastError)).
+			SetUpdatedAtUnix(st.UpdatedAtUnix).
+			Save(ctx)
 		return err
 	})
 }
@@ -107,34 +123,31 @@ func dbLoadLiveFollowStatus(ctx context.Context, store *clientDB, streamID strin
 	if store == nil {
 		return LiveFollowStatus{}, false, nil
 	}
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (LiveFollowStatus, error) {
-		var st LiveFollowStatus
-		var decisionJSON string
-		err := QueryRowContext(ctx, db, `SELECT stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
-			FROM proc_live_follows WHERE stream_id=?`, strings.ToLower(strings.TrimSpace(streamID))).Scan(
-			&st.StreamURI,
-			&st.PublisherPubKey,
-			&st.HaveSegmentIndex,
-			&st.LastBoughtSegmentIndex,
-			&st.LastBoughtSeedHash,
-			&st.LastOutputFilePath,
-			&st.LastQuoteSellerPubHex,
-			&decisionJSON,
-			&st.Status,
-			&st.LastError,
-			&st.UpdatedAtUnix,
-		)
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (LiveFollowStatus, error) {
+		node, err := tx.ProcLiveFollows.Query().Where(proclivefollows.StreamIDEQ(strings.ToLower(strings.TrimSpace(streamID)))).Only(ctx)
 		if err != nil {
 			return LiveFollowStatus{}, err
 		}
-		st.StreamID = strings.ToLower(strings.TrimSpace(streamID))
-		if strings.TrimSpace(decisionJSON) != "" {
-			_ = json.Unmarshal([]byte(decisionJSON), &st.LastDecision)
+		st := LiveFollowStatus{
+			StreamID:               node.StreamID,
+			StreamURI:              node.StreamURI,
+			PublisherPubKey:        node.PublisherPubkey,
+			HaveSegmentIndex:       node.HaveSegmentIndex,
+			LastBoughtSegmentIndex: uint64(node.LastBoughtSegmentIndex),
+			LastBoughtSeedHash:     node.LastBoughtSeedHash,
+			LastOutputFilePath:     node.LastOutputFilePath,
+			LastQuoteSellerPubHex:  node.LastQuoteSellerPubkeyHex,
+			Status:                 node.Status,
+			LastError:              node.LastError,
+			UpdatedAtUnix:          node.UpdatedAtUnix,
+		}
+		if strings.TrimSpace(node.LastDecisionJSON) != "" {
+			_ = json.Unmarshal([]byte(node.LastDecisionJSON), &st.LastDecision)
 		}
 		return normalizeLiveFollowStatus(st), nil
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if gen.IsNotFound(err) || err == sql.ErrNoRows {
 			return LiveFollowStatus{}, false, nil
 		}
 		return LiveFollowStatus{}, false, err
@@ -146,38 +159,33 @@ func dbListRunningLiveFollowStatuses(ctx context.Context, store *clientDB) ([]Li
 	if store == nil {
 		return nil, nil
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]LiveFollowStatus, error) {
-		rows, err := QueryContext(ctx, db, `SELECT stream_id,stream_uri,publisher_pubkey,have_segment_index,last_bought_segment_index,last_bought_seed_hash,last_output_file_path,last_quote_seller_pubkey_hex,last_decision_json,status,last_error,updated_at_unix
-			FROM proc_live_follows WHERE status='running' ORDER BY updated_at_unix ASC`)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]LiveFollowStatus, error) {
+		nodes, err := tx.ProcLiveFollows.Query().
+			Where(proclivefollows.StatusEQ("running")).
+			Order(proclivefollows.ByUpdatedAtUnix()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]LiveFollowStatus, 0)
-		for rows.Next() {
-			var st LiveFollowStatus
-			var decisionJSON string
-			if err := rows.Scan(
-				&st.StreamID,
-				&st.StreamURI,
-				&st.PublisherPubKey,
-				&st.HaveSegmentIndex,
-				&st.LastBoughtSegmentIndex,
-				&st.LastBoughtSeedHash,
-				&st.LastOutputFilePath,
-				&st.LastQuoteSellerPubHex,
-				&decisionJSON,
-				&st.Status,
-				&st.LastError,
-				&st.UpdatedAtUnix,
-			); err != nil {
-				return nil, err
+		out := make([]LiveFollowStatus, 0, len(nodes))
+		for _, node := range nodes {
+			st := LiveFollowStatus{
+				StreamID:               node.StreamID,
+				StreamURI:              node.StreamURI,
+				PublisherPubKey:        node.PublisherPubkey,
+				HaveSegmentIndex:       node.HaveSegmentIndex,
+				LastBoughtSegmentIndex: uint64(node.LastBoughtSegmentIndex),
+				LastBoughtSeedHash:     node.LastBoughtSeedHash,
+				LastOutputFilePath:     node.LastOutputFilePath,
+				LastQuoteSellerPubHex:  node.LastQuoteSellerPubkeyHex,
+				Status:                 node.Status,
+				LastError:              node.LastError,
+				UpdatedAtUnix:          node.UpdatedAtUnix,
 			}
-			_ = json.Unmarshal([]byte(decisionJSON), &st.LastDecision)
+			if strings.TrimSpace(node.LastDecisionJSON) != "" {
+				_ = json.Unmarshal([]byte(node.LastDecisionJSON), &st.LastDecision)
+			}
 			out = append(out, normalizeLiveFollowStatus(st))
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
@@ -191,42 +199,32 @@ func dbLoadCachedNodeReachability(ctx context.Context, store *clientDB, targetNo
 	if err != nil {
 		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
 	}
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (broadcastmodule.NodeReachabilityAnnouncement, error) {
-		var (
-			sourceGatewayPubkeyHex string
-			headHeight             uint64
-			seq                    uint64
-			multiaddrsJSON         string
-			publishedAtUnix        int64
-			expiresAtUnix          int64
-			signature              []byte
-		)
-		err := QueryRowContext(ctx, db,
-			`SELECT source_gateway_pubkey_hex,head_height,seq,multiaddrs_json,published_at_unix,expires_at_unix,signature
-			   FROM proc_node_reachability_cache
-			  WHERE target_node_pubkey_hex=? AND expires_at_unix>?`,
-			targetNodePubkeyHex,
-			nowUnix,
-		).Scan(&sourceGatewayPubkeyHex, &headHeight, &seq, &multiaddrsJSON, &publishedAtUnix, &expiresAtUnix, &signature)
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (broadcastmodule.NodeReachabilityAnnouncement, error) {
+		node, err := tx.ProcNodeReachabilityCache.Query().
+			Where(
+				procnodereachabilitycache.TargetNodePubkeyHexEQ(targetNodePubkeyHex),
+				procnodereachabilitycache.ExpiresAtUnixGT(nowUnix),
+			).
+			Only(ctx)
 		if err != nil {
 			return broadcastmodule.NodeReachabilityAnnouncement{}, err
 		}
-		addrs, err := unmarshalReachabilityStringList(multiaddrsJSON)
+		addrs, err := unmarshalReachabilityStringList(node.MultiaddrsJSON)
 		if err != nil {
 			return broadcastmodule.NodeReachabilityAnnouncement{}, err
 		}
 		return broadcastmodule.NodeReachabilityAnnouncement{
 			NodePubkeyHex:   targetNodePubkeyHex,
 			Multiaddrs:      addrs,
-			HeadHeight:      headHeight,
-			Seq:             seq,
-			PublishedAtUnix: publishedAtUnix,
-			ExpiresAtUnix:   expiresAtUnix,
-			Signature:       append([]byte(nil), signature...),
+			HeadHeight:      uint64(node.HeadHeight),
+			Seq:             uint64(node.Seq),
+			PublishedAtUnix: node.PublishedAtUnix,
+			ExpiresAtUnix:   node.ExpiresAtUnix,
+			Signature:       append([]byte(nil), node.Signature...),
 		}, nil
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if gen.IsNotFound(err) || err == sql.ErrNoRows {
 			return broadcastmodule.NodeReachabilityAnnouncement{}, false, nil
 		}
 		return broadcastmodule.NodeReachabilityAnnouncement{}, false, err
@@ -243,31 +241,38 @@ func dbSaveNodeReachabilityCache(ctx context.Context, store *clientDB, sourceGat
 	if err != nil {
 		return err
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		now := time.Now().Unix()
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO proc_node_reachability_cache(
-				target_node_pubkey_hex,source_gateway_pubkey_hex,head_height,seq,multiaddrs_json,published_at_unix,expires_at_unix,signature,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(target_node_pubkey_hex) DO UPDATE SET
-				source_gateway_pubkey_hex=excluded.source_gateway_pubkey_hex,
-				head_height=excluded.head_height,
-				seq=excluded.seq,
-				multiaddrs_json=excluded.multiaddrs_json,
-				published_at_unix=excluded.published_at_unix,
-				expires_at_unix=excluded.expires_at_unix,
-				signature=excluded.signature,
-				updated_at_unix=excluded.updated_at_unix`,
-			ann.NodePubkeyHex,
-			strings.ToLower(strings.TrimSpace(sourceGatewayPubkeyHex)),
-			ann.HeadHeight,
-			ann.Seq,
-			multiaddrsJSON,
-			ann.PublishedAtUnix,
-			ann.ExpiresAtUnix,
-			append([]byte(nil), ann.Signature...),
-			now,
-		)
+		existing, err := tx.ProcNodeReachabilityCache.Query().
+			Where(procnodereachabilitycache.TargetNodePubkeyHexEQ(ann.NodePubkeyHex)).
+			Only(ctx)
+		if err != nil {
+			if !gen.IsNotFound(err) {
+				return err
+			}
+			_, err = tx.ProcNodeReachabilityCache.Create().
+				SetTargetNodePubkeyHex(ann.NodePubkeyHex).
+				SetSourceGatewayPubkeyHex(strings.ToLower(strings.TrimSpace(sourceGatewayPubkeyHex))).
+				SetHeadHeight(int64(ann.HeadHeight)).
+				SetSeq(int64(ann.Seq)).
+				SetMultiaddrsJSON(multiaddrsJSON).
+				SetPublishedAtUnix(ann.PublishedAtUnix).
+				SetExpiresAtUnix(ann.ExpiresAtUnix).
+				SetSignature(append([]byte(nil), ann.Signature...)).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			return err
+		}
+		_, err = existing.Update().
+			SetSourceGatewayPubkeyHex(strings.ToLower(strings.TrimSpace(sourceGatewayPubkeyHex))).
+			SetHeadHeight(int64(ann.HeadHeight)).
+			SetSeq(int64(ann.Seq)).
+			SetMultiaddrsJSON(multiaddrsJSON).
+			SetPublishedAtUnix(ann.PublishedAtUnix).
+			SetExpiresAtUnix(ann.ExpiresAtUnix).
+			SetSignature(append([]byte(nil), ann.Signature...)).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
 		return err
 	})
 }
@@ -276,18 +281,29 @@ func dbSaveSelfNodeReachabilityState(ctx context.Context, store *clientDB, state
 	if store == nil {
 		return nil
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO proc_self_node_reachability_state(node_pubkey_hex,head_height,seq,updated_at_unix) VALUES(?,?,?,?)
-			 ON CONFLICT(node_pubkey_hex) DO UPDATE SET
-				head_height=excluded.head_height,
-				seq=excluded.seq,
-				updated_at_unix=excluded.updated_at_unix`,
-			strings.ToLower(strings.TrimSpace(state.NodePubkeyHex)),
-			state.HeadHeight,
-			state.Seq,
-			time.Now().Unix(),
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		now := time.Now().Unix()
+		nodePubkeyHex := strings.ToLower(strings.TrimSpace(state.NodePubkeyHex))
+		existing, err := tx.ProcSelfNodeReachabilityState.Query().
+			Where(procselfnodereachabilitystate.NodePubkeyHexEQ(nodePubkeyHex)).
+			Only(ctx)
+		if err != nil {
+			if !gen.IsNotFound(err) {
+				return err
+			}
+			_, err = tx.ProcSelfNodeReachabilityState.Create().
+				SetNodePubkeyHex(nodePubkeyHex).
+				SetHeadHeight(int64(state.HeadHeight)).
+				SetSeq(int64(state.Seq)).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			return err
+		}
+		_, err = existing.Update().
+			SetHeadHeight(int64(state.HeadHeight)).
+			SetSeq(int64(state.Seq)).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
 		return err
 	})
 }
@@ -296,20 +312,21 @@ func dbLoadSelfNodeReachabilityState(ctx context.Context, store *clientDB, nodeP
 	if store == nil {
 		return selfNodeReachabilityState{}, false, nil
 	}
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (selfNodeReachabilityState, error) {
-		var out selfNodeReachabilityState
-		err := QueryRowContext(ctx, db, `SELECT node_pubkey_hex,head_height,seq FROM proc_self_node_reachability_state WHERE node_pubkey_hex=?`, strings.ToLower(strings.TrimSpace(nodePubkeyHex))).Scan(
-			&out.NodePubkeyHex,
-			&out.HeadHeight,
-			&out.Seq,
-		)
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (selfNodeReachabilityState, error) {
+		node, err := tx.ProcSelfNodeReachabilityState.Query().
+			Where(procselfnodereachabilitystate.NodePubkeyHexEQ(strings.ToLower(strings.TrimSpace(nodePubkeyHex)))).
+			Only(ctx)
 		if err != nil {
 			return selfNodeReachabilityState{}, err
 		}
-		return out, nil
+		return selfNodeReachabilityState{
+			NodePubkeyHex: node.NodePubkeyHex,
+			HeadHeight:    uint64(node.HeadHeight),
+			Seq:           uint64(node.Seq),
+		}, nil
 	})
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if gen.IsNotFound(err) || err == sql.ErrNoRows {
 			return selfNodeReachabilityState{}, false, nil
 		}
 		return selfNodeReachabilityState{}, false, err

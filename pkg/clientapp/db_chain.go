@@ -2,12 +2,16 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipstate"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosynccursor"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
 )
 
 // ==================== Chain Tip State ====================
@@ -16,15 +20,22 @@ func dbLoadChainTipState(ctx context.Context, store *clientDB) (chainTipState, e
 	if store == nil {
 		return chainTipState{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (chainTipState, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (chainTipState, error) {
 		var s chainTipState
-		err := QueryRowContext(ctx, db, `SELECT tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms FROM proc_chain_tip_state WHERE id=1`).Scan(
-			&s.TipHeight, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS,
-		)
-		if err == sql.ErrNoRows {
-			return chainTipState{}, nil
+		row, err := tx.ProcChainTipState.Query().Where(procchaintipstate.IDEQ(1)).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return chainTipState{}, nil
+			}
+			return chainTipState{}, err
 		}
-		return s, err
+		s.TipHeight = uint32(row.TipHeight)
+		s.UpdatedAtUnix = row.UpdatedAtUnix
+		s.LastError = row.LastError
+		s.LastUpdatedBy = row.LastUpdatedBy
+		s.LastTrigger = row.LastTrigger
+		s.LastDurationMS = row.LastDurationMs
+		return s, nil
 	})
 }
 
@@ -33,7 +44,6 @@ func dbUpsertChainTipState(ctx context.Context, store *clientDB, tip uint32, las
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db sqlConn) error {
-		// 链高度在 DB 层按 signed integer 落库，避免把 uint32 原样送进 driver。
 		_, err := ExecContext(ctx, db,
 			`INSERT INTO proc_chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
 			 VALUES(1,?,?,?,?,?,?)
@@ -69,17 +79,16 @@ func dbResetWalletUTXOSyncStateOnStartup(ctx context.Context, store *clientDB) e
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`UPDATE wallet_utxo_sync_state SET
-				last_error='',
-				last_trigger='',
-				last_duration_ms=0,
-				last_sync_round_id='',
-				last_failed_step='',
-				last_upstream_path='',
-				last_http_status=0`,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.WalletUtxoSyncState.Update().
+			SetLastError("").
+			SetLastTrigger("").
+			SetLastDurationMs(0).
+			SetLastSyncRoundID("").
+			SetLastFailedStep("").
+			SetLastUpstreamPath("").
+			SetLastHTTPStatus(0).
+			Save(ctx)
 		return err
 	})
 }
@@ -92,16 +101,35 @@ func dbLoadWalletUTXOSyncState(ctx context.Context, store *clientDB, address str
 	if address == "" {
 		return walletUTXOSyncState{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOSyncState, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletUTXOSyncState, error) {
 		var s walletUTXOSyncState
-		err := QueryRowContext(ctx, db,
-			`SELECT wallet_id,address,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status FROM wallet_utxo_sync_state WHERE address=?`,
-			address,
-		).Scan(&s.WalletID, &s.Address, &s.UTXOCount, &s.BalanceSatoshi, &s.PlainBSVUTXOCount, &s.PlainBSVBalanceSatoshi, &s.ProtectedUTXOCount, &s.ProtectedBalanceSatoshi, &s.UnknownUTXOCount, &s.UnknownBalanceSatoshi, &s.UpdatedAtUnix, &s.LastError, &s.LastUpdatedBy, &s.LastTrigger, &s.LastDurationMS, &s.LastSyncRoundID, &s.LastFailedStep, &s.LastUpstreamPath, &s.LastHTTPStatus)
-		if err == sql.ErrNoRows {
-			return walletUTXOSyncState{}, nil
+		row, err := tx.WalletUtxoSyncState.Query().Where(walletutxosyncstate.AddressEQ(address)).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return walletUTXOSyncState{}, nil
+			}
+			return walletUTXOSyncState{}, err
 		}
-		return s, err
+		s.WalletID = row.WalletID
+		s.Address = row.Address
+		s.UTXOCount = int(row.UtxoCount)
+		s.BalanceSatoshi = uint64(row.BalanceSatoshi)
+		s.PlainBSVUTXOCount = int(row.PlainBsvUtxoCount)
+		s.PlainBSVBalanceSatoshi = uint64(row.PlainBsvBalanceSatoshi)
+		s.ProtectedUTXOCount = int(row.ProtectedUtxoCount)
+		s.ProtectedBalanceSatoshi = uint64(row.ProtectedBalanceSatoshi)
+		s.UnknownUTXOCount = int(row.UnknownUtxoCount)
+		s.UnknownBalanceSatoshi = uint64(row.UnknownBalanceSatoshi)
+		s.UpdatedAtUnix = row.UpdatedAtUnix
+		s.LastError = row.LastError
+		s.LastUpdatedBy = row.LastUpdatedBy
+		s.LastTrigger = row.LastTrigger
+		s.LastDurationMS = row.LastDurationMs
+		s.LastSyncRoundID = row.LastSyncRoundID
+		s.LastFailedStep = row.LastFailedStep
+		s.LastUpstreamPath = row.LastUpstreamPath
+		s.LastHTTPStatus = int(row.LastHTTPStatus)
+		return s, nil
 	})
 }
 
@@ -113,17 +141,24 @@ func dbLoadWalletUTXOSyncCursor(ctx context.Context, store *clientDB, address st
 	if address == "" {
 		return walletUTXOSyncCursor{}, fmt.Errorf("wallet address is empty")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOSyncCursor, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletUTXOSyncCursor, error) {
 		var s walletUTXOSyncCursor
-		err := QueryRowContext(ctx, db,
-			`SELECT wallet_id,address,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error
-			 FROM wallet_utxo_sync_cursor WHERE address=?`,
-			address,
-		).Scan(&s.WalletID, &s.Address, &s.NextConfirmedHeight, &s.NextPageToken, &s.AnchorHeight, &s.RoundTipHeight, &s.UpdatedAtUnix, &s.LastError)
-		if err == sql.ErrNoRows {
-			return walletUTXOSyncCursor{}, nil
+		row, err := tx.WalletUtxoSyncCursor.Query().Where(walletutxosynccursor.AddressEQ(address)).Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return walletUTXOSyncCursor{}, nil
+			}
+			return walletUTXOSyncCursor{}, err
 		}
-		return s, err
+		s.WalletID = row.WalletID
+		s.Address = row.Address
+		s.NextConfirmedHeight = row.NextConfirmedHeight
+		s.NextPageToken = row.NextPageToken
+		s.AnchorHeight = row.AnchorHeight
+		s.RoundTipHeight = row.RoundTipHeight
+		s.UpdatedAtUnix = row.UpdatedAtUnix
+		s.LastError = row.LastError
+		return s, nil
 	})
 }
 
@@ -137,41 +172,34 @@ func dbLoadWalletUTXOAggregate(ctx context.Context, store *clientDB, address str
 		return stats, fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOAggregateStats, error) {
-		rows, err := QueryContext(ctx, db,
-			`SELECT script_type,COUNT(1),COALESCE(SUM(value_satoshi),0)
-			 FROM wallet_utxo
-			 WHERE wallet_id=? AND address=? AND state='unspent'
-			 GROUP BY script_type`,
-			walletID, address,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletUTXOAggregateStats, error) {
+		rows, err := tx.WalletUtxo.Query().
+			Where(
+				walletutxo.WalletIDEQ(walletID),
+				walletutxo.AddressEQ(address),
+				walletutxo.StateEQ("unspent"),
+			).
+			All(ctx)
 		if err != nil {
 			return stats, err
 		}
-		defer rows.Close()
-		for rows.Next() {
-			var class string
-			var count int
-			var balance uint64
-			if err := rows.Scan(&class, &count, &balance); err != nil {
-				return stats, err
-			}
-			class = string(normalizeWalletScriptType(class))
-			stats.UTXOCount += count
-			stats.BalanceSatoshi += balance
+		for _, row := range rows {
+			class := string(normalizeWalletScriptType(row.ScriptType))
+			stats.UTXOCount++
+			stats.BalanceSatoshi += uint64(row.ValueSatoshi)
 			switch walletScriptTypeAllocationClass(class) {
 			case walletUTXOAllocationPlainBSV:
-				stats.PlainBSVUTXOCount += count
-				stats.PlainBSVBalanceSatoshi += balance
+				stats.PlainBSVUTXOCount++
+				stats.PlainBSVBalanceSatoshi += uint64(row.ValueSatoshi)
 			case walletUTXOAllocationProtectedAsset:
-				stats.ProtectedUTXOCount += count
-				stats.ProtectedBalanceSatoshi += balance
+				stats.ProtectedUTXOCount++
+				stats.ProtectedBalanceSatoshi += uint64(row.ValueSatoshi)
 			default:
-				stats.UnknownUTXOCount += count
-				stats.UnknownBalanceSatoshi += balance
+				stats.UnknownUTXOCount++
+				stats.UnknownBalanceSatoshi += uint64(row.ValueSatoshi)
 			}
 		}
-		return stats, rows.Err()
+		return stats, nil
 	})
 }
 
@@ -190,29 +218,56 @@ func dbUpdateWalletUTXOSyncStateError(ctx context.Context, store *clientDB, addr
 		errMsg = err.Error()
 	}
 	roundID, failedStep, upstreamPath, httpStatus := walletSyncFailureDetails(meta, err)
-	return store.Do(ctx, func(db sqlConn) error {
-		zeroCount := int64(0)
-		lastHTTPStatus := int64(httpStatus)
-		_, execErr := ExecContext(ctx, db,
-			`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-			 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			 ON CONFLICT(address) DO UPDATE SET
-				wallet_id=excluded.wallet_id,
-				updated_at_unix=excluded.updated_at_unix,
-				last_error=excluded.last_error,
-				last_updated_by=excluded.last_updated_by,
-				last_trigger=excluded.last_trigger,
-				last_duration_ms=excluded.last_duration_ms,
-				last_sync_round_id=excluded.last_sync_round_id,
-				last_failed_step=excluded.last_failed_step,
-				last_upstream_path=excluded.last_upstream_path,
-				last_http_status=excluded.last_http_status`,
-			address, walletID, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, zeroCount, now, strings.TrimSpace(errMsg), "chain_utxo_worker", strings.TrimSpace(trigger), zeroCount, roundID, failedStep, upstreamPath, lastHTTPStatus,
-		)
-		if execErr != nil {
-			obs.Error("bitcast-client", "wallet_utxo_sync_state_upsert_failed", map[string]any{"error": execErr.Error(), "address": address})
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, loadErr := tx.WalletUtxoSyncState.Query().Where(walletutxosyncstate.AddressEQ(address)).Only(ctx)
+		if loadErr == nil {
+			_, err = existing.Update().
+				SetWalletID(walletID).
+				SetUtxoCount(0).
+				SetBalanceSatoshi(0).
+				SetPlainBsvUtxoCount(0).
+				SetPlainBsvBalanceSatoshi(0).
+				SetProtectedUtxoCount(0).
+				SetProtectedBalanceSatoshi(0).
+				SetUnknownUtxoCount(0).
+				SetUnknownBalanceSatoshi(0).
+				SetUpdatedAtUnix(now).
+				SetLastError(strings.TrimSpace(errMsg)).
+				SetLastUpdatedBy("chain_utxo_worker").
+				SetLastTrigger(strings.TrimSpace(trigger)).
+				SetLastDurationMs(0).
+				SetLastSyncRoundID(roundID).
+				SetLastFailedStep(failedStep).
+				SetLastUpstreamPath(upstreamPath).
+				SetLastHTTPStatus(int64(httpStatus)).
+				Save(ctx)
+			return err
 		}
-		return execErr
+		if loadErr != nil && !gen.IsNotFound(loadErr) {
+			return loadErr
+		}
+		_, err := tx.WalletUtxoSyncState.Create().
+			SetAddress(address).
+			SetWalletID(walletID).
+			SetUtxoCount(0).
+			SetBalanceSatoshi(0).
+			SetPlainBsvUtxoCount(0).
+			SetPlainBsvBalanceSatoshi(0).
+			SetProtectedUtxoCount(0).
+			SetProtectedBalanceSatoshi(0).
+			SetUnknownUtxoCount(0).
+			SetUnknownBalanceSatoshi(0).
+			SetUpdatedAtUnix(now).
+			SetLastError(strings.TrimSpace(errMsg)).
+			SetLastUpdatedBy("chain_utxo_worker").
+			SetLastTrigger(strings.TrimSpace(trigger)).
+			SetLastDurationMs(0).
+			SetLastSyncRoundID(roundID).
+			SetLastFailedStep(failedStep).
+			SetLastUpstreamPath(upstreamPath).
+			SetLastHTTPStatus(int64(httpStatus)).
+			Save(ctx)
+		return err
 	})
 }
 
@@ -226,20 +281,29 @@ func dbUpdateWalletUTXOSyncCursorError(ctx context.Context, store *clientDB, add
 	}
 	walletID := walletIDByAddress(address)
 	now := time.Now().Unix()
-	return store.Do(ctx, func(db sqlConn) error {
-		zeroInt64 := int64(0)
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO wallet_utxo_sync_cursor(address,wallet_id,next_confirmed_height,next_page_token,anchor_height,round_tip_height,updated_at_unix,last_error)
-			 VALUES(?,?,?,?,?,?,?,?)
-			 ON CONFLICT(address) DO UPDATE SET
-				wallet_id=excluded.wallet_id,
-				updated_at_unix=excluded.updated_at_unix,
-				last_error=excluded.last_error`,
-			address, walletID, zeroInt64, "", zeroInt64, zeroInt64, now, strings.TrimSpace(errMsg),
-		)
-		if err != nil {
-			obs.Error("bitcast-client", "wallet_utxo_sync_cursor_upsert_failed", map[string]any{"error": err.Error(), "address": address})
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, loadErr := tx.WalletUtxoSyncCursor.Query().Where(walletutxosynccursor.AddressEQ(address)).Only(ctx)
+		if loadErr == nil {
+			_, err := existing.Update().
+				SetWalletID(walletID).
+				SetUpdatedAtUnix(now).
+				SetLastError(strings.TrimSpace(errMsg)).
+				Save(ctx)
+			return err
 		}
+		if loadErr != nil && !gen.IsNotFound(loadErr) {
+			return loadErr
+		}
+		_, err := tx.WalletUtxoSyncCursor.Create().
+			SetAddress(address).
+			SetWalletID(walletID).
+			SetNextConfirmedHeight(0).
+			SetNextPageToken("").
+			SetAnchorHeight(0).
+			SetRoundTipHeight(0).
+			SetUpdatedAtUnix(now).
+			SetLastError(strings.TrimSpace(errMsg)).
+			Save(ctx)
 		return err
 	})
 }

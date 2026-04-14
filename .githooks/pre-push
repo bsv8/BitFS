@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+run_guard="$repo_root/.guard/run-guard.sh"
+default_remote_base="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+if [ -z "$default_remote_base" ]; then
+  default_remote_base="origin/main"
+fi
+
+run_for_range() {
+  local range="$1"
+  "$run_guard" range "$range"
+}
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  if [ -z "${local_sha:-}" ]; then
+    continue
+  fi
+  if [[ "$local_sha" =~ ^0+$ ]]; then
+    continue
+  fi
+
+  if [[ "$remote_sha" =~ ^0+$ ]]; then
+    base="$(git merge-base "$local_sha" "$default_remote_base" 2>/dev/null || true)"
+    if [ -z "$base" ]; then
+      if git rev-parse --verify "$local_sha~1" >/dev/null 2>&1; then
+        base="$local_sha~1"
+      else
+        base="$local_sha"
+      fi
+    fi
+    run_for_range "$base..$local_sha"
+  else
+    run_for_range "$remote_sha..$local_sha"
+  fi
+done

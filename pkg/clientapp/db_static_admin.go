@@ -42,13 +42,17 @@ func dbGetSeedFilePathByHash(ctx context.Context, store *clientDB, seedHash stri
 	if store == nil {
 		return "", fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		var seedFilePath string
-		err := QueryRowContext(ctx, db, `SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedFilePath)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		row, err := tx.BizSeeds.Query().
+			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return "", sql.ErrNoRows
+			}
 			return "", err
 		}
-		return seedFilePath, nil
+		return row.SeedFilePath, nil
 	})
 }
 
@@ -58,24 +62,21 @@ func dbListLiveWorkspaceEntries(ctx context.Context, store *clientDB, pattern st
 	}
 	needle := strings.Trim(pattern, "%")
 	needle = strings.ReplaceAll(needle, "/", string(filepath.Separator))
-	return clientDBValue(ctx, store, func(db sqlConn) ([]liveWorkspaceEntry, error) {
-		rows, err := QueryContext(ctx, db, `SELECT workspace_path,file_path,seed_hash FROM biz_workspace_files ORDER BY workspace_path ASC,file_path ASC`)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]liveWorkspaceEntry, error) {
+		rows, err := tx.BizWorkspaceFiles.Query().
+			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]liveWorkspaceEntry, 0, 32)
-		for rows.Next() {
-			var workspacePath, filePath, seedHash string
-			if err := rows.Scan(&workspacePath, &filePath, &seedHash); err != nil {
-				return nil, err
-			}
-			absPath := workspacePathJoin(workspacePath, filePath)
+		out := make([]liveWorkspaceEntry, 0, len(rows))
+		for _, row := range rows {
+			absPath := workspacePathJoin(row.WorkspacePath, row.FilePath)
 			fullPath := filepath.Clean(absPath)
 			if needle != "" && !strings.Contains(filepath.ToSlash(fullPath), filepath.ToSlash(needle)) {
 				continue
 			}
-			it := liveWorkspaceEntry{Path: fullPath, SeedHash: seedHash}
+			it := liveWorkspaceEntry{Path: fullPath, SeedHash: row.SeedHash}
 			if includeMeta {
 				if st, err := os.Stat(fullPath); err == nil {
 					it.FileSize = st.Size()
@@ -84,9 +85,6 @@ func dbListLiveWorkspaceEntries(ctx context.Context, store *clientDB, pattern st
 				}
 			}
 			out = append(out, it)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
@@ -102,15 +100,16 @@ func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, prefi
 	if !isSeedHashHex(streamID) {
 		return 0, fmt.Errorf("invalid stream prefix")
 	}
-	return clientDBTxValue(ctx, store, func(tx sqlConn) (int64, error) {
-		var before int64
-		if err := QueryRowContext(ctx, tx, `SELECT COUNT(1) FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+streamID+"/%").Scan(&before); err != nil {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+		q := tx.BizWorkspaceFiles.Query().Where(bizworkspacefiles.FilePathHasPrefix("live/" + streamID + "/"))
+		before, err := q.Count(ctx)
+		if err != nil {
 			return 0, err
 		}
-		if _, err := ExecContext(ctx, tx, `DELETE FROM biz_workspace_files WHERE file_path LIKE ?`, "live/"+streamID+"/%"); err != nil {
+		if _, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix("live/" + streamID + "/")).Exec(ctx); err != nil {
 			return 0, err
 		}
-		return before, nil
+		return int64(before), nil
 	})
 }
 

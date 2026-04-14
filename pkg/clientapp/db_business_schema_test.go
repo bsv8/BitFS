@@ -219,7 +219,7 @@ func TestGetLatestBusinessByFrontOrderID_EmptyReturnsNoRows(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	_, err := GetLatestBusinessByFrontOrderID(context.Background(), &clientDB{db: db}, "fo_empty_1")
+	_, err := GetLatestBusinessByFrontOrderID(context.Background(), newClientDB(db, nil), "fo_empty_1")
 	if !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("expected sql.ErrNoRows, got %v", err)
 	}
@@ -345,7 +345,7 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 	}
 
 	// 第一次更新 settlement 字段
-	if err := dbUpsertBusinessSettlement(context.Background(), &clientDB{db: db}, businessSettlementEntry{
+	if err := dbUpsertBusinessSettlement(context.Background(), newClientDB(db, nil), businessSettlementEntry{
 		SettlementID:     "set_test_1",
 		OrderID:          "ord_test_2",
 		SettlementMethod: "chain",
@@ -358,7 +358,7 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 	}
 
 	// 再写一条同一 order 的新 settlement，应该追加新行而不是覆盖旧行
-	if err := dbUpsertBusinessSettlement(context.Background(), &clientDB{db: db}, businessSettlementEntry{
+	if err := dbUpsertBusinessSettlement(context.Background(), newClientDB(db, nil), businessSettlementEntry{
 		SettlementID:     "set_test_3",
 		OrderID:          "ord_test_2",
 		SettlementMethod: "chain",
@@ -370,7 +370,7 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 		t.Fatalf("second settlement update failed: %v", err)
 	}
 
-	latest, err := dbGetBusinessSettlementByBusinessID(context.Background(), &clientDB{db: db}, "ord_test_2")
+	latest, err := dbGetBusinessSettlementByBusinessID(context.Background(), newClientDB(db, nil), "ord_test_2")
 	if err != nil {
 		t.Fatalf("latest settlement lookup failed: %v", err)
 	}
@@ -379,7 +379,7 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 	}
 
 	// 但更新指定 settlement_id 仍然应该成功
-	if err := dbUpdateBusinessSettlementStatus(context.Background(), &clientDB{db: db}, "set_test_1", "completed", ""); err != nil {
+	if err := dbUpdateBusinessSettlementStatus(context.Background(), newClientDB(db, nil), "set_test_1", "completed", ""); err != nil {
 		t.Fatalf("update settlement status failed: %v", err)
 	}
 

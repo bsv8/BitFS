@@ -10,7 +10,24 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/obs"
 	oldproto "github.com/golang/protobuf/proto"
+	"github.com/libp2p/go-libp2p/core/peer"
 )
+
+// gatewayDemandPublishChainTxEnv 是这个触发链真正需要的能力。
+// 设计说明：
+// - 不再把整个 Runtime 塞进来，只拿调用这条链所需的显式能力；
+// - 这样入口更清楚，也避免把运行时总对象继续扩散到业务链里。
+type gatewayDemandPublishChainTxEnv interface {
+	Store() ClientStore
+	ClientID() string
+	HealthyGatewayInfos() []peer.AddrInfo
+	PickGatewayForBusiness(gatewayPeerID string) (peer.AddrInfo, error)
+	GatewayBusinessID(pid peer.ID) string
+	LocalAdvertiseAddrs() []string
+	CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error)
+	RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error)
+	PayPeerCallWithChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error)
+}
 
 // TriggerGatewayDemandPublishChainTxQuotePayResult 是 gateway demand publish chain_tx_v1 业务触发结果。
 // 说明：
@@ -40,12 +57,15 @@ type TriggerGatewayDemandPublishChainTxQuotePayResult struct {
 // - 先做 route preflight，硬要求 payment_required 且广告 chain_tx_v1；
 // - 再取正式 quote，硬要求 quote 有效；
 // - 最后显式用 chain_tx_v1 支付，不走 e2e 手拼协议。
-func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store ClientStore, rt *Runtime, p PublishDemandParams) (TriggerGatewayDemandPublishChainTxQuotePayResult, error) {
+func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store ClientStore, env gatewayDemandPublishChainTxEnv, p PublishDemandParams) (TriggerGatewayDemandPublishChainTxQuotePayResult, error) {
 	out := TriggerGatewayDemandPublishChainTxQuotePayResult{}
-	if rt == nil || rt.Host == nil {
-		err := fmt.Errorf("runtime not initialized")
+	if env == nil {
+		err := fmt.Errorf("trigger env not initialized")
 		out.Error = err.Error()
 		return out, err
+	}
+	if store == nil {
+		store = env.Store()
 	}
 	if store == nil {
 		err := fmt.Errorf("client db is nil")
@@ -61,24 +81,20 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	out.DemandSeedHash = seedHash
 	out.ChunkCount = p.ChunkCount
 
-	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
+	gw, err := env.PickGatewayForBusiness(p.GatewayPeerID)
 	if err != nil {
 		out.Error = err.Error()
 		return out, err
 	}
-	if len(rt.HealthyGWs) == 0 {
+	if len(env.HealthyGatewayInfos()) == 0 {
 		err := fmt.Errorf("no healthy gateway")
 		out.Error = err.Error()
 		return out, err
 	}
-	out.GatewayPubkeyHex = gatewayBusinessID(rt, gw.ID)
-	if actor, err := buildClientActorFromRunInput(rt.runIn); err == nil && actor != nil {
-		out.ClientPubkeyHex = strings.TrimSpace(actor.PubHex)
-	} else {
-		out.ClientPubkeyHex = strings.TrimSpace(rt.ClientID())
-	}
+	out.GatewayPubkeyHex = env.GatewayBusinessID(gw.ID)
+	out.ClientPubkeyHex = strings.TrimSpace(env.ClientID())
 
-	buyerAddrs := localAdvertiseAddrs(rt)
+	buyerAddrs := env.LocalAdvertiseAddrs()
 	body := &contractmessage.DemandPublishReq{
 		SeedHash:   seedHash,
 		ChunkCount: p.ChunkCount,
@@ -97,7 +113,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		"gateway":     out.GatewayPubkeyHex,
 	})
 
-	preflightResp, err := callNodeRoute(ctx, rt, gw.ID, ncall.CallReq{
+	preflightResp, err := env.CallNodeRoute(ctx, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
 		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
 		ContentType: contractmessage.ContentTypeProto,
@@ -115,7 +131,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		return out, err
 	}
 
-	quoted, err := requestPeerCallChainTxQuote(ctx, rt, store, gw.ID, ncall.CallReq{
+	quoted, err := env.RequestPeerCallChainTxQuote(ctx, store, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
 		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
 		ContentType: contractmessage.ContentTypeProto,
@@ -144,7 +160,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	out.QuoteServiceType = quoteServiceTypeDemandPublish
 	out.ServiceQuoteHash = strings.TrimSpace(quoted.ServiceQuoteHash)
 
-	paidResp, payErr := payPeerCallWithChainTxQuote(ctx, rt, store, gw.ID, ncall.CallReq{
+	paidResp, payErr := env.PayPeerCallWithChainTxQuote(ctx, store, gw.ID, ncall.CallReq{
 		To:          out.GatewayPubkeyHex,
 		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
 		ContentType: contractmessage.ContentTypeProto,

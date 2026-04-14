@@ -3,10 +3,17 @@ package clientapp
 import (
 	"context"
 	"fmt"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpurchases"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementrecords"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokenlots"
 )
 
 // walletSummaryCounters 钱包统计计数器
-// 设计说明：已改为 fact_* 事实表口径
+// 设计说明：已改为 fact_* 事实表口径，统计只看真实链上事实，不看旧汇总表。
 type walletSummaryCounters struct {
 	FlowCount         int64 // fact_bsv_utxos 记录数
 	TotalIn           int64 // fact_bsv_utxos 未花费总金额
@@ -31,69 +38,67 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 	if store == nil {
 		return walletSummaryCounters{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletSummaryCounters, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (walletSummaryCounters, error) {
 		var out walletSummaryCounters
 		// 设计说明（硬切版）：
-		// - 不再从 fact_chain_asset_flows 统计（表已删除）
-		// - 改为从 fact_bsv_utxos 统计本币余额和 UTXO 状态
-		// - 从 fact_token_lots 统计 token 消耗
-		// - 从 fact_settlement_records 统计结算消耗
+		// - 不再从旧汇总表读统计；
+		// - 只看事实表和真实业务表；
+		// - 统计逻辑尽量简单，方便后续直接从代码判断口径。
 
-		// 统计本币UTXO数量和金额
-		var utxoCount int64
-		var totalUnspent int64
-		if err := QueryRowContext(ctx, db, `
-			SELECT COUNT(1), COALESCE(SUM(value_satoshi),0) 
-			FROM fact_bsv_utxos WHERE utxo_state='unspent'`).Scan(&utxoCount, &totalUnspent); err != nil {
-			return walletSummaryCounters{}, err
-		}
-		out.FlowCount = utxoCount
-		out.TotalIn = totalUnspent
-
-		// BSV 已花费金额（从结算记录统计实际消耗，而非 spent UTXO 总额）
-		var totalSpent int64
-		if err := QueryRowContext(ctx, db, `
-			SELECT COALESCE(SUM(used_satoshi),0) 
-			FROM fact_settlement_records 
-			WHERE asset_type='BSV' AND state='confirmed'`).Scan(&totalSpent); err != nil {
-			return walletSummaryCounters{}, err
-		}
-		out.TotalOut = totalSpent
-		out.BSVUsedSatoshi = totalSpent
-
-		// Token 消耗统计（从 fact_token_lots 计算 used_quantity）
-		rows, err := QueryContext(ctx, db, `
-			SELECT token_standard, token_id, quantity_text, used_quantity_text
-			FROM fact_token_lots
-			WHERE lot_state IN ('unspent', 'spent') AND used_quantity_text != '0'`)
+		// 1. 本币 UTXO 数量和未花费金额
+		unspentRows, err := tx.FactBsvUtxos.Query().
+			Where(factbsvutxos.UtxoStateEQ("unspent")).
+			All(ctx)
 		if err != nil {
 			return walletSummaryCounters{}, err
 		}
-		defer rows.Close()
+		for _, row := range unspentRows {
+			out.FlowCount++
+			out.TotalIn += int64(row.ValueSatoshi)
+		}
 
+		// 2. BSV 已花费金额，按已确认结算记录统计
+		settlementRows, err := tx.FactSettlementRecords.Query().
+			Where(
+				factsettlementrecords.AssetTypeEQ("BSV"),
+				factsettlementrecords.StateEQ("confirmed"),
+			).
+			All(ctx)
+		if err != nil {
+			return walletSummaryCounters{}, err
+		}
+		for _, row := range settlementRows {
+			out.TotalOut += int64(row.UsedSatoshi)
+		}
+		out.BSVUsedSatoshi = out.TotalOut
+
+		// 3. Token 消耗统计，按 token_standard + token_id 分组
+		tokenRows, err := tx.FactTokenLots.Query().
+			Where(
+				facttokenlots.LotStateIn("unspent", "spent"),
+				facttokenlots.UsedQuantityTextNEQ("0"),
+			).
+			All(ctx)
+		if err != nil {
+			return walletSummaryCounters{}, err
+		}
 		tokenUsedMap := make(map[string]*walletTokenUsedSummary)
-		for rows.Next() {
-			var tokenStandard, tokenID, qtyText, usedText string
-			if err := rows.Scan(&tokenStandard, &tokenID, &qtyText, &usedText); err != nil {
-				return walletSummaryCounters{}, err
-			}
-			key := tokenStandard + ":" + tokenID
+		for _, row := range tokenRows {
+			key := row.TokenStandard + ":" + row.TokenID
 			if _, ok := tokenUsedMap[key]; !ok {
 				tokenUsedMap[key] = &walletTokenUsedSummary{
-					TokenStandard:    tokenStandard,
-					TokenID:          tokenID,
+					TokenStandard:    row.TokenStandard,
+					TokenID:          row.TokenID,
 					UsedQuantityText: "0",
 				}
 			}
-			// 累加 used_quantity
 			currentUsed := tokenUsedMap[key].UsedQuantityText
-			newUsed, _ := sumDecimalTexts(currentUsed + "," + usedText)
+			newUsed, err := sumDecimalTexts(currentUsed + "," + row.UsedQuantityText)
+			if err != nil {
+				return walletSummaryCounters{}, err
+			}
 			tokenUsedMap[key].UsedQuantityText = newUsed
 		}
-		if err := rows.Err(); err != nil {
-			return walletSummaryCounters{}, err
-		}
-
 		out.TokenUsed = make([]walletTokenUsedSummary, 0, len(tokenUsedMap))
 		for _, v := range tokenUsedMap {
 			out.TokenUsed = append(out.TokenUsed, *v)
@@ -101,18 +106,29 @@ func dbLoadWalletSummaryCounters(ctx context.Context, store *clientDB) (walletSu
 
 		out.TotalReturned = 0 // 已废弃
 
-		// 交易历史统计
-		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_pool_session_events WHERE event_kind=?`, PoolFactEventKindTxHistory).Scan(&out.TxCount); err != nil {
+		// 4. 交易历史、购买、网关事件的总数
+		txCount, err := tx.FactPoolSessionEvents.Query().
+			Where(factpoolsessionevents.EventKindEQ(PoolFactEventKindTxHistory)).
+			Count(ctx)
+		if err != nil {
 			return walletSummaryCounters{}, err
 		}
-		// 购买统计
-		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM biz_purchases WHERE status='done'`).Scan(&out.PurchaseCount); err != nil {
+		out.TxCount = int64(txCount)
+
+		purchaseCount, err := tx.BizPurchases.Query().
+			Where(bizpurchases.StatusEQ("done")).
+			Count(ctx)
+		if err != nil {
 			return walletSummaryCounters{}, err
 		}
-		// 网关事件统计
-		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM proc_gateway_events`).Scan(&out.GatewayEventCount); err != nil {
+		out.PurchaseCount = int64(purchaseCount)
+
+		gatewayCount, err := tx.ProcGatewayEvents.Query().Count(ctx)
+		if err != nil {
 			return walletSummaryCounters{}, err
 		}
+		out.GatewayEventCount = int64(gatewayCount)
+
 		return out, nil
 	})
 }

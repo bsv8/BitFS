@@ -1,16 +1,21 @@
 package clientapp
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procpublishedrouteindexes"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
-func upsertPublishedRouteIndex(db sqlConn, route string, seedHash string) (int64, error) {
-	if db == nil {
-		return 0, fmt.Errorf("db is nil")
+func upsertPublishedRouteIndex(ctx context.Context, store *clientDB, route string, seedHash string) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("store is nil")
 	}
 	normalizedRoute := normalizeResolveRoute(route)
 	normalizedSeedHash := strings.ToLower(strings.TrimSpace(seedHash))
@@ -18,39 +23,65 @@ func upsertPublishedRouteIndex(db sqlConn, route string, seedHash string) (int64
 		return 0, fmt.Errorf("seed_hash is required")
 	}
 	now := time.Now().Unix()
-	if _, err := db.Exec(
-		`INSERT INTO proc_published_route_indexes(route,seed_hash,updated_at_unix)
-		 VALUES(?,?,?)
-		 ON CONFLICT(route) DO UPDATE SET seed_hash=excluded.seed_hash,updated_at_unix=excluded.updated_at_unix`,
-		normalizedRoute,
-		normalizedSeedHash,
-		now,
-	); err != nil {
+	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcPublishedRouteIndexes.Query().
+			Where(procpublishedrouteindexes.RouteEQ(normalizedRoute)).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetSeedHash(normalizedSeedHash).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcPublishedRouteIndexes.Create().
+			SetRoute(normalizedRoute).
+			SetSeedHash(normalizedSeedHash).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
+		return err
+	}); err != nil {
 		return 0, err
 	}
 	return now, nil
 }
 
-func buildRouteIndexManifest(db sqlConn, route string) ([]byte, error) {
-	if db == nil {
-		return nil, fmt.Errorf("db is nil")
+func buildRouteIndexManifest(ctx context.Context, store *clientDB, route string) ([]byte, error) {
+	if store == nil {
+		return nil, fmt.Errorf("store is nil")
 	}
 	normalizedRoute := normalizeResolveRoute(route)
 	var manifest routeIndexManifest
-	if err := db.QueryRow(
-		`SELECT p.route,p.seed_hash,COALESCE(s.recommended_file_name,''),COALESCE(s.mime_hint,''),COALESCE(s.file_size,0),p.updated_at_unix
-		   FROM proc_published_route_indexes p
-		   JOIN biz_seeds s ON s.seed_hash=p.seed_hash
-		  WHERE p.route=?`,
-		normalizedRoute,
-	).Scan(
-		&manifest.Route,
-		&manifest.SeedHash,
-		&manifest.RecommendedFileName,
-		&manifest.MIMEHint,
-		&manifest.FileSize,
-		&manifest.UpdatedAtUnix,
-	); err != nil {
+	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		row, err := tx.ProcPublishedRouteIndexes.Query().
+			Where(procpublishedrouteindexes.RouteEQ(normalizedRoute)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return sql.ErrNoRows
+			}
+			return err
+		}
+		seed, err := tx.BizSeeds.Query().
+			Where(bizseeds.SeedHashEQ(row.SeedHash)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return sql.ErrNoRows
+			}
+			return err
+		}
+		manifest.Route = row.Route
+		manifest.SeedHash = row.SeedHash
+		manifest.RecommendedFileName = seed.RecommendedFileName
+		manifest.MIMEHint = seed.MimeHint
+		manifest.FileSize = seed.FileSize
+		manifest.UpdatedAtUnix = row.UpdatedAtUnix
+		return nil
+	}); err != nil {
 		return nil, err
 	}
 	return oldproto.Marshal(&manifest)

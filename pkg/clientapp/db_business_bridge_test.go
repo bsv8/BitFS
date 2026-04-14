@@ -19,7 +19,7 @@ func TestBusinessBridge_MultipleBusinessesFromOneFrontOrder(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	frontOrderID := "fo_multi_biz_test"
 	triggerType := "front_order"
@@ -147,7 +147,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 模拟域名注册业务入口
 	name := "testexample.bsv"
@@ -300,7 +300,7 @@ func TestBusinessBridge_TransactionAtomicity(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:     "fo_atomic_test",
@@ -357,7 +357,7 @@ func TestBusinessBridge_MissingBusinessRole_Fails(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 不传 BusinessRole，应该在校验阶段失败
 	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
@@ -411,7 +411,7 @@ func TestBusinessBridge_InvalidBusinessRole_Fails(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	invalidRoles := []string{"unknown", "invalid", "FORMAL", "PROCESS", "test_role"}
 

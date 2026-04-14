@@ -1,0 +1,24 @@
+{
+  "repo_name": "BitFS",
+  "exclude_files": [
+    "^vendor/",
+    "^third_party/",
+    "^\\.gen/"
+  ],
+  "allow_runtime_param_files": [],
+  "allow_runin_files": [],
+  "business_include": [
+    "^pkg/"
+  ],
+  "business_exclude": [
+    "_test\\.go$",
+    "^cmd/",
+    "(^|/)run\\.go$"
+  ],
+  "allow_sql_db_param_files": [],
+  "warn_shared_struct": true,
+  "data_struct_allow_patterns": [
+    "^context\\.Context$",
+    "(?i)(Req|Resp|Request|Response|DTO|Model|Entity|Record|Item|Payload|Params|Result)$"
+  ]
+}

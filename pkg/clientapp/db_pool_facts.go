@@ -242,7 +242,7 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx sqlConn, in dir
 	}
 	if err == sql.ErrNoRows {
 		pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
-		if err := dbUpsertSettlementPaymentAttemptCtx(ctx, tx,
+		settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptIDCtx(ctx, tx,
 			"payment_attempt_pool_session_quote_pay_"+sessionID,
 			"pool_session_quote_pay",
 			pendingSourceID,
@@ -250,12 +250,9 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx sqlConn, in dir
 			0, 0, 0, 0, updatedAt,
 			"pre-bind pool session quote pay channel",
 			map[string]any{"pool_session_id": sessionID, "status": status},
-		); err != nil {
-			return fmt.Errorf("upsert settlement payment attempt shell for pool session channel: %w", err)
-		}
-		settlementPaymentAttemptID, err = dbGetSettlementPaymentAttemptBySourceCtx(ctx, tx, "pool_session_quote_pay", pendingSourceID)
+		)
 		if err != nil {
-			return fmt.Errorf("resolve settlement payment attempt shell for pool session channel: %w", err)
+			return fmt.Errorf("upsert settlement payment attempt shell for pool session channel: %w", err)
 		}
 	}
 	_, err = ExecContext(ctx, tx,

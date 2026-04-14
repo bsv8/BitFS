@@ -8,6 +8,11 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletlocalbroadcasttxs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
 )
 
 // 设计说明：
@@ -15,40 +20,48 @@ import (
 // - 只保留当前还在用的查询，不再带旧 create 状态逻辑。
 
 func dbLoadCurrentWalletUTXOStateRows(ctx context.Context, store *clientDB, address string) (map[string]utxoStateRow, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) (map[string]utxoStateRow, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (map[string]utxoStateRow, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return map[string]utxoStateRow{}, fmt.Errorf("wallet address is empty")
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,spent_at_unix
-			FROM wallet_utxo
-			WHERE wallet_id=? AND address=?
-			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
+		rows, err := tx.WalletUtxo.Query().
+			Where(walletutxo.WalletIDEQ(walletID), walletutxo.AddressEQ(address)).
+			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByUtxoID()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
 		out := map[string]utxoStateRow{}
-		for rows.Next() {
-			var row utxoStateRow
-			if err := rows.Scan(&row.UTXOID, &row.TxID, &row.Vout, &row.Value, &row.State, &row.ScriptType, &row.ScriptTypeReason, &row.ScriptTypeUpdatedAtUnix, &row.AllocationClass, &row.AllocationReason, &row.CreatedTxID, &row.SpentTxID, &row.CreatedAtUnix, &row.SpentAtUnix); err != nil {
-				return nil, err
+		for _, row := range rows {
+			item := utxoStateRow{
+				UTXOID:                  row.UtxoID,
+				TxID:                    row.Txid,
+				Vout:                    uint32(row.Vout),
+				Value:                   uint64(row.ValueSatoshi),
+				State:                   row.State,
+				ScriptType:              row.ScriptType,
+				ScriptTypeReason:        row.ScriptTypeReason,
+				ScriptTypeUpdatedAtUnix: row.ScriptTypeUpdatedAtUnix,
+				AllocationClass:         row.AllocationClass,
+				AllocationReason:        row.AllocationReason,
+				CreatedTxID:             row.CreatedTxid,
+				SpentTxID:               row.SpentTxid,
+				CreatedAtUnix:           row.CreatedAtUnix,
+				SpentAtUnix:             row.SpentAtUnix,
 			}
-			row.ScriptType = string(normalizeWalletScriptType(row.ScriptType))
-			row.AllocationClass = walletScriptTypeAllocationClass(row.ScriptType)
-			row.AllocationReason = strings.TrimSpace(row.AllocationReason)
-			out[strings.ToLower(strings.TrimSpace(row.UTXOID))] = row
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
+			item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
+			item.AllocationClass = walletScriptTypeAllocationClass(item.ScriptType)
+			item.AllocationReason = strings.TrimSpace(item.AllocationReason)
+			out[strings.ToLower(strings.TrimSpace(item.UTXOID))] = item
 		}
 		return out, nil
 	})
 }
 
 func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) ([]poolcore.UTXO, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]poolcore.UTXO, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []poolcore.UTXO{}, fmt.Errorf("wallet address is empty")
@@ -73,27 +86,26 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 		if len(placeholders) == 0 {
 			return []poolcore.UTXO{}, nil
 		}
-		query := `SELECT utxo_id,txid,vout,value_satoshi
-			FROM wallet_utxo
-			WHERE wallet_id=? AND address=? AND state='unspent' AND utxo_id IN (` + strings.Join(placeholders, ",") + `)
-			ORDER BY created_at_unix ASC, utxo_id ASC`
-		rows, err := QueryContext(ctx, db, query, args...)
+		rows, err := tx.WalletUtxo.Query().
+			Where(
+				walletutxo.WalletIDEQ(walletID),
+				walletutxo.AddressEQ(address),
+				walletutxo.StateEQ("unspent"),
+				walletutxo.UtxoIDIn(utxoIDs...),
+			).
+			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByUtxoID()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]poolcore.UTXO, 0, len(placeholders))
-		for rows.Next() {
-			var utxoID string
-			var item poolcore.UTXO
-			if err := rows.Scan(&utxoID, &item.TxID, &item.Vout, &item.Value); err != nil {
-				return nil, err
+		out := make([]poolcore.UTXO, 0, len(rows))
+		for _, row := range rows {
+			item := poolcore.UTXO{
+				TxID:  strings.ToLower(strings.TrimSpace(row.Txid)),
+				Vout:  uint32(row.Vout),
+				Value: uint64(row.ValueSatoshi),
 			}
-			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
 			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		if len(out) != len(requested) {
 			return nil, fmt.Errorf("requested utxo count mismatch: want=%d got=%d", len(requested), len(out))
@@ -103,47 +115,51 @@ func dbLoadWalletUTXOsByID(ctx context.Context, store *clientDB, address string,
 }
 
 func dbListPlainBSVFundingCandidates(ctx context.Context, store *clientDB, address string) ([]fundalloc.Candidate, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) ([]fundalloc.Candidate, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]fundalloc.Candidate, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []fundalloc.Candidate{}, nil
 		}
 		ownerPubkeyHex := strings.ToLower(strings.TrimPrefix(address, "wallet:"))
 		walletID := walletIDByAddress(ownerPubkeyHex)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,carrier_type,note
-			FROM fact_bsv_utxos
-			WHERE (owner_pubkey_hex=? OR owner_pubkey_hex=?)
-			  AND utxo_state='unspent' AND carrier_type='plain_bsv'
-			ORDER BY created_at_unix ASC, value_satoshi ASC, txid ASC, vout ASC`, ownerPubkeyHex, walletID)
+		rows, err := tx.FactBsvUtxos.Query().
+			Where(
+				factbsvutxos.OwnerPubkeyHexIn(ownerPubkeyHex, walletID),
+				factbsvutxos.UtxoStateEQ("unspent"),
+				factbsvutxos.CarrierTypeEQ("plain_bsv"),
+			).
+			Order(factbsvutxos.ByCreatedAtUnix(), factbsvutxos.ByValueSatoshi(), factbsvutxos.ByTxid(), factbsvutxos.ByVout()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]fundalloc.Candidate, 0, 16)
-		for rows.Next() {
-			var item fundalloc.Candidate
-			var carrierType string
-			var note string
-			if err := rows.Scan(&item.ID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.CreatedAtUnix, &carrierType, &note); err != nil {
-				return nil, err
+		out := make([]fundalloc.Candidate, 0, len(rows))
+		for _, row := range rows {
+			item := fundalloc.Candidate{
+				ID:             row.UtxoID,
+				TxID:           strings.ToLower(strings.TrimSpace(row.Txid)),
+				Vout:           uint32(row.Vout),
+				ValueSatoshi:   uint64(row.ValueSatoshi),
+				CreatedAtUnix:  row.CreatedAtUnix,
+				ProtectionClass: fundalloc.ProtectionClass(walletUTXOAllocationPlainBSV),
+				ProtectionReason: strings.TrimSpace(row.Note),
 			}
-			item.ID = strings.ToLower(strings.TrimSpace(item.ID))
-			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-			item.ProtectionClass = fundalloc.ProtectionClass(walletUTXOAllocationPlainBSV)
-			item.ProtectionReason = strings.TrimSpace(note)
 			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
 }
 
 func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address string) ([]walletFundingCandidate, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) ([]walletFundingCandidate, error) {
-		s, err := dbLoadWalletUTXOSyncState(ctx, store, address)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]walletFundingCandidate, error) {
+		address = strings.TrimSpace(address)
+		s, err := tx.WalletUtxoSyncState.Query().
+			Where(walletutxosyncstate.AddressEQ(address)).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return nil, fmt.Errorf("wallet utxo sync state not ready")
+			}
 			return nil, err
 		}
 		if s.UpdatedAtUnix <= 0 {
@@ -153,120 +169,115 @@ func dbListWalletFundingCandidates(ctx context.Context, store *clientDB, address
 			return nil, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,created_at_unix,script_type,script_type_reason,allocation_class,allocation_reason
-			FROM wallet_utxo
-			WHERE wallet_id=? AND address=? AND state='unspent'
-			ORDER BY created_at_unix ASC, value_satoshi ASC, txid ASC, vout ASC`, walletID, address)
+		rows, err := tx.WalletUtxo.Query().
+			Where(walletutxo.WalletIDEQ(walletID), walletutxo.AddressEQ(address), walletutxo.StateEQ("unspent")).
+			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByValueSatoshi(), walletutxo.ByTxid(), walletutxo.ByVout()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]walletFundingCandidate, 0, s.UTXOCount)
-		for rows.Next() {
-			var item walletFundingCandidate
-			if err := rows.Scan(&item.UTXOID, &item.UTXO.TxID, &item.UTXO.Vout, &item.UTXO.Value, &item.CreatedAtUnix, &item.ScriptType, &item.ScriptTypeReason, &item.AllocationClass, &item.AllocationReason); err != nil {
-				return nil, err
+		out := make([]walletFundingCandidate, 0, len(rows))
+		for _, row := range rows {
+			item := walletFundingCandidate{
+				UTXOID:       row.UtxoID,
+				CreatedAtUnix: row.CreatedAtUnix,
+				ScriptType:   string(normalizeWalletScriptType(row.ScriptType)),
+				ScriptTypeReason: row.ScriptTypeReason,
+				AllocationClass: normalizeWalletUTXOAllocationClass(row.AllocationClass),
+				AllocationReason: strings.TrimSpace(row.AllocationReason),
 			}
+			item.UTXO.TxID = strings.ToLower(strings.TrimSpace(row.Txid))
+			item.UTXO.Vout = uint32(row.Vout)
+			item.UTXO.Value = uint64(row.ValueSatoshi)
 			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-			item.UTXO.TxID = strings.ToLower(strings.TrimSpace(item.UTXO.TxID))
-			item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
-			item.AllocationClass = normalizeWalletUTXOAllocationClass(item.AllocationClass)
-			item.AllocationReason = strings.TrimSpace(item.AllocationReason)
 			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
 }
 
 func dbListWalletUnspentOneSatRows(ctx context.Context, store *clientDB, address string) ([]walletUTXOBasicRow, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) ([]walletUTXOBasicRow, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]walletUTXOBasicRow, error) {
 		address = strings.TrimSpace(address)
 		if address == "" {
 			return []walletUTXOBasicRow{}, nil
 		}
 		walletID := walletIDByAddress(address)
-		rows, err := QueryContext(ctx, db, `SELECT utxo_id,txid,vout,value_satoshi,script_type,script_type_reason,allocation_class,allocation_reason,created_at_unix
-			FROM wallet_utxo
-			WHERE wallet_id=? AND address=? AND state='unspent' AND value_satoshi=1
-			ORDER BY created_at_unix ASC, utxo_id ASC`, walletID, address)
+		rows, err := tx.WalletUtxo.Query().
+			Where(walletutxo.WalletIDEQ(walletID), walletutxo.AddressEQ(address), walletutxo.StateEQ("unspent"), walletutxo.ValueSatoshiEQ(1)).
+			Order(walletutxo.ByCreatedAtUnix(), walletutxo.ByUtxoID()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]walletUTXOBasicRow, 0, 16)
-		for rows.Next() {
-			var item walletUTXOBasicRow
-			if err := rows.Scan(&item.UTXOID, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.ScriptType, &item.ScriptTypeReason, &item.AllocationClass, &item.AllocationReason, &item.CreatedAtUnix); err != nil {
-				return nil, err
+		out := make([]walletUTXOBasicRow, 0, len(rows))
+		for _, row := range rows {
+			item := walletUTXOBasicRow{
+				UTXOID:           row.UtxoID,
+				TxID:             strings.ToLower(strings.TrimSpace(row.Txid)),
+				Vout:             uint32(row.Vout),
+				ValueSatoshi:     uint64(row.ValueSatoshi),
+				ScriptType:       string(normalizeWalletScriptType(row.ScriptType)),
+				ScriptTypeReason: row.ScriptTypeReason,
+				AllocationClass:   normalizeWalletUTXOAllocationClass(row.AllocationClass),
+				AllocationReason:  strings.TrimSpace(row.AllocationReason),
+				CreatedAtUnix:     row.CreatedAtUnix,
 			}
 			item.UTXOID = strings.ToLower(strings.TrimSpace(item.UTXOID))
-			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-			item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
-			item.AllocationClass = normalizeWalletUTXOAllocationClass(item.AllocationClass)
-			item.AllocationReason = strings.TrimSpace(item.AllocationReason)
 			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
 }
 
 func dbLoadWalletLocalBroadcastRows(ctx context.Context, store *clientDB, walletID string, address string) ([]walletLocalBroadcastRow, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) ([]walletLocalBroadcastRow, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]walletLocalBroadcastRow, error) {
 		walletID = strings.TrimSpace(walletID)
 		address = strings.TrimSpace(address)
 		if walletID == "" || address == "" {
 			return []walletLocalBroadcastRow{}, nil
 		}
-		rows, err := QueryContext(ctx, db, `SELECT txid,tx_hex,created_at_unix,observed_at_unix,updated_at_unix
-			FROM wallet_local_broadcast_txs
-			WHERE wallet_id=? AND address=?
-			ORDER BY created_at_unix ASC, updated_at_unix ASC, txid ASC`, walletID, address)
+		rows, err := tx.WalletLocalBroadcastTxs.Query().
+			Where(walletlocalbroadcasttxs.WalletIDEQ(walletID), walletlocalbroadcasttxs.AddressEQ(address)).
+			Order(walletlocalbroadcasttxs.ByCreatedAtUnix(), walletlocalbroadcasttxs.ByUpdatedAtUnix(), walletlocalbroadcasttxs.ByTxid()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]walletLocalBroadcastRow, 0, 8)
-		for rows.Next() {
-			var item walletLocalBroadcastRow
-			if err := rows.Scan(&item.TxID, &item.TxHex, &item.CreatedAtUnix, &item.ObservedAtUnix, &item.UpdatedAtUnix); err != nil {
-				return nil, err
+		out := make([]walletLocalBroadcastRow, 0, len(rows))
+		for _, row := range rows {
+			item := walletLocalBroadcastRow{
+				TxID:          strings.ToLower(strings.TrimSpace(row.Txid)),
+				TxHex:         strings.ToLower(strings.TrimSpace(row.TxHex)),
+				CreatedAtUnix: row.CreatedAtUnix,
+				ObservedAtUnix: row.ObservedAtUnix,
+				UpdatedAtUnix: row.UpdatedAtUnix,
 			}
-			item.TxID = strings.ToLower(strings.TrimSpace(item.TxID))
-			item.TxHex = strings.ToLower(strings.TrimSpace(item.TxHex))
 			if item.TxHex == "" {
 				return nil, fmt.Errorf("wallet local broadcast tx_hex is empty for txid=%s", item.TxID)
 			}
 			out = append(out, item)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
 }
 
 func dbResolveWalletAddress(ctx context.Context, store *clientDB) (string, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
 		var address string
-		err := QueryRowContext(ctx, db, `SELECT address FROM wallet_utxo_sync_state ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
-		if err == nil && strings.TrimSpace(address) != "" {
-			return strings.TrimSpace(address), nil
+		row, err := tx.WalletUtxoSyncState.Query().
+			Order(walletutxosyncstate.ByUpdatedAtUnix()).
+			First(ctx)
+		if err == nil && strings.TrimSpace(row.Address) != "" {
+			return strings.TrimSpace(row.Address), nil
 		}
-		err = QueryRowContext(ctx, db, `SELECT address FROM wallet_utxo ORDER BY updated_at_unix DESC, address ASC LIMIT 1`).Scan(&address)
-		if err != nil {
-			return "", err
+		if row2, err := tx.WalletUtxo.Query().Order(walletutxo.ByUpdatedAtUnix()).First(ctx); err == nil {
+			address = row2.Address
+			if strings.TrimSpace(address) != "" {
+				return strings.TrimSpace(address), nil
+			}
 		}
-		address = strings.TrimSpace(address)
-		if address == "" {
-			return "", fmt.Errorf("wallet address not found")
-		}
-		return address, nil
+		return "", fmt.Errorf("wallet address not found")
 	})
 }
 

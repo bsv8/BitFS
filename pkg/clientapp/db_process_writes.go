@@ -945,7 +945,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 			minerFee = 0
 		}
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，别再把旧 fee_pool 口径塞回写入口。
-		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx, db, strings.TrimSpace(in.SpendTxID))
+		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, strings.TrimSpace(in.SpendTxID))
 		if err != nil {
 			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
@@ -977,7 +977,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 	dbRecordAccounting(ctx, store, func(db sqlConn) {
 		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，保证写入和查询走同一条路。
-		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttemptDB(ctx, db, strings.TrimSpace(spendTxID))
+		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, strings.TrimSpace(spendTxID))
 		if err != nil {
 			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 			return
@@ -1073,7 +1073,7 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		}
 		if err == sql.ErrNoRows {
 			pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
-			if err := dbUpsertSettlementPaymentAttemptCtx(ctx, db,
+			settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptStore(ctx, store,
 				"payment_attempt_pool_session_quote_pay_"+sessionID,
 				"pool_session_quote_pay",
 				pendingSourceID,
@@ -1083,10 +1083,7 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 				now,
 				"fee pool quote pay accounting",
 				payload,
-			); err != nil {
-				return err
-			}
-			settlementPaymentAttemptID, err = dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, "pool_session_quote_pay", pendingSourceID)
+			)
 			if err != nil {
 				return err
 			}
@@ -1390,10 +1387,10 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(in.SessionID), "open", 1)
-		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
+		if _, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx, db, allocID)
+		settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx, store, allocID)
 		if err != nil {
 			return fmt.Errorf("resolve settlement payment attempt for pool allocation %s: %w", allocID, err)
 		}
@@ -1496,10 +1493,10 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 	}
 	return store.Do(ctx, func(db sqlConn) error {
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
-		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
+		if _, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx, db, allocID)
+		settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx, store, allocID)
 		if err != nil {
 			return fmt.Errorf("resolve settlement payment attempt for pool allocation %s: %w", allocID, err)
 		}
@@ -1558,10 +1555,10 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		// 第二阶段整改：close 继续有自己的业务记录，但定性为过程型财务对象
 		businessID := "biz_c2c_close_" + strings.TrimSpace(sessionID)
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "close", sequence)
-		if _, err := dbGetPoolAllocationIDByAllocationIDDB(db, allocID); err != nil {
+		if _, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
 		}
-		settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx, db, allocID)
+		settlementPaymentAttemptID, err := resolvePoolAllocationSourceToSettlementPaymentAttempt(ctx, store, allocID)
 		if err != nil {
 			return fmt.Errorf("resolve settlement payment attempt for pool allocation %s: %w", allocID, err)
 		}

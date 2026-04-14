@@ -2,11 +2,17 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procfiledownloadchunks"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procfiledownloads"
 )
 
 type fileDownloadStateRow struct {
@@ -45,13 +51,27 @@ func dbGetFileDownloadState(ctx context.Context, store *clientDB, seedHash strin
 	if store == nil {
 		return fileDownloadStateRow{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (fileDownloadStateRow, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
-		err := QueryRowContext(ctx, db, `SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,updated_at_unix FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
-			Scan(&out.FilePath, &out.FileSize, &out.ChunkCount, &out.Completed, &out.PaidSats, &out.Status, &out.DemandID, &out.LastError, &out.StatusJSON, &out.UpdatedAtUnix)
+		row, err := tx.ProcFileDownloads.Query().
+			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return fileDownloadStateRow{}, sql.ErrNoRows
+			}
 			return fileDownloadStateRow{}, err
 		}
+		out.FilePath = row.FilePath
+		out.FileSize = uint64(row.FileSize)
+		out.ChunkCount = uint32(row.ChunkCount)
+		out.Completed = uint32(row.CompletedChunks)
+		out.PaidSats = uint64(row.PaidSats)
+		out.Status = row.Status
+		out.DemandID = row.DemandID
+		out.LastError = row.LastError
+		out.StatusJSON = row.StatusJSON
+		out.UpdatedAtUnix = row.UpdatedAtUnix
 		return out, nil
 	})
 }
@@ -60,13 +80,26 @@ func dbGetFileDownloadStateNoUpdated(ctx context.Context, store *clientDB, seedH
 	if store == nil {
 		return fileDownloadStateRow{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (fileDownloadStateRow, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (fileDownloadStateRow, error) {
 		var out fileDownloadStateRow
-		err := QueryRowContext(ctx, db, `SELECT file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json FROM proc_file_downloads WHERE seed_hash=?`, seedHash).
-			Scan(&out.FilePath, &out.FileSize, &out.ChunkCount, &out.Completed, &out.PaidSats, &out.Status, &out.DemandID, &out.LastError, &out.StatusJSON)
+		row, err := tx.ProcFileDownloads.Query().
+			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return fileDownloadStateRow{}, sql.ErrNoRows
+			}
 			return fileDownloadStateRow{}, err
 		}
+		out.FilePath = row.FilePath
+		out.FileSize = uint64(row.FileSize)
+		out.ChunkCount = uint32(row.ChunkCount)
+		out.Completed = uint32(row.CompletedChunks)
+		out.PaidSats = uint64(row.PaidSats)
+		out.Status = row.Status
+		out.DemandID = row.DemandID
+		out.LastError = row.LastError
+		out.StatusJSON = row.StatusJSON
 		return out, nil
 	})
 }
@@ -75,10 +108,44 @@ func dbEnsureFileDownloadQueued(ctx context.Context, store *clientDB, seedHash s
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		now := time.Now().Unix()
-		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			seedHash, partPath, 0, 0, 0, 0, "queued", "", "", statusJSON, now, now)
+		existing, err := tx.ProcFileDownloads.Query().
+			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetFilePath(partPath).
+				SetFileSize(0).
+				SetChunkCount(0).
+				SetCompletedChunks(0).
+				SetPaidSats(0).
+				SetStatus("queued").
+				SetDemandID("").
+				SetLastError("").
+				SetStatusJSON(statusJSON).
+				SetCreatedAtUnix(now).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcFileDownloads.Create().
+			SetSeedHash(strings.ToLower(strings.TrimSpace(seedHash))).
+			SetFilePath(partPath).
+			SetFileSize(0).
+			SetChunkCount(0).
+			SetCompletedChunks(0).
+			SetPaidSats(0).
+			SetStatus("queued").
+			SetDemandID("").
+			SetLastError("").
+			SetStatusJSON(statusJSON).
+			SetCreatedAtUnix(now).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
 		return err
 	})
 }
@@ -87,22 +154,20 @@ func dbListFileDownloadChunks(ctx context.Context, store *clientDB, seedHash str
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]fileDownloadChunkRow, error) {
-		rows, err := QueryContext(ctx, db, `SELECT chunk_index,status FROM proc_file_download_chunks WHERE seed_hash=?`, seedHash)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]fileDownloadChunkRow, error) {
+		rows, err := tx.ProcFileDownloadChunks.Query().
+			Where(procfiledownloadchunks.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Order(procfiledownloadchunks.ByChunkIndex()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]fileDownloadChunkRow, 0, 16)
-		for rows.Next() {
-			var it fileDownloadChunkRow
-			if err := rows.Scan(&it.ChunkIndex, &it.Status); err != nil {
-				return nil, err
-			}
-			out = append(out, it)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
+		out := make([]fileDownloadChunkRow, 0, len(rows))
+		for _, row := range rows {
+			out = append(out, fileDownloadChunkRow{
+				ChunkIndex: uint32(row.ChunkIndex),
+				Status:     row.Status,
+			})
 		}
 		return out, nil
 	})
@@ -112,22 +177,44 @@ func dbUpsertFileDownloadState(ctx context.Context, store *clientDB, seedHash st
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		now := time.Now().Unix()
-		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_downloads(seed_hash,file_path,file_size,chunk_count,completed_chunks,paid_sats,status,demand_id,last_error,status_json,created_at_unix,updated_at_unix)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(seed_hash) DO UPDATE SET
-				file_path=excluded.file_path,
-				file_size=excluded.file_size,
-				chunk_count=excluded.chunk_count,
-				completed_chunks=excluded.completed_chunks,
-				paid_sats=excluded.paid_sats,
-				status=excluded.status,
-				demand_id=excluded.demand_id,
-				last_error=excluded.last_error,
-				status_json=excluded.status_json,
-				updated_at_unix=excluded.updated_at_unix`,
-			seedHash, row.FilePath, row.FileSize, row.ChunkCount, row.Completed, row.PaidSats, row.Status, row.DemandID, row.LastError, row.StatusJSON, now, now)
+		existing, err := tx.ProcFileDownloads.Query().
+			Where(procfiledownloads.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetFilePath(row.FilePath).
+				SetFileSize(int64(row.FileSize)).
+				SetChunkCount(int64(row.ChunkCount)).
+				SetCompletedChunks(int64(row.Completed)).
+				SetPaidSats(int64(row.PaidSats)).
+				SetStatus(row.Status).
+				SetDemandID(row.DemandID).
+				SetLastError(row.LastError).
+				SetStatusJSON(row.StatusJSON).
+				SetCreatedAtUnix(now).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcFileDownloads.Create().
+			SetSeedHash(strings.ToLower(strings.TrimSpace(seedHash))).
+			SetFilePath(row.FilePath).
+			SetFileSize(int64(row.FileSize)).
+			SetChunkCount(int64(row.ChunkCount)).
+			SetCompletedChunks(int64(row.Completed)).
+			SetPaidSats(int64(row.PaidSats)).
+			SetStatus(row.Status).
+			SetDemandID(row.DemandID).
+			SetLastError(row.LastError).
+			SetStatusJSON(row.StatusJSON).
+			SetCreatedAtUnix(now).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
 		return err
 	})
 }
@@ -136,16 +223,34 @@ func dbUpsertFileDownloadChunkDone(ctx context.Context, store *clientDB, seedHas
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		now := time.Now().Unix()
-		_, err := ExecContext(ctx, db, `INSERT INTO proc_file_download_chunks(seed_hash,chunk_index,status,seller_pubkey_hex,price_sats,updated_at_unix)
-			VALUES(?,?,?,?,?,?)
-			ON CONFLICT(seed_hash,chunk_index) DO UPDATE SET
-				status=excluded.status,
-				seller_pubkey_hex=excluded.seller_pubkey_hex,
-				price_sats=excluded.price_sats,
-				updated_at_unix=excluded.updated_at_unix`,
-			seedHash, idx, "done", sellerPeerID, price, now)
+		existing, err := tx.ProcFileDownloadChunks.Query().
+			Where(
+				procfiledownloadchunks.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash))),
+				procfiledownloadchunks.ChunkIndexEQ(int64(idx)),
+			).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetStatus("done").
+				SetSellerPubkeyHex(sellerPeerID).
+				SetPriceSats(int64(price)).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcFileDownloadChunks.Create().
+			SetSeedHash(strings.ToLower(strings.TrimSpace(seedHash))).
+			SetChunkIndex(int64(idx)).
+			SetStatus("done").
+			SetSellerPubkeyHex(sellerPeerID).
+			SetPriceSats(int64(price)).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
 		return err
 	})
 }
@@ -158,13 +263,16 @@ func dbFindLatestWorkspaceFileBySeedHash(ctx context.Context, store *clientDB, s
 		path string
 		size uint64
 	}
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (result, error) {
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (result, error) {
 		var out result
-		var workspacePath, filePath string
-		if err := QueryRowContext(ctx, db, `SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, seedHash).Scan(&workspacePath, &filePath); err != nil {
+		row, err := tx.BizWorkspaceFiles.Query().
+			Where(bizworkspacefiles.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
+			First(ctx)
+		if err != nil {
 			return out, err
 		}
-		out.path = workspacePathJoin(workspacePath, filePath)
+		out.path = workspacePathJoin(row.WorkspacePath, row.FilePath)
 		if st, err := os.Stat(out.path); err == nil {
 			out.size = uint64(st.Size())
 		}

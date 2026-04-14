@@ -82,9 +82,7 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 		}
 	}, func(ctx context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
 		route := normalizeResolveRoute(req.Route)
-		body, err := clientDBValue(ctx, store, func(db sqlConn) ([]byte, error) {
-			return buildRouteIndexManifest(db, route)
-		})
+		body, err := buildRouteIndexManifest(ctx, store, route)
 		if err != nil {
 			if err == sql.ErrNoRows {
 				return ncall.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil

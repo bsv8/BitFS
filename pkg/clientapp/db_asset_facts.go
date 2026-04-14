@@ -1790,31 +1790,31 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 
 // ========== Settlement Cycle 函数（硬切版保留） ==========
 
-// dbUpsertSettlementPaymentAttempt 幂等写入结算周期
-func dbUpsertSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, paymentAttemptID string, sourceType string, sourceID string, state string,
+// dbUpsertSettlementPaymentAttempt 幂等写入结算周期，并返回写入后的主键。
+func dbUpsertSettlementPaymentAttemptIDCtx(ctx context.Context, db sqlConn, paymentAttemptID string, sourceType string, sourceID string, state string,
 	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
-	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) error {
+	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) (int64, error) {
 	if db == nil {
-		return fmt.Errorf("db is nil")
+		return 0, fmt.Errorf("db is nil")
 	}
 	if paymentAttemptID == "" {
-		return fmt.Errorf("payment_attempt_id is required")
+		return 0, fmt.Errorf("payment_attempt_id is required")
 	}
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceType == "" || sourceID == "" {
-		return fmt.Errorf("source_type and source_id are required")
+		return 0, fmt.Errorf("source_type and source_id are required")
 	}
 	switch sourceType {
 	case "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
 	default:
-		return fmt.Errorf("source_type must be pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create, got %s", sourceType)
+		return 0, fmt.Errorf("source_type must be pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create, got %s", sourceType)
 	}
 	if state == "" {
 		state = "confirmed"
 	}
 	if state != "pending" && state != "confirmed" && state != "failed" {
-		return fmt.Errorf("state must be pending/confirmed/failed, got %s", state)
+		return 0, fmt.Errorf("state must be pending/confirmed/failed, got %s", state)
 	}
 	now := time.Now().Unix()
 	occurredAt := occurredAtUnix
@@ -1854,7 +1854,19 @@ func dbUpsertSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, paymen
 		grossSatoshi, gateFeeSatoshi, netSatoshi,
 		paymentAttemptIndex, occurredAt, confirmedAt,
 		strings.TrimSpace(note), mustJSONString(payload),
-	)
+		)
+	if err != nil {
+		return 0, err
+	}
+	return dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, sourceType, sourceID)
+}
+
+// dbUpsertSettlementPaymentAttemptCtx 保持旧签名，内部走主键返回版。
+func dbUpsertSettlementPaymentAttemptCtx(ctx context.Context, db sqlConn, paymentAttemptID string, sourceType string, sourceID string, state string,
+	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
+	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) error {
+	_, err := dbUpsertSettlementPaymentAttemptIDCtx(ctx, db, paymentAttemptID, sourceType, sourceID, state,
+		grossSatoshi, gateFeeSatoshi, netSatoshi, paymentAttemptIndex, occurredAtUnix, note, payload)
 	return err
 }
 

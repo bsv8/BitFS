@@ -8,6 +8,17 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchainassetcreate"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchaindirectpay"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchainquotepay"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelpoolsessionquotepay"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementpaymentattempts"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 )
 
 // order_settlements 语义说明（一次性收口）：
@@ -234,6 +245,48 @@ func dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx context.Context, db sqlC
 	return settlementPaymentAttemptID, nil
 }
 
+func resolveSettlementPaymentAttemptSourceStore(ctx context.Context, store *clientDB, sourceType, sourceID string) (settlementCycleSourceResolution, error) {
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceType == "" && sourceID == "" {
+		return settlementCycleSourceResolution{}, nil
+	}
+	if sourceType == "" {
+		sourceType = "settlement_payment_attempt"
+	}
+	if sourceID == "" {
+		return settlementCycleSourceResolution{SourceType: sourceType}, nil
+	}
+	var (
+		paymentAttemptID int64
+		err              error
+	)
+	switch sourceType {
+	case "settlement_payment_attempt":
+		paymentAttemptID, err = strconv.ParseInt(sourceID, 10, 64)
+		if err != nil || paymentAttemptID <= 0 {
+			return settlementCycleSourceResolution{}, fmt.Errorf("settlement_payment_attempt source_id must be a positive integer")
+		}
+	case "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
+		paymentAttemptID, err = dbGetSettlementPaymentAttemptBySourceStore(ctx, store, sourceType, sourceID)
+		if err != nil {
+			return settlementCycleSourceResolution{}, err
+		}
+	default:
+		return settlementCycleSourceResolution{}, fmt.Errorf("source_type must be settlement_payment_attempt, pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create")
+	}
+	state, err := dbGetSettlementPaymentAttemptStateByIDStore(ctx, store, paymentAttemptID)
+	if err != nil {
+		return settlementCycleSourceResolution{}, err
+	}
+	return settlementCycleSourceResolution{
+		SourceType:                    "settlement_payment_attempt",
+		SourceID:                      fmt.Sprintf("%d", paymentAttemptID),
+		SettlementPaymentAttemptID:    paymentAttemptID,
+		SettlementPaymentAttemptState: state,
+	}, nil
+}
+
 func resolvePoolAllocationSourceToSettlementPaymentAttemptDB(ctx context.Context, db sqlConn, sourceID string) (int64, error) {
 	sourceID = strings.TrimSpace(sourceID)
 	if sourceID == "" {
@@ -314,111 +367,349 @@ func dbGetSettlementPaymentAttemptStateByIDDB(ctx context.Context, db sqlConn, i
 	return strings.TrimSpace(state), nil
 }
 
+func dbGetSettlementPaymentAttemptStateByIDStore(ctx context.Context, store *clientDB, id int64) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("client db is nil")
+	}
+	if id <= 0 {
+		return "", fmt.Errorf("settlement_payment_attempt_id must be positive")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		node, err := tx.FactSettlementPaymentAttempts.Query().
+			Where(factsettlementpaymentattempts.IDEQ(id)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return "", sql.ErrNoRows
+			}
+			return "", err
+		}
+		return strings.TrimSpace(node.State), nil
+	})
+}
+
+func dbGetSettlementPaymentAttemptBySourceStore(ctx context.Context, store *clientDB, sourceType, sourceID string) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceType == "" || sourceID == "" {
+		return 0, fmt.Errorf("source_type and source_id are required")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+		node, err := tx.FactSettlementPaymentAttempts.Query().
+			Where(
+				factsettlementpaymentattempts.SourceTypeEQ(sourceType),
+				factsettlementpaymentattempts.SourceIDEQ(sourceID),
+			).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return 0, fmt.Errorf("%w: settlement payment attempt not found for %s:%s", sql.ErrNoRows, sourceType, sourceID)
+			}
+			return 0, err
+		}
+		return node.ID, nil
+	})
+}
+
+func dbGetSettlementPaymentAttemptByPoolSessionIDStore(ctx context.Context, store *clientDB, poolSessionID string) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	poolSessionID = strings.TrimSpace(poolSessionID)
+	if poolSessionID == "" {
+		return 0, fmt.Errorf("pool_session_id is required")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+		node, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+			Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(poolSessionID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return 0, sql.ErrNoRows
+			}
+			return 0, err
+		}
+		return node.SettlementPaymentAttemptID, nil
+	})
+}
+
+func dbGetSettlementPaymentAttemptSourceTxIDStore(ctx context.Context, store *clientDB, settlementPaymentAttemptID int64) (string, error) {
+	if store == nil {
+		return "", fmt.Errorf("client db is nil")
+	}
+	if settlementPaymentAttemptID <= 0 {
+		return "", fmt.Errorf("settlement_payment_attempt_id is required")
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		node, err := tx.FactSettlementPaymentAttempts.Query().
+			Where(factsettlementpaymentattempts.IDEQ(settlementPaymentAttemptID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return "", fmt.Errorf("settlement payment attempt not found: %d", settlementPaymentAttemptID)
+			}
+			return "", err
+		}
+		switch strings.ToLower(strings.TrimSpace(node.SourceType)) {
+		case "chain_quote_pay":
+			channel, err := tx.FactSettlementChannelChainQuotePay.Query().
+				Where(factsettlementchannelchainquotepay.SettlementPaymentAttemptIDEQ(settlementPaymentAttemptID)).
+				Only(ctx)
+			if err != nil {
+				if gen.IsNotFound(err) {
+					return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
+				}
+				return "", err
+			}
+			return strings.ToLower(strings.TrimSpace(channel.Txid)), nil
+		case "chain_direct_pay":
+			channel, err := tx.FactSettlementChannelChainDirectPay.Query().
+				Where(factsettlementchannelchaindirectpay.SettlementPaymentAttemptIDEQ(settlementPaymentAttemptID)).
+				Only(ctx)
+			if err != nil {
+				if gen.IsNotFound(err) {
+					return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
+				}
+				return "", err
+			}
+			return strings.ToLower(strings.TrimSpace(channel.Txid)), nil
+		case "chain_asset_create":
+			channel, err := tx.FactSettlementChannelChainAssetCreate.Query().
+				Where(factsettlementchannelchainassetcreate.SettlementPaymentAttemptIDEQ(settlementPaymentAttemptID)).
+				Only(ctx)
+			if err != nil {
+				if gen.IsNotFound(err) {
+					return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
+				}
+				return "", err
+			}
+			return strings.ToLower(strings.TrimSpace(channel.Txid)), nil
+		case "pool_session_quote_pay":
+			channel, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+				Where(factsettlementchannelpoolsessionquotepay.SettlementPaymentAttemptIDEQ(settlementPaymentAttemptID)).
+				Only(ctx)
+			if err != nil {
+				if gen.IsNotFound(err) {
+					return "", fmt.Errorf("channel row not found for settlement payment attempt %d", settlementPaymentAttemptID)
+				}
+				return "", err
+			}
+			return strings.ToLower(strings.TrimSpace(channel.Txid)), nil
+		default:
+			return "", fmt.Errorf("settlement payment attempt %d source_type %s cannot derive txid", settlementPaymentAttemptID, strings.TrimSpace(node.SourceType))
+		}
+	})
+}
+
+func dbUpsertSettlementPaymentAttemptStore(ctx context.Context, store *clientDB, paymentAttemptID string, sourceType string, sourceID string, state string,
+	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
+	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) (int64, error) {
+	if store == nil {
+		return 0, fmt.Errorf("client db is nil")
+	}
+	if paymentAttemptID == "" {
+		return 0, fmt.Errorf("payment_attempt_id is required")
+	}
+	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceType == "" || sourceID == "" {
+		return 0, fmt.Errorf("source_type and source_id are required")
+	}
+	switch sourceType {
+	case "pool_session_quote_pay", "chain_quote_pay", "chain_direct_pay", "chain_asset_create":
+	default:
+		return 0, fmt.Errorf("source_type must be pool_session_quote_pay, chain_quote_pay, chain_direct_pay or chain_asset_create, got %s", sourceType)
+	}
+	if state == "" {
+		state = "confirmed"
+	}
+	if state != "pending" && state != "confirmed" && state != "failed" {
+		return 0, fmt.Errorf("state must be pending/confirmed/failed, got %s", state)
+	}
+	now := time.Now().Unix()
+	occurredAt := occurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+	confirmedAt := int64(0)
+	if state == "confirmed" {
+		confirmedAt = occurredAt
+	}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+		existing, err := tx.FactSettlementPaymentAttempts.Query().
+			Where(
+				factsettlementpaymentattempts.SourceTypeEQ(sourceType),
+				factsettlementpaymentattempts.SourceIDEQ(sourceID),
+			).
+			Only(ctx)
+		if err == nil {
+			nextState := state
+			if existing.State == "confirmed" && state == "pending" {
+				nextState = existing.State
+			}
+			nextConfirmedAt := existing.ConfirmedAtUnix
+			if state == "confirmed" {
+				nextConfirmedAt = occurredAt
+			}
+			_, err = tx.FactSettlementPaymentAttempts.UpdateOneID(existing.ID).
+				SetSourceType(sourceType).
+				SetSourceID(sourceID).
+				SetState(nextState).
+				SetGrossAmountSatoshi(grossSatoshi).
+				SetGateFeeSatoshi(gateFeeSatoshi).
+				SetNetAmountSatoshi(netSatoshi).
+				SetCycleIndex(int64(paymentAttemptIndex)).
+				SetOccurredAtUnix(occurredAt).
+				SetConfirmedAtUnix(nextConfirmedAt).
+				SetNote(strings.TrimSpace(note)).
+				SetPayloadJSON(mustJSONString(payload)).
+				Save(ctx)
+			return existing.ID, err
+		}
+		if err != nil && !gen.IsNotFound(err) {
+			return 0, err
+		}
+		node, err := tx.FactSettlementPaymentAttempts.Create().
+			SetPaymentAttemptID(paymentAttemptID).
+			SetSourceType(sourceType).
+			SetSourceID(sourceID).
+			SetState(state).
+			SetGrossAmountSatoshi(grossSatoshi).
+			SetGateFeeSatoshi(gateFeeSatoshi).
+			SetNetAmountSatoshi(netSatoshi).
+			SetCycleIndex(int64(paymentAttemptIndex)).
+			SetOccurredAtUnix(occurredAt).
+			SetConfirmedAtUnix(confirmedAt).
+			SetNote(strings.TrimSpace(note)).
+			SetPayloadJSON(mustJSONString(payload)).
+			Save(ctx)
+		if err != nil {
+			return 0, err
+		}
+		return node.ID, nil
+	})
+}
+
 func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusinessFilter) (financeBusinessPage, error) {
 	if store == nil {
 		return financeBusinessPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (financeBusinessPage, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (financeBusinessPage, error) {
 		settlementState, err := normalizeSettlementStateFilter(f.SettlementState)
 		if err != nil {
 			return financeBusinessPage{}, err
 		}
-		if f.SourceType != "" || f.SourceID != "" {
-			resolved, err := resolveSettlementPaymentAttemptSourceDB(ctx, db, f.SourceType, f.SourceID)
-			if err != nil {
-				return financeBusinessPage{}, err
-			}
-			f.SourceType = resolved.SourceType
-			f.SourceID = resolved.SourceID
-		}
-		where := ""
-		args := make([]any, 0, 16)
-		where += " AND sb.source_type='settlement_payment_attempt'"
-		where += " AND sc.id = CAST(sb.source_id AS INTEGER)"
-		if settlementState != "all" {
-			where += " AND sc.state=?"
-			args = append(args, settlementState)
-		}
-
-		// 第六阶段：business_role 成为唯一可信来源，不再使用前缀兜底
-		// formal：正式收费对象
-		// process：过程财务对象
-		if f.BusinessRole == "formal" {
-			where += " AND business_role='formal'"
-		} else if f.BusinessRole == "process" {
-			where += " AND business_role='process'"
-		}
-
-		if f.OrderID != "" {
-			where += " AND sb.order_id=?"
-			args = append(args, f.OrderID)
-		}
-		if f.SourceType != "" {
-			where += " AND sb.source_type=?"
-			args = append(args, f.SourceType)
-		}
-		if f.SourceID != "" {
-			where += " AND sb.source_id=?"
-			args = append(args, f.SourceID)
-		}
-		if f.AccountingScene != "" {
-			where += " AND sb.accounting_scene=?"
-			args = append(args, f.AccountingScene)
-		}
-		if f.AccountingSubtype != "" {
-			where += " AND sb.accounting_subtype=?"
-			args = append(args, f.AccountingSubtype)
-		}
-		if f.Status != "" {
-			where += " AND sb.status=?"
-			args = append(args, f.Status)
-		}
-		if f.FromPartyID != "" {
-			where += " AND sb.from_party_id=?"
-			args = append(args, f.FromPartyID)
-		}
-		if f.ToPartyID != "" {
-			where += " AND sb.to_party_id=?"
-			args = append(args, f.ToPartyID)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (sb.order_id LIKE ? OR sb.note LIKE ? OR sb.idempotency_key LIKE ? OR sb.source_type LIKE ? OR sb.source_id LIKE ? OR sb.accounting_scene LIKE ? OR sb.accounting_subtype LIKE ?)"
-			args = append(args, like, like, like, like, like, like, like)
-		}
-		var out financeBusinessPage
-		if err := QueryRowContext(ctx, db,
-			`SELECT COUNT(1)
-			   FROM order_settlements sb
-			   JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			  WHERE 1=1`+where,
-			args...).Scan(&out.Total); err != nil {
-			return financeBusinessPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT sb.order_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.created_at_unix,sb.idempotency_key,sb.note,sb.payload_json
-			 FROM order_settlements sb
-			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			 WHERE 1=1`+where+` ORDER BY sb.created_at_unix DESC,sb.order_id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
+		resolved, err := resolveSettlementPaymentAttemptSourceStore(ctx, store, f.SourceType, f.SourceID)
 		if err != nil {
 			return financeBusinessPage{}, err
 		}
-		defer rows.Close()
-		out.Items = make([]financeBusinessItem, 0, f.Limit)
-		for rows.Next() {
-			var it financeBusinessItem
-			var payload string
-			if err := rows.Scan(&it.OrderID, &it.BusinessRole, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.FromPartyID, &it.ToPartyID, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+		if resolved.SourceType != "" {
+			f.SourceType = resolved.SourceType
+			f.SourceID = resolved.SourceID
+		}
+
+		nodes, err := tx.OrderSettlements.Query().
+			Where(
+				ordersettlements.SourceTypeEQ("settlement_payment_attempt"),
+			).
+			Order(ordersettlements.ByCreatedAtUnix(entsql.OrderDesc()), ordersettlements.ByOrderID(entsql.OrderDesc())).
+			All(ctx)
+		if err != nil {
+			return financeBusinessPage{}, err
+		}
+		attemptIDs := make([]int64, 0, len(nodes))
+		for _, n := range nodes {
+			if id, parseErr := strconv.ParseInt(strings.TrimSpace(n.SourceID), 10, 64); parseErr == nil && id > 0 {
+				attemptIDs = append(attemptIDs, id)
+			}
+		}
+		attemptState := make(map[int64]string, len(attemptIDs))
+		if len(attemptIDs) > 0 {
+			attempts, err := tx.FactSettlementPaymentAttempts.Query().
+				Where(factsettlementpaymentattempts.IDIn(attemptIDs...)).
+				All(ctx)
+			if err != nil {
 				return financeBusinessPage{}, err
 			}
-			it.Payload = json.RawMessage(payload)
-			// 第六阶段：business_role 直接来自数据库字段，不再运行时推断
-			out.Items = append(out.Items, it)
+			for _, a := range attempts {
+				attemptState[a.ID] = strings.TrimSpace(a.State)
+			}
 		}
-		if err := rows.Err(); err != nil {
-			return financeBusinessPage{}, err
+
+		filtered := make([]financeBusinessItem, 0, len(nodes))
+		for _, n := range nodes {
+			item := orderSettlementToFinanceBusinessItem(n)
+			if f.BusinessRole == "formal" && item.BusinessRole != "formal" {
+				continue
+			}
+			if f.BusinessRole == "process" && item.BusinessRole != "process" {
+				continue
+			}
+			if f.OrderID != "" && item.OrderID != f.OrderID {
+				continue
+			}
+			if f.SourceType != "" && item.SourceType != f.SourceType {
+				continue
+			}
+			if f.SourceID != "" && item.SourceID != f.SourceID {
+				continue
+			}
+			if f.AccountingScene != "" && item.AccountingScene != f.AccountingScene {
+				continue
+			}
+			if f.AccountingSubtype != "" && item.AccountingSubtype != f.AccountingSubtype {
+				continue
+			}
+			if f.Status != "" && item.Status != f.Status {
+				continue
+			}
+			if f.FromPartyID != "" && item.FromPartyID != f.FromPartyID {
+				continue
+			}
+			if f.ToPartyID != "" && item.ToPartyID != f.ToPartyID {
+				continue
+			}
+			if f.Query != "" {
+				like := strings.ToLower(strings.TrimSpace(f.Query))
+				hit := strings.Contains(strings.ToLower(item.OrderID), like) ||
+					strings.Contains(strings.ToLower(item.Note), like) ||
+					strings.Contains(strings.ToLower(item.IdempotencyKey), like) ||
+					strings.Contains(strings.ToLower(item.SourceType), like) ||
+					strings.Contains(strings.ToLower(item.SourceID), like) ||
+					strings.Contains(strings.ToLower(item.AccountingScene), like) ||
+					strings.Contains(strings.ToLower(item.AccountingSubtype), like)
+				if !hit {
+					continue
+				}
+			}
+			if settlementState != "all" {
+				id, parseErr := strconv.ParseInt(strings.TrimSpace(item.SourceID), 10, 64)
+				if parseErr != nil || attemptState[id] != settlementState {
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+
+		var out financeBusinessPage
+		out.Total = len(filtered)
+		if f.Limit <= 0 {
+			f.Limit = 20
+		}
+		if f.Offset < 0 {
+			f.Offset = 0
+		}
+		if f.Offset < len(filtered) {
+			end := f.Offset + f.Limit
+			if end > len(filtered) {
+				end = len(filtered)
+			}
+			out.Items = append(out.Items, filtered[f.Offset:end]...)
+		} else {
+			out.Items = []financeBusinessItem{}
 		}
 		return out, nil
 	})
@@ -428,21 +719,18 @@ func dbGetFinanceBusiness(ctx context.Context, store *clientDB, businessID strin
 	if store == nil {
 		return financeBusinessItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (financeBusinessItem, error) {
-		var out financeBusinessItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT sb.order_id,sb.business_role,sb.source_type,sb.source_id,sb.accounting_scene,sb.accounting_subtype,sb.from_party_id,sb.to_party_id,sb.status,sb.created_at_unix,sb.idempotency_key,sb.note,sb.payload_json
-			 FROM order_settlements sb
-			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(sb.source_id AS INTEGER)
-			 WHERE sb.order_id=?`,
-			businessID,
-		).Scan(&out.OrderID, &out.BusinessRole, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.FromPartyID, &out.ToPartyID, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (financeBusinessItem, error) {
+		node, err := tx.OrderSettlements.Query().
+			Where(ordersettlements.OrderIDEQ(strings.TrimSpace(businessID))).
+			Order(ordersettlements.ByCreatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
+			First(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return financeBusinessItem{}, sql.ErrNoRows
+			}
 			return financeBusinessItem{}, err
 		}
-		out.Payload = json.RawMessage(payload)
-		return out, nil
+		return orderSettlementToFinanceBusinessItem(node), nil
 	})
 }
 
@@ -450,92 +738,121 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 	if store == nil {
 		return financeProcessEventPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (financeProcessEventPage, error) {
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (financeProcessEventPage, error) {
 		settlementState, err := normalizeSettlementStateFilter(f.SettlementState)
 		if err != nil {
 			return financeProcessEventPage{}, err
 		}
-		if f.SourceType != "" || f.SourceID != "" {
-			resolved, err := resolveSettlementPaymentAttemptSourceDB(ctx, db, f.SourceType, f.SourceID)
-			if err != nil {
-				return financeProcessEventPage{}, err
-			}
-			f.SourceType = resolved.SourceType
-			f.SourceID = resolved.SourceID
-		}
-		where := ""
-		args := make([]any, 0, 16)
-		where += " AND pe.source_type='settlement_payment_attempt'"
-		where += " AND sc.id = CAST(pe.source_id AS INTEGER)"
-		if settlementState != "all" {
-			where += " AND sc.state=?"
-			args = append(args, settlementState)
-		}
-		if f.ProcessID != "" {
-			where += " AND pe.process_id=?"
-			args = append(args, f.ProcessID)
-		}
-		if f.SourceType != "" {
-			where += " AND pe.source_type=?"
-			args = append(args, f.SourceType)
-		}
-		if f.SourceID != "" {
-			where += " AND pe.source_id=?"
-			args = append(args, f.SourceID)
-		}
-		if f.AccountingScene != "" {
-			where += " AND pe.accounting_scene=?"
-			args = append(args, f.AccountingScene)
-		}
-		if f.AccountingSubtype != "" {
-			where += " AND pe.accounting_subtype=?"
-			args = append(args, f.AccountingSubtype)
-		}
-		if f.EventType != "" {
-			where += " AND pe.event_type=?"
-			args = append(args, f.EventType)
-		}
-		if f.Status != "" {
-			where += " AND pe.status=?"
-			args = append(args, f.Status)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (pe.process_id LIKE ? OR pe.note LIKE ? OR pe.idempotency_key LIKE ? OR pe.source_type LIKE ? OR pe.source_id LIKE ? OR pe.accounting_scene LIKE ? OR pe.accounting_subtype LIKE ?)"
-			args = append(args, like, like, like, like, like, like, like)
-		}
-		var out financeProcessEventPage
-		if err := QueryRowContext(ctx, db,
-			`SELECT COUNT(1)
-			   FROM order_settlement_events pe
-			   JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
-			  WHERE 1=1`+where,
-			args...).Scan(&out.Total); err != nil {
-			return financeProcessEventPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
-			 FROM order_settlement_events pe
-			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
-			 WHERE 1=1`+where+` ORDER BY pe.occurred_at_unix DESC,pe.id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
+		resolved, err := resolveSettlementPaymentAttemptSourceStore(ctx, store, f.SourceType, f.SourceID)
 		if err != nil {
 			return financeProcessEventPage{}, err
 		}
-		defer rows.Close()
-		out.Items = make([]financeProcessEventItem, 0, f.Limit)
-		for rows.Next() {
-			var it financeProcessEventItem
-			var payload string
-			if err := rows.Scan(&it.ID, &it.ProcessID, &it.SourceType, &it.SourceID, &it.AccountingScene, &it.AccountingSubtype, &it.EventType, &it.Status, &it.OccurredAtUnix, &it.IdempotencyKey, &it.Note, &payload); err != nil {
+		if resolved.SourceType != "" {
+			f.SourceType = resolved.SourceType
+			f.SourceID = resolved.SourceID
+		}
+
+		nodes, err := tx.OrderSettlementEvents.Query().
+			Where(ordersettlementevents.SourceTypeEQ("settlement_payment_attempt")).
+			Order(ordersettlementevents.ByOccurredAtUnix(entsql.OrderDesc()), ordersettlementevents.ByID(entsql.OrderDesc())).
+			All(ctx)
+		if err != nil {
+			return financeProcessEventPage{}, err
+		}
+		attemptIDs := make([]int64, 0, len(nodes))
+		for _, n := range nodes {
+			if id, parseErr := strconv.ParseInt(strings.TrimSpace(n.SourceID), 10, 64); parseErr == nil && id > 0 {
+				attemptIDs = append(attemptIDs, id)
+			}
+		}
+		attemptState := make(map[int64]string, len(attemptIDs))
+		if len(attemptIDs) > 0 {
+			attempts, err := tx.FactSettlementPaymentAttempts.Query().
+				Where(factsettlementpaymentattempts.IDIn(attemptIDs...)).
+				All(ctx)
+			if err != nil {
 				return financeProcessEventPage{}, err
 			}
-			it.Payload = json.RawMessage(payload)
-			out.Items = append(out.Items, it)
+			for _, a := range attempts {
+				attemptState[a.ID] = strings.TrimSpace(a.State)
+			}
 		}
-		if err := rows.Err(); err != nil {
-			return financeProcessEventPage{}, err
+
+		filtered := make([]financeProcessEventItem, 0, len(nodes))
+		for _, n := range nodes {
+			item := financeProcessEventItem{
+				ID:                n.ID,
+				ProcessID:         strings.TrimSpace(n.ProcessID),
+				SourceType:        strings.TrimSpace(n.SourceType),
+				SourceID:          strings.TrimSpace(n.SourceID),
+				AccountingScene:   strings.TrimSpace(n.AccountingScene),
+				AccountingSubtype: strings.TrimSpace(n.AccountingSubtype),
+				EventType:         strings.TrimSpace(n.EventType),
+				Status:            strings.TrimSpace(n.Status),
+				OccurredAtUnix:    n.OccurredAtUnix,
+				IdempotencyKey:    strings.TrimSpace(n.IdempotencyKey),
+				Note:              strings.TrimSpace(n.Note),
+				Payload:           json.RawMessage(n.PayloadJSON),
+			}
+			if f.ProcessID != "" && item.ProcessID != f.ProcessID {
+				continue
+			}
+			if f.SourceType != "" && item.SourceType != f.SourceType {
+				continue
+			}
+			if f.SourceID != "" && item.SourceID != f.SourceID {
+				continue
+			}
+			if f.AccountingScene != "" && item.AccountingScene != f.AccountingScene {
+				continue
+			}
+			if f.AccountingSubtype != "" && item.AccountingSubtype != f.AccountingSubtype {
+				continue
+			}
+			if f.EventType != "" && item.EventType != f.EventType {
+				continue
+			}
+			if f.Status != "" && item.Status != f.Status {
+				continue
+			}
+			if f.Query != "" {
+				like := strings.ToLower(strings.TrimSpace(f.Query))
+				hit := strings.Contains(strings.ToLower(item.ProcessID), like) ||
+					strings.Contains(strings.ToLower(item.Note), like) ||
+					strings.Contains(strings.ToLower(item.IdempotencyKey), like) ||
+					strings.Contains(strings.ToLower(item.SourceType), like) ||
+					strings.Contains(strings.ToLower(item.SourceID), like) ||
+					strings.Contains(strings.ToLower(item.AccountingScene), like) ||
+					strings.Contains(strings.ToLower(item.AccountingSubtype), like)
+				if !hit {
+					continue
+				}
+			}
+			if settlementState != "all" {
+				id, parseErr := strconv.ParseInt(strings.TrimSpace(item.SourceID), 10, 64)
+				if parseErr != nil || attemptState[id] != settlementState {
+					continue
+				}
+			}
+			filtered = append(filtered, item)
+		}
+
+		var out financeProcessEventPage
+		out.Total = len(filtered)
+		if f.Limit <= 0 {
+			f.Limit = 20
+		}
+		if f.Offset < 0 {
+			f.Offset = 0
+		}
+		if f.Offset < len(filtered) {
+			end := f.Offset + f.Limit
+			if end > len(filtered) {
+				end = len(filtered)
+			}
+			out.Items = append(out.Items, filtered[f.Offset:end]...)
+		} else {
+			out.Items = []financeProcessEventItem{}
 		}
 		return out, nil
 	})
@@ -545,21 +862,30 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 	if store == nil {
 		return financeProcessEventItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (financeProcessEventItem, error) {
-		var out financeProcessEventItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT pe.id,pe.process_id,pe.source_type,pe.source_id,pe.accounting_scene,pe.accounting_subtype,pe.event_type,pe.status,pe.occurred_at_unix,pe.idempotency_key,pe.note,pe.payload_json
-			 FROM order_settlement_events pe
-			 JOIN fact_settlement_payment_attempts sc ON sc.id = CAST(pe.source_id AS INTEGER)
-			 WHERE pe.id=?`,
-			id,
-		).Scan(&out.ID, &out.ProcessID, &out.SourceType, &out.SourceID, &out.AccountingScene, &out.AccountingSubtype, &out.EventType, &out.Status, &out.OccurredAtUnix, &out.IdempotencyKey, &out.Note, &payload)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (financeProcessEventItem, error) {
+		node, err := tx.OrderSettlementEvents.Query().
+			Where(ordersettlementevents.IDEQ(id)).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return financeProcessEventItem{}, sql.ErrNoRows
+			}
 			return financeProcessEventItem{}, err
 		}
-		out.Payload = json.RawMessage(payload)
-		return out, nil
+		return financeProcessEventItem{
+			ID:                node.ID,
+			ProcessID:         strings.TrimSpace(node.ProcessID),
+			SourceType:        strings.TrimSpace(node.SourceType),
+			SourceID:          strings.TrimSpace(node.SourceID),
+			AccountingScene:   strings.TrimSpace(node.AccountingScene),
+			AccountingSubtype: strings.TrimSpace(node.AccountingSubtype),
+			EventType:         strings.TrimSpace(node.EventType),
+			Status:            strings.TrimSpace(node.Status),
+			OccurredAtUnix:    node.OccurredAtUnix,
+			IdempotencyKey:    strings.TrimSpace(node.IdempotencyKey),
+			Note:              strings.TrimSpace(node.Note),
+			Payload:           json.RawMessage(node.PayloadJSON),
+		}, nil
 	})
 }
 

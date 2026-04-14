@@ -6,6 +6,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 )
 
 // businessTriggerItem / Entry / Filter / Page 保留旧调用面，但底层已切到 order_settlement_events。
@@ -347,13 +352,14 @@ func settlementOrderIDFromSettlementID(ctx context.Context, store *clientDB, set
 		return ""
 	}
 	settlementID = strings.TrimSpace(settlementID)
-	orderID, err := clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		var out string
-		err := QueryRowContext(ctx, db, `SELECT order_id FROM order_settlements WHERE settlement_id=?`, settlementID).Scan(&out)
+	orderID, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		node, err := tx.OrderSettlements.Query().
+			Where(ordersettlements.SettlementIDEQ(settlementID)).
+			First(ctx)
 		if err != nil {
 			return "", err
 		}
-		return out, nil
+		return strings.TrimSpace(node.OrderID), nil
 	})
 	if err != nil {
 		return ""
@@ -461,29 +467,38 @@ func dbListBusinessesByTrigger(ctx context.Context, store *clientDB, triggerType
 	if triggerType == "" || triggerIDValue == "" {
 		return nil, fmt.Errorf("trigger_type and trigger_id_value are required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]string, error) {
-		rows, err := QueryContext(ctx, db,
-			`SELECT DISTINCT os.order_id
-			 FROM order_settlement_events e
-			 JOIN order_settlements os ON os.settlement_id=e.settlement_id
-			 WHERE e.source_type=? AND e.source_id=?
-			 ORDER BY e.occurred_at_unix DESC`,
-			triggerType, triggerIDValue,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]string, error) {
+		events, err := tx.OrderSettlementEvents.Query().
+			Where(
+				ordersettlementevents.SourceTypeEQ(triggerType),
+				ordersettlementevents.SourceIDEQ(triggerIDValue),
+			).
+			Order(
+				ordersettlementevents.ByOccurredAtUnix(entsql.OrderDesc()),
+				ordersettlementevents.ByID(entsql.OrderDesc()),
+			).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		var out []string
-		for rows.Next() {
-			var orderID string
-			if err := rows.Scan(&orderID); err != nil {
-				return nil, err
+		seen := make(map[string]struct{}, len(events))
+		out := make([]string, 0, len(events))
+		for _, event := range events {
+			settlement, err := tx.OrderSettlements.Query().
+				Where(ordersettlements.SettlementIDEQ(strings.TrimSpace(event.SettlementID))).
+				Only(ctx)
+			if err != nil {
+				continue
 			}
+			orderID := strings.TrimSpace(settlement.OrderID)
+			if orderID == "" {
+				continue
+			}
+			if _, ok := seen[orderID]; ok {
+				continue
+			}
+			seen[orderID] = struct{}{}
 			out = append(out, orderID)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})

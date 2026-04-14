@@ -51,7 +51,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := upsertPublishedRouteIndex(receiverDB, defaultNodeResolveRoute, strings.Repeat("ab", 32)); err != nil {
+	if _, err := upsertPublishedRouteIndex(context.Background(), receiverStore, defaultNodeResolveRoute, strings.Repeat("ab", 32)); err != nil {
 		t.Fatalf("upsert route index: %v", err)
 	}
 

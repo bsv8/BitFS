@@ -52,7 +52,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := upsertPublishedRouteIndex(targetDB, "album", strings.Repeat("ef", 32)); err != nil {
+	if _, err := upsertPublishedRouteIndex(context.Background(), targetStore, "album", strings.Repeat("ef", 32)); err != nil {
 		t.Fatalf("upsert route index: %v", err)
 	}
 

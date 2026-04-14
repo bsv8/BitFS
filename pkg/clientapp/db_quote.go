@@ -6,6 +6,9 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizlivequotes"
 )
 
 // dbListLiveQuotes 只负责读取 biz_live_quotes，不做业务过滤。
@@ -17,26 +20,26 @@ func dbListLiveQuotes(ctx context.Context, store *clientDB, demandID string) ([]
 	if demandID == "" {
 		return nil, fmt.Errorf("demand_id required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) ([]LiveQuoteItem, error) {
-		rows, err := QueryContext(ctx, db, `SELECT demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix FROM biz_live_quotes WHERE demand_id=? ORDER BY created_at_unix ASC`, demandID)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]LiveQuoteItem, error) {
+		rows, err := tx.BizLiveQuotes.Query().
+			Where(bizlivequotes.DemandIDEQ(demandID)).
+			Order(bizlivequotes.ByCreatedAtUnix()).
+			All(ctx)
 		if err != nil {
 			return nil, err
 		}
-		defer rows.Close()
-		out := make([]LiveQuoteItem, 0, 4)
-		for rows.Next() {
+		out := make([]LiveQuoteItem, 0, len(rows))
+		for _, row := range rows {
 			var it LiveQuoteItem
-			var recentJSON string
-			if err := rows.Scan(&it.DemandID, &it.SellerPubHex, &it.StreamID, &it.LatestSegmentIndex, &recentJSON, &it.ExpiresAtUnix); err != nil {
-				return nil, err
-			}
-			if strings.TrimSpace(recentJSON) != "" {
-				_ = json.Unmarshal([]byte(recentJSON), &it.RecentSegments)
+			it.DemandID = row.DemandID
+			it.SellerPubHex = row.SellerPubkeyHex
+			it.StreamID = row.StreamID
+			it.LatestSegmentIndex = uint64(row.LatestSegmentIndex)
+			it.ExpiresAtUnix = row.ExpiresAtUnix
+			if strings.TrimSpace(row.RecentSegmentsJSON) != "" {
+				_ = json.Unmarshal([]byte(row.RecentSegmentsJSON), &it.RecentSegments)
 			}
 			out = append(out, it)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, err
 		}
 		return out, nil
 	})
@@ -50,27 +53,39 @@ func dbUpsertLiveQuote(ctx context.Context, store *clientDB, item LiveQuoteItem)
 	if strings.TrimSpace(item.DemandID) == "" || strings.TrimSpace(item.SellerPubHex) == "" || strings.TrimSpace(item.StreamID) == "" {
 		return fmt.Errorf("live quote keys are required")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		recentJSON, err := json.Marshal(item.RecentSegments)
 		if err != nil {
 			return err
 		}
-		_, err = ExecContext(ctx, db, `INSERT INTO biz_live_quotes(demand_id,seller_pubkey_hex,stream_id,latest_segment_index,recent_segments_json,expires_at_unix,created_at_unix)
-			VALUES(?,?,?,?,?,?,?)
-			ON CONFLICT(demand_id,seller_pubkey_hex) DO UPDATE SET
-				stream_id=excluded.stream_id,
-				latest_segment_index=excluded.latest_segment_index,
-				recent_segments_json=excluded.recent_segments_json,
-				expires_at_unix=excluded.expires_at_unix,
-				created_at_unix=excluded.created_at_unix`,
-			strings.TrimSpace(item.DemandID),
-			strings.ToLower(strings.TrimSpace(item.SellerPubHex)),
-			strings.ToLower(strings.TrimSpace(item.StreamID)),
-			item.LatestSegmentIndex,
-			string(recentJSON),
-			item.ExpiresAtUnix,
-			time.Now().Unix(),
-		)
+		existing, err := tx.BizLiveQuotes.Query().
+			Where(
+				bizlivequotes.DemandIDEQ(strings.TrimSpace(item.DemandID)),
+				bizlivequotes.SellerPubkeyHexEQ(strings.ToLower(strings.TrimSpace(item.SellerPubHex))),
+			).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetStreamID(strings.ToLower(strings.TrimSpace(item.StreamID))).
+				SetLatestSegmentIndex(int64(item.LatestSegmentIndex)).
+				SetRecentSegmentsJSON(string(recentJSON)).
+				SetExpiresAtUnix(item.ExpiresAtUnix).
+				SetCreatedAtUnix(time.Now().Unix()).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.BizLiveQuotes.Create().
+			SetDemandID(strings.TrimSpace(item.DemandID)).
+			SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(item.SellerPubHex))).
+			SetStreamID(strings.ToLower(strings.TrimSpace(item.StreamID))).
+			SetLatestSegmentIndex(int64(item.LatestSegmentIndex)).
+			SetRecentSegmentsJSON(string(recentJSON)).
+			SetExpiresAtUnix(item.ExpiresAtUnix).
+			SetCreatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		return err
 	})
 }

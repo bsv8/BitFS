@@ -9,6 +9,12 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procdirectdeals"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procdirecttransferpools"
 )
 
 // 设计说明：
@@ -27,7 +33,7 @@ import (
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string) (string, string, string, error) {
 	// 运行期辅助查询：只给 direct transfer 串 buyer / seller / arbiter 上下文。
-	out, err := clientDBValue(ctx, store, func(db sqlConn) (struct {
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct {
 		buyer   string
 		seller  string
 		arbiter string
@@ -37,9 +43,19 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 			seller  string
 			arbiter string
 		}
-		err := QueryRowContext(ctx, db, `SELECT buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex FROM proc_direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).
-			Scan(&out.buyer, &out.seller, &out.arbiter)
-		return out, err
+		row, err := tx.ProcDirectDeals.Query().
+			Where(procdirectdeals.DealIDEQ(strings.TrimSpace(dealID))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return out, sql.ErrNoRows
+			}
+			return out, err
+		}
+		out.buyer = row.BuyerPubkeyHex
+		out.seller = row.SellerPubkeyHex
+		out.arbiter = row.ArbiterPubkeyHex
+		return out, nil
 	})
 	return out.buyer, out.seller, out.arbiter, err
 }
@@ -47,10 +63,17 @@ func dbLoadDirectDealParties(ctx context.Context, store *clientDB, dealID string
 // dbLoadDirectSessionDealID 【协议运行层专用】按 session_id 查 deal_id
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID string) (string, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		var dealID string
-		err := QueryRowContext(ctx, db, `SELECT deal_id FROM proc_direct_transfer_pools WHERE session_id=?`, strings.TrimSpace(sessionID)).Scan(&dealID)
-		return strings.TrimSpace(dealID), err
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		row, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(strings.TrimSpace(sessionID))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return "", sql.ErrNoRows
+			}
+			return "", err
+		}
+		return strings.TrimSpace(row.DealID), nil
 	})
 }
 
@@ -58,10 +81,17 @@ func dbLoadDirectSessionDealID(ctx context.Context, store *clientDB, sessionID s
 // ⚠️ 第五步：仅用于协议运行期上下文恢复，禁止用于业务状态判断
 func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID string) (string, error) {
 	// 运行期辅助查询：只用于恢复直连链路的 seed 关联。
-	return clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		var seedHash string
-		err := QueryRowContext(ctx, db, `SELECT seed_hash FROM proc_direct_deals WHERE deal_id=?`, strings.TrimSpace(dealID)).Scan(&seedHash)
-		return strings.ToLower(strings.TrimSpace(seedHash)), err
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		row, err := tx.ProcDirectDeals.Query().
+			Where(procdirectdeals.DealIDEQ(strings.TrimSpace(dealID))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return "", sql.ErrNoRows
+			}
+			return "", err
+		}
+		return strings.ToLower(strings.TrimSpace(row.SeedHash)), nil
 	})
 }
 
@@ -355,13 +385,17 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 }
 
 func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string) ([]byte, error) {
-	seedPath, err := clientDBValue(ctx, store, func(db sqlConn) (string, error) {
-		var seedPath string
-		err := QueryRowContext(ctx, db, `SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&seedPath)
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", fmt.Errorf("seed not found")
+	seedPath, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (string, error) {
+		row, err := tx.BizSeeds.Query().
+			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return "", fmt.Errorf("seed not found")
+			}
+			return "", err
 		}
-		return seedPath, err
+		return row.SeedFilePath, nil
 	})
 	if err != nil {
 		return nil, err
@@ -370,7 +404,7 @@ func dbLoadSeedBytesBySeedHash(ctx context.Context, store *clientDB, seedHash st
 }
 
 func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash string, chunkIndex uint32) ([]byte, error) {
-	meta, err := clientDBValue(ctx, store, func(db sqlConn) (struct {
+	meta, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (struct {
 		workspacePath string
 		filePath      string
 		chunkCount    uint32
@@ -380,16 +414,24 @@ func dbLoadChunkBytesBySeedHash(ctx context.Context, store *clientDB, seedHash s
 			filePath      string
 			chunkCount    uint32
 		}
-		if err := QueryRowContext(ctx, db,
-			`SELECT s.chunk_count FROM biz_seeds s WHERE s.seed_hash=?`,
-			strings.ToLower(strings.TrimSpace(seedHash)),
-		).Scan(&out.chunkCount); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+		seedRow, err := tx.BizSeeds.Query().
+			Where(bizseeds.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
 				return out, fmt.Errorf("seed not found")
 			}
 			return out, err
 		}
-		_ = QueryRowContext(ctx, db, `SELECT workspace_path,file_path FROM biz_workspace_files WHERE seed_hash=? ORDER BY workspace_path ASC,file_path ASC LIMIT 1`, strings.ToLower(strings.TrimSpace(seedHash))).Scan(&out.workspacePath, &out.filePath)
+		out.chunkCount = uint32(seedRow.ChunkCount)
+		fileRow, err := tx.BizWorkspaceFiles.Query().
+			Where(bizworkspacefiles.SeedHashEQ(strings.ToLower(strings.TrimSpace(seedHash)))).
+			Order(bizworkspacefiles.ByWorkspacePath(), bizworkspacefiles.ByFilePath()).
+			First(ctx)
+		if err == nil {
+			out.workspacePath = fileRow.WorkspacePath
+			out.filePath = fileRow.FilePath
+		}
 		return out, nil
 	})
 	if err != nil {

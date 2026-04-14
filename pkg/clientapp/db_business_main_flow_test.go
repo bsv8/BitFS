@@ -16,7 +16,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 步骤1：创建前台订单
 	frontOrderID := "fo_domain_reg_001"
@@ -175,7 +175,7 @@ func TestBusinessBridgeFlow_CreateBusinessWithFrontTriggerAndPendingSettlement(t
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 使用桥接函数创建完整主链
 	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
@@ -279,7 +279,7 @@ func TestBusinessBridgeFlow_IdempotentOnRetry(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:     "fo_idempotent_001",
@@ -349,7 +349,7 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 插入测试数据
 	for i := 0; i < 3; i++ {

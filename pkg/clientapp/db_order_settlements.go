@@ -9,6 +9,11 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/predicate"
 )
 
 // BusinessSettlementItem 业务结算出口记录
@@ -55,6 +60,93 @@ type businessSettlementOutcomeEntry struct {
 	ErrorMessage      string
 	SettlementPayload any
 	UpdatedAtUnix     int64
+}
+
+// 业务结算读写都只认 order_settlements 的唯一约束和 id。
+// 这里集中做行转换，避免各处重复拼列名。
+func orderSettlementToBusinessSettlementItem(n *gen.OrderSettlements) BusinessSettlementItem {
+	if n == nil {
+		return BusinessSettlementItem{}
+	}
+	return BusinessSettlementItem{
+		SettlementID:     strings.TrimSpace(n.SettlementID),
+		OrderID:          strings.TrimSpace(n.OrderID),
+		SettlementMethod: strings.TrimSpace(n.SettlementMethod),
+		Status:           strings.TrimSpace(n.SettlementStatus),
+		TargetType:       strings.TrimSpace(n.TargetType),
+		TargetID:         strings.TrimSpace(n.TargetID),
+		ErrorMessage:     strings.TrimSpace(n.ErrorMessage),
+		CreatedAtUnix:    n.CreatedAtUnix,
+		UpdatedAtUnix:    n.UpdatedAtUnix,
+		Payload:          json.RawMessage(n.SettlementPayloadJSON),
+	}
+}
+
+func orderSettlementToFinanceBusinessItem(n *gen.OrderSettlements) financeBusinessItem {
+	if n == nil {
+		return financeBusinessItem{}
+	}
+	return financeBusinessItem{
+		OrderID:           strings.TrimSpace(n.OrderID),
+		BusinessRole:      strings.TrimSpace(n.BusinessRole),
+		SourceType:        strings.TrimSpace(n.SourceType),
+		SourceID:          strings.TrimSpace(n.SourceID),
+		AccountingScene:   strings.TrimSpace(n.AccountingScene),
+		AccountingSubtype: strings.TrimSpace(n.AccountingSubtype),
+		FromPartyID:       strings.TrimSpace(n.FromPartyID),
+		ToPartyID:         strings.TrimSpace(n.ToPartyID),
+		Status:            strings.TrimSpace(n.Status),
+		OccurredAtUnix:    n.CreatedAtUnix,
+		IdempotencyKey:    strings.TrimSpace(n.IdempotencyKey),
+		Note:              strings.TrimSpace(n.Note),
+		Payload:           json.RawMessage(n.PayloadJSON),
+	}
+}
+
+func orderSettlementQueryPredicates(f businessSettlementFilter) []predicate.OrderSettlements {
+	preds := make([]predicate.OrderSettlements, 0, 6)
+	if f.SettlementID != "" {
+		preds = append(preds, ordersettlements.SettlementIDEQ(strings.TrimSpace(f.SettlementID)))
+	}
+	if f.OrderID != "" {
+		preds = append(preds, ordersettlements.OrderIDEQ(strings.TrimSpace(f.OrderID)))
+	}
+	if f.SettlementMethod != "" {
+		preds = append(preds, ordersettlements.SettlementMethodEQ(strings.TrimSpace(f.SettlementMethod)))
+	}
+	if f.Status != "" {
+		preds = append(preds, ordersettlements.SettlementStatusEQ(strings.TrimSpace(f.Status)))
+	}
+	if f.TargetType != "" {
+		preds = append(preds, ordersettlements.TargetTypeEQ(strings.TrimSpace(f.TargetType)))
+	}
+	if f.TargetID != "" {
+		preds = append(preds, ordersettlements.TargetIDEQ(strings.TrimSpace(f.TargetID)))
+	}
+	return preds
+}
+
+func orderSettlementBusinessPredicates(f businessSettlementFilter) []predicate.OrderSettlements {
+	preds := make([]predicate.OrderSettlements, 0, 8)
+	if f.SettlementID != "" {
+		preds = append(preds, ordersettlements.SettlementIDEQ(strings.TrimSpace(f.SettlementID)))
+	}
+	if f.OrderID != "" {
+		preds = append(preds, ordersettlements.OrderIDEQ(strings.TrimSpace(f.OrderID)))
+	}
+	if f.SettlementMethod != "" {
+		preds = append(preds, ordersettlements.SettlementMethodEQ(strings.TrimSpace(f.SettlementMethod)))
+	}
+	if f.Status != "" {
+		preds = append(preds, ordersettlements.StatusEQ(strings.TrimSpace(f.Status)))
+	}
+	if f.TargetType != "" {
+		preds = append(preds, ordersettlements.TargetTypeEQ(strings.TrimSpace(f.TargetType)))
+	}
+	if f.TargetID != "" {
+		preds = append(preds, ordersettlements.TargetIDEQ(strings.TrimSpace(f.TargetID)))
+	}
+	return preds
 }
 
 // dbUpdateBusinessSettlementOutcomeTx 在同一个事务里同步回写业务状态和结算出口状态。
@@ -213,62 +305,52 @@ func claimBusinessSettlementExecutionTx(ctx context.Context, store *clientDB, or
 		Item    BusinessSettlementItem
 		Claimed bool
 	}
-	res, err := clientDBValue(ctx, store, func(db sqlConn) (claimResult, error) {
-		var current BusinessSettlementItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
-			 FROM order_settlements WHERE order_id=? ORDER BY settlement_no DESC,updated_at_unix DESC,settlement_id DESC LIMIT 1`,
-			orderID,
-		).Scan(
-			&current.SettlementID, &current.OrderID, &current.SettlementMethod, &current.Status,
-			&current.TargetType, &current.TargetID, &current.ErrorMessage,
-			&current.CreatedAtUnix, &current.UpdatedAtUnix, &payload,
-		)
+	res, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (claimResult, error) {
+		current, err := tx.OrderSettlements.Query().
+			Where(ordersettlements.OrderIDEQ(orderID)).
+			Order(ordersettlements.BySettlementNo(entsql.OrderDesc()), ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
+			First(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return claimResult{}, sql.ErrNoRows
+			}
 			return claimResult{}, err
 		}
-		current.Payload = json.RawMessage(payload)
-		currentStatus := strings.ToLower(strings.TrimSpace(current.Status))
+		currentItem := orderSettlementToBusinessSettlementItem(current)
+		currentStatus := strings.ToLower(strings.TrimSpace(currentItem.Status))
 		if currentStatus != "pending" && currentStatus != "waiting_fund" {
-			return claimResult{Item: current, Claimed: false}, nil
+			return claimResult{Item: currentItem, Claimed: false}, nil
 		}
-		result, err := ExecContext(ctx, db,
-			`UPDATE order_settlements SET
-				status='processing',
-				settlement_status='processing',
-				updated_at_unix=?
-			WHERE settlement_id=? AND status IN ('pending','waiting_fund') AND settlement_status IN ('pending','waiting_fund')`,
-			time.Now().Unix(),
-			current.SettlementID,
-		)
-		if err != nil {
-			return claimResult{}, err
-		}
-		affected, err := result.RowsAffected()
+		affected, err := tx.OrderSettlements.Update().
+			Where(
+				ordersettlements.SettlementIDEQ(current.SettlementID),
+				ordersettlements.StatusIn("pending", "waiting_fund"),
+				ordersettlements.SettlementStatusIn("pending", "waiting_fund"),
+			).
+			SetStatus("processing").
+			SetSettlementStatus("processing").
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		if err != nil {
 			return claimResult{}, err
 		}
 		if affected > 0 {
-			return claimResult{Item: current, Claimed: true}, nil
+			currentItem.Status = "processing"
+			return claimResult{Item: currentItem, Claimed: true}, nil
 		}
-		err = QueryRowContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
-			 FROM order_settlements WHERE settlement_id=?`,
-			current.SettlementID,
-		).Scan(
-			&current.SettlementID, &current.OrderID, &current.SettlementMethod, &current.Status,
-			&current.TargetType, &current.TargetID, &current.ErrorMessage,
-			&current.CreatedAtUnix, &current.UpdatedAtUnix, &payload,
-		)
+		current, err = tx.OrderSettlements.Query().
+			Where(ordersettlements.SettlementIDEQ(current.SettlementID)).
+			Only(ctx)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return claimResult{}, fmt.Errorf("business record not found for order_id=%s", orderID)
 			}
+			if gen.IsNotFound(err) {
+				return claimResult{}, fmt.Errorf("business record not found for order_id=%s", orderID)
+			}
 			return claimResult{}, err
 		}
-		current.Payload = json.RawMessage(payload)
-		return claimResult{Item: current, Claimed: false}, nil
+		return claimResult{Item: orderSettlementToBusinessSettlementItem(current), Claimed: false}, nil
 	})
 	if err != nil {
 		return BusinessSettlementItem{}, false, err
@@ -375,23 +457,17 @@ func dbGetBusinessSettlement(ctx context.Context, store *clientDB, settlementID 
 	if settlementID == "" {
 		return BusinessSettlementItem{}, fmt.Errorf("settlement_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
-		var item BusinessSettlementItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
-			 FROM order_settlements WHERE settlement_id=?`,
-			settlementID,
-		).Scan(
-			&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status,
-			&item.TargetType, &item.TargetID, &item.ErrorMessage,
-			&item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
+		node, err := tx.OrderSettlements.Query().
+			Where(ordersettlements.SettlementIDEQ(settlementID)).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return BusinessSettlementItem{}, sql.ErrNoRows
+			}
 			return BusinessSettlementItem{}, err
 		}
-		item.Payload = json.RawMessage(payload)
-		return item, nil
+		return orderSettlementToBusinessSettlementItem(node), nil
 	})
 }
 
@@ -404,24 +480,18 @@ func dbGetBusinessSettlementByBusinessID(ctx context.Context, store *clientDB, b
 	if businessID == "" {
 		return BusinessSettlementItem{}, fmt.Errorf("order_id is required")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
-		var item BusinessSettlementItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
-			 FROM order_settlements WHERE order_id=?
-			 ORDER BY settlement_no DESC,updated_at_unix DESC,settlement_id DESC LIMIT 1`,
-			businessID,
-		).Scan(
-			&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status,
-			&item.TargetType, &item.TargetID, &item.ErrorMessage,
-			&item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
+		node, err := tx.OrderSettlements.Query().
+			Where(ordersettlements.OrderIDEQ(businessID)).
+			Order(ordersettlements.BySettlementNo(entsql.OrderDesc()), ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
+			First(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return BusinessSettlementItem{}, sql.ErrNoRows
+			}
 			return BusinessSettlementItem{}, err
 		}
-		item.Payload = json.RawMessage(payload)
-		return item, nil
+		return orderSettlementToBusinessSettlementItem(node), nil
 	})
 }
 
@@ -443,65 +513,32 @@ func dbListBusinessSettlements(ctx context.Context, store *clientDB, f businessS
 	if store == nil {
 		return businessSettlementPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (businessSettlementPage, error) {
-		where := ""
-		args := make([]any, 0, 16)
-		if f.SettlementID != "" {
-			where += " AND settlement_id=?"
-			args = append(args, f.SettlementID)
-		}
-		if f.OrderID != "" {
-			where += " AND order_id=?"
-			args = append(args, f.OrderID)
-		}
-		if f.SettlementMethod != "" {
-			where += " AND settlement_method=?"
-			args = append(args, f.SettlementMethod)
-		}
-		if f.Status != "" {
-			where += " AND settlement_status=?"
-			args = append(args, f.Status)
-		}
-		if f.TargetType != "" {
-			where += " AND target_type=?"
-			args = append(args, f.TargetType)
-		}
-		if f.TargetID != "" {
-			where += " AND target_id=?"
-			args = append(args, f.TargetID)
-		}
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (businessSettlementPage, error) {
+		preds := orderSettlementQueryPredicates(f)
 		var out businessSettlementPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM order_settlements WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return businessSettlementPage{}, err
-		}
-		if f.Limit <= 0 {
-			f.Limit = 20
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
-			 FROM order_settlements WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,settlement_id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
+		query := tx.OrderSettlements.Query().Where(preds...)
+		total, err := query.Count(ctx)
 		if err != nil {
 			return businessSettlementPage{}, err
 		}
-		defer rows.Close()
-		out.Items = make([]BusinessSettlementItem, 0, f.Limit)
-		for rows.Next() {
-			var item BusinessSettlementItem
-			var payload string
-			if err := rows.Scan(
-				&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status,
-				&item.TargetType, &item.TargetID, &item.ErrorMessage,
-				&item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
-			); err != nil {
-				return businessSettlementPage{}, err
-			}
-			item.Payload = json.RawMessage(payload)
-			out.Items = append(out.Items, item)
+		out.Total = total
+		if f.Limit <= 0 {
+			f.Limit = 20
 		}
-		if err := rows.Err(); err != nil {
+		if f.Offset < 0 {
+			f.Offset = 0
+		}
+		nodes, err := query.
+			Order(ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementID(entsql.OrderDesc())).
+			Limit(f.Limit).
+			Offset(f.Offset).
+			All(ctx)
+		if err != nil {
 			return businessSettlementPage{}, err
+		}
+		out.Items = make([]BusinessSettlementItem, 0, len(nodes))
+		for _, node := range nodes {
+			out.Items = append(out.Items, orderSettlementToBusinessSettlementItem(node))
 		}
 		return out, nil
 	})
@@ -516,14 +553,13 @@ func dbUpdateBusinessSettlementStatus(ctx context.Context, store *clientDB, sett
 	if settlementID == "" {
 		return fmt.Errorf("settlement_id is required")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`UPDATE order_settlements SET settlement_status=?, error_message=?, updated_at_unix=? WHERE settlement_id=?`,
-			strings.TrimSpace(status),
-			strings.TrimSpace(errorMessage),
-			time.Now().Unix(),
-			settlementID,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.OrderSettlements.Update().
+			Where(ordersettlements.SettlementIDEQ(settlementID)).
+			SetSettlementStatus(strings.TrimSpace(status)).
+			SetErrorMessage(strings.TrimSpace(errorMessage)).
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		return err
 	})
 }
@@ -553,14 +589,14 @@ func dbUpdateBusinessSettlementTarget(ctx context.Context, store *clientDB, sett
 	if settlementID == "" {
 		return fmt.Errorf("settlement_id is required")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`UPDATE order_settlements SET target_type=?, target_id=?, error_message='', updated_at_unix=? WHERE settlement_id=?`,
-			strings.TrimSpace(targetType),
-			strings.TrimSpace(targetID),
-			time.Now().Unix(),
-			settlementID,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.OrderSettlements.Update().
+			Where(ordersettlements.SettlementIDEQ(settlementID)).
+			SetTargetType(strings.TrimSpace(targetType)).
+			SetTargetID(strings.TrimSpace(targetID)).
+			SetErrorMessage("").
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		return err
 	})
 }
@@ -581,30 +617,19 @@ func dbUpdateBusinessSettlementOutcome(ctx context.Context, store *clientDB, e b
 	if e.UpdatedAtUnix <= 0 {
 		e.UpdatedAtUnix = time.Now().Unix()
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`UPDATE order_settlements SET
-				status=?,
-				settlement_status=?,
-				settlement_method=?,
-				target_type=?,
-				target_id=?,
-				error_message=?,
-				payload_json=?,
-				settlement_payload_json=?,
-				updated_at_unix=?
-		WHERE settlement_id=?`,
-			strings.TrimSpace(e.BusinessStatus),
-			strings.TrimSpace(e.SettlementStatus),
-			strings.TrimSpace(e.SettlementMethod),
-			strings.TrimSpace(e.TargetType),
-			strings.TrimSpace(e.TargetID),
-			strings.TrimSpace(e.ErrorMessage),
-			mustJSONString(e.SettlementPayload),
-			mustJSONString(e.SettlementPayload),
-			e.UpdatedAtUnix,
-			e.SettlementID,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.OrderSettlements.Update().
+			Where(ordersettlements.SettlementIDEQ(e.SettlementID)).
+			SetStatus(strings.TrimSpace(e.BusinessStatus)).
+			SetSettlementStatus(strings.TrimSpace(e.SettlementStatus)).
+			SetSettlementMethod(strings.TrimSpace(e.SettlementMethod)).
+			SetTargetType(strings.TrimSpace(e.TargetType)).
+			SetTargetID(strings.TrimSpace(e.TargetID)).
+			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+			SetPayloadJSON(mustJSONString(e.SettlementPayload)).
+			SetSettlementPayloadJSON(mustJSONString(e.SettlementPayload)).
+			SetUpdatedAtUnix(e.UpdatedAtUnix).
+			Save(ctx)
 		return err
 	})
 }
@@ -1074,22 +1099,19 @@ func GetSettlementByPoolAllocationID(ctx context.Context, store *clientDB, poolA
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
-		var item BusinessSettlementItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,settlement_status,target_type,target_id,error_message,created_at_unix,updated_at_unix,settlement_payload_json
-			 FROM order_settlements WHERE settlement_method='pool' AND target_id=?`,
-			fmt.Sprintf("%d", poolAllocationID),
-		).Scan(
-			&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status,
-			&item.TargetType, &item.TargetID, &item.ErrorMessage,
-			&item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
+		node, err := tx.OrderSettlements.Query().
+			Where(
+				ordersettlements.SettlementMethodEQ(string(SettlementMethodPool)),
+				ordersettlements.TargetIDEQ(fmt.Sprintf("%d", poolAllocationID)),
+			).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return BusinessSettlementItem{}, sql.ErrNoRows
+			}
 			return BusinessSettlementItem{}, err
 		}
-		item.Payload = json.RawMessage(payload)
-		return item, nil
+		return orderSettlementToBusinessSettlementItem(node), nil
 	})
 }

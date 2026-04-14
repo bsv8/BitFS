@@ -15,7 +15,7 @@ func TestBusinessBridge_ValidationFailure_NoWrite(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 使用无效的 settlement_method，会在事务开始前校验失败
 	input := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
@@ -74,7 +74,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
 		t.Fatalf("schema init failed: %v", err)
 	}
-	store := &clientDB{db: db}
+	store := newClientDB(db, nil)
 
 	// 步骤1：先正常创建一条完整的业务主链（第一次尝试）
 	firstInput := CreateBusinessWithFrontTriggerAndPendingSettlementInput{

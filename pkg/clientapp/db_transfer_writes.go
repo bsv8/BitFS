@@ -5,6 +5,12 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemandquotearbiters"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemandquotes"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizdemands"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procdirectdeals"
 )
 
 // 设计说明：
@@ -27,46 +33,54 @@ func dbUpsertDirectQuote(ctx context.Context, store *clientDB, req directQuoteSu
 	if err != nil {
 		return err
 	}
-	return store.Tx(ctx, func(tx sqlConn) error {
-		_, err := ExecContext(ctx, tx,
-			`INSERT INTO biz_demand_quotes(
-				demand_id,seller_pub_hex,seed_price_satoshi,chunk_price_satoshi,chunk_count,file_size_bytes,recommended_file_name,mime_type,available_chunk_bitmap_hex,expires_at_unix,created_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(demand_id,seller_pub_hex) DO UPDATE SET
-				seed_price_satoshi=excluded.seed_price_satoshi,
-				chunk_price_satoshi=excluded.chunk_price_satoshi,
-				chunk_count=excluded.chunk_count,
-				file_size_bytes=excluded.file_size_bytes,
-				recommended_file_name=excluded.recommended_file_name,
-				mime_type=excluded.mime_type,
-				available_chunk_bitmap_hex=excluded.available_chunk_bitmap_hex,
-				expires_at_unix=excluded.expires_at_unix,
-				created_at_unix=excluded.created_at_unix`,
-			demandID,
-			sellerPubHex,
-			req.SeedPrice,
-			req.ChunkPrice,
-			req.ChunkCount,
-			req.FileSize,
-			recommendedName,
-			mimeType,
-			availableChunkBitmapHex,
-			req.ExpiresAtUnix,
-			now,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.BizDemandQuotes.Query().
+			Where(bizdemandquotes.DemandIDEQ(demandID), bizdemandquotes.SellerPubHexEQ(sellerPubHex)).
+			Only(ctx)
 		if err != nil {
-			return err
+			if !gen.IsNotFound(err) {
+				return err
+			}
+			existing, err = tx.BizDemandQuotes.Create().
+				SetDemandID(demandID).
+				SetSellerPubHex(sellerPubHex).
+				SetSeedPriceSatoshi(int64(req.SeedPrice)).
+				SetChunkPriceSatoshi(int64(req.ChunkPrice)).
+				SetChunkCount(int64(req.ChunkCount)).
+				SetFileSizeBytes(int64(req.FileSize)).
+				SetRecommendedFileName(recommendedName).
+				SetMimeType(mimeType).
+				SetAvailableChunkBitmapHex(availableChunkBitmapHex).
+				SetExpiresAtUnix(req.ExpiresAtUnix).
+				SetCreatedAtUnix(now).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
+		} else {
+			if _, err := existing.Update().
+				SetSeedPriceSatoshi(int64(req.SeedPrice)).
+				SetChunkPriceSatoshi(int64(req.ChunkPrice)).
+				SetChunkCount(int64(req.ChunkCount)).
+				SetFileSizeBytes(int64(req.FileSize)).
+				SetRecommendedFileName(recommendedName).
+				SetMimeType(mimeType).
+				SetAvailableChunkBitmapHex(availableChunkBitmapHex).
+				SetExpiresAtUnix(req.ExpiresAtUnix).
+				SetCreatedAtUnix(now).
+				Save(ctx); err != nil {
+				return err
+			}
 		}
-		var quoteID int64
-		if err := QueryRowContext(ctx, tx, `SELECT id FROM biz_demand_quotes WHERE demand_id=? AND seller_pub_hex=?`, demandID, sellerPubHex).Scan(&quoteID); err != nil {
-			return err
-		}
-		if _, err := ExecContext(ctx, tx, `DELETE FROM biz_demand_quote_arbiters WHERE quote_id=?`, quoteID); err != nil {
+		quoteID := int64(existing.ID)
+		if _, err := tx.BizDemandQuoteArbiters.Delete().Where(bizdemandquotearbiters.QuoteIDEQ(quoteID)).Exec(ctx); err != nil {
 			return err
 		}
 		for _, arbiterPubHex := range arbiterPubHexes {
-			if _, err := ExecContext(ctx, tx, `INSERT INTO biz_demand_quote_arbiters(quote_id,arbiter_pub_hex) VALUES(?,?)
-				ON CONFLICT(quote_id,arbiter_pub_hex) DO NOTHING`, quoteID, arbiterPubHex); err != nil {
+			if _, err := tx.BizDemandQuoteArbiters.Create().
+				SetQuoteID(quoteID).
+				SetArbiterPubHex(arbiterPubHex).
+				Save(ctx); err != nil {
 				return err
 			}
 		}
@@ -78,14 +92,26 @@ func dbRecordDemand(ctx context.Context, store ClientStore, demandID string, see
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)
-			 ON CONFLICT(demand_id) DO NOTHING`,
-			strings.TrimSpace(demandID),
-			strings.ToLower(strings.TrimSpace(seedHash)),
-			time.Now().Unix(),
-		)
+	db, ok := store.(*clientDB)
+	if !ok {
+		return fmt.Errorf("client store type unsupported")
+	}
+	return clientDBEntTx(ctx, db, func(tx *gen.Tx) error {
+		demandID = strings.TrimSpace(demandID)
+		seedHash = strings.ToLower(strings.TrimSpace(seedHash))
+		if demandID == "" || seedHash == "" {
+			return fmt.Errorf("demand_id and seed_hash are required")
+		}
+		if _, err := tx.BizDemands.Query().Where(bizdemands.DemandIDEQ(demandID)).Only(ctx); err == nil {
+			return nil
+		} else if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err := tx.BizDemands.Create().
+			SetDemandID(demandID).
+			SetSeedHash(seedHash).
+			SetCreatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		return err
 	})
 }
@@ -98,21 +124,41 @@ func dbInsertDirectDeal(ctx context.Context, store *clientDB, dealID string, req
 	// - 只保存协议协商上下文（buyer/seller/seed_hash/price 等）
 	// - 不承载支付事实语义，不决定业务是否完成
 	// - 业务完成状态统一看 order_settlements
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO proc_direct_deals(deal_id,demand_id,buyer_pubkey_hex,seller_pubkey_hex,seed_hash,seed_price,chunk_price,arbiter_pubkey_hex,status,created_at_unix)
-			 VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			strings.TrimSpace(dealID),
-			strings.TrimSpace(req.DemandId),
-			strings.ToLower(strings.TrimSpace(buyerPubHex)),
-			strings.ToLower(strings.TrimSpace(sellerPubHex)),
-			strings.ToLower(strings.TrimSpace(req.SeedHash)),
-			req.SeedPrice,
-			req.ChunkPrice,
-			strings.TrimSpace(req.ArbiterPubkeyHex),
-			"accepted",
-			time.Now().Unix(),
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		dealID = strings.TrimSpace(dealID)
+		if dealID == "" {
+			return fmt.Errorf("deal_id is required")
+		}
+		existing, err := tx.ProcDirectDeals.Query().Where(procdirectdeals.DealIDEQ(dealID)).Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetDemandID(strings.TrimSpace(req.DemandId)).
+				SetBuyerPubkeyHex(strings.ToLower(strings.TrimSpace(buyerPubHex))).
+				SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(sellerPubHex))).
+				SetSeedHash(strings.ToLower(strings.TrimSpace(req.SeedHash))).
+				SetSeedPrice(int64(req.SeedPrice)).
+				SetChunkPrice(int64(req.ChunkPrice)).
+				SetArbiterPubkeyHex(strings.TrimSpace(req.ArbiterPubkeyHex)).
+				SetStatus("accepted").
+				SetCreatedAtUnix(time.Now().Unix()).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcDirectDeals.Create().
+			SetDealID(dealID).
+			SetDemandID(strings.TrimSpace(req.DemandId)).
+			SetBuyerPubkeyHex(strings.ToLower(strings.TrimSpace(buyerPubHex))).
+			SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(sellerPubHex))).
+			SetSeedHash(strings.ToLower(strings.TrimSpace(req.SeedHash))).
+			SetSeedPrice(int64(req.SeedPrice)).
+			SetChunkPrice(int64(req.ChunkPrice)).
+			SetArbiterPubkeyHex(strings.TrimSpace(req.ArbiterPubkeyHex)).
+			SetStatus("accepted").
+			SetCreatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		return err
 	})
 }

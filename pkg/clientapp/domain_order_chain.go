@@ -4,6 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 )
 
 // createDomainRegisterBusinessChain 创建域名注册业务主链
@@ -114,14 +118,15 @@ func finalizeDomainRegisterSettlement(
 		status = "failed"
 	}
 
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`UPDATE order_settlements SET settlement_status=?, target_type='chain_quote_pay', target_id=?, error_message=?, updated_at_unix=strftime('%s','now') WHERE settlement_id=?`,
-			status,
-			targetID,
-			errMsg,
-			settlementID,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.OrderSettlements.Update().
+			Where(ordersettlements.SettlementIDEQ(strings.TrimSpace(settlementID))).
+			SetSettlementStatus(status).
+			SetTargetType("chain_quote_pay").
+			SetTargetID(targetID).
+			SetErrorMessage(strings.TrimSpace(errMsg)).
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(ctx)
 		return err
 	})
 }

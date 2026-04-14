@@ -279,8 +279,6 @@ func TestGetSettlementPaymentAttemptSourceTxID_PoolSessionReturnsLatestPoolEvent
 
 // TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast 验证渠道行缺失时直接报错，不再回退到旧口径。
 func TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast(t *testing.T) {
-	t.Parallel()
-
 	db := newAssetFactsTestDB(t)
 	now := time.Now().Unix()
 
@@ -298,8 +296,6 @@ func TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast(t *tes
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-
 			paymentAttemptKey := "payment_attempt_missing_" + tc.name
 			if err := dbUpsertSettlementPaymentAttempt(db, paymentAttemptKey, tc.sourceType, tc.sourceID, "confirmed", 0, 0, 0, 0, now, "missing channel row test", nil); err != nil {
 				t.Fatalf("seed settlement payment attempt failed: %v", err)

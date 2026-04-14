@@ -31,18 +31,19 @@ func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 func dbUpsertSettlementPaymentAttempt(db *sql.DB, paymentAttemptID string, sourceType string, sourceID string, state string,
 	grossSatoshi int64, gateFeeSatoshi int64, netSatoshi int64,
 	paymentAttemptIndex int, occurredAtUnix int64, note string, payload any) error {
-	return dbUpsertSettlementPaymentAttemptCtx(context.Background(), db, paymentAttemptID, sourceType, sourceID, state,
+	_, err := dbUpsertSettlementPaymentAttemptStore(context.Background(), newClientDB(db, nil), paymentAttemptID, sourceType, sourceID, state,
 		grossSatoshi, gateFeeSatoshi, netSatoshi, paymentAttemptIndex, occurredAtUnix, note, payload)
+	return err
 }
 
 // dbGetSettlementPaymentAttemptBySource 是测试用的薄包装。
 func dbGetSettlementPaymentAttemptBySource(db *sql.DB, sourceType string, sourceID string) (int64, error) {
-	return dbGetSettlementPaymentAttemptBySourceCtx(context.Background(), db, sourceType, sourceID)
+	return dbGetSettlementPaymentAttemptBySourceStore(context.Background(), newClientDB(db, nil), sourceType, sourceID)
 }
 
 // dbGetSettlementPaymentAttemptSourceTxID 是测试用的薄包装。
 func dbGetSettlementPaymentAttemptSourceTxID(db *sql.DB, settlementPaymentAttemptID int64) (string, error) {
-	return dbGetSettlementPaymentAttemptSourceTxIDCtx(context.Background(), db, settlementPaymentAttemptID)
+	return dbGetSettlementPaymentAttemptSourceTxIDStore(context.Background(), newClientDB(db, nil), settlementPaymentAttemptID)
 }
 
 // dbAppendBSVConsumptionsForSettlementPaymentAttempt 是测试用的薄包装。

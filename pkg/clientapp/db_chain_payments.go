@@ -278,13 +278,13 @@ func dbUpsertChainPaymentDBWithSettlementPaymentAttempt(ctx context.Context, db 
 	return paymentID, nil
 }
 
-func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, db sqlConn, e chainPaymentEntry, sourceType string, tableName string, paymentAttemptPrefix string, bindNote string) (int64, error) {
+func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, db sqlConn, e chainPaymentEntry, sourceType string, tableName string, paymentAttemptPrefix string, bindNote string) (int64, int64, error) {
 	if db == nil {
-		return 0, fmt.Errorf("db is nil")
+		return 0, 0, fmt.Errorf("db is nil")
 	}
 	txid := strings.ToLower(strings.TrimSpace(e.TxID))
 	if txid == "" {
-		return 0, fmt.Errorf("txid is required")
+		return 0, 0, fmt.Errorf("txid is required")
 	}
 	now := time.Now().Unix()
 	occurredAt := e.OccurredAtUnix
@@ -338,7 +338,7 @@ func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, db sq
 			now,
 			existingID,
 		); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		state := settlementPaymentAttemptStateForChainPayment(e.Status)
 		if _, err := ExecContext(ctx, db,
@@ -347,25 +347,23 @@ func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, db sq
 			  WHERE id=?`,
 			sourceType, fmt.Sprintf("%d", existingID), state, e.WalletInputSatoshi, e.NetAmountSatoshi, occurredAt, state, occurredAt, bindNote, mustJSONString(e.Payload), existingSettlementPaymentAttemptID,
 		); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
-		return existingID, nil
+		return existingID, existingSettlementPaymentAttemptID, nil
 	}
 	if err != sql.ErrNoRows {
-		return 0, err
+		return 0, 0, err
 	}
 
 	state := settlementPaymentAttemptStateForChainPayment(e.Status)
 	paymentAttemptToken := "pending:" + sourceType + ":" + txid
-	if err := dbUpsertSettlementPaymentAttemptCtx(ctx, db,
+	var settlementPaymentAttemptID int64
+	settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptIDCtx(ctx, db,
 		fmt.Sprintf("%s_%s", paymentAttemptPrefix, txid), sourceType, paymentAttemptToken, state,
 		e.WalletInputSatoshi, 0, e.NetAmountSatoshi, 0, occurredAt, "pre-bind channel row", e.Payload,
-	); err != nil {
-		return 0, err
-	}
-	settlementPaymentAttemptID, err := dbGetSettlementPaymentAttemptBySourceCtx(ctx, db, sourceType, paymentAttemptToken)
+	)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	insertSQL := fmt.Sprintf(`INSERT INTO %s(
 		settlement_payment_attempt_id,txid,payment_subtype,status,wallet_input_satoshi,wallet_output_satoshi,net_amount_satoshi,
@@ -389,19 +387,19 @@ func dbUpsertChainChannelWithSettlementPaymentAttempt(ctx context.Context, db sq
 		now,
 	)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	id, err := res.LastInsertId()
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if _, err := ExecContext(ctx, db,
 		`UPDATE fact_settlement_payment_attempts SET source_type=?,source_id=?,note=?,payload_json=? WHERE id=?`,
 		sourceType, fmt.Sprintf("%d", id), bindNote, mustJSONString(e.Payload), settlementPaymentAttemptID,
 	); err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return id, nil
+	return id, settlementPaymentAttemptID, nil
 }
 
 func dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx context.Context, store *clientDB, e chainPaymentEntry) (int64, error) {
@@ -409,12 +407,13 @@ func dbUpsertChainDirectPayWithSettlementPaymentAttempt(ctx context.Context, sto
 		return 0, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
-		return dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, db, e,
+		channelID, _, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, db, e,
 			"chain_direct_pay",
 			"fact_settlement_channel_chain_direct_pay",
 			"payment_attempt_chain_direct_pay",
 			"bind chain direct pay channel id",
 		)
+		return channelID, err
 	})
 }
 
@@ -423,12 +422,13 @@ func dbUpsertChainAssetCreateWithSettlementPaymentAttempt(ctx context.Context, s
 		return 0, fmt.Errorf("client db is nil")
 	}
 	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
-		return dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, db, e,
+		channelID, _, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, db, e,
 			"chain_asset_create",
 			"fact_settlement_channel_chain_asset_create",
 			"payment_attempt_chain_asset_create",
 			"bind chain asset create channel id",
 		)
+		return channelID, err
 	})
 }
 

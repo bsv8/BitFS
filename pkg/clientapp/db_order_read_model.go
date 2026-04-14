@@ -2,10 +2,14 @@ package clientapp
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
 )
 
 // ============================================================
@@ -257,9 +261,7 @@ func GetFullPoolSettlementChainByPoolSessionID(ctx context.Context, store *clien
 	}
 	out.PoolSession = &poolSession
 
-	paymentAttemptID, err := clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
-		return dbGetSettlementPaymentAttemptByPoolSessionIDDB(ctx, db, poolSessionID)
-	})
+	paymentAttemptID, err := dbGetSettlementPaymentAttemptByPoolSessionIDStore(ctx, store, poolSessionID)
 	if err != nil {
 		return out, fmt.Errorf("find settlement payment attempt: %w", err)
 	}
@@ -296,22 +298,19 @@ func GetSettlementByChainPaymentID(ctx context.Context, store *clientDB, chainPa
 	if store == nil {
 		return BusinessSettlementItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (BusinessSettlementItem, error) {
-		var item BusinessSettlementItem
-		var payload string
-		err := QueryRowContext(ctx, db,
-			`SELECT settlement_id,order_id,settlement_method,status,target_type,target_id,error_message,created_at_unix,updated_at_unix,payload_json
-			 FROM order_settlements WHERE settlement_method='chain' AND target_id=?`,
-			fmt.Sprintf("%d", chainPaymentID),
-		).Scan(
-			&item.SettlementID, &item.OrderID, &item.SettlementMethod, &item.Status,
-			&item.TargetType, &item.TargetID, &item.ErrorMessage,
-			&item.CreatedAtUnix, &item.UpdatedAtUnix, &payload,
-		)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (BusinessSettlementItem, error) {
+		node, err := tx.OrderSettlements.Query().
+			Where(
+				ordersettlements.SettlementMethodEQ(string(SettlementMethodChain)),
+				ordersettlements.TargetIDEQ(fmt.Sprintf("%d", chainPaymentID)),
+			).
+			Only(ctx)
 		if err != nil {
+			if gen.IsNotFound(err) {
+				return BusinessSettlementItem{}, sql.ErrNoRows
+			}
 			return BusinessSettlementItem{}, err
 		}
-		item.Payload = json.RawMessage(payload)
-		return item, nil
+		return orderSettlementToBusinessSettlementItem(node), nil
 	})
 }
