@@ -20,9 +20,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/dealprod"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
+	"github.com/bsv8/BFTP/pkg/infra/sqliteactor"
 	"github.com/bsv8/BFTP/pkg/obs"
 	bitfsv1 "github.com/bsv8/bitfs-contract/gen/go/v1"
 	bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"
@@ -237,6 +239,40 @@ type ClientStore interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
+
+// RunDeps 由最外层装配好后显式传给 Run。
+// 设计约束：
+// - Run 不再自己开 DB；
+// - 这里必须显式提供已经准备好的 store 和 raw DB；
+// - OwnsDB 只决定本次 Run 是否回收外部注入的 DB 资源。
+type RunDeps struct {
+	Store   *clientDB
+	RawDB   *sql.DB
+	DBActor *sqliteactor.Actor
+	OwnsDB  bool
+}
+
+// RunOptions 只承载本次启动专属的能力和开关。
+// 设计约束：
+// - 这里放的是“启动参数”，不是运行期配置；
+// - 运行期配置统一进入 runtimeConfigService；
+// - 桌面托管模式需要的 listener、bootstrap 钩子等继续走这里，不进快照。
+type RunOptions struct {
+	ConfigPath  string
+	StartupMode StartupMode
+
+	DisableHTTPServer bool
+	FSHTTPListener    net.Listener
+
+	EffectivePrivKeyHex string
+	ObsSink             obs.Sink
+
+	ActionChain poolcore.ChainClient
+	WalletChain walletChainClient
+	RPCTrace    pproto.TraceSink
+
+	PostWorkspaceBootstrap func(ctx context.Context, store ClientStore) error
 }
 
 type Runtime struct {
@@ -464,52 +500,21 @@ func (r *Runtime) SQLTraceSummaryPath() string {
 	return strings.TrimSpace(r.sqlTraceSummaryPath)
 }
 
-func Run(
-	ctx context.Context,
-	cfg Config,
-	storeCap ClientStore,
-	rawDB *sql.DB,
-	closeOwnedDB func() error,
-	configPath string,
-	startupMode StartupMode,
-	disableHTTPServer bool,
-	fsHTTPListener net.Listener,
-	effectivePrivKeyHex string,
-	obsSink obs.Sink,
-	actionChain poolcore.ChainClient,
-	walletChain WalletChainClient,
-	rpcTrace pproto.TraceSink,
-	postWorkspaceBootstrap func(ctx context.Context, store ClientStore) error,
-) (*Runtime, error) {
-	phasePlan := newRunStartupPhases(
-		ctx,
-		cfg,
-		storeCap,
-		rawDB,
-		configPath,
-		startupMode,
-		effectivePrivKeyHex,
-		actionChain,
-		walletChain,
-	)
+func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtime, error) {
+	phasePlan := newRunStartupPhases(ctx, cfg, deps, opt)
 	if err := phasePlan.Preflight(); err != nil {
 		return nil, err
 	}
-	startupMode = phasePlan.StartupMode()
+	startupMode := phasePlan.StartupMode()
 	runtimeCfg := phasePlan.RuntimeConfig()
-	effectivePrivKeyHex = phasePlan.EffectivePrivKeyHex()
-	store, ok := storeCap.(*clientDB)
-	if !ok {
-		return nil, fmt.Errorf("store must come from clientapp.NewClientStore")
-	}
 
 	var removeObs func()
-	if obsSink != nil {
+	if opt.ObsSink != nil {
 		removeObs = obs.AddListener(func(ev obs.Event) {
 			if ev.Service != "bitcast-client" {
 				return
 			}
-			obsSink.Handle(ev)
+			opt.ObsSink.Handle(ev)
 		})
 	}
 
@@ -554,10 +559,19 @@ func Run(
 		sqlTraceDir = sqlTraceMgr.TracePath()
 		sqlTraceSummaryPath = sqlTraceMgr.SummaryPath()
 	}
-	db := rawDB
-	closeOwnedDBSilently := func() {
-		if closeOwnedDB != nil {
-			_ = closeOwnedDB()
+	db := deps.RawDB
+	dbActor := deps.DBActor
+	store := deps.Store
+	closeOwnedDB := func() {
+		if !deps.OwnsDB {
+			return
+		}
+		if dbActor != nil {
+			_ = dbActor.Close()
+			return
+		}
+		if db != nil {
+			_ = db.Close()
 		}
 	}
 	// 设计说明：
@@ -565,7 +579,7 @@ func Run(
 	// - 运行入口只负责拿到“已准备好的”库；
 	// - 结构就绪由外部流程保证，入口只做能力组装。
 	if err := dbSyncSystemSeedPricingPolicies(ctx, store, runtimeCfg.Seller.Pricing.FloorPriceSatPer64K, runtimeCfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -581,14 +595,14 @@ func Run(
 		catalog: catalog,
 	}
 	if err := workspaceMgr.EnsureDefaultWorkspace(); err != nil {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
 	if err := workspaceMgr.ValidateLiveCacheCapacity(runtimeCfg.Live.CacheMaxBytes); err != nil {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -596,7 +610,7 @@ func Run(
 	}
 	if runtimeCfg.Scan.StartupFullScan {
 		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
-			closeOwnedDBSilently()
+			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -604,15 +618,15 @@ func Run(
 		}
 	}
 	if err := workspaceMgr.EnforceLiveCacheLimit(runtimeCfg.Live.CacheMaxBytes); err != nil {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	if postWorkspaceBootstrap != nil {
-		if err := postWorkspaceBootstrap(ctx, store); err != nil {
-			closeOwnedDBSilently()
+	if opt.PostWorkspaceBootstrap != nil {
+		if err := opt.PostWorkspaceBootstrap(ctx, store); err != nil {
+			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -626,9 +640,16 @@ func Run(
 		libp2p.NoTransports,
 		libp2p.Transport(libp2ptcp.NewTCPTransport),
 	}
-	effectivePrivHex := effectivePrivKeyHex
+	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(opt.EffectivePrivKeyHex)
+	if err != nil {
+		closeOwnedDB()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
 	if strings.TrimSpace(effectivePrivHex) == "" {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -639,7 +660,7 @@ func Run(
 	runtimeCfg.Keys.PrivkeyHex = effectivePrivHex
 	priv, err := parsePrivHex(effectivePrivHex)
 	if err != nil {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -648,7 +669,7 @@ func Run(
 	opts = append(opts, libp2p.Identity(priv))
 	h, err := libp2p.New(opts...)
 	if err != nil {
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -657,7 +678,7 @@ func Run(
 	clientPubHex, err := localPubKeyHex(h)
 	if err != nil {
 		_ = h.Close()
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -670,7 +691,7 @@ func Run(
 	identity, err := buildClientIdentityCaps(runtimeCfg, effectivePrivHex)
 	if err != nil {
 		_ = h.Close()
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -680,7 +701,7 @@ func Run(
 	activeGWs, err := connectGateways(ctx, h, runtimeCfg.Network.Gateways)
 	if err != nil {
 		_ = h.Close()
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -692,19 +713,19 @@ func Run(
 	arbInfo, err := connectArbiters(ctx, h, runtimeCfg.Network.Arbiters)
 	if err != nil {
 		_ = h.Close()
-		closeOwnedDBSilently()
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
 		return nil, err
 	}
-	trace := rpcTrace
+	trace := opt.RPCTrace
 	var closeTrace func() error
 	if trace == nil && runtimeCfg.Debug {
 		localTrace, err := pproto.NewLocalRawTraceSink(logFile)
 		if err != nil {
 			_ = h.Close()
-			closeOwnedDBSilently()
+			closeOwnedDB()
 			if removeObs != nil {
 				removeObs()
 			}
@@ -742,13 +763,10 @@ func Run(
 		"protocol_suite":    BBroadcastSuiteVersion,
 		"protocol_doc_name": BBroadcastProtocolName,
 	})
-	runtimeCfgSvc, err := newRuntimeConfigService(runtimeCfg, configPath, startupMode)
+	runtimeCfgSvc, err := newRuntimeConfigService(runtimeCfg, opt.ConfigPath, startupMode)
 	if err != nil {
 		_ = h.Close()
-		closeOwnedDBSilently()
-		if closeTrace != nil {
-			_ = closeTrace()
-		}
+		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
 		}
@@ -765,8 +783,8 @@ func Run(
 		HealthyArbiters:          healthyArbiters,
 		Workspace:                workspaceMgr,
 		Catalog:                  catalog,
-		ActionChain:              actionChain,
-		WalletChain:              walletChain,
+		ActionChain:              opt.ActionChain,
+		WalletChain:              opt.WalletChain,
 		live:                     newLiveRuntime(),
 		sqlTraceDir:              sqlTraceDir,
 		sqlTraceSummaryPath:      sqlTraceSummaryPath,
@@ -789,6 +807,40 @@ func Run(
 	if runtimeCfg.Seller.Enabled {
 		registerSellerHandlers(h, store, rt.live, trace, runtimeCfg)
 	}
+	if rt.ActionChain == nil {
+		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
+			Provider: chainbridge.WhatsOnChainProvider,
+			Network:  runtimeCfg.BSV.Network,
+		})
+		if err != nil {
+			closeOwnedDB()
+			if closeTrace != nil {
+				_ = closeTrace()
+			}
+			if removeObs != nil {
+				removeObs()
+			}
+			return nil, err
+		}
+		rt.ActionChain = actionChain
+	}
+	if rt.WalletChain == nil {
+		walletChain, err := NewWalletChainClient(chainbridge.Route{
+			Provider: chainbridge.WhatsOnChainProvider,
+			Network:  runtimeCfg.BSV.Network,
+		})
+		if err != nil {
+			closeOwnedDB()
+			if closeTrace != nil {
+				_ = closeTrace()
+			}
+			if removeObs != nil {
+				removeObs()
+			}
+			return nil, err
+		}
+		rt.WalletChain = walletChain
+	}
 
 	// 初始化网关管理器
 	rt.gwManager = newGatewayManager(rt, h)
@@ -808,7 +860,7 @@ func Run(
 	// - listen 解决“我是否持续监听网关广播”；
 	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
 	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt, store)
-	if runtimeCfg.HTTP.Enabled && !disableHTTPServer {
+	if runtimeCfg.HTTP.Enabled && !opt.DisableHTTPServer {
 		rt.HTTP = newHTTPAPIServer(rt, runtimeCfgSvc, db, store, h, healthyGWs, workspaceMgr, trace)
 		wg.Add(1)
 		go func() {
@@ -820,6 +872,7 @@ func Run(
 	}
 	if runtimeCfg.FSHTTP.Enabled {
 		rt.FSHTTP = newFileHTTPServer(rt, runtimeCfgSvc, store, workspaceMgr)
+		fsHTTPListener := opt.FSHTTPListener
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -869,14 +922,15 @@ func Run(
 		if err := h.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
-		if closeOwnedDB != nil {
-			if err := closeOwnedDB(); err != nil && firstErr == nil {
-				firstErr = err
-			}
-		}
-		if closeTrace != nil {
-			if err := closeTrace(); err != nil && firstErr == nil {
-				firstErr = err
+		if deps.OwnsDB {
+			if dbActor != nil {
+				if err := dbActor.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
+			} else if db != nil {
+				if err := db.Close(); err != nil && firstErr == nil {
+					firstErr = err
+				}
 			}
 		}
 		if err := closeSQLTrace(); err != nil && firstErr == nil {
@@ -2110,7 +2164,7 @@ func resolvePrivKeyHex(cfg Config, cliPrivHex string) (string, error) {
 }
 
 // ResolveEffectivePrivKeyHex 在启动前统一解析“唯一运行时私钥”。
-// 调用方应在进入 Run 之前完成该解析，再通过 Run 的 effectivePrivKeyHex 显式参数传入。
+// 调用方应在进入 Run 之前完成该解析，再通过 RunOptions.EffectivePrivKeyHex 传入。
 func ResolveEffectivePrivKeyHex(cfg Config, overridePrivHex string) (string, error) {
 	return resolvePrivKeyHex(cfg, overridePrivHex)
 }

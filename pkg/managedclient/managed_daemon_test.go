@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,8 +14,6 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
-	"github.com/bsv8/BFTP/pkg/infra/poolcore"
-	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
@@ -192,56 +189,21 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 	}()
 
 	built := make(chan struct{}, 1)
-	runClientRuntime = func(
-		ctx context.Context,
-		runCfg clientapp.Config,
-		store clientapp.ClientStore,
-		rawDB *sql.DB,
-		closeOwnedDB func() error,
-		configPath string,
-		startupMode clientapp.StartupMode,
-		disableHTTPServer bool,
-		fsHTTPListener net.Listener,
-		effectivePrivKeyHex string,
-		obsSink obs.Sink,
-		actionChain poolcore.ChainClient,
-		walletChain clientapp.WalletChainClient,
-		rpcTrace pproto.TraceSink,
-		postWorkspaceBootstrap func(context.Context, clientapp.ClientStore) error,
-	) (*clientapp.Runtime, error) {
+	runClientRuntime = func(ctx context.Context, runCfg clientapp.Config, deps clientapp.RunDeps, opt clientapp.RunOptions) (*clientapp.Runtime, error) {
 		if ctx == nil {
 			return nil, fmt.Errorf("ctx is required")
 		}
-		if !disableHTTPServer {
+		if !opt.DisableHTTPServer {
 			return nil, fmt.Errorf("disable http server should stay enabled in managed mode")
 		}
-		if strings.TrimSpace(effectivePrivKeyHex) == "" {
+		if strings.TrimSpace(opt.EffectivePrivKeyHex) == "" {
 			return nil, fmt.Errorf("effective priv key is required")
 		}
-		if store == nil || rawDB == nil {
-			return nil, fmt.Errorf("runtime store/db is required")
+		if deps.DBActor != nil {
+			_ = deps.DBActor.Close()
 		}
-		if strings.TrimSpace(configPath) == "" {
-			return nil, fmt.Errorf("config path is required")
-		}
-		if startupMode != clientapp.StartupModeProduct {
-			return nil, fmt.Errorf("unexpected startup mode")
-		}
-		if actionChain == nil || walletChain == nil {
-			return nil, fmt.Errorf("chain capability is required")
-		}
-		if closeOwnedDB != nil {
-			_ = closeOwnedDB()
-		}
-		if fsHTTPListener != nil {
-			_ = fsHTTPListener.Close()
-		}
-		_ = obsSink
-		if rpcTrace != nil {
-			return nil, fmt.Errorf("rpc trace should be nil in this test")
-		}
-		if postWorkspaceBootstrap != nil {
-			_ = postWorkspaceBootstrap(ctx, store)
+		if opt.FSHTTPListener != nil {
+			_ = opt.FSHTTPListener.Close()
 		}
 		h, err := libp2p.New(libp2p.NoListenAddrs)
 		if err != nil {
@@ -560,38 +522,7 @@ func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
 	buildCalled := make(chan struct{}, 1)
 	origRunClientRuntime := runClientRuntime
 	origBuildRuntimeAPIHandler := buildRuntimeAPIHandler
-	runClientRuntime = func(
-		ctx context.Context,
-		runCfg clientapp.Config,
-		store clientapp.ClientStore,
-		rawDB *sql.DB,
-		closeOwnedDB func() error,
-		configPath string,
-		startupMode clientapp.StartupMode,
-		disableHTTPServer bool,
-		fsHTTPListener net.Listener,
-		effectivePrivKeyHex string,
-		obsSink obs.Sink,
-		actionChain poolcore.ChainClient,
-		walletChain clientapp.WalletChainClient,
-		rpcTrace pproto.TraceSink,
-		postWorkspaceBootstrap func(context.Context, clientapp.ClientStore) error,
-	) (*clientapp.Runtime, error) {
-		_ = ctx
-		_ = runCfg
-		_ = store
-		_ = rawDB
-		_ = closeOwnedDB
-		_ = configPath
-		_ = startupMode
-		_ = disableHTTPServer
-		_ = fsHTTPListener
-		_ = effectivePrivKeyHex
-		_ = obsSink
-		_ = actionChain
-		_ = walletChain
-		_ = rpcTrace
-		_ = postWorkspaceBootstrap
+	runClientRuntime = func(ctx context.Context, runCfg clientapp.Config, deps clientapp.RunDeps, opt clientapp.RunOptions) (*clientapp.Runtime, error) {
 		select {
 		case runCalled <- struct{}{}:
 		default:
