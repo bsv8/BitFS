@@ -376,8 +376,10 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		t.Fatalf("seed chain tip state: %v", err)
 	}
 	buyUTXOID := strings.Repeat("11", 32)
-	buyerRT := &Runtime{runIn: RunInput{EffectivePrivKeyHex: buyerPrivHex, BSV: struct{ Network string }{Network: "test"}}}
-	mustSetRuntimeIdentityFromRunIn(t, buyerRT)
+	buyerCfg := Config{}
+	buyerCfg.BSV.Network = "test"
+	buyerCfg.Keys.PrivkeyHex = buyerPrivHex
+	buyerRT := newRuntimeForTest(t, buyerCfg, buyerPrivHex)
 	buyerAddr, err := clientWalletAddress(buyerRT)
 	if err != nil {
 		t.Fatalf("derive buyer wallet address: %v", err)
@@ -414,14 +416,19 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 		ActionChain: &directPurchaseMockChain{
 			utxos: []poolcore.UTXO{{TxID: buyUTXOID, Vout: 0, Value: 200000}},
 		},
-		runIn: RunInput{
-			ClientID:            buyerPubHex,
-			EffectivePrivKeyHex: buyerPrivHex,
-			BSV:                 struct{ Network string }{Network: "test"},
-		},
 	}
-	mustSetRuntimeIdentityFromRunIn(t, buyer)
-	buyer.runIn.Network.Arbiters = []PeerNode{{Enabled: true, Addr: arbHost.Addrs()[0].String() + "/p2p/" + arbHost.ID().String(), Pubkey: arbPubHex}}
+	buyerCfg = Config{}
+	buyerCfg.ClientID = buyerPubHex
+	buyerCfg.BSV.Network = "test"
+	buyerCfg.Keys.PrivkeyHex = buyerPrivHex
+	buyer = newRuntimeForTest(t, buyerCfg, buyerPrivHex)
+	buyer.Host = buyerHost
+	buyer.ActionChain = &directPurchaseMockChain{
+		utxos: []poolcore.UTXO{{TxID: buyUTXOID, Vout: 0, Value: 200000}},
+	}
+	mustUpdateRuntimeConfigMemoryOnly(t, buyer, func(cfg *Config) {
+		cfg.Network.Arbiters = []PeerNode{{Enabled: true, Addr: arbHost.Addrs()[0].String() + "/p2p/" + arbHost.ID().String(), Pubkey: arbPubHex}}
+	})
 
 	quotes, err := TriggerClientListDirectQuotes(context.Background(), store, demandID)
 	if err != nil {

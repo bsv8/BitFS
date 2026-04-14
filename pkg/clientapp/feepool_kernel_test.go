@@ -32,20 +32,17 @@ func (m *feePoolKernelMockChain) Broadcast(txHex string) (string, error) {
 func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	t.Parallel()
 	db := newKernelTestDB(t)
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
-		},
-		ActionChain: &feePoolKernelMockChain{
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Listen.AutoRenewRounds = 100
+	privHex := "1111111111111111111111111111111111111111111111111111111111111111"
+	rt := newRuntimeForTest(t, cfg, privHex)
+	rt.ActionChain = &feePoolKernelMockChain{
 			utxos: []poolcore.UTXO{
 				{TxID: "tx1", Vout: 0, Value: 50000},
 				{TxID: "tx2", Vout: 1, Value: 48560},
 			},
-		},
 	}
-	rt.runIn.Listen.AutoRenewRounds = 100
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)
@@ -71,19 +68,16 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	t.Parallel()
 	db := newKernelTestDB(t)
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: "1111111111111111111111111111111111111111111111111111111111111111",
-		},
-		ActionChain: &feePoolKernelMockChain{
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Listen.AutoRenewRounds = 1
+	privHex := "1111111111111111111111111111111111111111111111111111111111111111"
+	rt := newRuntimeForTest(t, cfg, privHex)
+	rt.ActionChain = &feePoolKernelMockChain{
 			utxos: []poolcore.UTXO{
 				{TxID: "tx1", Vout: 0, Value: 500},
 			},
-		},
 	}
-	rt.runIn.Listen.AutoRenewRounds = 1
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("derive wallet address failed: %v", err)

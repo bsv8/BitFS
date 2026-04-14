@@ -129,11 +129,8 @@ func newWalletOrderTestRuntime(t *testing.T) (*Runtime, *clientDB) {
 	cfg := Config{ClientID: clientPubkeyHex}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = clientPrivHex
-	rt := &Runtime{
-		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
-		ActionChain: &feePoolKernelMockChain{},
-	}
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
+	rt.ActionChain = &feePoolKernelMockChain{}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		t.Fatalf("clientWalletAddress failed: %v", err)

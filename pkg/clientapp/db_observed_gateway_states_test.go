@@ -143,13 +143,10 @@ func TestObservedGatewayStateResumeChainWritesBeforeAndAfter(t *testing.T) {
 	t.Parallel()
 
 	db := newKernelTestDB(t)
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: strings.Repeat("1", 64),
-		},
-	}
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("1", 64)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
 
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
@@ -162,7 +159,9 @@ func TestObservedGatewayStateResumeChainWritesBeforeAndAfter(t *testing.T) {
 	gwHost, gwPubHex := newSecpHost(t)
 	defer gwHost.Close()
 	gwAddr := gwHost.Addrs()[0].String() + "/p2p/" + gwHost.ID().String()
-	rt.runIn.Network.Gateways = []PeerNode{{Enabled: true, Addr: gwAddr, Pubkey: gwPubHex}}
+	mustUpdateRuntimeConfigMemoryOnly(t, rt, func(cfg *Config) {
+		cfg.Network.Gateways = []PeerNode{{Enabled: true, Addr: gwAddr, Pubkey: gwPubHex}}
+	})
 
 	k := newFeePoolKernel(rt, newClientDB(db, nil))
 	k.setState(gwHost.ID().String(), feePoolKernelGatewayState{

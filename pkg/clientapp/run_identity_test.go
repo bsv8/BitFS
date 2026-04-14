@@ -41,7 +41,7 @@ func TestValidateClientIdentityConsistency_Mismatch(t *testing.T) {
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
 	cfg.ClientID, _ = clientIDFromPrivHex("2222222222222222222222222222222222222222222222222222222222222222")
 
-	if _, err := buildClientIdentityCaps(NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)); err == nil {
+	if _, err := buildClientIdentityCaps(cfg, cfg.Keys.PrivkeyHex); err == nil {
 		t.Fatalf("expected mismatch error, got nil")
 	}
 }
@@ -53,7 +53,7 @@ func TestBuildClientIdentityCaps_MismatchRejected(t *testing.T) {
 	cfg.Keys.PrivkeyHex = "1111111111111111111111111111111111111111111111111111111111111111"
 	cfg.ClientID, _ = clientIDFromPrivHex("2222222222222222222222222222222222222222222222222222222222222222")
 
-	if _, err := buildClientIdentityCaps(NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)); err == nil {
+	if _, err := buildClientIdentityCaps(cfg, cfg.Keys.PrivkeyHex); err == nil {
 		t.Fatalf("expected mismatch error, got nil")
 	}
 }
@@ -70,7 +70,7 @@ func TestBuildClientIdentityCaps_MatchAccepted(t *testing.T) {
 	}
 	cfg.ClientID = id
 
-	identity, err := buildClientIdentityCaps(NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex))
+	identity, err := buildClientIdentityCaps(cfg, cfg.Keys.PrivkeyHex)
 	if err != nil {
 		t.Fatalf("build identity: %v", err)
 	}

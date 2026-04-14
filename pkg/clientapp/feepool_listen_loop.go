@@ -31,15 +31,16 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 	if rt == nil || rt.Host == nil || store == nil {
 		return
 	}
-	if !cfgBool(rt.runIn.Listen.Enabled, true) {
+	cfg := rt.ConfigSnapshot()
+	if !cfgBool(cfg.Listen.Enabled, true) {
 		return
 	}
 	// 自动触发约束：auto_renew_rounds=0 视为显式关闭监听资金池自动动作。
-	if rt.runIn.Listen.AutoRenewRounds == 0 {
+	if cfg.Listen.AutoRenewRounds == 0 {
 		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": "all"})
 		return
 	}
-	intervalSec := rt.runIn.Listen.TickSeconds
+	intervalSec := cfg.Listen.TickSeconds
 	if intervalSec == 0 {
 		intervalSec = 5
 	}
@@ -719,7 +720,8 @@ func listenOfferPaymentSatoshi(rt *Runtime, s *feePoolSession) uint64 {
 		return 0
 	}
 	budget := s.SingleCycleFeeSatoshi
-	for _, node := range rt.runIn.Network.Gateways {
+	snapshot := rt.ConfigSnapshot()
+	for _, node := range snapshot.Network.Gateways {
 		ai, err := parseAddr(node.Addr)
 		if err != nil {
 			continue
@@ -729,8 +731,8 @@ func listenOfferPaymentSatoshi(rt *Runtime, s *feePoolSession) uint64 {
 			break
 		}
 	}
-	if budget == s.SingleCycleFeeSatoshi && rt.runIn.Listen.OfferPaymentSatoshi > 0 {
-		budget = rt.runIn.Listen.OfferPaymentSatoshi
+	if budget == s.SingleCycleFeeSatoshi && rt.ConfigSnapshot().Listen.OfferPaymentSatoshi > 0 {
+		budget = rt.ConfigSnapshot().Listen.OfferPaymentSatoshi
 	}
 	if s.ClientAmount > s.SpendTxFeeSat {
 		maxPayable := s.ClientAmount - s.SpendTxFeeSat

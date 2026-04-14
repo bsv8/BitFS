@@ -31,9 +31,16 @@ func TestTriggerGatewayPublishDemandRecordsDemand(t *testing.T) {
 			{ID: gwHost.ID(), Addrs: gwHost.Addrs()},
 		},
 	}
-	rt.runIn.Network.Gateways = []PeerNode{
-		{Enabled: true, Addr: gwHost.Addrs()[0].String() + "/p2p/" + gwHost.ID().String(), Pubkey: gwPubHex},
+	rt = newRuntimeForTest(t, Config{}, "")
+	rt.Host = buyerHost
+	rt.HealthyGWs = []peer.AddrInfo{
+		{ID: gwHost.ID(), Addrs: gwHost.Addrs()},
 	}
+	mustUpdateRuntimeConfigMemoryOnly(t, rt, func(cfg *Config) {
+		cfg.Network.Gateways = []PeerNode{
+			{Enabled: true, Addr: gwHost.Addrs()[0].String() + "/p2p/" + gwHost.ID().String(), Pubkey: gwPubHex},
+		}
+	})
 	ncall.Register(gwHost, nodeSecForRuntime(rt), func(_ context.Context, _ ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
 		if req.Route != string(contractroute.RouteBroadcastV1DemandPublish) {
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
@@ -88,11 +95,10 @@ func TestDefaultArbiterPubHexUsesPubHexFallback(t *testing.T) {
 		t.Fatalf("connect arbiter: %v", err)
 	}
 
-	rt := &Runtime{
-		Host: buyerHost,
-		HealthyArbiters: []peer.AddrInfo{
-			{ID: arbHost.ID(), Addrs: arbHost.Addrs()},
-		},
+	rt := newRuntimeForTest(t, Config{}, "")
+	rt.Host = buyerHost
+	rt.HealthyArbiters = []peer.AddrInfo{
+		{ID: arbHost.ID(), Addrs: arbHost.Addrs()},
 	}
 
 	got := defaultArbiterPubHex(rt)
@@ -105,11 +111,11 @@ func TestDefaultArbiterPubHexUsesPubHexFallback(t *testing.T) {
 }
 
 func TestDemandQuoteSchemaRebuildAddsForeignKeys(t *testing.T) {
-	t.Skip("legacy migration test removed")
+	t.Skip("migration test removed")
 }
 
 func TestDemandQuoteSchemaRebuildRejectsOrphans(t *testing.T) {
-	t.Skip("legacy migration test removed")
+	t.Skip("migration test removed")
 }
 
 func newDemandQuoteFKTestDB(t *testing.T) *sql.DB {

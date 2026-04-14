@@ -457,12 +457,7 @@ func seedTestAddressWithKey(t *testing.T, db *sql.DB, privKeyHex string) string 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = privKeyHex
-
-	rt := &Runtime{
-		runIn: NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
-	}
-
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
 	identity := rt.mustIdentity()
 	if identity == nil || identity.Actor == nil {
 		t.Fatal("runtime identity not initialized")
@@ -1167,9 +1162,9 @@ func TestTokenSpendableSourceFlows_ExcludesUnknown(t *testing.T) {
 	}
 }
 
-// TestTokenBalance_FactEmptyWithHistoryNotFallback 验证 fact 空但有历史，不回退旧路径
+// TestTokenBalance_FactEmptyWithRecordsUsesCurrentRule 验证 fact 空但有记录时仍按当前规则处理。
 // 使用新表 fact_settlement_records 和 fact_token_lots
-func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
+func TestTokenBalance_FactEmptyWithRecordsUsesCurrentRule(t *testing.T) {
 	t.Parallel()
 
 	db := newAssetVerificationTestDB(t)
@@ -1219,7 +1214,7 @@ func TestTokenBalance_FactEmptyWithHistoryNotFallback(t *testing.T) {
 		t.Fatalf("load fact balance: %v", err)
 	}
 
-	// 验证有历史（lot 已消耗完，余额为 0）
+	// 验证已有记录（lot 已消耗完，余额为 0）
 	totalIn, _ := sumDecimalTexts(bal.TotalInText)
 	totalUsed, _ := sumDecimalTexts(bal.TotalUsedText)
 	remaining, _ := subtractTokenDecimalText(totalIn, totalUsed)

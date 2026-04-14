@@ -25,10 +25,10 @@ func TestNodeReachabilityCacheAndSelfState(t *testing.T) {
 		ExpiresAtUnix:   2000,
 		Signature:       []byte{0xaa, 0xbb},
 	}
-	if err := saveNodeReachabilityCache(newClientDB(db, nil), gatewayPubkeyHex, ann); err != nil {
+	if err := storeNodeReachabilityCache(newClientDB(db, nil), gatewayPubkeyHex, ann); err != nil {
 		t.Fatalf("save cache: %v", err)
 	}
-	got, found, err := loadCachedNodeReachability(newClientDB(db, nil), ann.NodePubkeyHex, 1500)
+	got, found, err := loadNodeReachabilityCache(newClientDB(db, nil), ann.NodePubkeyHex, 1500)
 	if err != nil {
 		t.Fatalf("load cache: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestNodeReachabilityCacheAndSelfState(t *testing.T) {
 	if got.HeadHeight != ann.HeadHeight || got.Seq != ann.Seq || len(got.Multiaddrs) != 1 {
 		t.Fatalf("unexpected cache announcement: %+v", got)
 	}
-	if err := saveSelfNodeReachabilityState(newClientDB(db, nil), selfNodeReachabilityState{
+	if err := storeSelfNodeReachabilityState(newClientDB(db, nil), selfNodeReachabilityState{
 		NodePubkeyHex: ann.NodePubkeyHex,
 		HeadHeight:    ann.HeadHeight,
 		Seq:           ann.Seq,

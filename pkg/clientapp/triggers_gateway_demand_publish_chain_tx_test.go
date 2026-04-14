@@ -76,10 +76,11 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_Success(t *testing.T) {
 
 	rt := &Runtime{
 		Host:        clientHost,
-		runIn:       NewRunInputFromConfig(cfg, clientPrivHex),
 		ActionChain: gatewayDemandPublishMockChain{},
 	}
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt = newRuntimeForTest(t, cfg, clientPrivHex)
+	rt.Host = clientHost
+	rt.ActionChain = gatewayDemandPublishMockChain{}
 	rt.HealthyGWs = []peer.AddrInfo{{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}}
 	if err := clientHost.Connect(context.Background(), peer.AddrInfo{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}); err != nil {
 		t.Fatalf("connect client to gateway failed: %v", err)
@@ -165,8 +166,8 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_NoHealthyGateway(t *testing.
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = clientPrivHex
-	rt := &Runtime{Host: clientHost, runIn: NewRunInputFromConfig(cfg, clientPrivHex)}
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt := newRuntimeForTest(t, cfg, clientPrivHex)
+	rt.Host = clientHost
 	if _, err := TriggerGatewayDemandPublishChainTxQuotePay(context.Background(), store, rt, PublishDemandParams{
 		SeedHash:   strings.Repeat("ab", 32),
 		ChunkCount: 1,
@@ -206,10 +207,11 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_PayAfterValidationFailure(t 
 	}
 	rt := &Runtime{
 		Host:        clientHost,
-		runIn:       NewRunInputFromConfig(cfg, clientPrivHex),
 		ActionChain: gatewayDemandPublishMockChain{},
 	}
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt = newRuntimeForTest(t, cfg, clientPrivHex)
+	rt.Host = clientHost
+	rt.ActionChain = gatewayDemandPublishMockChain{}
 	rt.HealthyGWs = []peer.AddrInfo{{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}}
 	if err := clientHost.Connect(context.Background(), peer.AddrInfo{ID: gatewayHost.ID(), Addrs: gatewayHost.Addrs()}); err != nil {
 		t.Fatalf("connect client to gateway failed: %v", err)

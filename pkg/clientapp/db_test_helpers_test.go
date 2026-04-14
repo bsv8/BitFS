@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// newWalletAccountingTestDB 给旧测试提供统一的临时数据库。
+// newWalletAccountingTestDB 给测试提供统一的临时数据库。
 // 设计说明：这里只是测试支架，不承载业务口径。
 func newWalletAccountingTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -319,7 +319,7 @@ func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
 	}
 }
 
-// mustSettlementPaymentAttemptIDBySource 让旧测试更容易写断言。
+// mustSettlementPaymentAttemptIDBySource 让测试更容易写断言。
 func mustSettlementPaymentAttemptIDBySource(t *testing.T, db *sql.DB, sourceType, sourceID string) int64 {
 	t.Helper()
 	id, err := dbGetSettlementPaymentAttemptBySource(db, sourceType, sourceID)

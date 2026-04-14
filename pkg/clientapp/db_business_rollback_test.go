@@ -122,7 +122,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 	}
 
 	// 步骤2：第二次尝试，复用 business_id，但新的 front_order、trigger 和 settlement_id
-	// 这个模型下 business 仍归到同一 order，但新的 settlement 会追加成新执行单，不覆盖旧单
+	// 这个模型下 business 仍归到同一 order，但新的 settlement 会追加成新执行单，不覆盖已有单
 	secondInput := CreateBusinessWithFrontTriggerAndPendingSettlementInput{
 		FrontOrderID:     "fo_second_attempt", // 新的 front_order
 		FrontType:        "domain",
@@ -158,7 +158,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 		t.Fatalf("expected idempotent update, got error: %v", err)
 	}
 
-	// 步骤3：验证旧数据仍然存在
+	// 步骤3：验证已有数据仍然存在
 	oldFO, _ := dbGetFrontOrder(ctx, store, "fo_first_attempt")
 	if oldFO.FrontOrderID == "" {
 		t.Fatal("old front_order should still exist")
@@ -184,7 +184,7 @@ func TestBusinessBridge_TransactionIdempotentUpdate(t *testing.T) {
 		t.Fatalf("expected older settlement set_first, got %s", byBusiness.Items[1].SettlementID)
 	}
 
-	// 4.3 验证旧的 trigger 仍然存在
+	// 4.3 验证前一轮 trigger 仍然存在
 	oldTriggerPage, _ := dbListBusinessTriggers(ctx, store, businessTriggerFilter{TriggerID: "trg_first"})
 	if oldTriggerPage.Total != 1 {
 		t.Fatalf("expected 1 trigger for trg_first, got %d", oldTriggerPage.Total)

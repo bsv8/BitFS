@@ -501,20 +501,12 @@ func (r *Runtime) SQLTraceSummaryPath() string {
 }
 
 func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtime, error) {
-	if ctx == nil {
-		return nil, fmt.Errorf("ctx is required")
-	}
-	if deps.Store == nil || deps.RawDB == nil {
-		return nil, fmt.Errorf("runtime deps are required")
-	}
-	startupMode, err := normalizeStartupMode(opt.StartupMode)
-	if err != nil {
+	phasePlan := newRunStartupPhases(ctx, cfg, deps, opt)
+	if err := phasePlan.Preflight(); err != nil {
 		return nil, err
 	}
-	runtimeCfg := cloneConfig(cfg)
-	if err := applyConfigDefaultsForMode(&runtimeCfg, startupMode); err != nil {
-		return nil, err
-	}
+	startupMode := phasePlan.StartupMode()
+	runtimeCfg := phasePlan.RuntimeConfig()
 
 	var removeObs func()
 	if opt.ObsSink != nil {
@@ -526,18 +518,6 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 		})
 	}
 
-	if err := validateConfigForMode(&runtimeCfg, startupMode); err != nil {
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if runtimeCfg.HTTP.Enabled && strings.TrimSpace(opt.ConfigPath) == "" {
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, fmt.Errorf("config path is required when HTTP management is enabled")
-	}
 	if err := initDataDirs(&runtimeCfg); err != nil {
 		if removeObs != nil {
 			removeObs()

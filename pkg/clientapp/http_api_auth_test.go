@@ -67,15 +67,22 @@ func TestHTTPAPIServer_StartAndShutdown(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	rt := &Runtime{ctx: context.Background(), runIn: NewRunInputFromConfig(cfg, "")}
-	srv := newHTTPAPIServer(rt, &cfg, db, newClientDB(db, nil), nil, nil, nil, nil)
+	rt := newRuntimeForTest(t, cfg, "")
+	rt.ctx = context.Background()
+	srv := newHTTPAPIServer(rt, staticConfigSnapshot(cfg), db, newClientDB(db, nil), nil, nil, nil, nil)
 
 	done := make(chan error, 1)
 	go func() {
 		done <- srv.Start()
 	}()
 	deadline := time.Now().Add(3 * time.Second)
-	for srv.srv == nil {
+	for {
+		srv.srvMu.RLock()
+		started := srv.srv != nil
+		srv.srvMu.RUnlock()
+		if started {
+			break
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("http api server did not start")
 		}

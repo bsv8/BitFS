@@ -79,7 +79,7 @@ func (r *Runtime) FeePoolGatewayPeerID() (string, error) {
 		if peerID == "" {
 			return "", fmt.Errorf("fee pool session missing")
 		}
-		for _, g := range r.runIn.Network.Gateways {
+		for _, g := range r.ConfigSnapshot().Network.Gateways {
 			ai, err := parseAddr(g.Addr)
 			if err != nil || ai == nil || strings.TrimSpace(ai.ID.String()) != peerID {
 				continue

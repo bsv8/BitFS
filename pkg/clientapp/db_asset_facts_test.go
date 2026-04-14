@@ -277,7 +277,7 @@ func TestGetSettlementPaymentAttemptSourceTxID_PoolSessionReturnsLatestPoolEvent
 	}
 }
 
-// TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast 验证渠道行缺失时直接报错，不再回退到旧口径。
+// TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast 验证渠道行缺失时直接报错，不再走其他口径。
 func TestGetSettlementPaymentAttemptSourceTxID_MissingChannelRowFailsFast(t *testing.T) {
 	db := newAssetFactsTestDB(t)
 	now := time.Now().Unix()
@@ -1237,7 +1237,7 @@ func TestApplyVerifiedAssetFlowBSV(t *testing.T) {
 	ownerPubkey := "039999999999999999999999999999999999999999999999999999999999999999"
 	utxoID := "tx_verified_001:0"
 
-	// 使用兼容性函数写入 BSV UTXO
+	// 使用统一入口写入 BSV UTXO
 	params := verifiedAssetFlowParams{
 		WalletID:      ownerPubkey,
 		Address:       "1VerifiedAddr",
@@ -1280,7 +1280,7 @@ func TestApplyVerifiedAssetFlowToken(t *testing.T) {
 	ownerPubkey := "03aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
 	tokenID := "token_verified_001"
 
-	// 使用兼容性函数写入 Token
+	// 使用统一入口写入 Token
 	params := verifiedAssetFlowParams{
 		WalletID:      ownerPubkey,
 		Address:       "1VerifiedAddr",

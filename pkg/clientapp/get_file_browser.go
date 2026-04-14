@@ -252,7 +252,8 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 		}
 		return collectPlanItemsByOrder(hashes, itemsBySeedHash), quotes, nil
 	}
-	publishCtx, cancel := context.WithTimeout(ctx, filePlanTimeout(s.cfg))
+	cfg := s.runtimeConfigSnapshot()
+	publishCtx, cancel := context.WithTimeout(ctx, filePlanTimeout(&cfg))
 	defer cancel()
 	pub, err := TriggerGatewayPublishDemandBatch(publishCtx, s.store, s.rt, PublishDemandBatchParams{
 		Items:         missing,
@@ -273,8 +274,8 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 		s.store,
 		s.rt,
 		demandBySeedHash,
-		filePlanQuoteRetry(s.cfg),
-		filePlanQuoteInterval(s.cfg),
+		filePlanQuoteRetry(&cfg),
+		filePlanQuoteInterval(&cfg),
 	)
 	if err != nil {
 		return nil, nil, err

@@ -146,7 +146,8 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 	if rt == nil || rt.Host == nil || state == nil {
 		return
 	}
-	if !cfgBool(rt.runIn.Reachability.AutoAnnounceEnabled, true) {
+	cfg := rt.ConfigSnapshot()
+	if !cfgBool(cfg.Reachability.AutoAnnounceEnabled, true) {
 		return
 	}
 	if rt.gwManager == nil {
@@ -156,7 +157,7 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 	if gatewayPeerID == "" {
 		return
 	}
-	ttlSeconds := rt.runIn.Reachability.AnnounceTTLSeconds
+	ttlSeconds := cfg.Reachability.AnnounceTTLSeconds
 	if ttlSeconds == 0 {
 		ttlSeconds = 3600
 	}

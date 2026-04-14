@@ -119,8 +119,8 @@ func TestSettlementMethod_Valid(t *testing.T) {
 	}{
 		{SettlementMethodPool, false},
 		{SettlementMethodChain, false},
-		{"direct_payment", true}, // 旧值，应报错
-		{"test_payment", true},   // 旧值，应报错
+		{"direct_payment", true}, // 保留值，应报错
+		{"test_payment", true},   // 保留值，应报错
 		{"invalid", true},
 		{"", true},
 	}

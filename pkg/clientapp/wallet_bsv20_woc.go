@@ -58,10 +58,11 @@ func queryWalletBSV20WOCUnspent(ctx context.Context, rt *Runtime, address string
 	if err != nil {
 		return nil, err
 	}
+	cfg := rt.ConfigSnapshot()
 
 	auth := whatsonchain.AuthConfig{
 		Mode:  "bearer",
-		Value: strings.TrimSpace(rt.runIn.ExternalAPI.WOC.APIKey),
+		Value: strings.TrimSpace(cfg.ExternalAPI.WOC.APIKey),
 	}
 	if strings.TrimSpace(auth.Value) == "" {
 		auth.Mode = ""

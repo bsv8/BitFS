@@ -151,7 +151,7 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	}
 	cfg := Config{}
 	cfg.Storage.WorkspaceDir = ws
-	srv := &httpAPIServer{ctx: context.Background(), db: db, cfg: &cfg}
+	srv := &httpAPIServer{ctx: context.Background(), db: db, cfgSource: staticConfigSnapshot(cfg)}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/live/streams", nil)
 	listRec := httptest.NewRecorder()
@@ -230,7 +230,7 @@ func TestHandleAdminStaticTreeAndPrice(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	srv := &httpAPIServer{db: db, cfg: &cfg}
+	srv := &httpAPIServer{db: db, cfgSource: staticConfigSnapshot(cfg)}
 
 	treeReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/tree?path=/docs", nil)
 	treeRec := httptest.NewRecorder()
@@ -275,7 +275,7 @@ func TestHandleAdminStaticTreeRecursive(t *testing.T) {
 	db := newWalletAPITestDB(t)
 	cfg := Config{}
 	cfg.Storage.WorkspaceDir = ws
-	srv := &httpAPIServer{db: db, cfg: &cfg}
+	srv := &httpAPIServer{db: db, cfgSource: staticConfigSnapshot(cfg)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/static/tree?path=/&recursive=true&max_depth=4", nil)
 	rec := httptest.NewRecorder()
@@ -324,7 +324,7 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	srv := &httpAPIServer{db: db, cfg: &cfg, workspace: mgr}
+	srv := &httpAPIServer{db: db, cfgSource: staticConfigSnapshot(cfg), workspace: mgr}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)

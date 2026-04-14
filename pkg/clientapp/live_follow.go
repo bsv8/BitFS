@@ -149,7 +149,7 @@ func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decis
 	}); err != nil {
 		return liveAutoBuyResult{}, err
 	}
-	if err := rt.Workspace.EnforceLiveCacheLimit(rt.runIn.Live.CacheMaxBytes); err != nil {
+	if err := rt.Workspace.EnforceLiveCacheLimit(rt.ConfigSnapshot().Live.CacheMaxBytes); err != nil {
 		return liveAutoBuyResult{}, err
 	}
 	return liveAutoBuyResult{
@@ -167,7 +167,8 @@ func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, r
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
-	subRes, err := TriggerLiveSubscribe(ctx, rt, rawURI, rt.runIn.Live.Publish.BroadcastWindow)
+	cfg := rt.ConfigSnapshot()
+	subRes, err := TriggerLiveSubscribe(ctx, rt, rawURI, cfg.Live.Publish.BroadcastWindow)
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
@@ -176,7 +177,7 @@ func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, r
 	if err != nil {
 		return LiveFollowStatus{}, err
 	}
-	tick := time.Duration(rt.runIn.Live.Publish.BroadcastIntervalSec) * time.Second
+	tick := time.Duration(cfg.Live.Publish.BroadcastIntervalSec) * time.Second
 	if tick <= 0 {
 		tick = 3 * time.Second
 	}
@@ -309,7 +310,7 @@ func liveFollowOnce(ctx context.Context, store *clientDB, rt *Runtime, streamID 
 
 func discoverLiveSnapshotForFollow(ctx context.Context, store *clientDB, rt *Runtime, streamID string, haveSegmentIndex int64) (LiveSubscriberSnapshot, string, error) {
 	if rt != nil && len(rt.HealthyGWs) > 0 {
-		window := rt.runIn.Live.Publish.BroadcastWindow
+		window := rt.ConfigSnapshot().Live.Publish.BroadcastWindow
 		if window == 0 {
 			window = 10
 		}

@@ -341,7 +341,7 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
 	cfg.FSHTTP.MaxConcurrentSessions = 4
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
-	srv := newFileHTTPServer(&Runtime{}, cfg, newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
+	srv := newFileHTTPServer(&Runtime{}, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
 	seedHash := strings.Repeat("a", 64)
 	return srv, seedHash, cfg.Storage.WorkspaceDir
 }
@@ -393,7 +393,7 @@ func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
-	srv := newFileHTTPServer(&Runtime{}, cfg, newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
+	srv := newFileHTTPServer(&Runtime{}, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -405,7 +405,13 @@ func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 		done <- srv.StartOnListener(ln)
 	}()
 	deadline := time.Now().Add(3 * time.Second)
-	for srv.srv == nil {
+	for {
+		srv.srvMu.RLock()
+		started := srv.srv != nil
+		srv.srvMu.RUnlock()
+		if started {
+			break
+		}
 		if time.Now().After(deadline) {
 			t.Fatal("file http server did not start")
 		}

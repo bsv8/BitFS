@@ -73,16 +73,16 @@ func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
 		t.Fatalf("schema init failed: %v", err)
 	}
 
-	runIn := NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)
-	runIn.StartupMode = StartupModeTest
-	runIn.ActionChain = startupTestChain{}
-	runIn.WalletChain = startupTestWalletChain{}
-
-	rt, err := Run(ctx, runIn, RunDeps{
+	rt, err := Run(ctx, cfg, RunDeps{
 		Store:   NewClientStore(openedDB.DB, openedDB.Actor),
 		RawDB:   openedDB.DB,
 		DBActor: openedDB.Actor,
 		OwnsDB:  true,
+	}, RunOptions{
+		StartupMode:         StartupModeTest,
+		EffectivePrivKeyHex: cfg.Keys.PrivkeyHex,
+		ActionChain:         startupTestChain{},
+		WalletChain:         startupTestWalletChain{},
 	})
 	if err != nil {
 		t.Fatalf("Run: %v", err)

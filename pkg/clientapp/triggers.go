@@ -496,7 +496,7 @@ func gatewayBusinessID(rt *Runtime, pid peer.ID) string {
 	if peerID == "" || rt == nil {
 		return peerID
 	}
-	for _, g := range rt.runIn.Network.Gateways {
+	for _, g := range rt.ConfigSnapshot().Network.Gateways {
 		ai, err := parseAddr(g.Addr)
 		if err != nil || ai == nil || ai.ID != pid {
 			continue
@@ -1647,8 +1647,9 @@ func ownArbiterPubHexes(rt *Runtime) []string {
 	if rt == nil {
 		return nil
 	}
-	ids := make([]string, 0, len(rt.runIn.Network.Arbiters))
-	for _, a := range rt.runIn.Network.Arbiters {
+	snapshot := rt.ConfigSnapshot()
+	ids := make([]string, 0, len(snapshot.Network.Arbiters))
+	for _, a := range snapshot.Network.Arbiters {
 		if !a.Enabled {
 			continue
 		}

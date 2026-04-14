@@ -10,14 +10,11 @@ func TestWalletTokenSendSubmit_FailWhenAppendTokenConsumptionFailed(t *testing.T
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: strings.Repeat("4", 64),
-		},
-		ActionChain: &feePoolKernelMockChain{},
-	}
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("4", 64)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
+	rt.ActionChain = &feePoolKernelMockChain{}
 	srv := &httpAPIServer{
 		rt:    rt,
 		store: newClientDB(db, nil),
@@ -42,13 +39,10 @@ func TestAppendBSV21TokenSendAccountingAfterBroadcast_ErrorWhenNoTokenCarrierInp
 
 	db := newWalletAccountingTestDB(t)
 	store := newClientDB(db, nil)
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: strings.Repeat("4", 64),
-		},
-	}
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("4", 64)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
 	err := appendBSV21TokenSendAccountingAfterBroadcast(
 		httptest.NewRequest("POST", "/api/v1/wallet/tokens/send/submit", nil).Context(),
 		store,

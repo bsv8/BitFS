@@ -467,7 +467,7 @@ func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, s
 	if requireActiveFeePool {
 		return info, gw, fmt.Errorf("active fee pool session missing for peer=%s", gw.ID)
 	}
-	autoRenewRounds := rt.runIn.Listen.AutoRenewRounds
+	autoRenewRounds := rt.ConfigSnapshot().Listen.AutoRenewRounds
 	if autoRenewRounds == 0 {
 		autoRenewRounds = 1
 	}

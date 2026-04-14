@@ -15,11 +15,19 @@ func TriggerSetListenAutoRenewRounds(rt *Runtime, rounds uint64) (ListenAutoRene
 	if rt == nil {
 		return ListenAutoRenewRoundsResult{}, fmt.Errorf("runtime not initialized")
 	}
+	cfgSvc := rt.RuntimeConfigService()
+	if cfgSvc == nil {
+		return ListenAutoRenewRoundsResult{}, fmt.Errorf("runtime config service not initialized")
+	}
 	if rounds == 0 {
 		return ListenAutoRenewRoundsResult{}, fmt.Errorf("auto renew rounds must be greater than zero")
 	}
-	before := rt.runIn.Listen.AutoRenewRounds
-	rt.runIn.Listen.AutoRenewRounds = rounds
+	next := cfgSvc.Snapshot()
+	before := next.Listen.AutoRenewRounds
+	next.Listen.AutoRenewRounds = rounds
+	if err := cfgSvc.UpdateMemoryOnly(next); err != nil {
+		return ListenAutoRenewRoundsResult{}, err
+	}
 	return ListenAutoRenewRoundsResult{Before: before, After: rounds}, nil
 }
 

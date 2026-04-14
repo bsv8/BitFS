@@ -64,6 +64,9 @@ const (
 	bitfsManagedHTTPFallbackAbility = "bitfs.managed_http.fallback@1"
 )
 
+var runClientRuntime = clientapp.Run
+var buildRuntimeAPIHandler = clientapp.NewRuntimeAPIHandler
+
 type startupErrorState struct {
 	Service    string
 	ListenAddr string
@@ -526,13 +529,19 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	}
 	d.applyDesktopRuntimeBootstrap(&runCfg)
 	d.overrides.Apply(&runCfg)
-	runIn := clientapp.NewRunInputFromConfig(runCfg, privHex)
-	runIn.ConfigPath = d.startup.ConfigPath
-	runIn.StartupMode = clientapp.StartupModeProduct
-	runIn.PostWorkspaceBootstrap = d.systemHomepageBootstrapHook()
-	runIn.DisableHTTPServer = true
-	runIn.FSHTTPListener = d.takeReservedFSHTTPListener()
-	runIn.ObsSink = d.controlStream.ObsSink()
+	var obsSink obs.Sink
+	if d.controlStream != nil {
+		obsSink = d.controlStream.ObsSink()
+	}
+	runOpt := clientapp.RunOptions{
+		ConfigPath:             d.startup.ConfigPath,
+		StartupMode:            clientapp.StartupModeProduct,
+		PostWorkspaceBootstrap: d.systemHomepageBootstrapHook(),
+		DisableHTTPServer:      true,
+		FSHTTPListener:         d.takeReservedFSHTTPListener(),
+		ObsSink:                obsSink,
+		EffectivePrivKeyHex:    privHex,
+	}
 	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
 	if !filepath.IsAbs(indexDBPath) {
 		indexDBPath = filepath.Join(strings.TrimSpace(runCfg.Storage.DataDir), indexDBPath)
@@ -557,8 +566,8 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		Auth:     d.chainAccess.RouteAuth,
 	})
 	if err != nil {
-		if runIn.FSHTTPListener != nil {
-			_ = runIn.FSHTTPListener.Close()
+		if runOpt.FSHTTPListener != nil {
+			_ = runOpt.FSHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		_ = openedDB.Actor.Close()
@@ -569,28 +578,28 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		Network:  d.cfg.BSV.Network,
 	}, d.chainAccess.BaseURL, d.chainAccess.WalletAuth)
 	if err != nil {
-		if runIn.FSHTTPListener != nil {
-			_ = runIn.FSHTTPListener.Close()
+		if runOpt.FSHTTPListener != nil {
+			_ = runOpt.FSHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		_ = openedDB.Actor.Close()
 		return err
 	}
-	runIn.ActionChain = actionChain
-	runIn.WalletChain = walletChain
+	runOpt.ActionChain = actionChain
+	runOpt.WalletChain = walletChain
 
 	runCtx, cancel := context.WithCancel(d.rootCtx)
-	rt, err := clientapp.Run(runCtx, runIn, deps)
+	rt, err := runClientRuntime(runCtx, runCfg, deps, runOpt)
 	if err != nil {
-		if runIn.FSHTTPListener != nil {
-			_ = runIn.FSHTTPListener.Close()
+		if runOpt.FSHTTPListener != nil {
+			_ = runOpt.FSHTTPListener.Close()
 			_ = d.reserveFSHTTPListener()
 		}
 		cancel()
 		_ = openedDB.Actor.Close()
 		return err
 	}
-	runtimeAPI, err := clientapp.NewRuntimeAPIHandler(rt)
+	runtimeAPI, err := buildRuntimeAPIHandler(rt)
 	if err != nil {
 		_ = rt.Close()
 		cancel()

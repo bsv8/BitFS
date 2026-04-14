@@ -30,13 +30,14 @@ func TestOrchestratorReconcileSignal_FeePoolTickUsesMaintain(t *testing.T) {
 func TestOrchestratorReconcileSignal_ChainTipUsesMaintain(t *testing.T) {
 	t.Parallel()
 
-	rt := &Runtime{
-		HealthyGWs: []peer.AddrInfo{
-			{ID: peer.ID("gw-chain-1")},
-			{ID: peer.ID("gw-chain-2")},
-		},
+	rt := newRuntimeForTest(t, Config{}, "")
+	rt.HealthyGWs = []peer.AddrInfo{
+		{ID: peer.ID("gw-chain-1")},
+		{ID: peer.ID("gw-chain-2")},
 	}
-	rt.runIn.Listen.Enabled = boolPtr(true)
+	mustUpdateRuntimeConfigMemoryOnly(t, rt, func(cfg *Config) {
+		cfg.Listen.Enabled = boolPtr(true)
+	})
 	o := newOrchestrator(rt, nil)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")
@@ -61,12 +62,13 @@ func TestOrchestratorReconcileSignal_ChainTipUsesMaintain(t *testing.T) {
 func TestOrchestratorReconcileSignal_ChainTipSkipsWhenListenDisabled(t *testing.T) {
 	t.Parallel()
 
-	rt := &Runtime{
-		HealthyGWs: []peer.AddrInfo{
-			{ID: peer.ID("gw-chain-1")},
-		},
+	rt := newRuntimeForTest(t, Config{}, "")
+	rt.HealthyGWs = []peer.AddrInfo{
+		{ID: peer.ID("gw-chain-1")},
 	}
-	rt.runIn.Listen.Enabled = boolPtr(false)
+	mustUpdateRuntimeConfigMemoryOnly(t, rt, func(cfg *Config) {
+		cfg.Listen.Enabled = boolPtr(false)
+	})
 	o := newOrchestrator(rt, nil)
 	if o == nil {
 		t.Fatal("newOrchestrator returned nil")

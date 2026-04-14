@@ -449,14 +449,15 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 			StateAfter:   "live_plan",
 		}
 	}
+	cfg := k.rt.ConfigSnapshot()
 	decision, err := PlanLivePurchase(snap, haveSegmentIndex, LiveBuyerStrategy{
-		TargetLagSegments:   k.rt.runIn.Live.Buyer.TargetLagSegments,
-		MaxBudgetPerMinute:  k.rt.runIn.Live.Buyer.MaxBudgetPerMinute,
-		PreferOlderSegments: k.rt.runIn.Live.Buyer.PreferOlderSegments,
+		TargetLagSegments:   cfg.Live.Buyer.TargetLagSegments,
+		MaxBudgetPerMinute:  cfg.Live.Buyer.MaxBudgetPerMinute,
+		PreferOlderSegments: cfg.Live.Buyer.PreferOlderSegments,
 	}, LiveSellerPricing{
-		BasePriceSatPer64K:  k.rt.runIn.Seller.Pricing.LiveBasePriceSatPer64K,
-		FloorPriceSatPer64K: k.rt.runIn.Seller.Pricing.LiveFloorPriceSatPer64K,
-		DecayPerMinuteBPS:   k.rt.runIn.Seller.Pricing.LiveDecayPerMinuteBPS,
+		BasePriceSatPer64K:  cfg.Seller.Pricing.LiveBasePriceSatPer64K,
+		FloorPriceSatPer64K: cfg.Seller.Pricing.LiveFloorPriceSatPer64K,
+		DecayPerMinuteBPS:   cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
 	}, now)
 	if err != nil {
 		_ = dbAppendEffectLog(ctx, k.store, effectLogEntry{

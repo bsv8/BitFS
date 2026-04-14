@@ -311,7 +311,7 @@ func TestDbGetChainPaymentByTxID(t *testing.T) {
 	}
 }
 
-// TestDbAppendBusinessUTXOFactIfAbsent_Noop 验证旧 UTXO 占位入口不再落旧表。
+// TestDbAppendBusinessUTXOFactIfAbsent_Noop 验证 UTXO 占位入口只走当前路径。
 func TestDbAppendBusinessUTXOFactIfAbsent_Noop(t *testing.T) {
 	t.Parallel()
 
@@ -385,13 +385,10 @@ func TestRecordChainPaymentAccountingAfterBroadcast_WritesBusinessFacts(t *testi
 	db := newWalletAccountingTestDB(t)
 	store := newClientDB(db, nil)
 	ctx := context.Background()
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: strings.Repeat("4", 64),
-		},
-	}
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("4", 64)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
 
 	txHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 	txID := "tx_chain_payment_facts_001"

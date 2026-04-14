@@ -344,7 +344,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			return persist(st)
 		}
 
-		sess, err := ensureActiveFeePool(ctx, k.rt, k.store, gw, k.rt.runIn.Listen.AutoRenewRounds, info, cmd.CommandID)
+		sess, err := ensureActiveFeePool(ctx, k.rt, k.store, gw, k.rt.ConfigSnapshot().Listen.AutoRenewRounds, info, cmd.CommandID)
 		if err != nil {
 			if isWalletInsufficientForListen(err) {
 				need, have := parseNeedHave(err.Error())
@@ -490,7 +490,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			addEvent("fee_pool_paused_insufficient", map[string]any{"need": need, "have": have, "stage": "rotate_precheck"}, beforeState.State, st.State)
 			return persist(st)
 		}
-		next, rotateErr := rotateListenFeePool(ctx, k.rt, k.store, gw, sess, k.rt.runIn.Listen.AutoRenewRounds, info, cmd.CommandID)
+		next, rotateErr := rotateListenFeePool(ctx, k.rt, k.store, gw, sess, k.rt.ConfigSnapshot().Listen.AutoRenewRounds, info, cmd.CommandID)
 		if rotateErr != nil {
 			if strings.Contains(strings.ToLower(rotateErr.Error()), strings.ToLower(errListenFeePoolStop.Error())) {
 				need, have := parseNeedHave(rotateErr.Error())
@@ -582,7 +582,8 @@ func probeListenOpenNeedAndWallet(rt *Runtime, store *clientDB, info poolcore.In
 	if rt == nil {
 		return 0, 0, fmt.Errorf("runtime not initialized")
 	}
-	need, err := listenPoolAmountByRounds(rt.runIn.Listen.AutoRenewRounds, info.SingleCycleFeeSatoshi, 0)
+	snapshot := rt.ConfigSnapshot()
+	need, err := listenPoolAmountByRounds(snapshot.Listen.AutoRenewRounds, info.SingleCycleFeeSatoshi, 0)
 	if err != nil {
 		return 0, 0, err
 	}

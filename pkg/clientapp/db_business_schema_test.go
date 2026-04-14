@@ -357,7 +357,7 @@ func TestInitIndexDB_OrderSettlementsIdempotent(t *testing.T) {
 		t.Fatalf("first settlement update failed: %v", err)
 	}
 
-	// 再写一条同一 order 的新 settlement，应该追加新行而不是覆盖旧行
+	// 再写一条同一 order 的新 settlement，应该追加新行而不是覆盖已有行
 	if err := dbUpsertBusinessSettlement(context.Background(), newClientDB(db, nil), businessSettlementEntry{
 		SettlementID:     "set_test_3",
 		OrderID:          "ord_test_2",

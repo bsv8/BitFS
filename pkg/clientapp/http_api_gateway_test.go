@@ -19,16 +19,12 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 	hGw1, _ := newSecpHost(t)
 	defer hGw1.Close()
 
-	hGw2, _ := newSecpHost(t)
+	hGw2, gw2Pub := newSecpHost(t)
 	defer hGw2.Close()
 
 	gw1Pub, err := localPubKeyHex(hGw1)
 	if err != nil {
 		t.Fatalf("gw1 pubkey: %v", err)
-	}
-	gw2Pub, err := localPubKeyHex(hGw2)
-	if err != nil {
-		t.Fatalf("gw2 pubkey: %v", err)
 	}
 	gw1Addr := fmt.Sprintf("%s/p2p/%s", hGw1.Addrs()[0].String(), hGw1.ID().String())
 	gw2Addr := fmt.Sprintf("%s/p2p/%s", hGw2.Addrs()[0].String(), hGw2.ID().String())
@@ -38,7 +34,7 @@ func TestHandleGatewayMasterPostAndHealth(t *testing.T) {
 		{Enabled: true, Addr: gw1Addr, Pubkey: strings.ToLower(gw1Pub)},
 		{Enabled: true, Addr: gw2Addr, Pubkey: strings.ToLower(gw2Pub)},
 	}
-	rt := &Runtime{Host: hClient, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(hClient))
 	rt.gwManager = newGatewayManager(rt, hClient)
 	if err := rt.gwManager.InitFromConfig(t.Context(), cfg.Network.Gateways); err != nil {
 		t.Fatalf("init gateways: %v", err)
@@ -122,7 +118,7 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 
 	cfg := Config{}
 	cfg.Network.Gateways = []PeerNode{{Enabled: true, Addr: gw1Addr, Pubkey: strings.ToLower(gw1Pub)}}
-	rt := &Runtime{Host: hClient, runIn: NewRunInputFromConfig(cfg, "")}
+	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(hClient))
 	rt.gwManager = newGatewayManager(rt, hClient)
 	if err := rt.gwManager.InitFromConfig(t.Context(), cfg.Network.Gateways); err != nil {
 		t.Fatalf("init gateways: %v", err)
@@ -163,15 +159,15 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 	}
 	rt.gwManager.SetRuntimeError(hGw1.ID(), "fee_pool_open", fmt.Errorf("query utxos failed"))
 
-	hGw2, _ := newSecpHost(t)
+	hGwFail, gwFailPub := newSecpHost(t)
 	// 关闭 gw2，构造一个可解析但不可连接的地址，验证失败网关不会影响已连接网关。
-	gw2PeerID := hGw2.ID().String()
-	_ = hGw2.Close()
+	gw2PeerID := hGwFail.ID().String()
+	_ = hGwFail.Close()
 	gw2Addr := fmt.Sprintf("/ip4/127.0.0.1/tcp/1/p2p/%s", gw2PeerID)
 	_, err = rt.gwManager.AddGateway(t.Context(), PeerNode{
 		Enabled: true,
 		Addr:    gw2Addr,
-		Pubkey:  "test-pubkey-for-connect-fail-case",
+		Pubkey:  strings.ToLower(gwFailPub),
 	})
 	if err != nil {
 		t.Fatalf("add gateway via manager: %v", err)

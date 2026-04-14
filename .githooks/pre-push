@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-echo "pre-push: guard disabled. AI gate runs in pre-commit."

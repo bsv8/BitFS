@@ -24,7 +24,8 @@ func preferredPaymentScheme(rt *Runtime) string {
 	if rt == nil {
 		return defaultPreferredPaymentScheme
 	}
-	scheme, err := normalizePreferredPaymentScheme(rt.runIn.Payment.PreferredScheme)
+	snapshot := rt.ConfigSnapshot()
+	scheme, err := normalizePreferredPaymentScheme(snapshot.Payment.PreferredScheme)
 	if err != nil {
 		return defaultPreferredPaymentScheme
 	}

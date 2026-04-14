@@ -110,8 +110,10 @@ func TestDemandQuoteReadPathsAndArbiterSelection(t *testing.T) {
 	store := newClientDB(db, nil)
 
 	seller := "02ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-	arb1 := "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	arb2 := "03bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	arbHost1, arb1 := newSecpHost(t)
+	defer arbHost1.Close()
+	arbHost2, arb2 := newSecpHost(t)
+	defer arbHost2.Close()
 	if _, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix) VALUES(?,?,?)`, "dmd_read", "seed_read", 1700000001); err != nil {
 		t.Fatalf("insert demand: %v", err)
 	}
@@ -151,11 +153,13 @@ func TestDemandQuoteReadPathsAndArbiterSelection(t *testing.T) {
 		t.Fatalf("detail arbiter mismatch: %+v", item.SellerArbiterPubHexes)
 	}
 
-	buyer := &Runtime{}
-	buyer.runIn.Network.Arbiters = []PeerNode{
-		{Enabled: true, Pubkey: arb2},
-		{Enabled: true, Pubkey: "02cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"},
-	}
+	buyer := newRuntimeForTest(t, Config{}, "")
+	mustUpdateRuntimeConfigMemoryOnly(t, buyer, func(cfg *Config) {
+		cfg.Network.Arbiters = []PeerNode{
+			{Enabled: true, Addr: arbHost2.Addrs()[0].String() + "/p2p/" + arbHost2.ID().String(), Pubkey: arb2},
+			{Enabled: true, Addr: arbHost1.Addrs()[0].String() + "/p2p/" + arbHost1.ID().String(), Pubkey: arb1},
+		}
+	})
 	gotArbiter, err := resolveDealArbiter(buyer, quotes[0].SellerArbiterPubHexes, "")
 	if err != nil {
 		t.Fatalf("resolve arbiter: %v", err)

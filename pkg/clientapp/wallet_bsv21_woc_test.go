@@ -116,11 +116,8 @@ func newWalletBSV21LocalCandidateTestRuntime(t *testing.T, db *sql.DB, baseURL s
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = strings.Repeat("1", 64)
-	rt := &Runtime{
-		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
-		WalletChain: testWalletChainClient{baseURL: baseURL},
-	}
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
+	rt.WalletChain = testWalletChainClient{baseURL: baseURL}
 	return rt
 }
 

@@ -41,7 +41,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
+	rt := newRuntimeForTest(t, cfg, "")
 	rt.kernel = newClientKernel(rt, store)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -353,8 +353,8 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	if err := ApplyConfigDefaults(&cfg); err != nil {
 		t.Fatalf("apply defaults: %v", err)
 	}
-	rt := &Runtime{runIn: NewRunInputFromConfig(cfg, "")}
-	srv := &httpAPIServer{rt: rt, cfg: &cfg, db: db}
+	rt := newRuntimeForTest(t, cfg, "")
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
 
 	// 测试 1：按 trigger_key 过滤，应该只查到 orchestrator 命令
 	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?trigger_key=http_test_trigger_key", nil)

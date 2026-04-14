@@ -52,7 +52,7 @@ func TestDBLoadWalletUTXOsByID_StrictUnspent(t *testing.T) {
 func TestFactChainPaymentPayloadTxHexSupportsLegacyKey(t *testing.T) {
 	t.Parallel()
 
-	legacy, err := factChainPaymentPayloadTxHex(`{"txHex":"deadbeef"}`)
+	legacy, err := chainPaymentPayloadTxHex(`{"txHex":"deadbeef"}`)
 	if err != nil {
 		t.Fatalf("legacy payload parse failed: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestFactChainPaymentPayloadTxHexSupportsLegacyKey(t *testing.T) {
 		t.Fatalf("legacy payload mismatch: %s", legacy)
 	}
 
-	current, err := factChainPaymentPayloadTxHex(`{"tx_hex":"cafebabe"}`)
+	current, err := chainPaymentPayloadTxHex(`{"tx_hex":"cafebabe"}`)
 	if err != nil {
 		t.Fatalf("current payload parse failed: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestFactChainPaymentPayloadTxHexSupportsLegacyKey(t *testing.T) {
 		t.Fatalf("current payload mismatch: %s", current)
 	}
 
-	if _, err := factChainPaymentPayloadTxHex(`{"note":"missing"}`); err == nil || !strings.Contains(err.Error(), "missing tx_hex") {
+	if _, err := chainPaymentPayloadTxHex(`{"note":"missing"}`); err == nil || !strings.Contains(err.Error(), "missing tx_hex") {
 		t.Fatalf("missing tx_hex should fail with clear error, got: %v", err)
 	}
 }

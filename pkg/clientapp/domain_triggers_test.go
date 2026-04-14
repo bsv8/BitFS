@@ -94,13 +94,10 @@ func TestRecordDomainRegisterAccountingAfterBroadcast_WritesChainPaymentFacts(t 
 	db := newWalletAccountingTestDB(t)
 	store := newClientDB(db, nil)
 	ctx := context.Background()
-	rt := &Runtime{
-		runIn: RunInput{
-			EffectivePrivKeyHex: strings.Repeat("4", 64),
-		},
-	}
-	rt.runIn.BSV.Network = "test"
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("4", 64)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
 
 	txHex := "0100000001000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f0100000000ffffffff02bc020000000000001976a914111111111111111111111111111111111111111188ac22010000000000001976a914222222222222222222222222222222222222222288ac00000000"
 	registerTxRaw, err := hex.DecodeString(txHex)

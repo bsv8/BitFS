@@ -96,9 +96,10 @@ func newOrchestrator(rt *Runtime, store *clientDB) *orchestrator {
 	if rt == nil {
 		return nil
 	}
-	workspaceTick := int64(rt.runIn.Scan.RescanIntervalSeconds)
+	snapshot := rt.ConfigSnapshot()
+	workspaceTick := int64(snapshot.Scan.RescanIntervalSeconds)
 	if workspaceTick <= 0 {
-		d, err := networkInitDefaults(rt.runIn.BSV.Network)
+		d, err := networkInitDefaults(snapshot.BSV.Network)
 		if err != nil {
 			workspaceTick = 300
 		} else {
@@ -205,11 +206,15 @@ func (o *orchestrator) run(ctx context.Context) {
 }
 
 func (o *orchestrator) runWorkspaceSignalWorker(ctx context.Context) {
-	if o == nil || o.rt == nil || o.rt.runIn.Scan.RescanIntervalSeconds == 0 {
+	if o == nil || o.rt == nil {
+		return
+	}
+	snapshot := o.rt.ConfigSnapshot()
+	if snapshot.Scan.RescanIntervalSeconds == 0 {
 		return
 	}
 	// 唯一入口：按扫描间隔发 workspace.tick，后续统一进入 kernel 执行 SyncOnce。
-	interval := time.Duration(o.rt.runIn.Scan.RescanIntervalSeconds) * time.Second
+	interval := time.Duration(snapshot.Scan.RescanIntervalSeconds) * time.Second
 	scheduler := ensureRuntimeTaskScheduler(o.rt, o.store)
 	if scheduler == nil {
 		return
@@ -327,7 +332,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 	case orchestratorSignalChainTip:
 		// 设计约束：链高度推进只服务 listen 资金池维护。
 		// 非 listen 场景（例如 gateway 直付、普通 peer.call）不应该因为“配置了网关”就被动开池。
-		if o == nil || o.rt == nil || !cfgBool(o.rt.runIn.Listen.Enabled, true) {
+		if o == nil || o.rt == nil || !cfgBool(o.rt.ConfigSnapshot().Listen.Enabled, true) {
 			break
 		}
 		for _, gw := range snapshotHealthyGateways(o.rt) {

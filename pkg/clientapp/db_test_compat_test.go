@@ -9,11 +9,11 @@ import (
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 )
 
-// factChainPaymentPayloadTxHex 兼容旧测试里对 tx_hex/txHex 的取值。
+// chainPaymentPayloadTxHex 读取链上支付载荷里的交易 hex。
 // 设计说明：
 // - 只做一层很薄的 JSON 解析；
-// - 新旧 key 都支持，但缺失时直接报错，避免再默默吞字段。
-func factChainPaymentPayloadTxHex(payloadJSON string) (string, error) {
+// - `tx_hex` 和字段名 `txHex` 都接受，但缺失时直接报错。
+func chainPaymentPayloadTxHex(payloadJSON string) (string, error) {
 	payloadJSON = strings.TrimSpace(payloadJSON)
 	if payloadJSON == "" {
 		return "", fmt.Errorf("missing tx_hex")
@@ -40,22 +40,22 @@ func factChainPaymentPayloadTxHex(payloadJSON string) (string, error) {
 	return "", fmt.Errorf("missing tx_hex")
 }
 
-// saveNodeReachabilityCache 兼容旧名，直接落到 runtime state 的统一入口。
-func saveNodeReachabilityCache(store *clientDB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
+// storeNodeReachabilityCache 直接落到 runtime state 的统一入口。
+func storeNodeReachabilityCache(store *clientDB, sourceGatewayPubkeyHex string, ann broadcastmodule.NodeReachabilityAnnouncement) error {
 	return dbSaveNodeReachabilityCache(context.Background(), store, sourceGatewayPubkeyHex, ann)
 }
 
-// loadCachedNodeReachability 兼容旧名，直接读 runtime state 的统一入口。
-func loadCachedNodeReachability(store *clientDB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
+// loadNodeReachabilityCache 直接读 runtime state 的统一入口。
+func loadNodeReachabilityCache(store *clientDB, targetNodePubkeyHex string, nowUnix int64) (broadcastmodule.NodeReachabilityAnnouncement, bool, error) {
 	return dbLoadCachedNodeReachability(context.Background(), store, targetNodePubkeyHex, nowUnix)
 }
 
-// saveSelfNodeReachabilityState 兼容旧名，直接落到 runtime state 的统一入口。
-func saveSelfNodeReachabilityState(store *clientDB, state selfNodeReachabilityState) error {
+// storeSelfNodeReachabilityState 直接落到 runtime state 的统一入口。
+func storeSelfNodeReachabilityState(store *clientDB, state selfNodeReachabilityState) error {
 	return dbSaveSelfNodeReachabilityState(context.Background(), store, state)
 }
 
-// loadSelfNodeReachabilityState 兼容旧名，直接读 runtime state 的统一入口。
+// loadSelfNodeReachabilityState 直接读 runtime state 的统一入口。
 func loadSelfNodeReachabilityState(store *clientDB, nodePubkeyHex string) (selfNodeReachabilityState, bool, error) {
 	return dbLoadSelfNodeReachabilityState(context.Background(), store, nodePubkeyHex)
 }

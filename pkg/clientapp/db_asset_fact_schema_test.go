@@ -76,7 +76,7 @@ func TestInitIndexDB_CreatesCurrentAssetFactSchema(t *testing.T) {
 		}
 	}
 
-	// 验证旧表不存在
+	// 验证当前 schema 不再保留这些表
 	for _, table := range []string{
 		"fact_chain_asset_flows",
 		"fact_bsv_consumptions",
@@ -560,11 +560,11 @@ func TestInitIndexDB_RejectsLegacyAssetSchema(t *testing.T) {
 	}
 }
 
-func TestInitIndexDB_AllowsOldAssetFlowTable(t *testing.T) {
+func TestInitIndexDB_AllowsHistoricalAssetFlowTable(t *testing.T) {
 	t.Parallel()
 
 	db := openSchemaTestDB(t)
-	// 创建旧表 fact_chain_asset_flows
+	// 创建验证用表 fact_chain_asset_flows
 	if _, err := db.Exec(`CREATE TABLE fact_chain_asset_flows(
 		id INTEGER PRIMARY KEY AUTOINCREMENT
 	)`); err != nil {

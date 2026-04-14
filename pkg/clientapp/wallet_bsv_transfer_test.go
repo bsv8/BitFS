@@ -493,11 +493,8 @@ func newWalletBSVTransferTestRuntime(t *testing.T) *Runtime {
 	cfg := Config{}
 	cfg.BSV.Network = "test"
 	cfg.Keys.PrivkeyHex = privHex
-	rt := &Runtime{
-		runIn:       NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex),
-		ActionChain: walletBSVTransferMockChain{},
-	}
-	mustSetRuntimeIdentityFromRunIn(t, rt)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
+	rt.ActionChain = walletBSVTransferMockChain{}
 	return rt
 }
 

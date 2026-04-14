@@ -590,8 +590,8 @@ func TriggerLivePublishLatest(ctx context.Context, rt *Runtime, streamID string,
 	}
 	targets := rt.live.registerPublishedSegments(streamID, pubHex, normalized)
 	windowSize := defaultLiveWindowSize
-	if rt.runIn.Live.Publish.BroadcastWindow > 0 {
-		windowSize = clampLiveWindow(rt.runIn.Live.Publish.BroadcastWindow)
+	if cfg := rt.ConfigSnapshot(); cfg.Live.Publish.BroadcastWindow > 0 {
+		windowSize = clampLiveWindow(cfg.Live.Publish.BroadcastWindow)
 	}
 	windowed := trimLiveSegmentRefs(normalized, windowSize)
 	for _, target := range targets {
