@@ -8,8 +8,8 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipstate"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosynccursor"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
 )
@@ -43,19 +43,30 @@ func dbUpsertChainTipState(ctx context.Context, store *clientDB, tip uint32, las
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO proc_chain_tip_state(id,tip_height,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms)
-			 VALUES(1,?,?,?,?,?,?)
-			 ON CONFLICT(id) DO UPDATE SET
-				tip_height=excluded.tip_height,
-				updated_at_unix=excluded.updated_at_unix,
-				last_error=excluded.last_error,
-				last_updated_by=excluded.last_updated_by,
-				last_trigger=excluded.last_trigger,
-				last_duration_ms=excluded.last_duration_ms`,
-			int64(tip), updatedAt, strings.TrimSpace(lastError), "chain_tip_worker", strings.TrimSpace(updatedBy), durationMS,
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcChainTipState.Query().Where(procchaintipstate.IDEQ(1)).Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetTipHeight(int64(tip)).
+				SetUpdatedAtUnix(updatedAt).
+				SetLastError(strings.TrimSpace(lastError)).
+				SetLastUpdatedBy("chain_tip_worker").
+				SetLastTrigger(strings.TrimSpace(updatedBy)).
+				SetLastDurationMs(durationMS).
+				Save(ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcChainTipState.Create().
+			SetTipHeight(int64(tip)).
+			SetUpdatedAtUnix(updatedAt).
+			SetLastError(strings.TrimSpace(lastError)).
+			SetLastUpdatedBy("chain_tip_worker").
+			SetLastTrigger(strings.TrimSpace(updatedBy)).
+			SetLastDurationMs(durationMS).
+			Save(ctx)
 		return err
 	})
 }

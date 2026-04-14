@@ -13,6 +13,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/fundalloc"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 )
 
 // WalletBSVTransferRequest 是钱包普通 BSV 转账的业务输入。
@@ -175,7 +176,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"status":          "waiting_fund",
 				"error":           err.Error(),
 			}
-			if txErr := store.Tx(ctx, func(tx sqlConn) error {
+			if txErr := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",
@@ -191,7 +192,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				}); writeErr != nil {
 					return writeErr
 				}
-				return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+				return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
 					OrderID:           businessID,
 					SettlementID:      settlementID,
 					BusinessStatus:    "waiting_fund",
@@ -226,7 +227,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			"status":          "failed",
 			"error":           err.Error(),
 		}
-		if txErr := store.Tx(ctx, func(tx sqlConn) error {
+		if txErr := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 			if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -242,7 +243,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			}); writeErr != nil {
 				return writeErr
 			}
-			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
 				OrderID:           businessID,
 				SettlementID:      settlementID,
 				BusinessStatus:    "failed",
@@ -302,7 +303,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	}
 
 	if finalStatus == "failed" {
-		if err := store.Tx(ctx, func(tx sqlConn) error {
+		if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -318,7 +319,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			}); err != nil {
 				return err
 			}
-			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
 				OrderID:           businessID,
 				SettlementID:      settlementID,
 				BusinessStatus:    finalStatus,
@@ -349,7 +350,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	if finalStatus == "submitted_unknown_projection" {
 		payload["status"] = "submitted_unknown_projection"
 		payload["error"] = submitted.Result.Message
-		if err := store.Tx(ctx, func(tx sqlConn) error {
+		if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 			if err := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 				ProcessID:         "proc_" + businessID,
 				SourceType:        "biz_order_pay_bsv",
@@ -365,7 +366,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			}); err != nil {
 				return err
 			}
-			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
 				OrderID:           businessID,
 				SettlementID:      settlementID,
 				BusinessStatus:    "submitted_unknown_projection",
@@ -411,7 +412,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		if len(selectedUTXOIDs) == 0 {
 			return resp, fmt.Errorf("selected utxo ids are required for settlement records")
 		}
-		if err := store.Tx(ctx, func(tx sqlConn) error {
+		if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 			channelID, settlementPaymentAttemptID, err := dbUpsertChainChannelWithSettlementPaymentAttempt(ctx, tx, chainPaymentEntry{
 				TxID:                 submitted.BroadcastTxID,
 				PaymentSubType:       "biz_order_pay_bsv",
@@ -427,7 +428,6 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				Payload:              chainPaymentPayload,
 			},
 				"chain_direct_pay",
-				"fact_settlement_channel_chain_direct_pay",
 				"payment_attempt_chain_direct_pay",
 				"bind chain direct pay channel id",
 			)
@@ -454,7 +454,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			}); err != nil {
 				return err
 			}
-			return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+			return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
 				OrderID:           businessID,
 				SettlementID:      settlementID,
 				BusinessStatus:    finalStatus,
@@ -480,7 +480,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				"status":            "failed",
 				"error":             err.Error(),
 			}
-			_ = store.Tx(ctx, func(tx sqlConn) error {
+			_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
 					ProcessID:         "proc_" + businessID,
 					SourceType:        "biz_order_pay_bsv",
@@ -496,7 +496,7 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 				}); writeErr != nil {
 					return writeErr
 				}
-				return dbUpdateBusinessSettlementOutcomeTx(ctx, tx, businessSettlementOutcomeEntry{
+				return dbUpdateBusinessSettlementOutcomeEntTx(ctx, tx, businessSettlementOutcomeEntry{
 					OrderID:           businessID,
 					SettlementID:      settlementID,
 					BusinessStatus:    "failed",

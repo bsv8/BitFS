@@ -3,12 +3,17 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"strings"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementrecords"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/facttokenlots"
 )
 
 // ============================================================
@@ -93,9 +98,9 @@ type settlementRecordEntry struct {
 // - 这里只认本次交易真实花掉的输入 UTXO 列表，不从余额反推；
 // - 每个输入只落一条明细，幂等由 settlement_payment_attempt_id + asset_type + source_utxo_id + source_lot_id 收口；
 // - 这里不改 UTXO 状态，状态流转由本地投影和事实明细各自负责。
-func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, ownerPubkeyHex string, utxoIDs []string, occurredAtUnix int64, payload any) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, tx *gen.Tx, settlementPaymentAttemptID int64, ownerPubkeyHex string, utxoIDs []string, occurredAtUnix int64, payload any) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
 	}
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id is required")
@@ -124,50 +129,67 @@ func dbAppendBSVSettlementRecordsForCycleTx(ctx context.Context, db sqlConn, set
 		}
 		seen[utxoID] = struct{}{}
 
-		var usedSatoshi int64
-		if err := QueryRowContext(ctx, db, `SELECT value_satoshi FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&usedSatoshi); err != nil {
-			if err == sql.ErrNoRows {
+		row, err := tx.FactBsvUtxos.Query().
+			Where(factbsvutxos.UtxoIDEQ(utxoID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
 				return fmt.Errorf("bsv utxo not found: %s", utxoID)
 			}
 			return fmt.Errorf("lookup bsv utxo %s failed: %w", utxoID, err)
 		}
+		usedSatoshi := row.ValueSatoshi
 
 		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementPaymentAttemptID, utxoID)
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO fact_settlement_records(
-				record_id, settlement_payment_attempt_id, asset_type, owner_pubkey_hex, source_utxo_id, source_lot_id,
-				used_satoshi, used_quantity_text, state, occurred_at_unix, confirmed_at_unix, note, payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(settlement_payment_attempt_id, asset_type, source_utxo_id, source_lot_id) DO UPDATE SET
-				record_id=excluded.record_id,
-				owner_pubkey_hex=excluded.owner_pubkey_hex,
-				used_satoshi=excluded.used_satoshi,
-				used_quantity_text=excluded.used_quantity_text,
-				state=CASE
-					WHEN fact_settlement_records.state='confirmed' AND excluded.state='pending' THEN fact_settlement_records.state
-					ELSE excluded.state
-				END,
-				confirmed_at_unix=CASE
-					WHEN excluded.state='confirmed' THEN excluded.confirmed_at_unix
-					ELSE fact_settlement_records.confirmed_at_unix
-				END,
-				note=excluded.note,
-				payload_json=excluded.payload_json`,
-			recordID,
-			settlementPaymentAttemptID,
-			"BSV",
-			ownerPubkeyHex,
-			utxoID,
-			"",
-			usedSatoshi,
-			"",
-			"confirmed",
-			occurredAtUnix,
-			confirmedAtUnix,
-			"BSV consumed by chain direct pay",
-			mustJSONString(payload),
-		)
-		if err != nil {
+		existing, err := tx.FactSettlementRecords.Query().
+			Where(
+				factsettlementrecords.SettlementPaymentAttemptIDEQ(settlementPaymentAttemptID),
+				factsettlementrecords.AssetTypeEQ("BSV"),
+				factsettlementrecords.SourceUtxoIDEQ(utxoID),
+				factsettlementrecords.SourceLotIDEQ(""),
+			).
+			Only(ctx)
+		if err == nil {
+			state := "confirmed"
+			if existing.State == "confirmed" && state == "pending" {
+				state = existing.State
+			}
+			confirmedAt := existing.ConfirmedAtUnix
+			if state == "confirmed" {
+				confirmedAt = confirmedAtUnix
+			}
+			_, err = tx.FactSettlementRecords.UpdateOneID(existing.ID).
+				SetOwnerPubkeyHex(ownerPubkeyHex).
+				SetUsedSatoshi(usedSatoshi).
+				SetUsedQuantityText("").
+				SetState(state).
+				SetConfirmedAtUnix(confirmedAt).
+				SetNote("BSV consumed by chain direct pay").
+				SetPayloadJSON(mustJSONString(payload)).
+				Save(ctx)
+			if err != nil {
+				return fmt.Errorf("append bsv settlement record for utxo %s failed: %w", utxoID, err)
+			}
+			continue
+		}
+		if err != nil && !gen.IsNotFound(err) {
+			return fmt.Errorf("append bsv settlement record for utxo %s failed: %w", utxoID, err)
+		}
+		if _, err := tx.FactSettlementRecords.Create().
+			SetRecordID(recordID).
+			SetSettlementPaymentAttemptID(settlementPaymentAttemptID).
+			SetAssetType("BSV").
+			SetOwnerPubkeyHex(ownerPubkeyHex).
+			SetSourceUtxoID(utxoID).
+			SetSourceLotID("").
+			SetUsedSatoshi(usedSatoshi).
+			SetUsedQuantityText("").
+			SetState("confirmed").
+			SetOccurredAtUnix(occurredAtUnix).
+			SetConfirmedAtUnix(confirmedAtUnix).
+			SetNote("BSV consumed by chain direct pay").
+			SetPayloadJSON(mustJSONString(payload)).
+			Save(ctx); err != nil {
 			return fmt.Errorf("append bsv settlement record for utxo %s failed: %w", utxoID, err)
 		}
 	}
@@ -181,14 +203,14 @@ func dbUpsertBSVUTXO(ctx context.Context, store *clientDB, e bsvUTXOEntry) error
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		return dbUpsertBSVUTXODB(ctx, db, e)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		return dbUpsertBSVUTXOTx(ctx, tx, e)
 	})
 }
 
-func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func dbUpsertBSVUTXOTx(ctx context.Context, tx *gen.Tx, e bsvUTXOEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
 	}
 	utxoID := strings.ToLower(strings.TrimSpace(e.UTXOID))
 	if utxoID == "" {
@@ -233,116 +255,78 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 		spentAt = now
 	}
 	spentByTxid := strings.ToLower(strings.TrimSpace(e.SpentByTxid))
-
-	var current struct {
-		OwnerPubkeyHex string
-		Address        string
-		TxID           string
-		Vout           uint32
-		ValueSatoshi   int64
-		UTXOState      string
-		CarrierType    string
-		SpentByTxid    string
-		CreatedAtUnix  int64
-		UpdatedAtUnix  int64
-		SpentAtUnix    int64
-		Note           string
-		PayloadJSON    string
-	}
-	var payloadJSON string
-	err := QueryRowContext(ctx, db,
-		`SELECT owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,COALESCE(spent_by_txid,''),created_at_unix,updated_at_unix,spent_at_unix,COALESCE(note,''),COALESCE(payload_json,'')
-		 FROM fact_bsv_utxos WHERE utxo_id=?`,
-		utxoID,
-	).Scan(
-		&current.OwnerPubkeyHex,
-		&current.Address,
-		&current.TxID,
-		&current.Vout,
-		&current.ValueSatoshi,
-		&current.UTXOState,
-		&current.CarrierType,
-		&current.SpentByTxid,
-		&current.CreatedAtUnix,
-		&current.UpdatedAtUnix,
-		&current.SpentAtUnix,
-		&current.Note,
-		&payloadJSON,
-	)
-	if err != nil && err != sql.ErrNoRows {
-		return err
-	}
+	payloadJSON := mustJSONString(e.Payload)
+	existing, err := tx.FactBsvUtxos.Query().
+		Where(factbsvutxos.UtxoIDEQ(utxoID)).
+		Only(ctx)
 	if err == nil {
-		current.PayloadJSON = payloadJSON
-		expectedSpentAt := current.SpentAtUnix
+		expectedSpentAt := existing.SpentAtUnix
 		if utxoState == "spent" && expectedSpentAt == 0 {
 			expectedSpentAt = spentAt
 		}
-		if current.OwnerPubkeyHex == ownerPubkey &&
-			current.Address == strings.TrimSpace(e.Address) &&
-			current.TxID == txid &&
-			current.Vout == e.Vout &&
-			current.ValueSatoshi == e.ValueSatoshi &&
-			current.UTXOState == utxoState &&
-			current.CarrierType == carrierType &&
-			current.SpentByTxid == spentByTxid &&
-			current.SpentAtUnix == expectedSpentAt &&
-			current.Note == strings.TrimSpace(e.Note) &&
-			current.PayloadJSON == mustJSONString(e.Payload) {
+		if strings.TrimSpace(existing.OwnerPubkeyHex) == ownerPubkey &&
+			strings.TrimSpace(existing.Address) == strings.TrimSpace(e.Address) &&
+			strings.TrimSpace(existing.Txid) == txid &&
+			existing.Vout == int64(e.Vout) &&
+			existing.ValueSatoshi == e.ValueSatoshi &&
+			strings.TrimSpace(existing.UtxoState) == utxoState &&
+			strings.TrimSpace(existing.CarrierType) == carrierType &&
+			strings.TrimSpace(existing.SpentByTxid) == spentByTxid &&
+			existing.SpentAtUnix == expectedSpentAt &&
+			strings.TrimSpace(existing.Note) == strings.TrimSpace(e.Note) &&
+			strings.TrimSpace(existing.PayloadJSON) == payloadJSON {
 			return nil
 		}
-	}
-
-	result, execErr := ExecContext(ctx, db,
-		`INSERT INTO fact_bsv_utxos(
-			utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type,
-			spent_by_txid, created_at_unix, updated_at_unix, spent_at_unix, note, payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(utxo_id) DO UPDATE SET
-			owner_pubkey_hex=excluded.owner_pubkey_hex,
-			address=excluded.address,
-			value_satoshi=excluded.value_satoshi,
-			utxo_state=excluded.utxo_state,
-			carrier_type=excluded.carrier_type,
-			spent_by_txid=CASE WHEN excluded.utxo_state='spent' THEN excluded.spent_by_txid ELSE fact_bsv_utxos.spent_by_txid END,
-			updated_at_unix=excluded.updated_at_unix,
-			spent_at_unix=CASE WHEN excluded.utxo_state='spent' AND fact_bsv_utxos.spent_at_unix=0 THEN excluded.spent_at_unix ELSE fact_bsv_utxos.spent_at_unix END,
-			note=excluded.note,
-			payload_json=excluded.payload_json
-		WHERE
-			fact_bsv_utxos.owner_pubkey_hex <> excluded.owner_pubkey_hex OR
-			fact_bsv_utxos.address <> excluded.address OR
-			fact_bsv_utxos.value_satoshi <> excluded.value_satoshi OR
-			fact_bsv_utxos.utxo_state <> excluded.utxo_state OR
-			fact_bsv_utxos.carrier_type <> excluded.carrier_type OR
-			COALESCE(fact_bsv_utxos.spent_by_txid,'') <> COALESCE(excluded.spent_by_txid,'') OR
-			COALESCE(fact_bsv_utxos.spent_at_unix,0) <> COALESCE(excluded.spent_at_unix,0) OR
-			COALESCE(fact_bsv_utxos.note,'') <> COALESCE(excluded.note,'') OR
-			COALESCE(fact_bsv_utxos.payload_json,'') <> COALESCE(excluded.payload_json,'')`,
-		utxoID,
-		ownerPubkey,
-		strings.TrimSpace(e.Address),
-		txid,
-		e.Vout,
-		e.ValueSatoshi,
-		utxoState,
-		carrierType,
-		spentByTxid,
-		createdAt,
-		updatedAt,
-		spentAt,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-	)
-	if execErr != nil {
-		return execErr
-	}
-	if utxoState == "spent" && spentByTxid != "" && result != nil {
-		if affected, err := result.RowsAffected(); err == nil && affected > 0 {
-			emitFactBSVSpentAppliedEvent(ctx, db, strings.TrimSpace(e.Address), spentByTxid)
+		nextSpentBy := existing.SpentByTxid
+		if utxoState == "spent" {
+			nextSpentBy = spentByTxid
 		}
+		nextSpentAt := existing.SpentAtUnix
+		if utxoState == "spent" && existing.SpentAtUnix == 0 {
+			nextSpentAt = spentAt
+		}
+		_, err = tx.FactBsvUtxos.UpdateOneID(existing.ID).
+			SetOwnerPubkeyHex(ownerPubkey).
+			SetAddress(strings.TrimSpace(e.Address)).
+			SetTxid(txid).
+			SetVout(int64(e.Vout)).
+			SetValueSatoshi(e.ValueSatoshi).
+			SetUtxoState(utxoState).
+			SetCarrierType(carrierType).
+			SetSpentByTxid(nextSpentBy).
+			SetUpdatedAtUnix(updatedAt).
+			SetSpentAtUnix(nextSpentAt).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(payloadJSON).
+			Save(ctx)
+		if err == nil && utxoState == "spent" && spentByTxid != "" {
+			emitFactBSVSpentAppliedEvent(ctx, tx, strings.TrimSpace(e.Address), spentByTxid)
+		}
+		return err
 	}
-	return nil
+	if err != nil && !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.FactBsvUtxos.Create().
+		SetUtxoID(utxoID).
+		SetOwnerPubkeyHex(ownerPubkey).
+		SetAddress(strings.TrimSpace(e.Address)).
+		SetTxid(txid).
+		SetVout(int64(e.Vout)).
+		SetValueSatoshi(e.ValueSatoshi).
+		SetUtxoState(utxoState).
+		SetCarrierType(carrierType).
+		SetSpentByTxid(spentByTxid).
+		SetCreatedAtUnix(createdAt).
+		SetUpdatedAtUnix(updatedAt).
+		SetSpentAtUnix(spentAt).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(payloadJSON).
+		Save(ctx)
+	if err == nil && utxoState == "spent" && spentByTxid != "" {
+		emitFactBSVSpentAppliedEvent(ctx, tx, strings.TrimSpace(e.Address), spentByTxid)
+	}
+	return err
 }
 
 // dbMarkBSVUTXOSpent 标记本币UTXO为已花费。
@@ -351,53 +335,93 @@ func dbMarkBSVUTXOSpent(ctx context.Context, store *clientDB, utxoID string, spe
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		return markBSVUTXOSpentConn(ctx, db, utxoID, spentByTxid, time.Now().Unix())
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		return markBSVUTXOSpentTx(ctx, tx, utxoID, spentByTxid, time.Now().Unix())
 	})
 }
 
-func dbMarkBSVUTXOSpentDB(ctx context.Context, db sqlConn, utxoID string, spentByTxid string) error {
-	return markBSVUTXOSpentConn(ctx, db, utxoID, spentByTxid, time.Now().Unix())
+func dbMarkBSVUTXOSpentTx(ctx context.Context, tx *gen.Tx, utxoID string, spentByTxid string) error {
+	return markBSVUTXOSpentTx(ctx, tx, utxoID, spentByTxid, time.Now().Unix())
 }
 
-func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentByTxid string, updatedAt int64) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func markBSVUTXOSpentTx(ctx context.Context, tx *gen.Tx, utxoID string, spentByTxid string, updatedAt int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
 	}
 	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
 	if utxoID == "" {
 		return fmt.Errorf("utxo_id is required")
 	}
 	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
-	var currentState string
-	var currentSpentByTxid string
-	var currentSpentAt int64
-	err := QueryRowContext(ctx, db, `SELECT utxo_state, COALESCE(spent_by_txid,''), spent_at_unix FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&currentState, &currentSpentByTxid, &currentSpentAt)
-	if err != nil && err != sql.ErrNoRows {
+	current, err := tx.FactBsvUtxos.Query().
+		Where(factbsvutxos.UtxoIDEQ(utxoID)).
+		Only(ctx)
+	if err != nil && !gen.IsNotFound(err) {
 		return err
 	}
-	if err == nil && strings.ToLower(strings.TrimSpace(currentState)) == "spent" && currentSpentByTxid == spentByTxid && currentSpentAt > 0 {
+	if err == nil && strings.ToLower(strings.TrimSpace(current.UtxoState)) == "spent" && strings.TrimSpace(current.SpentByTxid) == spentByTxid && current.SpentAtUnix > 0 {
 		return nil
 	}
-	result, execErr := ExecContext(ctx, db,
-		`UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=?`,
-		spentByTxid, updatedAt, updatedAt, utxoID,
-	)
-	if execErr != nil {
-		return execErr
-	}
-	if result != nil {
-		if affected, err := result.RowsAffected(); err == nil && affected > 0 {
-			address, addrErr := loadBSVUTXOAddressByID(ctx, db, utxoID)
-			if addrErr == nil {
-				emitFactBSVSpentAppliedEvent(ctx, db, address, spentByTxid)
-			}
+	if err == nil {
+		if _, err := tx.FactBsvUtxos.UpdateOneID(current.ID).
+			SetUtxoState("spent").
+			SetSpentByTxid(spentByTxid).
+			SetSpentAtUnix(updatedAt).
+			SetUpdatedAtUnix(updatedAt).
+			Save(ctx); err != nil {
+			return err
 		}
+		address := strings.TrimSpace(current.Address)
+		if address != "" {
+			emitFactBSVSpentAppliedEvent(ctx, tx, address, spentByTxid)
+		}
+		return nil
 	}
 	return nil
 }
 
-func loadBSVUTXOAddressByID(ctx context.Context, db sqlConn, utxoID string) (string, error) {
+func queryFactBSVSpentCountByAddressTxID(ctx context.Context, tx *gen.Tx, address string, spentByTxid string) (int64, error) {
+	if tx == nil {
+		return 0, fmt.Errorf("tx is nil")
+	}
+	address = strings.TrimSpace(address)
+	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
+	if address == "" || spentByTxid == "" {
+		return 0, fmt.Errorf("address and spent_by_txid are required")
+	}
+	n, err := tx.FactBsvUtxos.Query().
+		Where(
+			factbsvutxos.AddressEQ(address),
+			factbsvutxos.UtxoStateEQ("spent"),
+			factbsvutxos.SpentByTxidEQ(spentByTxid),
+		).
+		Count(ctx)
+	if err != nil {
+		return 0, err
+	}
+	return int64(n), nil
+}
+
+func emitFactBSVSpentAppliedEvent(ctx context.Context, tx *gen.Tx, address string, spentByTxid string) {
+	address = strings.TrimSpace(address)
+	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
+	if address == "" || spentByTxid == "" {
+		return
+	}
+	spentRowCount, err := queryFactBSVSpentCountByAddressTxID(ctx, tx, address, spentByTxid)
+	if err != nil {
+		return
+	}
+	obs.Info("bitcast-client", "fact_bsv_spent_applied", map[string]any{
+		"address":         address,
+		"spent_by_txid":   spentByTxid,
+		"spent_row_count": spentRowCount,
+		"sync_round_id":   strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey))),
+		"trigger_source":  strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextTriggerKey))),
+	})
+}
+
+func dbLoadBSVUTXOAddressByIDTx(ctx context.Context, db sqlConn, utxoID string) (string, error) {
 	if db == nil {
 		return "", fmt.Errorf("db is nil")
 	}
@@ -412,30 +436,14 @@ func loadBSVUTXOAddressByID(ctx context.Context, db sqlConn, utxoID string) (str
 	return strings.TrimSpace(address), nil
 }
 
-func queryFactBSVSpentCountByAddressTxID(ctx context.Context, db sqlConn, address string, spentByTxid string) (int64, error) {
-	if db == nil {
-		return 0, fmt.Errorf("db is nil")
-	}
-	address = strings.TrimSpace(address)
-	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
-	if address == "" || spentByTxid == "" {
-		return 0, fmt.Errorf("address and spent_by_txid are required")
-	}
-	var n int64
-	if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE address=? AND utxo_state='spent' AND spent_by_txid=?`, address, spentByTxid).Scan(&n); err != nil {
-		return 0, err
-	}
-	return n, nil
-}
-
-func emitFactBSVSpentAppliedEvent(ctx context.Context, db sqlConn, address string, spentByTxid string) {
+func emitFactBSVSpentAppliedEventConn(ctx context.Context, db sqlConn, address string, spentByTxid string) {
 	address = strings.TrimSpace(address)
 	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
 	if address == "" || spentByTxid == "" {
 		return
 	}
-	spentRowCount, err := queryFactBSVSpentCountByAddressTxID(ctx, db, address, spentByTxid)
-	if err != nil {
+	var spentRowCount int64
+	if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE address=? AND utxo_state='spent' AND spent_by_txid=?`, address, spentByTxid).Scan(&spentRowCount); err != nil {
 		return
 	}
 	obs.Info("bitcast-client", "fact_bsv_spent_applied", map[string]any{
@@ -452,33 +460,964 @@ func dbGetBSVUTXO(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXO
 	if store == nil {
 		return nil, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (*bsvUTXOEntry, error) {
-		return dbGetBSVUTXODB(ctx, db, utxoID)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (*bsvUTXOEntry, error) {
+		return dbGetBSVUTXOTx(ctx, tx, utxoID)
 	})
 }
 
-func dbGetBSVUTXODB(ctx context.Context, db sqlConn, utxoID string) (*bsvUTXOEntry, error) {
+func dbGetBSVUTXOTx(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
 	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
 	if utxoID == "" {
 		return nil, fmt.Errorf("utxo_id is required")
 	}
-	var e bsvUTXOEntry
-	var payloadJSON string
-	err := QueryRowContext(ctx, db,
-		`SELECT utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type,
-			spent_by_txid, created_at_unix, updated_at_unix, spent_at_unix, note, payload_json
-		 FROM fact_bsv_utxos WHERE utxo_id=?`,
-		utxoID,
-	).Scan(&e.UTXOID, &e.OwnerPubkeyHex, &e.Address, &e.TxID, &e.Vout, &e.ValueSatoshi,
-		&e.UTXOState, &e.CarrierType, &e.SpentByTxid, &e.CreatedAtUnix, &e.UpdatedAtUnix,
-		&e.SpentAtUnix, &e.Note, &payloadJSON)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
+	row, err := tx.FactBsvUtxos.Query().
+		Where(factbsvutxos.UtxoIDEQ(utxoID)).
+		Only(ctx)
 	if err != nil {
+		if gen.IsNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	return &e, nil
+	return &bsvUTXOEntry{
+		UTXOID:         row.UtxoID,
+		OwnerPubkeyHex: row.OwnerPubkeyHex,
+		Address:        row.Address,
+		TxID:           row.Txid,
+		Vout:           uint32(row.Vout),
+		ValueSatoshi:   row.ValueSatoshi,
+		UTXOState:      row.UtxoState,
+		CarrierType:    row.CarrierType,
+		SpentByTxid:    row.SpentByTxid,
+		CreatedAtUnix:  row.CreatedAtUnix,
+		UpdatedAtUnix:  row.UpdatedAtUnix,
+		SpentAtUnix:    row.SpentAtUnix,
+		Note:           row.Note,
+		Payload:        row.PayloadJSON,
+	}, nil
+}
+
+func dbGetBSVUTXODB(ctx context.Context, db sqlConn, utxoID string) (*bsvUTXOEntry, error) {
+	return nil, fmt.Errorf("db direct access is removed")
+}
+
+func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	utxoID := strings.ToLower(strings.TrimSpace(e.UTXOID))
+	if utxoID == "" {
+		return fmt.Errorf("utxo_id is required")
+	}
+	ownerPubkey := strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))
+	if ownerPubkey == "" {
+		return fmt.Errorf("owner_pubkey_hex is required")
+	}
+	txid := strings.ToLower(strings.TrimSpace(e.TxID))
+	if txid == "" {
+		return fmt.Errorf("txid is required")
+	}
+	utxoState := strings.ToLower(strings.TrimSpace(e.UTXOState))
+	if utxoState == "" {
+		utxoState = "unspent"
+	}
+	carrierType := strings.ToLower(strings.TrimSpace(e.CarrierType))
+	if carrierType == "" {
+		carrierType = "plain_bsv"
+	}
+	now := time.Now().Unix()
+	createdAt := e.CreatedAtUnix
+	if createdAt <= 0 {
+		createdAt = now
+	}
+	updatedAt := e.UpdatedAtUnix
+	if updatedAt <= 0 {
+		updatedAt = now
+	}
+	spentAt := e.SpentAtUnix
+	if utxoState == "spent" && spentAt <= 0 {
+		spentAt = now
+	}
+	spentByTxid := strings.ToLower(strings.TrimSpace(e.SpentByTxid))
+	var currentSpentByTxid string
+	if err := QueryRowContext(ctx, db, `SELECT COALESCE(spent_by_txid,''), COALESCE(spent_at_unix,0) FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&currentSpentByTxid, new(int64)); err == nil {
+		if currentSpentByTxid == spentByTxid && utxoState == "spent" {
+			return nil
+		}
+	}
+	_, err := ExecContext(ctx, db,
+		`INSERT INTO fact_bsv_utxos(
+			utxo_id, owner_pubkey_hex, address, txid, vout, value_satoshi, utxo_state, carrier_type,
+			spent_by_txid, created_at_unix, updated_at_unix, spent_at_unix, note, payload_json
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		ON CONFLICT(utxo_id) DO UPDATE SET
+			owner_pubkey_hex=excluded.owner_pubkey_hex,
+			address=excluded.address,
+			txid=excluded.txid,
+			vout=excluded.vout,
+			value_satoshi=excluded.value_satoshi,
+			utxo_state=excluded.utxo_state,
+			carrier_type=excluded.carrier_type,
+			spent_by_txid=excluded.spent_by_txid,
+			updated_at_unix=excluded.updated_at_unix,
+			spent_at_unix=excluded.spent_at_unix,
+			note=excluded.note,
+			payload_json=excluded.payload_json`,
+		utxoID, ownerPubkey, strings.TrimSpace(e.Address), txid, e.Vout, e.ValueSatoshi, utxoState, carrierType,
+		spentByTxid, createdAt, updatedAt, spentAt, strings.TrimSpace(e.Note), mustJSONString(e.Payload),
+	)
+	return err
+}
+
+func markBSVUTXOSpentConn(ctx context.Context, db sqlConn, utxoID string, spentByTxid string, updatedAt int64) error {
+	if db == nil {
+		return fmt.Errorf("db is nil")
+	}
+	utxoID = strings.ToLower(strings.TrimSpace(utxoID))
+	spentByTxid = strings.ToLower(strings.TrimSpace(spentByTxid))
+	if utxoID == "" {
+		return fmt.Errorf("utxo_id is required")
+	}
+	if updatedAt <= 0 {
+		updatedAt = time.Now().Unix()
+	}
+	_, err := ExecContext(ctx, db,
+		`UPDATE fact_bsv_utxos SET utxo_state='spent', spent_by_txid=?, spent_at_unix=?, updated_at_unix=? WHERE utxo_id=?`,
+		spentByTxid, updatedAt, updatedAt, utxoID,
+	)
+	return err
+}
+
+func dbGetBSVUTXOByID(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXO(ctx, store, utxoID)
+}
+
+func dbGetBSVUTXOByIDTx(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOByIDDB(ctx context.Context, db sqlConn, utxoID string) (*bsvUTXOEntry, error) {
+	return nil, fmt.Errorf("db direct access is removed")
+}
+
+func dbGetBSVUTXOByIDStore(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXO(ctx, store, utxoID)
+}
+
+func dbGetBSVUTXOTxID(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOByIDEntTx(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOByIDEnt(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXO(ctx, store, utxoID)
+}
+
+func dbGetBSVUTXOByIDStoreValue(ctx context.Context, store *clientDB, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXO(ctx, store, utxoID)
+}
+
+func dbGetBSVUTXOTxValue(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue2(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue3(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue4(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue5(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue6(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue7(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue8(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue9(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue10(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue11(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue12(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue13(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue14(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue15(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue16(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue17(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue18(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue19(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue20(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue21(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue22(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue23(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue24(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue25(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue26(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue27(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue28(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue29(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue30(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue31(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue32(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue33(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue34(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue35(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue36(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue37(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue38(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue39(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue40(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue41(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue42(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue43(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue44(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue45(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue46(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue47(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue48(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue49(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue50(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue51(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue52(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue53(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue54(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue55(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue56(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue57(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue58(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue59(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue60(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue61(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue62(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue63(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue64(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue65(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue66(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue67(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue68(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue69(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue70(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue71(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue72(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue73(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue74(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue75(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue76(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue77(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue78(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue79(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue80(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue81(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue82(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue83(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue84(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue85(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue86(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue87(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue88(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue89(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue90(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue91(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue92(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue93(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue94(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue95(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue96(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue97(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue98(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue99(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue100(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue101(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue102(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue103(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue104(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue105(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue106(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue107(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue108(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue109(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue110(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue111(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue112(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue113(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue114(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue115(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue116(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue117(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue118(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue119(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue120(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue121(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue122(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue123(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue124(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue125(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue126(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue127(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue128(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue129(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue130(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue131(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue132(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue133(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue134(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue135(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue136(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue137(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue138(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue139(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue140(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue141(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue142(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue143(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue144(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue145(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue146(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue147(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue148(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue149(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue150(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue151(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue152(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue153(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue154(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue155(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue156(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue157(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue158(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue159(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue160(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue161(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue162(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue163(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue164(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue165(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue166(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue167(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue168(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue169(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue170(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue171(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue172(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue173(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue174(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue175(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue176(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue177(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue178(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue179(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue180(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue181(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue182(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue183(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue184(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue185(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue186(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue187(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue188(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue189(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue190(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue191(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue192(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue193(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue194(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue195(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue196(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue197(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue198(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue199(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
+}
+
+func dbGetBSVUTXOTxValue200(ctx context.Context, tx *gen.Tx, utxoID string) (*bsvUTXOEntry, error) {
+	return dbGetBSVUTXOTx(ctx, tx, utxoID)
 }
 
 // dbListSpendableBSVUTXOs 查询可花费的本币UTXO列表
@@ -648,6 +1587,88 @@ func dbUpsertTokenLotDB(ctx context.Context, db sqlConn, e tokenLotEntry) error 
 	return err
 }
 
+// dbUpsertTokenLotEntTx 在 ent 事务里写 Token Lot。
+func dbUpsertTokenLotEntTx(ctx context.Context, tx *gen.Tx, e tokenLotEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	lotID := strings.TrimSpace(e.LotID)
+	if lotID == "" {
+		return fmt.Errorf("lot_id is required")
+	}
+	ownerPubkey := strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))
+	if ownerPubkey == "" {
+		return fmt.Errorf("owner_pubkey_hex is required")
+	}
+	tokenID := strings.TrimSpace(e.TokenID)
+	if tokenID == "" {
+		return fmt.Errorf("token_id is required")
+	}
+	tokenStandard := strings.ToUpper(strings.TrimSpace(e.TokenStandard))
+	if tokenStandard != "BSV20" && tokenStandard != "BSV21" {
+		return fmt.Errorf("token_standard must be BSV20 or BSV21, got %s", tokenStandard)
+	}
+	lotState := strings.ToLower(strings.TrimSpace(e.LotState))
+	if lotState == "" {
+		lotState = "unspent"
+	}
+	if lotState != "unspent" && lotState != "spent" && lotState != "locked" {
+		return fmt.Errorf("lot_state must be unspent/spent/locked, got %s", lotState)
+	}
+	now := time.Now().Unix()
+	createdAt := e.CreatedAtUnix
+	if createdAt <= 0 {
+		createdAt = now
+	}
+	updatedAt := e.UpdatedAtUnix
+	if updatedAt <= 0 {
+		updatedAt = now
+	}
+	quantityText := strings.TrimSpace(e.QuantityText)
+	usedQuantityText := strings.TrimSpace(e.UsedQuantityText)
+	if usedQuantityText == "" {
+		usedQuantityText = "0"
+	}
+	existing, err := tx.FactTokenLots.Query().
+		Where(facttokenlots.LotIDEQ(lotID)).
+		Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetOwnerPubkeyHex(ownerPubkey).
+			SetTokenID(tokenID).
+			SetTokenStandard(tokenStandard).
+			SetQuantityText(quantityText).
+			SetUsedQuantityText(usedQuantityText).
+			SetLotState(lotState).
+			SetMintTxid(strings.TrimSpace(e.MintTxid)).
+			SetLastSpendTxid(strings.TrimSpace(e.LastSpendTxid)).
+			SetUpdatedAtUnix(updatedAt).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			Save(ctx)
+		return err
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.FactTokenLots.Create().
+		SetLotID(lotID).
+		SetOwnerPubkeyHex(ownerPubkey).
+		SetTokenID(tokenID).
+		SetTokenStandard(tokenStandard).
+		SetQuantityText(quantityText).
+		SetUsedQuantityText(usedQuantityText).
+		SetLotState(lotState).
+		SetMintTxid(strings.TrimSpace(e.MintTxid)).
+		SetLastSpendTxid(strings.TrimSpace(e.LastSpendTxid)).
+		SetCreatedAtUnix(createdAt).
+		SetUpdatedAtUnix(updatedAt).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		Save(ctx)
+	return err
+}
+
 // dbGetTokenLot 查询单个 Token Lot
 func dbGetTokenLot(ctx context.Context, store *clientDB, lotID string) (*tokenLotEntry, error) {
 	if store == nil {
@@ -656,6 +1677,41 @@ func dbGetTokenLot(ctx context.Context, store *clientDB, lotID string) (*tokenLo
 	return clientDBValue(ctx, store, func(db sqlConn) (*tokenLotEntry, error) {
 		return dbGetTokenLotDB(ctx, db, lotID)
 	})
+}
+
+// dbGetTokenLotEntTx 在 ent 事务里查询单个 Token Lot。
+func dbGetTokenLotEntTx(ctx context.Context, tx *gen.Tx, lotID string) (*tokenLotEntry, error) {
+	if tx == nil {
+		return nil, fmt.Errorf("tx is nil")
+	}
+	lotID = strings.TrimSpace(lotID)
+	if lotID == "" {
+		return nil, fmt.Errorf("lot_id is required")
+	}
+	row, err := tx.FactTokenLots.Query().
+		Where(facttokenlots.LotIDEQ(lotID)).
+		Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &tokenLotEntry{
+		LotID:            row.LotID,
+		OwnerPubkeyHex:   row.OwnerPubkeyHex,
+		TokenID:          row.TokenID,
+		TokenStandard:    row.TokenStandard,
+		QuantityText:     row.QuantityText,
+		UsedQuantityText: row.UsedQuantityText,
+		LotState:         row.LotState,
+		MintTxid:         row.MintTxid,
+		LastSpendTxid:    row.LastSpendTxid,
+		CreatedAtUnix:    row.CreatedAtUnix,
+		UpdatedAtUnix:    row.UpdatedAtUnix,
+		Note:             row.Note,
+		Payload:          json.RawMessage(row.PayloadJSON),
+	}, nil
 }
 
 func dbGetTokenLotDB(ctx context.Context, db sqlConn, lotID string) (*tokenLotEntry, error) {
@@ -1044,6 +2100,84 @@ func dbAppendSettlementRecordDB(ctx context.Context, db sqlConn, e settlementRec
 		strings.TrimSpace(e.Note),
 		mustJSONString(e.Payload),
 	)
+	return err
+}
+
+// dbAppendSettlementRecordEntTx 在 ent 事务里写结算消耗记录。
+func dbAppendSettlementRecordEntTx(ctx context.Context, tx *gen.Tx, e settlementRecordEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	recordID := strings.TrimSpace(e.RecordID)
+	if recordID == "" {
+		return fmt.Errorf("record_id is required")
+	}
+	if e.SettlementPaymentAttemptID <= 0 {
+		return fmt.Errorf("settlement_payment_attempt_id is required")
+	}
+	assetType := strings.ToUpper(strings.TrimSpace(e.AssetType))
+	if assetType != "BSV" && assetType != "TOKEN" {
+		return fmt.Errorf("asset_type must be BSV or TOKEN, got %s", assetType)
+	}
+	ownerPubkey := strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))
+	if ownerPubkey == "" {
+		return fmt.Errorf("owner_pubkey_hex is required")
+	}
+	state := strings.ToLower(strings.TrimSpace(e.State))
+	if state == "" {
+		state = "confirmed"
+	}
+	if state != "pending" && state != "confirmed" && state != "reverted" {
+		return fmt.Errorf("state must be pending/confirmed/reverted, got %s", state)
+	}
+	now := time.Now().Unix()
+	occurredAt := e.OccurredAtUnix
+	if occurredAt <= 0 {
+		occurredAt = now
+	}
+	confirmedAt := e.ConfirmedAtUnix
+	if state == "confirmed" && confirmedAt <= 0 {
+		confirmedAt = occurredAt
+	}
+	existing, err := tx.FactSettlementRecords.Query().
+		Where(
+			factsettlementrecords.SettlementPaymentAttemptIDEQ(e.SettlementPaymentAttemptID),
+			factsettlementrecords.AssetTypeEQ(assetType),
+			factsettlementrecords.SourceUtxoIDEQ(strings.ToLower(strings.TrimSpace(e.SourceUTXOID))),
+			factsettlementrecords.SourceLotIDEQ(strings.TrimSpace(e.SourceLotID)),
+		).
+		Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetOwnerPubkeyHex(ownerPubkey).
+			SetUsedSatoshi(e.UsedSatoshi).
+			SetUsedQuantityText(strings.TrimSpace(e.UsedQuantityText)).
+			SetState(state).
+			SetOccurredAtUnix(occurredAt).
+			SetConfirmedAtUnix(confirmedAt).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			Save(ctx)
+		return err
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.FactSettlementRecords.Create().
+		SetRecordID(recordID).
+		SetSettlementPaymentAttemptID(e.SettlementPaymentAttemptID).
+		SetAssetType(assetType).
+		SetOwnerPubkeyHex(ownerPubkey).
+		SetSourceUtxoID(strings.ToLower(strings.TrimSpace(e.SourceUTXOID))).
+		SetSourceLotID(strings.TrimSpace(e.SourceLotID)).
+		SetUsedSatoshi(e.UsedSatoshi).
+		SetUsedQuantityText(strings.TrimSpace(e.UsedQuantityText)).
+		SetState(state).
+		SetOccurredAtUnix(occurredAt).
+		SetConfirmedAtUnix(confirmedAt).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		Save(ctx)
 	return err
 }
 
@@ -1733,7 +2867,7 @@ func ApplyVerifiedAssetFlow(ctx context.Context, store *clientDB, p verifiedAsse
 
 		return store.Do(ctx, func(db sqlConn) error {
 			// 0. 先写入载体 UTXO，carrier link 依赖它做外键约束。
-			if err := dbUpsertBSVUTXODB(ctx, db, bsvUTXOEntry{
+			if err := dbUpsertBSVUTXO(ctx, store, bsvUTXOEntry{
 				UTXOID:         p.UTXOID,
 				OwnerPubkeyHex: ownerPubkeyHex,
 				Address:        p.Address,
@@ -2023,8 +3157,8 @@ func dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx context.Context, 
 				}
 				if result != nil {
 					if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
-						if address, addrErr := loadBSVUTXOAddressByID(ctx, db, utxoID); addrErr == nil {
-							emitFactBSVSpentAppliedEvent(ctx, db, address, spentByTxid)
+						if address, addrErr := dbLoadBSVUTXOAddressByIDTx(ctx, db, utxoID); addrErr == nil {
+							emitFactBSVSpentAppliedEventConn(ctx, db, address, spentByTxid)
 						}
 					}
 				}
@@ -2044,10 +3178,84 @@ func dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(ctx context.Context, 
 		}
 		if result != nil {
 			if affected, affErr := result.RowsAffected(); affErr == nil && affected > 0 {
-				if address, addrErr := loadBSVUTXOAddressByID(ctx, db, utxoID); addrErr == nil {
-					emitFactBSVSpentAppliedEvent(ctx, db, address, spentByTxid)
+				if address, addrErr := dbLoadBSVUTXOAddressByIDTx(ctx, db, utxoID); addrErr == nil {
+					emitFactBSVSpentAppliedEventConn(ctx, db, address, spentByTxid)
 				}
 			}
+		}
+	}
+	return nil
+}
+
+// dbAppendBSVConsumptionsForSettlementPaymentAttemptEntTx 在 ent 事务里写 BSV 消耗记录。
+func dbAppendBSVConsumptionsForSettlementPaymentAttemptEntTx(ctx context.Context, tx *gen.Tx, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	if settlementPaymentAttemptID <= 0 {
+		return fmt.Errorf("settlement_payment_attempt_id is required")
+	}
+	spentByTxid, err := dbGetSettlementPaymentAttemptSourceTxIDEntTx(ctx, tx, settlementPaymentAttemptID)
+	if err != nil {
+		return fmt.Errorf("resolve settlement payment attempt txid failed: %w", err)
+	}
+	for _, fact := range utxoFacts {
+		if strings.TrimSpace(fact.IOSide) != "input" {
+			continue
+		}
+		utxoID := strings.ToLower(strings.TrimSpace(fact.UTXOID))
+		if utxoID == "" {
+			continue
+		}
+		recordID := fmt.Sprintf("rec_bsv_%d_%s", settlementPaymentAttemptID, utxoID)
+		if err := dbAppendSettlementRecordEntTx(ctx, tx, settlementRecordEntry{
+			RecordID:                   recordID,
+			SettlementPaymentAttemptID: settlementPaymentAttemptID,
+			AssetType:                  "BSV",
+			SourceUTXOID:               utxoID,
+			State:                      "confirmed",
+			OccurredAtUnix:             occurredAtUnix,
+			ConfirmedAtUnix:            occurredAtUnix,
+			Note:                       "BSV consumed by settlement payment attempt",
+			Payload:                    fact.Payload,
+		}); err != nil {
+			return fmt.Errorf("append BSV consumption for utxo %s: %w", utxoID, err)
+		}
+		current, err := tx.FactBsvUtxos.Query().
+			Where(factbsvutxos.UtxoIDEQ(utxoID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("bsv utxo not found: %s", utxoID)
+			}
+			return fmt.Errorf("lookup bsv utxo %s failed: %w", utxoID, err)
+		}
+		utxoState := strings.ToLower(strings.TrimSpace(current.UtxoState))
+		currentSpentByTxid := strings.ToLower(strings.TrimSpace(current.SpentByTxid))
+		if utxoState == "spent" {
+			if currentSpentByTxid == "" {
+				if _, err := tx.FactBsvUtxos.UpdateOneID(current.ID).
+					SetSpentByTxid(spentByTxid).
+					SetSpentAtUnix(func() int64 {
+						if current.SpentAtUnix <= 0 {
+							return occurredAtUnix
+						}
+						return current.SpentAtUnix
+					}()).
+					SetUpdatedAtUnix(occurredAtUnix).
+					Save(ctx); err != nil {
+					return fmt.Errorf("update spent txid for utxo %s failed: %w", utxoID, err)
+				}
+			}
+			continue
+		}
+		if _, err := tx.FactBsvUtxos.UpdateOneID(current.ID).
+			SetUtxoState("spent").
+			SetSpentByTxid(spentByTxid).
+			SetSpentAtUnix(occurredAtUnix).
+			SetUpdatedAtUnix(occurredAtUnix).
+			Save(ctx); err != nil {
+			return fmt.Errorf("mark bsv utxo spent %s failed: %w", utxoID, err)
 		}
 	}
 	return nil

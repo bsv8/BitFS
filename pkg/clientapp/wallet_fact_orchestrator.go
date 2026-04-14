@@ -394,7 +394,7 @@ WHERE utxo_id=? AND (utxo_state<>'spent' OR COALESCE(spent_by_txid,'')='')`,
 		}
 	}
 	for spentTxID := range spentTxIDs {
-		emitFactBSVSpentAppliedEvent(ctx, db, address, spentTxID)
+		emitFactBSVSpentAppliedEventConn(ctx, db, address, spentTxID)
 	}
 	obs.Info("bitcast-client", "fact_backfill_spent_from_wallet_finished", map[string]any{
 		"wallet_id":        walletID,

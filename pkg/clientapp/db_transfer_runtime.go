@@ -100,32 +100,51 @@ func dbLoadDirectDealSeedHash(ctx context.Context, store *clientDB, dealID strin
 // - 返回值中的 Status 是协议运行时状态，不代表业务结算状态
 // - 业务状态请查 order_settlements
 func dbLoadDirectTransferPoolRow(ctx context.Context, store *clientDB, sessionID string) (directTransferPoolRow, error) {
-	return clientDBValue(ctx, store, func(db sqlConn) (directTransferPoolRow, error) {
-		return loadDirectTransferPoolRowDB(ctx, db, sessionID)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (directTransferPoolRow, error) {
+		return loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
 	})
 }
 
-func loadDirectTransferPoolRowDB(ctx context.Context, queryer interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}, sessionID string) (directTransferPoolRow, error) {
+func loadDirectTransferPoolRowEntTx(ctx context.Context, tx *gen.Tx, sessionID string) (directTransferPoolRow, error) {
 	var row directTransferPoolRow
-	err := QueryRowContext(ctx, queryer,
-		`SELECT
-			session_id,deal_id,
-			buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
-			buyer_pubkey_hex AS buyer_pubkey_hex_alias,
-			seller_pubkey_hex AS seller_pubkey_hex_alias,
-			arbiter_pubkey_hex AS arbiter_pubkey_hex_alias,
-			pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-		 FROM proc_direct_transfer_pools WHERE session_id=?`,
-		strings.TrimSpace(sessionID),
-	).Scan(
-		&row.SessionID, &row.DealID, &row.BuyerPubHex, &row.SellerPubHex, &row.ArbiterPubHex,
-		&row.BuyerPubKeyHex, &row.SellerPubKeyHex, &row.ArbiterPubKeyHex,
-		&row.PoolAmount, &row.SpendTxFee, &row.SequenceNum, &row.SellerAmount, &row.BuyerAmount,
-		&row.CurrentTxHex, &row.BaseTxHex, &row.BaseTxID, &row.Status, &row.FeeRateSatByte, &row.LockBlocks, &row.CreatedAtUnix, &row.UpdatedAtUnix,
-	)
-	return row, err
+	if tx == nil {
+		return row, fmt.Errorf("tx is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return row, fmt.Errorf("session_id is required")
+	}
+	node, err := tx.ProcDirectTransferPools.Query().
+		Where(procdirecttransferpools.SessionIDEQ(sessionID)).
+		Only(ctx)
+	if err != nil {
+		if gen.IsNotFound(err) {
+			return row, sql.ErrNoRows
+		}
+		return row, err
+	}
+	row.SessionID = strings.TrimSpace(node.SessionID)
+	row.DealID = strings.TrimSpace(node.DealID)
+	row.BuyerPubHex = strings.TrimSpace(node.BuyerPubkeyHex)
+	row.SellerPubHex = strings.TrimSpace(node.SellerPubkeyHex)
+	row.ArbiterPubHex = strings.TrimSpace(node.ArbiterPubkeyHex)
+	row.BuyerPubKeyHex = row.BuyerPubHex
+	row.SellerPubKeyHex = row.SellerPubHex
+	row.ArbiterPubKeyHex = row.ArbiterPubHex
+	row.PoolAmount = uint64(node.PoolAmount)
+	row.SpendTxFee = uint64(node.SpendTxFee)
+	row.SequenceNum = uint32(node.SequenceNum)
+	row.SellerAmount = uint64(node.SellerAmount)
+	row.BuyerAmount = uint64(node.BuyerAmount)
+	row.CurrentTxHex = strings.TrimSpace(node.CurrentTxHex)
+	row.BaseTxHex = strings.TrimSpace(node.BaseTxHex)
+	row.BaseTxID = strings.TrimSpace(node.BaseTxid)
+	row.Status = strings.TrimSpace(node.Status)
+	row.FeeRateSatByte = node.FeeRateSatByte
+	row.LockBlocks = uint32(node.LockBlocks)
+	row.CreatedAtUnix = node.CreatedAtUnix
+	row.UpdatedAtUnix = node.UpdatedAtUnix
+	return row, nil
 }
 
 func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req directTransferPoolOpenReq, sessionID string, dealID string, buyerPubHex string, sellerPubHex string, arbiterPubHex string, currentTxHex string, baseTxHex string) error {
@@ -133,38 +152,63 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx sqlConn) error {
-		if row, err := loadDirectTransferPoolRowDB(ctx, tx, sessionID); err == nil {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		if row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID); err == nil {
 			if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
 				return fmt.Errorf("transfer pool is closed")
 			}
 		}
-		if _, err := ExecContext(ctx, tx,
-			`INSERT INTO proc_direct_transfer_pools(
-				session_id,deal_id,buyer_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,
-				pool_amount,spend_tx_fee,sequence_num,seller_amount,buyer_amount,current_tx_hex,base_tx_hex,base_txid,status,fee_rate_sat_byte,lock_blocks,created_at_unix,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(session_id) DO UPDATE SET
-				deal_id=excluded.deal_id,
-				buyer_pubkey_hex=excluded.buyer_pubkey_hex,
-				seller_pubkey_hex=excluded.seller_pubkey_hex,
-				arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
-				pool_amount=excluded.pool_amount,
-				spend_tx_fee=excluded.spend_tx_fee,
-				sequence_num=excluded.sequence_num,
-				seller_amount=excluded.seller_amount,
-				buyer_amount=excluded.buyer_amount,
-				current_tx_hex=excluded.current_tx_hex,
-				base_tx_hex=excluded.base_tx_hex,
-				base_txid=excluded.base_txid,
-				status=excluded.status,
-				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
-				lock_blocks=excluded.lock_blocks,
-				updated_at_unix=excluded.updated_at_unix`,
-			sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex,
-			req.PoolAmount, req.SpendTxFee, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, baseTxHex, strings.TrimSpace(req.BaseTxid), "active", req.FeeRateSatByte, req.LockBlocks, now, now,
-		); err != nil {
+		existing, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(strings.TrimSpace(sessionID))).
+			Only(ctx)
+		if err == nil {
+			_, err = tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+				SetDealID(strings.TrimSpace(dealID)).
+				SetBuyerPubkeyHex(strings.TrimSpace(buyerPubHex)).
+				SetSellerPubkeyHex(strings.TrimSpace(sellerPubHex)).
+				SetArbiterPubkeyHex(strings.TrimSpace(arbiterPubHex)).
+				SetPoolAmount(int64(req.PoolAmount)).
+				SetSpendTxFee(int64(req.SpendTxFee)).
+				SetSequenceNum(int64(req.Sequence)).
+				SetSellerAmount(int64(req.SellerAmount)).
+				SetBuyerAmount(int64(req.BuyerAmount)).
+				SetCurrentTxHex(strings.TrimSpace(currentTxHex)).
+				SetBaseTxHex(strings.TrimSpace(baseTxHex)).
+				SetBaseTxid(strings.TrimSpace(req.BaseTxid)).
+				SetStatus("active").
+				SetFeeRateSatByte(req.FeeRateSatByte).
+				SetLockBlocks(int64(req.LockBlocks)).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
+		} else if err != nil && !gen.IsNotFound(err) {
 			return err
+		} else {
+			_, err = tx.ProcDirectTransferPools.Create().
+				SetSessionID(strings.TrimSpace(sessionID)).
+				SetDealID(strings.TrimSpace(dealID)).
+				SetBuyerPubkeyHex(strings.TrimSpace(buyerPubHex)).
+				SetSellerPubkeyHex(strings.TrimSpace(sellerPubHex)).
+				SetArbiterPubkeyHex(strings.TrimSpace(arbiterPubHex)).
+				SetPoolAmount(int64(req.PoolAmount)).
+				SetSpendTxFee(int64(req.SpendTxFee)).
+				SetSequenceNum(int64(req.Sequence)).
+				SetSellerAmount(int64(req.SellerAmount)).
+				SetBuyerAmount(int64(req.BuyerAmount)).
+				SetCurrentTxHex(strings.TrimSpace(currentTxHex)).
+				SetBaseTxHex(strings.TrimSpace(baseTxHex)).
+				SetBaseTxid(strings.TrimSpace(req.BaseTxid)).
+				SetStatus("active").
+				SetFeeRateSatByte(req.FeeRateSatByte).
+				SetLockBlocks(int64(req.LockBlocks)).
+				SetCreatedAtUnix(now).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
 		}
 		if err := dbUpsertDirectTransferPoolSessionTx(ctx, tx, directTransferPoolSessionFactInput{
 			SessionID:          sessionID,
@@ -227,18 +271,30 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx sqlConn) error {
-		row, err := loadDirectTransferPoolRowDB(ctx, tx, sessionID)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
 		if strings.EqualFold(strings.TrimSpace(row.Status), "closed") {
 			return fmt.Errorf("transfer pool is closed")
 		}
-		if _, err := ExecContext(ctx, tx,
-			`UPDATE proc_direct_transfer_pools SET sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
-			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID,
-		); err != nil {
+		existing, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(strings.TrimSpace(sessionID))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("transfer pool not found")
+			}
+			return err
+		}
+		if _, err := tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+			SetSequenceNum(int64(sequence)).
+			SetSellerAmount(int64(sellerAmount)).
+			SetBuyerAmount(int64(buyerAmount)).
+			SetCurrentTxHex(strings.TrimSpace(currentTxHex)).
+			SetUpdatedAtUnix(now).
+			Save(ctx); err != nil {
 			return err
 		}
 		txid, err := directTransferPoolTxIDFromHex(currentTxHex)
@@ -310,13 +366,28 @@ func dbUpdateDirectTransferPoolClosing(ctx context.Context, store *clientDB, ses
 		return fmt.Errorf("db is nil")
 	}
 	now := time.Now().Unix()
-	return store.Tx(ctx, func(tx sqlConn) error {
-		row, err := loadDirectTransferPoolRowDB(ctx, tx, sessionID)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
 		if err != nil {
 			return err
 		}
-		if _, err := ExecContext(ctx, tx, `UPDATE proc_direct_transfer_pools SET status='closed',sequence_num=?,seller_amount=?,buyer_amount=?,current_tx_hex=?,updated_at_unix=? WHERE session_id=?`,
-			sequence, sellerAmount, buyerAmount, currentTxHex, now, sessionID); err != nil {
+		existing, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(strings.TrimSpace(sessionID))).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("transfer pool not found")
+			}
+			return err
+		}
+		if _, err := tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+			SetStatus("closed").
+			SetSequenceNum(int64(sequence)).
+			SetSellerAmount(int64(sellerAmount)).
+			SetBuyerAmount(int64(buyerAmount)).
+			SetCurrentTxHex(strings.TrimSpace(currentTxHex)).
+			SetUpdatedAtUnix(now).
+			Save(ctx); err != nil {
 			return err
 		}
 		txid, err := directTransferPoolTxIDFromHex(currentTxHex)

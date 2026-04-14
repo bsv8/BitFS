@@ -759,16 +759,9 @@ func Run(ctx context.Context, in RunInput, deps RunDeps) (*Runtime, error) {
 		}
 	}
 	// 设计说明：
-	// - BitFS 正式运行时的 sqlite 从这里开始统一进入单 owner 模型；
-	// - 初始化阶段仍有一些旧 helper 直接吃 `*sql.DB`，所以当前同时保留 `db` 和 `dbActor`；
-	// - 但运行期并发最重的路径必须优先走 actor，避免再长出新的直连写库逻辑。
-	if err := ensureClientDBSchema(ctx, store); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
+	// - BitFS 正式运行时不再做任何 DB 建表/迁移；
+	// - 运行入口只负责拿到“已准备好的”库；
+	// - 结构就绪由外部流程保证，入口只做能力组装。
 	if err := dbSyncSystemSeedPricingPolicies(ctx, store, cfg.Seller.Pricing.FloorPriceSatPer64K, cfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
@@ -1574,7 +1567,7 @@ func applySQLitePragmas(db *sql.DB) error {
 	return nil
 }
 
-// 注意：数据库初始化与迁移逻辑已统一移至 db_init.go，通过 ensureClientDBSchema 入口调用。
+	// 注意：数据库结构由 contract 的 ent schema 管理，通过 ensureClientDBSchema 入口调用。
 // 该文件不再包含数据库初始化逻辑，只保留启动顺序。
 
 func errString(err error) string {

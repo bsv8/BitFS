@@ -2,13 +2,18 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
+	entsql "entgo.io/ent/dialect/sql"
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpool"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpoolallocations"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelpoolsessionquotepay"
 )
 
 type directTransferPoolSessionFactInput struct {
@@ -74,7 +79,7 @@ type directTransferBizPoolAllocationInput struct {
 	CreatedAtUnix    int64
 }
 
-func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx sqlConn, in directTransferBizPoolSnapshotInput) error {
+func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx *gen.Tx, in directTransferBizPoolSnapshotInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -103,53 +108,73 @@ func dbUpsertDirectTransferBizPoolSnapshotTx(ctx context.Context, tx sqlConn, in
 	if nextSeq == 0 {
 		nextSeq = 1
 	}
-	_, err := ExecContext(ctx, tx,
-		`INSERT INTO biz_pool(
-			pool_session_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-			pool_amount_satoshi,spend_tx_fee_satoshi,allocated_satoshi,cycle_fee_satoshi,available_satoshi,next_sequence_num,
-			status,open_base_txid,open_allocation_id,close_allocation_id,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(pool_session_id) DO UPDATE SET
-			pool_scheme=excluded.pool_scheme,
-			counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
-			seller_pubkey_hex=excluded.seller_pubkey_hex,
-			arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
-			gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-			pool_amount_satoshi=excluded.pool_amount_satoshi,
-			spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
-			allocated_satoshi=excluded.allocated_satoshi,
-			cycle_fee_satoshi=excluded.cycle_fee_satoshi,
-			available_satoshi=excluded.available_satoshi,
-			next_sequence_num=excluded.next_sequence_num,
-			status=excluded.status,
-			open_base_txid=CASE WHEN excluded.open_base_txid<>'' THEN excluded.open_base_txid ELSE biz_pool.open_base_txid END,
-			open_allocation_id=CASE WHEN excluded.open_allocation_id<>'' THEN excluded.open_allocation_id ELSE biz_pool.open_allocation_id END,
-			close_allocation_id=CASE WHEN excluded.close_allocation_id<>'' THEN excluded.close_allocation_id ELSE biz_pool.close_allocation_id END,
-			updated_at_unix=excluded.updated_at_unix
-		WHERE excluded.next_sequence_num >= biz_pool.next_sequence_num`,
-		sessionID,
-		poolScheme,
-		strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex)),
-		strings.ToLower(strings.TrimSpace(in.SellerPubHex)),
-		strings.ToLower(strings.TrimSpace(in.ArbiterPubHex)),
-		strings.ToLower(strings.TrimSpace(in.GatewayPubHex)),
-		in.PoolAmountSat,
-		in.SpendTxFeeSat,
-		in.AllocatedSat,
-		in.CycleFeeSat,
-		in.AvailableSat,
-		nextSeq,
-		status,
-		strings.ToLower(strings.TrimSpace(in.OpenBaseTxID)),
-		strings.TrimSpace(in.OpenAllocationID),
-		strings.TrimSpace(in.CloseAllocationID),
-		createdAt,
-		updatedAt,
-	)
+
+	existing, err := tx.BizPool.Query().
+		Where(bizpool.PoolSessionIDEQ(sessionID)).
+		Only(ctx)
+	if err == nil {
+		if int64(nextSeq) < existing.NextSequenceNum {
+			return nil
+		}
+		openBaseTxid := strings.ToLower(strings.TrimSpace(in.OpenBaseTxID))
+		if openBaseTxid == "" {
+			openBaseTxid = strings.TrimSpace(existing.OpenBaseTxid)
+		}
+		openAllocationID := strings.TrimSpace(in.OpenAllocationID)
+		if openAllocationID == "" {
+			openAllocationID = strings.TrimSpace(existing.OpenAllocationID)
+		}
+		closeAllocationID := strings.TrimSpace(in.CloseAllocationID)
+		if closeAllocationID == "" {
+			closeAllocationID = strings.TrimSpace(existing.CloseAllocationID)
+		}
+		_, err = tx.BizPool.UpdateOneID(existing.ID).
+			SetPoolScheme(poolScheme).
+			SetCounterpartyPubkeyHex(strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex))).
+			SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(in.SellerPubHex))).
+			SetArbiterPubkeyHex(strings.ToLower(strings.TrimSpace(in.ArbiterPubHex))).
+			SetGatewayPubkeyHex(strings.ToLower(strings.TrimSpace(in.GatewayPubHex))).
+			SetPoolAmountSatoshi(int64(in.PoolAmountSat)).
+			SetSpendTxFeeSatoshi(int64(in.SpendTxFeeSat)).
+			SetAllocatedSatoshi(int64(in.AllocatedSat)).
+			SetCycleFeeSatoshi(int64(in.CycleFeeSat)).
+			SetAvailableSatoshi(int64(in.AvailableSat)).
+			SetNextSequenceNum(int64(nextSeq)).
+			SetStatus(status).
+			SetOpenBaseTxid(openBaseTxid).
+			SetOpenAllocationID(openAllocationID).
+			SetCloseAllocationID(closeAllocationID).
+			SetUpdatedAtUnix(updatedAt).
+			Save(ctx)
+		return err
+	}
+	if err != nil && !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.BizPool.Create().
+		SetPoolSessionID(sessionID).
+		SetPoolScheme(poolScheme).
+		SetCounterpartyPubkeyHex(strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex))).
+		SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(in.SellerPubHex))).
+		SetArbiterPubkeyHex(strings.ToLower(strings.TrimSpace(in.ArbiterPubHex))).
+		SetGatewayPubkeyHex(strings.ToLower(strings.TrimSpace(in.GatewayPubHex))).
+		SetPoolAmountSatoshi(int64(in.PoolAmountSat)).
+		SetSpendTxFeeSatoshi(int64(in.SpendTxFeeSat)).
+		SetAllocatedSatoshi(int64(in.AllocatedSat)).
+		SetCycleFeeSatoshi(int64(in.CycleFeeSat)).
+		SetAvailableSatoshi(int64(in.AvailableSat)).
+		SetNextSequenceNum(int64(nextSeq)).
+		SetStatus(status).
+		SetOpenBaseTxid(strings.ToLower(strings.TrimSpace(in.OpenBaseTxID))).
+		SetOpenAllocationID(strings.TrimSpace(in.OpenAllocationID)).
+		SetCloseAllocationID(strings.TrimSpace(in.CloseAllocationID)).
+		SetCreatedAtUnix(createdAt).
+		SetUpdatedAtUnix(updatedAt).
+		Save(ctx)
 	return err
 }
 
-func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx sqlConn, in directTransferBizPoolAllocationInput) error {
+func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx *gen.Tx, in directTransferBizPoolAllocationInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -178,34 +203,42 @@ func dbUpsertDirectTransferBizPoolAllocationTx(ctx context.Context, tx sqlConn, 
 	if createdAt <= 0 {
 		createdAt = now
 	}
-	_, err := ExecContext(ctx, tx,
-		`INSERT INTO biz_pool_allocations(
-			allocation_id,pool_session_id,allocation_no,allocation_kind,sequence_num,payee_amount_after,payer_amount_after,txid,tx_hex,created_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(allocation_id) DO UPDATE SET
-			pool_session_id=excluded.pool_session_id,
-			allocation_kind=excluded.allocation_kind,
-			sequence_num=excluded.sequence_num,
-			payee_amount_after=excluded.payee_amount_after,
-			payer_amount_after=excluded.payer_amount_after,
-			txid=excluded.txid,
-			tx_hex=excluded.tx_hex,
-			created_at_unix=excluded.created_at_unix`,
-		allocationID,
-		sessionID,
-		in.AllocationNo,
-		kind,
-		in.SequenceNum,
-		in.PayeeAmountAfter,
-		in.PayerAmountAfter,
-		txID,
-		txHex,
-		createdAt,
-	)
+
+	existing, err := tx.BizPoolAllocations.Query().
+		Where(bizpoolallocations.AllocationIDEQ(allocationID)).
+		Only(ctx)
+	if err == nil {
+		_, err = tx.BizPoolAllocations.UpdateOneID(existing.ID).
+			SetPoolSessionID(sessionID).
+			SetAllocationKind(kind).
+			SetSequenceNum(int64(in.SequenceNum)).
+			SetPayeeAmountAfter(int64(in.PayeeAmountAfter)).
+			SetPayerAmountAfter(int64(in.PayerAmountAfter)).
+			SetTxid(txID).
+			SetTxHex(txHex).
+			SetCreatedAtUnix(createdAt).
+			Save(ctx)
+		return err
+	}
+	if err != nil && !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.BizPoolAllocations.Create().
+		SetAllocationID(allocationID).
+		SetPoolSessionID(sessionID).
+		SetAllocationNo(in.AllocationNo).
+		SetAllocationKind(kind).
+		SetSequenceNum(int64(in.SequenceNum)).
+		SetPayeeAmountAfter(int64(in.PayeeAmountAfter)).
+		SetPayerAmountAfter(int64(in.PayerAmountAfter)).
+		SetTxid(txID).
+		SetTxHex(txHex).
+		SetCreatedAtUnix(createdAt).
+		Save(ctx)
 	return err
 }
 
-func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx sqlConn, in directTransferPoolSessionFactInput) error {
+func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx *gen.Tx, in directTransferPoolSessionFactInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -234,15 +267,21 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx sqlConn, in dir
 	if strings.EqualFold(status, "settled") || strings.EqualFold(status, "closed") || strings.EqualFold(status, "confirmed") {
 		paymentAttemptState = "confirmed"
 	}
+
+	var channelID int64
 	var settlementPaymentAttemptID int64
-	var existingChannelID int64
-	err := QueryRowContext(ctx, tx, `SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&existingChannelID, &settlementPaymentAttemptID)
-	if err != nil && err != sql.ErrNoRows {
+	channel, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+		Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(sessionID)).
+		Only(ctx)
+	if err == nil {
+		channelID = int64(channel.ID)
+		settlementPaymentAttemptID = channel.SettlementPaymentAttemptID
+	} else if !gen.IsNotFound(err) {
 		return err
 	}
-	if err == sql.ErrNoRows {
+	if settlementPaymentAttemptID == 0 {
 		pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
-		settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptIDCtx(ctx, tx,
+		settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptEntTx(ctx, tx,
 			"payment_attempt_pool_session_quote_pay_"+sessionID,
 			"pool_session_quote_pay",
 			pendingSourceID,
@@ -255,54 +294,63 @@ func dbUpsertDirectTransferPoolSessionTx(ctx context.Context, tx sqlConn, in dir
 			return fmt.Errorf("upsert settlement payment attempt shell for pool session channel: %w", err)
 		}
 	}
-	_, err = ExecContext(ctx, tx,
-		`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
-			settlement_payment_attempt_id,pool_session_id,txid,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-			pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(pool_session_id) DO UPDATE SET
-			txid=excluded.txid,
-			pool_scheme=excluded.pool_scheme,
-			counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
-			seller_pubkey_hex=excluded.seller_pubkey_hex,
-			arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
-			gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-			pool_amount_satoshi=excluded.pool_amount_satoshi,
-			spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
-			fee_rate_sat_byte=excluded.fee_rate_sat_byte,
-			lock_blocks=excluded.lock_blocks,
-			open_base_txid=excluded.open_base_txid,
-			status=excluded.status,
-			updated_at_unix=excluded.updated_at_unix`,
-		settlementPaymentAttemptID,
-		sessionID,
-		strings.ToLower(strings.TrimSpace(in.OpenBaseTxID)),
-		poolScheme,
-		strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex)),
-		strings.ToLower(strings.TrimSpace(in.SellerPubHex)),
-		strings.ToLower(strings.TrimSpace(in.ArbiterPubHex)),
-		strings.ToLower(strings.TrimSpace(in.GatewayPubHex)),
-		in.PoolAmountSat,
-		in.SpendTxFeeSat,
-		in.FeeRateSatByte,
-		in.LockBlocks,
-		strings.ToLower(strings.TrimSpace(in.OpenBaseTxID)),
-		status,
-		createdAt,
-		updatedAt,
-	)
-	if err != nil {
-		return err
+
+	txid := strings.ToLower(strings.TrimSpace(in.OpenBaseTxID))
+	openBaseTxid := strings.ToLower(strings.TrimSpace(in.OpenBaseTxID))
+	if channel != nil {
+		_, err = tx.FactSettlementChannelPoolSessionQuotePay.UpdateOneID(channel.ID).
+			SetSettlementPaymentAttemptID(settlementPaymentAttemptID).
+			SetTxid(txid).
+			SetPoolScheme(poolScheme).
+			SetCounterpartyPubkeyHex(strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex))).
+			SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(in.SellerPubHex))).
+			SetArbiterPubkeyHex(strings.ToLower(strings.TrimSpace(in.ArbiterPubHex))).
+			SetGatewayPubkeyHex(strings.ToLower(strings.TrimSpace(in.GatewayPubHex))).
+			SetPoolAmountSatoshi(int64(in.PoolAmountSat)).
+			SetSpendTxFeeSatoshi(int64(in.SpendTxFeeSat)).
+			SetFeeRateSatByte(in.FeeRateSatByte).
+			SetLockBlocks(int64(in.LockBlocks)).
+			SetOpenBaseTxid(openBaseTxid).
+			SetStatus(status).
+			SetUpdatedAtUnix(updatedAt).
+			Save(ctx)
+		if err != nil {
+			return err
+		}
+		channelID = int64(channel.ID)
+	} else {
+		node, err := tx.FactSettlementChannelPoolSessionQuotePay.Create().
+			SetSettlementPaymentAttemptID(settlementPaymentAttemptID).
+			SetPoolSessionID(sessionID).
+			SetTxid(txid).
+			SetPoolScheme(poolScheme).
+			SetCounterpartyPubkeyHex(strings.ToLower(strings.TrimSpace(in.CounterpartyPubHex))).
+			SetSellerPubkeyHex(strings.ToLower(strings.TrimSpace(in.SellerPubHex))).
+			SetArbiterPubkeyHex(strings.ToLower(strings.TrimSpace(in.ArbiterPubHex))).
+			SetGatewayPubkeyHex(strings.ToLower(strings.TrimSpace(in.GatewayPubHex))).
+			SetPoolAmountSatoshi(int64(in.PoolAmountSat)).
+			SetSpendTxFeeSatoshi(int64(in.SpendTxFeeSat)).
+			SetFeeRateSatByte(in.FeeRateSatByte).
+			SetLockBlocks(int64(in.LockBlocks)).
+			SetOpenBaseTxid(openBaseTxid).
+			SetStatus(status).
+			SetCreatedAtUnix(createdAt).
+			SetUpdatedAtUnix(updatedAt).
+			Save(ctx)
+		if err != nil {
+			return err
+		}
+		channelID = int64(node.ID)
 	}
-	var channelID int64
-	if err := QueryRowContext(ctx, tx, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
-		return err
-	}
-	_, err = ExecContext(ctx, tx, `UPDATE fact_settlement_payment_attempts SET source_type='pool_session_quote_pay', source_id=? WHERE id=?`, fmt.Sprintf("%d", channelID), settlementPaymentAttemptID)
+
+	_, err = tx.FactSettlementPaymentAttempts.UpdateOneID(settlementPaymentAttemptID).
+		SetSourceType("pool_session_quote_pay").
+		SetSourceID(fmt.Sprintf("%d", channelID)).
+		Save(ctx)
 	return err
 }
 
-func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx sqlConn, in directTransferPoolAllocationFactInput) error {
+func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *gen.Tx, in directTransferPoolAllocationFactInput) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -341,88 +389,100 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx sqlConn, in 
 	if createdAt <= 0 {
 		createdAt = now
 	}
-	var allocationNo int64
-	if err := QueryRowContext(ctx, tx,
-		`SELECT COALESCE(MAX(allocation_no),0)+1 FROM fact_pool_session_events WHERE pool_session_id=? AND event_kind=?`,
-		sessionID, PoolFactEventKindPoolEvent,
-	).Scan(&allocationNo); err != nil {
+
+	allocationNo := int64(1)
+	last, err := tx.FactPoolSessionEvents.Query().
+		Where(
+			factpoolsessionevents.PoolSessionIDEQ(sessionID),
+			factpoolsessionevents.EventKindEQ(PoolFactEventKindPoolEvent),
+		).
+		Order(factpoolsessionevents.ByAllocationNo(entsql.OrderDesc())).
+		First(ctx)
+	if err == nil {
+		allocationNo = last.AllocationNo + 1
+	} else if err != nil && !gen.IsNotFound(err) {
 		return err
 	}
-	_, err := ExecContext(ctx, tx,
-		`INSERT INTO fact_pool_session_events(
-			allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(allocation_id) DO UPDATE SET
-			pool_session_id=excluded.pool_session_id,
-			allocation_kind=excluded.allocation_kind,
-			event_kind=excluded.event_kind,
-			sequence_num=excluded.sequence_num,
-			state=excluded.state,
-			payee_amount_after=excluded.payee_amount_after,
-			payer_amount_after=excluded.payer_amount_after,
-			txid=excluded.txid,
-			tx_hex=excluded.tx_hex,
-			created_at_unix=excluded.created_at_unix,
-			payload_json=excluded.payload_json`,
-		allocID,
-		sessionID,
-		allocationNo,
-		kind,
-		PoolFactEventKindPoolEvent,
-		in.SequenceNum,
-		"confirmed",
-		"",
-		0,
-		kind,
-		"",
-		"",
-		0,
-		in.PayeeAmountAfter,
-		in.PayerAmountAfter,
-		txID,
-		txHex,
-		"",
-		createdAt,
-		"{}",
-	)
-	if err != nil {
+
+	existing, err := tx.FactPoolSessionEvents.Query().
+		Where(factpoolsessionevents.AllocationIDEQ(allocID)).
+		Only(ctx)
+	if err == nil {
+		allocationNo = existing.AllocationNo
+		_, err = tx.FactPoolSessionEvents.UpdateOneID(existing.ID).
+			SetPoolSessionID(sessionID).
+			SetAllocationKind(kind).
+			SetEventKind(PoolFactEventKindPoolEvent).
+			SetSequenceNum(int64(in.SequenceNum)).
+			SetState("confirmed").
+			SetPayeeAmountAfter(int64(in.PayeeAmountAfter)).
+			SetPayerAmountAfter(int64(in.PayerAmountAfter)).
+			SetTxid(txID).
+			SetTxHex(txHex).
+			SetCreatedAtUnix(createdAt).
+			SetPayloadJSON("{}").
+			Save(ctx)
+		if err != nil {
+			return err
+		}
+	} else if err != nil && !gen.IsNotFound(err) {
 		return err
+	} else {
+		_, err = tx.FactPoolSessionEvents.Create().
+			SetAllocationID(allocID).
+			SetPoolSessionID(sessionID).
+			SetAllocationNo(allocationNo).
+			SetAllocationKind(kind).
+			SetEventKind(PoolFactEventKindPoolEvent).
+			SetSequenceNum(int64(in.SequenceNum)).
+			SetState("confirmed").
+			SetDirection("").
+			SetAmountSatoshi(0).
+			SetPurpose(kind).
+			SetNote("").
+			SetMsgID("").
+			SetCycleIndex(0).
+			SetPayeeAmountAfter(int64(in.PayeeAmountAfter)).
+			SetPayerAmountAfter(int64(in.PayerAmountAfter)).
+			SetTxid(txID).
+			SetTxHex(txHex).
+			SetGatewayPubkeyHex("").
+			SetCreatedAtUnix(createdAt).
+			SetPayloadJSON("{}").
+			Save(ctx)
+		if err != nil {
+			return err
+		}
 	}
+
 	// 旧 fact 事件只保留兼容锚点，真正的池账写入走 dbApplyDirectTransferBizPoolAccountingTx。
 	if err := dbApplyDirectTransferBizPoolAccountingTx(ctx, tx, in, allocationNo); err != nil {
 		return err
 	}
-	var settlementPaymentAttemptID int64
-	var channelID int64
-	if err := QueryRowContext(ctx, tx,
-		`SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`,
-		sessionID,
-	).Scan(&channelID, &settlementPaymentAttemptID); err != nil {
+
+	channel, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+		Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(sessionID)).
+		Only(ctx)
+	if err != nil {
 		return fmt.Errorf("resolve pool session channel for allocation %s: %w", allocID, err)
 	}
-	if _, err := ExecContext(ctx, tx,
-		`UPDATE fact_settlement_channel_pool_session_quote_pay
-		    SET txid=?,updated_at_unix=?
-		  WHERE id=?`,
-		txID, createdAt, channelID,
-	); err != nil {
+	channelID := int64(channel.ID)
+	settlementPaymentAttemptID := channel.SettlementPaymentAttemptID
+
+	if _, err := tx.FactSettlementChannelPoolSessionQuotePay.UpdateOneID(channel.ID).
+		SetTxid(txID).
+		SetUpdatedAtUnix(createdAt).
+		Save(ctx); err != nil {
 		return err
 	}
-	if _, err := ExecContext(ctx, tx,
-		`UPDATE fact_settlement_payment_attempts
-		    SET source_type='pool_session_quote_pay',
-		        source_id=?,
-		        state='confirmed',
-		        occurred_at_unix=?,
-		        confirmed_at_unix=?,
-		        note=?
-		  WHERE id=?`,
-		fmt.Sprintf("%d", channelID),
-		createdAt,
-		createdAt,
-		"updated from pool allocation event",
-		settlementPaymentAttemptID,
-	); err != nil {
+	if _, err := tx.FactSettlementPaymentAttempts.UpdateOneID(settlementPaymentAttemptID).
+		SetSourceType("pool_session_quote_pay").
+		SetSourceID(fmt.Sprintf("%d", channelID)).
+		SetState("confirmed").
+		SetOccurredAtUnix(createdAt).
+		SetConfirmedAtUnix(createdAt).
+		SetNote("updated from pool allocation event").
+		Save(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -432,7 +492,7 @@ func dbUpsertDirectTransferPoolSession(ctx context.Context, store *clientDB, in 
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Tx(ctx, func(tx sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		return dbUpsertDirectTransferPoolSessionTx(ctx, tx, in)
 	})
 }
@@ -441,7 +501,7 @@ func dbUpsertDirectTransferPoolAllocation(ctx context.Context, store *clientDB, 
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Tx(ctx, func(tx sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		return dbUpsertDirectTransferPoolAllocationTx(ctx, tx, in)
 	})
 }
@@ -466,27 +526,25 @@ func directTransferPoolTxIDFromHex(txHex string) (string, error) {
 	return strings.ToLower(strings.TrimSpace(parsed.TxID().String())), nil
 }
 
-// dbGetPoolAllocationIDByAllocationIDDB 按 allocation_id 查 fact_pool_session_events.id
+// dbGetPoolAllocationIDByAllocationIDEntTx 按 allocation_id 查 fact_pool_session_events.id
 // 设计说明：
 // - 写入层和读层都只认事实表自增主键；
 // - allocation_id 只作为旧入口和 payload 保留，不再直接承担 source_id 语义。
-func dbGetPoolAllocationIDByAllocationIDDB(db sqlConn, allocationID string) (int64, error) {
-	if db == nil {
-		return 0, fmt.Errorf("db is nil")
+func dbGetPoolAllocationIDByAllocationIDEntTx(ctx context.Context, tx *gen.Tx, allocationID string) (int64, error) {
+	if tx == nil {
+		return 0, fmt.Errorf("tx is nil")
 	}
 	allocationID = strings.TrimSpace(allocationID)
 	if allocationID == "" {
 		return 0, fmt.Errorf("allocation_id is required")
 	}
-	var id int64
-	err := db.QueryRow(
-		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
-		allocationID,
-	).Scan(&id)
+	row, err := tx.FactPoolSessionEvents.Query().
+		Where(factpoolsessionevents.AllocationIDEQ(allocationID)).
+		Only(ctx)
 	if err != nil {
 		return 0, err
 	}
-	return id, nil
+	return int64(row.ID), nil
 }
 
 // dbGetPoolAllocationIDByAllocationID 按 allocation_id 查自增 id
@@ -495,37 +553,22 @@ func dbGetPoolAllocationIDByAllocationID(ctx context.Context, store *clientDB, a
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (int64, error) {
-		return dbGetPoolAllocationIDByAllocationIDDB(db, allocationID)
+	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
+		return dbGetPoolAllocationIDByAllocationIDEntTx(ctx, tx, allocationID)
 	})
 }
 
 // dbGetPoolAllocationIDByAllocationIDTx 在事务内按 allocation_id 查自增 id
 // 用于财务写入时在同一事务内获取主键
-func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx sqlConn, allocationID string) (int64, error) {
-	if tx == nil {
-		return 0, fmt.Errorf("tx is nil")
-	}
-	allocationID = strings.TrimSpace(allocationID)
-	if allocationID == "" {
-		return 0, fmt.Errorf("allocation_id is required")
-	}
-	var id int64
-	err := QueryRowContext(ctx, tx,
-		`SELECT id FROM fact_pool_session_events WHERE allocation_id=?`,
-		allocationID,
-	).Scan(&id)
-	if err != nil {
-		return 0, err
-	}
-	return id, nil
+func dbGetPoolAllocationIDByAllocationIDTx(ctx context.Context, tx *gen.Tx, allocationID string) (int64, error) {
+	return dbGetPoolAllocationIDByAllocationIDEntTx(ctx, tx, allocationID)
 }
 
 // dbGetPoolAllocationIDByKindTx 在事务内按 session + kind 取第一条 allocation_id。
 // 设计说明：
 // - snapshot 更新需要稳定地拿到 open allocation id；
 // - 不能拿当前 sequence 反推，否则重放时会漂。
-func dbGetPoolAllocationIDByKindTx(ctx context.Context, tx sqlConn, sessionID string, allocationKind string) (string, error) {
+func dbGetPoolAllocationIDByKindTx(ctx context.Context, tx *gen.Tx, sessionID string, allocationKind string) (string, error) {
 	if tx == nil {
 		return "", fmt.Errorf("tx is nil")
 	}
@@ -537,17 +580,18 @@ func dbGetPoolAllocationIDByKindTx(ctx context.Context, tx sqlConn, sessionID st
 	if allocationKind == "" {
 		return "", fmt.Errorf("allocation_kind is required")
 	}
-	var allocationID string
-	err := QueryRowContext(ctx, tx,
-		`SELECT allocation_id FROM fact_pool_session_events
-		 WHERE pool_session_id=? AND event_kind=? AND allocation_kind=?
-		 ORDER BY allocation_no ASC LIMIT 1`,
-		sessionID, PoolFactEventKindPoolEvent, allocationKind,
-	).Scan(&allocationID)
+	row, err := tx.FactPoolSessionEvents.Query().
+		Where(
+			factpoolsessionevents.PoolSessionIDEQ(sessionID),
+			factpoolsessionevents.EventKindEQ(PoolFactEventKindPoolEvent),
+			factpoolsessionevents.AllocationKindEQ(allocationKind),
+		).
+		Order(factpoolsessionevents.ByAllocationNo(entsql.OrderAsc())).
+		First(ctx)
 	if err != nil {
 		return "", err
 	}
-	return allocationID, nil
+	return strings.TrimSpace(row.AllocationID), nil
 }
 
 // dbExtractUTXOFactsFromTxHex 从交易 hex 中提取 input UTXO facts

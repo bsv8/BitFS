@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"testing"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 )
 
 func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
@@ -119,65 +121,61 @@ func TestInitIndexDB_PoolFactsWriteCurrentTables(t *testing.T) {
 	if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), nil, directTransferPoolSessionFactInput{}); err == nil {
 		t.Fatal("nil tx should be rejected")
 	}
-
-	tx, err := db.Begin()
-	if err != nil {
-		t.Fatalf("begin tx failed: %v", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), tx, directTransferPoolSessionFactInput{
-		SessionID:          "sess_pool_schema_1",
-		PoolScheme:         "2of3",
-		CounterpartyPubHex: "11",
-		SellerPubHex:       "22",
-		ArbiterPubHex:      "33",
-		GatewayPubHex:      "44",
-		PoolAmountSat:      1000,
-		SpendTxFeeSat:      10,
-		FeeRateSatByte:     1,
-		LockBlocks:         10,
-		OpenBaseTxID:       "base_tx_1",
-		Status:             "active",
+	store := newClientDB(db, nil)
+	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+		if err := dbUpsertDirectTransferPoolSessionTx(context.Background(), tx, directTransferPoolSessionFactInput{
+			SessionID:          "sess_pool_schema_1",
+			PoolScheme:         "2of3",
+			CounterpartyPubHex: "11",
+			SellerPubHex:       "22",
+			ArbiterPubHex:      "33",
+			GatewayPubHex:      "44",
+			PoolAmountSat:      1000,
+			SpendTxFeeSat:      10,
+			FeeRateSatByte:     1,
+			LockBlocks:         10,
+			OpenBaseTxID:       "base_tx_1",
+			Status:             "active",
+		}); err != nil {
+			return err
+		}
+		if err := dbUpsertDirectTransferBizPoolSnapshotTx(context.Background(), tx, directTransferBizPoolSnapshotInput{
+			SessionID:          "sess_pool_schema_1",
+			PoolScheme:         "2of3",
+			CounterpartyPubHex: "11",
+			SellerPubHex:       "22",
+			ArbiterPubHex:      "33",
+			GatewayPubHex:      "44",
+			PoolAmountSat:      1000,
+			SpendTxFeeSat:      10,
+			AllocatedSat:       0,
+			CycleFeeSat:        0,
+			AvailableSat:       990,
+			NextSequenceNum:    1,
+			Status:             "active",
+			OpenBaseTxID:       "base_tx_1",
+			CreatedAtUnix:      1700000100,
+			UpdatedAtUnix:      1700000100,
+		}); err != nil {
+			return err
+		}
+		if err := dbUpsertDirectTransferBizPoolAllocationTx(context.Background(), tx, directTransferBizPoolAllocationInput{
+			SessionID:        "sess_pool_schema_1",
+			AllocationID:     "alloc_pool_schema_1",
+			AllocationNo:     1,
+			AllocationKind:   "open",
+			SequenceNum:      1,
+			PayeeAmountAfter: 0,
+			PayerAmountAfter: 990,
+			TxID:             "tx_pool_schema_1",
+			TxHex:            "deadbeef",
+			CreatedAtUnix:    1700000100,
+		}); err != nil {
+			return err
+		}
+		return nil
 	}); err != nil {
-		t.Fatalf("write pool session failed: %v", err)
-	}
-	if err := dbUpsertDirectTransferBizPoolSnapshotTx(context.Background(), tx, directTransferBizPoolSnapshotInput{
-		SessionID:          "sess_pool_schema_1",
-		PoolScheme:         "2of3",
-		CounterpartyPubHex: "11",
-		SellerPubHex:       "22",
-		ArbiterPubHex:      "33",
-		GatewayPubHex:      "44",
-		PoolAmountSat:      1000,
-		SpendTxFeeSat:      10,
-		AllocatedSat:       0,
-		CycleFeeSat:        0,
-		AvailableSat:       990,
-		NextSequenceNum:    1,
-		Status:             "active",
-		OpenBaseTxID:       "base_tx_1",
-		CreatedAtUnix:      1700000100,
-		UpdatedAtUnix:      1700000100,
-	}); err != nil {
-		t.Fatalf("write biz pool snapshot failed: %v", err)
-	}
-	if err := dbUpsertDirectTransferBizPoolAllocationTx(context.Background(), tx, directTransferBizPoolAllocationInput{
-		SessionID:        "sess_pool_schema_1",
-		AllocationID:     "alloc_pool_schema_1",
-		AllocationNo:     1,
-		AllocationKind:   "open",
-		SequenceNum:      1,
-		PayeeAmountAfter: 0,
-		PayerAmountAfter: 990,
-		TxID:             "tx_pool_schema_1",
-		TxHex:            "deadbeef",
-		CreatedAtUnix:    1700000100,
-	}); err != nil {
-		t.Fatalf("write biz pool allocation failed: %v", err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatalf("commit tx failed: %v", err)
+		t.Fatalf("write pool facts failed: %v", err)
 	}
 
 	var count int64

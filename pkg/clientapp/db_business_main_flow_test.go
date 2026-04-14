@@ -66,7 +66,7 @@ func TestBusinessMainFlow_FullChain(t *testing.T) {
 			"amount_sat":  10000,
 		},
 	}
-	if err := dbAppendFinBusiness(ctx, db, business); err != nil {
+	if err := dbAppendFinBusiness(ctx, store, business); err != nil {
 		t.Fatalf("append business failed: %v", err)
 	}
 

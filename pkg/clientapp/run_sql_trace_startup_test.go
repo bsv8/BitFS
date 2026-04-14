@@ -67,14 +67,16 @@ func TestRun_SQLTraceStartupBackfillsEmptyLogFile(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	defer func() { _ = openedDB.Actor.Close() }()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := ensureClientDBSchemaOnDB(ctx, openedDB.DB); err != nil {
+		t.Fatalf("schema init failed: %v", err)
+	}
 
 	runIn := NewRunInputFromConfig(cfg, cfg.Keys.PrivkeyHex)
 	runIn.StartupMode = StartupModeTest
 	runIn.ActionChain = startupTestChain{}
 	runIn.WalletChain = startupTestWalletChain{}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	rt, err := Run(ctx, runIn, RunDeps{
 		Store:   NewClientStore(openedDB.DB, openedDB.Actor),

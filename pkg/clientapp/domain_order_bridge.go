@@ -6,6 +6,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/orders"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
 	"github.com/bsv8/BFTP/pkg/obs"
 )
 
@@ -119,11 +122,11 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 		triggerID = "trg_" + in.BusinessID
 	}
 
-	return store.Tx(ctx, func(tx sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		now := time.Now().Unix()
 
 		// 1. 确保 front_order 存在
-		if err := dbUpsertFrontOrderTx(ctx, tx, frontOrderEntry{
+		if err := dbUpsertFrontOrderEntTx(ctx, tx, frontOrderEntry{
 			FrontOrderID:     in.FrontOrderID,
 			FrontType:        in.FrontType,
 			FrontSubtype:     in.FrontSubtype,
@@ -228,8 +231,11 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 	})
 }
 
-// dbUpsertFrontOrderTx 事务内插入或更新前台业务单
-func dbUpsertFrontOrderTx(ctx context.Context, tx sqlConn, e frontOrderEntry) error {
+// dbUpsertFrontOrderEntTx 事务内插入或更新前台业务单。
+// 设计说明：
+// - 这里直接收口到 ent，避免桥接层再碰旧 SQL；
+// - order_id 仍然是唯一定位，不再靠旧主键语义猜行。
+func dbUpsertFrontOrderEntTx(ctx context.Context, tx *gen.Tx, e frontOrderEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -247,34 +253,45 @@ func dbUpsertFrontOrderTx(ctx context.Context, tx sqlConn, e frontOrderEntry) er
 	if e.IdempotencyKey == "" {
 		e.IdempotencyKey = e.FrontOrderID
 	}
-	if _, err := ExecContext(ctx, tx,
-		`INSERT INTO orders(
-				order_id,order_type,order_subtype,owner_pubkey_hex,target_object_type,target_object_id,status,idempotency_key,note,payload_json,created_at_unix,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(order_id) DO UPDATE SET
-				order_type=excluded.order_type,
-				order_subtype=excluded.order_subtype,
-				owner_pubkey_hex=excluded.owner_pubkey_hex,
-				target_object_type=excluded.target_object_type,
-				target_object_id=excluded.target_object_id,
-				status=excluded.status,
-				idempotency_key=excluded.idempotency_key,
-				updated_at_unix=excluded.updated_at_unix,
-				note=excluded.note,
-				payload_json=excluded.payload_json`,
-		e.FrontOrderID,
-		strings.TrimSpace(e.FrontType),
-		strings.TrimSpace(e.FrontSubtype),
-		strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex)),
-		strings.TrimSpace(e.TargetObjectType),
-		strings.TrimSpace(e.TargetObjectID),
-		strings.TrimSpace(e.Status),
-		e.IdempotencyKey,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-		e.CreatedAtUnix,
-		e.UpdatedAtUnix,
-	); err != nil {
+	existing, err := tx.Orders.Query().
+		Where(orders.OrderIDEQ(e.FrontOrderID)).
+		Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetOrderType(strings.TrimSpace(e.FrontType)).
+			SetOrderSubtype(strings.TrimSpace(e.FrontSubtype)).
+			SetOwnerPubkeyHex(strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))).
+			SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
+			SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetIdempotencyKey(e.IdempotencyKey).
+			SetUpdatedAtUnix(e.UpdatedAtUnix).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			Save(ctx)
+		if err != nil {
+			return fmt.Errorf("upsert front_order: %w", err)
+		}
+		return nil
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.Orders.Create().
+		SetOrderID(e.FrontOrderID).
+		SetOrderType(strings.TrimSpace(e.FrontType)).
+		SetOrderSubtype(strings.TrimSpace(e.FrontSubtype)).
+		SetOwnerPubkeyHex(strings.ToLower(strings.TrimSpace(e.OwnerPubkeyHex))).
+		SetTargetObjectType(strings.TrimSpace(e.TargetObjectType)).
+		SetTargetObjectID(strings.TrimSpace(e.TargetObjectID)).
+		SetStatus(strings.TrimSpace(e.Status)).
+		SetIdempotencyKey(e.IdempotencyKey).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		SetCreatedAtUnix(e.CreatedAtUnix).
+		SetUpdatedAtUnix(e.UpdatedAtUnix).
+		Save(ctx)
+	if err != nil {
 		return fmt.Errorf("upsert front_order: %w", err)
 	}
 	return nil
@@ -285,7 +302,7 @@ func dbUpsertFrontOrderTx(ctx context.Context, tx sqlConn, e frontOrderEntry) er
 // - 业务和结算一起落，不再把同一 order_id 压成一行；
 // - settlement_id 负责精确定位，后续新执行单会顺延新增；
 // - 这个入口只做桥接，不自己拼旧式 UPSERT。
-func dbUpsertSettleRecordTx(ctx context.Context, tx sqlConn, e finBusinessEntry) error {
+func dbUpsertSettleRecordTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -295,7 +312,7 @@ func dbUpsertSettleRecordTx(ctx context.Context, tx sqlConn, e finBusinessEntry)
 // dbAppendBusinessTriggerTx 事务内插入业务触发桥接记录
 // 幂等约束在 (order_id, trigger_type, trigger_id_value, trigger_role) 上
 // 支持"一前台单多条 business"：同一 trigger_type+trigger_id_value 可触发多个不同 business
-func dbAppendBusinessTriggerTx(ctx context.Context, tx sqlConn, e businessTriggerEntry) error {
+func dbAppendBusinessTriggerTx(ctx context.Context, tx *gen.Tx, e businessTriggerEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -314,41 +331,53 @@ func dbAppendBusinessTriggerTx(ctx context.Context, tx sqlConn, e businessTrigge
 	if e.CreatedAtUnix <= 0 {
 		e.CreatedAtUnix = time.Now().Unix()
 	}
-	_, err := ExecContext(ctx, tx,
-		`INSERT INTO order_settlement_events(
-			process_id,settlement_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,idempotency_key,note,payload_json,occurred_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-		ON CONFLICT(settlement_id, event_type, idempotency_key) DO UPDATE SET
-			process_id=excluded.process_id,
-			source_type=excluded.source_type,
-			source_id=excluded.source_id,
-			accounting_scene=excluded.accounting_scene,
-			accounting_subtype=excluded.accounting_subtype,
-			status=excluded.status,
-			note=excluded.note,
-			payload_json=excluded.payload_json,
-			occurred_at_unix=excluded.occurred_at_unix`,
-		e.TriggerID,
-		e.SettlementID,
-		strings.TrimSpace(e.TriggerType),
-		strings.TrimSpace(e.TriggerIDValue),
-		"",
-		strings.TrimSpace(e.TriggerRole),
-		"bridge_trigger",
-		"linked",
-		e.TriggerID+":"+e.OrderID+":"+strings.TrimSpace(e.TriggerType)+":"+strings.TrimSpace(e.TriggerIDValue)+":"+strings.TrimSpace(e.TriggerRole),
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-		e.CreatedAtUnix,
-	)
+	existing, err := tx.OrderSettlementEvents.Query().
+		Where(
+			ordersettlementevents.SettlementIDEQ(e.SettlementID),
+			ordersettlementevents.EventTypeEQ("bridge_trigger"),
+			ordersettlementevents.IdempotencyKeyEQ(e.TriggerID+":"+e.OrderID+":"+strings.TrimSpace(e.TriggerType)+":"+strings.TrimSpace(e.TriggerIDValue)+":"+strings.TrimSpace(e.TriggerRole)),
+		).
+		Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetProcessID(e.TriggerID).
+			SetSettlementID(e.SettlementID).
+			SetSourceType(strings.TrimSpace(e.TriggerType)).
+			SetSourceID(strings.TrimSpace(e.TriggerIDValue)).
+			SetAccountingScene("").
+			SetAccountingSubtype(strings.TrimSpace(e.TriggerRole)).
+			SetStatus("linked").
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			SetOccurredAtUnix(e.CreatedAtUnix).
+			Save(ctx)
+		return err
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.OrderSettlementEvents.Create().
+		SetProcessID(e.TriggerID).
+		SetSettlementID(e.SettlementID).
+		SetSourceType(strings.TrimSpace(e.TriggerType)).
+		SetSourceID(strings.TrimSpace(e.TriggerIDValue)).
+		SetAccountingScene("").
+		SetAccountingSubtype(strings.TrimSpace(e.TriggerRole)).
+		SetEventType("bridge_trigger").
+		SetStatus("linked").
+		SetIdempotencyKey(e.TriggerID + ":" + e.OrderID + ":" + strings.TrimSpace(e.TriggerType) + ":" + strings.TrimSpace(e.TriggerIDValue) + ":" + strings.TrimSpace(e.TriggerRole)).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		SetOccurredAtUnix(e.CreatedAtUnix).
+		Save(ctx)
 	return err
 }
 
 // dbUpsertBusinessSettlementTx 事务内插入或更新业务结算出口
 // 校验：settlement_method 只允许 'pool' 或 'chain'
-func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx sqlConn, e businessSettlementEntry) error {
+func dbUpsertSettleRecordSettlementTx(ctx context.Context, tx *gen.Tx, e businessSettlementEntry) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
-	return dbUpsertBusinessSettlementTx(ctx, tx, e)
+	return dbUpsertBusinessSettlementEntTx(ctx, tx, e)
 }

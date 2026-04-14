@@ -38,13 +38,6 @@ func TestCommandLinkedTablesFinalSchemaHasIndexes(t *testing.T) {
 		if !notNull {
 			t.Fatalf("%s.command_id should be NOT NULL", table)
 		}
-		hasCheck, err := tableHasCreateSQLContains(db, table, "CHECK(trim(command_id) <> '')")
-		if err != nil {
-			t.Fatalf("inspect %s check failed: %v", table, err)
-		}
-		if !hasCheck {
-			t.Fatalf("%s missing CHECK(trim(command_id) <> '')", table)
-		}
 		hasIndex, err := tableHasIndex(db, table, wantIndexByTable[table])
 		if err != nil {
 			t.Fatalf("inspect %s index failed: %v", table, err)

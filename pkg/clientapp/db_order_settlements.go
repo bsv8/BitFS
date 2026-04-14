@@ -187,6 +187,41 @@ func dbUpdateBusinessSettlementOutcomeTx(ctx context.Context, tx sqlConn, e busi
 	return err
 }
 
+// dbUpdateBusinessSettlementOutcomeEntTx 在 ent 事务里同步回写业务状态和结算出口状态。
+// 设计说明：
+// - 桥接链路已经切到 ent，这里只保留同一口径的 ent 入口；
+// - 失败时直接返回，不再做旧 SQL 兜底。
+func dbUpdateBusinessSettlementOutcomeEntTx(ctx context.Context, tx *gen.Tx, e businessSettlementOutcomeEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	e.SettlementID = strings.TrimSpace(e.SettlementID)
+	if e.SettlementID == "" {
+		return fmt.Errorf("settlement_id is required")
+	}
+	if e.UpdatedAtUnix <= 0 {
+		e.UpdatedAtUnix = time.Now().Unix()
+	}
+	existing, err := tx.OrderSettlements.Query().
+		Where(ordersettlements.SettlementIDEQ(e.SettlementID)).
+		Only(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = existing.Update().
+		SetStatus(strings.TrimSpace(e.BusinessStatus)).
+		SetSettlementStatus(strings.TrimSpace(e.SettlementStatus)).
+		SetSettlementMethod(strings.TrimSpace(e.SettlementMethod)).
+		SetTargetType(strings.TrimSpace(e.TargetType)).
+		SetTargetID(strings.TrimSpace(e.TargetID)).
+		SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+		SetPayloadJSON(mustJSONString(e.SettlementPayload)).
+		SetSettlementPayloadJSON(mustJSONString(e.SettlementPayload)).
+		SetUpdatedAtUnix(e.UpdatedAtUnix).
+		Save(ctx)
+	return err
+}
+
 // dbUpsertBusinessSettlementTx 统一处理结算行写入。
 // 设计说明：
 // - settlement_id 精确定位，不再拿 order_id 整单覆盖；
@@ -285,6 +320,95 @@ func dbUpsertBusinessSettlementTx(ctx context.Context, tx sqlConn, e businessSet
 		e.CreatedAtUnix,
 		e.UpdatedAtUnix,
 	)
+	return err
+}
+
+// dbUpsertBusinessSettlementEntTx 在 ent 事务里统一处理结算行写入。
+// 设计说明：
+// - 这条入口和 SQL 版保持同样的幂等语义，但不再向上层扩散旧事务句柄；
+// - 桥接层已经切到 ent 后，只允许走这个入口。
+func dbUpsertBusinessSettlementEntTx(ctx context.Context, tx *gen.Tx, e businessSettlementEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
+	}
+	e.SettlementID = strings.TrimSpace(e.SettlementID)
+	if e.SettlementID == "" {
+		return fmt.Errorf("settlement_id is required")
+	}
+	e.OrderID = strings.TrimSpace(e.OrderID)
+	if e.OrderID == "" {
+		return fmt.Errorf("order_id is required")
+	}
+	if err := validateSettlementMethod(e.SettlementMethod); err != nil {
+		return err
+	}
+	if e.CreatedAtUnix <= 0 {
+		e.CreatedAtUnix = time.Now().Unix()
+	}
+	if e.UpdatedAtUnix <= 0 {
+		e.UpdatedAtUnix = e.CreatedAtUnix
+	}
+
+	existing, err := tx.OrderSettlements.Query().
+		Where(ordersettlements.SettlementIDEQ(e.SettlementID)).
+		Only(ctx)
+	if err == nil {
+		if strings.TrimSpace(existing.OrderID) != "" && strings.TrimSpace(existing.OrderID) != e.OrderID {
+			return fmt.Errorf("order_id mismatch for settlement_id=%s", e.SettlementID)
+		}
+		_, err = existing.Update().
+			SetSettlementMethod(strings.TrimSpace(e.SettlementMethod)).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetSettlementStatus(strings.TrimSpace(e.Status)).
+			SetTargetType(strings.TrimSpace(e.TargetType)).
+			SetTargetID(strings.TrimSpace(e.TargetID)).
+			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			SetSettlementPayloadJSON(mustJSONString(e.Payload)).
+			SetUpdatedAtUnix(e.UpdatedAtUnix).
+			Save(ctx)
+		return err
+	}
+	if !gen.IsNotFound(err) {
+		return err
+	}
+
+	nextSettlementNo := int64(1)
+	last, err := tx.OrderSettlements.Query().
+		Where(ordersettlements.OrderIDEQ(e.OrderID)).
+		Order(ordersettlements.BySettlementNo(entsql.OrderDesc())).
+		First(ctx)
+	if err == nil {
+		nextSettlementNo = last.SettlementNo + 1
+	} else if !gen.IsNotFound(err) {
+		return err
+	}
+
+	_, err = tx.OrderSettlements.Create().
+		SetSettlementID(e.SettlementID).
+		SetOrderID(e.OrderID).
+		SetSettlementNo(nextSettlementNo).
+		SetBusinessRole("").
+		SetSourceType("").
+		SetSourceID("").
+		SetAccountingScene("").
+		SetAccountingSubtype("").
+		SetSettlementMethod(strings.TrimSpace(e.SettlementMethod)).
+		SetStatus(strings.TrimSpace(e.Status)).
+		SetSettlementStatus(strings.TrimSpace(e.Status)).
+		SetAmountSatoshi(0).
+		SetFromPartyID("").
+		SetToPartyID("").
+		SetTargetType(strings.TrimSpace(e.TargetType)).
+		SetTargetID(strings.TrimSpace(e.TargetID)).
+		SetIdempotencyKey("").
+		SetNote("").
+		SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		SetSettlementPayloadJSON(mustJSONString(e.Payload)).
+		SetCreatedAtUnix(e.CreatedAtUnix).
+		SetUpdatedAtUnix(e.UpdatedAtUnix).
+		Save(ctx)
 	return err
 }
 

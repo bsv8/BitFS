@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 )
 
 func openSchemaTestDB(t *testing.T) *sql.DB {
@@ -192,31 +194,36 @@ func TestSettlementPaymentAttemptWrappersPopulateSettlementSource(t *testing.T) 
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
 
-	if err := dbAppendSettlementPaymentAttemptFinBusiness(context.Background(), db, 77, finBusinessEntry{
-		OrderID:           "biz_settlement_guard_1",
-		BusinessRole:      "process",
-		AccountingScene:   "wallet_transfer",
-		AccountingSubType: "open",
-		FromPartyID:       "client:self",
-		ToPartyID:         "gateway:peer",
-		Status:            "posted",
-		OccurredAtUnix:    1700000602,
-		IdempotencyKey:    "idem_settlement_guard_1",
-		Note:              "历史回填业务",
+	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+		return dbAppendSettlementPaymentAttemptFinBusiness(context.Background(), tx, 77, finBusinessEntry{
+			OrderID:           "biz_settlement_guard_1",
+			BusinessRole:      "process",
+			AccountingScene:   "wallet_transfer",
+			AccountingSubType: "open",
+			FromPartyID:       "client:self",
+			ToPartyID:         "gateway:peer",
+			Status:            "posted",
+			OccurredAtUnix:    1700000602,
+			IdempotencyKey:    "idem_settlement_guard_1",
+			Note:              "历史回填业务",
+		})
 	}); err != nil {
 		t.Fatalf("settlement payment attempt business write failed: %v", err)
 	}
 
-	if err := dbAppendSettlementPaymentAttemptFinProcessEvent(context.Background(), db, 77, finProcessEventEntry{
-		ProcessID:         "proc_settlement_guard_1",
-		AccountingScene:   "wallet_transfer",
-		AccountingSubType: "open",
-		EventType:         "state_change",
-		Status:            "applied",
-		OccurredAtUnix:    1700000603,
-		IdempotencyKey:    "idem_settlement_guard_evt_1",
-		Note:              "历史回填事件",
+	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+		return dbAppendSettlementPaymentAttemptFinProcessEvent(context.Background(), tx, 77, finProcessEventEntry{
+			ProcessID:         "proc_settlement_guard_1",
+			AccountingScene:   "wallet_transfer",
+			AccountingSubType: "open",
+			EventType:         "state_change",
+			Status:            "applied",
+			OccurredAtUnix:    1700000603,
+			IdempotencyKey:    "idem_settlement_guard_evt_1",
+			Note:              "历史回填事件",
+		})
 	}); err != nil {
 		t.Fatalf("settlement payment attempt process event write failed: %v", err)
 	}
@@ -249,8 +256,9 @@ func TestBizOrderPayBSVProcessEventUsesSourceSettlementID(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAccountingTestDB(t)
+	store := newClientDB(db, nil)
 
-	if err := dbAppendFinBusiness(context.Background(), db, finBusinessEntry{
+	if err := dbAppendFinBusiness(context.Background(), newClientDB(db, nil), finBusinessEntry{
 		OrderID:           "biz_wallet_guard_1",
 		BusinessRole:      "process",
 		SourceType:        "front_order",
@@ -271,18 +279,20 @@ func TestBizOrderPayBSVProcessEventUsesSourceSettlementID(t *testing.T) {
 		t.Fatalf("business write failed: %v", err)
 	}
 
-	if err := dbAppendFinProcessEvent(context.Background(), db, finProcessEventEntry{
-		ProcessID:         "proc_wallet_guard_1",
-		SourceType:        "biz_order_pay_bsv",
-		SourceID:          "set_wallet_guard_1",
-		AccountingScene:   "wallet_transfer",
-		AccountingSubType: "pay_bsv",
-		EventType:         "wallet_transfer_submit",
-		Status:            "submitted",
-		OccurredAtUnix:    1700000611,
-		IdempotencyKey:    "idem_wallet_guard_evt_1",
-		Note:              "钱包主流程事件",
-		Payload:           map[string]any{"step": 2},
+	if err := clientDBEntTx(context.Background(), store, func(tx *gen.Tx) error {
+		return dbAppendFinProcessEvent(context.Background(), tx, finProcessEventEntry{
+			ProcessID:         "proc_wallet_guard_1",
+			SourceType:        "biz_order_pay_bsv",
+			SourceID:          "set_wallet_guard_1",
+			AccountingScene:   "wallet_transfer",
+			AccountingSubType: "pay_bsv",
+			EventType:         "wallet_transfer_submit",
+			Status:            "submitted",
+			OccurredAtUnix:    1700000611,
+			IdempotencyKey:    "idem_wallet_guard_evt_1",
+			Note:              "钱包主流程事件",
+			Payload:           map[string]any{"step": 2},
+		})
 	}); err != nil {
 		t.Fatalf("process event write failed: %v", err)
 	}
@@ -309,14 +319,13 @@ func TestSettlementPaymentAttemptWriteGuard_NoSharedEntryDirectCalls(t *testing.
 
 	files := []string{
 		"db_process_writes.go",
-		"db_init.go",
 	}
 	allowed := map[string]map[string]bool{
 		"db_process_writes.go": {
-			"func dbAppendFinBusiness(ctx context.Context, db sqlConn, e finBusinessEntry) error {":         true,
-			"func dbAppendFinProcessEvent(ctx context.Context, db sqlConn, e finProcessEventEntry) error {": true,
-			"return dbAppendFinBusiness(ctx, db, e)":                                                        true,
-			"return dbAppendFinProcessEvent(ctx, db, e)":                                                    true,
+			"func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {": true,
+			"func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventEntry) error {": true,
+			"return dbAppendFinBusinessTx(ctx, tx, e)":                                                     true,
+			"return dbAppendFinProcessEvent(ctx, tx, e)":                                                   true,
 		},
 	}
 

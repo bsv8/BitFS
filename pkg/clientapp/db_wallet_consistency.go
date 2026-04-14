@@ -2,42 +2,59 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factbsvutxos"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelchaindirectpay"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementpaymentattempts"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementrecords"
 )
 
-func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, db sqlConn, sourceType, channelTable, txid string, requireConfirmed bool) (int64, bool, error) {
-	if db == nil {
-		return 0, false, fmt.Errorf("db is nil")
+type settlementAttemptLookupResult struct {
+	ID    int64
+	Found bool
+}
+
+func resolveSettlementPaymentAttemptIDByChannelTxID(ctx context.Context, store *clientDB, sourceType, txid string, requireConfirmed bool) (int64, bool, error) {
+	if store == nil {
+		return 0, false, fmt.Errorf("client db is nil")
 	}
 	sourceType = strings.ToLower(strings.TrimSpace(sourceType))
-	channelTable = strings.TrimSpace(channelTable)
 	txid = strings.ToLower(strings.TrimSpace(txid))
-	if sourceType == "" || channelTable == "" || txid == "" {
-		return 0, false, fmt.Errorf("source_type, channel_table and txid are required")
+	if sourceType == "" || txid == "" {
+		return 0, false, fmt.Errorf("source_type and txid are required")
 	}
-	query := fmt.Sprintf(
-		`SELECT sc.id
-		   FROM fact_settlement_payment_attempts sc
-		   JOIN %s ch ON ch.settlement_payment_attempt_id=sc.id
-		  WHERE sc.source_type=? AND ch.txid=?`,
-		channelTable,
-	)
-	args := []any{sourceType, txid}
-	if requireConfirmed {
-		query += " AND sc.state='confirmed'"
-	}
-	query += " LIMIT 1"
-	var paymentAttemptID int64
-	if err := QueryRowContext(ctx, db, query, args...).Scan(&paymentAttemptID); err != nil {
-		if err == sql.ErrNoRows {
-			return 0, false, nil
+	out, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (settlementAttemptLookupResult, error) {
+		channel, err := tx.FactSettlementChannelChainDirectPay.Query().
+			Where(factsettlementchannelchaindirectpay.TxidEQ(txid)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return settlementAttemptLookupResult{}, nil
+			}
+			return settlementAttemptLookupResult{}, err
 		}
+		q := channel.QuerySettlementPaymentAttempt().
+			Where(factsettlementpaymentattempts.SourceTypeEQ(sourceType))
+		if requireConfirmed {
+			q = q.Where(factsettlementpaymentattempts.StateEQ("confirmed"))
+		}
+		attempt, err := q.Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return settlementAttemptLookupResult{}, nil
+			}
+			return settlementAttemptLookupResult{}, err
+		}
+		return settlementAttemptLookupResult{ID: int64(attempt.ID), Found: true}, nil
+	})
+	if err != nil {
 		return 0, false, err
 	}
-	return paymentAttemptID, true, nil
+	return out.ID, out.Found, nil
 }
 
 // TokenTxDualLineConsistency 是 token 交易一致性检查结果。
@@ -78,41 +95,44 @@ func CheckTokenTxDualLineConsistency(ctx context.Context, store *clientDB, txid 
 	if store == nil {
 		return TokenTxDualLineConsistency{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (TokenTxDualLineConsistency, error) {
-		out := TokenTxDualLineConsistency{TxID: txid}
-		var count int
-		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE spent_by_txid=? AND utxo_state='spent'`, txid).Scan(&count); err != nil {
-			return TokenTxDualLineConsistency{}, err
-		}
-		if count > 0 {
-			out.HasCarrierBSVFact = true
-		}
+	out := TokenTxDualLineConsistency{TxID: txid}
+	count, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
+		return tx.FactBsvUtxos.Query().
+			Where(factbsvutxos.SpentByTxidEQ(txid), factbsvutxos.UtxoStateEQ("spent")).
+			Count(ctx)
+	})
+	if err != nil {
+		return TokenTxDualLineConsistency{}, err
+	}
+	out.HasCarrierBSVFact = count > 0
 
-		tokenPaymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, false)
+	tokenPaymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, false)
+	if err != nil {
+		return TokenTxDualLineConsistency{}, err
+	}
+	if found {
+		out.HasChainTokenCycle = true
+		count, err = clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
+			return tx.FactSettlementRecords.Query().
+				Where(factsettlementrecords.SettlementPaymentAttemptIDEQ(tokenPaymentAttemptID), factsettlementrecords.AssetTypeEQ("TOKEN")).
+				Count(ctx)
+		})
 		if err != nil {
 			return TokenTxDualLineConsistency{}, err
 		}
-		if found {
-			out.HasChainTokenCycle = true
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE asset_type='TOKEN' AND settlement_payment_attempt_id=?`, tokenPaymentAttemptID).Scan(&count); err != nil {
-				return TokenTxDualLineConsistency{}, err
-			}
-			if count > 0 {
-				out.HasTokenQuantityFact = true
-			}
-		}
+		out.HasTokenQuantityFact = count > 0
+	}
 
-		if !out.HasChainTokenCycle {
-			out.MissingItems = append(out.MissingItems, "chain_token_cycle")
-		}
-		if !out.HasCarrierBSVFact {
-			out.MissingItems = append(out.MissingItems, "carrier_bsv_fact")
-		}
-		if !out.HasTokenQuantityFact {
-			out.MissingItems = append(out.MissingItems, "token_quantity_fact")
-		}
-		return out, nil
-	})
+	if !out.HasChainTokenCycle {
+		out.MissingItems = append(out.MissingItems, "chain_token_cycle")
+	}
+	if !out.HasCarrierBSVFact {
+		out.MissingItems = append(out.MissingItems, "carrier_bsv_fact")
+	}
+	if !out.HasTokenQuantityFact {
+		out.MissingItems = append(out.MissingItems, "token_quantity_fact")
+	}
+	return out, nil
 }
 
 // CheckConfirmedBSVSpendConsistency 检查 BSV 已确认支付是否真正落到 UTXO 扣账。
@@ -124,41 +144,44 @@ func CheckConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, txi
 	if store == nil {
 		return ConfirmedBSVSpendConsistency{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (ConfirmedBSVSpendConsistency, error) {
-		out := ConfirmedBSVSpendConsistency{TxID: txid}
-		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
+	out := ConfirmedBSVSpendConsistency{TxID: txid}
+	paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, true)
+	if err != nil {
+		return ConfirmedBSVSpendConsistency{}, err
+	}
+	if found {
+		out.HasConfirmedCycle = true
+		count, err := clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
+			return tx.FactSettlementRecords.Query().
+				Where(factsettlementrecords.SettlementPaymentAttemptIDEQ(paymentAttemptID), factsettlementrecords.AssetTypeEQ("BSV")).
+				Count(ctx)
+		})
 		if err != nil {
 			return ConfirmedBSVSpendConsistency{}, err
 		}
-		if found {
-			out.HasConfirmedCycle = true
-			var count int
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_settlement_records WHERE settlement_payment_attempt_id=? AND asset_type='BSV'`, paymentAttemptID).Scan(&count); err != nil {
-				return ConfirmedBSVSpendConsistency{}, err
-			}
-			if count > 0 {
-				out.HasBSVSettlementFact = true
-			}
-			if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE spent_by_txid=? AND utxo_state='spent'`, txid).Scan(&count); err != nil {
-				return ConfirmedBSVSpendConsistency{}, err
-			}
-			if count > 0 {
-				out.HasSpentUTXO = true
-			}
+		out.HasBSVSettlementFact = count > 0
+		count, err = clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int, error) {
+			return tx.FactBsvUtxos.Query().
+				Where(factbsvutxos.SpentByTxidEQ(txid), factbsvutxos.UtxoStateEQ("spent")).
+				Count(ctx)
+		})
+		if err != nil {
+			return ConfirmedBSVSpendConsistency{}, err
 		}
+		out.HasSpentUTXO = count > 0
+	}
 
-		if !out.HasConfirmedCycle {
-			out.MissingItems = append(out.MissingItems, "confirmed_cycle")
-		}
-		if out.HasConfirmedCycle && !out.HasBSVSettlementFact {
-			out.MissingItems = append(out.MissingItems, "bsv_settlement_fact")
-		}
-		if out.HasConfirmedCycle && out.HasBSVSettlementFact && !out.HasSpentUTXO {
-			out.MissingItems = append(out.MissingItems, "spent_bsv_utxo")
-			out.Repairable = true
-		}
-		return out, nil
-	})
+	if !out.HasConfirmedCycle {
+		out.MissingItems = append(out.MissingItems, "confirmed_cycle")
+	}
+	if out.HasConfirmedCycle && !out.HasBSVSettlementFact {
+		out.MissingItems = append(out.MissingItems, "bsv_settlement_fact")
+	}
+	if out.HasConfirmedCycle && out.HasBSVSettlementFact && !out.HasSpentUTXO {
+		out.MissingItems = append(out.MissingItems, "spent_bsv_utxo")
+		out.Repairable = true
+	}
+	return out, nil
 }
 
 // RepairConfirmedBSVSpendConsistency 通过 settlement_payment_attempt 重放 BSV 扣账。
@@ -175,7 +198,7 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		return fmt.Errorf("client db is nil")
 	}
 	return store.Do(ctx, func(db sqlConn) error {
-		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, db, "chain_direct_pay", "fact_settlement_channel_chain_direct_pay", txid, true)
+		paymentAttemptID, found, err := resolveSettlementPaymentAttemptIDByChannelTxID(ctx, store, "chain_direct_pay", txid, true)
 		if err != nil {
 			return err
 		}

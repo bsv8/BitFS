@@ -2,13 +2,21 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 	"time"
 
+	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizpool"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factpoolsessionevents"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/factsettlementchannelpoolsessionquotepay"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlements"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipworkerlogs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procchainutxoworkerlogs"
 )
 
 // 设计说明：
@@ -31,7 +39,7 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db sqlConn) error {
+	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -44,50 +52,53 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 		now := time.Now().Unix()
 		// tx_history 仍是兼容事实事件，写入口径统一收口到常量。
 		allocationID := fmt.Sprintf("txhist_%s_%d_%d_%d", strings.TrimSpace(e.GatewayPeerID), now, e.SequenceNum, e.PaymentAttemptIndex)
-		_, err := db.Exec(
-			`INSERT INTO fact_pool_session_events(
-				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(allocation_id) DO UPDATE SET
-				event_kind=excluded.event_kind,
-				state=excluded.state,
-				direction=excluded.direction,
-				amount_satoshi=excluded.amount_satoshi,
-				purpose=excluded.purpose,
-				note=excluded.note,
-				msg_id=excluded.msg_id,
-				cycle_index=excluded.cycle_index,
-				txid=excluded.txid,
-				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-				created_at_unix=excluded.created_at_unix,
-				payload_json=excluded.payload_json`,
-			allocationID,
-			"",
-			int64(0),
-			PoolFactEventKindTxHistory,
-			PoolFactEventKindTxHistory,
-			int64(e.SequenceNum),
-			"confirmed",
-			e.Direction,
-			e.AmountSatoshi,
-			e.Purpose,
-			e.Note,
-			e.MsgID,
-			int64(e.PaymentAttemptIndex),
-			int64(0),
-			int64(0),
-			e.PoolID,
-			"",
-			e.GatewayPeerID,
-			now,
-			mustJSONString(map[string]any{
-				"event_type": e.EventType,
-			}),
-		)
+		payload := mustJSONString(map[string]any{"event_type": e.EventType})
+		existing, err := tx.FactPoolSessionEvents.Query().
+			Where(factpoolsessionevents.AllocationIDEQ(allocationID)).
+			Only(ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetEventKind(PoolFactEventKindTxHistory).
+				SetState("confirmed").
+				SetDirection(e.Direction).
+				SetAmountSatoshi(e.AmountSatoshi).
+				SetPurpose(e.Purpose).
+				SetNote(e.Note).
+				SetMsgID(e.MsgID).
+				SetCycleIndex(int64(e.PaymentAttemptIndex)).
+				SetTxid(e.PoolID).
+				SetGatewayPubkeyHex(e.GatewayPeerID).
+				SetCreatedAtUnix(now).
+				SetPayloadJSON(payload).
+				Save(ctx)
+		} else if gen.IsNotFound(err) {
+			_, err = tx.FactPoolSessionEvents.Create().
+				SetAllocationID(allocationID).
+				SetPoolSessionID("").
+				SetAllocationNo(0).
+				SetAllocationKind(PoolFactEventKindTxHistory).
+				SetEventKind(PoolFactEventKindTxHistory).
+				SetSequenceNum(int64(e.SequenceNum)).
+				SetState("confirmed").
+				SetDirection(e.Direction).
+				SetAmountSatoshi(e.AmountSatoshi).
+				SetPurpose(e.Purpose).
+				SetNote(e.Note).
+				SetMsgID(e.MsgID).
+				SetCycleIndex(int64(e.PaymentAttemptIndex)).
+				SetPayeeAmountAfter(0).
+				SetPayerAmountAfter(0).
+				SetTxid(e.PoolID).
+				SetTxHex("").
+				SetGatewayPubkeyHex(e.GatewayPeerID).
+				SetCreatedAtUnix(now).
+				SetPayloadJSON(payload).
+				Save(ctx)
+		}
 		if err != nil {
 			obs.Error("bitcast-client", "fact_pool_session_events_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
 		}
-		return nil
+		return err
 	})
 }
 
@@ -95,7 +106,7 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		if strings.TrimSpace(e.DemandID) == "" {
 			return fmt.Errorf("demand_id is required")
 		}
@@ -117,21 +128,18 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 		if finishedAtUnix <= 0 {
 			finishedAtUnix = now
 		}
-		_, err := db.Exec(
-			`INSERT INTO biz_purchases(
-					demand_id,seller_pub_hex,arbiter_pub_hex,chunk_index,object_hash,amount_satoshi,status,error_message,created_at_unix,finished_at_unix
-				) VALUES(?,?,?,?,?,?,?,?,?,?)`,
-			strings.TrimSpace(e.DemandID),
-			strings.ToLower(strings.TrimSpace(e.SellerPubHex)),
-			strings.ToLower(strings.TrimSpace(e.ArbiterPubHex)),
-			int64(e.ChunkIndex),
-			strings.ToLower(strings.TrimSpace(e.ObjectHash)),
-			int64(e.AmountSatoshi),
-			"done",
-			"",
-			createdAtUnix,
-			finishedAtUnix,
-		)
+		_, err := tx.BizPurchases.Create().
+			SetDemandID(strings.TrimSpace(e.DemandID)).
+			SetSellerPubHex(strings.ToLower(strings.TrimSpace(e.SellerPubHex))).
+			SetArbiterPubHex(strings.ToLower(strings.TrimSpace(e.ArbiterPubHex))).
+			SetChunkIndex(int64(e.ChunkIndex)).
+			SetObjectHash(strings.ToLower(strings.TrimSpace(e.ObjectHash))).
+			SetAmountSatoshi(int64(e.AmountSatoshi)).
+			SetStatus("done").
+			SetErrorMessage("").
+			SetCreatedAtUnix(createdAtUnix).
+			SetFinishedAtUnix(finishedAtUnix).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "purchase_append_failed", map[string]any{
 				"error":       err.Error(),
@@ -156,25 +164,24 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 		obs.Error("bitcast-client", "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
 		return err
 	}
-	err := store.Do(ctx, func(db sqlConn) error {
+	err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
 		if strings.TrimSpace(e.Action) == "" {
 			e.Action = "unknown"
 		}
-		_, err := db.Exec(
-			`INSERT INTO proc_gateway_events(created_at_unix,gateway_pubkey_hex,command_id,action,msg_id,sequence_num,pool_id,amount_satoshi,payload_json) VALUES(?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			e.GatewayPeerID,
-			commandID,
-			e.Action,
-			e.MsgID,
-			int64(e.SequenceNum),
-			e.PoolID,
-			e.AmountSatoshi,
-			mustJSONString(e.Payload),
-		)
+		_, err := tx.ProcGatewayEvents.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetGatewayPubkeyHex(e.GatewayPeerID).
+			SetCommandID(commandID).
+			SetAction(e.Action).
+			SetMsgID(e.MsgID).
+			SetSequenceNum(int64(e.SequenceNum)).
+			SetPoolID(e.PoolID).
+			SetAmountSatoshi(e.AmountSatoshi).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action, "command_id": commandID})
 		}
@@ -187,25 +194,22 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db sqlConn) error {
-		_, err := db.Exec(
-			`INSERT INTO proc_orchestrator_logs(
-				created_at_unix,event_type,source,signal_type,aggregate_key,idempotency_key,command_type,gateway_pubkey_hex,task_status,retry_count,queue_length,error_message,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			strings.TrimSpace(e.EventType),
-			strings.TrimSpace(e.Source),
-			strings.TrimSpace(e.SignalType),
-			strings.TrimSpace(e.AggregateKey),
-			strings.TrimSpace(e.IdempotencyKey),
-			strings.TrimSpace(e.CommandType),
-			strings.TrimSpace(e.GatewayPeerID),
-			strings.TrimSpace(e.TaskStatus),
-			int64(e.RetryCount),
-			int64(e.QueueLength),
-			strings.TrimSpace(e.ErrorMessage),
-			mustJSON(e.Payload),
-		)
+	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.ProcOrchestratorLogs.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetEventType(strings.TrimSpace(e.EventType)).
+			SetSource(strings.TrimSpace(e.Source)).
+			SetSignalType(strings.TrimSpace(e.SignalType)).
+			SetAggregateKey(strings.TrimSpace(e.AggregateKey)).
+			SetIdempotencyKey(strings.TrimSpace(e.IdempotencyKey)).
+			SetCommandType(strings.TrimSpace(e.CommandType)).
+			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
+			SetTaskStatus(strings.TrimSpace(e.TaskStatus)).
+			SetRetryCount(int64(e.RetryCount)).
+			SetQueueLength(int64(e.QueueLength)).
+			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+			SetPayloadJSON(mustJSON(e.Payload)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "orchestrator_log_append_failed", map[string]any{
 				"error":      err.Error(),
@@ -226,7 +230,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		obs.Error("bitcast-client", "proc_command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
 		return err
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		accepted := 0
 		if e.Accepted {
 			accepted = 1
@@ -234,28 +238,25 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 		// trigger_key 是来源链路键，不是命令主键
 		// - orchestrator 发起时，trigger_key = orchestrator.idempotency_key
 		// - 非 orchestrator 发起时，trigger_key = ''
-		_, err := db.Exec(
-			`INSERT INTO proc_command_journal(
-				created_at_unix,command_id,command_type,gateway_pubkey_hex,aggregate_id,requested_by,requested_at_unix,accepted,status,error_code,error_message,state_before,state_after,duration_ms,trigger_key,payload_json,result_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			commandID,
-			strings.TrimSpace(e.CommandType),
-			strings.TrimSpace(e.GatewayPeerID),
-			strings.TrimSpace(e.AggregateID),
-			strings.TrimSpace(e.RequestedBy),
-			e.RequestedAt,
-			int64(accepted),
-			strings.TrimSpace(e.Status),
-			strings.TrimSpace(e.ErrorCode),
-			strings.TrimSpace(e.ErrorMessage),
-			strings.TrimSpace(e.StateBefore),
-			strings.TrimSpace(e.StateAfter),
-			e.DurationMS,
-			strings.TrimSpace(e.TriggerKey),
-			mustJSON(e.Payload),
-			mustJSON(e.Result),
-		)
+		_, err := tx.ProcCommandJournal.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetCommandID(commandID).
+			SetCommandType(strings.TrimSpace(e.CommandType)).
+			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
+			SetAggregateID(strings.TrimSpace(e.AggregateID)).
+			SetRequestedBy(strings.TrimSpace(e.RequestedBy)).
+			SetRequestedAtUnix(e.RequestedAt).
+			SetAccepted(int64(accepted)).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetErrorCode(strings.TrimSpace(e.ErrorCode)).
+			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+			SetStateBefore(strings.TrimSpace(e.StateBefore)).
+			SetStateAfter(strings.TrimSpace(e.StateAfter)).
+			SetDurationMs(e.DurationMS).
+			SetTriggerKey(strings.TrimSpace(e.TriggerKey)).
+			SetPayloadJSON(mustJSON(e.Payload)).
+			SetResultJSON(mustJSON(e.Result)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "proc_command_journal_append_failed", map[string]any{"error": err.Error(), "command_type": e.CommandType})
 		}
@@ -273,17 +274,16 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 		obs.Error("bitcast-client", "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
 		return err
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := db.Exec(
-			`INSERT INTO proc_domain_events(created_at_unix,command_id,gateway_pubkey_hex,event_name,state_before,state_after,payload_json) VALUES(?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			commandID,
-			strings.TrimSpace(e.GatewayPeerID),
-			strings.TrimSpace(e.EventName),
-			strings.TrimSpace(e.StateBefore),
-			strings.TrimSpace(e.StateAfter),
-			mustJSON(e.Payload),
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.ProcDomainEvents.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetCommandID(commandID).
+			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
+			SetEventName(strings.TrimSpace(e.EventName)).
+			SetStateBefore(strings.TrimSpace(e.StateBefore)).
+			SetStateAfter(strings.TrimSpace(e.StateAfter)).
+			SetPayloadJSON(mustJSON(e.Payload)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "domain_event_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
 		}
@@ -301,21 +301,18 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 		obs.Error("bitcast-client", "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
 		return err
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := db.Exec(
-			`INSERT INTO proc_state_snapshots(
-				created_at_unix,command_id,gateway_pubkey_hex,state,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			commandID,
-			strings.TrimSpace(e.GatewayPeerID),
-			strings.TrimSpace(e.State),
-			strings.TrimSpace(e.PauseReason),
-			int64(e.PauseNeedSat),
-			int64(e.PauseHaveSat),
-			strings.TrimSpace(e.LastError),
-			mustJSON(e.Payload),
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.ProcStateSnapshots.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetCommandID(commandID).
+			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
+			SetState(strings.TrimSpace(e.State)).
+			SetPauseReason(strings.TrimSpace(e.PauseReason)).
+			SetPauseNeedSatoshi(int64(e.PauseNeedSat)).
+			SetPauseHaveSatoshi(int64(e.PauseHaveSat)).
+			SetLastError(strings.TrimSpace(e.LastError)).
+			SetPayloadJSON(mustJSON(e.Payload)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "state_snapshot_append_failed", map[string]any{"error": err.Error(), "state": e.State})
 		}
@@ -341,28 +338,25 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 	if store == nil {
 		return nil
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		observedAtUnix := e.ObservedAtUnix
 		if observedAtUnix <= 0 {
 			observedAtUnix = time.Now().Unix()
 		}
-		_, err := db.Exec(
-			`INSERT INTO proc_observed_gateway_states(
-				created_at_unix,gateway_pubkey_hex,source_ref,observed_at_unix,event_name,state_before,state_after,pause_reason,pause_need_satoshi,pause_have_satoshi,last_error,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			strings.TrimSpace(e.GatewayPeerID),
-			strings.TrimSpace(e.SourceRef),
-			observedAtUnix,
-			strings.TrimSpace(e.EventName),
-			strings.TrimSpace(e.StateBefore),
-			strings.TrimSpace(e.StateAfter),
-			strings.TrimSpace(e.PauseReason),
-			int64(e.PauseNeedSat),
-			int64(e.PauseHaveSat),
-			strings.TrimSpace(e.LastError),
-			mustJSON(e.Payload),
-		)
+		_, err := tx.ProcObservedGatewayStates.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
+			SetSourceRef(strings.TrimSpace(e.SourceRef)).
+			SetObservedAtUnix(observedAtUnix).
+			SetEventName(strings.TrimSpace(e.EventName)).
+			SetStateBefore(strings.TrimSpace(e.StateBefore)).
+			SetStateAfter(strings.TrimSpace(e.StateAfter)).
+			SetPauseReason(strings.TrimSpace(e.PauseReason)).
+			SetPauseNeedSatoshi(int64(e.PauseNeedSat)).
+			SetPauseHaveSatoshi(int64(e.PauseHaveSat)).
+			SetLastError(strings.TrimSpace(e.LastError)).
+			SetPayloadJSON(mustJSON(e.Payload)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "observed_gateway_state_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
 		}
@@ -380,18 +374,17 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 		obs.Error("bitcast-client", "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
 		return err
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO proc_effect_logs(created_at_unix,command_id,gateway_pubkey_hex,effect_type,stage,status,error_message,payload_json) VALUES(?,?,?,?,?,?,?,?)`,
-			time.Now().Unix(),
-			commandID,
-			strings.TrimSpace(e.GatewayPeerID),
-			strings.TrimSpace(e.EffectType),
-			strings.TrimSpace(e.Stage),
-			strings.TrimSpace(e.Status),
-			strings.TrimSpace(e.ErrorMessage),
-			mustJSON(e.Payload),
-		)
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		_, err := tx.ProcEffectLogs.Create().
+			SetCreatedAtUnix(time.Now().Unix()).
+			SetCommandID(commandID).
+			SetGatewayPubkeyHex(strings.TrimSpace(e.GatewayPeerID)).
+			SetEffectType(strings.TrimSpace(e.EffectType)).
+			SetStage(strings.TrimSpace(e.Stage)).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+			SetPayloadJSON(mustJSON(e.Payload)).
+			Save(ctx)
 		if err != nil {
 			obs.Error("bitcast-client", "effect_log_append_failed", map[string]any{"error": err.Error(), "effect_type": e.EffectType, "stage": e.Stage})
 		}
@@ -411,7 +404,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db sqlConn) error {
+	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		if e.TriggeredAtUnix <= 0 {
 			e.TriggeredAtUnix = time.Now().Unix()
 		}
@@ -421,41 +414,83 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 		if e.EndedAtUnix <= 0 {
 			e.EndedAtUnix = e.StartedAtUnix
 		}
-		stmt := fmt.Sprintf(
-			`INSERT INTO %s(triggered_at_unix,started_at_unix,ended_at_unix,duration_ms,trigger_source,status,error_message,result_json)
-			 VALUES(?,?,?,?,?,?,?,?)`,
-			strings.TrimSpace(table),
-		)
-		if _, err := db.Exec(
-			stmt,
-			e.TriggeredAtUnix,
-			e.StartedAtUnix,
-			e.EndedAtUnix,
-			e.DurationMS,
-			strings.TrimSpace(e.TriggerSource),
-			strings.TrimSpace(e.Status),
-			strings.TrimSpace(e.ErrorMessage),
-			mustJSON(e.Result),
-		); err != nil {
+		var err error
+		switch strings.TrimSpace(table) {
+		case "proc_chain_tip_worker_logs":
+			_, err = tx.ProcChainTipWorkerLogs.Create().
+				SetTriggeredAtUnix(e.TriggeredAtUnix).
+				SetStartedAtUnix(e.StartedAtUnix).
+				SetEndedAtUnix(e.EndedAtUnix).
+				SetDurationMs(e.DurationMS).
+				SetTriggerSource(strings.TrimSpace(e.TriggerSource)).
+				SetStatus(strings.TrimSpace(e.Status)).
+				SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+				SetResultJSON(mustJSON(e.Result)).
+				Save(ctx)
+		case "proc_chain_utxo_worker_logs":
+			_, err = tx.ProcChainUtxoWorkerLogs.Create().
+				SetTriggeredAtUnix(e.TriggeredAtUnix).
+				SetStartedAtUnix(e.StartedAtUnix).
+				SetEndedAtUnix(e.EndedAtUnix).
+				SetDurationMs(e.DurationMS).
+				SetTriggerSource(strings.TrimSpace(e.TriggerSource)).
+				SetStatus(strings.TrimSpace(e.Status)).
+				SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
+				SetResultJSON(mustJSON(e.Result)).
+				Save(ctx)
+		default:
+			return fmt.Errorf("unknown worker log table: %s", strings.TrimSpace(table))
+		}
+		if err != nil {
 			obs.Error("bitcast-client", errorEvent, map[string]any{"error": err.Error()})
 			return nil
 		}
-		dbTrimWorkerLogs(db, table, chainWorkerLogKeepCount)
+		dbTrimWorkerLogsEntTx(ctx, tx, table, chainWorkerLogKeepCount)
 		return nil
 	})
 }
 
-func dbTrimWorkerLogs(db sqlConn, table string, keep int) {
-	if db == nil || strings.TrimSpace(table) == "" || keep <= 0 {
+func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep int) {
+	if tx == nil || strings.TrimSpace(table) == "" || keep <= 0 {
 		return
 	}
-	stmt := fmt.Sprintf(
-		"DELETE FROM %s WHERE id NOT IN (SELECT id FROM %s ORDER BY id DESC LIMIT ?)",
-		table,
-		table,
-	)
-	if _, err := db.Exec(stmt, int64(keep)); err != nil {
-		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+	switch strings.TrimSpace(table) {
+	case "proc_chain_tip_worker_logs":
+		ids, err := tx.ProcChainTipWorkerLogs.Query().
+			Order(procchaintipworkerlogs.ByID(entsql.OrderDesc())).
+			Limit(keep).
+			IDs(ctx)
+		if err != nil {
+			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+			return
+		}
+		if len(ids) == 0 {
+			return
+		}
+		if _, err := tx.ProcChainTipWorkerLogs.Delete().
+			Where(procchaintipworkerlogs.IDNotIn(ids...)).
+			Exec(ctx); err != nil {
+			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+		}
+	case "proc_chain_utxo_worker_logs":
+		ids, err := tx.ProcChainUtxoWorkerLogs.Query().
+			Order(procchainutxoworkerlogs.ByID(entsql.OrderDesc())).
+			Limit(keep).
+			IDs(ctx)
+		if err != nil {
+			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+			return
+		}
+		if len(ids) == 0 {
+			return
+		}
+		if _, err := tx.ProcChainUtxoWorkerLogs.Delete().
+			Where(procchainutxoworkerlogs.IDNotIn(ids...)).
+			Exec(ctx); err != nil {
+			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+		}
+	default:
+		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": "unknown worker log table", "table": table})
 	}
 }
 
@@ -464,13 +499,13 @@ func dbTrimWorkerLogs(db sqlConn, table string, keep int) {
 // - 这里只负责把一条财务事实稳定落库，不判断业务链路归属；
 // - 结算出口字段由桥接层单独补，不在这里猜；
 // - order_settlements 已经是唯一主表，旧来源一律拒绝。
-func dbUpsertSettleRecord(ctx context.Context, db sqlConn, e finBusinessEntry) error {
-	return dbAppendFinBusiness(ctx, db, e)
+func dbUpsertSettleRecord(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
+	return dbAppendFinBusinessTx(ctx, tx, e)
 }
 
-func dbAppendFinBusinessTx(ctx context.Context, db sqlConn, e finBusinessEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func dbAppendFinBusinessTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
 	}
 	if e.OccurredAtUnix <= 0 {
 		e.OccurredAtUnix = time.Now().Unix()
@@ -513,113 +548,80 @@ func dbAppendFinBusinessTx(ctx context.Context, db sqlConn, e finBusinessEntry) 
 	settlementTargetID := strings.TrimSpace(e.SettlementTargetID)
 	settlementErrorMessage := strings.TrimSpace(e.SettlementErrorMessage)
 
-	switch starter := db.(type) {
-	case sqlConn:
-		return dbAppendFinBusinessRowTx(ctx, starter, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
-	case sqlTxStarter:
-		return dbInTx(ctx, starter, func(tx sqlConn) error {
-			return dbAppendFinBusinessRowTx(ctx, tx, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
-		})
-	default:
-		return fmt.Errorf("db does not support transactions")
-	}
+	return dbAppendFinBusinessRowTx(ctx, tx, e, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage)
 }
 
-func dbAppendFinBusinessRowTx(ctx context.Context, tx sqlConn, e finBusinessEntry, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage string) error {
-	var existingOrderID string
-	err := QueryRowContext(ctx, tx,
-		`SELECT order_id,settlement_no FROM order_settlements WHERE settlement_id=?`,
-		e.SettlementID,
-	).Scan(&existingOrderID, new(int64))
+func dbAppendFinBusinessRowTx(ctx context.Context, tx *gen.Tx, e finBusinessEntry, settlementMethod, settlementStatus, settlementTargetType, settlementTargetID, settlementErrorMessage string) error {
+	existing, err := tx.OrderSettlements.Query().
+		Where(ordersettlements.SettlementIDEQ(e.SettlementID)).
+		Only(ctx)
 	if err == nil {
-		if strings.TrimSpace(existingOrderID) != "" && strings.TrimSpace(existingOrderID) != e.OrderID {
+		if strings.TrimSpace(existing.OrderID) != "" && strings.TrimSpace(existing.OrderID) != e.OrderID {
 			return fmt.Errorf("order_id mismatch for settlement_id=%s", e.SettlementID)
 		}
-		_, err = ExecContext(ctx, tx,
-			`UPDATE order_settlements SET
-				business_role=?,
-				source_type=?,
-				source_id=?,
-				accounting_scene=?,
-				accounting_subtype=?,
-				settlement_method=?,
-				status=?,
-				settlement_status=?,
-				amount_satoshi=?,
-				from_party_id=?,
-				to_party_id=?,
-				target_type=?,
-				target_id=?,
-				idempotency_key=?,
-				note=?,
-				error_message=?,
-				payload_json=?,
-				settlement_payload_json=?,
-				updated_at_unix=?
-			WHERE settlement_id=?`,
-			e.BusinessRole,
-			e.SourceType,
-			e.SourceID,
-			strings.TrimSpace(e.AccountingScene),
-			strings.TrimSpace(e.AccountingSubType),
-			settlementMethod,
-			strings.TrimSpace(e.Status),
-			settlementStatus,
-			int64(0),
-			strings.TrimSpace(e.FromPartyID),
-			strings.TrimSpace(e.ToPartyID),
-			settlementTargetType,
-			settlementTargetID,
-			e.IdempotencyKey,
-			strings.TrimSpace(e.Note),
-			settlementErrorMessage,
-			mustJSONString(e.Payload),
-			mustJSONString(e.SettlementPayload),
-			e.OccurredAtUnix,
-			e.SettlementID,
-		)
+		_, err = tx.OrderSettlements.UpdateOneID(existing.ID).
+			SetBusinessRole(e.BusinessRole).
+			SetSourceType(e.SourceType).
+			SetSourceID(e.SourceID).
+			SetAccountingScene(strings.TrimSpace(e.AccountingScene)).
+			SetAccountingSubtype(strings.TrimSpace(e.AccountingSubType)).
+			SetSettlementMethod(settlementMethod).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetSettlementStatus(settlementStatus).
+			SetAmountSatoshi(0).
+			SetFromPartyID(strings.TrimSpace(e.FromPartyID)).
+			SetToPartyID(strings.TrimSpace(e.ToPartyID)).
+			SetTargetType(settlementTargetType).
+			SetTargetID(settlementTargetID).
+			SetIdempotencyKey(e.IdempotencyKey).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetErrorMessage(settlementErrorMessage).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			SetSettlementPayloadJSON(mustJSONString(e.SettlementPayload)).
+			SetUpdatedAtUnix(e.OccurredAtUnix).
+			Save(ctx)
 		return err
 	}
-	if err != nil && err != sql.ErrNoRows {
+	if err != nil && !gen.IsNotFound(err) {
 		return err
 	}
 
-	var nextSettlementNo int64
-	if err := QueryRowContext(ctx, tx,
-		`SELECT COALESCE(MAX(settlement_no),0)+1 FROM order_settlements WHERE order_id=?`,
-		e.OrderID,
-	).Scan(&nextSettlementNo); err != nil {
+	nextSettlementNo := int64(1)
+	last, err := tx.OrderSettlements.Query().
+		Where(ordersettlements.OrderIDEQ(e.OrderID)).
+		Order(ordersettlements.BySettlementNo(entsql.OrderDesc())).
+		First(ctx)
+	if err == nil {
+		nextSettlementNo = last.SettlementNo + 1
+	} else if err != nil && !gen.IsNotFound(err) {
 		return err
 	}
 
-	_, err = ExecContext(ctx, tx,
-		`INSERT INTO order_settlements(
-			settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,amount_satoshi,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,error_message,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		e.SettlementID,
-		e.OrderID,
-		nextSettlementNo,
-		e.BusinessRole,
-		e.SourceType,
-		e.SourceID,
-		strings.TrimSpace(e.AccountingScene),
-		strings.TrimSpace(e.AccountingSubType),
-		settlementMethod,
-		strings.TrimSpace(e.Status),
-		settlementStatus,
-		int64(0),
-		strings.TrimSpace(e.FromPartyID),
-		strings.TrimSpace(e.ToPartyID),
-		settlementTargetType,
-		settlementTargetID,
-		e.IdempotencyKey,
-		strings.TrimSpace(e.Note),
-		settlementErrorMessage,
-		mustJSONString(e.Payload),
-		mustJSONString(e.SettlementPayload),
-		e.OccurredAtUnix,
-		e.OccurredAtUnix,
-	)
+	_, err = tx.OrderSettlements.Create().
+		SetSettlementID(e.SettlementID).
+		SetOrderID(e.OrderID).
+		SetSettlementNo(nextSettlementNo).
+		SetBusinessRole(e.BusinessRole).
+		SetSourceType(e.SourceType).
+		SetSourceID(e.SourceID).
+		SetAccountingScene(strings.TrimSpace(e.AccountingScene)).
+		SetAccountingSubtype(strings.TrimSpace(e.AccountingSubType)).
+		SetSettlementMethod(settlementMethod).
+		SetStatus(strings.TrimSpace(e.Status)).
+		SetSettlementStatus(settlementStatus).
+		SetAmountSatoshi(0).
+		SetFromPartyID(strings.TrimSpace(e.FromPartyID)).
+		SetToPartyID(strings.TrimSpace(e.ToPartyID)).
+		SetTargetType(settlementTargetType).
+		SetTargetID(settlementTargetID).
+		SetIdempotencyKey(e.IdempotencyKey).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetErrorMessage(settlementErrorMessage).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		SetSettlementPayloadJSON(mustJSONString(e.SettlementPayload)).
+		SetCreatedAtUnix(e.OccurredAtUnix).
+		SetUpdatedAtUnix(e.OccurredAtUnix).
+		Save(ctx)
 	return err
 }
 
@@ -628,8 +630,13 @@ func dbAppendFinBusinessRowTx(ctx context.Context, tx sqlConn, e finBusinessEntr
 // - 这里只负责把一条财务业务事实稳定落库，不判断业务链路归属；
 // - 结算链路必须走 dbAppendSettlementPaymentAttemptFinBusiness，不能绕回这个入口；
 // - 这里已经收口到 settlement_payment_attempt，旧来源一律拒绝。
-func dbAppendFinBusiness(ctx context.Context, db sqlConn, e finBusinessEntry) error {
-	return dbAppendFinBusinessTx(ctx, db, e)
+func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {
+	if store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		return dbAppendFinBusinessTx(ctx, tx, e)
+	})
 }
 
 // 结算写入专用入口只认 settlement_payment_attempt 主键，调用方不再有机会手填来源口径。
@@ -637,19 +644,16 @@ func dbAppendFinBusiness(ctx context.Context, db sqlConn, e finBusinessEntry) er
 // - source_type/source_id 在这里统一生成；
 // - 结算链路只传 settlementPaymentAttemptID 和业务字段；
 // - 这样才能把“入口可用”和“入口可误用”彻底分开。
-func dbAppendSettlementPaymentAttemptFinBusiness(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, e finBusinessEntry) error {
+func dbAppendSettlementPaymentAttemptFinBusiness(ctx context.Context, tx *gen.Tx, settlementPaymentAttemptID int64, e finBusinessEntry) error {
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
 	e.SourceType = "settlement_payment_attempt"
 	e.SourceID = fmt.Sprintf("%d", settlementPaymentAttemptID)
-	return dbAppendFinBusiness(ctx, db, e)
+	return dbAppendFinBusinessTx(ctx, tx, e)
 }
 
-func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
+func dbAppendBusinessUTXOFactIfAbsent(_ any, txRole string) error {
 	txRole = strings.TrimSpace(txRole)
 	if txRole == "" {
 		return fmt.Errorf("tx_role is required for business utxo fact")
@@ -665,9 +669,9 @@ func dbAppendBusinessUTXOFactIfAbsent(db sqlConn, txRole string) error {
 // - 结算链路里，settlement_payment_attempt 继续走专用封装，biz_order_pay_bsv 直接用 settlement_id 作为来源；
 // - 不要在这里塞兼容分支，不然历史口径会重新污染主线；
 // - source_id 先按 settlement_id 使用，若是 settlement_payment_attempt 再反查真实 settlement。
-func dbAppendFinProcessEvent(ctx context.Context, db sqlConn, e finProcessEventEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
+func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventEntry) error {
+	if tx == nil {
+		return fmt.Errorf("tx is nil")
 	}
 	if e.OccurredAtUnix <= 0 {
 		e.OccurredAtUnix = time.Now().Unix()
@@ -696,53 +700,75 @@ func dbAppendFinProcessEvent(ctx context.Context, db sqlConn, e finProcessEventE
 		settlementID = strings.TrimSpace(e.ProcessID)
 	}
 	if strings.TrimSpace(e.SourceType) == "settlement_payment_attempt" {
-		var resolvedSettlementID string
-		if err := QueryRowContext(ctx, db, `SELECT settlement_id FROM order_settlements WHERE source_type=? AND source_id=? ORDER BY updated_at_unix DESC, settlement_no DESC LIMIT 1`, e.SourceType, e.SourceID).Scan(&resolvedSettlementID); err != nil {
+		resolved, err := tx.OrderSettlements.Query().
+			Where(
+				ordersettlements.SourceTypeEQ(e.SourceType),
+				ordersettlements.SourceIDEQ(e.SourceID),
+			).
+			Order(ordersettlements.ByUpdatedAtUnix(entsql.OrderDesc()), ordersettlements.BySettlementNo(entsql.OrderDesc())).
+			First(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("settlement not found for source_id=%s", e.SourceID)
+			}
+			return err
+		}
+		settlementID = strings.TrimSpace(resolved.SettlementID)
+		if settlementID == "" {
 			return fmt.Errorf("settlement not found for source_id=%s", e.SourceID)
 		}
-		if strings.TrimSpace(resolvedSettlementID) == "" {
-			return fmt.Errorf("settlement not found for source_id=%s", e.SourceID)
-		}
-		settlementID = strings.TrimSpace(resolvedSettlementID)
 	}
-	_, err := db.Exec(
-		`INSERT INTO order_settlement_events(process_id,settlement_id,source_type,source_id,accounting_scene,accounting_subtype,event_type,status,idempotency_key,note,payload_json,occurred_at_unix)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(settlement_id, event_type, idempotency_key) DO UPDATE SET
-			process_id=excluded.process_id,
-			settlement_id=excluded.settlement_id,
-			status=excluded.status,
-			occurred_at_unix=excluded.occurred_at_unix,
-			note=excluded.note,
-			payload_json=excluded.payload_json,
-			source_type=excluded.source_type,
-			source_id=excluded.source_id,
-			accounting_scene=excluded.accounting_scene,
-			accounting_subtype=excluded.accounting_subtype`,
-		e.ProcessID,
-		settlementID,
-		strings.TrimSpace(e.SourceType),
-		strings.TrimSpace(e.SourceID),
-		strings.TrimSpace(e.AccountingScene),
-		strings.TrimSpace(e.AccountingSubType),
-		strings.TrimSpace(e.EventType),
-		strings.TrimSpace(e.Status),
-		e.IdempotencyKey,
-		strings.TrimSpace(e.Note),
-		mustJSONString(e.Payload),
-		e.OccurredAtUnix,
-	)
+
+	existing, err := tx.OrderSettlementEvents.Query().
+		Where(
+			ordersettlementevents.SettlementIDEQ(settlementID),
+			ordersettlementevents.EventTypeEQ(strings.TrimSpace(e.EventType)),
+			ordersettlementevents.IdempotencyKeyEQ(e.IdempotencyKey),
+		).
+		Only(ctx)
+	if err == nil {
+		_, err = tx.OrderSettlementEvents.UpdateOneID(existing.ID).
+			SetProcessID(strings.TrimSpace(e.ProcessID)).
+			SetSettlementID(settlementID).
+			SetSourceType(strings.TrimSpace(e.SourceType)).
+			SetSourceID(strings.TrimSpace(e.SourceID)).
+			SetAccountingScene(strings.TrimSpace(e.AccountingScene)).
+			SetAccountingSubtype(strings.TrimSpace(e.AccountingSubType)).
+			SetStatus(strings.TrimSpace(e.Status)).
+			SetNote(strings.TrimSpace(e.Note)).
+			SetPayloadJSON(mustJSONString(e.Payload)).
+			SetOccurredAtUnix(e.OccurredAtUnix).
+			Save(ctx)
+		return err
+	}
+	if err != nil && !gen.IsNotFound(err) {
+		return err
+	}
+	_, err = tx.OrderSettlementEvents.Create().
+		SetProcessID(strings.TrimSpace(e.ProcessID)).
+		SetSettlementID(settlementID).
+		SetSourceType(strings.TrimSpace(e.SourceType)).
+		SetSourceID(strings.TrimSpace(e.SourceID)).
+		SetAccountingScene(strings.TrimSpace(e.AccountingScene)).
+		SetAccountingSubtype(strings.TrimSpace(e.AccountingSubType)).
+		SetEventType(strings.TrimSpace(e.EventType)).
+		SetStatus(strings.TrimSpace(e.Status)).
+		SetIdempotencyKey(e.IdempotencyKey).
+		SetNote(strings.TrimSpace(e.Note)).
+		SetPayloadJSON(mustJSONString(e.Payload)).
+		SetOccurredAtUnix(e.OccurredAtUnix).
+		Save(ctx)
 	return err
 }
 
 // 结算流程事件专用入口只认 settlement_payment_attempt 主键，避免调用方把旧来源带进来。
-func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, db sqlConn, settlementPaymentAttemptID int64, e finProcessEventEntry) error {
+func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, tx *gen.Tx, settlementPaymentAttemptID int64, e finProcessEventEntry) error {
 	if settlementPaymentAttemptID <= 0 {
 		return fmt.Errorf("settlement_payment_attempt_id must be positive")
 	}
 	e.SourceType = "settlement_payment_attempt"
 	e.SourceID = fmt.Sprintf("%d", settlementPaymentAttemptID)
-	return dbAppendFinProcessEvent(ctx, db, e)
+	return dbAppendFinProcessEvent(ctx, tx, e)
 }
 
 // dbApplyDirectTransferBizPoolAccountingTx 统一写 direct_transfer_pool 的业务层池账。
@@ -750,7 +776,7 @@ func dbAppendSettlementPaymentAttemptFinProcessEvent(ctx context.Context, db sql
 // - 这里只负责 biz_pool_allocations 和 biz_pool 快照，不碰 fact 消耗主路径；
 // - 调用方仍然可以先写兼容 fact 事件，但真正的划拨账必须从这里落到业务层；
 // - 幂等性依赖 allocation_id + (pool_session_id, allocation_kind, sequence_num) 的唯一约束。
-func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx sqlConn, in directTransferPoolAllocationFactInput, allocationNo int64) error {
+func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx *gen.Tx, in directTransferPoolAllocationFactInput, allocationNo int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -778,56 +804,41 @@ func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx sqlConn, i
 		return fmt.Errorf("allocation_no must be positive")
 	}
 
-	var existingStatus string
-	if err := tx.QueryRow(`SELECT status FROM biz_pool WHERE pool_session_id=?`, sessionID).Scan(&existingStatus); err == nil {
-		existingStatus = strings.ToLower(strings.TrimSpace(existingStatus))
+	existingPool, err := tx.BizPool.Query().
+		Where(bizpool.PoolSessionIDEQ(sessionID)).
+		Only(ctx)
+	if err == nil {
+		existingStatus := strings.ToLower(strings.TrimSpace(existingPool.Status))
 		if existingStatus == "closed" && kind != PoolBusinessActionClose {
 			return fmt.Errorf("pool session %s is closed", sessionID)
 		}
+	} else if err != nil && !gen.IsNotFound(err) {
+		return err
 	}
 
-	var session struct {
-		PoolScheme         string
-		CounterpartyPubHex string
-		SellerPubHex       string
-		ArbiterPubHex      string
-		GatewayPubHex      string
-		PoolAmountSat      int64
-		SpendTxFeeSat      int64
-		Status             string
-		OpenBaseTxID       string
-		CreatedAtUnix      int64
-		UpdatedAtUnix      int64
-	}
-	if err := tx.QueryRow(`
-		SELECT pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-		       pool_amount_satoshi,spend_tx_fee_satoshi,status,open_base_txid,created_at_unix,updated_at_unix
-		  FROM fact_settlement_channel_pool_session_quote_pay
-		 WHERE pool_session_id=?`,
-		sessionID,
-	).Scan(
-		&session.PoolScheme, &session.CounterpartyPubHex, &session.SellerPubHex, &session.ArbiterPubHex, &session.GatewayPubHex,
-		&session.PoolAmountSat, &session.SpendTxFeeSat, &session.Status, &session.OpenBaseTxID, &session.CreatedAtUnix, &session.UpdatedAtUnix,
-	); err != nil {
+	session, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+		Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(sessionID)).
+		Only(ctx)
+	if err != nil {
 		return fmt.Errorf("load fact_settlement_channel_pool_session_quote_pay for %s: %w", sessionID, err)
 	}
 
 	poolAmountSat := uint64(0)
-	if session.PoolAmountSat > 0 {
-		poolAmountSat = uint64(session.PoolAmountSat)
+	if session.PoolAmountSatoshi > 0 {
+		poolAmountSat = uint64(session.PoolAmountSatoshi)
 	}
-	if session.SpendTxFeeSat > 0 {
-		poolAmountSat += uint64(session.SpendTxFeeSat)
+	if session.SpendTxFeeSatoshi > 0 {
+		poolAmountSat += uint64(session.SpendTxFeeSatoshi)
 	}
 	cycleFeeSat := uint64(0)
-	if session.SpendTxFeeSat > 0 {
-		cycleFeeSat = uint64(session.SpendTxFeeSat)
+	if session.SpendTxFeeSatoshi > 0 {
+		cycleFeeSat = uint64(session.SpendTxFeeSatoshi)
 	}
 	allocatedSat := in.PayeeAmountAfter
 	availableSat := in.PayerAmountAfter
 	if kind == PoolBusinessActionOpen {
 		allocatedSat = 0
-		availableSat = uint64(session.PoolAmountSat)
+		availableSat = uint64(session.PoolAmountSatoshi)
 		if availableSat == 0 && poolAmountSat >= cycleFeeSat {
 			availableSat = poolAmountSat - cycleFeeSat
 		}
@@ -835,8 +846,9 @@ func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx sqlConn, i
 	if availableSat == 0 && poolAmountSat >= allocatedSat+cycleFeeSat {
 		availableSat = poolAmountSat - allocatedSat - cycleFeeSat
 	}
-	if strings.TrimSpace(session.Status) == "" {
-		session.Status = "active"
+	sessionStatus := strings.TrimSpace(session.Status)
+	if sessionStatus == "" {
+		sessionStatus = "active"
 	}
 	now := time.Now().Unix()
 	createdAt := in.CreatedAtUnix
@@ -862,18 +874,18 @@ func dbApplyDirectTransferBizPoolAccountingTx(ctx context.Context, tx sqlConn, i
 	snapshot := directTransferBizPoolSnapshotInput{
 		SessionID:          sessionID,
 		PoolScheme:         session.PoolScheme,
-		CounterpartyPubHex: session.CounterpartyPubHex,
-		SellerPubHex:       session.SellerPubHex,
-		ArbiterPubHex:      session.ArbiterPubHex,
-		GatewayPubHex:      session.GatewayPubHex,
+		CounterpartyPubHex: session.CounterpartyPubkeyHex,
+		SellerPubHex:       session.SellerPubkeyHex,
+		ArbiterPubHex:      session.ArbiterPubkeyHex,
+		GatewayPubHex:      session.GatewayPubkeyHex,
 		PoolAmountSat:      poolAmountSat,
-		SpendTxFeeSat:      uint64(session.SpendTxFeeSat),
+		SpendTxFeeSat:      uint64(session.SpendTxFeeSatoshi),
 		AllocatedSat:       allocatedSat,
 		CycleFeeSat:        cycleFeeSat,
 		AvailableSat:       availableSat,
 		NextSequenceNum:    in.SequenceNum + 1,
-		Status:             session.Status,
-		OpenBaseTxID:       session.OpenBaseTxID,
+		Status:             sessionStatus,
+		OpenBaseTxID:       session.OpenBaseTxid,
 		CreatedAtUnix:      session.CreatedAtUnix,
 		UpdatedAtUnix:      createdAt,
 	}
@@ -898,7 +910,7 @@ func directTransferPoolAccountingSource(sessionID string, allocationKind string,
 }
 
 func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feePoolOpenAccountingInput) {
-	dbRecordAccounting(ctx, store, func(db sqlConn) {
+	dbRecordAccounting(ctx, store, func(tx *gen.Tx) {
 		businessID := strings.TrimSpace(in.BusinessID)
 		if businessID == "" {
 			businessID = "biz_feepool_open_" + randHex(8)
@@ -916,7 +928,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 					if input.SourceTxOutput() != nil {
 						grossInput += int64(input.SourceTxOutput().Satoshis)
 						if input.SourceTXID != nil {
-							_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
+							_ = dbAppendBusinessUTXOFactIfAbsent(tx, "open_base")
 						}
 					}
 				}
@@ -924,12 +936,12 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 					amount := int64(out.Satoshis)
 					if idx == 0 {
 						lockAmount += amount
-						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
+						_ = dbAppendBusinessUTXOFactIfAbsent(tx, "open_base")
 						continue
 					}
 					if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
 						changeBack += amount
-						_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
+						_ = dbAppendBusinessUTXOFactIfAbsent(tx, "open_base")
 					}
 				}
 				if lockAmount == 0 {
@@ -950,7 +962,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, db, settlementPaymentAttemptID, finBusinessEntry{
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, tx, settlementPaymentAttemptID, finBusinessEntry{
 			OrderID:           businessID,
 			BusinessRole:      "process", // 过程财务对象
 			AccountingScene:   "fee_pool",
@@ -974,7 +986,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 }
 
 func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID string, sequence uint32, amount uint64, gatewayPeerID string) {
-	dbRecordAccounting(ctx, store, func(db sqlConn) {
+	dbRecordAccounting(ctx, store, func(tx *gen.Tx) {
 		processID := "proc_feepool_cycle_" + strings.TrimSpace(spendTxID)
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，保证写入和查询走同一条路。
 		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, strings.TrimSpace(spendTxID))
@@ -982,7 +994,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 			return
 		}
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         processID,
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "cycle_pay",
@@ -1064,16 +1076,23 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 		"lock_blocks":                 session.LockBlocks,
 		"fee_rate_sat_per_byte":       session.FeeRateSatPerByte,
 	}
-	return store.Do(ctx, func(db sqlConn) error {
-		var settlementPaymentAttemptID int64
-		var channelID int64
-		err := QueryRowContext(ctx, db, `SELECT id,settlement_payment_attempt_id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID, &settlementPaymentAttemptID)
-		if err != nil && err != sql.ErrNoRows {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		var (
+			settlementPaymentAttemptID int64
+			channelID                  int64
+		)
+		existing, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+			Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(sessionID)).
+			Only(ctx)
+		if err == nil {
+			channelID = int64(existing.ID)
+			settlementPaymentAttemptID = existing.SettlementPaymentAttemptID
+		} else if err != nil && !gen.IsNotFound(err) {
 			return err
 		}
-		if err == sql.ErrNoRows {
+		if channelID == 0 {
 			pendingSourceID := "pending:pool_session_quote_pay:" + sessionID
-			settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptStore(ctx, store,
+			settlementPaymentAttemptID, err = dbUpsertSettlementPaymentAttemptEntTx(ctx, tx,
 				"payment_attempt_pool_session_quote_pay_"+sessionID,
 				"pool_session_quote_pay",
 				pendingSourceID,
@@ -1088,117 +1107,112 @@ func dbRecordFeePoolQuotePayAccounting(ctx context.Context, store *clientDB, gat
 				return err
 			}
 		}
-		_, err = ExecContext(ctx, db,
-			`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
-				settlement_payment_attempt_id,pool_session_id,txid,pool_scheme,
-				counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-				pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,
-				status,created_at_unix,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(pool_session_id) DO UPDATE SET
-				settlement_payment_attempt_id=excluded.settlement_payment_attempt_id,
-				txid=excluded.txid,
-				pool_scheme=excluded.pool_scheme,
-				counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
-				seller_pubkey_hex=excluded.seller_pubkey_hex,
-				arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
-				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-				pool_amount_satoshi=excluded.pool_amount_satoshi,
-				spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
-				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
-				lock_blocks=excluded.lock_blocks,
-				open_base_txid=excluded.open_base_txid,
-				status=excluded.status,
-				updated_at_unix=excluded.updated_at_unix`,
-			settlementPaymentAttemptID,
-			sessionID,
-			updatedTxID,
-			"2of2",
-			"",
-			"",
-			"",
-			gatewayPubkeyHex,
-			int64(session.PoolAmountSat),
-			int64(session.SpendTxFeeSat),
-			session.FeeRateSatPerByte,
-			int64(session.LockBlocks),
-			strings.ToLower(strings.TrimSpace(session.BaseTxID)),
-			"confirmed",
-			now,
-			now,
-		)
-		if err != nil {
-			return err
+		if existing != nil {
+			_, err = tx.FactSettlementChannelPoolSessionQuotePay.UpdateOneID(existing.ID).
+				SetSettlementPaymentAttemptID(settlementPaymentAttemptID).
+				SetTxid(updatedTxID).
+				SetPoolScheme("2of2").
+				SetCounterpartyPubkeyHex("").
+				SetSellerPubkeyHex("").
+				SetArbiterPubkeyHex("").
+				SetGatewayPubkeyHex(gatewayPubkeyHex).
+				SetPoolAmountSatoshi(int64(session.PoolAmountSat)).
+				SetSpendTxFeeSatoshi(int64(session.SpendTxFeeSat)).
+				SetFeeRateSatByte(session.FeeRateSatPerByte).
+				SetLockBlocks(int64(session.LockBlocks)).
+				SetOpenBaseTxid(strings.ToLower(strings.TrimSpace(session.BaseTxID))).
+				SetStatus("confirmed").
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+		} else {
+			node, err := tx.FactSettlementChannelPoolSessionQuotePay.Create().
+				SetSettlementPaymentAttemptID(settlementPaymentAttemptID).
+				SetPoolSessionID(sessionID).
+				SetTxid(updatedTxID).
+				SetPoolScheme("2of2").
+				SetCounterpartyPubkeyHex("").
+				SetSellerPubkeyHex("").
+				SetArbiterPubkeyHex("").
+				SetGatewayPubkeyHex(gatewayPubkeyHex).
+				SetPoolAmountSatoshi(int64(session.PoolAmountSat)).
+				SetSpendTxFeeSatoshi(int64(session.SpendTxFeeSat)).
+				SetFeeRateSatByte(session.FeeRateSatPerByte).
+				SetLockBlocks(int64(session.LockBlocks)).
+				SetOpenBaseTxid(strings.ToLower(strings.TrimSpace(session.BaseTxID))).
+				SetStatus("confirmed").
+				SetCreatedAtUnix(now).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			if err != nil {
+				return err
+			}
+			channelID = int64(node.ID)
 		}
-		if channelID == 0 {
-			if err := QueryRowContext(ctx, db, `SELECT id FROM fact_settlement_channel_pool_session_quote_pay WHERE pool_session_id=?`, sessionID).Scan(&channelID); err != nil {
+		if settlementPaymentAttemptID > 0 {
+			if _, err := tx.FactSettlementPaymentAttempts.UpdateOneID(int64(settlementPaymentAttemptID)).
+				SetSourceType("pool_session_quote_pay").
+				SetSourceID(fmt.Sprintf("%d", channelID)).
+				SetState("confirmed").
+				SetOccurredAtUnix(now).
+				SetConfirmedAtUnix(now).
+				SetNote("fee pool quote pay accounting").
+				SetPayloadJSON(mustJSONString(payload)).
+				Save(ctx); err != nil {
 				return err
 			}
 		}
-		if _, err := ExecContext(ctx, db,
-			`UPDATE fact_settlement_payment_attempts SET
-				source_type='pool_session_quote_pay',
-				source_id=?,
-				state='confirmed',
-				occurred_at_unix=?,
-				confirmed_at_unix=?,
-				note=?,
-				payload_json=?
-			WHERE id=?`,
-			fmt.Sprintf("%d", channelID),
-			now,
-			now,
-			"fee pool quote pay accounting",
-			mustJSONString(payload),
-			settlementPaymentAttemptID,
-		); err != nil {
+		event, err := tx.FactPoolSessionEvents.Query().
+			Where(factpoolsessionevents.AllocationIDEQ(allocationID)).
+			Only(ctx)
+		if err == nil {
+			_, err = tx.FactPoolSessionEvents.UpdateOneID(event.ID).
+				SetPoolSessionID(sessionID).
+				SetAllocationNo(int64(sequence)).
+				SetAllocationKind("pay").
+				SetEventKind(PoolFactEventKindPoolEvent).
+				SetSequenceNum(int64(sequence)).
+				SetState("confirmed").
+				SetDirection("out").
+				SetAmountSatoshi(int64(chargedAmount)).
+				SetPurpose(chargeReason).
+				SetNote("fee pool quote pay accounting").
+				SetMsgID(updatedTxID).
+				SetCycleIndex(int64(sequence)).
+				SetPayeeAmountAfter(int64(session.ServerAmount)).
+				SetPayerAmountAfter(int64(session.ClientAmount)).
+				SetTxid(updatedTxID).
+				SetTxHex(updatedTxHex).
+				SetGatewayPubkeyHex(gatewayPubkeyHex).
+				SetCreatedAtUnix(now).
+				SetPayloadJSON(mustJSONString(payload)).
+				Save(ctx)
 			return err
 		}
-		_, err = ExecContext(ctx, db,
-			`INSERT INTO fact_pool_session_events(
-				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(allocation_id) DO UPDATE SET
-				pool_session_id=excluded.pool_session_id,
-				allocation_no=excluded.allocation_no,
-				allocation_kind=excluded.allocation_kind,
-				event_kind=excluded.event_kind,
-				sequence_num=excluded.sequence_num,
-				state=excluded.state,
-				direction=excluded.direction,
-				amount_satoshi=excluded.amount_satoshi,
-				purpose=excluded.purpose,
-				note=excluded.note,
-				msg_id=excluded.msg_id,
-				cycle_index=excluded.cycle_index,
-				payee_amount_after=excluded.payee_amount_after,
-				payer_amount_after=excluded.payer_amount_after,
-				txid=excluded.txid,
-				tx_hex=excluded.tx_hex,
-				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-				created_at_unix=excluded.created_at_unix,
-				payload_json=excluded.payload_json`,
-			allocationID,
-			sessionID,
-			int64(sequence),
-			"pay",
-			PoolFactEventKindPoolEvent,
-			int64(sequence),
-			"confirmed",
-			"out",
-			int64(chargedAmount),
-			chargeReason,
-			"fee pool quote pay accounting",
-			updatedTxID,
-			int64(sequence),
-			int64(session.ServerAmount),
-			int64(session.ClientAmount),
-			updatedTxID,
-			updatedTxHex,
-			gatewayPubkeyHex,
-			now,
-			mustJSONString(payload),
-		)
+		if err != nil && !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.FactPoolSessionEvents.Create().
+			SetAllocationID(allocationID).
+			SetPoolSessionID(sessionID).
+			SetAllocationNo(int64(sequence)).
+			SetAllocationKind("pay").
+			SetEventKind(PoolFactEventKindPoolEvent).
+			SetSequenceNum(int64(sequence)).
+			SetState("confirmed").
+			SetDirection("out").
+			SetAmountSatoshi(int64(chargedAmount)).
+			SetPurpose(chargeReason).
+			SetNote("fee pool quote pay accounting").
+			SetMsgID(updatedTxID).
+			SetCycleIndex(int64(sequence)).
+			SetPayeeAmountAfter(int64(session.ServerAmount)).
+			SetPayerAmountAfter(int64(session.ClientAmount)).
+			SetTxid(updatedTxID).
+			SetTxHex(updatedTxHex).
+			SetGatewayPubkeyHex(gatewayPubkeyHex).
+			SetCreatedAtUnix(now).
+			SetPayloadJSON(mustJSONString(payload)).
+			Save(ctx)
 		return err
 	})
 }
@@ -1223,96 +1237,44 @@ func dbRecordFeePoolCloseAccounting(ctx context.Context, store *clientDB, sessio
 	finalTxHex = strings.ToLower(strings.TrimSpace(finalTxHex))
 	gatewayPeerID = strings.ToLower(strings.TrimSpace(gatewayPeerID))
 	now := time.Now().Unix()
-	return store.Do(ctx, func(db sqlConn) error {
-		var existing struct {
-			SettlementPaymentAttemptID int64
-			PoolScheme                 string
-			CounterpartyPubHex         string
-			SellerPubHex               string
-			ArbiterPubHex              string
-			GatewayPubHex              string
-			PoolAmountSat              int64
-			SpendTxFeeSat              int64
-			FeeRateSatByte             float64
-			LockBlocks                 int64
-			OpenBaseTxID               string
-			Status                     string
-			CreatedAtUnix              int64
-		}
-		if err := db.QueryRowContext(ctx, `
-			SELECT settlement_payment_attempt_id,pool_scheme,counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-			       pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,status,created_at_unix
-			  FROM fact_settlement_channel_pool_session_quote_pay
-			 WHERE pool_session_id=?`,
-			sessionID,
-		).Scan(
-			&existing.SettlementPaymentAttemptID,
-			&existing.PoolScheme,
-			&existing.CounterpartyPubHex,
-			&existing.SellerPubHex,
-			&existing.ArbiterPubHex,
-			&existing.GatewayPubHex,
-			&existing.PoolAmountSat,
-			&existing.SpendTxFeeSat,
-			&existing.FeeRateSatByte,
-			&existing.LockBlocks,
-			&existing.OpenBaseTxID,
-			&existing.Status,
-			&existing.CreatedAtUnix,
-		); err != nil {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.FactSettlementChannelPoolSessionQuotePay.Query().
+			Where(factsettlementchannelpoolsessionquotepay.PoolSessionIDEQ(sessionID)).
+			Only(ctx)
+		if err != nil {
 			return err
 		}
-		if existing.Status == "" {
-			existing.Status = "closed"
+		status := strings.TrimSpace(existing.Status)
+		if status == "" {
+			status = "closed"
 		}
 		if gatewayPeerID == "" {
-			gatewayPeerID = strings.ToLower(strings.TrimSpace(existing.GatewayPubHex))
+			gatewayPeerID = strings.ToLower(strings.TrimSpace(existing.GatewayPubkeyHex))
 		}
 		if gatewayPeerID == "" {
 			gatewayPeerID = "unknown"
 		}
-		if existing.CreatedAtUnix <= 0 {
-			existing.CreatedAtUnix = now
+		createdAt := existing.CreatedAtUnix
+		if createdAt <= 0 {
+			createdAt = now
 		}
-		if _, err := ExecContext(ctx, db,
-			`INSERT INTO fact_settlement_channel_pool_session_quote_pay(
-				settlement_payment_attempt_id,pool_session_id,txid,pool_scheme,
-				counterparty_pubkey_hex,seller_pubkey_hex,arbiter_pubkey_hex,gateway_pubkey_hex,
-				pool_amount_satoshi,spend_tx_fee_satoshi,fee_rate_sat_byte,lock_blocks,open_base_txid,
-				status,created_at_unix,updated_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(pool_session_id) DO UPDATE SET
-				settlement_payment_attempt_id=excluded.settlement_payment_attempt_id,
-				txid=excluded.txid,
-				pool_scheme=excluded.pool_scheme,
-				counterparty_pubkey_hex=excluded.counterparty_pubkey_hex,
-				seller_pubkey_hex=excluded.seller_pubkey_hex,
-				arbiter_pubkey_hex=excluded.arbiter_pubkey_hex,
-				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-				pool_amount_satoshi=excluded.pool_amount_satoshi,
-				spend_tx_fee_satoshi=excluded.spend_tx_fee_satoshi,
-				fee_rate_sat_byte=excluded.fee_rate_sat_byte,
-				lock_blocks=excluded.lock_blocks,
-				open_base_txid=excluded.open_base_txid,
-				status=excluded.status,
-				updated_at_unix=excluded.updated_at_unix`,
-			existing.SettlementPaymentAttemptID,
-			sessionID,
-			finalTxID,
-			existing.PoolScheme,
-			existing.CounterpartyPubHex,
-			existing.SellerPubHex,
-			existing.ArbiterPubHex,
-			gatewayPeerID,
-			existing.PoolAmountSat,
-			existing.SpendTxFeeSat,
-			existing.FeeRateSatByte,
-			existing.LockBlocks,
-			existing.OpenBaseTxID,
-			"closed",
-			existing.CreatedAtUnix,
-			now,
-		); err != nil {
+		if _, err := tx.FactSettlementChannelPoolSessionQuotePay.UpdateOneID(existing.ID).
+			SetSettlementPaymentAttemptID(existing.SettlementPaymentAttemptID).
+			SetTxid(finalTxID).
+			SetPoolScheme(existing.PoolScheme).
+			SetCounterpartyPubkeyHex(existing.CounterpartyPubkeyHex).
+			SetSellerPubkeyHex(existing.SellerPubkeyHex).
+			SetArbiterPubkeyHex(existing.ArbiterPubkeyHex).
+			SetGatewayPubkeyHex(gatewayPeerID).
+			SetPoolAmountSatoshi(existing.PoolAmountSatoshi).
+			SetSpendTxFeeSatoshi(existing.SpendTxFeeSatoshi).
+			SetFeeRateSatByte(existing.FeeRateSatByte).
+			SetLockBlocks(existing.LockBlocks).
+			SetOpenBaseTxid(existing.OpenBaseTxid).
+			SetStatus("closed").
+			SetCreatedAtUnix(createdAt).
+			SetUpdatedAtUnix(now).
+			Save(ctx); err != nil {
 			return err
 		}
 		allocationID := "fee_pool_close:" + sessionID
@@ -1322,51 +1284,58 @@ func dbRecordFeePoolCloseAccounting(ctx context.Context, store *clientDB, sessio
 			"final_spend_txid":   finalTxID,
 			"status":             "closed",
 		}
-		_, err := ExecContext(ctx, db,
-			`INSERT INTO fact_pool_session_events(
-				allocation_id,pool_session_id,allocation_no,allocation_kind,event_kind,sequence_num,state,direction,amount_satoshi,purpose,note,msg_id,cycle_index,payee_amount_after,payer_amount_after,txid,tx_hex,gateway_pubkey_hex,created_at_unix,payload_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(allocation_id) DO UPDATE SET
-				pool_session_id=excluded.pool_session_id,
-				allocation_no=excluded.allocation_no,
-				allocation_kind=excluded.allocation_kind,
-				event_kind=excluded.event_kind,
-				sequence_num=excluded.sequence_num,
-				state=excluded.state,
-				direction=excluded.direction,
-				amount_satoshi=excluded.amount_satoshi,
-				purpose=excluded.purpose,
-				note=excluded.note,
-				msg_id=excluded.msg_id,
-				cycle_index=excluded.cycle_index,
-				payee_amount_after=excluded.payee_amount_after,
-				payer_amount_after=excluded.payer_amount_after,
-				txid=excluded.txid,
-				tx_hex=excluded.tx_hex,
-				gateway_pubkey_hex=excluded.gateway_pubkey_hex,
-				created_at_unix=excluded.created_at_unix,
-				payload_json=excluded.payload_json`,
-			allocationID,
-			sessionID,
-			int64(1),
-			"close",
-			PoolFactEventKindPoolEvent,
-			int64(1),
-			"confirmed",
-			"out",
-			int64(0),
-			"fee_pool_close",
-			"fee pool close accounting",
-			finalTxID,
-			int64(0),
-			int64(0),
-			int64(0),
-			finalTxID,
-			finalTxHex,
-			gatewayPeerID,
-			now,
-			mustJSONString(payload),
-		)
+		event, err := tx.FactPoolSessionEvents.Query().
+			Where(factpoolsessionevents.AllocationIDEQ(allocationID)).
+			Only(ctx)
+		if err == nil {
+			_, err = tx.FactPoolSessionEvents.UpdateOneID(event.ID).
+				SetPoolSessionID(sessionID).
+				SetAllocationNo(1).
+				SetAllocationKind("close").
+				SetEventKind(PoolFactEventKindPoolEvent).
+				SetSequenceNum(1).
+				SetState("confirmed").
+				SetDirection("out").
+				SetAmountSatoshi(0).
+				SetPurpose("fee_pool_close").
+				SetNote("fee pool close accounting").
+				SetMsgID(finalTxID).
+				SetCycleIndex(0).
+				SetPayeeAmountAfter(0).
+				SetPayerAmountAfter(0).
+				SetTxid(finalTxID).
+				SetTxHex(finalTxHex).
+				SetGatewayPubkeyHex(gatewayPeerID).
+				SetCreatedAtUnix(now).
+				SetPayloadJSON(mustJSONString(payload)).
+				Save(ctx)
+			return err
+		}
+		if err != nil && !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.FactPoolSessionEvents.Create().
+			SetAllocationID(allocationID).
+			SetPoolSessionID(sessionID).
+			SetAllocationNo(1).
+			SetAllocationKind("close").
+			SetEventKind(PoolFactEventKindPoolEvent).
+			SetSequenceNum(1).
+			SetState("confirmed").
+			SetDirection("out").
+			SetAmountSatoshi(0).
+			SetPurpose("fee_pool_close").
+			SetNote("fee pool close accounting").
+			SetMsgID(finalTxID).
+			SetCycleIndex(0).
+			SetPayeeAmountAfter(0).
+			SetPayerAmountAfter(0).
+			SetTxid(finalTxID).
+			SetTxHex(finalTxHex).
+			SetGatewayPubkeyHex(gatewayPeerID).
+			SetCreatedAtUnix(now).
+			SetPayloadJSON(mustJSONString(payload)).
+			Save(ctx)
 		return err
 	})
 }
@@ -1382,7 +1351,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		// 第二阶段整改：open 继续有自己的业务记录，但定性为过程型财务对象
 		businessID := "biz_c2c_open_" + strings.TrimSpace(in.SessionID)
 		baseTxID := strings.ToLower(strings.TrimSpace(in.BaseTxID))
@@ -1403,19 +1372,19 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				}
 				grossInput += int64(input.SourceTxOutput().Satoshis)
 				if input.SourceTXID != nil {
-					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
+					_ = dbAppendBusinessUTXOFactIfAbsent(tx, "open_base")
 				}
 			}
 			for idx, out := range t.Outputs {
 				amount := int64(out.Satoshis)
 				if idx == 0 {
 					lockAmount += amount
-					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
+					_ = dbAppendBusinessUTXOFactIfAbsent(tx, "open_base")
 					continue
 				}
 				if lockScript != "" && strings.EqualFold(strings.TrimSpace(out.LockingScript.String()), lockScript) {
 					changeBack += amount
-					_ = dbAppendBusinessUTXOFactIfAbsent(db, "open_base")
+					_ = dbAppendBusinessUTXOFactIfAbsent(tx, "open_base")
 				}
 			}
 		}
@@ -1428,7 +1397,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 		}
 		// 第二阶段整改：open 继续写业务记录，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, db, settlementPaymentAttemptID, finBusinessEntry{
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, tx, settlementPaymentAttemptID, finBusinessEntry{
 			OrderID:           businessID,
 			BusinessRole:      "process",                 // 过程财务对象
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
@@ -1450,7 +1419,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 			obs.Error("bitcast-client", "direct_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(in.SessionID),
 			AccountingScene:   "fee_pool",
 			AccountingSubType: "open",
@@ -1491,7 +1460,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		_, allocID := directTransferPoolAccountingSource(strings.TrimSpace(sessionID), "pay", sequence)
 		if _, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID); err != nil {
 			return fmt.Errorf("resolve pool_allocation source id failed: %w", err)
@@ -1502,7 +1471,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 		}
 
 		// 过程事件：记录 pay 财务动作，供审计/对账/调试使用
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "chunk_pay",
@@ -1537,7 +1506,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	return store.Do(ctx, func(db sqlConn) error {
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		finalTxID = strings.ToLower(strings.TrimSpace(finalTxID))
 		txHex := strings.TrimSpace(finalTxHex)
 		var parsedFinalTx *transaction.Transaction
@@ -1564,7 +1533,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		}
 		// 第二阶段整改：close 继续写业务记录，但明确标记为过程型财务对象
 		// 注意：这不是正式下载收费 business，正式收费主事实只认 biz_download_pool_*
-		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, db, settlementPaymentAttemptID, finBusinessEntry{
+		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, tx, settlementPaymentAttemptID, finBusinessEntry{
 			OrderID:           businessID,
 			BusinessRole:      "process",                 // 过程财务对象
 			AccountingScene:   "direct_transfer_process", // 过程型财务场景
@@ -1586,7 +1555,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			return err
 		}
 		// 过程事件继续使用统一的过程追踪 id
-		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, db, settlementPaymentAttemptID, finProcessEventEntry{
+		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
 			ProcessID:         "proc_c2c_transfer_" + strings.TrimSpace(sessionID),
 			AccountingScene:   "c2c_transfer",
 			AccountingSubType: "close",
@@ -1612,7 +1581,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			if in.SourceTXID == nil {
 				continue
 			}
-			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final"); err != nil {
+			if err := dbAppendBusinessUTXOFactIfAbsent(tx, "close_final"); err != nil {
 				return err
 			}
 		}
@@ -1628,7 +1597,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 			} else if buyerLeft > 0 && amount == buyerLeft {
 				buyerLeft = 0
 			}
-			if err := dbAppendBusinessUTXOFactIfAbsent(db, "close_final"); err != nil {
+			if err := dbAppendBusinessUTXOFactIfAbsent(tx, "close_final"); err != nil {
 				return err
 			}
 		}
@@ -1636,12 +1605,12 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 	})
 }
 
-func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(sqlConn)) {
+func dbRecordAccounting(ctx context.Context, store *clientDB, fn func(*gen.Tx)) {
 	if store == nil {
 		return
 	}
-	_ = store.Do(ctx, func(db sqlConn) error {
-		fn(db)
+	_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		fn(tx)
 		return nil
 	})
 }

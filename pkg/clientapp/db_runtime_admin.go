@@ -10,10 +10,13 @@ import (
 	"strings"
 
 	entsql "entgo.io/ent/dialect/sql"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	bitfsprocchaintipworkerlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/procchaintipworkerlogs"
 	bitfsprocchainutxoworkerlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/procchainutxoworkerlogs"
 	bitfsprocorchestratorlogs "github.com/bsv8/bitfs-contract/ent/v1/gen/procorchestratorlogs"
 	bitfsprocschedulertaskruns "github.com/bsv8/bitfs-contract/ent/v1/gen/procschedulertaskruns"
+	bitfsprocschedulertasks "github.com/bsv8/bitfs-contract/ent/v1/gen/procschedulertasks"
+	bitfswalletutxo "github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
 )
 
 const singleStepOrchestratorEventPrefix = "__single__:"
@@ -560,246 +563,200 @@ func dbListSchedulerTasks(ctx context.Context, store *clientDB, f schedulerTaskF
 	if store == nil {
 		return schedulerTaskPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (schedulerTaskPage, error) {
-		where := make([]string, 0, 8)
-		args := make([]any, 0, 8)
-		if f.Mode != "" {
-			where = append(where, "mode=?")
-			args = append(args, f.Mode)
+	if store.ent == nil {
+		return schedulerTaskPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcSchedulerTasks.Query()
+	if f.Mode != "" {
+		q = q.Where(bitfsprocschedulertasks.ModeEQ(f.Mode))
+	}
+	if f.Owner != "" {
+		q = q.Where(bitfsprocschedulertasks.OwnerEQ(f.Owner))
+	}
+	if f.Status != "" {
+		q = q.Where(bitfsprocschedulertasks.StatusEQ(f.Status))
+	}
+	if f.NamePrefix != "" {
+		q = q.Where(bitfsprocschedulertasks.TaskNameHasPrefix(f.NamePrefix))
+	}
+	if f.InFlightSet {
+		if f.InFlight {
+			q = q.Where(bitfsprocschedulertasks.InFlightEQ(1))
+		} else {
+			q = q.Where(bitfsprocschedulertasks.InFlightEQ(0))
 		}
-		if f.Owner != "" {
-			where = append(where, "owner=?")
-			args = append(args, f.Owner)
+	}
+	total, err := store.ent.ProcSchedulerTasks.Query().Count(ctx)
+	if err != nil {
+		return schedulerTaskPage{}, err
+	}
+	rows, err := q.All(ctx)
+	if err != nil {
+		return schedulerTaskPage{}, err
+	}
+	out := schedulerTaskPage{EnabledTaskCount: total, Items: make([]schedulerTaskItem, 0, len(rows))}
+	for _, row := range rows {
+		it := schedulerTaskItem{
+			Name:              row.TaskName,
+			Owner:             row.Owner,
+			Mode:              row.Mode,
+			Status:            row.Status,
+			IntervalSeconds:   row.IntervalSeconds,
+			CreatedAtUnix:     row.CreatedAtUnix,
+			UpdatedAtUnix:     row.UpdatedAtUnix,
+			ClosedAtUnix:      row.ClosedAtUnix,
+			LastTrigger:       row.LastTrigger,
+			LastStartedAtUnix: row.LastStartedAtUnix,
+			LastEndedAtUnix:   row.LastEndedAtUnix,
+			LastDurationMS:    row.LastDurationMs,
+			LastError:         row.LastError,
+			InFlight:          row.InFlight != 0,
+			RunCount:          uint64(row.RunCount),
+			SuccessCount:      uint64(row.SuccessCount),
+			FailureCount:      uint64(row.FailureCount),
 		}
-		if f.Status != "" {
-			where = append(where, "status=?")
-			args = append(args, f.Status)
-		}
-		if f.NamePrefix != "" {
-			where = append(where, "task_name LIKE ?")
-			args = append(args, f.NamePrefix+"%")
-		}
-		if f.InFlightSet {
-			where = append(where, "in_flight=?")
-			if f.InFlight {
-				args = append(args, 1)
-			} else {
-				args = append(args, 0)
-			}
-		}
-		if f.HasErrorSet {
-			if f.HasError {
-				where = append(where, "length(trim(last_error))>0")
-			} else {
-				where = append(where, "length(trim(last_error))=0")
-			}
-		}
-		whereSQL := ""
-		if len(where) > 0 {
-			whereSQL = " WHERE " + strings.Join(where, " AND ")
-		}
-		orderClause := "CASE WHEN status='active' THEN 0 ELSE 1 END ASC, CASE WHEN status='active' THEN last_started_at_unix ELSE COALESCE(NULLIF(closed_at_unix,0),updated_at_unix) END DESC, task_name ASC"
-		switch f.OrderBy {
-		case "", "default":
-		case "name_asc":
-			orderClause = "task_name ASC"
-		case "updated_desc":
-			orderClause = "updated_at_unix DESC, task_name ASC"
-		default:
-			return schedulerTaskPage{}, fmt.Errorf("invalid order_by")
-		}
-		var out schedulerTaskPage
-		if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM proc_scheduler_tasks`).Scan(&out.EnabledTaskCount); err != nil {
-			return schedulerTaskPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT
-				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
-				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
-				run_count,success_count,failure_count,last_summary_json
-			FROM proc_scheduler_tasks`+whereSQL+` ORDER BY `+orderClause,
-			args...,
-		)
-		if err != nil {
-			return schedulerTaskPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]schedulerTaskItem, 0, 64)
-		for rows.Next() {
-			var it schedulerTaskItem
-			var inFlightInt int64
-			var lastSummaryRaw string
-			if err := rows.Scan(
-				&it.Name, &it.Owner, &it.Mode, &it.Status, &it.IntervalSeconds, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.ClosedAtUnix,
-				&it.LastTrigger, &it.LastStartedAtUnix, &it.LastEndedAtUnix, &it.LastDurationMS, &it.LastError, &inFlightInt,
-				&it.RunCount, &it.SuccessCount, &it.FailureCount, &lastSummaryRaw,
-			); err != nil {
-				return schedulerTaskPage{}, err
-			}
-			it.InFlight = inFlightInt != 0
-			if strings.TrimSpace(lastSummaryRaw) != "" {
-				var decoded any
-				if err := json.Unmarshal([]byte(lastSummaryRaw), &decoded); err == nil {
-					it.LastSummary = decoded
-				} else {
-					it.LastSummary = map[string]any{}
-				}
+		if strings.TrimSpace(row.LastSummaryJSON) != "" {
+			var decoded any
+			if err := json.Unmarshal([]byte(row.LastSummaryJSON), &decoded); err == nil {
+				it.LastSummary = decoded
 			} else {
 				it.LastSummary = map[string]any{}
 			}
-			if it.InFlight {
-				out.InFlightCount++
-			}
-			if strings.EqualFold(strings.TrimSpace(it.Status), "active") {
-				out.ActiveCount++
-			} else {
-				out.StoppedCount++
-			}
-			out.FailureTotal += it.FailureCount
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return schedulerTaskPage{}, err
-		}
-		if f.Mode != "" {
-			out.FilterCount++
-		}
-		if f.Owner != "" {
-			out.FilterCount++
-		}
-		if f.NamePrefix != "" {
-			out.FilterCount++
-		}
-		if f.Status != "" {
-			out.FilterCount++
-		}
-		if f.InFlightSet {
-			out.FilterCount++
+		} else {
+			it.LastSummary = map[string]any{}
 		}
 		if f.HasErrorSet {
-			out.FilterCount++
+			hasError := strings.TrimSpace(it.LastError) != ""
+			if f.HasError != hasError {
+				continue
+			}
 		}
-		return out, nil
-	})
+		if it.InFlight {
+			out.InFlightCount++
+		}
+		if strings.EqualFold(strings.TrimSpace(it.Status), "active") {
+			out.ActiveCount++
+		} else {
+			out.StoppedCount++
+		}
+		out.FailureTotal += it.FailureCount
+		out.Items = append(out.Items, it)
+	}
+	switch f.OrderBy {
+	case "", "default":
+		sort.Slice(out.Items, func(i, j int) bool {
+			leftActive := strings.EqualFold(strings.TrimSpace(out.Items[i].Status), "active")
+			rightActive := strings.EqualFold(strings.TrimSpace(out.Items[j].Status), "active")
+			if leftActive != rightActive {
+				return leftActive
+			}
+			leftKey := out.Items[i].LastStartedAtUnix
+			if !leftActive {
+				leftKey = out.Items[i].ClosedAtUnix
+				if leftKey == 0 {
+					leftKey = out.Items[i].UpdatedAtUnix
+				}
+			}
+			rightKey := out.Items[j].LastStartedAtUnix
+			if !rightActive {
+				rightKey = out.Items[j].ClosedAtUnix
+				if rightKey == 0 {
+					rightKey = out.Items[j].UpdatedAtUnix
+				}
+			}
+			if leftKey != rightKey {
+				return leftKey > rightKey
+			}
+			return out.Items[i].Name < out.Items[j].Name
+		})
+	case "name_asc":
+		sort.Slice(out.Items, func(i, j int) bool { return out.Items[i].Name < out.Items[j].Name })
+	case "updated_desc":
+		sort.Slice(out.Items, func(i, j int) bool {
+			if out.Items[i].UpdatedAtUnix != out.Items[j].UpdatedAtUnix {
+				return out.Items[i].UpdatedAtUnix > out.Items[j].UpdatedAtUnix
+			}
+			return out.Items[i].Name < out.Items[j].Name
+		})
+	default:
+		return schedulerTaskPage{}, fmt.Errorf("invalid order_by")
+	}
+	if f.Mode != "" {
+		out.FilterCount++
+	}
+	if f.Owner != "" {
+		out.FilterCount++
+	}
+	if f.NamePrefix != "" {
+		out.FilterCount++
+	}
+	if f.Status != "" {
+		out.FilterCount++
+	}
+	if f.InFlightSet {
+		out.FilterCount++
+	}
+	if f.HasErrorSet {
+		out.FilterCount++
+	}
+	return out, nil
 }
 
 func dbListSchedulerRuns(ctx context.Context, store *clientDB, f schedulerRunFilter) (schedulerRunPage, error) {
 	if store == nil {
 		return schedulerRunPage{}, fmt.Errorf("client db is nil")
 	}
-	if store.ent != nil {
-		q := store.ent.ProcSchedulerTaskRuns.Query()
-		if f.TaskName != "" {
-			q = q.Where(bitfsprocschedulertaskruns.TaskNameEQ(f.TaskName))
-		}
-		if f.Owner != "" {
-			q = q.Where(bitfsprocschedulertaskruns.OwnerEQ(f.Owner))
-		}
-		if f.Mode != "" {
-			q = q.Where(bitfsprocschedulertaskruns.ModeEQ(f.Mode))
-		}
-		if f.Status != "" {
-			q = q.Where(bitfsprocschedulertaskruns.StatusEQ(f.Status))
-		}
-		total, err := q.Count(ctx)
-		if err != nil {
-			return schedulerRunPage{}, err
-		}
-		rows, err := q.Order(bitfsprocschedulertaskruns.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
-		if err != nil {
-			return schedulerRunPage{}, err
-		}
-		out := schedulerRunPage{Total: total, Items: make([]schedulerRunItem, 0, len(rows))}
-		for _, row := range rows {
-			var item schedulerRunItem
-			item.ID = int64(row.ID)
-			item.TaskName = row.TaskName
-			item.Owner = row.Owner
-			item.Mode = row.Mode
-			item.Trigger = row.Trigger
-			item.StartedAtUnix = row.StartedAtUnix
-			item.EndedAtUnix = row.EndedAtUnix
-			item.DurationMS = row.DurationMs
-			item.Status = row.Status
-			item.ErrorMessage = row.ErrorMessage
-			if strings.TrimSpace(row.SummaryJSON) != "" {
-				var summary any
-				if err := json.Unmarshal([]byte(row.SummaryJSON), &summary); err == nil {
-					item.Summary = summary
-				} else {
-					item.Summary = map[string]any{}
-				}
+	if store.ent == nil {
+		return schedulerRunPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.ProcSchedulerTaskRuns.Query()
+	if f.TaskName != "" {
+		q = q.Where(bitfsprocschedulertaskruns.TaskNameEQ(f.TaskName))
+	}
+	if f.Owner != "" {
+		q = q.Where(bitfsprocschedulertaskruns.OwnerEQ(f.Owner))
+	}
+	if f.Mode != "" {
+		q = q.Where(bitfsprocschedulertaskruns.ModeEQ(f.Mode))
+	}
+	if f.Status != "" {
+		q = q.Where(bitfsprocschedulertaskruns.StatusEQ(f.Status))
+	}
+	total, err := q.Count(ctx)
+	if err != nil {
+		return schedulerRunPage{}, err
+	}
+	rows, err := q.Order(bitfsprocschedulertaskruns.ByID(entsql.OrderDesc())).Limit(f.Limit).Offset(f.Offset).All(ctx)
+	if err != nil {
+		return schedulerRunPage{}, err
+	}
+	out := schedulerRunPage{Total: total, Items: make([]schedulerRunItem, 0, len(rows))}
+	for _, row := range rows {
+		var item schedulerRunItem
+		item.ID = int64(row.ID)
+		item.TaskName = row.TaskName
+		item.Owner = row.Owner
+		item.Mode = row.Mode
+		item.Trigger = row.Trigger
+		item.StartedAtUnix = row.StartedAtUnix
+		item.EndedAtUnix = row.EndedAtUnix
+		item.DurationMS = row.DurationMs
+		item.Status = row.Status
+		item.ErrorMessage = row.ErrorMessage
+		if strings.TrimSpace(row.SummaryJSON) != "" {
+			var summary any
+			if err := json.Unmarshal([]byte(row.SummaryJSON), &summary); err == nil {
+				item.Summary = summary
 			} else {
 				item.Summary = map[string]any{}
 			}
-			item.CreatedAtUnix = row.CreatedAtUnix
-			out.Items = append(out.Items, item)
+		} else {
+			item.Summary = map[string]any{}
 		}
-		return out, nil
+		item.CreatedAtUnix = row.CreatedAtUnix
+		out.Items = append(out.Items, item)
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (schedulerRunPage, error) {
-		where := make([]string, 0, 6)
-		args := make([]any, 0, 8)
-		if f.TaskName != "" {
-			where = append(where, "task_name=?")
-			args = append(args, f.TaskName)
-		}
-		if f.Owner != "" {
-			where = append(where, "owner=?")
-			args = append(args, f.Owner)
-		}
-		if f.Mode != "" {
-			where = append(where, "mode=?")
-			args = append(args, f.Mode)
-		}
-		if f.Status != "" {
-			where = append(where, "status=?")
-			args = append(args, f.Status)
-		}
-		whereSQL := ""
-		if len(where) > 0 {
-			whereSQL = " WHERE " + strings.Join(where, " AND ")
-		}
-		var out schedulerRunPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM proc_scheduler_task_runs"+whereSQL, args...).Scan(&out.Total); err != nil {
-			return schedulerRunPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT id,task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
-			 FROM proc_scheduler_task_runs`+whereSQL+` ORDER BY id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return schedulerRunPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]schedulerRunItem, 0, f.Limit)
-		for rows.Next() {
-			var it schedulerRunItem
-			var summaryRaw string
-			if err := rows.Scan(
-				&it.ID, &it.TaskName, &it.Owner, &it.Mode, &it.Trigger, &it.StartedAtUnix, &it.EndedAtUnix, &it.DurationMS,
-				&it.Status, &it.ErrorMessage, &summaryRaw, &it.CreatedAtUnix,
-			); err != nil {
-				return schedulerRunPage{}, err
-			}
-			if strings.TrimSpace(summaryRaw) != "" {
-				var summary any
-				if err := json.Unmarshal([]byte(summaryRaw), &summary); err == nil {
-					it.Summary = summary
-				} else {
-					it.Summary = map[string]any{}
-				}
-			} else {
-				it.Summary = map[string]any{}
-			}
-			out.Items = append(out.Items, it)
-		}
-		if err := rows.Err(); err != nil {
-			return schedulerRunPage{}, err
-		}
-		return out, nil
-	})
+	return out, nil
 }
 
 func dbListChainTipWorkerLogs(ctx context.Context, store *clientDB, f chainWorkerLogFilter) (chainWorkerLogPage, error) {
@@ -915,79 +872,108 @@ func dbListWalletUTXOs(ctx context.Context, store *clientDB, f walletUTXOFilter)
 	if store == nil {
 		return walletUTXOPage{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOPage, error) {
-		where := ""
-		args := make([]any, 0, 16)
-		if f.WalletID != "" {
-			where += " AND wallet_id=?"
-			args = append(args, f.WalletID)
-		}
-		if f.Address != "" {
-			where += " AND address=?"
-			args = append(args, f.Address)
-		}
-		if f.State != "" {
-			where += " AND state=?"
-			args = append(args, f.State)
-		}
-		if f.TxID != "" {
-			where += " AND txid=?"
-			args = append(args, f.TxID)
-		}
-		if f.Query != "" {
-			like := "%" + f.Query + "%"
-			where += " AND (utxo_id LIKE ? OR txid LIKE ? OR address LIKE ? OR created_txid LIKE ? OR spent_txid LIKE ?)"
-			args = append(args, like, like, like, like, like)
-		}
-		var out walletUTXOPage
-		if err := QueryRowContext(ctx, db, "SELECT COUNT(1) FROM wallet_utxo WHERE 1=1"+where, args...).Scan(&out.Total); err != nil {
-			return walletUTXOPage{}, err
-		}
-		rows, err := QueryContext(ctx, db,
-			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-				 FROM wallet_utxo WHERE 1=1`+where+` ORDER BY updated_at_unix DESC,utxo_id DESC LIMIT ? OFFSET ?`,
-			append(args, f.Limit, f.Offset)...,
-		)
-		if err != nil {
-			return walletUTXOPage{}, err
-		}
-		defer rows.Close()
-		out.Items = make([]walletUTXOItem, 0, f.Limit)
-		for rows.Next() {
-			var it walletUTXOItem
-			if err := rows.Scan(
-				&it.UTXOID, &it.WalletID, &it.Address, &it.TxID, &it.Vout, &it.ValueSatoshi, &it.State, &it.ScriptType, &it.ScriptTypeReason, &it.ScriptTypeUpdatedAtUnix, &it.AllocationClass, &it.AllocationReason,
-				&it.CreatedTxID, &it.SpentTxID, &it.CreatedAtUnix, &it.UpdatedAtUnix, &it.SpentAtUnix,
-			); err != nil {
-				return walletUTXOPage{}, err
+	if store.ent == nil {
+		return walletUTXOPage{}, fmt.Errorf("client db ent client is nil")
+	}
+	q := store.ent.WalletUtxo.Query()
+	if f.WalletID != "" {
+		q = q.Where(bitfswalletutxo.WalletIDEQ(f.WalletID))
+	}
+	if f.Address != "" {
+		q = q.Where(bitfswalletutxo.AddressEQ(f.Address))
+	}
+	if f.State != "" {
+		q = q.Where(bitfswalletutxo.StateEQ(f.State))
+	}
+	if f.TxID != "" {
+		q = q.Where(bitfswalletutxo.TxidEQ(f.TxID))
+	}
+	rows, err := q.All(ctx)
+	if err != nil {
+		return walletUTXOPage{}, err
+	}
+	filtered := make([]*gen.WalletUtxo, 0, len(rows))
+	if f.Query != "" {
+		qLower := strings.ToLower(strings.TrimSpace(f.Query))
+		for _, row := range rows {
+			if strings.Contains(strings.ToLower(row.UtxoID), qLower) || strings.Contains(strings.ToLower(row.Txid), qLower) || strings.Contains(strings.ToLower(row.Address), qLower) || strings.Contains(strings.ToLower(row.CreatedTxid), qLower) || strings.Contains(strings.ToLower(row.SpentTxid), qLower) {
+				filtered = append(filtered, row)
 			}
-			it.ScriptType = string(normalizeWalletScriptType(it.ScriptType))
-			it.AllocationClass = walletScriptTypeAllocationClass(it.ScriptType)
-			out.Items = append(out.Items, it)
 		}
-		if err := rows.Err(); err != nil {
-			return walletUTXOPage{}, err
+	} else {
+		filtered = rows
+	}
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].UpdatedAtUnix != filtered[j].UpdatedAtUnix {
+			return filtered[i].UpdatedAtUnix > filtered[j].UpdatedAtUnix
 		}
-		return out, nil
+		return filtered[i].UtxoID > filtered[j].UtxoID
 	})
+	total := len(filtered)
+	start := 0
+	if f.Offset > 0 {
+		start = f.Offset
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if f.Limit >= 0 && start+f.Limit < end {
+		end = start + f.Limit
+	}
+	out := walletUTXOPage{Total: total, Items: make([]walletUTXOItem, 0, end-start)}
+	for _, row := range filtered[start:end] {
+		out.Items = append(out.Items, walletUTXOItem{
+			UTXOID:                  row.UtxoID,
+			WalletID:                row.WalletID,
+			Address:                 row.Address,
+			TxID:                    row.Txid,
+			Vout:                    uint32(row.Vout),
+			ValueSatoshi:            uint64(row.ValueSatoshi),
+			State:                   row.State,
+			ScriptType:              string(normalizeWalletScriptType(row.ScriptType)),
+			ScriptTypeReason:        row.ScriptTypeReason,
+			ScriptTypeUpdatedAtUnix: row.ScriptTypeUpdatedAtUnix,
+			AllocationClass:         walletScriptTypeAllocationClass(row.ScriptType),
+			AllocationReason:        row.AllocationReason,
+			CreatedTxID:             row.CreatedTxid,
+			SpentTxID:               row.SpentTxid,
+			CreatedAtUnix:           row.CreatedAtUnix,
+			UpdatedAtUnix:           row.UpdatedAtUnix,
+			SpentAtUnix:             row.SpentAtUnix,
+		})
+	}
+	return out, nil
 }
 
 func dbGetWalletUTXO(ctx context.Context, store *clientDB, utxoID string) (walletUTXOItem, error) {
 	if store == nil {
 		return walletUTXOItem{}, fmt.Errorf("client db is nil")
 	}
-	return clientDBValue(ctx, store, func(db sqlConn) (walletUTXOItem, error) {
-		var item walletUTXOItem
-		err := QueryRowContext(ctx, db,
-			`SELECT utxo_id,wallet_id,address,txid,vout,value_satoshi,state,script_type,script_type_reason,script_type_updated_at_unix,allocation_class,allocation_reason,created_txid,spent_txid,created_at_unix,updated_at_unix,spent_at_unix
-				 FROM wallet_utxo WHERE utxo_id=?`,
-			utxoID,
-		).Scan(
-			&item.UTXOID, &item.WalletID, &item.Address, &item.TxID, &item.Vout, &item.ValueSatoshi, &item.State, &item.ScriptType, &item.ScriptTypeReason, &item.ScriptTypeUpdatedAtUnix, &item.AllocationClass, &item.AllocationReason,
-			&item.CreatedTxID, &item.SpentTxID, &item.CreatedAtUnix, &item.UpdatedAtUnix, &item.SpentAtUnix,
-		)
-		item.ScriptType = string(normalizeWalletScriptType(item.ScriptType))
-		item.AllocationClass = walletScriptTypeAllocationClass(item.ScriptType)
-		return item, err
-	})
+	if store.ent == nil {
+		return walletUTXOItem{}, fmt.Errorf("client db ent client is nil")
+	}
+	row, err := store.ent.WalletUtxo.Query().Where(bitfswalletutxo.UtxoIDEQ(strings.TrimSpace(utxoID))).Only(ctx)
+	if err != nil {
+		return walletUTXOItem{}, err
+	}
+	return walletUTXOItem{
+		UTXOID:                  row.UtxoID,
+		WalletID:                row.WalletID,
+		Address:                 row.Address,
+		TxID:                    row.Txid,
+		Vout:                    uint32(row.Vout),
+		ValueSatoshi:            uint64(row.ValueSatoshi),
+		State:                   row.State,
+		ScriptType:              string(normalizeWalletScriptType(row.ScriptType)),
+		ScriptTypeReason:        row.ScriptTypeReason,
+		ScriptTypeUpdatedAtUnix: row.ScriptTypeUpdatedAtUnix,
+		AllocationClass:         walletScriptTypeAllocationClass(row.ScriptType),
+		AllocationReason:        row.AllocationReason,
+		CreatedTxID:             row.CreatedTxid,
+		SpentTxID:               row.SpentTxid,
+		CreatedAtUnix:           row.CreatedAtUnix,
+		UpdatedAtUnix:           row.UpdatedAtUnix,
+		SpentAtUnix:             row.SpentAtUnix,
+	}, nil
 }

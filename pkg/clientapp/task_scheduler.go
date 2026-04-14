@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/procschedulertasks"
 )
 
 // periodicTaskSpec 描述一个独立的周期任务。
@@ -410,56 +412,55 @@ func (s *taskScheduler) upsertTaskProfile(rt *periodicTaskRuntime, status string
 	if s.ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
+	if s.store == nil {
+		return fmt.Errorf("client db is nil")
+	}
 	now := time.Now().Unix()
 	spec := rt.spec
 	if strings.TrimSpace(status) == "" {
 		status = "active"
 	}
-	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
+	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
 		intervalSeconds := int64(spec.Interval / time.Second)
 		createdAtUnix := int64(now)
 		closedAtUnix := int64(closedAt)
-		lastStartedAtUnix := int64(0)
-		lastEndedAtUnix := int64(0)
-		lastDurationMS := int64(0)
-		inFlight := int64(0)
-		runCount := int64(0)
-		successCount := int64(0)
-		failureCount := int64(0)
-		_, err := ExecContext(s.ctx, db,
-			`INSERT INTO proc_scheduler_tasks(
-				task_name,owner,mode,status,interval_seconds,created_at_unix,updated_at_unix,closed_at_unix,
-				last_trigger,last_started_at_unix,last_ended_at_unix,last_duration_ms,last_error,in_flight,
-				run_count,success_count,failure_count,last_summary_json,meta_json
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-			ON CONFLICT(task_name) DO UPDATE SET
-				owner=excluded.owner,
-				mode=excluded.mode,
-				status=excluded.status,
-				interval_seconds=excluded.interval_seconds,
-				updated_at_unix=excluded.updated_at_unix,
-				closed_at_unix=excluded.closed_at_unix,
-				meta_json=excluded.meta_json`,
-			strings.TrimSpace(spec.Name),
-			strings.TrimSpace(spec.Owner),
-			strings.TrimSpace(spec.Mode),
-			strings.TrimSpace(status),
-			intervalSeconds,
-			createdAtUnix,
-			createdAtUnix,
-			closedAtUnix,
-			"",
-			lastStartedAtUnix,
-			lastEndedAtUnix,
-			lastDurationMS,
-			"",
-			inFlight,
-			runCount,
-			successCount,
-			failureCount,
-			"{}",
-			mustJSONTask(map[string]any{"immediate": spec.Immediate, "timeout_ms": spec.Timeout.Milliseconds()}),
-		)
+		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(spec.Name)).Only(s.ctx)
+		if err == nil {
+			_, err = existing.Update().
+				SetOwner(strings.TrimSpace(spec.Owner)).
+				SetMode(strings.TrimSpace(spec.Mode)).
+				SetStatus(strings.TrimSpace(status)).
+				SetIntervalSeconds(intervalSeconds).
+				SetUpdatedAtUnix(createdAtUnix).
+				SetClosedAtUnix(closedAtUnix).
+				SetMetaJSON(mustJSONTask(map[string]any{"immediate": spec.Immediate, "timeout_ms": spec.Timeout.Milliseconds()})).
+				Save(s.ctx)
+			return err
+		}
+		if !gen.IsNotFound(err) {
+			return err
+		}
+		_, err = tx.ProcSchedulerTasks.Create().
+			SetTaskName(strings.TrimSpace(spec.Name)).
+			SetOwner(strings.TrimSpace(spec.Owner)).
+			SetMode(strings.TrimSpace(spec.Mode)).
+			SetStatus(strings.TrimSpace(status)).
+			SetIntervalSeconds(intervalSeconds).
+			SetCreatedAtUnix(createdAtUnix).
+			SetUpdatedAtUnix(createdAtUnix).
+			SetClosedAtUnix(closedAtUnix).
+			SetLastTrigger("").
+			SetLastStartedAtUnix(0).
+			SetLastEndedAtUnix(0).
+			SetLastDurationMs(0).
+			SetLastError("").
+			SetInFlight(0).
+			SetRunCount(0).
+			SetSuccessCount(0).
+			SetFailureCount(0).
+			SetLastSummaryJSON("{}").
+			SetMetaJSON(mustJSONTask(map[string]any{"immediate": spec.Immediate, "timeout_ms": spec.Timeout.Milliseconds()})).
+			Save(s.ctx)
 		return err
 	})
 }
@@ -475,14 +476,21 @@ func (s *taskScheduler) markTaskStoppedWithCtx(ctx context.Context, name string)
 	if ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
+	if s.store == nil {
+		return fmt.Errorf("client db is nil")
+	}
 	now := time.Now().Unix()
-	return schedulerDBDo(s, ctx, func(db sqlConn) error {
-		closedAtUnix := int64(now)
-		updatedAtUnix := int64(now)
-		_, err := ExecContext(ctx, db,
-			`UPDATE proc_scheduler_tasks SET status='stopped',closed_at_unix=?,updated_at_unix=?,in_flight=0 WHERE task_name=?`,
-			closedAtUnix, updatedAtUnix, strings.TrimSpace(name),
-		)
+	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(strings.TrimSpace(name))).Only(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = existing.Update().
+			SetStatus("stopped").
+			SetClosedAtUnix(now).
+			SetUpdatedAtUnix(now).
+			SetInFlight(0).
+			Save(ctx)
 		return err
 	})
 }
@@ -494,21 +502,25 @@ func (s *taskScheduler) markTaskStarted(name string, trigger string, startedAt i
 	if s.ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
-	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
-		updatedAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(s.ctx, db,
-			`UPDATE proc_scheduler_tasks SET
-				last_trigger=?,
-				last_started_at_unix=?,
-				in_flight=1,
-				updated_at_unix=?,
-				status=CASE WHEN status='stopped' THEN status ELSE 'active' END
-			WHERE task_name=?`,
-			strings.TrimSpace(trigger),
-			startedAt,
-			updatedAtUnix,
-			strings.TrimSpace(name),
-		)
+	if s.store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(strings.TrimSpace(name))).Only(s.ctx)
+		if err != nil {
+			return err
+		}
+		status := existing.Status
+		if !strings.EqualFold(strings.TrimSpace(status), "stopped") {
+			status = "active"
+		}
+		_, err = existing.Update().
+			SetLastTrigger(strings.TrimSpace(trigger)).
+			SetLastStartedAtUnix(startedAt).
+			SetInFlight(1).
+			SetUpdatedAtUnix(time.Now().Unix()).
+			SetStatus(status).
+			Save(s.ctx)
 		return err
 	})
 }
@@ -527,29 +539,25 @@ func (s *taskScheduler) markTaskFinished(name string, endedAt int64, durationMS 
 	} else {
 		incFailure = 1
 	}
-	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
-		updatedAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(s.ctx, db,
-			`UPDATE proc_scheduler_tasks SET
-				last_ended_at_unix=?,
-				last_duration_ms=?,
-				last_error=?,
-				last_summary_json=?,
-				in_flight=0,
-				run_count=run_count+1,
-				success_count=success_count+?,
-				failure_count=failure_count+?,
-				updated_at_unix=?
-			WHERE task_name=?`,
-			endedAt,
-			durationMS,
-			strings.TrimSpace(errMsg),
-			mustJSONTask(summary),
-			int64(incSuccess),
-			int64(incFailure),
-			updatedAtUnix,
-			strings.TrimSpace(name),
-		)
+	if s.store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcSchedulerTasks.Query().Where(procschedulertasks.TaskNameEQ(strings.TrimSpace(name))).Only(s.ctx)
+		if err != nil {
+			return err
+		}
+		_, err = existing.Update().
+			SetLastEndedAtUnix(endedAt).
+			SetLastDurationMs(durationMS).
+			SetLastError(strings.TrimSpace(errMsg)).
+			SetLastSummaryJSON(mustJSONTask(summary)).
+			SetInFlight(0).
+			SetRunCount(existing.RunCount + 1).
+			SetSuccessCount(existing.SuccessCount + int64(incSuccess)).
+			SetFailureCount(existing.FailureCount + int64(incFailure)).
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(s.ctx)
 		return err
 	})
 }
@@ -561,24 +569,23 @@ func (s *taskScheduler) appendTaskRunLog(spec periodicTaskSpec, trigger string, 
 	if s.ctx == nil {
 		return fmt.Errorf("ctx is required")
 	}
-	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
-		createdAtUnix := int64(time.Now().Unix())
-		_, err := ExecContext(s.ctx, db,
-			`INSERT INTO proc_scheduler_task_runs(
-				task_name,owner,mode,trigger,started_at_unix,ended_at_unix,duration_ms,status,error_message,summary_json,created_at_unix
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-			strings.TrimSpace(spec.Name),
-			strings.TrimSpace(spec.Owner),
-			strings.TrimSpace(spec.Mode),
-			strings.TrimSpace(trigger),
-			startedAt,
-			endedAt,
-			durationMS,
-			strings.TrimSpace(status),
-			strings.TrimSpace(errMsg),
-			mustJSONTask(summary),
-			createdAtUnix,
-		)
+	if s.store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+		_, err := tx.ProcSchedulerTaskRuns.Create().
+			SetTaskName(strings.TrimSpace(spec.Name)).
+			SetOwner(strings.TrimSpace(spec.Owner)).
+			SetMode(strings.TrimSpace(spec.Mode)).
+			SetTrigger(strings.TrimSpace(trigger)).
+			SetStartedAtUnix(startedAt).
+			SetEndedAtUnix(endedAt).
+			SetDurationMs(durationMS).
+			SetStatus(strings.TrimSpace(status)).
+			SetErrorMessage(strings.TrimSpace(errMsg)).
+			SetSummaryJSON(mustJSONTask(summary)).
+			SetCreatedAtUnix(time.Now().Unix()).
+			Save(s.ctx)
 		return err
 	})
 }
@@ -614,14 +621,12 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 		return fmt.Errorf("ctx is required")
 	}
 	filtered := make([]string, 0, len(names))
-	args := make([]any, 0, len(names)+2)
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
 		filtered = append(filtered, name)
-		args = append(args, name)
 	}
 	if len(filtered) == 0 {
 		return nil
@@ -629,24 +634,23 @@ func (s *taskScheduler) ResetTaskProfilesForStartup(names []string, startupUnix 
 	if startupUnix <= 0 {
 		startupUnix = time.Now().Unix()
 	}
-	placeholders := strings.TrimRight(strings.Repeat("?,", len(filtered)), ",")
-	args = append([]any{startupUnix, startupUnix}, args...)
-	return schedulerDBDo(s, s.ctx, func(db sqlConn) error {
-		_, err := ExecContext(s.ctx, db,
-			`UPDATE proc_scheduler_tasks SET
-				status='stopped',
-				updated_at_unix=?,
-				closed_at_unix=?,
-				last_trigger='',
-				last_started_at_unix=0,
-				last_ended_at_unix=0,
-				last_duration_ms=0,
-				last_error='',
-				in_flight=0,
-				last_summary_json='{}'
-			WHERE task_name IN (`+placeholders+`)`,
-			args...,
-		)
+	if s.store == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	return clientDBEntTx(s.ctx, s.store, func(tx *gen.Tx) error {
+		_, err := tx.ProcSchedulerTasks.Update().
+			Where(procschedulertasks.TaskNameIn(filtered...)).
+			SetStatus("stopped").
+			SetUpdatedAtUnix(startupUnix).
+			SetClosedAtUnix(startupUnix).
+			SetLastTrigger("").
+			SetLastStartedAtUnix(0).
+			SetLastEndedAtUnix(0).
+			SetLastDurationMs(0).
+			SetLastError("").
+			SetInFlight(0).
+			SetLastSummaryJSON("{}").
+			Save(s.ctx)
 		return err
 	})
 }

@@ -9,6 +9,9 @@ import (
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
 	"github.com/bsv8/BFTP/pkg/obs"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxo"
+	"github.com/bsv8/bitfs-contract/ent/v1/gen/walletutxosyncstate"
 )
 
 // dbApplyLocalBroadcastWalletProjection 只负责把本地广播交易写回钱包视图。
@@ -252,7 +255,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 	if err != nil {
 		return err
 	}
-	if err := store.Tx(ctx, func(tx sqlConn) error {
+	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 		updatedAt := time.Now().Unix()
 		for utxoID, row := range current {
 			if strings.TrimSpace(strings.ToLower(row.State)) != "unspent" {
@@ -263,15 +266,16 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 			if allocationReason == "" {
 				allocationReason = strings.TrimSpace(row.AllocationReason)
 			}
-			if _, err := ExecContext(ctx, tx, `UPDATE wallet_utxo SET allocation_class=?,allocation_reason=? WHERE utxo_id=?`, allocationClass, allocationReason, utxoID); err != nil {
+			if _, err := tx.WalletUtxo.Update().
+				Where(walletutxo.UtxoIDEQ(utxoID)).
+				SetAllocationClass(allocationClass).
+				SetAllocationReason(allocationReason).
+				Save(ctx); err != nil {
 				return err
 			}
 		}
-		stats, err := dbLoadWalletUTXOAggregateTx(tx, address)
-		if err != nil {
-			return err
-		}
-		if err := dbUpdateWalletUTXOSyncStateStatsTx(tx, address, stats, updatedAt); err != nil {
+		stats := summarizeWalletUTXOState(current)
+		if err := dbUpsertWalletUTXOSyncStateEntTx(ctx, tx, address, stats, updatedAt); err != nil {
 			return err
 		}
 		return nil
@@ -287,57 +291,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 	return nil
 }
 
-func dbLoadWalletUTXOAggregateTx(tx sqlConn, address string) (walletUTXOAggregateStats, error) {
-	if tx == nil {
-		return walletUTXOAggregateStats{}, fmt.Errorf("tx is nil")
-	}
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return walletUTXOAggregateStats{}, fmt.Errorf("wallet address is empty")
-	}
-	walletID := walletIDByAddress(address)
-	rows, err := tx.Query(
-		`SELECT script_type,COUNT(1),COALESCE(SUM(value_satoshi),0)
-		 FROM wallet_utxo
-		 WHERE wallet_id=? AND address=? AND state='unspent'
-		 GROUP BY script_type`,
-		walletID,
-		address,
-	)
-	if err != nil {
-		return walletUTXOAggregateStats{}, err
-	}
-	defer rows.Close()
-	var stats walletUTXOAggregateStats
-	for rows.Next() {
-		var class string
-		var count int
-		var balance uint64
-		if err := rows.Scan(&class, &count, &balance); err != nil {
-			return walletUTXOAggregateStats{}, err
-		}
-		class = string(normalizeWalletScriptType(class))
-		stats.UTXOCount += count
-		stats.BalanceSatoshi += balance
-		switch walletScriptTypeAllocationClass(class) {
-		case walletUTXOAllocationPlainBSV:
-			stats.PlainBSVUTXOCount += count
-			stats.PlainBSVBalanceSatoshi += balance
-		case walletUTXOAllocationProtectedAsset:
-			stats.ProtectedUTXOCount += count
-			stats.ProtectedBalanceSatoshi += balance
-		default:
-			stats.UnknownUTXOCount += count
-			stats.UnknownBalanceSatoshi += balance
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return walletUTXOAggregateStats{}, err
-	}
-	return stats, nil
-}
-
-func dbUpdateWalletUTXOSyncStateStatsTx(tx sqlConn, address string, stats walletUTXOAggregateStats, updatedAt int64) error {
+func dbUpsertWalletUTXOSyncStateEntTx(ctx context.Context, tx *gen.Tx, address string, stats walletUTXOAggregateStats, updatedAt int64) error {
 	if tx == nil {
 		return fmt.Errorf("tx is nil")
 	}
@@ -346,63 +300,45 @@ func dbUpdateWalletUTXOSyncStateStatsTx(tx sqlConn, address string, stats wallet
 		return fmt.Errorf("wallet address is empty")
 	}
 	walletID := walletIDByAddress(address)
-	res, err := tx.Exec(
-		`UPDATE wallet_utxo_sync_state
-		 SET wallet_id=?,
-		     utxo_count=?,
-		     balance_satoshi=?,
-		     plain_bsv_utxo_count=?,
-		     plain_bsv_balance_satoshi=?,
-		     protected_utxo_count=?,
-		     protected_balance_satoshi=?,
-		     unknown_utxo_count=?,
-		     unknown_balance_satoshi=?,
-		     updated_at_unix=?
-		 WHERE address=?`,
-		walletID,
-		int64(stats.UTXOCount),
-		int64(stats.BalanceSatoshi),
-		int64(stats.PlainBSVUTXOCount),
-		int64(stats.PlainBSVBalanceSatoshi),
-		int64(stats.ProtectedUTXOCount),
-		int64(stats.ProtectedBalanceSatoshi),
-		int64(stats.UnknownUTXOCount),
-		int64(stats.UnknownBalanceSatoshi),
-		updatedAt,
-		address,
-	)
-	if err != nil {
+	existing, err := tx.WalletUtxoSyncState.Query().Where(walletutxosyncstate.AddressEQ(address)).Only(ctx)
+	if err == nil {
+		_, err = existing.Update().
+			SetWalletID(walletID).
+			SetUtxoCount(int64(stats.UTXOCount)).
+			SetBalanceSatoshi(int64(stats.BalanceSatoshi)).
+			SetPlainBsvUtxoCount(int64(stats.PlainBSVUTXOCount)).
+			SetPlainBsvBalanceSatoshi(int64(stats.PlainBSVBalanceSatoshi)).
+			SetProtectedUtxoCount(int64(stats.ProtectedUTXOCount)).
+			SetProtectedBalanceSatoshi(int64(stats.ProtectedBalanceSatoshi)).
+			SetUnknownUtxoCount(int64(stats.UnknownUTXOCount)).
+			SetUnknownBalanceSatoshi(int64(stats.UnknownBalanceSatoshi)).
+			SetUpdatedAtUnix(updatedAt).
+			Save(ctx)
 		return err
 	}
-	affected, err := res.RowsAffected()
-	if err != nil {
+	if !gen.IsNotFound(err) {
 		return err
 	}
-	if affected > 0 {
-		return nil
-	}
-	_, err = tx.Exec(
-		`INSERT INTO wallet_utxo_sync_state(address,wallet_id,utxo_count,balance_satoshi,plain_bsv_utxo_count,plain_bsv_balance_satoshi,protected_utxo_count,protected_balance_satoshi,unknown_utxo_count,unknown_balance_satoshi,updated_at_unix,last_error,last_updated_by,last_trigger,last_duration_ms,last_sync_round_id,last_failed_step,last_upstream_path,last_http_status)
-		 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		address,
-		walletID,
-		int64(stats.UTXOCount),
-		int64(stats.BalanceSatoshi),
-		int64(stats.PlainBSVUTXOCount),
-		int64(stats.PlainBSVBalanceSatoshi),
-		int64(stats.ProtectedUTXOCount),
-		int64(stats.ProtectedBalanceSatoshi),
-		int64(stats.UnknownUTXOCount),
-		int64(stats.UnknownBalanceSatoshi),
-		updatedAt,
-		"",
-		"wallet_asset_projection",
-		"",
-		int64(0),
-		"",
-		"",
-		"",
-		int64(0),
-	)
+	_, err = tx.WalletUtxoSyncState.Create().
+		SetAddress(address).
+		SetWalletID(walletID).
+		SetUtxoCount(int64(stats.UTXOCount)).
+		SetBalanceSatoshi(int64(stats.BalanceSatoshi)).
+		SetPlainBsvUtxoCount(int64(stats.PlainBSVUTXOCount)).
+		SetPlainBsvBalanceSatoshi(int64(stats.PlainBSVBalanceSatoshi)).
+		SetProtectedUtxoCount(int64(stats.ProtectedUTXOCount)).
+		SetProtectedBalanceSatoshi(int64(stats.ProtectedBalanceSatoshi)).
+		SetUnknownUtxoCount(int64(stats.UnknownUTXOCount)).
+		SetUnknownBalanceSatoshi(int64(stats.UnknownBalanceSatoshi)).
+		SetUpdatedAtUnix(updatedAt).
+		SetLastError("").
+		SetLastUpdatedBy("wallet_asset_projection").
+		SetLastTrigger("").
+		SetLastDurationMs(0).
+		SetLastSyncRoundID("").
+		SetLastFailedStep("").
+		SetLastUpstreamPath("").
+		SetLastHTTPStatus(0).
+		Save(ctx)
 	return err
 }

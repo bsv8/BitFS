@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 )
@@ -46,6 +48,118 @@ func dbGetSettlementPaymentAttemptSourceTxID(db *sql.DB, settlementPaymentAttemp
 	return dbGetSettlementPaymentAttemptSourceTxIDStore(context.Background(), newClientDB(db, nil), settlementPaymentAttemptID)
 }
 
+// hasTable 是测试用的薄包装。
+func hasTable(db *sql.DB, table string) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	var name string
+	err := db.QueryRow(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&name)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(name) != "", nil
+}
+
+// tableColumns 返回表字段名集合。
+func tableColumns(db *sql.DB, table string) (map[string]struct{}, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[string]struct{})
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return nil, err
+		}
+		out[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// tableColumnNotNull 检查字段是否为 NOT NULL。
+func tableColumnNotNull(db *sql.DB, table, column string) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return notnull != 0, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// tableHasUniqueIndexOnColumns 检查表是否存在匹配字段顺序的唯一索引。
+func tableHasUniqueIndexOnColumns(db *sql.DB, table string, columns []string) (bool, error) {
+	rows, err := db.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	want := strings.Join(columns, ",")
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique, origin, partial any
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return false, err
+		}
+		isUnique := false
+		switch v := unique.(type) {
+		case int64:
+			isUnique = v != 0
+		case int:
+			isUnique = v != 0
+		}
+		if !isUnique {
+			continue
+		}
+		colsRows, err := db.Query(`PRAGMA index_info(` + name + `)`)
+		if err != nil {
+			return false, err
+		}
+		got := make([]string, 0, len(columns))
+		for colsRows.Next() {
+			var seqno, cid int
+			var colName string
+			if err := colsRows.Scan(&seqno, &cid, &colName); err != nil {
+				_ = colsRows.Close()
+				return false, err
+			}
+			got = append(got, colName)
+		}
+		_ = colsRows.Close()
+		if err := colsRows.Err(); err != nil {
+			return false, err
+		}
+		if strings.Join(got, ",") == want {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
 // dbAppendBSVConsumptionsForSettlementPaymentAttempt 是测试用的薄包装。
 func dbAppendBSVConsumptionsForSettlementPaymentAttempt(db *sql.DB, settlementPaymentAttemptID int64, utxoFacts []chainPaymentUTXOLinkEntry, occurredAtUnix int64) error {
 	return dbAppendBSVConsumptionsForSettlementPaymentAttemptCtx(context.Background(), db, settlementPaymentAttemptID, utxoFacts, occurredAtUnix)
@@ -58,13 +172,69 @@ func dbAppendTokenConsumptionsForSettlementPaymentAttempt(db *sql.DB, settlement
 
 // tableHasForeignKey 是测试用的薄包装。
 func tableHasForeignKey(db *sql.DB, table, fromColumn, parentTable, parentColumn string) (bool, error) {
-	return tableHasForeignKeyCtx(context.Background(), db, table, fromColumn, parentTable, parentColumn)
+	if db == nil {
+		return false, nil
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_list(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, seq, onUpdate, onDelete, match any
+		var tbl, from, to string
+		if err := rows.Scan(&id, &seq, &tbl, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return false, err
+		}
+		if from == fromColumn && tbl == parentTable && to == parentColumn {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // tableHasCreateSQLContains 是测试用的薄包装。
 func tableHasCreateSQLContains(db *sql.DB, table, snippet string) (bool, error) {
-	return tableHasCreateSQLContainsCtx(context.Background(), db, table, snippet)
+	if db == nil {
+		return false, nil
+	}
+	var sqlText string
+	err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name=?`, table).Scan(&sqlText)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return strings.Contains(sqlText, snippet), nil
 }
+
+// tableHasIndex 检查表是否存在指定索引。
+func tableHasIndex(db *sql.DB, table, indexName string) (bool, error) {
+	if db == nil {
+		return false, nil
+	}
+	rows, err := db.Query(`PRAGMA index_list(` + table + `)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var seq int
+		var name string
+		var unique, origin, partial any
+		if err := rows.Scan(&seq, &name, &unique, &origin, &partial); err != nil {
+			return false, err
+		}
+		if name == indexName {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// 为避免测试 helper 因未使用排序而被静态检查误判，保留一个轻量引用。
+var _ = sort.Strings
 
 // seedWalletUTXO 给钱包一致性测试种一条 wallet_utxo。
 // 设计说明：这里只补测试需要的最小列，不触碰事实表。
