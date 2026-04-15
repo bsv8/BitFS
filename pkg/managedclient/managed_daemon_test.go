@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +38,10 @@ func (s *capturedManagedControlStream) Emit(topic, scope, producer, traceID stri
 }
 
 func (*capturedManagedControlStream) ObsSink() obs.Sink {
+	return nil
+}
+
+func (*capturedManagedControlStream) StartCommandLoop(ManagedControlCommandHandler) error {
 	return nil
 }
 
@@ -135,9 +140,7 @@ func TestHandleNonAPIRequest_ReturnsNotFound(t *testing.T) {
 	}
 }
 
-func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
-	t.Parallel()
-
+func TestHandleManagedControlCommand_UnlockSuccess_StartsRuntimeAndEmitsResult(t *testing.T) {
 	root := t.TempDir()
 	keyPath := filepath.Join(root, "key.json")
 	configPath := filepath.Join(root, "config.yaml")
@@ -153,6 +156,7 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 	}
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	t.Cleanup(rootCancel)
+	stream := &capturedManagedControlStream{}
 
 	d := &managedDaemon{
 		cfg: cfg,
@@ -164,7 +168,7 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 		},
 		rootCtx:       rootCtx,
 		rootCancel:    rootCancel,
-		controlStream: &capturedManagedControlStream{},
+		controlStream: stream,
 		backendPhase:  managedBackendPhaseAvailable,
 		runtimePhase:  managedRuntimePhaseStopped,
 	}
@@ -230,53 +234,14 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
 	}
 
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", strings.NewReader(`{"password":"pass"}`))
-	rec := httptest.NewRecorder()
-	d.handleKeyUnlock(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var firstResp struct {
-		UnlockResult string `json:"unlock_result"`
-		UnlockToken  string `json:"unlock_token"`
-		UnlockOwner  string `json:"unlock_owner"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &firstResp); err != nil {
-		t.Fatalf("decode first unlock response: %v", err)
-	}
-	if got, want := firstResp.UnlockResult, "succeeded"; got != want {
-		t.Fatalf("first unlock_result=%q, want %q", got, want)
-	}
-	if strings.TrimSpace(firstResp.UnlockToken) == "" {
-		t.Fatal("first unlock_token should not be empty")
-	}
-	if got, want := firstResp.UnlockOwner, "api"; got != want {
-		t.Fatalf("first unlock_owner=%q, want %q", got, want)
-	}
-
-	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", strings.NewReader(`{"password":"pass"}`))
-	rec2 := httptest.NewRecorder()
-	d.handleKeyUnlock(rec2, req2)
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("second unlock status mismatch: got=%d want=%d body=%s", rec2.Code, http.StatusOK, rec2.Body.String())
-	}
-	var secondResp struct {
-		UnlockResult string `json:"unlock_result"`
-		UnlockToken  string `json:"unlock_token"`
-		UnlockOwner  string `json:"unlock_owner"`
-	}
-	if err := json.Unmarshal(rec2.Body.Bytes(), &secondResp); err != nil {
-		t.Fatalf("decode second unlock response: %v", err)
-	}
-	if got, want := secondResp.UnlockResult, "already_unlocked"; got != want {
-		t.Fatalf("second unlock_result=%q, want %q", got, want)
-	}
-	if got, want := secondResp.UnlockToken, firstResp.UnlockToken; got != want {
-		t.Fatalf("second unlock_token=%q, want %q", got, want)
-	}
-	if got, want := secondResp.UnlockOwner, "api"; got != want {
-		t.Fatalf("second unlock_owner=%q, want %q", got, want)
-	}
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-unlock-1",
+		Action:    "key.unlock",
+		Payload: map[string]any{
+			"password": "pass",
+		},
+	})
 
 	deadline := time.Now().Add(5 * time.Second)
 	for d.currentRuntimePhase() != managedRuntimePhaseReady {
@@ -292,6 +257,25 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 	}
 	if d.rt == nil || d.rtAPI == nil {
 		t.Fatal("runtime or runtime api handler not committed")
+	}
+	result, ok := findControlCommandResult(stream.events, "cmd-unlock-1")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := result["action"], "key.unlock"; got != want {
+		t.Fatalf("command action=%q, want %q", got, want)
+	}
+	if got, want := strings.ToLower(strings.TrimSpace(result["ok"])), "true"; got != want {
+		t.Fatalf("command ok=%q, want %q", got, want)
+	}
+	if got, want := result["result"], "succeeded"; got != want {
+		t.Fatalf("command result=%q, want %q", got, want)
+	}
+	if got, want := result["key_state"], "unlocked"; got != want {
+		t.Fatalf("command key_state=%q, want %q", got, want)
+	}
+	if got, want := result["runtime_phase"], string(managedRuntimePhaseReady); got != want {
+		t.Fatalf("command runtime_phase=%q, want %q", got, want)
 	}
 }
 
@@ -621,4 +605,424 @@ func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
 	if d.rtAPI == nil {
 		t.Fatal("runtime api handler not committed")
 	}
+}
+
+func TestHandleKeyUnlock_KeyNotFoundReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	keyPath := filepath.Join(root, "key.json")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: noopManagedControlStream{},
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", strings.NewReader(`{"password":"pass"}`))
+	rec := httptest.NewRecorder()
+	d.handleKeyUnlock(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "encrypted key not found") {
+		t.Fatalf("unlock body mismatch: body=%s", rec.Body.String())
+	}
+}
+
+func TestHandleKeyUnlock_BackendNotReadyReturnsConflict(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "config.yaml")
+	keyPath := filepath.Join(root, "key.json")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: noopManagedControlStream{},
+		backendPhase:  managedBackendPhaseStarting,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", strings.NewReader(`{"password":"pass"}`))
+	rec := httptest.NewRecorder()
+	d.handleKeyUnlock(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "client is still starting") {
+		t.Fatalf("unlock body mismatch: body=%s", rec.Body.String())
+	}
+}
+
+func TestHandleManagedControlCommand_EnsureMaterialCreatesLockedKey(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-ensure-1",
+		Action:    "key.ensure_material",
+		Payload: map[string]any{
+			"password": "pass",
+		},
+	})
+
+	if _, exists, err := LoadEncryptedKeyEnvelope(keyPath); err != nil {
+		t.Fatalf("load encrypted key envelope: %v", err)
+	} else if !exists {
+		t.Fatal("encrypted key should exist after ensure_material")
+	}
+	if got, want := d.currentKeyState(), managedKeyStateLocked; got != want {
+		t.Fatalf("key state mismatch: got=%s want=%s", got, want)
+	}
+	result, ok := findControlCommandResult(stream.events, "cmd-ensure-1")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := result["action"], "key.ensure_material"; got != want {
+		t.Fatalf("command action=%q, want %q", got, want)
+	}
+	if got, want := strings.ToLower(strings.TrimSpace(result["ok"])), "true"; got != want {
+		t.Fatalf("command ok=%q, want %q", got, want)
+	}
+	if got, want := result["result"], "created"; got != want {
+		t.Fatalf("command result=%q, want %q", got, want)
+	}
+}
+
+func TestHandleManagedControlCommand_UnlockFailureKeepsLocked(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+
+	env, err := EncryptPrivateKeyEnvelope(strings.Repeat("1", 64), "pass")
+	if err != nil {
+		t.Fatalf("encrypt private key envelope: %v", err)
+	}
+	if err := SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
+		t.Fatalf("save encrypted key envelope: %v", err)
+	}
+
+	runtimeCalled := false
+	oldRun := runClientRuntime
+	oldBuild := buildRuntimeAPIHandler
+	defer func() {
+		runClientRuntime = oldRun
+		buildRuntimeAPIHandler = oldBuild
+	}()
+	runClientRuntime = func(context.Context, clientapp.Config, clientapp.RunDeps, clientapp.RunOptions) (*clientapp.Runtime, error) {
+		runtimeCalled = true
+		return nil, fmt.Errorf("runtime should not start on bad password")
+	}
+	buildRuntimeAPIHandler = func(*clientapp.Runtime) (http.Handler, error) {
+		runtimeCalled = true
+		return nil, fmt.Errorf("runtime api should not be built")
+	}
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-unlock-bad",
+		Action:    "key.unlock",
+		Payload: map[string]any{
+			"password": "wrong-pass",
+		},
+	})
+
+	if runtimeCalled {
+		t.Fatal("runtime should not start on bad password")
+	}
+	if got, want := d.currentKeyState(), managedKeyStateLocked; got != want {
+		t.Fatalf("key state mismatch: got=%s want=%s", got, want)
+	}
+	result, ok := findControlCommandResult(stream.events, "cmd-unlock-bad")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := strings.ToLower(strings.TrimSpace(result["ok"])), "false"; got != want {
+		t.Fatalf("command ok=%q, want %q", got, want)
+	}
+	if got, want := result["result"], "failed"; got != want {
+		t.Fatalf("command result=%q, want %q", got, want)
+	}
+	if strings.TrimSpace(result["error"]) == "" {
+		t.Fatal("command error should not be empty")
+	}
+}
+
+func TestHandleManagedControlCommand_ConcurrentUnlockOnlyOneSucceeds(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+	workspaceDir := filepath.Join(root, "workspace")
+	dataDir := filepath.Join(root, "data")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.Enabled = false
+	cfg.FSHTTP.Enabled = false
+	cfg.Storage.WorkspaceDir = workspaceDir
+	cfg.Storage.DataDir = dataDir
+	cfg.Index.Backend = "sqlite"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	cfg.HTTP.Enabled = false
+	cfg.FSHTTP.Enabled = false
+	if err := clientapp.SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	h, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new host: %v", err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		initNetwork:          "test",
+		cfg:                  cfg,
+		startup:              StartupSummary{ConfigPath: configPath, IndexDBPath: "client-index.sqlite"},
+		rootCtx:              rootCtx,
+		rootCancel:           rootCancel,
+		controlStream:        stream,
+		backendPhase:         managedBackendPhaseAvailable,
+		runtimePhase:         managedRuntimePhaseStopped,
+		unlockPasswordPrompt: "Unlock password: ",
+	}
+	d.startup.VaultPath = root
+	d.startup.KeyPath = keyPath
+	d.chainAccess = d.resolveChainAccessState()
+
+	env, err := EncryptPrivateKeyEnvelope(strings.Repeat("1", 64), "pass")
+	if err != nil {
+		t.Fatalf("encrypt private key envelope: %v", err)
+	}
+	if err := SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
+		t.Fatalf("save encrypted key envelope: %v", err)
+	}
+
+	oldRun := runClientRuntime
+	oldBuild := buildRuntimeAPIHandler
+	defer func() {
+		runClientRuntime = oldRun
+		buildRuntimeAPIHandler = oldBuild
+	}()
+	runClientRuntime = func(ctx context.Context, runCfg clientapp.Config, deps clientapp.RunDeps, opt clientapp.RunOptions) (*clientapp.Runtime, error) {
+		if ctx == nil {
+			return nil, fmt.Errorf("ctx is required")
+		}
+		if !opt.DisableHTTPServer {
+			return nil, fmt.Errorf("disable http server should stay enabled in managed mode")
+		}
+		if strings.TrimSpace(opt.EffectivePrivKeyHex) == "" {
+			return nil, fmt.Errorf("effective priv key is required")
+		}
+		if deps.DBActor != nil {
+			_ = deps.DBActor.Close()
+		}
+		if opt.FSHTTPListener != nil {
+			_ = opt.FSHTTPListener.Close()
+		}
+		if opt.ObsSink != nil {
+			for _, name := range []string{"fs_http_started", "chain_tip_task_registered", "chain_utxo_task_registered"} {
+				opt.ObsSink.Handle(obs.Event{
+					Service: "bitcast-client",
+					Name:    name,
+				})
+			}
+		}
+		return &clientapp.Runtime{Host: h}, nil
+	}
+	buildRuntimeAPIHandler = func(rt *clientapp.Runtime) (http.Handler, error) {
+		if rt == nil || rt.Host == nil {
+			return nil, fmt.Errorf("runtime host is nil")
+		}
+		return http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), nil
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		d.handleManagedControlCommand(ManagedControlCommandFrame{
+			Type:      "command",
+			CommandID: "cmd-concurrent-1",
+			Action:    "key.unlock",
+			Payload: map[string]any{
+				"password": "pass",
+			},
+		})
+	}()
+	go func() {
+		defer wg.Done()
+		d.handleManagedControlCommand(ManagedControlCommandFrame{
+			Type:      "command",
+			CommandID: "cmd-concurrent-2",
+			Action:    "key.unlock",
+			Payload: map[string]any{
+				"password": "pass",
+			},
+		})
+	}()
+	wg.Wait()
+
+	if got, want := d.currentRuntimePhase(), managedRuntimePhaseReady; got != want {
+		t.Fatalf("runtime phase mismatch: got=%s want=%s", got, want)
+	}
+	if got, want := d.currentKeyState(), managedKeyStateUnlocked; got != want {
+		t.Fatalf("key state mismatch: got=%s want=%s", got, want)
+	}
+	first, ok := findControlCommandResult(stream.events, "cmd-concurrent-1")
+	if !ok {
+		t.Fatal("first command result event not found")
+	}
+	second, ok := findControlCommandResult(stream.events, "cmd-concurrent-2")
+	if !ok {
+		t.Fatal("second command result event not found")
+	}
+	successCount := 0
+	alreadyCount := 0
+	for _, result := range []map[string]string{first, second} {
+		switch strings.TrimSpace(result["result"]) {
+		case "succeeded":
+			successCount++
+		case "already_unlocked":
+			alreadyCount++
+		default:
+			t.Fatalf("unexpected command result: %+v", result)
+		}
+	}
+	if successCount != 1 || alreadyCount != 1 {
+		t.Fatalf("concurrent command mismatch: success=%d already=%d", successCount, alreadyCount)
+	}
+}
+
+func findControlCommandResult(events []ManagedRuntimeEvent, commandID string) (map[string]string, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Topic != "backend.command.result" {
+			continue
+		}
+		fields := map[string]string{}
+		for key, value := range ev.Payload {
+			fields[key] = strings.TrimSpace(fmt.Sprint(value))
+		}
+		if strings.TrimSpace(fields["command_id"]) != strings.TrimSpace(commandID) {
+			continue
+		}
+		return fields, true
+	}
+	return nil, false
 }

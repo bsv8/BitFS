@@ -1,6 +1,7 @@
 package managedclient
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -35,7 +36,31 @@ type managedControlHello struct {
 	RuntimeEpoch string `json:"runtime_epoch"`
 }
 
-// ManagedControlStream 负责把 runtime 内部事件投递到托管宿主。
+type ManagedControlCommandFrame struct {
+	Type       string         `json:"type"`
+	CommandID  string         `json:"command_id"`
+	Action     string         `json:"action"`
+	SentAtUnix int64          `json:"sent_at_unix,omitempty"`
+	Payload    map[string]any `json:"payload,omitempty"`
+}
+
+type ManagedControlCommandResultFrame struct {
+	CommandID    string         `json:"command_id"`
+	Action       string         `json:"action"`
+	OK           bool           `json:"ok"`
+	Result       string         `json:"result,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	BackendPhase string         `json:"backend_phase,omitempty"`
+	RuntimePhase string         `json:"runtime_phase,omitempty"`
+	KeyState     string         `json:"key_state,omitempty"`
+	UnlockOwner  string         `json:"unlock_owner,omitempty"`
+	UnlockToken  string         `json:"unlock_token,omitempty"`
+	Payload      map[string]any `json:"payload,omitempty"`
+}
+
+type ManagedControlCommandHandler func(ManagedControlCommandFrame)
+
+// ManagedControlStream 负责把 runtime 内部事件投递到托管宿主，同时接收宿主下行命令。
 //
 // 设计说明：
 // - BitFS 内部先统一使用进程内消息/obs 挂钩，再由托管层决定是否额外输出机器帧；
@@ -44,6 +69,7 @@ type managedControlHello struct {
 type ManagedControlStream interface {
 	Emit(topic, scope, producer, traceID string, payload map[string]any)
 	ObsSink() obs.Sink
+	StartCommandLoop(handler ManagedControlCommandHandler) error
 }
 
 func NewManagedControlStreamFromEnv() (ManagedControlStream, error) {
@@ -74,13 +100,19 @@ func (noopManagedControlStream) ObsSink() obs.Sink {
 	return nil
 }
 
+func (noopManagedControlStream) StartCommandLoop(ManagedControlCommandHandler) error {
+	return nil
+}
+
 type socketManagedControlStream struct {
-	mu           sync.Mutex
-	seq          uint64
-	runtimeEpoch string
-	obsSink      obs.Sink
-	conn         net.Conn
-	token        string
+	mu                 sync.Mutex
+	seq                uint64
+	runtimeEpoch       string
+	obsSink            obs.Sink
+	conn               net.Conn
+	token              string
+	commandLoopStarted bool
+	commandHandler     ManagedControlCommandHandler
 }
 
 func newSocketManagedControlStream(conn net.Conn, token string) (ManagedControlStream, error) {
@@ -107,6 +139,26 @@ func (s *socketManagedControlStream) ObsSink() obs.Sink {
 	return s.obsSink
 }
 
+func (s *socketManagedControlStream) StartCommandLoop(handler ManagedControlCommandHandler) error {
+	if handler == nil {
+		return fmt.Errorf("managed control command handler is required")
+	}
+	s.mu.Lock()
+	if s.commandLoopStarted {
+		s.mu.Unlock()
+		return nil
+	}
+	s.commandLoopStarted = true
+	s.commandHandler = handler
+	conn := s.conn
+	s.mu.Unlock()
+	if conn == nil {
+		return fmt.Errorf("managed control connection is not ready")
+	}
+	go s.readCommandLoop(conn)
+	return nil
+}
+
 func (s *socketManagedControlStream) Emit(topic, scope, producer, traceID string, payload map[string]any) {
 	topic = strings.TrimSpace(topic)
 	if topic == "" {
@@ -130,6 +182,42 @@ func (s *socketManagedControlStream) Emit(topic, scope, producer, traceID string
 	}
 	if err := s.writeFrameLocked(frame); err != nil {
 		return
+	}
+}
+
+func (s *socketManagedControlStream) readCommandLoop(conn net.Conn) {
+	scanner := bufio.NewScanner(conn)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var cmd ManagedControlCommandFrame
+		if err := json.Unmarshal([]byte(line), &cmd); err != nil {
+			obs.Error("bitcast-client", "managed_control_command_decode_failed", map[string]any{
+				"error": err.Error(),
+			})
+			return
+		}
+		if !isManagedControlCommandFrame(cmd) {
+			obs.Error("bitcast-client", "managed_control_command_invalid", map[string]any{
+				"command_id": strings.TrimSpace(cmd.CommandID),
+				"action":     strings.TrimSpace(cmd.Action),
+			})
+			return
+		}
+		s.mu.Lock()
+		handler := s.commandHandler
+		s.mu.Unlock()
+		if handler != nil {
+			handler(cmd)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		obs.Error("bitcast-client", "managed_control_command_read_failed", map[string]any{
+			"error": err.Error(),
+		})
 	}
 }
 
@@ -240,6 +328,16 @@ func normalizeManagedEventScope(raw string) string {
 	default:
 		return "private"
 	}
+}
+
+func isManagedControlCommandFrame(frame ManagedControlCommandFrame) bool {
+	if strings.TrimSpace(frame.Type) != "command" {
+		return false
+	}
+	if strings.TrimSpace(frame.CommandID) == "" {
+		return false
+	}
+	return strings.TrimSpace(frame.Action) != ""
 }
 
 func managedFieldString(fields map[string]any, key string) string {

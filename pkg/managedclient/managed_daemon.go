@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -68,6 +69,11 @@ const (
 
 	unlockSourceAPI = "api"
 	unlockSourceCLI = "cli"
+	unlockSourceObs = "obs"
+
+	controlActionKeyEnsureMaterial = "key.ensure_material"
+	controlActionKeyUnlock         = "key.unlock"
+	controlActionKeyLock           = "key.lock"
 
 	managedUnlockResultSucceeded managedUnlockResult = "succeeded"
 	managedUnlockResultAlready   managedUnlockResult = "already_unlocked"
@@ -99,6 +105,67 @@ type unlockTicket struct {
 	Winner string
 }
 
+type controlCommandResult struct {
+	CommandID    string
+	Action       string
+	OK           bool
+	Result       string
+	Error        string
+	BackendPhase managedBackendPhase
+	RuntimePhase managedRuntimePhase
+	KeyState     managedKeyState
+	UnlockOwner  string
+	UnlockToken  string
+}
+
+type controlCommandRequest struct {
+	CommandID string
+	Action    string
+	Payload   map[string]any
+}
+
+type keyMaterialTicket struct {
+	Result string
+	PubHex string
+}
+
+type unlockHTTPError struct {
+	Status int
+	Cause  error
+}
+
+func (e *unlockHTTPError) Error() string {
+	if e == nil || e.Cause == nil {
+		return ""
+	}
+	return e.Cause.Error()
+}
+
+func (e *unlockHTTPError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func wrapUnlockHTTPError(status int, err error) error {
+	if err == nil {
+		return nil
+	}
+	return &unlockHTTPError{
+		Status: status,
+		Cause:  err,
+	}
+}
+
+func unlockHTTPStatus(err error) int {
+	var typed *unlockHTTPError
+	if errors.As(err, &typed) && typed != nil && typed.Status > 0 {
+		return typed.Status
+	}
+	return http.StatusInternalServerError
+}
+
 type managedDaemon struct {
 	initNetwork          string
 	cfg                  clientapp.Config
@@ -116,10 +183,14 @@ type managedDaemon struct {
 	fsHTTPReserved net.Listener
 	wocProxySrv    *http.Server
 
-	mu       sync.RWMutex
-	rt       *clientapp.Runtime
-	rtCancel context.CancelFunc
-	rtAPI    http.Handler
+	mu                 sync.RWMutex
+	rt                 *clientapp.Runtime
+	rtCancel           context.CancelFunc
+	rtAPI              http.Handler
+	controlReady       bool
+	controlErr         error
+	commandWaiters     map[string]chan controlCommandResult
+	commandResultsSeen map[string]struct{}
 
 	backendPhase        managedBackendPhase
 	runtimePhase        managedRuntimePhase
@@ -161,6 +232,9 @@ func RunManagedDaemon(opts DaemonOptions) error {
 	}
 	if d.controlStream == nil {
 		d.controlStream = noopManagedControlStream{}
+	}
+	if err := d.controlStream.StartCommandLoop(d.handleManagedControlCommand); err != nil {
+		return err
 	}
 	if d.unlockPasswordPrompt == "" {
 		d.unlockPasswordPrompt = "Unlock password: "
@@ -205,6 +279,10 @@ func (d *managedDaemon) close() error {
 	d.rtCancel = nil
 	d.rt = nil
 	d.rtAPI = nil
+	d.controlReady = false
+	d.controlErr = nil
+	d.commandWaiters = nil
+	d.commandResultsSeen = nil
 	d.unlockedPrivHex = ""
 	d.unlockSuccessToken = ""
 	d.unlockSuccessBy = ""
@@ -368,24 +446,192 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
+func (d *managedDaemon) ensureKeyMaterial(password string) (keyMaterialTicket, error) {
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		return keyMaterialTicket{}, err
+	}
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		return keyMaterialTicket{}, fmt.Errorf("client key is already unlocked, lock first")
+	}
+	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
+		return keyMaterialTicket{}, err
+	} else if exists {
+		return keyMaterialTicket{Result: "already_exists"}, nil
+	}
+	privHex, err := GeneratePrivateKeyHex()
+	if err != nil {
+		return keyMaterialTicket{}, err
+	}
+	env, err := EncryptPrivateKeyEnvelope(privHex, password)
+	if err != nil {
+		return keyMaterialTicket{}, err
+	}
+	if err := SaveEncryptedKeyEnvelope(d.startup.KeyPath, env); err != nil {
+		return keyMaterialTicket{}, err
+	}
+	d.emitBackendSnapshot("key_material_ready")
+	pubHex, _ := PubHexFromPrivHex(privHex)
+	return keyMaterialTicket{
+		Result: "created",
+		PubHex: pubHex,
+	}, nil
+}
+
+func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password string) (unlockTicket, error) {
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+	}
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		ticket := d.currentUnlockTicket(source)
+		if err := d.startRuntimeAsync(); err != nil {
+			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+		}
+		if err := d.waitRuntimeReadyForAPI(ctx); err != nil {
+			obs.Error("bitcast-client", "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+		}
+		return ticket, nil
+	}
+	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
+	if err != nil {
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusInternalServerError, err)
+	}
+	if !exists || env == nil {
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusNotFound, fmt.Errorf("encrypted key not found"))
+	}
+	privHex, err := DecryptPrivateKeyEnvelope(*env, password)
+	if err != nil {
+		obs.Error("bitcast-client", "unlock_decrypt_failed", map[string]any{"error": err.Error()})
+		fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusUnauthorized, err)
+	}
+	ticket := d.claimUnlockTicket(source, privHex)
+	if ticket.Result == managedUnlockResultAlready {
+		if err := d.startRuntimeAsync(); err != nil {
+			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+		}
+		if err := d.waitRuntimeReadyForAPI(ctx); err != nil {
+			obs.Error("bitcast-client", "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+			fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
+			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+		}
+		return ticket, nil
+	}
+	if err := d.startRuntimeAsync(); err != nil {
+		d.clearUnlockedKey()
+		obs.Error("bitcast-client", "unlock_start_runtime_failed", map[string]any{"error": err.Error()})
+		fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+	}
+	if err := d.waitRuntimeReadyForAPI(ctx); err != nil {
+		obs.Error("bitcast-client", "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+		fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
+	}
+	return ticket, nil
+}
+
+func (d *managedDaemon) handleManagedControlCommand(cmd ManagedControlCommandFrame) {
+	result := d.executeManagedControlCommand(controlCommandRequest{
+		CommandID: strings.TrimSpace(cmd.CommandID),
+		Action:    strings.TrimSpace(cmd.Action),
+		Payload:   cmd.Payload,
+	})
+	d.emitManagedCommandResult(result)
+}
+
+func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) controlCommandResult {
+	result := controlCommandResult{
+		CommandID:    req.CommandID,
+		Action:       req.Action,
+		BackendPhase: d.currentBackendPhase(),
+		RuntimePhase: d.currentRuntimePhase(),
+		KeyState:     d.currentKeyState(),
+	}
+	switch req.Action {
+	case controlActionKeyEnsureMaterial:
+		password := strings.TrimSpace(controlCommandPayloadString(req.Payload, "password"))
+		if password == "" {
+			result.Result = "failed"
+			result.Error = "password is required"
+			return result
+		}
+		ticket, err := d.ensureKeyMaterial(password)
+		if err != nil {
+			result.Result = "failed"
+			result.Error = err.Error()
+			return result
+		}
+		result.OK = true
+		result.Result = ticket.Result
+	case controlActionKeyUnlock:
+		password := strings.TrimSpace(controlCommandPayloadString(req.Payload, "password"))
+		if password == "" {
+			result.Result = "failed"
+			result.Error = "password is required"
+			return result
+		}
+		ticket, err := d.unlockWithPassword(d.rootCtx, unlockSourceObs, password)
+		if err != nil {
+			result.Result = "failed"
+			result.Error = err.Error()
+			return result
+		}
+		result.OK = true
+		result.Result = string(ticket.Result)
+		result.UnlockOwner = strings.TrimSpace(ticket.Winner)
+		result.UnlockToken = strings.TrimSpace(ticket.Token)
+	case controlActionKeyLock:
+		if err := d.lockRuntime(); err != nil {
+			result.Result = "failed"
+			result.Error = err.Error()
+			return result
+		}
+		result.OK = true
+		result.Result = "locked"
+	default:
+		result.Result = "failed"
+		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
+	}
+	result.BackendPhase = d.currentBackendPhase()
+	result.RuntimePhase = d.currentRuntimePhase()
+	result.KeyState = d.currentKeyState()
+	return result
+}
+
+func (d *managedDaemon) emitManagedCommandResult(result controlCommandResult) {
+	if d == nil || d.controlStream == nil {
+		return
+	}
+	payload := map[string]any{
+		"command_id":    strings.TrimSpace(result.CommandID),
+		"action":        strings.TrimSpace(result.Action),
+		"ok":            result.OK,
+		"result":        strings.TrimSpace(result.Result),
+		"error":         strings.TrimSpace(result.Error),
+		"backend_phase": strings.TrimSpace(string(result.BackendPhase)),
+		"runtime_phase": strings.TrimSpace(string(result.RuntimePhase)),
+		"key_state":     strings.TrimSpace(string(result.KeyState)),
+		"unlock_owner":  strings.TrimSpace(result.UnlockOwner),
+		"unlock_token":  strings.TrimSpace(result.UnlockToken),
+	}
+	d.controlStream.Emit("backend.command.result", "private", "managed_daemon", "", payload)
+}
+
+func controlCommandPayloadString(payload map[string]any, key string) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	value, ok := payload[key]
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
+}
+
 func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if err := d.ensureKeyWorkflowReady(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	if d.currentKeyState() == managedKeyStateUnlocked {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "client key is already unlocked, lock first"})
-		return
-	}
-	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	} else if exists {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "encrypted key already exists"})
 		return
 	}
 	var req struct {
@@ -399,23 +645,16 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password is required"})
 		return
 	}
-	privHex, err := GeneratePrivateKeyHex()
+	ticket, err := d.ensureKeyMaterial(req.Password)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	env, err := EncryptPrivateKeyEnvelope(privHex, req.Password)
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+	if ticket.Result == "already_exists" {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "encrypted key already exists"})
 		return
 	}
-	if err := SaveEncryptedKeyEnvelope(d.startup.KeyPath, env); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	d.emitBackendSnapshot("key_material_ready")
-	pubHex, _ := PubHexFromPrivHex(privHex)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pubkey_hex": pubHex})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pubkey_hex": ticket.PubHex})
 }
 
 func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) {
@@ -479,75 +718,18 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	if err := d.ensureKeyWorkflowReady(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	if d.currentKeyState() == managedKeyStateUnlocked {
-		ticket := d.currentUnlockTicket(unlockSourceAPI)
-		if err := d.startRuntimeAsync(); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-			return
-		}
-		if err := d.waitRuntimeReadyForAPI(r.Context()); err != nil {
-			obs.Error("bitcast-client", "api_unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
-			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-			return
-		}
-		d.emitUnlockResult(unlockSourceAPI, ticket)
-		writeUnlockResponse(w, ticket)
-		return
-	}
-	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if !exists || env == nil {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "encrypted key not found"})
-		return
-	}
 	var req struct {
 		Password string `json:"password"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
+	if r.Body != nil {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			return
+		}
 	}
-	privHex, err := DecryptPrivateKeyEnvelope(*env, req.Password)
+	ticket, err := d.unlockWithPassword(r.Context(), unlockSourceAPI, req.Password)
 	if err != nil {
-		obs.Error("bitcast-client", "api_unlock_decrypt_failed", map[string]any{"error": err.Error()})
-		fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
-		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
-		return
-	}
-	ticket := d.claimUnlockTicket(unlockSourceAPI, privHex)
-	if ticket.Result == managedUnlockResultAlready {
-		if err := d.startRuntimeAsync(); err != nil {
-			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-			return
-		}
-		if err := d.waitRuntimeReadyForAPI(r.Context()); err != nil {
-			obs.Error("bitcast-client", "api_unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
-			fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
-			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-			return
-		}
-		d.emitUnlockResult(unlockSourceAPI, ticket)
-		writeUnlockResponse(w, ticket)
-		return
-	}
-	if err := d.startRuntimeAsync(); err != nil {
-		d.clearUnlockedKey()
-		obs.Error("bitcast-client", "api_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
-		fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	if err := d.waitRuntimeReadyForAPI(r.Context()); err != nil {
-		obs.Error("bitcast-client", "api_unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
-		fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		writeJSON(w, unlockHTTPStatus(err), map[string]any{"error": err.Error()})
 		return
 	}
 	d.emitUnlockResult(unlockSourceAPI, ticket)
@@ -1144,6 +1326,8 @@ func normalizeUnlockSource(raw string) string {
 	switch strings.TrimSpace(strings.ToLower(raw)) {
 	case unlockSourceCLI:
 		return unlockSourceCLI
+	case unlockSourceObs:
+		return unlockSourceObs
 	default:
 		return unlockSourceAPI
 	}
@@ -1207,6 +1391,11 @@ func unlockResultEventName(source string, result managedUnlockResult) string {
 			return "cli_unlock_succeeded"
 		}
 		return "cli_unlock_already_unlocked"
+	case unlockSourceObs:
+		if result == managedUnlockResultSucceeded {
+			return "obs_unlock_succeeded"
+		}
+		return "obs_unlock_already_unlocked"
 	default:
 		if result == managedUnlockResultSucceeded {
 			return "api_unlock_succeeded"
@@ -1493,16 +1682,6 @@ func (d *managedDaemon) cliUnlockLoop() {
 			time.Sleep(200 * time.Millisecond)
 			continue
 		}
-		env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
-		if err != nil {
-			obs.Error("bitcast-client", "cli_unlock_load_key_failed", map[string]any{"error": err.Error()})
-			time.Sleep(300 * time.Millisecond)
-			continue
-		}
-		if !exists || env == nil {
-			time.Sleep(300 * time.Millisecond)
-			continue
-		}
 		password, cancelled, err := d.readPasswordCancelable(d.unlockPasswordPrompt)
 		if err != nil {
 			obs.Error("bitcast-client", "cli_unlock_read_password_failed", map[string]any{"error": err.Error()})
@@ -1518,31 +1697,13 @@ func (d *managedDaemon) cliUnlockLoop() {
 			obs.Info("bitcast-client", "cli_unlock_empty_password", map[string]any{"vault_path": d.startup.VaultPath})
 			continue
 		}
-		if d.currentKeyState() == managedKeyStateUnlocked {
-			ticket := d.currentUnlockTicket(unlockSourceCLI)
-			d.emitUnlockResult(unlockSourceCLI, ticket)
-			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
-			continue
-		}
-		privHex, err := DecryptPrivateKeyEnvelope(*env, password)
+		ticket, err := d.unlockWithPassword(d.rootCtx, unlockSourceCLI, password)
 		if err != nil {
-			obs.Error("bitcast-client", "cli_unlock_decrypt_failed", map[string]any{"error": err.Error()})
-			fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
-			continue
-		}
-		ticket := d.claimUnlockTicket(unlockSourceCLI, privHex)
-		if ticket.Result == managedUnlockResultAlready {
-			d.emitUnlockResult(unlockSourceCLI, ticket)
-			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
-			continue
-		}
-		if err := d.startRuntimeAsync(); err != nil {
-			d.clearUnlockedKey()
-			obs.Error("bitcast-client", "cli_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
-			fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
+			obs.Error("bitcast-client", "cli_unlock_failed", map[string]any{"error": err.Error()})
 			continue
 		}
 		d.emitUnlockResult(unlockSourceCLI, ticket)
+		fmt.Fprintln(os.Stderr, "已解锁（管理控制命令已生效）")
 	}
 }
 
@@ -1565,7 +1726,7 @@ func (d *managedDaemon) readPasswordCancelable(prompt string) (password string, 
 	buf := make([]byte, 0, 128)
 	for {
 		if d.currentKeyState() == managedKeyStateUnlocked {
-			fmt.Fprint(os.Stderr, "\r已解锁（管理 API 已生效），取消命令行密码输入。")
+			fmt.Fprint(os.Stderr, "\r已解锁（管理控制命令已生效），取消命令行密码输入。")
 			return "", true, nil
 		}
 		select {
