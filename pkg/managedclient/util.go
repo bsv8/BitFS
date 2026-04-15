@@ -3,6 +3,7 @@ package managedclient
 import (
 	"bufio"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -94,6 +95,14 @@ func NewDefaultConfig(network string) clientapp.Config {
 }
 
 func LoadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, bool, error) {
+	configExisted := true
+	if _, err := os.Stat(configPath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			configExisted = false
+		} else {
+			return clientapp.Config{}, false, err
+		}
+	}
 	defaultCfg := NewDefaultConfig(initNetwork)
 	res, err := clientapp.LoadOrInitConfigFileForMode(configPath, defaultCfg, clientapp.StartupModeProduct)
 	if err != nil {
@@ -107,10 +116,16 @@ func LoadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, 
 	if strings.TrimSpace(cfg.Index.SQLitePath) == "" {
 		cfg.Index.SQLitePath = filepath.Clean(filepath.Join(filepath.Dir(configPath), "data", "client-index.sqlite"))
 	}
-	if err := clientapp.SaveConfigFile(configPath, cfg); err != nil {
+	if err := clientapp.SaveConfigFileForMode(configPath, cfg, clientapp.StartupModeProduct); err != nil {
 		return clientapp.Config{}, false, err
 	}
-	return cfg, res.Created, nil
+	configExistsAfterSave := false
+	if _, err := os.Stat(configPath); err == nil {
+		configExistsAfterSave = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return clientapp.Config{}, false, err
+	}
+	return cfg, !configExisted && configExistsAfterSave && res.Created, nil
 }
 
 func GeneratePrivateKeyHex() (string, error) {

@@ -77,6 +77,17 @@ func (s *runtimeConfigService) UpdateMemoryOnly(next Config) error {
 	return s.update(next, false)
 }
 
+// SnapshotWithSellerLiveBasePrice 只生成“改了全局 base”的新快照。
+// 设计说明：
+// - 这是 set_base 的最小辅助，不扩散成通用配置编辑器；
+// - 调用方仍然要自己决定是落盘还是只改内存；
+// - 这样控制面读起来更直，不用在上层手工复制整份 Config。
+func (s *runtimeConfigService) SnapshotWithSellerLiveBasePrice(base uint64) Config {
+	next := s.Snapshot()
+	next.Seller.Pricing.LiveBasePriceSatPer64K = base
+	return next
+}
+
 func (s *runtimeConfigService) update(next Config, persist bool) error {
 	if s == nil {
 		return fmt.Errorf("runtime config service is nil")
@@ -92,7 +103,7 @@ func (s *runtimeConfigService) update(next Config, persist bool) error {
 		if strings.TrimSpace(s.configPath) == "" {
 			return fmt.Errorf("config path is required for persisted runtime config updates")
 		}
-		if err := SaveConfigFile(s.configPath, next); err != nil {
+		if err := SaveConfigFileForMode(s.configPath, next, mode); err != nil {
 			return fmt.Errorf("save config file failed: %w", err)
 		}
 	}

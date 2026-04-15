@@ -15,15 +15,16 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace")
-	cfg.Storage.DataDir = filepath.Join(vaultDir, "data")
+	cfg.Storage.WorkspaceDir = filepath.Join(vaultDir, "workspace-custom")
+	cfg.Storage.DataDir = filepath.Join(vaultDir, "data-custom")
 	cfg.Index.Backend = "sqlite"
-	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data", "client-index.sqlite")
+	cfg.Index.SQLitePath = filepath.Join(vaultDir, "data-custom", "client-index.sqlite")
 	cfg.HTTP.Enabled = true
 	cfg.HTTP.ListenAddr = "127.0.0.1:18080"
 	cfg.FSHTTP.Enabled = true
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:18090"
-	cfg.Log.File = filepath.Join(vaultDir, "logs", "bitfs.log")
+	cfg.Log.File = filepath.Join(vaultDir, "logs-custom", "bitfs.log")
+	cfg.Listen.AutoRenewRounds = 9
 	cfg.ClientID = "should-not-be-saved"
 	cfg.Keys.PrivkeyHex = "should-not-be-saved"
 	if err := ApplyConfigDefaults(&cfg); err != nil {
@@ -44,7 +45,7 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 	if strings.Contains(saved, "privkey_hex") {
 		t.Fatalf("config file should not persist privkey_hex")
 	}
-	if !strings.Contains(saved, "workspace: workspace") && !strings.Contains(saved, "workspace_dir: workspace") {
+	if !strings.Contains(saved, "workspace-custom") {
 		t.Fatalf("workspace path should be saved as relative, got:\n%s", saved)
 	}
 
@@ -52,17 +53,20 @@ func TestSaveConfigFile_PersistsRelativePaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load config: %v", err)
 	}
-	if loaded.Storage.WorkspaceDir != filepath.Join(vaultDir, "workspace") {
+	if loaded.Storage.WorkspaceDir != filepath.Join(vaultDir, "workspace-custom") {
 		t.Fatalf("workspace dir mismatch: got=%q", loaded.Storage.WorkspaceDir)
 	}
-	if loaded.Storage.DataDir != filepath.Join(vaultDir, "data") {
+	if loaded.Storage.DataDir != filepath.Join(vaultDir, "data-custom") {
 		t.Fatalf("data dir mismatch: got=%q", loaded.Storage.DataDir)
 	}
-	if loaded.Index.SQLitePath != filepath.Join(vaultDir, "data", "client-index.sqlite") {
+	if loaded.Index.SQLitePath != filepath.Join(vaultDir, "data-custom", "client-index.sqlite") {
 		t.Fatalf("sqlite path mismatch: got=%q", loaded.Index.SQLitePath)
 	}
-	if loaded.Log.File != filepath.Join(vaultDir, "logs", "bitfs.log") {
+	if loaded.Log.File != filepath.Join(vaultDir, "logs-custom", "bitfs.log") {
 		t.Fatalf("log file mismatch: got=%q", loaded.Log.File)
+	}
+	if loaded.Listen.AutoRenewRounds != 9 {
+		t.Fatalf("listen.auto_renew_rounds mismatch: got=%d want=9", loaded.Listen.AutoRenewRounds)
 	}
 }
 
@@ -121,19 +125,12 @@ func TestSaveConfigFile_PreservesEmptyPeers(t *testing.T) {
 	if err := SaveConfigFile(configPath, cfg); err != nil {
 		t.Fatalf("save config file: %v", err)
 	}
-	loaded, _, err := LoadConfig(configPath)
-	if err != nil {
-		t.Fatalf("load config: %v", err)
-	}
-	if len(loaded.Network.Gateways) != 0 {
-		t.Fatalf("saved config should keep gateways empty, got=%d", len(loaded.Network.Gateways))
-	}
-	if len(loaded.Network.Arbiters) != 0 {
-		t.Fatalf("saved config should keep arbiters empty, got=%d", len(loaded.Network.Arbiters))
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config file should be deleted when there is no diff")
 	}
 }
 
-func TestLoadOrInitConfigFile_CreatesDefaultConfig(t *testing.T) {
+func TestLoadOrInitConfigFile_ReturnsDefaultConfigWithoutCreatingFile(t *testing.T) {
 	t.Parallel()
 
 	vaultDir := t.TempDir()
@@ -156,14 +153,14 @@ func TestLoadOrInitConfigFile_CreatesDefaultConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load or init config file: %v", err)
 	}
-	if !res.Created {
-		t.Fatalf("expected created config file")
+	if res.Created {
+		t.Fatalf("created should be false when no config file is written")
 	}
 	if res.Config.Index.SQLitePath != filepath.Join(vaultDir, "data", "client-index.sqlite") {
 		t.Fatalf("sqlite path mismatch: got=%q", res.Config.Index.SQLitePath)
 	}
-	if _, err := os.Stat(configPath); err != nil {
-		t.Fatalf("config file should exist: %v", err)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config file should not exist when no diff")
 	}
 }
 
@@ -187,19 +184,11 @@ func TestLoadOrInitConfigFileForMode_TestModeKeepsEmptyPeersOnCreate(t *testing.
 	if err != nil {
 		t.Fatalf("load or init config file in test mode: %v", err)
 	}
-	if !res.Created {
-		t.Fatalf("expected created config file")
+	if res.Created {
+		t.Fatalf("created should be false when no config file is written")
 	}
-	raw, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("read config: %v", err)
-	}
-	saved := string(raw)
-	if strings.Contains(saved, "020c7fbbdf69c2bce8431a4fbc8e89ded25fa6bc524eb5988aa7da05923dcaea3e") {
-		t.Fatalf("test mode should not inject default gateway, got:\n%s", saved)
-	}
-	if strings.Contains(saved, "03bbed86936b5b8157dcc5ce9d1cef2be7e0a1185b6e17e3b020a4e413110143f4") {
-		t.Fatalf("test mode should keep config file free of injected peers, got:\n%s", saved)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config file should not exist in test mode when no diff")
 	}
 }
 
@@ -223,18 +212,155 @@ func TestLoadOrInitConfigFileForMode_ProductModeBackfillsPeersOnCreate(t *testin
 	if err != nil {
 		t.Fatalf("load or init config file in product mode: %v", err)
 	}
-	if !res.Created {
-		t.Fatalf("expected created config file")
+	if res.Created {
+		t.Fatalf("created should be false when no config file is written")
+	}
+	if len(res.Config.Network.Gateways) == 0 {
+		t.Fatalf("product mode should backfill gateways in runtime config")
+	}
+	if len(res.Config.Network.Arbiters) == 0 {
+		t.Fatalf("product mode should backfill arbiters in runtime config")
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("config file should not exist when no diff")
+	}
+}
+
+func TestSaveConfigFile_DiffAndDeleteWhenResetToDefault(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.Enabled = true
+	cfg.FSHTTP.Enabled = true
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	cfg.Listen.AutoRenewRounds = 9
+	if err := SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save config file with diff: %v", err)
 	}
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
-		t.Fatalf("read config: %v", err)
+		t.Fatalf("read config file: %v", err)
+	}
+	if !strings.Contains(string(raw), "auto_renew_rounds: 9") {
+		t.Fatalf("diff key should be persisted, got:\n%s", string(raw))
+	}
+
+	cfg.Listen.AutoRenewRounds = 5
+	if err := SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save config file reset default: %v", err)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		raw, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			t.Fatalf("config file should be deleted after reset to default: %v", readErr)
+		}
+		t.Fatalf("config file should be deleted after reset to default, got:\n%s", string(raw))
+	}
+}
+
+func TestSaveConfigFile_ProductModeStripsMandatoryPeersFromDiff(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+	gwHost, _ := newSecpHost(t)
+	defer gwHost.Close()
+	arbHost, _ := newSecpHost(t)
+	defer arbHost.Close()
+	gwPub, err := localPubKeyHex(gwHost)
+	if err != nil {
+		t.Fatalf("gateway pubkey: %v", err)
+	}
+	arbPub, err := localPubKeyHex(arbHost)
+	if err != nil {
+		t.Fatalf("arbiter pubkey: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.Enabled = true
+	cfg.FSHTTP.Enabled = true
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	cfg.Network.Gateways = append(cfg.Network.Gateways, PeerNode{
+		Enabled: false,
+		Addr:    gwHost.Addrs()[0].String() + "/p2p/" + gwHost.ID().String(),
+		Pubkey:  strings.ToLower(gwPub),
+	})
+	cfg.Network.Arbiters = append(cfg.Network.Arbiters, PeerNode{
+		Enabled: false,
+		Addr:    arbHost.Addrs()[0].String() + "/p2p/" + arbHost.ID().String(),
+		Pubkey:  strings.ToLower(arbPub),
+	})
+	if err := SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save config file: %v", err)
+	}
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read config file: %v", err)
 	}
 	saved := string(raw)
-	if !strings.Contains(saved, "020c7fbbdf69c2bce8431a4fbc8e89ded25fa6bc524eb5988aa7da05923dcaea3e") {
-		t.Fatalf("product mode should persist gateways, got:\n%s", saved)
+	defaults, err := networkInitDefaults("test")
+	if err != nil {
+		t.Fatalf("network defaults: %v", err)
 	}
-	if !strings.Contains(saved, "03bbed86936b5b8157dcc5ce9d1cef2be7e0a1185b6e17e3b020a4e413110143f4") {
-		t.Fatalf("product mode should persist arbiters, got:\n%s", saved)
+	for _, mandatory := range append(defaults.DefaultGateways, defaults.DefaultArbiters...) {
+		if strings.Contains(saved, mandatory.Pubkey) {
+			t.Fatalf("mandatory peer should not be written: %s", mandatory.Pubkey)
+		}
+	}
+	if !strings.Contains(saved, gwPub) || !strings.Contains(saved, arbPub) {
+		t.Fatalf("custom peers should be written, got:\n%s", saved)
+	}
+}
+
+func TestSaveConfigFile_ProductModeDeletesFileAfterReset(t *testing.T) {
+	t.Parallel()
+
+	vaultDir := t.TempDir()
+	configPath := filepath.Join(vaultDir, "config.yaml")
+	gwHost, _ := newSecpHost(t)
+	defer gwHost.Close()
+	gwPub, err := localPubKeyHex(gwHost)
+	if err != nil {
+		t.Fatalf("gateway pubkey: %v", err)
+	}
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.Enabled = true
+	cfg.FSHTTP.Enabled = true
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	cfg.Network.Gateways = append(cfg.Network.Gateways, PeerNode{
+		Enabled: false,
+		Addr:    gwHost.Addrs()[0].String() + "/p2p/" + gwHost.ID().String(),
+		Pubkey:  strings.ToLower(gwPub),
+	})
+	if err := SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save diff config: %v", err)
+	}
+	cfg.Network.Gateways = nil
+	cfg.Network.Arbiters = nil
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("reapply defaults: %v", err)
+	}
+	if err := SaveConfigFile(configPath, cfg); err != nil {
+		t.Fatalf("save reset config: %v", err)
+	}
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		raw, readErr := os.ReadFile(configPath)
+		if readErr != nil {
+			t.Fatalf("config file should be deleted after reset: %v", readErr)
+		}
+		t.Fatalf("config file should be deleted after reset, got:\n%s", string(raw))
 	}
 }

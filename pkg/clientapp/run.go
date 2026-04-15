@@ -1014,11 +1014,12 @@ func applyConfigDefaultsForMode(cfg *Config, mode StartupMode) error {
 	if err != nil {
 		return err
 	}
-	if startupMode == StartupModeProduct && len(cfg.Network.Gateways) == 0 {
-		cfg.Network.Gateways = initPeerNodesToPeerNodes(networkDefaults.DefaultGateways)
-	}
-	if startupMode == StartupModeProduct && len(cfg.Network.Arbiters) == 0 {
-		cfg.Network.Arbiters = initPeerNodesToPeerNodes(networkDefaults.DefaultArbiters)
+	if startupMode == StartupModeProduct {
+		// 内置网关/仲裁是运行底座，必须强制并入运行态，且不可被文件覆盖。
+		warnMandatoryPeerOverrides("gateway", cfg.Network.Gateways, networkDefaults.DefaultGateways)
+		warnMandatoryPeerOverrides("arbiter", cfg.Network.Arbiters, networkDefaults.DefaultArbiters)
+		cfg.Network.Gateways = mergeMandatoryPeerNodes(cfg.Network.Gateways, networkDefaults.DefaultGateways)
+		cfg.Network.Arbiters = mergeMandatoryPeerNodes(cfg.Network.Arbiters, networkDefaults.DefaultArbiters)
 	}
 	if cfg.Index.Backend == "" {
 		cfg.Index.Backend = networkDefaults.IndexBackend

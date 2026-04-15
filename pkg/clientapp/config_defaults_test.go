@@ -129,6 +129,57 @@ func TestApplyConfigDefaults_ProductModeBackfillsPeers(t *testing.T) {
 	}
 }
 
+func TestApplyConfigDefaults_ProductModeMergesMandatoryAndCustomPeers(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Network.Gateways = []PeerNode{
+		{Enabled: true, Addr: "/ip4/127.0.0.1/tcp/19990/p2p/16Uiu2HAmT1x9dTYdJnkEgajv4i7xW9nUCPN5J8rQ7zQNNJfN4owv", Pubkey: "03b57f32fbce4d8f52f14e83ff2642d3f6fd8f0f2ca90dc8f95fc54802a47a4068"},
+	}
+	cfg.Network.Arbiters = []PeerNode{
+		{Enabled: true, Addr: "/ip4/127.0.0.1/tcp/19991/p2p/16Uiu2HAmPXKX7cq2uFY12V3h45xTBJv5A67x9jduPJgD4hXyQxMx", Pubkey: "0324e9b29f0ecf6be4bc7f2ee9ca2f9f4b72bf711f514cb0fcb04ce57cf7f0ee8f"},
+	}
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults in product mode: %v", err)
+	}
+	if len(cfg.Network.Gateways) < 2 {
+		t.Fatalf("product mode should keep custom gateway and merge mandatory gateway")
+	}
+	if len(cfg.Network.Arbiters) < 2 {
+		t.Fatalf("product mode should keep custom arbiter and merge mandatory arbiter")
+	}
+}
+
+func TestApplyConfigDefaults_ProductModeIgnoresMandatoryPeerOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Network.Gateways = []PeerNode{
+		{Enabled: false, Addr: "/ip4/127.0.0.1/tcp/19990/p2p/16Uiu2HAmT1x9dTYdJnkEgajv4i7xW9nUCPN5J8rQ7zQNNJfN4owv", Pubkey: "020c7fbbdf69c2bce8431a4fbc8e89ded25fa6bc524eb5988aa7da05923dcaea3e"},
+	}
+	cfg.Network.Arbiters = []PeerNode{
+		{Enabled: false, Addr: "/ip4/127.0.0.1/tcp/19991/p2p/16Uiu2HAmPXKX7cq2uFY12V3h45xTBJv5A67x9jduPJgD4hXyQxMx", Pubkey: "03bbed86936b5b8157dcc5ce9d1cef2be7e0a1185b6e17e3b020a4e413110143f4"},
+	}
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults in product mode: %v", err)
+	}
+	defaults, err := networkInitDefaults("test")
+	if err != nil {
+		t.Fatalf("network defaults: %v", err)
+	}
+	if len(cfg.Network.Gateways) == 0 || len(cfg.Network.Arbiters) == 0 {
+		t.Fatalf("product mode should still keep mandatory peers")
+	}
+	if cfg.Network.Gateways[0].Pubkey != defaults.DefaultGateways[0].Pubkey || cfg.Network.Gateways[0].Addr != defaults.DefaultGateways[0].Addr {
+		t.Fatalf("mandatory gateway override should be ignored: %+v", cfg.Network.Gateways[0])
+	}
+	if cfg.Network.Arbiters[0].Pubkey != defaults.DefaultArbiters[0].Pubkey || cfg.Network.Arbiters[0].Addr != defaults.DefaultArbiters[0].Addr {
+		t.Fatalf("mandatory arbiter override should be ignored: %+v", cfg.Network.Arbiters[0])
+	}
+}
+
 func TestValidateConfig_TestModeAllowsEmptyPeers(t *testing.T) {
 	t.Parallel()
 

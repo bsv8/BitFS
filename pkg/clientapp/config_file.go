@@ -1,10 +1,12 @@
 package clientapp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -69,10 +71,11 @@ func LoadOrInitConfigFile(path string, seed Config) (ConfigFileResult, error) {
 	return LoadOrInitConfigFileForMode(path, seed, StartupModeProduct)
 }
 
-// LoadOrInitConfigFileForMode 保证配置文件存在，并按启动模式决定首次创建时是否补默认值。
-// - product：首次创建时先补齐基础网关和仲裁，再写回文件；
-// - test：首次创建时保持 seed 原样，不补默认值；
-// - 已存在文件：只读取并展开路径，不在这里改文件内容。
+// LoadOrInitConfigFileForMode 加载配置文件，并把运行态默认值补齐到最终快照。
+// 设计说明：
+// - 差异化配置下，“无差异=无文件”是常态，因此这里不再强制创建文件；
+// - product 模式会补齐基础默认值（包含内置网关/仲裁）；
+// - test 模式保持最小 seed，不注入默认网关/仲裁。
 func LoadOrInitConfigFileForMode(path string, seed Config, mode StartupMode) (ConfigFileResult, error) {
 	resolved := filepath.Clean(strings.TrimSpace(path))
 	if resolved == "" {
@@ -90,28 +93,22 @@ func LoadOrInitConfigFileForMode(path string, seed Config, mode StartupMode) (Co
 		if err != nil {
 			return ConfigFileResult{}, err
 		}
+		if err := ApplyConfigDefaultsForMode(&cfg, startupMode); err != nil {
+			return ConfigFileResult{}, err
+		}
 		return ConfigFileResult{Config: cfg}, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return ConfigFileResult{}, err
 	}
 
 	cfg := seed
-	if startupMode == StartupModeProduct {
-		if err := ApplyConfigDefaultsForMode(&cfg, startupMode); err != nil {
-			return ConfigFileResult{}, err
-		}
-	}
-	if err := normalizeConfigForFile(&cfg, resolved); err != nil {
+	if err := ApplyConfigDefaultsForMode(&cfg, startupMode); err != nil {
 		return ConfigFileResult{}, err
 	}
-	if err := saveConfigFile(resolved, cfg); err != nil {
+	if err := resolveConfigPathsForRuntime(&cfg, resolved); err != nil {
 		return ConfigFileResult{}, err
 	}
-	loaded, _, err := LoadConfigWithSeed(resolved, seed)
-	if err != nil {
-		return ConfigFileResult{}, err
-	}
-	return ConfigFileResult{Config: loaded, Created: true}, nil
+	return ConfigFileResult{Config: cfg, Created: false}, nil
 }
 
 // SaveConfigFile 将配置原样写回 YAML。
@@ -119,14 +116,69 @@ func LoadOrInitConfigFileForMode(path string, seed Config, mode StartupMode) (Co
 // - 仅保存业务配置；
 // - 路径优先折叠为 vault 目录下的相对路径，避免把配置写死在机器绝对路径上。
 func SaveConfigFile(path string, cfg Config) error {
+	return SaveConfigFileForMode(path, cfg, StartupModeProduct)
+}
+
+// SaveConfigFileForMode 按启动模式保存配置。
+// 差异化写盘规则：
+// - 文件只保存“与默认值不同”的字段；
+// - 当没有任何差异时删除配置文件；
+// - product 模式下，内置网关/仲裁不进文件（读取时会自动并入）。
+func SaveConfigFileForMode(path string, cfg Config, mode StartupMode) error {
 	resolved := filepath.Clean(strings.TrimSpace(path))
 	if resolved == "" {
 		return fmt.Errorf("config path is empty")
 	}
-	if err := normalizeConfigForFile(&cfg, resolved); err != nil {
+	startupMode, err := normalizeStartupMode(mode)
+	if err != nil {
 		return err
 	}
-	return saveConfigFile(resolved, cfg)
+
+	fileCfg := cloneConfig(cfg)
+	if err := ApplyConfigDefaultsForMode(&fileCfg, startupMode); err != nil {
+		return err
+	}
+	if err := normalizeConfigForFile(&fileCfg, resolved); err != nil {
+		return err
+	}
+
+	baseCfg := defaultConfigSeed()
+	baseCfg.BSV.Network = fileCfg.BSV.Network
+	if err := ApplyConfigDefaultsForMode(&baseCfg, startupMode); err != nil {
+		return err
+	}
+	if err := normalizeConfigForFile(&baseCfg, resolved); err != nil {
+		return err
+	}
+
+	if startupMode == StartupModeProduct {
+		defaults, err := networkInitDefaults(fileCfg.BSV.Network)
+		if err != nil {
+			return err
+		}
+		fileCfg.Network.Gateways = stripMandatoryPeerNodesForFile(fileCfg.Network.Gateways, defaults.DefaultGateways)
+		fileCfg.Network.Arbiters = stripMandatoryPeerNodesForFile(fileCfg.Network.Arbiters, defaults.DefaultArbiters)
+		baseCfg.Network.Gateways = stripMandatoryPeerNodesForFile(baseCfg.Network.Gateways, defaults.DefaultGateways)
+		baseCfg.Network.Arbiters = stripMandatoryPeerNodesForFile(baseCfg.Network.Arbiters, defaults.DefaultArbiters)
+	}
+	// 设计说明：
+	// - startup_full_scan 是桌面托管启动时的临时技术开关；
+	// - 只影响本次运行，不应污染用户配置文件；
+	// - 写盘时统一按“未开启”视角比较差异。
+	fileCfg.Scan.StartupFullScan = false
+	baseCfg.Scan.StartupFullScan = false
+
+	diffRaw, err := buildConfigDiffYAML(fileCfg, baseCfg)
+	if err != nil {
+		return err
+	}
+	if len(diffRaw) == 0 {
+		if err := os.Remove(resolved); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	return writeRawConfigFile(resolved, diffRaw)
 }
 
 func defaultConfigSeed() Config {
@@ -141,18 +193,82 @@ func defaultConfigSeed() Config {
 	return cfg
 }
 
-func saveConfigFile(path string, cfg Config) error {
+func writeRawConfigFile(path string, raw []byte) error {
 	dir := filepath.Dir(path)
 	if dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+func buildConfigDiffYAML(current Config, baseline Config) ([]byte, error) {
+	currentMap, err := configToYAMLMap(current)
+	if err != nil {
+		return nil, err
+	}
+	baselineMap, err := configToYAMLMap(baseline)
+	if err != nil {
+		return nil, err
+	}
+	diff := diffYAMLValue(currentMap, baselineMap)
+	diffMap, ok := diff.(map[string]any)
+	if !ok || len(diffMap) == 0 {
+		return nil, nil
+	}
+	raw, err := yaml.Marshal(diffMap)
+	if err != nil {
+		return nil, err
+	}
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	return append(raw, '\n'), nil
+}
+
+func configToYAMLMap(cfg Config) (map[string]any, error) {
 	raw, err := yaml.Marshal(cfg)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return os.WriteFile(path, raw, 0o644)
+	out := map[string]any{}
+	if err := yaml.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func diffYAMLValue(current any, baseline any) any {
+	switch c := current.(type) {
+	case map[string]any:
+		b, ok := baseline.(map[string]any)
+		if !ok {
+			return c
+		}
+		out := map[string]any{}
+		for k, v := range c {
+			d := diffYAMLValue(v, b[k])
+			if d != nil {
+				out[k] = d
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	case []any:
+		if b, ok := baseline.([]any); ok && reflect.DeepEqual(c, b) {
+			return nil
+		}
+		return c
+	default:
+		if reflect.DeepEqual(current, baseline) {
+			return nil
+		}
+		return current
+	}
 }
 
 func resolveConfigPathsForRuntime(cfg *Config, configPath string) error {

@@ -1,6 +1,7 @@
 package clientapp
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -146,6 +147,15 @@ var networkInitDefaultsByNetwork = map[string]NetworkInitDefaults{
 	},
 }
 
+var (
+	errCannotModifyBuiltInGateway = errors.New("cannot modify built-in gateway")
+	errCannotDeleteBuiltInGateway = errors.New("cannot delete built-in gateway")
+	errCannotDisableBuiltInGateway = errors.New("cannot disable built-in gateway")
+	errCannotModifyBuiltInArbiter = errors.New("cannot modify built-in arbiter")
+	errCannotDeleteBuiltInArbiter = errors.New("cannot delete built-in arbiter")
+	errCannotDisableBuiltInArbiter = errors.New("cannot disable built-in arbiter")
+)
+
 // NormalizeBSVNetwork 归一化 bsv.network 输入，仅支持 test/main。
 func NormalizeBSVNetwork(raw string) (string, error) {
 	n := strings.ToLower(strings.TrimSpace(raw))
@@ -186,4 +196,115 @@ func initPeerNodesToPeerNodes(in []InitPeerNode) []PeerNode {
 		})
 	}
 	return out
+}
+
+func mandatoryPeerPubkeySet(defaults []InitPeerNode) map[string]struct{} {
+	out := make(map[string]struct{}, len(defaults))
+	for _, it := range defaults {
+		pub := strings.ToLower(strings.TrimSpace(it.Pubkey))
+		if pub == "" {
+			continue
+		}
+		out[pub] = struct{}{}
+	}
+	return out
+}
+
+func isMandatoryPeer(pubkey string, mandatorySet map[string]struct{}) bool {
+	pub := strings.ToLower(strings.TrimSpace(pubkey))
+	if pub == "" || len(mandatorySet) == 0 {
+		return false
+	}
+	_, ok := mandatorySet[pub]
+	return ok
+}
+
+func mandatoryGatewayPubkeySet(network string) (map[string]struct{}, error) {
+	defaults, err := networkInitDefaults(network)
+	if err != nil {
+		return nil, err
+	}
+	return mandatoryPeerPubkeySet(defaults.DefaultGateways), nil
+}
+
+func mandatoryArbiterPubkeySet(network string) (map[string]struct{}, error) {
+	defaults, err := networkInitDefaults(network)
+	if err != nil {
+		return nil, err
+	}
+	return mandatoryPeerPubkeySet(defaults.DefaultArbiters), nil
+}
+
+// mergeMandatoryPeerNodes 保证代码内置节点始终在前、始终存在、始终按内置值生效。
+// 设计说明：
+// - 内置节点不可删改禁，因此这里直接以代码内置值为准；
+// - 文件里若出现同 pubkey 条目，视为“用户尝试覆盖”，会被忽略；
+// - 仅把非内置节点作为用户新增项追加到后面。
+func mergeMandatoryPeerNodes(existing []PeerNode, defaults []InitPeerNode) []PeerNode {
+	mandatorySet := mandatoryPeerPubkeySet(defaults)
+	out := initPeerNodesToPeerNodes(defaults)
+	for _, it := range existing {
+		if isMandatoryPeer(it.Pubkey, mandatorySet) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+// stripMandatoryPeerNodesForFile 只保留“用户新增节点”，用于差异配置文件落盘。
+func stripMandatoryPeerNodesForFile(existing []PeerNode, defaults []InitPeerNode) []PeerNode {
+	mandatorySet := mandatoryPeerPubkeySet(defaults)
+	out := make([]PeerNode, 0, len(existing))
+	for _, it := range existing {
+		if isMandatoryPeer(it.Pubkey, mandatorySet) {
+			continue
+		}
+		out = append(out, it)
+	}
+	return out
+}
+
+func warnMandatoryPeerOverrides(kind string, existing []PeerNode, defaults []InitPeerNode) {
+	mandatorySet := mandatoryPeerPubkeySet(defaults)
+	defaultByPub := make(map[string]InitPeerNode, len(defaults))
+	for _, def := range defaults {
+		pub := strings.ToLower(strings.TrimSpace(def.Pubkey))
+		if pub == "" {
+			continue
+		}
+		defaultByPub[pub] = def
+	}
+	seen := make(map[string]struct{}, len(existing))
+	overridden := make([]string, 0, len(existing))
+	for _, it := range existing {
+		pub := strings.ToLower(strings.TrimSpace(it.Pubkey))
+		if pub == "" {
+			continue
+		}
+		if !isMandatoryPeer(pub, mandatorySet) {
+			continue
+		}
+		if _, ok := seen[pub]; ok {
+			overridden = append(overridden, pub)
+			continue
+		}
+		seen[pub] = struct{}{}
+		def, ok := defaultByPub[pub]
+		if !ok {
+			overridden = append(overridden, pub)
+			continue
+		}
+		if strings.TrimSpace(it.Addr) != strings.TrimSpace(def.Addr) || !it.Enabled {
+			overridden = append(overridden, pub)
+		}
+	}
+	if len(overridden) == 0 {
+		return
+	}
+	obs.Important("bitcast-client", "mandatory_peer_override_ignored", map[string]any{
+		"kind":      kind,
+		"count":     len(overridden),
+		"pubkeys":   overridden,
+	})
 }
