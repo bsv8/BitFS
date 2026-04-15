@@ -1009,6 +1009,279 @@ func TestHandleManagedControlCommand_ConcurrentUnlockOnlyOneSucceeds(t *testing.
 	}
 }
 
+func TestHandleManagedControlCommand_PricingCommands(t *testing.T) {
+	stream := &capturedManagedControlStream{}
+	rt, seedHash := newManagedPricingControlRuntime(t)
+	d := &managedDaemon{
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		rootCtx:       t.Context(),
+		rt:            rt,
+	}
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-base",
+		Action:    "pricing.set_base",
+		Payload: map[string]any{
+			"base_price_sat_per_64k": uint64(1600),
+		},
+	})
+	baseEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-base")
+	if !ok {
+		t.Fatal("pricing set_base result event not found")
+	}
+	if got, want := strings.TrimSpace(fmt.Sprint(baseEvent.Payload["result"])), "updated"; got != want {
+		t.Fatalf("set_base result=%q, want %q", got, want)
+	}
+	if cfgPayload, ok := baseEvent.Payload["pricing_config"].(map[string]any); !ok {
+		t.Fatal("pricing_config payload missing after set_base")
+	} else if got, want := fmt.Sprint(cfgPayload["base_price_sat_per_64k"]), "1600"; got != want {
+		t.Fatalf("pricing base=%q, want %q", got, want)
+	}
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-reset",
+		Action:    "pricing.reset_seed",
+		Payload: map[string]any{
+			"seed_hash": seedHash,
+		},
+	})
+	resetEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-reset")
+	if !ok {
+		t.Fatal("pricing reset_seed result event not found")
+	}
+	resetState := mustPricingStatePayload(t, resetEvent.Payload)
+	if got, want := resetState["seed_hash"], seedHash; got != want {
+		t.Fatalf("reset seed hash=%q, want %q", got, want)
+	}
+	if got, want := resetState["base_price_sat_per_64k"], "1600"; got != want {
+		t.Fatalf("reset base price=%q, want %q", got, want)
+	}
+	if got, want := resetState["effective_price_sat_per_64k"], "1600"; got != want {
+		t.Fatalf("reset effective price=%q, want %q", got, want)
+	}
+	if got, want := resetState["pricing_mode"], "auto"; got != want {
+		t.Fatalf("reset pricing mode=%q, want %q", got, want)
+	}
+	assertManagedCommandResultFields(t, resetEvent, "pricing.reset_seed")
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-feed",
+		Action:    "pricing.feed_seed",
+		Payload: map[string]any{
+			"seed_hash":     seedHash,
+			"query_count":   uint32(40),
+			"deal_count":    uint32(35),
+			"silence_hours": uint32(0),
+		},
+	})
+	feedEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-feed")
+	if !ok {
+		t.Fatal("pricing feed_seed result event not found")
+	}
+	feedState := mustPricingStatePayload(t, feedEvent.Payload)
+	if got, want := feedState["pending_query_count"], "40"; got != want {
+		t.Fatalf("feed pending query=%q, want %q", got, want)
+	}
+	if got, want := feedState["pending_deal_count"], "35"; got != want {
+		t.Fatalf("feed pending deal=%q, want %q", got, want)
+	}
+	assertManagedCommandResultFields(t, feedEvent, "pricing.feed_seed")
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-tick",
+		Action:    "pricing.run_tick",
+		Payload: map[string]any{
+			"hours": uint32(1),
+		},
+	})
+	tickEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-tick")
+	if !ok {
+		t.Fatal("pricing run_tick result event not found")
+	}
+	tickStates := mustPricingStatesPayload(t, tickEvent.Payload)
+	if len(tickStates) == 0 {
+		t.Fatal("pricing_states payload missing")
+	}
+	tickState := tickStates[0]
+	if got, want := tickState["pending_query_count"], "0"; got != want {
+		t.Fatalf("tick pending query=%q, want %q", got, want)
+	}
+	if got, want := tickState["pending_deal_count"], "0"; got != want {
+		t.Fatalf("tick pending deal=%q, want %q", got, want)
+	}
+	if got, want := tickState["pricing_mode"], "auto"; got != want {
+		t.Fatalf("tick pricing mode=%q, want %q", got, want)
+	}
+	if audits := mustPricingAuditsPayload(t, tickEvent.Payload); len(audits) == 0 {
+		t.Fatal("pricing audits should be present after tick")
+	}
+	assertManagedCommandResultFields(t, tickEvent, "pricing.run_tick")
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-force",
+		Action:    "pricing.set_force",
+		Payload: map[string]any{
+			"seed_hash":               seedHash,
+			"force_price_sat_per_64k": uint64(7777),
+			"force_hours":             uint32(6),
+		},
+	})
+	forceEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-force")
+	if !ok {
+		t.Fatal("pricing set_force result event not found")
+	}
+	forceState := mustPricingStatePayload(t, forceEvent.Payload)
+	if got, want := forceState["pricing_mode"], "force"; got != want {
+		t.Fatalf("force pricing mode=%q, want %q", got, want)
+	}
+	if got, want := forceState["effective_price_sat_per_64k"], "7777"; got != want {
+		t.Fatalf("force effective price=%q, want %q", got, want)
+	}
+	assertManagedCommandResultFields(t, forceEvent, "pricing.set_force")
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-release",
+		Action:    "pricing.release_force",
+		Payload: map[string]any{
+			"seed_hash": seedHash,
+		},
+	})
+	releaseEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-release")
+	if !ok {
+		t.Fatal("pricing release_force result event not found")
+	}
+	releaseState := mustPricingStatePayload(t, releaseEvent.Payload)
+	if got, want := releaseState["pricing_mode"], "auto"; got != want {
+		t.Fatalf("release pricing mode=%q, want %q", got, want)
+	}
+	if got, want := releaseState["forced_price_sat_per_64k"], "0"; got != want {
+		t.Fatalf("release forced price=%q, want %q", got, want)
+	}
+	assertManagedCommandResultFields(t, releaseEvent, "pricing.release_force")
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-reconcile",
+		Action:    "pricing.trigger_reconcile",
+		Payload: map[string]any{
+			"seed_hash": seedHash,
+			"now_unix":  mustInt64(t, tickState["last_rate_calc_at_unix"]) + 3601,
+		},
+	})
+	reconcileEvent, ok := findManagedCommandEvent(stream.events, "cmd-pricing-reconcile")
+	if !ok {
+		t.Fatal("pricing trigger_reconcile result event not found")
+	}
+	reconcileState := mustPricingStatePayload(t, reconcileEvent.Payload)
+	if got, want := reconcileState["pending_query_count"], "0"; got != want {
+		t.Fatalf("reconcile pending query=%q, want %q", got, want)
+	}
+	if got, want := reconcileState["pending_deal_count"], "0"; got != want {
+		t.Fatalf("reconcile pending deal=%q, want %q", got, want)
+	}
+	if audits := mustPricingAuditsPayload(t, reconcileEvent.Payload); len(audits) == 0 {
+		t.Fatal("pricing audits should be present after reconcile")
+	}
+	assertManagedCommandResultFields(t, reconcileEvent, "pricing.trigger_reconcile")
+}
+
+func TestHandleManagedControlCommand_PricingCommandsMissingParams(t *testing.T) {
+	cases := []ManagedControlCommandFrame{
+		{Type: "command", CommandID: "cmd-missing-base", Action: "pricing.set_base"},
+		{Type: "command", CommandID: "cmd-missing-reset", Action: "pricing.reset_seed"},
+		{Type: "command", CommandID: "cmd-missing-feed", Action: "pricing.feed_seed"},
+		{Type: "command", CommandID: "cmd-missing-force", Action: "pricing.set_force", Payload: map[string]any{"seed_hash": strings.Repeat("ab", 32)}},
+		{Type: "command", CommandID: "cmd-missing-release", Action: "pricing.release_force"},
+		{Type: "command", CommandID: "cmd-missing-tick", Action: "pricing.run_tick"},
+		{Type: "command", CommandID: "cmd-missing-reconcile", Action: "pricing.trigger_reconcile"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.CommandID, func(t *testing.T) {
+			stream := &capturedManagedControlStream{}
+			rt, _ := newManagedPricingControlRuntime(t)
+			d := &managedDaemon{
+				controlStream: stream,
+				backendPhase:  managedBackendPhaseAvailable,
+				runtimePhase:  managedRuntimePhaseStopped,
+				rootCtx:       t.Context(),
+				rt:            rt,
+			}
+			d.handleManagedControlCommand(tc)
+			result, ok := findManagedCommandResult(stream.events, tc.CommandID)
+			if !ok {
+				t.Fatal("command result event not found")
+			}
+			if got, want := strings.TrimSpace(result["ok"]), "false"; got != want {
+				t.Fatalf("command ok=%q, want %q", got, want)
+			}
+			if strings.TrimSpace(result["error"]) == "" {
+				t.Fatal("command error should not be empty")
+			}
+		})
+	}
+}
+
+func TestHandleManagedControlCommand_PricingCommandsUnsupportedAction(t *testing.T) {
+	stream := &capturedManagedControlStream{}
+	rt, _ := newManagedPricingControlRuntime(t)
+	d := &managedDaemon{
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		rootCtx:       t.Context(),
+		rt:            rt,
+	}
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-unsupported",
+		Action:    "pricing.unknown",
+	})
+	result, ok := findManagedCommandResult(stream.events, "cmd-pricing-unsupported")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := strings.TrimSpace(result["error"]), "unsupported control action: pricing.unknown"; got != want {
+		t.Fatalf("unsupported error=%q, want %q", got, want)
+	}
+}
+
+func TestHandleManagedControlCommand_PricingCommandResultFieldsComplete(t *testing.T) {
+	stream := &capturedManagedControlStream{}
+	rt, _ := newManagedPricingControlRuntime(t)
+	d := &managedDaemon{
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		rootCtx:       t.Context(),
+		rt:            rt,
+	}
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-pricing-fields",
+		Action:    "pricing.reset_seed",
+		Payload: map[string]any{
+			"seed_hash": strings.Repeat("ab", 32),
+		},
+	})
+	result, ok := findManagedCommandResult(stream.events, "cmd-pricing-fields")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	for _, key := range []string{"command_id", "action", "ok", "result", "error", "backend_phase", "runtime_phase", "key_state", "unlock_owner", "unlock_token"} {
+		if _, exists := result[key]; !exists {
+			t.Fatalf("result field %q missing", key)
+		}
+	}
+}
+
 func findControlCommandResult(events []ManagedRuntimeEvent, commandID string) (map[string]string, bool) {
 	for i := len(events) - 1; i >= 0; i-- {
 		ev := events[i]
@@ -1025,4 +1298,128 @@ func findControlCommandResult(events []ManagedRuntimeEvent, commandID string) (m
 		return fields, true
 	}
 	return nil, false
+}
+
+func findManagedCommandEvent(events []ManagedRuntimeEvent, commandID string) (ManagedRuntimeEvent, bool) {
+	for i := len(events) - 1; i >= 0; i-- {
+		ev := events[i]
+		if ev.Topic != "backend.command.result" {
+			continue
+		}
+		if strings.TrimSpace(fmt.Sprint(ev.Payload["command_id"])) != strings.TrimSpace(commandID) {
+			continue
+		}
+		return ev, true
+	}
+	return ManagedRuntimeEvent{}, false
+}
+
+func findManagedCommandResult(events []ManagedRuntimeEvent, commandID string) (map[string]string, bool) {
+	return findControlCommandResult(events, commandID)
+}
+
+func assertManagedCommandResultFields(t *testing.T, ev ManagedRuntimeEvent, wantAction string) {
+	t.Helper()
+	if got := strings.TrimSpace(fmt.Sprint(ev.Payload["action"])); got != wantAction {
+		t.Fatalf("result action=%q, want %q", got, wantAction)
+	}
+	for _, key := range []string{"command_id", "action", "ok", "result", "error", "backend_phase", "runtime_phase", "key_state", "unlock_owner", "unlock_token"} {
+		if _, exists := ev.Payload[key]; !exists {
+			t.Fatalf("result field %q missing", key)
+		}
+	}
+}
+
+func mustPricingStatePayload(t *testing.T, payload map[string]any) map[string]string {
+	t.Helper()
+	statePayload, ok := payload["pricing_state"].(map[string]any)
+	if !ok {
+		t.Fatal("pricing_state payload missing")
+	}
+	out := map[string]string{}
+	for key, value := range statePayload {
+		out[key] = strings.TrimSpace(fmt.Sprint(value))
+	}
+	return out
+}
+
+func mustPricingAuditsPayload(t *testing.T, payload map[string]any) []map[string]string {
+	t.Helper()
+	raw, ok := payload["pricing_audits"]
+	if !ok || raw == nil {
+		return nil
+	}
+	items, ok := raw.([]map[string]any)
+	if !ok {
+		t.Fatal("pricing_audits payload has unexpected type")
+	}
+	out := make([]map[string]string, 0, len(items))
+	for _, item := range items {
+		next := map[string]string{}
+		for key, value := range item {
+			next[key] = strings.TrimSpace(fmt.Sprint(value))
+		}
+		out = append(out, next)
+	}
+	return out
+}
+
+func mustPricingStatesPayload(t *testing.T, payload map[string]any) []map[string]string {
+	t.Helper()
+	raw, ok := payload["pricing_states"]
+	if !ok || raw == nil {
+		return nil
+	}
+	items, ok := raw.([]map[string]any)
+	if !ok {
+		t.Fatal("pricing_states payload has unexpected type")
+	}
+	out := make([]map[string]string, 0, len(items))
+	for _, item := range items {
+		next := map[string]string{}
+		for key, value := range item {
+			next[key] = strings.TrimSpace(fmt.Sprint(value))
+		}
+		out = append(out, next)
+	}
+	return out
+}
+
+func mustInt64(t *testing.T, raw string) int64 {
+	t.Helper()
+	var out int64
+	if _, err := fmt.Sscan(strings.TrimSpace(raw), &out); err != nil {
+		t.Fatalf("parse int64: %v", err)
+	}
+	return out
+}
+
+func newManagedPricingControlRuntime(t *testing.T) (*clientapp.Runtime, string) {
+	t.Helper()
+	root := t.TempDir()
+	dbPath := filepath.Join(root, "pricing.sqlite")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := clientapp.EnsureClientStoreSchema(t.Context(), clientapp.NewClientStore(db, nil)); err != nil {
+		t.Fatalf("ensure schema: %v", err)
+	}
+	seedHash := strings.Repeat("ab", 32)
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
+		seedHash, int64(4), int64(1024), filepath.Join(root, "seed", "sample.bse"), "sample.bin", "application/octet-stream"); err != nil {
+		t.Fatalf("insert seed: %v", err)
+	}
+	var cfg clientapp.Config
+	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeTest); err != nil {
+		t.Fatalf("apply config defaults: %v", err)
+	}
+	cfg.Storage.WorkspaceDir = filepath.Join(root, "workspace")
+	cfg.Storage.DataDir = filepath.Join(root, "data")
+	rt, err := clientapp.NewPricingTestRuntime(t.Context(), db, cfg)
+	if err != nil {
+		t.Fatalf("new pricing runtime: %v", err)
+	}
+	return rt, seedHash
 }

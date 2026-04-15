@@ -75,6 +75,18 @@ const (
 	controlActionKeyUnlock         = "key.unlock"
 	controlActionKeyLock           = "key.lock"
 
+	controlActionPricingSetBase          = "pricing.set_base"
+	controlActionPricingResetSeed        = "pricing.reset_seed"
+	controlActionPricingFeedSeed         = "pricing.feed_seed"
+	controlActionPricingSetForce         = "pricing.set_force"
+	controlActionPricingReleaseForce     = "pricing.release_force"
+	controlActionPricingRunTick          = "pricing.run_tick"
+	controlActionPricingTriggerReconcile = "pricing.trigger_reconcile"
+	controlActionPricingGetConfig        = "pricing.get_config"
+	controlActionPricingGetState         = "pricing.get_state"
+	controlActionPricingGetAudits        = "pricing.get_audits"
+	controlActionPricingListSeeds        = "pricing.list_seeds"
+
 	managedUnlockResultSucceeded managedUnlockResult = "succeeded"
 	managedUnlockResultAlready   managedUnlockResult = "already_unlocked"
 )
@@ -116,6 +128,7 @@ type controlCommandResult struct {
 	KeyState     managedKeyState
 	UnlockOwner  string
 	UnlockToken  string
+	Payload      map[string]any
 }
 
 type controlCommandRequest struct {
@@ -589,6 +602,14 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		}
 		result.OK = true
 		result.Result = "locked"
+	case controlActionPricingSetBase, controlActionPricingResetSeed, controlActionPricingFeedSeed, controlActionPricingSetForce, controlActionPricingReleaseForce, controlActionPricingRunTick, controlActionPricingTriggerReconcile, controlActionPricingGetConfig, controlActionPricingGetState, controlActionPricingGetAudits, controlActionPricingListSeeds:
+		pricingResult, err := d.executeManagedPricingControlCommand(req)
+		if err != nil {
+			result.Result = "failed"
+			result.Error = err.Error()
+			return result
+		}
+		return pricingResult
 	default:
 		result.Result = "failed"
 		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
@@ -614,6 +635,9 @@ func (d *managedDaemon) emitManagedCommandResult(result controlCommandResult) {
 		"key_state":     strings.TrimSpace(string(result.KeyState)),
 		"unlock_owner":  strings.TrimSpace(result.UnlockOwner),
 		"unlock_token":  strings.TrimSpace(result.UnlockToken),
+	}
+	for key, value := range result.Payload {
+		payload[key] = value
 	}
 	d.controlStream.Emit("backend.command.result", "private", "managed_daemon", "", payload)
 }
@@ -831,7 +855,6 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		return err
 	}
 	d.applyDesktopRuntimeBootstrap(&runCfg)
-	d.overrides.Apply(&runCfg)
 	var obsSink obs.Sink
 	if d.controlStream != nil {
 		obsSink = d.controlStream.ObsSink()
