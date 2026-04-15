@@ -137,6 +137,34 @@ func TestTriggerWalletBSVTransfer_InsufficientBalance(t *testing.T) {
 	}
 }
 
+func TestTriggerWalletBSVTransfer_FailsFastWhenUTXOSyncUnhealthy(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	rt := newWalletBSVTransferTestRuntime(t)
+	fromAddress, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	actor := walletBSVTransferTestActor(t, rt)
+	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
+		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
+	}
+	seedTipStateForSyncGuardTest(t, db, time.Now().Unix(), "")
+	seedUTXOSyncStateForSyncGuardTest(t, db, fromAddress, time.Now().Unix(), "http 418: teapot")
+
+	_, err = TriggerWalletBSVTransfer(context.Background(), newClientDB(db, nil), rt, WalletBSVTransferRequest{
+		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
+		AmountSatoshi: 6,
+	})
+	if err == nil {
+		t.Fatal("expected sync guard error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "utxo sync unhealthy") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestTriggerWalletBSVTransfer_OwnerStoredAsAddressFallback(t *testing.T) {
 	t.Parallel()
 

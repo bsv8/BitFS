@@ -361,6 +361,12 @@ func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime,
 	if rt == nil {
 		return preparedWalletTokenCreate{}, fmt.Errorf("runtime not initialized")
 	}
+	if _, err := requireFreshTipState(ctx, store); err != nil {
+		return preparedWalletTokenCreate{}, err
+	}
+	if _, err := requireHealthyUTXOSyncState(ctx, store, rt); err != nil {
+		return preparedWalletTokenCreate{}, err
+	}
 	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan()
 	selectedFee, _, _, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {

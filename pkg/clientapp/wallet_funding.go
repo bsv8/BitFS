@@ -37,6 +37,12 @@ func allocatePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runti
 	if rt == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
+	if _, err := requireFreshTipState(ctx, store); err != nil {
+		return nil, err
+	}
+	if _, err := requireHealthyUTXOSyncState(ctx, store, rt); err != nil {
+		return nil, err
+	}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
 		return nil, err

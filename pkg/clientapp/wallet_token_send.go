@@ -239,6 +239,12 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	if requested.scale != 0 {
 		return preparedWalletTokenSend{}, fmt.Errorf("%s amount_text must be an integer", standard)
 	}
+	if _, err := requireFreshTipState(ctx, store); err != nil {
+		return preparedWalletTokenSend{}, err
+	}
+	if _, err := requireHealthyUTXOSyncState(ctx, store, rt); err != nil {
+		return preparedWalletTokenSend{}, err
+	}
 	// fact_token_lots 为唯一 token 选源口径
 	candidates, err := loadWalletTokenSpendableCandidatesFromFact(ctx, store, rt, address, standard, assetKey)
 	if err != nil {

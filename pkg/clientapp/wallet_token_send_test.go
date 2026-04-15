@@ -1,9 +1,11 @@
 package clientapp
 
 import (
+	"context"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestWalletTokenSendSubmit_FailWhenAppendTokenConsumptionFailed(t *testing.T) {
@@ -54,6 +56,35 @@ func TestAppendBSV21TokenSendAccountingAfterBroadcast_ErrorWhenNoTokenCarrierInp
 		t.Fatal("expected appendBSV21TokenSendAccountingAfterBroadcast to fail when no token carrier inputs are found")
 	}
 	if !strings.Contains(err.Error(), "no token carrier inputs") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestPrepareWalletTokenSend_FailsFastWhenUTXOSyncUnhealthy(t *testing.T) {
+	t.Parallel()
+
+	db := newWalletAccountingTestDB(t)
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = strings.Repeat("4", 64)
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
+	addr, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	seedTipStateForSyncGuardTest(t, db, time.Now().Unix(), "")
+	seedUTXOSyncStateForSyncGuardTest(t, db, addr, time.Now().Unix(), "http 418: teapot")
+
+	input, err := normalizeWalletTokenCreateInput("bsv21", "TST", "1000", 0, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatalf("normalizeWalletTokenCreateInput: %v", err)
+	}
+
+	_, err = prepareWalletTokenSend(context.Background(), newClientDB(db, nil), rt, addr, input.TokenStandard, "bsv21:test-token", "1", "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf")
+	if err == nil {
+		t.Fatal("expected sync guard error")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "utxo sync unhealthy") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

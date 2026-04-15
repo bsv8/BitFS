@@ -288,13 +288,13 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 	}
 
 	payload := map[string]any{
-		"order_id":       orderID,
-		"settlement_id":  settlementID,
-		"amount_satoshi": amountSatoshi,
-		"miner_fee_sat":  submitted.Result.MinerFeeSatoshi,
-		"change_sat":     submitted.Result.ChangeSatoshi,
-		"to_address":     toAddress,
-		"txid":           submitted.BroadcastTxID,
+		"order_id":          orderID,
+		"settlement_id":     settlementID,
+		"amount_satoshi":    amountSatoshi,
+		"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
+		"change_sat":        submitted.Result.ChangeSatoshi,
+		"to_address":        toAddress,
+		"txid":              submitted.BroadcastTxID,
 		"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
 	}
 
@@ -383,13 +383,13 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 		processStatus = "submitted_unknown_projection"
 	} else {
 		chainPaymentPayload := map[string]any{
-			"order_id":       orderID,
-			"settlement_id":  settlementID,
-			"amount_satoshi": amountSatoshi,
-			"miner_fee_sat":  submitted.Result.MinerFeeSatoshi,
-			"change_sat":     submitted.Result.ChangeSatoshi,
-			"to_address":     toAddress,
-			"txid":           submitted.BroadcastTxID,
+			"order_id":          orderID,
+			"settlement_id":     settlementID,
+			"amount_satoshi":    amountSatoshi,
+			"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
+			"change_sat":        submitted.Result.ChangeSatoshi,
+			"to_address":        toAddress,
+			"txid":              submitted.BroadcastTxID,
 			"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
 		}
 		ownerPubkeyHex := strings.ToLower(strings.TrimSpace(rt.ClientID()))
@@ -467,16 +467,16 @@ func executeBizOrderPayBSVSettlement(ctx context.Context, store *clientDB, rt *R
 			})
 		}); err != nil {
 			failedPayload := map[string]any{
-				"order_id":       orderID,
-				"settlement_id":  settlementID,
-				"amount_satoshi": amountSatoshi,
-				"miner_fee_sat":  submitted.Result.MinerFeeSatoshi,
-				"change_sat":     submitted.Result.ChangeSatoshi,
-				"to_address":     toAddress,
-				"txid":           submitted.BroadcastTxID,
+				"order_id":          orderID,
+				"settlement_id":     settlementID,
+				"amount_satoshi":    amountSatoshi,
+				"miner_fee_sat":     submitted.Result.MinerFeeSatoshi,
+				"change_sat":        submitted.Result.ChangeSatoshi,
+				"to_address":        toAddress,
+				"txid":              submitted.BroadcastTxID,
 				"selected_utxo_ids": append([]string(nil), submitted.Result.SelectedUTXOIDs...),
-				"status":         "failed",
-				"error":          err.Error(),
+				"status":            "failed",
+				"error":             err.Error(),
 			}
 			_ = clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
 				if writeErr := dbAppendFinProcessEvent(ctx, tx, finProcessEventEntry{
@@ -560,6 +560,12 @@ func prepareWalletBSVTransfer(ctx context.Context, store *clientDB, rt *Runtime,
 	fromAddress := strings.TrimSpace(actor.Addr)
 	if fromAddress == "" {
 		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "RUNTIME_NOT_INITIALIZED", Message: "wallet address is empty"}}, fmt.Errorf("wallet address is empty")
+	}
+	if _, err := requireFreshTipState(ctx, store); err != nil {
+		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "SYNC_STATE_NOT_READY", Message: err.Error(), FromAddress: fromAddress, ToAddress: toAddress, AmountSatoshi: req.AmountSatoshi}}, err
+	}
+	if _, err := requireHealthyUTXOSyncState(ctx, store, rt); err != nil {
+		return walletBSVTransferPrepared{Result: WalletBSVTransferResult{Ok: false, Code: "UTXO_SYNC_UNHEALTHY", Message: err.Error(), FromAddress: fromAddress, ToAddress: toAddress, AmountSatoshi: req.AmountSatoshi}}, err
 	}
 
 	// 钱包选币必须串行，避免两个业务同时挑中同一批 plain BSV 输入。

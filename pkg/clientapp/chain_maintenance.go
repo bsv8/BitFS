@@ -1655,15 +1655,9 @@ func getTipHeightFromDB(ctx context.Context, store *clientDB) (uint32, error) {
 	if store == nil {
 		return 0, fmt.Errorf("store not initialized")
 	}
-	s, err := dbLoadChainTipState(ctx, store)
+	s, err := requireFreshTipState(ctx, store)
 	if err != nil {
 		return 0, err
-	}
-	if s.UpdatedAtUnix <= 0 {
-		return 0, fmt.Errorf("chain tip state not ready")
-	}
-	if strings.TrimSpace(s.LastError) != "" {
-		return 0, fmt.Errorf("chain tip state unavailable: %s", strings.TrimSpace(s.LastError))
 	}
 	return s.TipHeight, nil
 }
