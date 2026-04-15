@@ -213,3 +213,51 @@ func TestHandleGatewaysListAndAddFailedConnectionDoesNotBreakExisting(t *testing
 		t.Fatalf("unexpected gateway states after add fail: %+v", listBody2.Items)
 	}
 }
+
+func TestHandleGatewaysBuiltInProtection(t *testing.T) {
+	t.Parallel()
+
+	hClient, _ := newSecpHost(t)
+	defer hClient.Close()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{}
+	svc, err := newRuntimeConfigService(cfg, "", StartupModeProduct)
+	if err != nil {
+		t.Fatalf("runtime config service: %v", err)
+	}
+	rt.config = svc
+	rt.gwManager = newGatewayManager(rt, hClient)
+	srv := &httpAPIServer{rt: rt, h: hClient}
+
+	defaults, err := networkInitDefaults("test")
+	if err != nil {
+		t.Fatalf("network defaults: %v", err)
+	}
+	target := defaults.DefaultGateways[0]
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/gateways", strings.NewReader(fmt.Sprintf(`{"addr":"%s","pubkey":"%s","enabled":true}`, target.Addr, target.Pubkey)))
+	postRec := httptest.NewRecorder()
+	srv.handleGateways(postRec, postReq)
+	if postRec.Code != http.StatusBadRequest || !strings.Contains(strings.ToLower(postRec.Body.String()), "cannot modify built-in gateway") {
+		t.Fatalf("built-in gateway add should fail: code=%d body=%s", postRec.Code, postRec.Body.String())
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/gateways?id=0", strings.NewReader(fmt.Sprintf(`{"addr":"%s","pubkey":"%s","enabled":false}`, target.Addr, target.Pubkey)))
+	putRec := httptest.NewRecorder()
+	srv.handleGateways(putRec, putReq)
+	if putRec.Code != http.StatusBadRequest || !strings.Contains(strings.ToLower(putRec.Body.String()), "cannot disable built-in gateway") {
+		t.Fatalf("built-in gateway disable should fail: code=%d body=%s", putRec.Code, putRec.Body.String())
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/gateways?id=0", nil)
+	delRec := httptest.NewRecorder()
+	srv.handleGateways(delRec, delReq)
+	if delRec.Code != http.StatusBadRequest || !strings.Contains(strings.ToLower(delRec.Body.String()), "cannot delete built-in gateway") {
+		t.Fatalf("built-in gateway delete should fail: code=%d body=%s", delRec.Code, delRec.Body.String())
+	}
+}

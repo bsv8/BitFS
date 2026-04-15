@@ -74,6 +74,43 @@ func TestPlanLivePurchase_PreferOlderWhenBudgetTight(t *testing.T) {
 	}
 }
 
+func TestPlanLivePurchaseBySeedUsesSeedSpecificPricing(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	snap := LiveSubscriberSnapshot{
+		StreamID: "stream",
+		RecentSegments: []LiveSegmentRef{
+			{SegmentIndex: 10, SeedHash: strings.Repeat("aa", 32), PublishedAtUnix: now.Add(-5 * time.Minute).Unix()},
+			{SegmentIndex: 11, SeedHash: strings.Repeat("bb", 32), PublishedAtUnix: now.Add(-2 * time.Minute).Unix()},
+		},
+	}
+	decision, err := PlanLivePurchaseBySeed(snap, 9, LiveBuyerStrategy{
+		TargetLagSegments:  0,
+		MaxBudgetPerMinute: 100,
+	}, func(seedHash string) (LiveSellerPricing, error) {
+		if seedHash == strings.Repeat("aa", 32) {
+			return LiveSellerPricing{
+				BasePriceSatPer64K:  80,
+				FloorPriceSatPer64K: 20,
+				DecayPerMinuteBPS:   0,
+			}, nil
+		}
+		return LiveSellerPricing{
+			BasePriceSatPer64K:  150,
+			FloorPriceSatPer64K: 20,
+			DecayPerMinuteBPS:   0,
+		}, nil
+	}, now)
+	if err != nil {
+		t.Fatalf("plan by seed failed: %v", err)
+	}
+	if decision.SeedHash != strings.Repeat("aa", 32) {
+		t.Fatalf("unexpected chosen seed: %s", decision.SeedHash)
+	}
+	if decision.EstimatedChunkPrice != 80 {
+		t.Fatalf("unexpected chunk price: %d", decision.EstimatedChunkPrice)
+	}
+}
+
 func TestComputeLiveQuotePrices(t *testing.T) {
 	seed := sellerSeed{SeedHash: "x", SeedPrice: 300, ChunkPrice: 100}
 	got := ComputeLiveQuotePrices(seed, liveSegmentMeta{PublishedAtUnix: time.Now().Add(-2 * time.Minute).Unix()}, LiveSellerPricing{

@@ -63,6 +63,14 @@ func ShouldPreferOlderSegments(strategy LiveBuyerStrategy) bool {
 }
 
 func PlanLivePurchase(snapshot LiveSubscriberSnapshot, haveSegmentIndex int64, strategy LiveBuyerStrategy, pricing LiveSellerPricing, now time.Time) (LivePurchaseDecision, error) {
+	return PlanLivePurchaseBySeed(snapshot, haveSegmentIndex, strategy, func(string) (LiveSellerPricing, error) {
+		return pricing, nil
+	}, now)
+}
+
+// PlanLivePurchaseBySeed 按每个候选 seed 取自己的自动价。
+// 这样 live 计划不会把全局 base 误当成单个 seed 的真实价格。
+func PlanLivePurchaseBySeed(snapshot LiveSubscriberSnapshot, haveSegmentIndex int64, strategy LiveBuyerStrategy, pricingBySeed func(string) (LiveSellerPricing, error), now time.Time) (LivePurchaseDecision, error) {
 	recent := normalizeLiveSegmentRefs(snapshot.RecentSegments)
 	if len(recent) == 0 {
 		return LivePurchaseDecision{}, fmt.Errorf("no recent segments")
@@ -80,6 +88,14 @@ func PlanLivePurchase(snapshot LiveSubscriberSnapshot, haveSegmentIndex int64, s
 		ageMinutes := uint64(0)
 		if seg.PublishedAtUnix > 0 && now.Unix() > seg.PublishedAtUnix {
 			ageMinutes = uint64((now.Unix() - seg.PublishedAtUnix) / 60)
+		}
+		pricing := LiveSellerPricing{}
+		if pricingBySeed != nil {
+			next, err := pricingBySeed(seg.SeedHash)
+			if err != nil {
+				return LivePurchaseDecision{}, err
+			}
+			pricing = next
 		}
 		price := ComputeLiveUnitPriceSatPer64K(pricing, time.Duration(ageMinutes)*time.Minute)
 		candidates = append(candidates, LivePurchaseDecision{

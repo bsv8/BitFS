@@ -26,10 +26,17 @@ func TestNewRuntimeAPIHandler_DoesNotRequireRuntimeHTTPServer(t *testing.T) {
 		t.Fatal("handler is nil")
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/user/schema", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("schema status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)
+	badRec := httptest.NewRecorder()
+	handler.ServeHTTP(badRec, badReq)
+	if badRec.Code != http.StatusNotFound {
+		t.Fatalf("admin config route should be removed: got=%d want=%d body=%s", badRec.Code, http.StatusNotFound, badRec.Body.String())
 	}
 }

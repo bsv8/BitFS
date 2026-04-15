@@ -85,6 +85,13 @@ func (gm *gatewayManager) AddGateway(ctx context.Context, node PeerNode) (int, e
 		return -1, fmt.Errorf("runtime config service not initialized")
 	}
 	snapshot := gm.rt.ConfigSnapshot()
+	mandatorySet, err := mandatoryGatewayPubkeySet(snapshot.BSV.Network)
+	if err != nil {
+		return -1, err
+	}
+	if isMandatoryPeer(node.Pubkey, mandatorySet) {
+		return -1, errCannotModifyBuiltInGateway
+	}
 	// 检查是否已存在相同地址（peer ID）或 pubkey
 	for i, g := range snapshot.Network.Gateways {
 		// 检查地址重复（通过解析地址后比较 peer ID）
@@ -134,12 +141,25 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 		return fmt.Errorf("runtime config service not initialized")
 	}
 	snapshot := gm.rt.ConfigSnapshot()
+	mandatorySet, err := mandatoryGatewayPubkeySet(snapshot.BSV.Network)
+	if err != nil {
+		return err
+	}
 	if index < 0 || index >= len(snapshot.Network.Gateways) {
 		return fmt.Errorf("gateway index %d out of range", index)
 	}
 
 	oldNode := snapshot.Network.Gateways[index]
 	oldAI, _ := parseAddr(oldNode.Addr)
+	if isMandatoryPeer(oldNode.Pubkey, mandatorySet) {
+		if !node.Enabled {
+			return errCannotDisableBuiltInGateway
+		}
+		return errCannotModifyBuiltInGateway
+	}
+	if isMandatoryPeer(node.Pubkey, mandatorySet) {
+		return errCannotModifyBuiltInGateway
+	}
 
 	// 检查新 pubkey 是否与其他网关冲突（如果不是同一个索引）
 	for i, g := range snapshot.Network.Gateways {
@@ -207,11 +227,18 @@ func (gm *gatewayManager) DeleteGateway(index int) error {
 		return fmt.Errorf("runtime config service not initialized")
 	}
 	snapshot := gm.rt.ConfigSnapshot()
+	mandatorySet, err := mandatoryGatewayPubkeySet(snapshot.BSV.Network)
+	if err != nil {
+		return err
+	}
 	if index < 0 || index >= len(snapshot.Network.Gateways) {
 		return fmt.Errorf("gateway index %d out of range", index)
 	}
 
 	node := snapshot.Network.Gateways[index]
+	if isMandatoryPeer(node.Pubkey, mandatorySet) {
+		return errCannotDeleteBuiltInGateway
+	}
 	if node.Enabled {
 		return fmt.Errorf("cannot delete enabled gateway, please disable it first")
 	}

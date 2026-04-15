@@ -169,3 +169,57 @@ func TestHandleArbiterHealth(t *testing.T) {
 		t.Fatalf("arbiter should be connected: %+v", healthBody.Items[0])
 	}
 }
+
+func TestHandleArbitersBuiltInProtection(t *testing.T) {
+	t.Parallel()
+
+	hClient, err := libp2p.New(
+		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
+		libp2p.NoTransports,
+		libp2p.Transport(libp2ptcp.NewTCPTransport),
+	)
+	if err != nil {
+		t.Fatalf("new client host: %v", err)
+	}
+	defer hClient.Close()
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeProduct); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	rt := &Runtime{}
+	svc, err := newRuntimeConfigService(cfg, "", StartupModeProduct)
+	if err != nil {
+		t.Fatalf("runtime config service: %v", err)
+	}
+	rt.config = svc
+	srv := &httpAPIServer{rt: rt, h: hClient}
+
+	defaults, err := networkInitDefaults("test")
+	if err != nil {
+		t.Fatalf("network defaults: %v", err)
+	}
+	target := defaults.DefaultArbiters[0]
+
+	postReq := httptest.NewRequest(http.MethodPost, "/api/v1/arbiters", strings.NewReader(fmt.Sprintf(`{"addr":"%s","pubkey":"%s","enabled":true}`, target.Addr, target.Pubkey)))
+	postRec := httptest.NewRecorder()
+	srv.handleArbiters(postRec, postReq)
+	if postRec.Code != http.StatusBadRequest || !strings.Contains(strings.ToLower(postRec.Body.String()), "cannot modify built-in arbiter") {
+		t.Fatalf("built-in arbiter add should fail: code=%d body=%s", postRec.Code, postRec.Body.String())
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/arbiters?id=0", strings.NewReader(fmt.Sprintf(`{"addr":"%s","pubkey":"%s","enabled":false}`, target.Addr, target.Pubkey)))
+	putRec := httptest.NewRecorder()
+	srv.handleArbiters(putRec, putReq)
+	if putRec.Code != http.StatusBadRequest || !strings.Contains(strings.ToLower(putRec.Body.String()), "cannot disable built-in arbiter") {
+		t.Fatalf("built-in arbiter disable should fail: code=%d body=%s", putRec.Code, putRec.Body.String())
+	}
+
+	delReq := httptest.NewRequest(http.MethodDelete, "/api/v1/arbiters?id=0", nil)
+	delRec := httptest.NewRecorder()
+	srv.handleArbiters(delRec, delReq)
+	if delRec.Code != http.StatusBadRequest || !strings.Contains(strings.ToLower(delRec.Body.String()), "cannot delete built-in arbiter") {
+		t.Fatalf("built-in arbiter delete should fail: code=%d body=%s", delRec.Code, delRec.Body.String())
+	}
+}

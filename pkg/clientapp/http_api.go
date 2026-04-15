@@ -383,8 +383,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events", s.withAuth(s.handleAdminFinanceProcessEvents))
 		mux.HandleFunc(prefix+"/v1/admin/finance/process-events/detail", s.withAuth(s.handleAdminFinanceProcessEventDetail))
-		mux.HandleFunc(prefix+"/v1/admin/config", s.withAuth(s.handleAdminConfig))
-		mux.HandleFunc(prefix+"/v1/admin/config/schema", s.withAuth(s.handleAdminConfigSchema))
+		mux.HandleFunc(prefix+"/v1/settings/user", s.withAuth(s.handleUserSettings))
+		mux.HandleFunc(prefix+"/v1/settings/user/schema", s.withAuth(s.handleUserSettingsSchema))
 	}
 	registerAPI("/api")
 	registerAPI("")
@@ -3340,6 +3340,15 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		}
 		// 检查重复
 		snapshot := s.runtimeConfigSnapshot()
+		mandatorySet, err := mandatoryGatewayPubkeySet(snapshot.BSV.Network)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if isMandatoryPeer(req.Pubkey, mandatorySet) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": errCannotModifyBuiltInGateway.Error()})
+			return
+		}
 		for i, g := range snapshot.Network.Gateways {
 			if strings.EqualFold(g.Pubkey, req.Pubkey) {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("pubkey already exists at index %d", i)})
@@ -3350,7 +3359,12 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		node := PeerNode{Enabled: req.Enabled, Addr: req.Addr, Pubkey: req.Pubkey, ListenOfferPaymentSatoshi: req.ListenOfferPaymentSatoshi}
 		idx, err := gm.AddGateway(r.Context(), node)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			switch {
+			case errors.Is(err, errCannotModifyBuiltInGateway):
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			default:
+				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			}
 			return
 		}
 		// 更新 HealthyGWs
@@ -3393,6 +3407,8 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		if err := gm.UpdateGateway(r.Context(), id, node); err != nil {
 			if strings.Contains(err.Error(), "out of range") {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "gateway not found"})
+			} else if errors.Is(err, errCannotModifyBuiltInGateway) || errors.Is(err, errCannotDisableBuiltInGateway) {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			} else {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			}
@@ -3420,6 +3436,8 @@ func (s *httpAPIServer) handleGateways(w http.ResponseWriter, r *http.Request) {
 		if err := gm.DeleteGateway(id); err != nil {
 			if strings.Contains(err.Error(), "out of range") {
 				writeJSON(w, http.StatusNotFound, map[string]any{"error": "gateway not found"})
+			} else if errors.Is(err, errCannotDeleteBuiltInGateway) {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			} else if strings.Contains(err.Error(), "disable") {
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			} else {
@@ -3647,6 +3665,15 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		snapshot := s.runtimeConfigSnapshot()
+		mandatorySet, err := mandatoryArbiterPubkeySet(snapshot.BSV.Network)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if isMandatoryPeer(node.Pubkey, mandatorySet) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": errCannotModifyBuiltInArbiter.Error()})
+			return
+		}
 		newAI, _ := parseAddr(node.Addr)
 		for i, a := range snapshot.Network.Arbiters {
 			if strings.EqualFold(strings.TrimSpace(a.Pubkey), node.Pubkey) {
@@ -3678,11 +3705,6 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
 			return
 		}
-		snapshot := s.runtimeConfigSnapshot()
-		if id >= len(snapshot.Network.Arbiters) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
-			return
-		}
 		var req struct {
 			Addr    string `json:"addr"`
 			Pubkey  string `json:"pubkey"`
@@ -3700,6 +3722,28 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 		cfgSvc := s.rt.RuntimeConfigService()
 		if cfgSvc == nil {
 			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
+			return
+		}
+		snapshot := s.runtimeConfigSnapshot()
+		mandatorySet, err := mandatoryArbiterPubkeySet(snapshot.BSV.Network)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if id >= len(snapshot.Network.Arbiters) {
+			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
+			return
+		}
+		if isMandatoryPeer(snapshot.Network.Arbiters[id].Pubkey, mandatorySet) {
+			if !req.Enabled {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": errCannotDisableBuiltInArbiter.Error()})
+			} else {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": errCannotModifyBuiltInArbiter.Error()})
+			}
+			return
+		}
+		if isMandatoryPeer(node.Pubkey, mandatorySet) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": errCannotModifyBuiltInArbiter.Error()})
 			return
 		}
 		newAI, _ := parseAddr(node.Addr)
@@ -3739,6 +3783,15 @@ func (s *httpAPIServer) handleArbiters(w http.ResponseWriter, r *http.Request) {
 		snapshot := s.runtimeConfigSnapshot()
 		if id >= len(snapshot.Network.Arbiters) {
 			writeJSON(w, http.StatusNotFound, map[string]any{"error": "arbiter not found"})
+			return
+		}
+		mandatorySet, err := mandatoryArbiterPubkeySet(snapshot.BSV.Network)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		if isMandatoryPeer(snapshot.Network.Arbiters[id].Pubkey, mandatorySet) {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": errCannotDeleteBuiltInArbiter.Error()})
 			return
 		}
 		if snapshot.Network.Arbiters[id].Enabled {
@@ -4776,6 +4829,150 @@ func adminConfigRuleMap() map[string]adminConfigRule {
 	return out
 }
 
+// userConfigRules 是“用户设置层”白名单。
+// 设计约束：
+// - 仅放业务运营常改项；
+// - 不暴露监听地址、目录、索引路径等技术装配项；
+// - 价格相关字段全部纳入用户层并提供默认值。
+func userConfigRules() []adminConfigRule {
+	return []adminConfigRule{
+		{Key: "listen.enabled", Type: adminConfigBool, Description: "是否启用监听费用池自动循环"},
+		{Key: "listen.renew_threshold_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 86400, Description: "监听续费阈值秒"},
+		{Key: "listen.auto_renew_rounds", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 20, Description: "监听自动续费轮数"},
+		{Key: "listen.offer_payment_satoshi", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 40, Description: "监听续费预算 sat"},
+		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
+		{Key: "payment.preferred_scheme", Type: adminConfigString, MinLen: 1, MaxLen: 32, Description: "默认优先支付通道"},
+		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布节点可达地址"},
+		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
+		{Key: "seller.enabled", Type: adminConfigBool, Description: "是否启用卖方模式"},
+		{Key: "seller.pricing.floor_price_sat_per_64k", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 40, Description: "静态底价"},
+		{Key: "seller.pricing.live_base_price_sat_per_64k", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 40, Description: "直播基准价"},
+		{Key: "seller.pricing.live_floor_price_sat_per_64k", Type: adminConfigInt, MinInt: 1, MaxInt: 1 << 40, Description: "直播底价"},
+		{Key: "seller.pricing.live_decay_per_minute_bps", Type: adminConfigInt, MinInt: 0, MaxInt: 10000, Description: "直播每分钟衰减 bps"},
+		{Key: "seller.pricing.resale_discount_bps", Type: adminConfigInt, MinInt: 0, MaxInt: 10000, Description: "转售折扣 bps"},
+		{Key: "seller.pricing.resale_discount_ratio", Type: adminConfigFloat, MinFloat: 0, MaxFloat: 1, Description: "转售折扣比例(0~1)"},
+	}
+}
+
+func userConfigRuleMap() map[string]adminConfigRule {
+	out := make(map[string]adminConfigRule, len(userConfigRules()))
+	for _, r := range userConfigRules() {
+		out[r.Key] = r
+	}
+	return out
+}
+
+func (s *httpAPIServer) handleUserSettingsSchema(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	rules := userConfigRules()
+	type item struct {
+		Key         string  `json:"key"`
+		Type        string  `json:"type"`
+		MinInt      int64   `json:"min_int,omitempty"`
+		MaxInt      int64   `json:"max_int,omitempty"`
+		MinFloat    float64 `json:"min_float,omitempty"`
+		MaxFloat    float64 `json:"max_float,omitempty"`
+		MinLen      int     `json:"min_len,omitempty"`
+		MaxLen      int     `json:"max_len,omitempty"`
+		Description string  `json:"description,omitempty"`
+	}
+	out := make([]item, 0, len(rules))
+	for _, it := range rules {
+		out = append(out, item{
+			Key:         it.Key,
+			Type:        string(it.Type),
+			MinInt:      it.MinInt,
+			MaxInt:      it.MaxInt,
+			MinFloat:    it.MinFloat,
+			MaxFloat:    it.MaxFloat,
+			MinLen:      it.MinLen,
+			MaxLen:      it.MaxLen,
+			Description: it.Description,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": out, "total": len(out)})
+}
+
+func (s *httpAPIServer) handleUserSettings(w http.ResponseWriter, r *http.Request) {
+	if s == nil || s.rt == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	cfgSvc := s.rt.RuntimeConfigService()
+	if cfgSvc == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime config service not initialized"})
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"settings": userConfigSnapshot(s.runtimeConfigSnapshot())})
+	case http.MethodPost:
+		var req struct {
+			ValidateOnly bool `json:"validate_only"`
+			Items        []struct {
+				Key   string `json:"key"`
+				Value any    `json:"value"`
+			} `json:"items"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			return
+		}
+		if len(req.Items) == 0 {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "items is required"})
+			return
+		}
+		nextCfg := s.runtimeConfigSnapshot()
+		ruleMap := userConfigRuleMap()
+		applied := make([]string, 0, len(req.Items))
+		for _, it := range req.Items {
+			key := strings.TrimSpace(it.Key)
+			rule, ok := ruleMap[key]
+			if !ok {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported key: " + key})
+				return
+			}
+			if err := adminConfigApplyOne(&nextCfg, rule, it.Value); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error(), "key": key})
+				return
+			}
+			applied = append(applied, key)
+		}
+		if err := validateConfigForMode(&nextCfg, cfgSvc.StartupMode()); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if req.ValidateOnly {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"ok":            true,
+				"validate_only": true,
+				"applied_keys":  applied,
+				"settings":      userConfigSnapshot(nextCfg),
+			})
+			return
+		}
+		if err := cfgSvc.UpdateAndPersist(nextCfg); err != nil {
+			obs.Error("bitcast-client", "user_settings_update_failed", map[string]any{
+				"error":        err.Error(),
+				"applied_keys": applied,
+			})
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":            true,
+			"validate_only": false,
+			"applied_keys":  applied,
+			"settings":      userConfigSnapshot(nextCfg),
+		})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+	}
+}
+
 func (s *httpAPIServer) handleAdminConfigSchema(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -4925,6 +5122,17 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"seller.enabled":                              cfg.Seller.Enabled,
 		"fs_http.strategy_debug_log_enabled":          cfg.FSHTTP.StrategyDebugLogEnabled,
 	}
+}
+
+func userConfigSnapshot(cfg Config) map[string]any {
+	all := adminConfigSnapshot(cfg)
+	out := make(map[string]any, len(userConfigRules()))
+	for _, rule := range userConfigRules() {
+		if v, ok := all[rule.Key]; ok {
+			out[rule.Key] = v
+		}
+	}
+	return out
 }
 
 func adminConfigApplyOne(cfg *Config, rule adminConfigRule, raw any) error {

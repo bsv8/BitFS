@@ -97,5 +97,29 @@ func ensureClientDBSchemaOnDB(ctx context.Context, db *sql.DB) error {
 			return fmt.Errorf("apply schema compatibility index: %w", err)
 		}
 	}
+	pricingTables := []string{
+		`CREATE TABLE IF NOT EXISTS biz_pricing_autopilot_config(
+			config_key TEXT PRIMARY KEY,
+			payload_json TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS biz_pricing_autopilot_state(
+			seed_hash TEXT PRIMARY KEY,
+			payload_json TEXT NOT NULL,
+			updated_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE TABLE IF NOT EXISTS biz_pricing_autopilot_audit(
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			seed_hash TEXT NOT NULL,
+			payload_json TEXT NOT NULL,
+			ticked_at_unix INTEGER NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_biz_pricing_autopilot_audit_seed_time ON biz_pricing_autopilot_audit(seed_hash, ticked_at_unix DESC, id DESC)`,
+	}
+	for _, sqlText := range pricingTables {
+		if _, err := db.ExecContext(ctx, sqlText); err != nil {
+			return fmt.Errorf("apply pricing schema: %w", err)
+		}
+	}
 	return nil
 }
