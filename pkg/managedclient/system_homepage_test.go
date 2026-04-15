@@ -70,11 +70,11 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, created_at_unix INTEGER)`); err != nil {
-		t.Fatalf("create seeds: %v", err)
+	if _, err := db.Exec(`CREATE TABLE biz_seeds(seed_hash TEXT PRIMARY KEY, seed_file_path TEXT NOT NULL, chunk_count INTEGER, file_size INTEGER, recommended_file_name TEXT NOT NULL DEFAULT '', mime_hint TEXT NOT NULL DEFAULT '', created_at_unix INTEGER)`); err != nil {
+		t.Fatalf("create biz_seeds: %v", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE seed_price_state(seed_hash TEXT PRIMARY KEY, last_buy_unit_price_sat_per_64k INTEGER, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, unit_price_sat_per_64k INTEGER, updated_at_unix INTEGER)`); err != nil {
-		t.Fatalf("create seed_price_state: %v", err)
+	if _, err := db.Exec(`CREATE TABLE biz_seed_pricing_policy(seed_hash TEXT PRIMARY KEY, floor_unit_price_sat_per_64k INTEGER, resale_discount_bps INTEGER, pricing_source TEXT, updated_at_unix INTEGER)`); err != nil {
+		t.Fatalf("create biz_seed_pricing_policy: %v", err)
 	}
 
 	rootHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
@@ -87,14 +87,14 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 	if err := os.WriteFile(childSeedPath, []byte("child-seed"), 0o644); err != nil {
 		t.Fatalf("write child seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, rootHash, rootSeedPath, 1, 9, 1); err != nil {
-		t.Fatalf("insert root seed: %v", err)
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, rootHash, rootSeedPath, 1, 9, 1); err != nil {
+		t.Fatalf("insert root biz_seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, childHash, childSeedPath, 1, 10, 1); err != nil {
-		t.Fatalf("insert child seed: %v", err)
+	if _, err := db.Exec(`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,created_at_unix) VALUES(?,?,?,?,?)`, childHash, childSeedPath, 1, 10, 1); err != nil {
+		t.Fatalf("insert child biz_seed: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO seed_price_state(seed_hash,last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps,unit_price_sat_per_64k,updated_at_unix) VALUES(?,?,?,?,?,?)`, childHash, nil, 9, 5000, 9, 1); err != nil {
-		t.Fatalf("insert existing price: %v", err)
+	if _, err := db.Exec(`INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix) VALUES(?,?,?,?,?)`, childHash, 9, 5000, "system", 1); err != nil {
+		t.Fatalf("insert existing pricing_policy: %v", err)
 	}
 
 	state := &systemHomepageState{
@@ -106,14 +106,14 @@ func TestSystemHomepageEnsureSeedPricesOnlyFillsMissingFloor(t *testing.T) {
 	}
 
 	var rootFloor uint64
-	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, rootHash).Scan(&rootFloor); err != nil {
+	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM biz_seed_pricing_policy WHERE seed_hash=?`, rootHash).Scan(&rootFloor); err != nil {
 		t.Fatalf("query root floor: %v", err)
 	}
 	if got, want := rootFloor, systemHomepageFloorPriceSatPer64K; got != want {
 		t.Fatalf("root floor=%d, want %d", got, want)
 	}
 	var childFloor uint64
-	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, childHash).Scan(&childFloor); err != nil {
+	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM biz_seed_pricing_policy WHERE seed_hash=?`, childHash).Scan(&childFloor); err != nil {
 		t.Fatalf("query child floor: %v", err)
 	}
 	if got, want := childFloor, uint64(9); got != want {
@@ -130,7 +130,7 @@ func TestSystemHomepageApplySeedMetadataOnlyFillsMissingOrLowConfidenceFields(t 
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE seeds(
+	if _, err := db.Exec(`CREATE TABLE biz_seeds(
 		seed_hash TEXT PRIMARY KEY,
 		seed_file_path TEXT NOT NULL,
 		chunk_count INTEGER,
@@ -139,17 +139,17 @@ func TestSystemHomepageApplySeedMetadataOnlyFillsMissingOrLowConfidenceFields(t 
 		mime_hint TEXT NOT NULL DEFAULT '',
 		created_at_unix INTEGER
 	)`); err != nil {
-		t.Fatalf("create seeds: %v", err)
+		t.Fatalf("create biz_seeds: %v", err)
 	}
 
 	rootHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
 	childHash := "052b8d352bbab7129389974c9734b6bf0b6661a55b25cadb2a0b947dfb063ce0"
 	if _, err := db.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?),(?,?,?,?,?,?,?)`,
+		`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?),(?,?,?,?,?,?,?)`,
 		rootHash, filepath.Join(root, rootHash), 1, 10, rootHash, "application/octet-stream", 1,
 		childHash, filepath.Join(root, childHash), 1, 11, "keep.css", "text/css", 1,
 	); err != nil {
-		t.Fatalf("insert seeds: %v", err)
+		t.Fatalf("insert biz_seeds: %v", err)
 	}
 
 	state := &systemHomepageState{
@@ -171,16 +171,16 @@ func TestSystemHomepageApplySeedMetadataOnlyFillsMissingOrLowConfidenceFields(t 
 	}
 
 	var rootName, rootMIME string
-	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, rootHash).Scan(&rootName, &rootMIME); err != nil {
-		t.Fatalf("query root seed: %v", err)
+	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM biz_seeds WHERE seed_hash=?`, rootHash).Scan(&rootName, &rootMIME); err != nil {
+		t.Fatalf("query root biz_seed: %v", err)
 	}
 	if rootName != "index.html" || rootMIME != "text/html" {
 		t.Fatalf("root seed metadata mismatch: name=%q mime=%q", rootName, rootMIME)
 	}
 
 	var childName, childMIME string
-	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, childHash).Scan(&childName, &childMIME); err != nil {
-		t.Fatalf("query child seed: %v", err)
+	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM biz_seeds WHERE seed_hash=?`, childHash).Scan(&childName, &childMIME); err != nil {
+		t.Fatalf("query child biz_seed: %v", err)
 	}
 	if childName != "keep.css" || childMIME != "text/css" {
 		t.Fatalf("child seed metadata should not be overwritten: name=%q mime=%q", childName, childMIME)

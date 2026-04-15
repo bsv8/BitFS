@@ -141,14 +141,14 @@ func (s *systemHomepageState) EnsureSeedPrices(db *sql.DB, resaleDiscountBPS uin
 	}
 	for _, seedHash := range s.SeedHashes {
 		var seedPath string
-		if err := db.QueryRow(`SELECT seed_file_path FROM seeds WHERE seed_hash=?`, seedHash).Scan(&seedPath); err != nil {
+		if err := db.QueryRow(`SELECT seed_file_path FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&seedPath); err != nil {
 			if err == sql.ErrNoRows {
 				return fmt.Errorf("system homepage seed not found after workspace sync: %s", seedHash)
 			}
 			return err
 		}
 		var existingFloor sql.NullInt64
-		if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&existingFloor); err != nil && err != sql.ErrNoRows {
+		if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash).Scan(&existingFloor); err != nil && err != sql.ErrNoRows {
 			return err
 		}
 		// 设计说明：
@@ -157,7 +157,7 @@ func (s *systemHomepageState) EnsureSeedPrices(db *sql.DB, resaleDiscountBPS uin
 		if existingFloor.Valid && existingFloor.Int64 > 0 {
 			continue
 		}
-		if _, _, err := upsertSystemHomepageSeedPriceState(db, seedHash, systemHomepageFloorPriceSatPer64K, resaleDiscountBPS, seedPath); err != nil {
+		if _, _, err := upsertSystemHomepageSeedPricingPolicy(db, seedHash, systemHomepageFloorPriceSatPer64K, resaleDiscountBPS, seedPath); err != nil {
 			return err
 		}
 	}
@@ -172,7 +172,7 @@ func (s *systemHomepageState) ApplySeedMetadata(db *sql.DB) error {
 		meta := s.FileMetaBySeed[seedHash]
 		normalizedSeedHash := normalizeSeedHashHex(seedHash)
 		if _, err := db.Exec(
-			`UPDATE seeds
+			`UPDATE biz_seeds
 			    SET recommended_file_name=CASE
 			          WHEN TRIM(COALESCE(recommended_file_name,''))='' THEN ?
 			          WHEN LOWER(TRIM(COALESCE(recommended_file_name,'')))=LOWER(?) THEN ?
@@ -261,7 +261,7 @@ func sanitizeHomepageMIMEHint(raw string) string {
 	return value
 }
 
-func upsertSystemHomepageSeedPriceState(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, seedPath string) (uint64, uint64, error) {
+func upsertSystemHomepageSeedPricingPolicy(db *sql.DB, seedHash string, floorUnit, discountBPS uint64, seedPath string) (uint64, uint64, error) {
 	if db == nil {
 		return 0, 0, fmt.Errorf("db is nil")
 	}
@@ -270,7 +270,7 @@ func upsertSystemHomepageSeedPriceState(db *sql.DB, seedHash string, floorUnit, 
 		return 0, 0, fmt.Errorf("invalid seed hash")
 	}
 	var chunkCount uint64
-	if err := db.QueryRow(`SELECT chunk_count FROM seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
+	if err := db.QueryRow(`SELECT chunk_count FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&chunkCount); err != nil {
 		return 0, 0, err
 	}
 	if chunkCount == 0 {
@@ -291,20 +291,17 @@ func upsertSystemHomepageSeedPriceState(db *sql.DB, seedHash string, floorUnit, 
 	unitPrice := floorUnit
 	now := time.Now().Unix()
 	if _, err := db.Exec(
-		`INSERT INTO seed_price_state(seed_hash,last_buy_unit_price_sat_per_64k,floor_unit_price_sat_per_64k,resale_discount_bps,unit_price_sat_per_64k,updated_at_unix)
-		 VALUES(?,?,?,?,?,?)
+		`INSERT INTO biz_seed_pricing_policy(seed_hash,floor_unit_price_sat_per_64k,resale_discount_bps,pricing_source,updated_at_unix)
+		 VALUES(?,?,?,?,?)
 		 ON CONFLICT(seed_hash) DO UPDATE SET
 		   floor_unit_price_sat_per_64k=excluded.floor_unit_price_sat_per_64k,
 		   resale_discount_bps=excluded.resale_discount_bps,
-		   unit_price_sat_per_64k=CASE
-		     WHEN COALESCE(seed_price_state.last_buy_unit_price_sat_per_64k,0) > excluded.floor_unit_price_sat_per_64k
-		       THEN COALESCE(seed_price_state.last_buy_unit_price_sat_per_64k,0)
-		     ELSE excluded.floor_unit_price_sat_per_64k
-		   END,
-		   updated_at_unix=excluded.updated_at_unix`,
-		seedHash, nil, floorUnit, discountBPS, unitPrice, now,
+		   pricing_source=excluded.pricing_source,
+		   updated_at_unix=excluded.updated_at_unix
+		 WHERE COALESCE(biz_seed_pricing_policy.pricing_source,'')!='user'`,
+		seedHash, floorUnit, discountBPS, "system", now,
 	); err != nil {
 		return 0, 0, err
 	}
-	return floorUnit, chunkCount, nil
+	return unitPrice, chunkCount, nil
 }

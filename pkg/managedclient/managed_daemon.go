@@ -62,6 +62,8 @@ const (
 	bitfsManagedHTTPKeyAbility      = "bitfs.managed_http.key@1"
 	bitfsManagedHTTPProxyAbility    = "bitfs.managed_http.proxy@1"
 	bitfsManagedHTTPFallbackAbility = "bitfs.managed_http.fallback@1"
+
+	apiUnlockWaitRuntimeTimeout = 2 * time.Second
 )
 
 var runClientRuntime = clientapp.Run
@@ -111,6 +113,9 @@ type managedDaemon struct {
 	runtimeErrorMessage string
 	unlockedPrivHex     string
 	runtimeStartSeq     uint64
+	runtimeFSHTTPReady  bool
+	runtimeTipReady     bool
+	runtimeUTXOReady    bool
 	startupError        startupErrorState
 	chainAccess         chainAccessState
 
@@ -188,6 +193,9 @@ func (d *managedDaemon) close() error {
 	d.unlockedPrivHex = ""
 	d.runtimeErrorMessage = ""
 	d.runtimePhase = managedRuntimePhaseStopped
+	d.runtimeFSHTTPReady = false
+	d.runtimeTipReady = false
+	d.runtimeUTXOReady = false
 	fsHTTPReserved := d.fsHTTPReserved
 	d.fsHTTPReserved = nil
 	d.mu.Unlock()
@@ -459,6 +467,11 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
 		}
+		if err := d.waitRuntimeReadyForAPI(r.Context()); err != nil {
+			obs.Error("bitcast-client", "api_unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
 		return
 	}
@@ -493,6 +506,12 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
+	if err := d.waitRuntimeReadyForAPI(r.Context()); err != nil {
+		obs.Error("bitcast-client", "api_unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+		fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
 }
 
@@ -510,6 +529,69 @@ func (d *managedDaemon) handleKeyLock(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": false})
+}
+
+func (d *managedDaemon) waitRuntimeReadyForAPI(ctx context.Context) error {
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, apiUnlockWaitRuntimeTimeout)
+	defer cancel()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		d.mu.RLock()
+		runtimePhase := d.runtimePhase
+		runtimeErrMsg := strings.TrimSpace(d.runtimeErrorMessage)
+		fsHTTPReady := d.runtimeFSHTTPReady
+		tipReady := d.runtimeTipReady
+		utxoReady := d.runtimeUTXOReady
+		d.mu.RUnlock()
+		switch runtimePhase {
+		case managedRuntimePhaseReady:
+			if fsHTTPReady && tipReady && utxoReady {
+				return nil
+			}
+		case managedRuntimePhaseError:
+			if runtimeErrMsg == "" {
+				return fmt.Errorf("runtime startup failed")
+			}
+			return fmt.Errorf("runtime startup failed: %s", runtimeErrMsg)
+		}
+		select {
+		case <-waitCtx.Done():
+			return fmt.Errorf("runtime startup wait timeout: %w", waitCtx.Err())
+		case <-d.rootCtx.Done():
+			return fmt.Errorf("runtime root context ended: %w", d.rootCtx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (d *managedDaemon) runtimeObsSink(next obs.Sink) obs.Sink {
+	return obs.SinkFunc(func(ev obs.Event) {
+		d.captureRuntimeReadySignals(ev)
+		if next != nil {
+			next.Handle(ev)
+		}
+	})
+}
+
+func (d *managedDaemon) captureRuntimeReadySignals(ev obs.Event) {
+	if strings.TrimSpace(ev.Service) != "bitcast-client" {
+		return
+	}
+	eventName := strings.TrimSpace(ev.Name)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	switch eventName {
+	case "fs_http_started":
+		d.runtimeFSHTTPReady = true
+	case "chain_tip_task_registered":
+		d.runtimeTipReady = true
+	case "chain_utxo_task_registered":
+		d.runtimeUTXOReady = true
+	}
 }
 
 func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
@@ -533,6 +615,7 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	if d.controlStream != nil {
 		obsSink = d.controlStream.ObsSink()
 	}
+	obsSink = d.runtimeObsSink(obsSink)
 	runOpt := clientapp.RunOptions{
 		ConfigPath:             d.startup.ConfigPath,
 		StartupMode:            clientapp.StartupModeProduct,
@@ -558,6 +641,18 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		RawDB:   openedDB.DB,
 		DBActor: openedDB.Actor,
 		OwnsDB:  true,
+	}
+	// 设计说明：
+	// - managed daemon 解锁后会直接进入 runtime；
+	// - runtime 入口不再隐式建表，所以这里要先把 schema 准备好；
+	// - 失败时沿用统一收尾，避免占住 fs listener 和 db actor。
+	if err := clientapp.EnsureClientStoreSchema(d.rootCtx, deps.Store); err != nil {
+		if runOpt.FSHTTPListener != nil {
+			_ = runOpt.FSHTTPListener.Close()
+			_ = d.reserveFSHTTPListener()
+		}
+		_ = openedDB.Actor.Close()
+		return fmt.Errorf("prepare runtime db schema failed: %w", err)
 	}
 	actionChain, err := chainbridge.NewEmbeddedFeePoolChain(chainbridge.RouteConfig{
 		Provider: chainbridge.WhatsOnChainProvider,
@@ -1010,6 +1105,9 @@ func (d *managedDaemon) clearUnlockedKey() {
 	d.unlockedPrivHex = ""
 	d.runtimeErrorMessage = ""
 	d.runtimePhase = managedRuntimePhaseStopped
+	d.runtimeFSHTTPReady = false
+	d.runtimeTipReady = false
+	d.runtimeUTXOReady = false
 	d.runtimeStartSeq++
 	d.mu.Unlock()
 	d.emitBackendSnapshot("key_locked")
@@ -1037,6 +1135,9 @@ func (d *managedDaemon) startRuntimeAsync() error {
 	privHex := d.unlockedPrivHex
 	d.runtimePhase = managedRuntimePhaseStarting
 	d.runtimeErrorMessage = ""
+	d.runtimeFSHTTPReady = false
+	d.runtimeTipReady = false
+	d.runtimeUTXOReady = false
 	d.mu.Unlock()
 
 	d.emitBackendSnapshot("runtime_starting")
@@ -1171,6 +1272,9 @@ func (d *managedDaemon) stopRuntime() error {
 	d.rtAPI = nil
 	d.runtimePhase = managedRuntimePhaseStopped
 	d.runtimeErrorMessage = ""
+	d.runtimeFSHTTPReady = false
+	d.runtimeTipReady = false
+	d.runtimeUTXOReady = false
 	d.runtimeStartSeq++
 	d.mu.Unlock()
 
@@ -1188,6 +1292,7 @@ func (d *managedDaemon) stopRuntime() error {
 		d.emitBackendSnapshot("runtime_stopped")
 		d.emitPhaseEvent()
 		obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
+		d.emitManagedBackendObs("managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 		return nil
 	}
 	if err := d.reserveFSHTTPListener(); err != nil {
@@ -1197,7 +1302,25 @@ func (d *managedDaemon) stopRuntime() error {
 	d.emitBackendSnapshot("runtime_stopped")
 	d.emitPhaseEvent()
 	obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
+	d.emitManagedBackendObs("managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 	return nil
+}
+
+func (d *managedDaemon) emitManagedBackendObs(eventName string, fields map[string]any) {
+	if d == nil || d.controlStream == nil {
+		return
+	}
+	eventName = strings.TrimSpace(eventName)
+	if eventName == "" {
+		return
+	}
+	payload := map[string]any{
+		"event": eventName,
+	}
+	if len(fields) > 0 {
+		payload["fields"] = cloneManagedEventPayload(fields)
+	}
+	d.controlStream.Emit("backend.obs", "private", "managed_daemon", "", payload)
 }
 
 func (d *managedDaemon) lockRuntime() error {

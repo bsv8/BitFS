@@ -205,6 +205,14 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 		if opt.FSHTTPListener != nil {
 			_ = opt.FSHTTPListener.Close()
 		}
+		if opt.ObsSink != nil {
+			for _, name := range []string{"fs_http_started", "chain_tip_task_registered", "chain_utxo_task_registered"} {
+				opt.ObsSink.Handle(obs.Event{
+					Service: "bitcast-client",
+					Name:    name,
+				})
+			}
+		}
 		h, err := libp2p.New(libp2p.NoListenAddrs)
 		if err != nil {
 			return nil, err
@@ -255,7 +263,7 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 		t.Fatalf("open db: %v", err)
 	}
 	defer db.Close()
-	if _, err := db.Exec(`CREATE TABLE seeds(
+	if _, err := db.Exec(`CREATE TABLE biz_seeds(
 		seed_hash TEXT PRIMARY KEY,
 		seed_file_path TEXT NOT NULL,
 		chunk_count INTEGER,
@@ -264,17 +272,16 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 		mime_hint TEXT NOT NULL DEFAULT '',
 		created_at_unix INTEGER
 	)`); err != nil {
-		t.Fatalf("create seeds: %v", err)
+		t.Fatalf("create biz_seeds: %v", err)
 	}
-	if _, err := db.Exec(`CREATE TABLE seed_price_state(
+	if _, err := db.Exec(`CREATE TABLE biz_seed_pricing_policy(
 		seed_hash TEXT PRIMARY KEY,
-		last_buy_unit_price_sat_per_64k INTEGER,
 		floor_unit_price_sat_per_64k INTEGER,
 		resale_discount_bps INTEGER,
-		unit_price_sat_per_64k INTEGER,
+		pricing_source TEXT,
 		updated_at_unix INTEGER
 	)`); err != nil {
-		t.Fatalf("create seed_price_state: %v", err)
+		t.Fatalf("create biz_seed_pricing_policy: %v", err)
 	}
 
 	seedHash := "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd"
@@ -283,10 +290,10 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 		t.Fatalf("write seed file: %v", err)
 	}
 	if _, err := db.Exec(
-		`INSERT INTO seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?)`,
+		`INSERT INTO biz_seeds(seed_hash,seed_file_path,chunk_count,file_size,recommended_file_name,mime_hint,created_at_unix) VALUES(?,?,?,?,?,?,?)`,
 		seedHash, seedPath, 1, 128, "", "", 1,
 	); err != nil {
-		t.Fatalf("insert seed: %v", err)
+		t.Fatalf("insert biz_seed: %v", err)
 	}
 
 	var cfg clientapp.Config
@@ -315,16 +322,16 @@ func TestSystemHomepageBootstrapHook_AppliesMetadataAndPrice(t *testing.T) {
 	}
 
 	var name, mime string
-	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM seeds WHERE seed_hash=?`, seedHash).Scan(&name, &mime); err != nil {
-		t.Fatalf("query seed metadata: %v", err)
+	if err := db.QueryRow(`SELECT recommended_file_name,mime_hint FROM biz_seeds WHERE seed_hash=?`, seedHash).Scan(&name, &mime); err != nil {
+		t.Fatalf("query biz_seed metadata: %v", err)
 	}
 	if name != "index.html" || mime != "text/html" {
 		t.Fatalf("seed metadata mismatch: name=%q mime=%q", name, mime)
 	}
 
 	var floorPrice uint64
-	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM seed_price_state WHERE seed_hash=?`, seedHash).Scan(&floorPrice); err != nil {
-		t.Fatalf("query seed price: %v", err)
+	if err := db.QueryRow(`SELECT floor_unit_price_sat_per_64k FROM biz_seed_pricing_policy WHERE seed_hash=?`, seedHash).Scan(&floorPrice); err != nil {
+		t.Fatalf("query biz_seed pricing_policy: %v", err)
 	}
 	if floorPrice != systemHomepageFloorPriceSatPer64K {
 		t.Fatalf("seed floor price mismatch: got=%d want=%d", floorPrice, systemHomepageFloorPriceSatPer64K)
@@ -526,6 +533,14 @@ func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
 		select {
 		case runCalled <- struct{}{}:
 		default:
+		}
+		if opt.ObsSink != nil {
+			for _, name := range []string{"fs_http_started", "chain_tip_task_registered", "chain_utxo_task_registered"} {
+				opt.ObsSink.Handle(obs.Event{
+					Service: "bitcast-client",
+					Name:    name,
+				})
+			}
 		}
 		return &clientapp.Runtime{
 			Host: h,
