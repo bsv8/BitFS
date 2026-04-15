@@ -708,7 +708,9 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 		return nil, err
 	}
 	if len(activeGWs) == 0 {
-		obs.Business("bitcast-client", "waiting_gateway_config", map[string]any{"message": "no enabled gateway, waiting for HTTP API configuration"})
+		obs.Business("bitcast-client", "waiting_gateway_config", map[string]any{
+			"message": noEnabledGatewayMessage(runtimeCfg.HTTP.Enabled, runtimeCfg.FSHTTP.Enabled),
+		})
 	}
 	arbInfo, err := connectArbiters(ctx, h, runtimeCfg.Network.Arbiters)
 	if err != nil {
@@ -735,7 +737,7 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 		closeTrace = localTrace.Close
 	}
 	healthyGWs := checkPeerHealth(ctx, h, activeGWs, ProtoHealth, gwSec(trace), "gateway")
-	if len(healthyGWs) == 0 {
+	if len(activeGWs) > 0 && len(healthyGWs) == 0 {
 		obs.Error("bitcast-client", "gateway_health_all_failed", map[string]any{
 			"configured_gateway_count": len(activeGWs),
 			"fallback":                 "use_connected_gateways_and_retry_in_listen_loop",
@@ -1936,6 +1938,16 @@ func buildSeedV1(path string) ([]byte, string, uint32, error) {
 	seedBytes := buf.Bytes()
 	h := sha256.Sum256(seedBytes)
 	return seedBytes, hex.EncodeToString(h[:]), chunkCount, nil
+}
+
+func noEnabledGatewayMessage(httpAPIEnabled bool, fsHTTPEnabled bool) string {
+	if httpAPIEnabled {
+		return "no enabled gateway, waiting for HTTP API configuration"
+	}
+	if fsHTTPEnabled {
+		return "no enabled gateway, HTTP API disabled; waiting external gateway config or runner injection"
+	}
+	return "no enabled gateway, HTTP API and FS HTTP disabled; waiting external gateway config or runner injection"
 }
 
 func writeIfChanged(path string, data []byte) error {
