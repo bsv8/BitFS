@@ -613,8 +613,11 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 				walletUTXOSyncStateIsStale, walletUTXOSyncStateStaleReason = walletUTXOSyncStateStaleness(syncState, runtimeStartedAtUnix)
 			}
 			if aggregate, aggErr := dbLoadWalletUTXOAggregate(r.Context(), s.store, walletAddr); aggErr == nil {
-				walletUTXOTotalCount = aggregate.UTXOCount
-				walletUTXOTotalBalanceSatoshi = int64(aggregate.BalanceSatoshi)
+				// 口径说明：
+				// - 总余额对外定义为“可用余额”；
+				// - unknown/protected 只做分类展示，不进入 total。
+				walletUTXOTotalCount = aggregate.PlainBSVUTXOCount
+				walletUTXOTotalBalanceSatoshi = int64(aggregate.PlainBSVBalanceSatoshi)
 				walletPlainBSVUTXOCount = aggregate.PlainBSVUTXOCount
 				walletPlainBSVBalanceSatoshi = int64(aggregate.PlainBSVBalanceSatoshi)
 				walletProtectedUTXOCount = aggregate.ProtectedUTXOCount
@@ -662,6 +665,8 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 		"onchain_balance_satoshi":                         onchainBal,
 		"wallet_total_unspent_utxo_count":                 walletUTXOTotalCount,
 		"wallet_total_unspent_satoshi":                    walletUTXOTotalBalanceSatoshi,
+		"wallet_total_indexed_utxo_count":                 walletPlainBSVUTXOCount + walletProtectedUTXOCount + walletUnknownUTXOCount,
+		"wallet_total_indexed_satoshi":                    walletPlainBSVBalanceSatoshi + walletProtectedBalanceSatoshi + walletUnknownBalanceSatoshi,
 		"wallet_plain_bsv_utxo_count":                     walletPlainBSVUTXOCount,
 		"wallet_plain_bsv_balance_satoshi":                walletPlainBSVBalanceSatoshi,
 		"wallet_protected_utxo_count":                     walletProtectedUTXOCount,

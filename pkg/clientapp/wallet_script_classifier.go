@@ -69,7 +69,11 @@ func classifyWalletUTXOWithClassifier(ctx context.Context, classifier *walletScr
 		TxHex:     strings.ToLower(strings.TrimSpace(txHex)),
 		ScriptHex: strings.ToLower(strings.TrimSpace(scriptHex)),
 	}
-	if round.ScriptHex == "" && round.TxHex == "" && round.Value != 1 && source != nil && round.TxID != "" {
+	// 设计说明：
+	// - 当 live 快照里的 UTXO 不在 address history 里（例如 p2pk script 路径补进来的输出），
+	//   这里拿不到 scriptHex；
+	// - 1sat 也必须补拉 tx hex 才能区分“标准 1sat p2pk/p2pkh”和 token carrier。
+	if round.ScriptHex == "" && round.TxHex == "" && source != nil && round.TxID != "" {
 		if fetched, err := source.GetTxHex(ctx, round.TxID); err == nil {
 			round.TxHex = strings.ToLower(strings.TrimSpace(fetched))
 		}

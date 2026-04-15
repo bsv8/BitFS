@@ -1,7 +1,9 @@
 package clientapp
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	crypto "github.com/bsv-blockchain/go-sdk/primitives/hash"
 	"github.com/bsv-blockchain/go-sdk/script"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
@@ -140,6 +143,13 @@ type walletSyncError struct {
 	UpstreamPath string
 	HTTPStatus   int
 	Cause        error
+}
+
+// walletChainScriptUTXOClient 是可选能力：
+// 当底层链客户端支持脚本哈希查询时，钱包同步可补充 p2pk 可见性。
+type walletChainScriptUTXOClient interface {
+	GetScriptConfirmedUnspent(ctx context.Context, scriptHash string) ([]whatsonchain.UTXO, error)
+	GetScriptSpendableUnspent(ctx context.Context, scriptHash string) ([]whatsonchain.UTXO, error)
 }
 
 func (e *walletSyncError) Error() string {
@@ -633,6 +643,13 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	logWalletSyncStepInfo(meta, "load_wallet_address", map[string]any{
 		"address": addr,
 	})
+	p2pkScriptHashes, hashErr := walletP2PKScriptHashCandidates(m.rt.ClientID())
+	if hashErr != nil {
+		logWalletSyncStepError(meta, "build_wallet_p2pk_script_hash", hashErr, nil)
+	}
+	logWalletSyncStepInfo(meta, "build_wallet_p2pk_script_hash", map[string]any{
+		"candidate_count": len(p2pkScriptHashes),
+	})
 	startedAt := time.Now()
 	stepStart := time.Now()
 	tipPath := walletChainTipUpstreamPath()
@@ -656,7 +673,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"tip_height":       tip,
 		"step_duration_ms": time.Since(stepStart).Milliseconds(),
 	})
-	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, meta)
+	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, p2pkScriptHashes, meta)
 	if err != nil {
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, err, task.TriggerSource)
 		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
@@ -1039,7 +1056,7 @@ func walletChainConfirmedHistoryUpstreamPath(address string, q whatsonchain.Conf
 	return path
 }
 
-func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, address string, meta walletSyncRoundMeta) (liveWalletSnapshot, error) {
+func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, address string, p2pkScriptHashes []string, meta walletSyncRoundMeta) (liveWalletSnapshot, error) {
 	stepStart := time.Now()
 	utxoPath := walletChainUTXOsUpstreamPath(address)
 	confirmedUTXOs, err := chain.GetAddressConfirmedUnspent(ctx, address)
@@ -1068,6 +1085,20 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 		"bsv21_unspent_cnt":  len(bsv21TokenUTXOs),
 		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
 	})
+	p2pkConfirmedUTXOs, p2pkSpendableUTXOs, p2pkErr := collectP2PKScriptUTXOs(ctx, chain, p2pkScriptHashes)
+	if p2pkErr != nil {
+		// 非阻断设计：script 端点失败时，不影响地址口径同步，避免整轮余额冻结。
+		logWalletSyncStepError(meta, "chain_get_p2pk_script_utxos", p2pkErr, map[string]any{
+			"script_hash_count": len(p2pkScriptHashes),
+		})
+	} else if len(p2pkScriptHashes) > 0 {
+		logWalletSyncStepInfo(meta, "chain_get_p2pk_script_utxos", map[string]any{
+			"script_hash_count":       len(p2pkScriptHashes),
+			"confirmed_utxo_cnt":      len(p2pkConfirmedUTXOs),
+			"spendable_utxo_cnt":      len(p2pkSpendableUTXOs),
+			"confirmed_and_token_utx": len(confirmedUTXOs) + len(bsv21TokenUTXOs),
+		})
+	}
 	current := map[string]poolcore.UTXO{}
 	confirmedLiveTxIDs := map[string]struct{}{}
 	for _, u := range confirmedUTXOs {
@@ -1090,6 +1121,26 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 		}
 		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: tokenUTXO.Vout, Value: 1}
 		confirmedLiveTxIDs[txid] = struct{}{}
+	}
+	for _, u := range p2pkConfirmedUTXOs {
+		txid := strings.ToLower(strings.TrimSpace(u.TxID))
+		if txid == "" {
+			continue
+		}
+		utxoID := txid + ":" + fmt.Sprint(u.Vout)
+		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
+		confirmedLiveTxIDs[txid] = struct{}{}
+	}
+	for _, u := range p2pkSpendableUTXOs {
+		txid := strings.ToLower(strings.TrimSpace(u.TxID))
+		if txid == "" {
+			continue
+		}
+		utxoID := txid + ":" + fmt.Sprint(u.Vout)
+		if _, exists := current[utxoID]; exists {
+			continue
+		}
+		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
 	}
 	stepStart = time.Now()
 	unconfirmedPath := walletChainUnconfirmedHistoryUpstreamPath(address)
@@ -1149,6 +1200,70 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 		Count:                 len(current),
 		OldestConfirmedHeight: oldestConfirmedHeight,
 	}, nil
+}
+
+func collectP2PKScriptUTXOs(ctx context.Context, chain walletChainClient, scriptHashes []string) ([]whatsonchain.UTXO, []whatsonchain.UTXO, error) {
+	scriptClient, ok := chain.(walletChainScriptUTXOClient)
+	if !ok || len(scriptHashes) == 0 {
+		return nil, nil, nil
+	}
+	confirmedByID := map[string]whatsonchain.UTXO{}
+	spendableByID := map[string]whatsonchain.UTXO{}
+	for _, hash := range scriptHashes {
+		hash = strings.ToLower(strings.TrimSpace(hash))
+		if hash == "" {
+			continue
+		}
+		confirmed, err := scriptClient.GetScriptConfirmedUnspent(ctx, hash)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query script confirmed unspent failed hash=%s: %w", hash, err)
+		}
+		for _, u := range confirmed {
+			key := strings.ToLower(strings.TrimSpace(u.TxID)) + ":" + fmt.Sprint(u.Vout)
+			if strings.HasPrefix(key, ":") {
+				continue
+			}
+			confirmedByID[key] = whatsonchain.UTXO{TxID: strings.ToLower(strings.TrimSpace(u.TxID)), Vout: u.Vout, Value: u.Value}
+		}
+		spendable, err := scriptClient.GetScriptSpendableUnspent(ctx, hash)
+		if err != nil {
+			return nil, nil, fmt.Errorf("query script spendable unspent failed hash=%s: %w", hash, err)
+		}
+		for _, u := range spendable {
+			key := strings.ToLower(strings.TrimSpace(u.TxID)) + ":" + fmt.Sprint(u.Vout)
+			if strings.HasPrefix(key, ":") {
+				continue
+			}
+			spendableByID[key] = whatsonchain.UTXO{TxID: strings.ToLower(strings.TrimSpace(u.TxID)), Vout: u.Vout, Value: u.Value}
+		}
+	}
+	confirmed := make([]whatsonchain.UTXO, 0, len(confirmedByID))
+	for _, u := range confirmedByID {
+		confirmed = append(confirmed, u)
+	}
+	spendable := make([]whatsonchain.UTXO, 0, len(spendableByID))
+	for _, u := range spendableByID {
+		spendable = append(spendable, u)
+	}
+	return confirmed, spendable, nil
+}
+
+func walletP2PKScriptHashCandidates(pubkeyHex string) ([]string, error) {
+	pubkeyHex, err := normalizeCompressedPubKeyHex(strings.TrimSpace(pubkeyHex))
+	if err != nil {
+		return nil, err
+	}
+	lock, err := script.NewFromASM(strings.ToLower(pubkeyHex) + " OP_CHECKSIG")
+	if err != nil {
+		return nil, fmt.Errorf("build wallet p2pk lock failed: %w", err)
+	}
+	sum := sha256.Sum256(lock.Bytes())
+	normal := strings.ToLower(hex.EncodeToString(sum[:]))
+	reversed := reverseHexByByte(normal)
+	if reversed == "" || reversed == normal {
+		return []string{normal}, nil
+	}
+	return []string{normal, reversed}, nil
 }
 
 func loadOrderedTxDetails(ctx context.Context, chain walletChainClient, txids []string, meta walletSyncRoundMeta) ([]whatsonchain.TxDetail, error) {
@@ -1439,7 +1554,47 @@ func walletScriptHexMatchesAddressControl(outputScriptHex string, walletScriptHe
 	if outputScriptHex == walletScriptHex {
 		return true
 	}
-	return strings.HasSuffix(outputScriptHex, walletScriptHex)
+	if strings.HasSuffix(outputScriptHex, walletScriptHex) {
+		return true
+	}
+	// 设计说明：
+	// - 钱包地址脚本是 p2pkh；当外部打到纯 p2pk（或“前缀变形 + 尾部 p2pk”）时，
+	//   需要用“输出公钥哈希是否等于钱包地址哈希”来判定控制权；
+	// - 这样标准 p2pk 能进可用余额，而变形脚本仍可按脚本分类落到 unknown。
+	walletPKH, ok := walletScriptPublicKeyHash(walletScriptHex)
+	if !ok || len(walletPKH) == 0 {
+		return false
+	}
+	return outputScriptHasWalletP2PKTail(outputScriptHex, walletPKH)
+}
+
+func walletScriptPublicKeyHash(walletScriptHex string) ([]byte, bool) {
+	lock, err := script.NewFromHex(strings.TrimSpace(walletScriptHex))
+	if err != nil || lock == nil || !lock.IsP2PKH() {
+		return nil, false
+	}
+	pkh, err := lock.PublicKeyHash()
+	if err != nil || len(pkh) == 0 {
+		return nil, false
+	}
+	return pkh, true
+}
+
+func outputScriptHasWalletP2PKTail(outputScriptHex string, walletPKH []byte) bool {
+	lock, err := script.NewFromHex(strings.TrimSpace(outputScriptHex))
+	if err != nil || lock == nil {
+		return false
+	}
+	ops, err := script.DecodeScript(*lock)
+	if err != nil || len(ops) < 2 {
+		return false
+	}
+	last := ops[len(ops)-1]
+	prev := ops[len(ops)-2]
+	if last == nil || prev == nil || last.Op != script.OpCHECKSIG || len(prev.Data) == 0 {
+		return false
+	}
+	return bytes.Equal(crypto.Hash160(prev.Data), walletPKH)
 }
 
 // hasBSV21TransferOutput 判断交易里是否包含 BSV21 transfer 输出。
