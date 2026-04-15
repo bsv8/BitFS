@@ -35,6 +35,7 @@ type managedBackendPhase string
 type managedRuntimePhase string
 
 type managedKeyState string
+type managedUnlockResult string
 
 // 设计说明：
 // - backendPhase 只描述受管后端自己有没有活着，和钱包是否解锁无关；
@@ -64,6 +65,12 @@ const (
 	bitfsManagedHTTPFallbackAbility = "bitfs.managed_http.fallback@1"
 
 	apiUnlockWaitRuntimeTimeout = 2 * time.Second
+
+	unlockSourceAPI = "api"
+	unlockSourceCLI = "cli"
+
+	managedUnlockResultSucceeded managedUnlockResult = "succeeded"
+	managedUnlockResultAlready   managedUnlockResult = "already_unlocked"
 )
 
 var runClientRuntime = clientapp.Run
@@ -84,6 +91,12 @@ type chainAccessState struct {
 	WOCProxyAddr    string
 	UpstreamRootURL string
 	MinInterval     time.Duration
+}
+
+type unlockTicket struct {
+	Result managedUnlockResult
+	Token  string
+	Winner string
 }
 
 type managedDaemon struct {
@@ -112,6 +125,8 @@ type managedDaemon struct {
 	runtimePhase        managedRuntimePhase
 	runtimeErrorMessage string
 	unlockedPrivHex     string
+	unlockSuccessToken  string
+	unlockSuccessBy     string
 	runtimeStartSeq     uint64
 	runtimeFSHTTPReady  bool
 	runtimeTipReady     bool
@@ -191,6 +206,8 @@ func (d *managedDaemon) close() error {
 	d.rt = nil
 	d.rtAPI = nil
 	d.unlockedPrivHex = ""
+	d.unlockSuccessToken = ""
+	d.unlockSuccessBy = ""
 	d.runtimeErrorMessage = ""
 	d.runtimePhase = managedRuntimePhaseStopped
 	d.runtimeFSHTTPReady = false
@@ -314,6 +331,8 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	runtimePhase := d.runtimePhase
 	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
 	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
+	unlockToken := strings.TrimSpace(d.unlockSuccessToken)
+	unlockOwner := strings.TrimSpace(d.unlockSuccessBy)
 	startupErr := d.startupError
 	chainAccess := d.chainAccess
 	d.mu.RUnlock()
@@ -336,6 +355,8 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 		"startup_error_listen":   startupErr.ListenAddr,
 		"startup_error_message":  startupErr.Message,
 		"runtime_error_message":  runtimeErrorMessage,
+		"unlock_token":           unlockToken,
+		"unlock_owner":           unlockOwner,
 		"chain_access_mode":      chainAccess.Mode,
 		"wallet_chain_base_url":  chainAccess.BaseURL,
 		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
@@ -463,6 +484,7 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if d.currentKeyState() == managedKeyStateUnlocked {
+		ticket := d.currentUnlockTicket(unlockSourceAPI)
 		if err := d.startRuntimeAsync(); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
@@ -472,7 +494,8 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
+		d.emitUnlockResult(unlockSourceAPI, ticket)
+		writeUnlockResponse(w, ticket)
 		return
 	}
 	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
@@ -498,7 +521,22 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": err.Error()})
 		return
 	}
-	d.rememberUnlockedKey(privHex)
+	ticket := d.claimUnlockTicket(unlockSourceAPI, privHex)
+	if ticket.Result == managedUnlockResultAlready {
+		if err := d.startRuntimeAsync(); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := d.waitRuntimeReadyForAPI(r.Context()); err != nil {
+			obs.Error("bitcast-client", "api_unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+			fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
+			writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+			return
+		}
+		d.emitUnlockResult(unlockSourceAPI, ticket)
+		writeUnlockResponse(w, ticket)
+		return
+	}
 	if err := d.startRuntimeAsync(); err != nil {
 		d.clearUnlockedKey()
 		obs.Error("bitcast-client", "api_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
@@ -512,7 +550,8 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": true})
+	d.emitUnlockResult(unlockSourceAPI, ticket)
+	writeUnlockResponse(w, ticket)
 }
 
 func (d *managedDaemon) handleKeyLock(w http.ResponseWriter, r *http.Request) {
@@ -975,6 +1014,8 @@ func (d *managedDaemon) emitPhaseEvent() {
 	backendPhase := string(d.backendPhase)
 	runtimePhase := string(d.runtimePhase)
 	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
+	unlockToken := strings.TrimSpace(d.unlockSuccessToken)
+	unlockOwner := strings.TrimSpace(d.unlockSuccessBy)
 	startupErr := d.startupError
 	chainAccess := d.chainAccess
 	hasSystemHomeBundle := d.systemHomepage != nil && d.systemHomepage.HasBundle()
@@ -1002,6 +1043,8 @@ func (d *managedDaemon) emitPhaseEvent() {
 		"startup_error_listen":   strings.TrimSpace(startupErr.ListenAddr),
 		"startup_error_message":  strings.TrimSpace(startupErr.Message),
 		"runtime_error_message":  runtimeErrorMessage,
+		"unlock_token":           unlockToken,
+		"unlock_owner":           unlockOwner,
 		"chain_access_mode":      strings.TrimSpace(chainAccess.Mode),
 		"wallet_chain_base_url":  strings.TrimSpace(chainAccess.BaseURL),
 		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
@@ -1024,6 +1067,8 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 	backendPhase := string(d.backendPhase)
 	runtimePhase := string(d.runtimePhase)
 	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
+	unlockToken := strings.TrimSpace(d.unlockSuccessToken)
+	unlockOwner := strings.TrimSpace(d.unlockSuccessBy)
 	startupErr := d.startupError
 	chainAccess := d.chainAccess
 	hasSystemHomeBundle := d.systemHomepage != nil && d.systemHomepage.HasBundle()
@@ -1062,6 +1107,8 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 		"startup_error_listen":   strings.TrimSpace(startupErr.ListenAddr),
 		"startup_error_message":  strings.TrimSpace(startupErr.Message),
 		"runtime_error_message":  runtimeErrorMessage,
+		"unlock_token":           unlockToken,
+		"unlock_owner":           unlockOwner,
 		"chain_access_mode":      strings.TrimSpace(chainAccess.Mode),
 		"wallet_chain_base_url":  strings.TrimSpace(chainAccess.BaseURL),
 		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
@@ -1093,16 +1140,111 @@ func (d *managedDaemon) ensureKeyWorkflowReady() error {
 	}
 }
 
-func (d *managedDaemon) rememberUnlockedKey(privHex string) {
+func normalizeUnlockSource(raw string) string {
+	switch strings.TrimSpace(strings.ToLower(raw)) {
+	case unlockSourceCLI:
+		return unlockSourceCLI
+	default:
+		return unlockSourceAPI
+	}
+}
+
+func (d *managedDaemon) claimUnlockTicket(source string, privHex string) unlockTicket {
+	source = normalizeUnlockSource(source)
 	d.mu.Lock()
-	d.unlockedPrivHex = strings.TrimSpace(privHex)
-	d.runtimeErrorMessage = ""
-	d.mu.Unlock()
+	defer d.mu.Unlock()
+	if strings.TrimSpace(d.unlockedPrivHex) == "" {
+		d.unlockedPrivHex = strings.TrimSpace(privHex)
+		d.runtimeErrorMessage = ""
+		d.unlockSuccessToken = d.nextUnlockSuccessTokenLocked()
+		d.unlockSuccessBy = source
+		return unlockTicket{
+			Result: managedUnlockResultSucceeded,
+			Token:  d.unlockSuccessToken,
+			Winner: d.unlockSuccessBy,
+		}
+	}
+	if strings.TrimSpace(d.unlockSuccessToken) == "" {
+		d.unlockSuccessToken = d.nextUnlockSuccessTokenLocked()
+	}
+	if strings.TrimSpace(d.unlockSuccessBy) == "" {
+		d.unlockSuccessBy = source
+	}
+	return unlockTicket{
+		Result: managedUnlockResultAlready,
+		Token:  strings.TrimSpace(d.unlockSuccessToken),
+		Winner: strings.TrimSpace(d.unlockSuccessBy),
+	}
+}
+
+func (d *managedDaemon) currentUnlockTicket(source string) unlockTicket {
+	source = normalizeUnlockSource(source)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if strings.TrimSpace(d.unlockSuccessToken) == "" {
+		d.unlockSuccessToken = d.nextUnlockSuccessTokenLocked()
+	}
+	if strings.TrimSpace(d.unlockSuccessBy) == "" {
+		d.unlockSuccessBy = source
+	}
+	return unlockTicket{
+		Result: managedUnlockResultAlready,
+		Token:  strings.TrimSpace(d.unlockSuccessToken),
+		Winner: strings.TrimSpace(d.unlockSuccessBy),
+	}
+}
+
+func (d *managedDaemon) nextUnlockSuccessTokenLocked() string {
+	seed := time.Now().UnixNano()
+	return fmt.Sprintf("unlock-%d-%d", seed, d.runtimeStartSeq+1)
+}
+
+func unlockResultEventName(source string, result managedUnlockResult) string {
+	source = normalizeUnlockSource(source)
+	switch source {
+	case unlockSourceCLI:
+		if result == managedUnlockResultSucceeded {
+			return "cli_unlock_succeeded"
+		}
+		return "cli_unlock_already_unlocked"
+	default:
+		if result == managedUnlockResultSucceeded {
+			return "api_unlock_succeeded"
+		}
+		return "api_unlock_already_unlocked"
+	}
+}
+
+func unlockResultPayload(ticket unlockTicket) map[string]any {
+	return map[string]any{
+		"unlock_result": string(ticket.Result),
+		"unlock_token":  strings.TrimSpace(ticket.Token),
+		"unlock_owner":  strings.TrimSpace(ticket.Winner),
+	}
+}
+
+func (d *managedDaemon) emitUnlockResult(source string, ticket unlockTicket) {
+	eventName := unlockResultEventName(source, ticket.Result)
+	fields := unlockResultPayload(ticket)
+	obs.Important("bitcast-client", eventName, fields)
+	d.emitManagedBackendObs(eventName, fields)
+}
+
+func writeUnlockResponse(w http.ResponseWriter, ticket unlockTicket) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":            true,
+		"unlocked":      true,
+		"unlock_result": string(ticket.Result),
+		"unlock_token":  strings.TrimSpace(ticket.Token),
+		"unlock_owner":  strings.TrimSpace(ticket.Winner),
+	})
 }
 
 func (d *managedDaemon) clearUnlockedKey() {
 	d.mu.Lock()
 	d.unlockedPrivHex = ""
+	d.unlockSuccessToken = ""
+	d.unlockSuccessBy = ""
 	d.runtimeErrorMessage = ""
 	d.runtimePhase = managedRuntimePhaseStopped
 	d.runtimeFSHTTPReady = false
@@ -1377,6 +1519,8 @@ func (d *managedDaemon) cliUnlockLoop() {
 			continue
 		}
 		if d.currentKeyState() == managedKeyStateUnlocked {
+			ticket := d.currentUnlockTicket(unlockSourceCLI)
+			d.emitUnlockResult(unlockSourceCLI, ticket)
 			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
 			continue
 		}
@@ -1386,14 +1530,19 @@ func (d *managedDaemon) cliUnlockLoop() {
 			fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
 			continue
 		}
-		d.rememberUnlockedKey(privHex)
+		ticket := d.claimUnlockTicket(unlockSourceCLI, privHex)
+		if ticket.Result == managedUnlockResultAlready {
+			d.emitUnlockResult(unlockSourceCLI, ticket)
+			fmt.Fprintln(os.Stderr, "已解锁（管理 API 已生效）")
+			continue
+		}
 		if err := d.startRuntimeAsync(); err != nil {
 			d.clearUnlockedKey()
 			obs.Error("bitcast-client", "cli_unlock_start_runtime_failed", map[string]any{"error": err.Error()})
 			fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
 			continue
 		}
-		obs.Important("bitcast-client", "cli_unlock_succeeded", map[string]any{"vault_path": d.startup.VaultPath})
+		d.emitUnlockResult(unlockSourceCLI, ticket)
 	}
 }
 

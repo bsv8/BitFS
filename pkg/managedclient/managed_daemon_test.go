@@ -236,6 +236,47 @@ func TestHandleKeyUnlock_StartsRuntimeAndBuildsManagedHandler(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	var firstResp struct {
+		UnlockResult string `json:"unlock_result"`
+		UnlockToken  string `json:"unlock_token"`
+		UnlockOwner  string `json:"unlock_owner"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &firstResp); err != nil {
+		t.Fatalf("decode first unlock response: %v", err)
+	}
+	if got, want := firstResp.UnlockResult, "succeeded"; got != want {
+		t.Fatalf("first unlock_result=%q, want %q", got, want)
+	}
+	if strings.TrimSpace(firstResp.UnlockToken) == "" {
+		t.Fatal("first unlock_token should not be empty")
+	}
+	if got, want := firstResp.UnlockOwner, "api"; got != want {
+		t.Fatalf("first unlock_owner=%q, want %q", got, want)
+	}
+
+	req2 := httptest.NewRequest(http.MethodPost, "/api/v1/key/unlock", strings.NewReader(`{"password":"pass"}`))
+	rec2 := httptest.NewRecorder()
+	d.handleKeyUnlock(rec2, req2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("second unlock status mismatch: got=%d want=%d body=%s", rec2.Code, http.StatusOK, rec2.Body.String())
+	}
+	var secondResp struct {
+		UnlockResult string `json:"unlock_result"`
+		UnlockToken  string `json:"unlock_token"`
+		UnlockOwner  string `json:"unlock_owner"`
+	}
+	if err := json.Unmarshal(rec2.Body.Bytes(), &secondResp); err != nil {
+		t.Fatalf("decode second unlock response: %v", err)
+	}
+	if got, want := secondResp.UnlockResult, "already_unlocked"; got != want {
+		t.Fatalf("second unlock_result=%q, want %q", got, want)
+	}
+	if got, want := secondResp.UnlockToken, firstResp.UnlockToken; got != want {
+		t.Fatalf("second unlock_token=%q, want %q", got, want)
+	}
+	if got, want := secondResp.UnlockOwner, "api"; got != want {
+		t.Fatalf("second unlock_owner=%q, want %q", got, want)
+	}
 
 	deadline := time.Now().Add(5 * time.Second)
 	for d.currentRuntimePhase() != managedRuntimePhaseReady {
