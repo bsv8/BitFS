@@ -65,7 +65,7 @@ func TestLoadRuntimeConfigOrInit_ExistingConfigNotOverriddenByInitNetwork(t *tes
 	if got, want := cfg2.BSV.Network, "main"; got != want {
 		t.Fatalf("second bsv.network=%q, want %q", cfg2.BSV.Network, want)
 	}
-	raw, err := os.ReadFile(configPath)
+	savedRaw, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("read config file: %v", err)
 	}

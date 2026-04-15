@@ -316,7 +316,6 @@ type Runtime struct {
 	live                *liveRuntime
 	sqlTraceDir         string
 	sqlTraceSummaryPath string
-
 	// 运行时状态
 	gwManager   *gatewayManager
 	masterGW    peer.ID
@@ -331,6 +330,32 @@ type Runtime struct {
 
 	closeOnce sync.Once
 	closeFn   func() error
+}
+
+// NewPricingTestRuntime 只给测试和桥接夹具用。
+// 设计说明：
+// - 它放在运行入口文件，避免把 newClientDB 带到控制/业务文件里；
+// - 这里只装最小 runtime，不走完整启动流程。
+func NewPricingTestRuntime(ctx context.Context, db *sql.DB, cfg Config) (*Runtime, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("ctx is required")
+	}
+	if err := ApplyConfigDefaultsForMode(&cfg, StartupModeTest); err != nil {
+		return nil, err
+	}
+	cfgSvc, err := newRuntimeConfigService(cfg, "", StartupModeTest)
+	if err != nil {
+		return nil, err
+	}
+	var store *clientDB
+	if db != nil {
+		store = newClientDB(db, nil)
+	}
+	return &Runtime{
+		ctx:    ctx,
+		store:  store,
+		config: cfgSvc,
+	}, nil
 }
 
 // Store 返回已经准备好的客户端 store 能力。
@@ -579,6 +604,15 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 	// - 运行入口只负责拿到“已准备好的”库；
 	// - 结构就绪由外部流程保证，入口只做能力组装。
 	if err := dbSyncSystemSeedPricingPolicies(ctx, store, runtimeCfg.Seller.Pricing.FloorPriceSatPer64K, runtimeCfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
+		closeOwnedDB()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
+	// 启动时把配置文件里的 live_base_price_sat_per_64k 记进 DB，只做启动快照同步。
+	// 这里不是 DB 反向覆盖源，真正的运行值仍然以配置文件为准。
+	if err := dbUpsertPricingAutopilotConfig(ctx, store, PricingConfig{BasePriceSatPer64K: runtimeCfg.Seller.Pricing.LiveBasePriceSatPer64K}, time.Now().Unix()); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
@@ -1456,11 +1490,11 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			seed.SeedPrice = seed.ChunkPrice * uint64(seed.ChunkCount)
 		}
 		if liveMeta, ok := live.segment(seedHash); ok {
-			seed = ComputeLiveQuotePrices(seed, liveMeta, LiveSellerPricing{
-				BasePriceSatPer64K:  cfg.Seller.Pricing.LiveBasePriceSatPer64K,
-				FloorPriceSatPer64K: cfg.Seller.Pricing.LiveFloorPriceSatPer64K,
-				DecayPerMinuteBPS:   cfg.Seller.Pricing.LiveDecayPerMinuteBPS,
-			}, time.Now())
+			pricing, pricingErr := currentSeedLiveSellerPricing(ctx, store, cfg, seedHash)
+			if pricingErr != nil {
+				return dealprod.DemandAnnounceResp{}, pricingErr
+			}
+			seed = ComputeLiveQuotePrices(seed, liveMeta, pricing, time.Now())
 		}
 		availableChunks, err := dbListSeedChunkSupply(ctx, store, seedHash)
 		if err != nil {
