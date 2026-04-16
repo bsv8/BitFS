@@ -19,6 +19,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
+	contractfnlock "github.com/bsv8/bitfs-contract/pkg/v1/fnlock"
 	libp2p "github.com/libp2p/go-libp2p"
 	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
@@ -1250,6 +1251,38 @@ func TestHandleManagedControlCommand_PricingCommandsUnsupportedAction(t *testing
 	}
 	if got, want := strings.TrimSpace(result["error"]), "unsupported control action: pricing.unknown"; got != want {
 		t.Fatalf("unsupported error=%q, want %q", got, want)
+	}
+}
+
+func TestManagedObsControlWhitelist_AllActionsRouted(t *testing.T) {
+	t.Parallel()
+
+	if err := ensureManagedObsControlRouteCoverage(); err != nil {
+		t.Fatalf("obs control route coverage mismatch: %v", err)
+	}
+
+	for _, action := range contractfnlock.ObsControlActions() {
+		action = strings.TrimSpace(action)
+		if action == "" {
+			t.Fatal("obs control whitelist action should not be empty")
+		}
+		if !isManagedObsControlActionRouted(action) {
+			t.Fatalf("obs control whitelist action is not routed: %s", action)
+		}
+		lockID, ok := contractfnlock.ObsControlActionLockID(action)
+		if !ok {
+			t.Fatalf("obs control action lock id mapping missing: %s", action)
+		}
+		lockID = strings.TrimSpace(lockID)
+		if lockID == "" {
+			t.Fatalf("obs control whitelist lock id should not be empty: action=%s", action)
+		}
+		if _, ok := managedObsControlLockHandler(lockID); !ok {
+			t.Fatalf("obs control action lock id has no daemon handler: action=%s lock_id=%s", action, lockID)
+		}
+	}
+	if isManagedObsControlActionRouted("pricing.unknown") {
+		t.Fatal("pricing.unknown should not be treated as routed")
 	}
 }
 

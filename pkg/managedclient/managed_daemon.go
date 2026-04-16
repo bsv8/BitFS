@@ -26,6 +26,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
+	contractfnlock "github.com/bsv8/bitfs-contract/pkg/v1/fnlock"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -93,6 +94,9 @@ const (
 
 var runClientRuntime = clientapp.Run
 var buildRuntimeAPIHandler = clientapp.NewRuntimeAPIHandler
+
+var managedObsControlRouteCoverageOnce sync.Once
+var managedObsControlRouteCoverageErr error
 
 type startupErrorState struct {
 	Service    string
@@ -561,63 +565,189 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		RuntimePhase: d.currentRuntimePhase(),
 		KeyState:     d.currentKeyState(),
 	}
-	switch req.Action {
-	case controlActionKeyEnsureMaterial:
-		password := strings.TrimSpace(controlCommandPayloadString(req.Payload, "password"))
-		if password == "" {
-			result.Result = "failed"
-			result.Error = "password is required"
-			return result
-		}
-		ticket, err := d.ensureKeyMaterial(password)
-		if err != nil {
-			result.Result = "failed"
-			result.Error = err.Error()
-			return result
-		}
-		result.OK = true
-		result.Result = ticket.Result
-	case controlActionKeyUnlock:
-		password := strings.TrimSpace(controlCommandPayloadString(req.Payload, "password"))
-		if password == "" {
-			result.Result = "failed"
-			result.Error = "password is required"
-			return result
-		}
-		ticket, err := d.unlockWithPassword(d.rootCtx, unlockSourceObs, password)
-		if err != nil {
-			result.Result = "failed"
-			result.Error = err.Error()
-			return result
-		}
-		result.OK = true
-		result.Result = string(ticket.Result)
-		result.UnlockOwner = strings.TrimSpace(ticket.Winner)
-		result.UnlockToken = strings.TrimSpace(ticket.Token)
-	case controlActionKeyLock:
-		if err := d.lockRuntime(); err != nil {
-			result.Result = "failed"
-			result.Error = err.Error()
-			return result
-		}
-		result.OK = true
-		result.Result = "locked"
-	case controlActionPricingSetBase, controlActionPricingResetSeed, controlActionPricingFeedSeed, controlActionPricingSetForce, controlActionPricingReleaseForce, controlActionPricingRunTick, controlActionPricingTriggerReconcile, controlActionPricingGetConfig, controlActionPricingGetState, controlActionPricingGetAudits, controlActionPricingListSeeds:
-		pricingResult, err := d.executeManagedPricingControlCommand(req)
-		if err != nil {
-			result.Result = "failed"
-			result.Error = err.Error()
-			return result
-		}
-		return pricingResult
-	default:
+	if err := ensureManagedObsControlRouteCoverage(); err != nil {
+		result.Result = "failed"
+		result.Error = err.Error()
+		return result
+	}
+	req.Action = strings.TrimSpace(req.Action)
+	result.Action = req.Action
+	lockID, ok := contractfnlock.ObsControlActionLockID(req.Action)
+	if !ok {
 		result.Result = "failed"
 		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
+		return result
 	}
+	handler, ok := managedObsControlLockHandler(lockID)
+	if !ok {
+		result.Result = "failed"
+		result.Error = fmt.Sprintf("obs control action is whitelisted but not routed: action=%s lock_id=%s", req.Action, lockID)
+		return result
+	}
+	return handler(d, req)
+}
+
+type managedObsControlCommandHandler func(d *managedDaemon, req controlCommandRequest) controlCommandResult
+
+// isManagedObsControlActionRouted 返回 action 是否已在 daemon 中实现分发。
+func isManagedObsControlActionRouted(action string) bool {
+	lockID, ok := contractfnlock.ObsControlActionLockID(strings.TrimSpace(action))
+	if !ok {
+		return false
+	}
+	_, ok = managedObsControlLockHandler(lockID)
+	return ok
+}
+
+func managedObsControlLockHandler(lockID string) (managedObsControlCommandHandler, bool) {
+	switch strings.TrimSpace(lockID) {
+	case "bitfs.managed.key.ensure_material":
+		return managedObsControlHandleKeyEnsureMaterial, true
+	case "bitfs.managed.key.unlock_with_password":
+		return managedObsControlHandleKeyUnlock, true
+	case "bitfs.managed.key.lock_runtime":
+		return managedObsControlHandleKeyLock, true
+	default:
+		if strings.HasPrefix(strings.TrimSpace(lockID), "bitfs.clientapp.pricing.trigger_") {
+			return managedObsControlHandlePricing, true
+		}
+		return nil, false
+	}
+}
+
+func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+	result := controlCommandResult{
+		CommandID: req.CommandID,
+		Action:    req.Action,
+	}
+	password := strings.TrimSpace(controlCommandPayloadString(req.Payload, "password"))
+	if password == "" {
+		result.Result = "failed"
+		result.Error = "password is required"
+		result.BackendPhase = d.currentBackendPhase()
+		result.RuntimePhase = d.currentRuntimePhase()
+		result.KeyState = d.currentKeyState()
+		return result
+	}
+	ticket, err := d.ensureKeyMaterial(password)
+	if err != nil {
+		result.Result = "failed"
+		result.Error = err.Error()
+		result.BackendPhase = d.currentBackendPhase()
+		result.RuntimePhase = d.currentRuntimePhase()
+		result.KeyState = d.currentKeyState()
+		return result
+	}
+	result.OK = true
+	result.Result = ticket.Result
 	result.BackendPhase = d.currentBackendPhase()
 	result.RuntimePhase = d.currentRuntimePhase()
 	result.KeyState = d.currentKeyState()
 	return result
+}
+
+func managedObsControlHandleKeyUnlock(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+	result := controlCommandResult{
+		CommandID: req.CommandID,
+		Action:    req.Action,
+	}
+	password := strings.TrimSpace(controlCommandPayloadString(req.Payload, "password"))
+	if password == "" {
+		result.Result = "failed"
+		result.Error = "password is required"
+		result.BackendPhase = d.currentBackendPhase()
+		result.RuntimePhase = d.currentRuntimePhase()
+		result.KeyState = d.currentKeyState()
+		return result
+	}
+	ticket, err := d.unlockWithPassword(d.rootCtx, unlockSourceObs, password)
+	if err != nil {
+		result.Result = "failed"
+		result.Error = err.Error()
+		result.BackendPhase = d.currentBackendPhase()
+		result.RuntimePhase = d.currentRuntimePhase()
+		result.KeyState = d.currentKeyState()
+		return result
+	}
+	result.OK = true
+	result.Result = string(ticket.Result)
+	result.UnlockOwner = strings.TrimSpace(ticket.Winner)
+	result.UnlockToken = strings.TrimSpace(ticket.Token)
+	result.BackendPhase = d.currentBackendPhase()
+	result.RuntimePhase = d.currentRuntimePhase()
+	result.KeyState = d.currentKeyState()
+	return result
+}
+
+func managedObsControlHandleKeyLock(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+	result := controlCommandResult{
+		CommandID: req.CommandID,
+		Action:    req.Action,
+	}
+	if err := d.lockRuntime(); err != nil {
+		result.Result = "failed"
+		result.Error = err.Error()
+		result.BackendPhase = d.currentBackendPhase()
+		result.RuntimePhase = d.currentRuntimePhase()
+		result.KeyState = d.currentKeyState()
+		return result
+	}
+	result.OK = true
+	result.Result = "locked"
+	result.BackendPhase = d.currentBackendPhase()
+	result.RuntimePhase = d.currentRuntimePhase()
+	result.KeyState = d.currentKeyState()
+	return result
+}
+
+func managedObsControlHandlePricing(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+	pricingResult, err := d.executeManagedPricingControlCommand(req)
+	if err == nil {
+		return pricingResult
+	}
+	return controlCommandResult{
+		CommandID:    req.CommandID,
+		Action:       req.Action,
+		Result:       "failed",
+		Error:        err.Error(),
+		BackendPhase: d.currentBackendPhase(),
+		RuntimePhase: d.currentRuntimePhase(),
+		KeyState:     d.currentKeyState(),
+	}
+}
+
+func ensureManagedObsControlRouteCoverage() error {
+	managedObsControlRouteCoverageOnce.Do(func() {
+		whitelistedAction := map[string]struct{}{}
+		for _, action := range contractfnlock.ObsControlActions() {
+			action = strings.TrimSpace(action)
+			if action == "" {
+				managedObsControlRouteCoverageErr = fmt.Errorf("obs control whitelist action is empty")
+				return
+			}
+			if _, exists := whitelistedAction[action]; exists {
+				managedObsControlRouteCoverageErr = fmt.Errorf("obs control whitelist action is duplicated: %s", action)
+				return
+			}
+			whitelistedAction[action] = struct{}{}
+
+			lockID, ok := contractfnlock.ObsControlActionLockID(action)
+			if !ok {
+				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action lock id mapping missing: %s", action)
+				return
+			}
+			lockID = strings.TrimSpace(lockID)
+			if lockID == "" {
+				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action lock id is empty: action=%s", action)
+				return
+			}
+			if _, ok := managedObsControlLockHandler(lockID); !ok {
+				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action is whitelisted but not routed: action=%s lock_id=%s", action, lockID)
+				return
+			}
+		}
+	})
+	return managedObsControlRouteCoverageErr
 }
 
 func (d *managedDaemon) emitManagedCommandResult(result controlCommandResult) {
