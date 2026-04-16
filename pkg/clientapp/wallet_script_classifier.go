@@ -53,7 +53,6 @@ func newWalletScriptClassifier(modules ...walletScriptModule) *walletScriptClass
 
 func defaultWalletScriptClassifier(source walletScriptEvidenceSource) *walletScriptClassifier {
 	return newWalletScriptClassifier(
-		newWalletScriptModule1SatToken(source),
 		newWalletScriptModuleP2PKH(),
 		newWalletScriptModuleP2PK(),
 	)

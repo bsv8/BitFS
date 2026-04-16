@@ -647,9 +647,27 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if hashErr != nil {
 		logWalletSyncStepError(meta, "build_wallet_p2pk_script_hash", hashErr, nil)
 	}
-	logWalletSyncStepInfo(meta, "build_wallet_p2pk_script_hash", map[string]any{
-		"candidate_count": len(p2pkScriptHashes),
+	p2pkhScriptHashes, p2pkhErr := walletP2PKHScriptHashCandidates(addr)
+	if p2pkhErr != nil {
+		logWalletSyncStepError(meta, "build_wallet_p2pkh_script_hash", p2pkhErr, nil)
+	}
+	scriptHashes := mergeWalletScriptHashCandidates(p2pkScriptHashes, p2pkhScriptHashes)
+	logWalletSyncStepInfo(meta, "build_wallet_script_hashes", map[string]any{
+		"p2pk_candidate_count":  len(p2pkScriptHashes),
+		"p2pkh_candidate_count": len(p2pkhScriptHashes),
+		"candidate_count":       len(scriptHashes),
 	})
+	if len(scriptHashes) == 0 {
+		err = fmt.Errorf("wallet script hash candidates are empty")
+		wrappedErr := wrapWalletSyncStepError(meta, "build_wallet_script_hashes", "", err)
+		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		return map[string]any{
+			"task_type":     chainTaskUTXO,
+			"address":       addr,
+			"sync_round_id": meta.RoundID,
+		}, err
+	}
 	startedAt := time.Now()
 	stepStart := time.Now()
 	tipPath := walletChainTipUpstreamPath()
@@ -673,7 +691,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"tip_height":       tip,
 		"step_duration_ms": time.Since(stepStart).Milliseconds(),
 	})
-	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, p2pkScriptHashes, meta)
+	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, scriptHashes, meta)
 	if err != nil {
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, err, task.TriggerSource)
 		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
@@ -691,53 +709,57 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"oldest_confirmed_height": snapshot.OldestConfirmedHeight,
 	})
 	stepStart = time.Now()
-	cursor, err := dbLoadWalletUTXOSyncCursor(ctx, m.store, addr)
+	bsv21Path := fmt.Sprintf("/token/bsv21/%s/unspent", strings.TrimSpace(addr))
+	bsv21TokenUTXOs, err := chain.GetAddressBSV21TokenUnspent(ctx, addr)
 	if err != nil {
-		wrappedErr := wrapWalletSyncStepError(meta, "load_wallet_utxo_sync_cursor", "", err)
+		wrappedErr := wrapWalletSyncStepError(meta, "chain_get_bsv21_unspent", bsv21Path, err)
 		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
 		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
-		logWalletSyncStepError(meta, "load_wallet_utxo_sync_cursor", err, nil)
-		return map[string]any{
-			"task_type":     chainTaskUTXO,
-			"address":       addr,
-			"sync_round_id": meta.RoundID,
-		}, err
-	}
-	logWalletSyncStepInfo(meta, "load_wallet_utxo_sync_cursor", map[string]any{
-		"next_confirmed_height": cursor.NextConfirmedHeight,
-		"next_page_token":       cursor.NextPageToken,
-		"anchor_height":         cursor.AnchorHeight,
-		"round_tip_height":      cursor.RoundTipHeight,
-		"step_duration_ms":      time.Since(stepStart).Milliseconds(),
-	})
-	cursor.WalletID = walletIDByAddress(addr)
-	cursor.Address = addr
-	cursor = alignWalletUTXOSyncCursor(cursor, snapshot.OldestConfirmedHeight, tip)
-	stepStart = time.Now()
-	history, nextCursor, err := collectConfirmedHistoryRange(ctx, chain, addr, cursor, tip, meta)
-	if err != nil {
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, err, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
-		logWalletSyncStepError(meta, "collect_confirmed_history_range", err, map[string]any{
-			"tip_height":           tip,
-			"cursor_anchor_height": cursor.AnchorHeight,
-			"cursor_next_height":   cursor.NextConfirmedHeight,
-			"step_duration_ms":     time.Since(stepStart).Milliseconds(),
+		logWalletSyncStepError(meta, "chain_get_bsv21_unspent", err, map[string]any{
+			"upstream_path":    bsv21Path,
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
 		})
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
 			"address":       addr,
-			"tip":           tip,
 			"sync_round_id": meta.RoundID,
 		}, err
 	}
-	logWalletSyncStepInfo(meta, "collect_confirmed_history_range", map[string]any{
-		"history_tx_cnt":        len(history),
-		"next_confirmed_height": nextCursor.NextConfirmedHeight,
-		"next_page_token":       nextCursor.NextPageToken,
-		"anchor_height":         nextCursor.AnchorHeight,
-		"step_duration_ms":      time.Since(stepStart).Milliseconds(),
+	logWalletSyncStepInfo(meta, "chain_get_bsv21_unspent", map[string]any{
+		"upstream_path":     bsv21Path,
+		"bsv21_unspent_cnt": len(bsv21TokenUTXOs),
+		"step_duration_ms":  time.Since(stepStart).Milliseconds(),
 	})
+	stepStart = time.Now()
+	bsv21Upserted, bsv21Cleared, err := syncWalletBSV21HoldingsFromUnspent(ctx, m.store, addr, bsv21TokenUTXOs, time.Now().Unix())
+	if err != nil {
+		wrappedErr := wrapWalletSyncStepError(meta, "sync_bsv21_holdings", bsv21Path, err)
+		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		logWalletSyncStepError(meta, "sync_bsv21_holdings", err, map[string]any{
+			"upstream_path":    bsv21Path,
+			"step_duration_ms": time.Since(stepStart).Milliseconds(),
+		})
+		return map[string]any{
+			"task_type":     chainTaskUTXO,
+			"address":       addr,
+			"sync_round_id": meta.RoundID,
+		}, err
+	}
+	logWalletSyncStepInfo(meta, "sync_bsv21_holdings", map[string]any{
+		"upstream_path":    bsv21Path,
+		"upserted_count":   bsv21Upserted,
+		"cleared_count":    bsv21Cleared,
+		"step_duration_ms": time.Since(stepStart).Milliseconds(),
+	})
+	nextCursor := walletUTXOSyncCursor{
+		WalletID:       walletIDByAddress(addr),
+		Address:        addr,
+		RoundTipHeight: int64(tip),
+		LastError:      "",
+		UpdatedAtUnix:  time.Now().Unix(),
+	}
+	history := make([]walletHistoryTxRecord, 0)
 	durationMS := time.Since(startedAt).Milliseconds()
 	stepStart = time.Now()
 	// 编排层：先同步钱包状态，再写入 fact
@@ -1027,6 +1049,10 @@ func walletChainUTXOsUpstreamPath(address string) string {
 	return fmt.Sprintf("/address/%s/confirmed/unspent", strings.TrimSpace(address))
 }
 
+func walletChainScriptUnspentAllUpstreamPath(scriptHash string) string {
+	return fmt.Sprintf("/script/%s/unspent/all", strings.TrimSpace(scriptHash))
+}
+
 func walletChainUnconfirmedHistoryUpstreamPath(address string) string {
 	return fmt.Sprintf("/address/%s/unconfirmed/history", strings.TrimSpace(address))
 }
@@ -1056,137 +1082,31 @@ func walletChainConfirmedHistoryUpstreamPath(address string, q whatsonchain.Conf
 	return path
 }
 
-func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, address string, p2pkScriptHashes []string, meta walletSyncRoundMeta) (liveWalletSnapshot, error) {
+func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, address string, scriptHashes []string, meta walletSyncRoundMeta) (liveWalletSnapshot, error) {
 	stepStart := time.Now()
-	utxoPath := walletChainUTXOsUpstreamPath(address)
-	confirmedUTXOs, err := chain.GetAddressConfirmedUnspent(ctx, address)
+	spendable, err := collectScriptSpendableUTXOs(ctx, chain, scriptHashes)
 	if err != nil {
-		logWalletSyncStepError(meta, "chain_get_utxos", err, map[string]any{
-			"upstream_path":    utxoPath,
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_utxos", utxoPath, err)
+		return liveWalletSnapshot{}, err
 	}
-	// BSV21 carrier 输出常常是 inscription + p2pkh 的组合脚本，
-	// 部分上游地址 unspent 端点不会把它算进普通 confirmed/unspent。
-	// 这里补一份 token 视图，把“已确认的 1sat carrier”并入当前快照，
-	// 让后续 unknown->verification->fact 能按统一链路落地。
-	bsv21TokenUTXOs, err := chain.GetAddressBSV21TokenUnspent(ctx, address)
-	if err != nil {
-		logWalletSyncStepError(meta, "chain_get_bsv21_unspent", err, map[string]any{
-			"upstream_path":    fmt.Sprintf("/token/bsv21/%s/unspent", strings.TrimSpace(address)),
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_bsv21_unspent", fmt.Sprintf("/token/bsv21/%s/unspent", strings.TrimSpace(address)), err)
-	}
-	logWalletSyncStepInfo(meta, "chain_get_utxos", map[string]any{
-		"upstream_path":      utxoPath,
-		"confirmed_utxo_cnt": len(confirmedUTXOs),
-		"bsv21_unspent_cnt":  len(bsv21TokenUTXOs),
+	logWalletSyncStepInfo(meta, "chain_get_script_unspent_all", map[string]any{
+		"script_hash_count":  len(scriptHashes),
+		"spendable_utxo_cnt": len(spendable),
 		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
 	})
-	p2pkConfirmedUTXOs, p2pkSpendableUTXOs, p2pkErr := collectP2PKScriptUTXOs(ctx, chain, p2pkScriptHashes)
-	if p2pkErr != nil {
-		// 非阻断设计：script 端点失败时，不影响地址口径同步，避免整轮余额冻结。
-		logWalletSyncStepError(meta, "chain_get_p2pk_script_utxos", p2pkErr, map[string]any{
-			"script_hash_count": len(p2pkScriptHashes),
-		})
-	} else if len(p2pkScriptHashes) > 0 {
-		logWalletSyncStepInfo(meta, "chain_get_p2pk_script_utxos", map[string]any{
-			"script_hash_count":       len(p2pkScriptHashes),
-			"confirmed_utxo_cnt":      len(p2pkConfirmedUTXOs),
-			"spendable_utxo_cnt":      len(p2pkSpendableUTXOs),
-			"confirmed_and_token_utx": len(confirmedUTXOs) + len(bsv21TokenUTXOs),
-		})
-	}
 	current := map[string]poolcore.UTXO{}
-	confirmedLiveTxIDs := map[string]struct{}{}
-	for _, u := range confirmedUTXOs {
-		txid := strings.ToLower(strings.TrimSpace(u.TxID))
-		utxoID := txid + ":" + fmt.Sprint(u.Vout)
-		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
-		confirmedLiveTxIDs[txid] = struct{}{}
-	}
-	for _, tokenUTXO := range bsv21TokenUTXOs {
-		if tokenUTXO.BlockHeight <= 0 {
-			continue
-		}
-		txid := strings.ToLower(strings.TrimSpace(tokenUTXO.TxID))
-		if txid == "" {
-			continue
-		}
-		utxoID := txid + ":" + fmt.Sprint(tokenUTXO.Vout)
-		if _, exists := current[utxoID]; exists {
-			continue
-		}
-		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: tokenUTXO.Vout, Value: 1}
-		confirmedLiveTxIDs[txid] = struct{}{}
-	}
-	for _, u := range p2pkConfirmedUTXOs {
+	liveTxIDs := map[string]struct{}{}
+	for _, u := range spendable {
 		txid := strings.ToLower(strings.TrimSpace(u.TxID))
 		if txid == "" {
 			continue
 		}
 		utxoID := txid + ":" + fmt.Sprint(u.Vout)
-		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
-		confirmedLiveTxIDs[txid] = struct{}{}
-	}
-	for _, u := range p2pkSpendableUTXOs {
-		txid := strings.ToLower(strings.TrimSpace(u.TxID))
-		if txid == "" {
-			continue
+		current[utxoID] = poolcore.UTXO{
+			TxID:  txid,
+			Vout:  u.Vout,
+			Value: u.Value,
 		}
-		utxoID := txid + ":" + fmt.Sprint(u.Vout)
-		if _, exists := current[utxoID]; exists {
-			continue
-		}
-		current[utxoID] = poolcore.UTXO{TxID: txid, Vout: u.Vout, Value: u.Value}
-	}
-	stepStart = time.Now()
-	unconfirmedPath := walletChainUnconfirmedHistoryUpstreamPath(address)
-	unconfirmedTxIDs, err := chain.GetAddressUnconfirmedHistory(ctx, address)
-	if err != nil {
-		logWalletSyncStepError(meta, "chain_get_unconfirmed_history", err, map[string]any{
-			"upstream_path":    unconfirmedPath,
-			"step_duration_ms": time.Since(stepStart).Milliseconds(),
-		})
-		return liveWalletSnapshot{}, wrapWalletSyncStepError(meta, "chain_get_unconfirmed_history", unconfirmedPath, err)
-	}
-	logWalletSyncStepInfo(meta, "chain_get_unconfirmed_history", map[string]any{
-		"upstream_path":      unconfirmedPath,
-		"unconfirmed_tx_cnt": len(unconfirmedTxIDs),
-		"step_duration_ms":   time.Since(stepStart).Milliseconds(),
-	})
-	scriptHex, err := walletAddressLockScriptHex(address)
-	if err != nil {
-		return liveWalletSnapshot{}, err
-	}
-	details, err := loadOrderedTxDetails(ctx, chain, unconfirmedTxIDs, meta)
-	if err != nil {
-		return liveWalletSnapshot{}, err
-	}
-	for _, detail := range details {
-		txid := strings.ToLower(strings.TrimSpace(detail.TxID))
-		for _, in := range detail.Vin {
-			prevID := strings.ToLower(strings.TrimSpace(in.TxID)) + ":" + fmt.Sprint(in.Vout)
-			delete(current, prevID)
-			delete(confirmedLiveTxIDs, strings.ToLower(strings.TrimSpace(in.TxID)))
-		}
-		for _, out := range detail.Vout {
-			if !walletScriptHexMatchesAddressControl(out.ScriptPubKey.Hex, scriptHex) {
-				continue
-			}
-			utxoID := txid + ":" + fmt.Sprint(out.N)
-			current[utxoID] = poolcore.UTXO{
-				TxID:  txid,
-				Vout:  out.N,
-				Value: txOutputValueSatoshi(out),
-			}
-		}
-	}
-	oldestConfirmedHeight, err := findOldestCurrentConfirmedHeight(ctx, chain, address, confirmedLiveTxIDs, meta)
-	if err != nil {
-		return liveWalletSnapshot{}, err
+		liveTxIDs[txid] = struct{}{}
 	}
 	var balance uint64
 	for _, u := range current {
@@ -1194,40 +1114,32 @@ func collectCurrentWalletSnapshot(ctx context.Context, chain walletChainClient, 
 	}
 	return liveWalletSnapshot{
 		Live:                  current,
-		ObservedMempoolTxs:    details,
-		ConfirmedLiveTxIDs:    confirmedLiveTxIDs,
+		ObservedMempoolTxs:    nil,
+		ConfirmedLiveTxIDs:    liveTxIDs,
 		Balance:               balance,
 		Count:                 len(current),
-		OldestConfirmedHeight: oldestConfirmedHeight,
+		OldestConfirmedHeight: 0,
 	}, nil
 }
 
-func collectP2PKScriptUTXOs(ctx context.Context, chain walletChainClient, scriptHashes []string) ([]whatsonchain.UTXO, []whatsonchain.UTXO, error) {
+func collectScriptSpendableUTXOs(ctx context.Context, chain walletChainClient, scriptHashes []string) ([]whatsonchain.UTXO, error) {
 	scriptClient, ok := chain.(walletChainScriptUTXOClient)
-	if !ok || len(scriptHashes) == 0 {
-		return nil, nil, nil
+	if !ok {
+		return nil, fmt.Errorf("wallet chain missing script spendable capability")
 	}
-	confirmedByID := map[string]whatsonchain.UTXO{}
+	if len(scriptHashes) == 0 {
+		return nil, nil
+	}
 	spendableByID := map[string]whatsonchain.UTXO{}
 	for _, hash := range scriptHashes {
 		hash = strings.ToLower(strings.TrimSpace(hash))
 		if hash == "" {
 			continue
 		}
-		confirmed, err := scriptClient.GetScriptConfirmedUnspent(ctx, hash)
-		if err != nil {
-			return nil, nil, fmt.Errorf("query script confirmed unspent failed hash=%s: %w", hash, err)
-		}
-		for _, u := range confirmed {
-			key := strings.ToLower(strings.TrimSpace(u.TxID)) + ":" + fmt.Sprint(u.Vout)
-			if strings.HasPrefix(key, ":") {
-				continue
-			}
-			confirmedByID[key] = whatsonchain.UTXO{TxID: strings.ToLower(strings.TrimSpace(u.TxID)), Vout: u.Vout, Value: u.Value}
-		}
 		spendable, err := scriptClient.GetScriptSpendableUnspent(ctx, hash)
 		if err != nil {
-			return nil, nil, fmt.Errorf("query script spendable unspent failed hash=%s: %w", hash, err)
+			upstreamPath := walletChainScriptUnspentAllUpstreamPath(hash)
+			return nil, fmt.Errorf("query script spendable unspent failed path=%s: %w", upstreamPath, err)
 		}
 		for _, u := range spendable {
 			key := strings.ToLower(strings.TrimSpace(u.TxID)) + ":" + fmt.Sprint(u.Vout)
@@ -1237,15 +1149,11 @@ func collectP2PKScriptUTXOs(ctx context.Context, chain walletChainClient, script
 			spendableByID[key] = whatsonchain.UTXO{TxID: strings.ToLower(strings.TrimSpace(u.TxID)), Vout: u.Vout, Value: u.Value}
 		}
 	}
-	confirmed := make([]whatsonchain.UTXO, 0, len(confirmedByID))
-	for _, u := range confirmedByID {
-		confirmed = append(confirmed, u)
-	}
 	spendable := make([]whatsonchain.UTXO, 0, len(spendableByID))
 	for _, u := range spendableByID {
 		spendable = append(spendable, u)
 	}
-	return confirmed, spendable, nil
+	return spendable, nil
 }
 
 func walletP2PKScriptHashCandidates(pubkeyHex string) ([]string, error) {
@@ -1264,6 +1172,43 @@ func walletP2PKScriptHashCandidates(pubkeyHex string) ([]string, error) {
 		return []string{normal}, nil
 	}
 	return []string{normal, reversed}, nil
+}
+
+func walletP2PKHScriptHashCandidates(address string) ([]string, error) {
+	scriptHex, err := walletAddressLockScriptHex(address)
+	if err != nil {
+		return nil, err
+	}
+	raw, err := hex.DecodeString(strings.TrimSpace(scriptHex))
+	if err != nil {
+		return nil, fmt.Errorf("decode wallet p2pkh lock script hex failed: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	normal := strings.ToLower(hex.EncodeToString(sum[:]))
+	reversed := reverseHexByByte(normal)
+	if reversed == "" || reversed == normal {
+		return []string{normal}, nil
+	}
+	return []string{normal, reversed}, nil
+}
+
+func mergeWalletScriptHashCandidates(lists ...[]string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, 8)
+	for _, list := range lists {
+		for _, item := range list {
+			hash := strings.ToLower(strings.TrimSpace(item))
+			if hash == "" {
+				continue
+			}
+			if _, ok := seen[hash]; ok {
+				continue
+			}
+			seen[hash] = struct{}{}
+			out = append(out, hash)
+		}
+	}
+	return out
 }
 
 func loadOrderedTxDetails(ctx context.Context, chain walletChainClient, txids []string, meta walletSyncRoundMeta) ([]whatsonchain.TxDetail, error) {

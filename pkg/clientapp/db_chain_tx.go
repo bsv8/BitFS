@@ -66,6 +66,67 @@ func collectObservedWalletTxIDs(history []walletHistoryTxRecord, mempool []whats
 	return out
 }
 
+// inferObservedWalletLocalBroadcastTxIDs 在没有 history/mempool 证据时，用 live 快照补推断 observed。
+// 设计说明：
+// - 若本地广播 txid 已出现在 live 输出里，视为已观测；
+// - 若一笔本地广播的“外部输入”都不在 live 集合中，也视为已观测；
+// - 仅依赖本轮快照，不做额外链上查询，避免把轮询再拉回旧路径。
+func inferObservedWalletLocalBroadcastTxIDs(rows []walletLocalBroadcastRow, liveUTXOIDs map[string]struct{}, liveTxIDs map[string]struct{}) map[string]struct{} {
+	out := map[string]struct{}{}
+	if len(rows) == 0 {
+		return out
+	}
+	localTxIDs := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		txid := strings.ToLower(strings.TrimSpace(row.TxID))
+		if txid != "" {
+			localTxIDs[txid] = struct{}{}
+		}
+	}
+	for _, row := range rows {
+		txid := strings.ToLower(strings.TrimSpace(row.TxID))
+		if txid == "" {
+			continue
+		}
+		if row.ObservedAtUnix > 0 {
+			out[txid] = struct{}{}
+			continue
+		}
+		if _, ok := liveTxIDs[txid]; ok {
+			out[txid] = struct{}{}
+			continue
+		}
+		parsed, err := txsdk.NewTransactionFromHex(strings.TrimSpace(row.TxHex))
+		if err != nil {
+			continue
+		}
+		externalInputCount := 0
+		externalInputStillLive := false
+		for _, in := range parsed.Inputs {
+			if in == nil || in.SourceTXID == nil {
+				continue
+			}
+			prevTxID := strings.ToLower(strings.TrimSpace(in.SourceTXID.String()))
+			if prevTxID == "" {
+				continue
+			}
+			if _, isLocal := localTxIDs[prevTxID]; isLocal {
+				continue
+			}
+			externalInputCount++
+			prevUTXOID := prevTxID + ":" + fmt.Sprint(in.SourceTxOutIndex)
+			if _, stillLive := liveUTXOIDs[prevUTXOID]; stillLive {
+				externalInputStillLive = true
+				break
+			}
+		}
+		if externalInputCount > 0 && !externalInputStillLive {
+			out[txid] = struct{}{}
+		}
+	}
+	return out
+}
+
 func cloneWalletUTXOStateRows(src map[string]utxoStateRow) map[string]utxoStateRow {
 	if len(src) == 0 {
 		return map[string]utxoStateRow{}

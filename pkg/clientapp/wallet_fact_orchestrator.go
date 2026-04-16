@@ -65,6 +65,13 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 			"change_count": len(changes),
 		})
 	}
+	if len(changes) == 0 {
+		if backfillErr := store.Do(ctx, func(db sqlConn) error {
+			return backfillFactSpentFromWalletUTXO(ctx, db, walletID, address, updatedAt)
+		}); backfillErr != nil {
+			return fmt.Errorf("backfill fact spent without confirmed changes: %w", backfillErr)
+		}
+	}
 	return nil
 }
 
@@ -142,6 +149,31 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 			}
 		}
 
+		liveUTXOSet := make(map[string]struct{}, len(snapshot.Live))
+		liveTxIDSet := make(map[string]struct{}, len(snapshot.Live))
+		for utxoID := range snapshot.Live {
+			liveUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))] = struct{}{}
+		}
+		for _, u := range snapshot.Live {
+			txid := strings.ToLower(strings.TrimSpace(u.TxID))
+			if txid != "" {
+				liveTxIDSet[txid] = struct{}{}
+			}
+		}
+		// 设计说明：
+		// - 当前轮询口径只认“这一刻 still unspent 的快照”；
+		// - 不再要求 spent_txid / confirmed height，快照里消失就先标 spent；
+		// - 若下轮又回到快照，会被同一条 upsert 重新拉回 unspent（用于面对上游抖动）。
+		for utxoID, row := range desired {
+			if strings.ToLower(strings.TrimSpace(row.State)) != "unspent" {
+				continue
+			}
+			if _, exists := liveUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))]; exists {
+				continue
+			}
+			_ = applyWalletUTXOSpentState(desired, utxoID, "", updatedAt)
+		}
+
 		for utxoID, u := range snapshot.Live {
 			liveTxID := strings.ToLower(strings.TrimSpace(u.TxID))
 			scriptHex := ""
@@ -152,6 +184,10 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 			_ = applyWalletUTXOUpsertState(desired, walletID, address, utxoID, liveTxID, u.Vout, u.Value, "unspent", "", string(classified.ScriptType), classified.Reason, updatedAt, updatedAt)
 		}
 		observedLocalTxIDs := collectObservedWalletTxIDs(history, snapshot.ObservedMempoolTxs)
+		inferredObserved := inferObservedWalletLocalBroadcastTxIDs(localBroadcasts, liveUTXOSet, liveTxIDSet)
+		for txid := range inferredObserved {
+			observedLocalTxIDs[txid] = struct{}{}
+		}
 		if err = overlayPendingLocalBroadcastsTx(ctx, classifier, desired, walletID, address, scriptHex, localBroadcasts, observedLocalTxIDs, updatedAt); err != nil {
 			return err
 		}
@@ -164,10 +200,7 @@ func reconcileWalletUTXOSetAndReturnChanges(ctx context.Context, store *clientDB
 		}
 
 		stats := summarizeWalletUTXOState(desired)
-		confirmedUTXOSet := make(map[string]struct{}, len(snapshot.Live))
-		for utxoID := range snapshot.Live {
-			confirmedUTXOSet[strings.ToLower(strings.TrimSpace(utxoID))] = struct{}{}
-		}
+		confirmedUTXOSet := liveUTXOSet
 
 		// 收集 confirmed unspent plain_bsv UTXO 变化
 		changes = make([]confirmedUTXOChange, 0, len(snapshot.Live))
@@ -352,9 +385,9 @@ func backfillFactSpentFromWalletUTXO(ctx context.Context, db sqlConn, walletID s
 	}
 	startedAt := time.Now()
 	// 先拿“本轮刚变化为 spent”的明细，再按 utxo_id 定点回填，避免大范围更新导致锁等待。
-	rows, err := QueryContext(ctx, db, `SELECT LOWER(TRIM(utxo_id)), LOWER(TRIM(spent_txid))
+	rows, err := QueryContext(ctx, db, `SELECT LOWER(TRIM(utxo_id)), LOWER(TRIM(COALESCE(spent_txid,'')))
 FROM wallet_utxo
-WHERE wallet_id=? AND address=? AND state='spent' AND COALESCE(TRIM(spent_txid),'')<>'' AND updated_at_unix=?`, walletID, address, updatedAt)
+WHERE wallet_id=? AND address=? AND state='spent' AND updated_at_unix=?`, walletID, address, updatedAt)
 	if err != nil {
 		return fmt.Errorf("query changed spent rows: %w", err)
 	}
@@ -369,11 +402,13 @@ WHERE wallet_id=? AND address=? AND state='spent' AND COALESCE(TRIM(spent_txid),
 		}
 		utxoID = strings.ToLower(strings.TrimSpace(utxoID))
 		spentTxID = strings.ToLower(strings.TrimSpace(spentTxID))
-		if utxoID == "" || spentTxID == "" {
+		if utxoID == "" {
 			continue
 		}
 		spentByUTXO[utxoID] = spentTxID
-		spentTxIDs[spentTxID] = struct{}{}
+		if spentTxID != "" {
+			spentTxIDs[spentTxID] = struct{}{}
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate changed spent rows: %w", err)
@@ -382,6 +417,18 @@ WHERE wallet_id=? AND address=? AND state='spent' AND COALESCE(TRIM(spent_txid),
 		return nil
 	}
 	for utxoID, spentTxID := range spentByUTXO {
+		if strings.TrimSpace(spentTxID) == "" {
+			if _, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos
+SET utxo_state='spent',
+    spent_at_unix=CASE WHEN spent_at_unix=0 THEN ? ELSE spent_at_unix END,
+    updated_at_unix=?
+WHERE utxo_id=? AND utxo_state<>'spent'`,
+				updatedAt, updatedAt, utxoID,
+			); err != nil {
+				return fmt.Errorf("update fact spent without spent_txid by utxo_id=%s: %w", utxoID, err)
+			}
+			continue
+		}
 		if _, err := ExecContext(ctx, db, `UPDATE fact_bsv_utxos
 SET utxo_state='spent',
     spent_by_txid=?,

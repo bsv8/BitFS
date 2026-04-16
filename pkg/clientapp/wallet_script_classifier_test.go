@@ -13,22 +13,18 @@ func TestDefaultWalletScriptClassifierModuleOrder(t *testing.T) {
 	if classifier == nil {
 		t.Fatal("classifier is nil")
 	}
-	if len(classifier.modules) != 3 {
-		t.Fatalf("module count mismatch: got=%d want=3", len(classifier.modules))
+	if len(classifier.modules) != 2 {
+		t.Fatalf("module count mismatch: got=%d want=2", len(classifier.modules))
 	}
 	got := []string{
 		moduleName(classifier.modules[0]),
 		moduleName(classifier.modules[1]),
-		moduleName(classifier.modules[2]),
 	}
-	if !strings.Contains(got[0], "walletScriptModule1SatToken") {
+	if !strings.Contains(got[0], "walletScriptModuleP2PKH") {
 		t.Fatalf("first module mismatch: %+v", got)
 	}
-	if !strings.Contains(got[1], "walletScriptModuleP2PKH") {
+	if !strings.Contains(got[1], "walletScriptModuleP2PK") {
 		t.Fatalf("second module mismatch: %+v", got)
-	}
-	if !strings.Contains(got[2], "walletScriptModuleP2PK") {
-		t.Fatalf("third module mismatch: %+v", got)
 	}
 }
 
@@ -127,16 +123,16 @@ func TestWalletScriptClassifierTokenEvidenceAndTxHexCache(t *testing.T) {
 	first := classifyWalletUTXOWithClassifier(context.Background(), classifier, source, address, "utxo-1", txid, 0, 1, scriptHex, "")
 	second := classifyWalletUTXOWithClassifier(context.Background(), classifier, source, address, "utxo-2", txid, 0, 1, scriptHex, "")
 
-	if first.ScriptType != walletScriptTypeBSV20 {
-		t.Fatalf("first classification mismatch: got=%s want=%s", first.ScriptType, walletScriptTypeBSV20)
+	if first.ScriptType != walletScriptTypeUnknown {
+		t.Fatalf("first classification mismatch: got=%s want=%s", first.ScriptType, walletScriptTypeUnknown)
 	}
-	if second.ScriptType != walletScriptTypeBSV20 {
-		t.Fatalf("second classification mismatch: got=%s want=%s", second.ScriptType, walletScriptTypeBSV20)
+	if second.ScriptType != walletScriptTypeUnknown {
+		t.Fatalf("second classification mismatch: got=%s want=%s", second.ScriptType, walletScriptTypeUnknown)
 	}
-	if source.getBSV20Count != 1 || source.getBSV21Count != 1 {
-		t.Fatalf("prefetch count mismatch: bsv20=%d bsv21=%d", source.getBSV20Count, source.getBSV21Count)
+	if source.getBSV20Count != 0 || source.getBSV21Count != 0 {
+		t.Fatalf("prefetch count mismatch after token-module removal: bsv20=%d bsv21=%d", source.getBSV20Count, source.getBSV21Count)
 	}
-	if source.getTxHexCount != 1 {
+	if source.getTxHexCount != 0 {
 		t.Fatalf("unexpected tx hex fetch count: %d", source.getTxHexCount)
 	}
 }
@@ -170,7 +166,7 @@ func TestWalletScriptModule1SatTokenFailureReturnsUnknown(t *testing.T) {
 	if result.ScriptType != walletScriptTypeUnknown {
 		t.Fatalf("script type mismatch: got=%s want=%s", result.ScriptType, walletScriptTypeUnknown)
 	}
-	if source.getBSV21Count != 1 {
+	if source.getBSV21Count != 0 {
 		t.Fatalf("unexpected bsv21 count: %d", source.getBSV21Count)
 	}
 	if source.getBSV20Count != 0 {

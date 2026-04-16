@@ -306,6 +306,68 @@ func TestSyncWalletAndApplyFacts_WalletUTXOUpdatedAtMovesOnStateChange(t *testin
 	}
 }
 
+func TestSyncWalletAndApplyFacts_SnapshotMissingMarksSpentWithoutSpentTxID(t *testing.T) {
+	t.Parallel()
+
+	db, _ := newOrchestratorTestDB(t)
+	store := newClientDB(db, nil)
+
+	cfg := Config{}
+	cfg.BSV.Network = "test"
+	cfg.Keys.PrivkeyHex = "3333333333333333333333333333333333333333333333333333333333333333"
+	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
+	address, err := clientWalletAddress(rt)
+	if err != nil {
+		t.Fatalf("clientWalletAddress: %v", err)
+	}
+	walletID := walletIDByAddress(address)
+	now := time.Now().Unix()
+	txid := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+	cursor := walletUTXOSyncCursor{WalletID: walletID, Address: address}
+
+	snapshot1 := liveWalletSnapshot{
+		Live: map[string]poolcore.UTXO{
+			txid + ":0": {TxID: txid, Vout: 0, Value: 1234},
+		},
+		ConfirmedLiveTxIDs: map[string]struct{}{txid: {}},
+		Balance:            1234,
+		Count:              1,
+	}
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot1, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-a", "", "test", now, 10); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts round-a: %v", err)
+	}
+
+	snapshot2 := liveWalletSnapshot{
+		Live:               map[string]poolcore.UTXO{},
+		ConfirmedLiveTxIDs: map[string]struct{}{},
+		Balance:            0,
+		Count:              0,
+	}
+	if err := SyncWalletAndApplyFacts(context.Background(), store, address, snapshot2, nil, cursor, &testWalletScriptEvidenceSource{txHex: testWalletScriptPlainTxHex}, "round-b", "", "test", now+1, 10); err != nil {
+		t.Fatalf("SyncWalletAndApplyFacts round-b: %v", err)
+	}
+
+	var state string
+	var spentTxID string
+	if err := db.QueryRow(`SELECT state, COALESCE(spent_txid,'') FROM wallet_utxo WHERE utxo_id=?`, txid+":0").Scan(&state, &spentTxID); err != nil {
+		t.Fatalf("query wallet_utxo after snapshot missing failed: %v", err)
+	}
+	if state != "spent" {
+		t.Fatalf("wallet_utxo state mismatch: got=%s want=spent", state)
+	}
+	if spentTxID != "" {
+		t.Fatalf("wallet_utxo spent_txid mismatch: got=%s want empty", spentTxID)
+	}
+
+	var factState string
+	if err := db.QueryRow(`SELECT utxo_state FROM fact_bsv_utxos WHERE utxo_id=?`, txid+":0").Scan(&factState); err != nil {
+		t.Fatalf("query fact_bsv_utxos after snapshot missing failed: %v", err)
+	}
+	if factState != "spent" {
+		t.Fatalf("fact_bsv_utxos state mismatch: got=%s want=spent", factState)
+	}
+}
+
 // TestSyncWalletAndApplyFacts_FactFailureAndRecovery 真实失败注入测试：
 // 分步验证 fact 写入失败-重试恢复场景
 // 设计说明：
