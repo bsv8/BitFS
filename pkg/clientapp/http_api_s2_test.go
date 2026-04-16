@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -364,5 +365,81 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, "archive", "2026", "moved.txt")); err != nil {
 		t.Fatalf("moved file missing: %v", err)
+	}
+}
+
+func TestHandleAdminRegisterDownloadedFileAcceptsAbsolutePath(t *testing.T) {
+	t.Parallel()
+
+	base := t.TempDir()
+	ws := filepath.Join(base, "ws")
+	dataDir := filepath.Join(base, "data")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatalf("mkdir ws: %v", err)
+	}
+	db := newWalletAPITestDB(t)
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = ws
+	cfg.Storage.DataDir = dataDir
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+	if err := initDataDirs(&cfg); err != nil {
+		t.Fatalf("init data dirs: %v", err)
+	}
+	mgr := newTestWorkspaceManager(context.Background(), &cfg, db)
+	if err := mgr.EnsureDefaultWorkspace(); err != nil {
+		t.Fatalf("ensure default workspace: %v", err)
+	}
+	srv := &httpAPIServer{db: db, cfgSource: staticConfigSnapshot(cfg), workspace: mgr}
+
+	downloadedPath := filepath.Join(ws, "downloads", "abs-register.bin")
+	if err := os.MkdirAll(filepath.Dir(downloadedPath), 0o755); err != nil {
+		t.Fatalf("mkdir downloads: %v", err)
+	}
+	if err := os.WriteFile(downloadedPath, []byte("downloaded-content"), 0o644); err != nil {
+		t.Fatalf("write downloaded file: %v", err)
+	}
+	_, expectedSeedHash, _, err := buildSeedV1(downloadedPath)
+	if err != nil {
+		t.Fatalf("build seed: %v", err)
+	}
+
+	callRegister := func(path string) *httptest.ResponseRecorder {
+		raw, err := json.Marshal(map[string]any{"file_path": path})
+		if err != nil {
+			t.Fatalf("marshal request: %v", err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/workspace/register-downloaded-file", bytes.NewReader(raw))
+		rec := httptest.NewRecorder()
+		srv.handleAdminRegisterDownloadedFile(rec, req)
+		return rec
+	}
+
+	recAbs := callRegister(downloadedPath)
+	if recAbs.Code != http.StatusOK {
+		t.Fatalf("register absolute path status mismatch: got=%d want=%d body=%s", recAbs.Code, http.StatusOK, recAbs.Body.String())
+	}
+	var bodyAbs map[string]any
+	if err := json.Unmarshal(recAbs.Body.Bytes(), &bodyAbs); err != nil {
+		t.Fatalf("decode absolute response: %v", err)
+	}
+	gotSeedHash := func(body map[string]any) string {
+		return strings.ToLower(strings.TrimSpace(strings.TrimSpace(fmt.Sprint(body["seed_hash"]))))
+	}
+	if got := gotSeedHash(bodyAbs); got != expectedSeedHash {
+		t.Fatalf("absolute register seed mismatch: got=%s want=%s", got, expectedSeedHash)
+	}
+
+	recRel := callRegister("/downloads/abs-register.bin")
+	if recRel.Code != http.StatusOK {
+		t.Fatalf("register workspace path status mismatch: got=%d want=%d body=%s", recRel.Code, http.StatusOK, recRel.Body.String())
+	}
+	var bodyRel map[string]any
+	if err := json.Unmarshal(recRel.Body.Bytes(), &bodyRel); err != nil {
+		t.Fatalf("decode workspace response: %v", err)
+	}
+	if got := gotSeedHash(bodyRel); got != expectedSeedHash {
+		t.Fatalf("workspace register seed mismatch: got=%s want=%s", got, expectedSeedHash)
 	}
 }

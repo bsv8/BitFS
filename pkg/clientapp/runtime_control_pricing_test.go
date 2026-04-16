@@ -88,7 +88,7 @@ func TestCurrentSeedLiveSellerPricingReadsPersistedEffectivePrice(t *testing.T) 
 		t.Fatalf("decay=%d, want 12", got.DecayPerMinuteBPS)
 	}
 
-	quoted := ComputeLiveQuotePrices(sellerSeed{SeedHash: seedHash, SeedPrice: 300, ChunkPrice: 100}, liveSegmentMeta{PublishedAtUnix: time.Now().Unix()}, got, time.Now())
+	quoted := ComputeLiveQuotePrices(sellerSeed{SeedHash: seedHash, ChunkCount: 3}, liveSegmentMeta{PublishedAtUnix: time.Now().Unix()}, got, time.Now())
 	if quoted.ChunkPrice != 7777 {
 		t.Fatalf("quoted chunk price=%d, want 7777", quoted.ChunkPrice)
 	}
@@ -237,6 +237,12 @@ func TestTriggerPricingSetBasePersistsConfigAndSurvivesReload(t *testing.T) {
 	cfg.Seller.Pricing.LiveBasePriceSatPer64K = 1000
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeConfigPath(configPath))
 	rt.store = newClientDB(db, nil)
+	rt.Catalog = newSellerCatalog()
+	if seeds, err := dbLoadSeedCatalogSnapshot(t.Context(), rt.store); err != nil {
+		t.Fatalf("load seed catalog snapshot: %v", err)
+	} else {
+		rt.Catalog.Replace(seeds)
+	}
 
 	if _, err := TriggerPricingSetBase(t.Context(), rt, 1600); err != nil {
 		t.Fatalf("set base: %v", err)

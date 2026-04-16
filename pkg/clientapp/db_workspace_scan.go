@@ -86,16 +86,10 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 					}
 					seedRow, err := tx.BizSeeds.Query().Where(bizseeds.SeedHashEQ(ref.SeedHash)).Only(ctx)
 					if err == nil {
-						policy, err := dbLoadSeedPricingPolicyTx(ctx, tx, ref.SeedHash)
-						if err != nil && !errors.Is(err, sql.ErrNoRows) {
-							return err
-						}
-						unitPrice := policy.FloorPriceSatPer64K
 						catalog[ref.SeedHash] = sellerSeed{
 							SeedHash:            ref.SeedHash,
 							ChunkCount:          uint32(seedRow.ChunkCount),
-							ChunkPrice:          unitPrice,
-							SeedPrice:           unitPrice * uint64(seedRow.ChunkCount),
+							FileSize:            uint64(seedRow.FileSize),
 							RecommendedFileName: sanitizeRecommendedFileName(seedRow.RecommendedFileName),
 							MIMEHint:            sanitizeMIMEHint(seedRow.MimeHint),
 						}
@@ -130,8 +124,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 				catalog[seedHash] = sellerSeed{
 					SeedHash:            seedHash,
 					ChunkCount:          chunkCount,
-					ChunkPrice:          cfg.Seller.Pricing.FloorPriceSatPer64K,
-					SeedPrice:           cfg.Seller.Pricing.FloorPriceSatPer64K * uint64(chunkCount),
+					FileSize:            uint64(st.Size()),
 					RecommendedFileName: recommendedName,
 					MIMEHint:            mimeHint,
 				}

@@ -159,12 +159,9 @@ func ComputeLiveQuotePrices(seed sellerSeed, meta liveSegmentMeta, pricing LiveS
 		age = time.Duration(now.Unix()-meta.PublishedAtUnix) * time.Second
 	}
 	unit := ComputeLiveUnitPriceSatPer64K(pricing, age)
-	multiplier := uint64(1)
-	if seed.ChunkPrice > 0 && seed.SeedPrice >= seed.ChunkPrice {
-		multiplier = seed.SeedPrice / seed.ChunkPrice
-		if multiplier == 0 {
-			multiplier = 1
-		}
+	multiplier := uint64(seed.ChunkCount)
+	if multiplier == 0 {
+		multiplier = 1
 	}
 	seed.ChunkPrice = unit
 	seed.SeedPrice = unit * multiplier

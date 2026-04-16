@@ -36,7 +36,7 @@ func newTestWorkspaceManager(ctx context.Context, cfg *Config, db *sql.DB) *work
 		ctx:     ctx,
 		cfg:     cfg,
 		db:      db,
-		catalog: &sellerCatalog{biz_seeds: map[string]sellerSeed{}},
+		catalog: newSellerCatalog(),
 	}
 }
 

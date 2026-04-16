@@ -310,6 +310,8 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
 		mux.HandleFunc(prefix+"/v1/workspace/biz_seeds", s.withAuth(s.handleWorkspaceSeeds))
 		mux.HandleFunc(prefix+"/v1/workspace/biz_seeds/price", s.withAuth(s.handleSeedPriceUpdate))
+		mux.HandleFunc(prefix+"/v1/admin/seed-cache/stats", s.withAuth(s.handleAdminSeedCacheStats))
+		mux.HandleFunc(prefix+"/v1/admin/seed-cache/presence", s.withAuth(s.handleAdminSeedCachePresence))
 		mux.HandleFunc(prefix+"/v1/live/subscribe-uri", s.withAuth(s.handleLiveSubscribeURI))
 		mux.HandleFunc(prefix+"/v1/live/subscribe", s.withAuth(s.handleLiveSubscribe))
 		mux.HandleFunc(prefix+"/v1/live/demand/publish", s.withAuth(s.handleLiveDemandPublish))
@@ -340,6 +342,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		mux.HandleFunc(prefix+"/v1/admin/static/tree", s.withAuth(s.handleAdminStaticTree))
 		mux.HandleFunc(prefix+"/v1/admin/static/mkdir", s.withAuth(s.handleAdminStaticMkdir))
 		mux.HandleFunc(prefix+"/v1/admin/static/upload", s.withAuth(s.handleAdminStaticUpload))
+		mux.HandleFunc(prefix+"/v1/admin/workspace/register-downloaded-file", s.withAuth(s.handleAdminRegisterDownloadedFile))
 		mux.HandleFunc(prefix+"/v1/admin/static/move", s.withAuth(s.handleAdminStaticMove))
 		mux.HandleFunc(prefix+"/v1/admin/static/entry", s.withAuth(s.handleAdminStaticEntry))
 		mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
@@ -2681,6 +2684,47 @@ func (s *httpAPIServer) handleSeedPriceUpdate(w http.ResponseWriter, r *http.Req
 	})
 }
 
+func (s *httpAPIServer) handleAdminSeedCacheStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.rt.Catalog == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	stats := s.rt.Catalog.Stats()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"seed_count":       stats.SeedCount,
+		"cache_hit_count":  stats.CacheHitCount,
+		"cache_miss_count": stats.CacheMissCount,
+		"db_query_count":   stats.DBQueryCount,
+		"stale":            stats.Stale,
+		"loaded_at_unix":   stats.LoadedAtUnix,
+	})
+}
+
+func (s *httpAPIServer) handleAdminSeedCachePresence(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	if s == nil || s.rt == nil || s.rt.Catalog == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		return
+	}
+	seedHash := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("seed_hash")))
+	if seedHash == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "seed_hash is required"})
+		return
+	}
+	_, ok := s.rt.Catalog.Get(seedHash)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"seed_hash": seedHash,
+		"exists":    ok,
+	})
+}
+
 func (s *httpAPIServer) handleLiveSubscribeURI(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -4487,6 +4531,7 @@ func (s *httpAPIServer) handleAdminStaticUpload(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
+	seedHash, _ := dbGetWorkspaceFileSeedHash(r.Context(), httpStore(s), dst)
 	relPath := filepath.ToSlash(filepath.Join(targetRel, fileName))
 	if !strings.HasPrefix(relPath, "/") {
 		relPath = "/" + relPath
@@ -4494,9 +4539,64 @@ func (s *httpAPIServer) handleAdminStaticUpload(w http.ResponseWriter, r *http.R
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":         true,
 		"path":       relPath,
+		"seed_hash":  strings.ToLower(strings.TrimSpace(seedHash)),
 		"target_dir": targetRel,
 		"bytes":      written,
 		"overwrite":  overwrite,
+	})
+}
+
+func (s *httpAPIServer) handleAdminRegisterDownloadedFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		return
+	}
+	root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
+	if root == "" {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
+		return
+	}
+	var req struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		return
+	}
+	filePath := strings.TrimSpace(req.FilePath)
+	if filePath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "file_path is required"})
+		return
+	}
+	absPath, err := resolveDownloadedFilePath(root, filePath)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	seedBytes, _, chunkCount, err := buildSeedV1(absPath)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	if s.workspace == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace manager not initialized"})
+		return
+	}
+	seed, err := s.workspace.RegisterDownloadedFile(registerDownloadedFileParams{
+		FilePath:              absPath,
+		Seed:                  seedBytes,
+		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
+		RecommendedFileName:   sanitizeRecommendedFileName(filepath.Base(absPath)),
+		MIMEHint:              sanitizeMIMEHint(guessContentType(absPath, nil)),
+	})
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"path":      absPath,
+		"seed_hash": strings.ToLower(strings.TrimSpace(seed.SeedHash)),
 	})
 }
 
@@ -4759,6 +4859,40 @@ func resolveStaticPath(root, input string) (string, string, error) {
 		return "", "", err
 	}
 	return abs, "/" + filepath.ToSlash(rel), nil
+}
+
+func resolveDownloadedFilePath(root, input string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", fmt.Errorf("workspace_dir not configured")
+	}
+	raw := strings.TrimSpace(input)
+	if raw == "" {
+		return "", fmt.Errorf("file_path is required")
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return "", err
+	}
+	// 下载任务返回的是绝对路径；老管理面历史上传的是“/xxx”这种 workspace 相对路径。
+	// 这里统一支持两种语义，避免下载结果和注册入口语义打架。
+	if filepath.IsAbs(raw) {
+		candidateAbs, err := filepath.Abs(raw)
+		if err != nil {
+			return "", err
+		}
+		rel, err := filepath.Rel(rootAbs, candidateAbs)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return candidateAbs, nil
+		}
+		raw = strings.TrimPrefix(filepath.ToSlash(raw), "/")
+	}
+	clean := pathClean(raw)
+	rel := strings.TrimPrefix(clean, "/")
+	if rel == "" || rel == "." {
+		return "", fmt.Errorf("file_path must point to a regular file")
+	}
+	return resolveWorkspacePath(root, rel)
 }
 
 func (s *httpAPIServer) rewriteStaticPricePaths(fromAbs, toAbs string) error {

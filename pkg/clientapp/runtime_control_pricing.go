@@ -62,17 +62,14 @@ func (r *Runtime) pricingCurrentBase(ctx context.Context) uint64 {
 }
 
 func (r *Runtime) requirePricingSeedExists(ctx context.Context, seedHash string) error {
-	if r == nil || r.store == nil {
+	if r == nil || r.Catalog == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
 	seedHash = strings.ToLower(strings.TrimSpace(seedHash))
 	if seedHash == "" {
 		return fmt.Errorf("seed_hash is required")
 	}
-	_, ok, err := dbLoadSellerSeedSnapshot(ctx, r.store, seedHash)
-	if err != nil {
-		return err
-	}
+	_, ok := r.Catalog.Get(seedHash)
 	if !ok {
 		return fmt.Errorf("seed not found")
 	}

@@ -184,9 +184,18 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 	if store == nil {
 		return nil, fmt.Errorf("workspace manager not initialized")
 	}
+	if m.catalog != nil {
+		m.catalog.IncDBQueries(1)
+	}
 	biz_seeds, err := dbScanAndSyncWorkspace(ctx, store, *m.cfg)
 	if err != nil {
+		if m.catalog != nil {
+			m.catalog.MarkStale()
+		}
 		return nil, err
+	}
+	if m.catalog != nil {
+		m.catalog.Replace(biz_seeds)
 	}
 	return biz_seeds, nil
 }
@@ -415,8 +424,6 @@ func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams
 		SeedHash:            seedHash,
 		FileSize:            meta.FileSize,
 		ChunkCount:          meta.ChunkCount,
-		ChunkPrice:          m.cfg.Seller.Pricing.FloorPriceSatPer64K,
-		SeedPrice:           m.cfg.Seller.Pricing.FloorPriceSatPer64K * uint64(meta.ChunkCount),
 		RecommendedFileName: recommendedName,
 		MIMEHint:            mimeHint,
 	}

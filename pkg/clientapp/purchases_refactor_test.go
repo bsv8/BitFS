@@ -311,6 +311,9 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	if err := ApplyConfigDefaults(&sellerCfg); err != nil {
 		t.Fatalf("apply seller defaults: %v", err)
 	}
+	sellerRT := newRuntimeForTest(t, sellerCfg, sellerPrivHex)
+	sellerRT.Host = sellerHost
+	sellerRT.Catalog = newSellerCatalog()
 
 	cfg := Config{}
 	cfg.Storage.WorkspaceDir = wsDir
@@ -391,7 +394,7 @@ func newDirectPurchaseFlowEnv(t *testing.T) directPurchaseFlowEnv {
 	if err := connectPurchaseHosts(buyerHost, sellerHost, arbHost, sellerPriv, arbPriv, buyerPriv); err != nil {
 		t.Fatalf("connect purchase hosts: %v", err)
 	}
-	registerSellerHandlers(sellerHost, store, nil, nil, sellerCfg)
+	registerSellerHandlers(sellerRT, sellerHost, store, nil, nil, sellerCfg)
 
 	frontOrderID := "fo_purchase_flow"
 	if err := dbUpsertFrontOrder(context.Background(), store, frontOrderEntry{

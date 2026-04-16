@@ -18,6 +18,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/chainbridge"
@@ -224,8 +225,11 @@ type sellerSeed struct {
 }
 
 type sellerCatalog struct {
-	mu        sync.RWMutex
-	biz_seeds map[string]sellerSeed
+	snapshot  atomic.Pointer[seedCatalogSnapshot]
+	cacheHits atomic.Uint64
+	cacheMiss atomic.Uint64
+	dbQueries atomic.Uint64
+	stale     atomic.Bool
 }
 
 // ClientStore 是业务层可见的最小数据库能力。
@@ -351,11 +355,18 @@ func NewPricingTestRuntime(ctx context.Context, db *sql.DB, cfg Config) (*Runtim
 	if db != nil {
 		store = newClientDB(db, nil)
 	}
-	return &Runtime{
+	rt := &Runtime{
 		ctx:    ctx,
 		store:  store,
 		config: cfgSvc,
-	}, nil
+	}
+	rt.Catalog = newSellerCatalog()
+	if store != nil {
+		if seeds, err := dbLoadSeedCatalogSnapshot(ctx, store); err == nil {
+			rt.Catalog.Replace(seeds)
+		}
+	}
+	return rt, nil
 }
 
 // Store 返回已经准备好的客户端 store 能力。
@@ -620,7 +631,7 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 		return nil, err
 	}
 
-	catalog := &sellerCatalog{biz_seeds: map[string]sellerSeed{}}
+	catalog := newSellerCatalog()
 	workspaceMgr := &workspaceManager{
 		ctx:     ctx,
 		cfg:     &runtimeCfg,
@@ -636,6 +647,13 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 		return nil, err
 	}
 	if err := workspaceMgr.ValidateLiveCacheCapacity(runtimeCfg.Live.CacheMaxBytes); err != nil {
+		closeOwnedDB()
+		if removeObs != nil {
+			removeObs()
+		}
+		return nil, err
+	}
+	if _, err := workspaceMgr.LoadSeedCatalogSnapshot(ctx); err != nil {
 		closeOwnedDB()
 		if removeObs != nil {
 			removeObs()
@@ -841,7 +859,7 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 	registerResolverHandlers(rt)
 	registerDirectQuoteSubmitHandler(h, store, trace)
 	if runtimeCfg.Seller.Enabled {
-		registerSellerHandlers(h, store, rt.live, trace, runtimeCfg)
+		registerSellerHandlers(rt, h, store, rt.live, trace, runtimeCfg)
 	}
 	if rt.ActionChain == nil {
 		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
@@ -1457,8 +1475,8 @@ func registerDirectQuoteSubmitHandler(h host.Host, store *clientDB, trace pproto
 	})
 }
 
-func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, trace pproto.TraceSink, cfg Config) {
-	if store == nil {
+func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liveRuntime, trace pproto.TraceSink, cfg Config) {
+	if store == nil || rt == nil || rt.Catalog == nil {
 		return
 	}
 	pproto.HandleProto[dealprod.DemandAnnounceReq, dealprod.DemandAnnounceResp](h, protocol.ID(dealprod.ProtoDemandAnnounce), clientSec(trace), func(ctx context.Context, req dealprod.DemandAnnounceReq) (dealprod.DemandAnnounceResp, error) {
@@ -1471,10 +1489,7 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 		if err := dbRecordDemand(ctx, store, demandID, seedHash); err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
-		seed, ok, err := dbLoadSellerSeedSnapshot(ctx, store, seedHash)
-		if err != nil {
-			return dealprod.DemandAnnounceResp{}, err
-		}
+		seed, ok := rt.Catalog.Get(seedHash)
 		if !ok {
 			obs.Business("bitcast-client", "demand_announce_ignored_no_seed", map[string]any{
 				"demand_id":   demandID,
@@ -1484,18 +1499,15 @@ func registerSellerHandlers(h host.Host, store *clientDB, live *liveRuntime, tra
 			})
 			return dealprod.DemandAnnounceResp{Status: "ignored_no_seed"}, nil
 		}
-		if seed.ChunkPrice == 0 {
-			seed.ChunkPrice = cfg.Seller.Pricing.FloorPriceSatPer64K
+		pricing, pricingErr := currentSeedLiveSellerPricing(ctx, store, cfg, seedHash)
+		if pricingErr != nil {
+			return dealprod.DemandAnnounceResp{}, pricingErr
 		}
-		if seed.SeedPrice == 0 {
-			seed.SeedPrice = seed.ChunkPrice * uint64(seed.ChunkCount)
-		}
-		if liveMeta, ok := live.segment(seedHash); ok {
-			pricing, pricingErr := currentSeedLiveSellerPricing(ctx, store, cfg, seedHash)
-			if pricingErr != nil {
-				return dealprod.DemandAnnounceResp{}, pricingErr
+		seed = ComputeLiveQuotePrices(seed, liveSegmentMeta{}, pricing, time.Now())
+		if live != nil {
+			if liveMeta, ok := live.segment(seedHash); ok {
+				seed = ComputeLiveQuotePrices(seed, liveMeta, pricing, time.Now())
 			}
-			seed = ComputeLiveQuotePrices(seed, liveMeta, pricing, time.Now())
 		}
 		availableChunks, err := dbListSeedChunkSupply(ctx, store, seedHash)
 		if err != nil {
@@ -2137,35 +2149,6 @@ func contiguousChunkIndexes(chunkCount uint32) []uint32 {
 		out = append(out, i)
 	}
 	return out
-}
-
-func (c *sellerCatalog) Replace(biz_seeds map[string]sellerSeed) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.biz_seeds = biz_seeds
-}
-
-func (c *sellerCatalog) Upsert(seed sellerSeed) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.biz_seeds == nil {
-		c.biz_seeds = map[string]sellerSeed{}
-	}
-	key := strings.ToLower(strings.TrimSpace(seed.SeedHash))
-	if key == "" {
-		return
-	}
-	c.biz_seeds[key] = seed
-}
-
-func (c *sellerCatalog) Get(seedHash string) (sellerSeed, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	s, ok := c.biz_seeds[seedHash]
-	return s, ok
 }
 
 func gwSec(trace pproto.TraceSink) pproto.SecurityConfig {

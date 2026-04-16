@@ -112,7 +112,7 @@ func TestPlanLivePurchaseBySeedUsesSeedSpecificPricing(t *testing.T) {
 }
 
 func TestComputeLiveQuotePrices(t *testing.T) {
-	seed := sellerSeed{SeedHash: "x", SeedPrice: 300, ChunkPrice: 100}
+	seed := sellerSeed{SeedHash: "x", ChunkCount: 3}
 	got := ComputeLiveQuotePrices(seed, liveSegmentMeta{PublishedAtUnix: time.Now().Add(-2 * time.Minute).Unix()}, LiveSellerPricing{
 		BasePriceSatPer64K:  100,
 		FloorPriceSatPer64K: 20,

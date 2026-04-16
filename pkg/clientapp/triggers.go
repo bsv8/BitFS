@@ -58,12 +58,16 @@ func TriggerWorkspaceSyncOnce(ctx context.Context, rt *Runtime) (WorkspaceSyncRe
 	}
 
 	out := make([]WorkspaceSeed, 0, len(biz_seeds))
+	basePrice := uint64(0)
+	if rt != nil && rt.config != nil {
+		basePrice = rt.config.Snapshot().Seller.Pricing.FloorPriceSatPer64K
+	}
 	for _, s := range biz_seeds {
 		out = append(out, WorkspaceSeed{
 			SeedHash:   strings.ToLower(strings.TrimSpace(s.SeedHash)),
 			ChunkCount: s.ChunkCount,
-			SeedPrice:  s.SeedPrice,
-			ChunkPrice: s.ChunkPrice,
+			SeedPrice:  basePrice * uint64(s.ChunkCount),
+			ChunkPrice: basePrice,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].SeedHash < out[j].SeedHash })
@@ -109,9 +113,9 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 	frontOrderID, businessID, settlementID, triggerID := bizOrderPayBSVIdentity(orderID)
 	nowNote := fmt.Sprintf("BSV payment order %s", orderID)
 	payload := map[string]any{
-		"order_id":       orderID,
-		"to_address":     toAddress,
-		"amount_satoshi": req.AmountSatoshi,
+		"order_id":        orderID,
+		"to_address":      toAddress,
+		"amount_satoshi":  req.AmountSatoshi,
 		"from_pubkey_hex": fromPubHex,
 		"from_address":    fromAddress,
 	}
@@ -264,7 +268,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		ChunkCount: p.ChunkCount,
 		BuyerAddrs: buyerAddrs,
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash, "chunk_count": p.ChunkCount})
+	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash})
 	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublish), body, decodeDemandPublishRouteResp)
 	if err != nil {
 		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
