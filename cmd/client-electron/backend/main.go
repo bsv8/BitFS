@@ -18,7 +18,7 @@ var version = "dev"
 var cliLang = detectCLILanguage()
 
 type cliOptions struct {
-	vaultPath            string
+	configRoot           string
 	initNetwork          string
 	httpListenAddr       string
 	fsHTTPListen         string
@@ -69,23 +69,23 @@ func main() {
 		SystemHomepageBundle: strings.TrimSpace(opts.systemHomepageBundle),
 	}
 
-	vaultPath := clientapp.ResolveVaultPath(opts.vaultPath)
-	configPath := clientapp.ResolveConfigPath(vaultPath)
-	keyPath := clientapp.ResolveKeyFilePath(vaultPath)
-	cfg, runtimeCfgCreated, err := managedclient.LoadRuntimeConfigOrInit(configPath, initNetwork)
-	if err != nil {
+	configRoot := clientapp.ResolveConfigRoot(opts.configRoot)
+	keyPath := clientapp.ResolveKeyFilePath(configRoot)
+	cfg := managedclient.NewDefaultConfig(initNetwork)
+	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
 		log.Fatal(err)
 	}
+	// 设计说明：
+	// - 解锁前还没有公钥，不能把日志写进根目录；
+	// - 真正业务日志在解锁后按公钥目录装配。
+	cfg.Log.File = ""
 	overrides.Apply(&cfg)
-	runtimeConfigStatus := "已加载"
-	if runtimeCfgCreated {
-		runtimeConfigStatus = "已创建（首次启动）"
-	}
+	runtimeConfigStatus := "按公钥目录运行时装配"
 	startup := startupSummary{
-		VaultPath:           vaultPath,
-		ConfigPath:          configPath,
+		VaultPath:           configRoot,
+		ConfigPath:          "",
 		KeyPath:             keyPath,
-		IndexDBPath:         strings.TrimSpace(cfg.Index.SQLitePath),
+		IndexDBPath:         "",
 		RuntimeConfigStatus: runtimeConfigStatus,
 	}
 
@@ -129,7 +129,7 @@ func main() {
 
 func parseFlags() cliOptions {
 	var opts cliOptions
-	flag.StringVar(&opts.vaultPath, "path", ".vault", msg("flag_path"))
+	flag.StringVar(&opts.configRoot, "config-root", "", msg("flag_config_root"))
 	flag.StringVar(&opts.initNetwork, "network", "main", msg("flag_network"))
 	flag.StringVar(&opts.httpListenAddr, "http-listen", "", msg("flag_http_listen"))
 	flag.StringVar(&opts.fsHTTPListen, "fs-http-listen", "", msg("flag_fs_http_listen"))
@@ -324,7 +324,7 @@ var cliMessages = map[string]map[string]string{
 	"en": {
 		"version_line":                   "bitfs version %s",
 		"usage_line":                     "Usage: bitfs [flags]",
-		"flag_path":                      "vault directory path",
+		"flag_config_root":               "config root directory path (default: ~/.config/bitfs)",
 		"flag_network":                   "initial bsv network for first run only: test/main",
 		"flag_http_listen":               "override managed api listen address for current run only",
 		"flag_fs_http_listen":            "override fs_http listen address for current run only",
@@ -351,7 +351,7 @@ var cliMessages = map[string]map[string]string{
 	"zh-CN": {
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags]",
-		"flag_path":                      "vault 目录路径",
+		"flag_config_root":               "配置根目录路径（默认：~/.config/bitfs）",
 		"flag_network":                   "首次初始化使用的 bsv 网络：test/main（仅首次生效）",
 		"flag_http_listen":               "仅本次运行覆盖 managed api 监听地址",
 		"flag_fs_http_listen":            "仅本次运行覆盖 fs_http 监听地址",
@@ -378,7 +378,7 @@ var cliMessages = map[string]map[string]string{
 	"zh-TW": {
 		"version_line":                   "bitfs 版本 %s",
 		"usage_line":                     "用法: bitfs [flags]",
-		"flag_path":                      "vault 目錄路徑",
+		"flag_config_root":               "配置根目錄路徑（預設：~/.config/bitfs）",
 		"flag_network":                   "首次初始化使用的 bsv 網路：test/main（僅首次生效）",
 		"flag_http_listen":               "僅本次執行覆蓋 managed api 監聽位址",
 		"flag_fs_http_listen":            "僅本次執行覆蓋 fs_http 監聽位址",
@@ -405,7 +405,7 @@ var cliMessages = map[string]map[string]string{
 	"ja": {
 		"version_line":                   "bitfs バージョン %s",
 		"usage_line":                     "使い方: bitfs [flags]",
-		"flag_path":                      "vault ディレクトリパス",
+		"flag_config_root":               "設定ルートディレクトリ（デフォルト: ~/.config/bitfs）",
 		"flag_network":                   "初回初期化のみで使う bsv ネットワーク: test/main",
 		"flag_http_listen":               "今回の起動だけ managed api の待受アドレスを上書き",
 		"flag_fs_http_listen":            "今回の起動だけ fs_http の待受アドレスを上書き",

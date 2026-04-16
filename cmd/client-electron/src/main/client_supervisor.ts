@@ -434,7 +434,7 @@ export class ManagedClientSupervisor extends EventEmitter {
 
   private buildManagedArgs(): string[] {
     const args = [
-      "-path", this.launch.vaultPath,
+      "-config-root", this.launch.vaultPath,
       "-network", this.launch.network,
       "-http-listen", this.launch.apiListenAddr,
       "-fs-http-listen", this.launch.fsHTTPListenAddr
