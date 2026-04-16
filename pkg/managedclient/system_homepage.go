@@ -34,10 +34,14 @@ type systemHomepageState struct {
 }
 
 func loadSystemHomepageState(bundleDir string, workspaceDir string) (*systemHomepageState, error) {
-	bundleDir = filepath.Clean(strings.TrimSpace(bundleDir))
+	bundleDir = strings.TrimSpace(bundleDir)
+	// 设计说明：
+	// - 空值表示“本次不启用系统首页 bundle”；
+	// - 不能先 filepath.Clean("")，否则会变成 "." 并误读当前目录 manifest。
 	if bundleDir == "" {
 		return nil, nil
 	}
+	bundleDir = filepath.Clean(bundleDir)
 	manifestPath := filepath.Join(bundleDir, "manifest.json")
 	raw, err := os.ReadFile(manifestPath)
 	if err != nil {
