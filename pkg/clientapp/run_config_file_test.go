@@ -112,7 +112,7 @@ func TestSaveConfigFile_PreservesEmptyPeers(t *testing.T) {
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = "workspace"
+	cfg.Storage.WorkspaceDir = ""
 	cfg.Storage.DataDir = "data"
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
@@ -141,7 +141,7 @@ func TestLoadOrInitConfigFile_ReturnsDefaultConfigWithoutCreatingFile(t *testing
 	seed.HTTP.Enabled = true
 	seed.FSHTTP.Enabled = true
 	seed.Index.Backend = "sqlite"
-	seed.Storage.WorkspaceDir = "workspace"
+	seed.Storage.WorkspaceDir = ""
 	seed.Storage.DataDir = "data"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
@@ -175,7 +175,7 @@ func TestLoadOrInitConfigFileForMode_TestModeKeepsEmptyPeersOnCreate(t *testing.
 	seed.HTTP.Enabled = true
 	seed.FSHTTP.Enabled = true
 	seed.Index.Backend = "sqlite"
-	seed.Storage.WorkspaceDir = "workspace"
+	seed.Storage.WorkspaceDir = ""
 	seed.Storage.DataDir = "data"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
@@ -203,7 +203,7 @@ func TestLoadOrInitConfigFileForMode_ProductModeBackfillsPeersOnCreate(t *testin
 	seed.HTTP.Enabled = true
 	seed.FSHTTP.Enabled = true
 	seed.Index.Backend = "sqlite"
-	seed.Storage.WorkspaceDir = "workspace"
+	seed.Storage.WorkspaceDir = ""
 	seed.Storage.DataDir = "data"
 	seed.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	seed.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))

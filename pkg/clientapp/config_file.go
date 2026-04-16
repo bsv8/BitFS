@@ -18,26 +18,30 @@ type ConfigFileResult struct {
 	Created bool
 }
 
-// ResolveVaultPath 解析客户端 vault 目录。
+// ResolveConfigRoot 解析客户端配置根目录。
 // 约定：
-// - 空值回退到 `.vault`
-// - 传入值始终视为目录，不是文件
-func ResolveVaultPath(path string) string {
+// - 空值回退到系统默认目录（Linux/macOS: ~/.config/bitfs）；
+// - 传入值始终视为目录，不是文件。
+func ResolveConfigRoot(path string) string {
 	p := strings.TrimSpace(path)
 	if p == "" {
-		return ".vault"
+		base, err := os.UserConfigDir()
+		if err != nil || strings.TrimSpace(base) == "" {
+			return filepath.Clean(filepath.Join(".config", "bitfs"))
+		}
+		return filepath.Clean(filepath.Join(base, "bitfs"))
 	}
-	return p
+	return filepath.Clean(p)
 }
 
 // ResolveConfigPath 解析配置文件路径。
-func ResolveConfigPath(path string) string {
-	return filepath.Join(filepath.Clean(ResolveVaultPath(path)), "config.yaml")
+func ResolveConfigPath(configRoot string) string {
+	return filepath.Join(ResolveConfigRoot(configRoot), "config.yaml")
 }
 
 // ResolveKeyFilePath 解析 key.json 路径。
-func ResolveKeyFilePath(path string) string {
-	return filepath.Join(filepath.Clean(ResolveVaultPath(path)), "key.json")
+func ResolveKeyFilePath(configRoot string) string {
+	return filepath.Join(ResolveConfigRoot(configRoot), "key.json")
 }
 
 // LoadConfig 读取 YAML 配置文件。
@@ -186,7 +190,6 @@ func defaultConfigSeed() Config {
 	cfg.HTTP.Enabled = true
 	cfg.FSHTTP.Enabled = true
 	cfg.Index.Backend = "sqlite"
-	cfg.Storage.WorkspaceDir = "workspace"
 	cfg.Storage.DataDir = "data"
 	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
@@ -276,7 +279,10 @@ func resolveConfigPathsForRuntime(cfg *Config, configPath string) error {
 		return fmt.Errorf("config is nil")
 	}
 	baseDir := filepath.Dir(filepath.Clean(strings.TrimSpace(configPath)))
-	cfg.Storage.WorkspaceDir = resolveConfigPathValue(baseDir, cfg.Storage.WorkspaceDir, "workspace")
+	// 设计说明：
+	// - workspace_dir 允许为空，空值表示“钱包模式（不启用本地文件目录）”；
+	// - 因此这里不再给 workspace_dir 注入兜底路径。
+	cfg.Storage.WorkspaceDir = resolveConfigPathValue(baseDir, cfg.Storage.WorkspaceDir, "")
 	cfg.Storage.DataDir = resolveConfigPathValue(baseDir, cfg.Storage.DataDir, "data")
 	cfg.Index.SQLitePath = resolveConfigPathValue(baseDir, cfg.Index.SQLitePath, filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = resolveConfigPathValue(baseDir, cfg.Log.File, filepath.Join("logs", "bitfs.log"))
@@ -288,7 +294,9 @@ func normalizeConfigForFile(cfg *Config, configPath string) error {
 		return fmt.Errorf("config is nil")
 	}
 	baseDir := filepath.Dir(filepath.Clean(strings.TrimSpace(configPath)))
-	cfg.Storage.WorkspaceDir = saveConfigPathValue(baseDir, cfg.Storage.WorkspaceDir, "workspace")
+	// 设计说明：
+	// - workspace_dir 为空时不落盘默认值，避免“启动就被强行写出 workspace”。
+	cfg.Storage.WorkspaceDir = saveConfigPathValue(baseDir, cfg.Storage.WorkspaceDir, "")
 	cfg.Storage.DataDir = saveConfigPathValue(baseDir, cfg.Storage.DataDir, "data")
 	cfg.Index.SQLitePath = saveConfigPathValue(baseDir, cfg.Index.SQLitePath, filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = saveConfigPathValue(baseDir, cfg.Log.File, filepath.Join("logs", "bitfs.log"))
@@ -297,7 +305,11 @@ func normalizeConfigForFile(cfg *Config, configPath string) error {
 
 func resolveConfigPathValue(baseDir, rawValue, fallback string) string {
 	v := strings.TrimSpace(rawValue)
+	fallback = strings.TrimSpace(fallback)
 	if v == "" {
+		if fallback == "" {
+			return ""
+		}
 		v = fallback
 	}
 	if filepath.IsAbs(v) {
@@ -311,7 +323,11 @@ func resolveConfigPathValue(baseDir, rawValue, fallback string) string {
 
 func saveConfigPathValue(baseDir, rawValue, fallback string) string {
 	v := strings.TrimSpace(rawValue)
+	fallback = strings.TrimSpace(fallback)
 	if v == "" {
+		if fallback == "" {
+			return ""
+		}
 		v = fallback
 	}
 	clean := filepath.Clean(v)

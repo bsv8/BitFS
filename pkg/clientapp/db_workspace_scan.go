@@ -210,9 +210,13 @@ func listEnabledWorkspacePaths(ctx context.Context, tx *gen.Tx, fallback string)
 	if len(out) > 0 {
 		return out, nil
 	}
-	fallback = filepath.Clean(strings.TrimSpace(fallback))
+	fallback = strings.TrimSpace(fallback)
 	if fallback == "" {
-		return nil, fmt.Errorf("no workspace configured")
+		// 设计说明：
+		// - 空 workspace_dir 是钱包模式；
+		// - 扫描流程在该模式下返回空结果而不是报错。
+		return []string{}, nil
 	}
+	fallback = filepath.Clean(fallback)
 	return []string{fallback}, nil
 }

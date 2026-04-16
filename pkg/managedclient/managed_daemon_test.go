@@ -95,6 +95,7 @@ func TestApplyDesktopRuntimeBootstrap_EnablesStartupFullScanWhenSystemHomepageEx
 	}
 	var cfg clientapp.Config
 	cfg.Scan.StartupFullScan = false
+	cfg.Storage.WorkspaceDir = filepath.Join(t.TempDir(), "workspace")
 
 	d.applyDesktopRuntimeBootstrap(&cfg)
 
@@ -114,6 +115,25 @@ func TestApplyDesktopRuntimeBootstrap_NoHomepageKeepsScanConfig(t *testing.T) {
 
 	if cfg.Scan.StartupFullScan {
 		t.Fatalf("startup_full_scan should stay unchanged when no system homepage bundle is active")
+	}
+}
+
+func TestApplyDesktopRuntimeBootstrap_EmptyWorkspaceKeepsScanConfig(t *testing.T) {
+	t.Parallel()
+
+	d := &managedDaemon{
+		systemHomepage: &systemHomepageState{
+			DefaultSeedHash: "7da33adac40556fa6e5c8258f139f01f2a3fb2a22d6c651b07a12e83c04f19fd",
+		},
+	}
+	var cfg clientapp.Config
+	cfg.Scan.StartupFullScan = false
+	cfg.Storage.WorkspaceDir = ""
+
+	d.applyDesktopRuntimeBootstrap(&cfg)
+
+	if cfg.Scan.StartupFullScan {
+		t.Fatalf("startup_full_scan should stay unchanged when workspace_dir is empty")
 	}
 }
 

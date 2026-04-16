@@ -34,7 +34,11 @@ func normalizeSeedHashHex(raw string) string {
 
 // normalizeWorkspacePath 统一工作区根路径口径。
 func normalizeWorkspacePath(raw string) (string, error) {
-	abs, err := filepath.Abs(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", fmt.Errorf("workspace path is empty")
+	}
+	abs, err := filepath.Abs(raw)
 	if err != nil {
 		return "", err
 	}

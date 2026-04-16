@@ -89,13 +89,26 @@ func loadSystemHomepageState(bundleDir string, workspaceDir string) (*systemHome
 			MIME:         sanitizeHomepageMIMEHint(meta.MIME),
 		}
 	}
-	return &systemHomepageState{
+	state := &systemHomepageState{
 		BundleDir:       bundleDir,
-		WorkspaceDir:    filepath.Join(filepath.Clean(strings.TrimSpace(workspaceDir)), ".bitfs-system", "homepage"),
 		DefaultSeedHash: rootSeedHash,
 		SeedHashes:      seedHashes,
 		FileMetaBySeed:  fileMetaBySeed,
-	}, nil
+	}
+	state.BindWorkspace(workspaceDir)
+	return state, nil
+}
+
+func (s *systemHomepageState) BindWorkspace(workspaceDir string) {
+	if s == nil {
+		return
+	}
+	root := filepath.Clean(strings.TrimSpace(workspaceDir))
+	if root == "" || root == "." {
+		s.WorkspaceDir = filepath.Join(".bitfs-system", "homepage")
+		return
+	}
+	s.WorkspaceDir = filepath.Join(root, ".bitfs-system", "homepage")
 }
 
 func (s *systemHomepageState) InstallIntoWorkspace() error {

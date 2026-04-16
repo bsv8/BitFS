@@ -1249,16 +1249,23 @@ func validateConfigForMode(cfg *Config, mode StartupMode) error {
 	}
 	cfg.BSV.Network = n
 
-	cfg.Storage.WorkspaceDir = filepath.Clean(strings.TrimSpace(cfg.Storage.WorkspaceDir))
+	workspaceDir := strings.TrimSpace(cfg.Storage.WorkspaceDir)
+	if workspaceDir == "" {
+		cfg.Storage.WorkspaceDir = ""
+	} else {
+		cfg.Storage.WorkspaceDir = filepath.Clean(workspaceDir)
+	}
 	cfg.Storage.DataDir = filepath.Clean(strings.TrimSpace(cfg.Storage.DataDir))
-	if cfg.Storage.WorkspaceDir == "" || cfg.Storage.DataDir == "" {
-		return errors.New("storage.workspace_dir and storage.data_dir are required")
+	if cfg.Storage.DataDir == "" {
+		return errors.New("storage.data_dir is required")
 	}
-	if cfg.Storage.WorkspaceDir == cfg.Storage.DataDir {
-		return errors.New("workspace_dir and data_dir must be different")
-	}
-	if overlaps(cfg.Storage.WorkspaceDir, cfg.Storage.DataDir) {
-		return errors.New("workspace_dir and data_dir must not overlap")
+	if cfg.Storage.WorkspaceDir != "" {
+		if cfg.Storage.WorkspaceDir == cfg.Storage.DataDir {
+			return errors.New("workspace_dir and data_dir must be different")
+		}
+		if overlaps(cfg.Storage.WorkspaceDir, cfg.Storage.DataDir) {
+			return errors.New("workspace_dir and data_dir must not overlap")
+		}
 	}
 	if len(cfg.Network.Gateways) == 0 {
 		if startupMode == StartupModeProduct {
@@ -1365,21 +1372,26 @@ func validateNetworkPeers(items []PeerNode, requireEnabled bool) error {
 }
 
 func initDataDirs(cfg *Config) error {
-	for _, d := range []string{
-		cfg.Storage.WorkspaceDir,
+	dirs := []string{
 		cfg.Storage.DataDir,
 		filepath.Join(cfg.Storage.DataDir, "config"),
 		filepath.Join(cfg.Storage.DataDir, "biz_seeds"),
 		filepath.Join(cfg.Storage.DataDir, "db"),
 		filepath.Join(cfg.Storage.DataDir, "keys"),
 		filepath.Join(cfg.Storage.DataDir, "logs"),
-	} {
+	}
+	if strings.TrimSpace(cfg.Storage.WorkspaceDir) != "" {
+		dirs = append(dirs, cfg.Storage.WorkspaceDir)
+	}
+	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return err
 		}
 	}
-	if err := ensureReadableDir(cfg.Storage.WorkspaceDir); err != nil {
-		return err
+	if strings.TrimSpace(cfg.Storage.WorkspaceDir) != "" {
+		if err := ensureReadableDir(cfg.Storage.WorkspaceDir); err != nil {
+			return err
+		}
 	}
 	if err := ensureWritableDir(cfg.Storage.DataDir); err != nil {
 		return err

@@ -76,6 +76,13 @@ func dbEnsureDefaultWorkspace(ctx context.Context, store *clientDB, workspaceDir
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
+	workspaceDir = strings.TrimSpace(workspaceDir)
+	if workspaceDir == "" {
+		// 设计说明：
+		// - 空 workspace_dir 表示钱包模式；
+		// - 启动时不创建默认 workspace 记录。
+		return nil
+	}
 	abs, err := normalizeWorkspacePath(workspaceDir)
 	if err != nil {
 		return err

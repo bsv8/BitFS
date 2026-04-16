@@ -185,7 +185,7 @@ func TestValidateConfig_TestModeAllowsEmptyPeers(t *testing.T) {
 
 	cfg := Config{}
 	cfg.BSV.Network = "test"
-	cfg.Storage.WorkspaceDir = "workspace"
+	cfg.Storage.WorkspaceDir = ""
 	cfg.Storage.DataDir = "data"
 	cfg.Index.Backend = "sqlite"
 	cfg.Index.SQLitePath = "data/client-index.sqlite"

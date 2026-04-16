@@ -31,3 +31,24 @@ func TestInitDataDirsCreatesWorkspaceDir(t *testing.T) {
 		t.Fatalf("workspace path is not directory")
 	}
 }
+
+func TestInitDataDirs_AllowsEmptyWorkspaceDir(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	data := filepath.Join(root, "data")
+
+	cfg := Config{}
+	cfg.Storage.WorkspaceDir = ""
+	cfg.Storage.DataDir = data
+	cfg.Storage.MinFreeBytes = 1
+	if err := ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("ApplyConfigDefaults failed: %v", err)
+	}
+
+	if err := initDataDirs(&cfg); err != nil {
+		t.Fatalf("initDataDirs failed: %v", err)
+	}
+	if _, err := os.Stat(data); err != nil {
+		t.Fatalf("data dir not created: %v", err)
+	}
+}

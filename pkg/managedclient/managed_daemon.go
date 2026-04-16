@@ -219,6 +219,8 @@ type managedDaemon struct {
 	runtimeFSHTTPReady  bool
 	runtimeTipReady     bool
 	runtimeUTXOReady    bool
+	activeConfigPath    string
+	activeIndexDBPath   string
 	startupError        startupErrorState
 	chainAccess         chainAccessState
 
@@ -308,6 +310,8 @@ func (d *managedDaemon) close() error {
 	d.runtimeFSHTTPReady = false
 	d.runtimeTipReady = false
 	d.runtimeUTXOReady = false
+	d.activeConfigPath = ""
+	d.activeIndexDBPath = ""
 	fsHTTPReserved := d.fsHTTPReserved
 	d.fsHTTPReserved = nil
 	d.mu.Unlock()
@@ -430,7 +434,17 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	unlockOwner := strings.TrimSpace(d.unlockSuccessBy)
 	startupErr := d.startupError
 	chainAccess := d.chainAccess
+	activeConfigPath := strings.TrimSpace(d.activeConfigPath)
+	activeIndexDBPath := strings.TrimSpace(d.activeIndexDBPath)
 	d.mu.RUnlock()
+	configPath := strings.TrimSpace(d.startup.ConfigPath)
+	if activeConfigPath != "" {
+		configPath = activeConfigPath
+	}
+	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
+	if activeIndexDBPath != "" {
+		indexDBPath = activeIndexDBPath
+	}
 	keyState := managedKeyStateMissing
 	switch {
 	case unlocked:
@@ -440,9 +454,9 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"vault_path":             d.startup.VaultPath,
-		"config_path":            d.startup.ConfigPath,
+		"config_path":            configPath,
 		"key_path":               d.startup.KeyPath,
-		"index_db_path":          d.startup.IndexDBPath,
+		"index_db_path":          indexDBPath,
 		"backend_phase":          string(backendPhase),
 		"runtime_phase":          string(runtimePhase),
 		"key_state":              string(keyState),
@@ -980,9 +994,32 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 	}
 	d.mu.Unlock()
 
-	runCfg, _, err := LoadRuntimeConfigOrInit(d.startup.ConfigPath, d.initNetwork)
+	pubHex, err := PubHexFromPrivHex(privHex)
 	if err != nil {
 		return err
+	}
+	pubHex = strings.ToLower(strings.TrimSpace(pubHex))
+	configRoot := strings.TrimSpace(d.startup.VaultPath)
+	if configRoot == "" {
+		return fmt.Errorf("config root is empty")
+	}
+	configPath := filepath.Join(configRoot, pubHex, "config.yaml")
+	runCfg, _, err := LoadRuntimeConfigOrInit(configPath, d.initNetwork)
+	if err != nil {
+		return err
+	}
+	systemHomepageActive := d.systemHomepage != nil && strings.TrimSpace(runCfg.Storage.WorkspaceDir) != ""
+	if systemHomepageActive {
+		d.systemHomepage.BindWorkspace(runCfg.Storage.WorkspaceDir)
+		if err := d.systemHomepage.InstallIntoWorkspace(); err != nil {
+			return err
+		}
+		logSystemHomepageInstalled(d.systemHomepage)
+	}
+	if logFile := strings.TrimSpace(runCfg.Log.File); logFile != "" {
+		if err := os.MkdirAll(filepath.Dir(logFile), 0o755); err != nil {
+			return err
+		}
 	}
 	d.applyDesktopRuntimeBootstrap(&runCfg)
 	var obsSink obs.Sink
@@ -990,16 +1027,23 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		obsSink = d.controlStream.ObsSink()
 	}
 	obsSink = d.runtimeObsSink(obsSink)
+	postWorkspaceBootstrap := d.systemHomepageBootstrapHook()
+	if !systemHomepageActive {
+		postWorkspaceBootstrap = nil
+	}
 	runOpt := clientapp.RunOptions{
-		ConfigPath:             d.startup.ConfigPath,
+		ConfigPath:             configPath,
 		StartupMode:            clientapp.StartupModeProduct,
-		PostWorkspaceBootstrap: d.systemHomepageBootstrapHook(),
+		PostWorkspaceBootstrap: postWorkspaceBootstrap,
 		DisableHTTPServer:      true,
 		FSHTTPListener:         d.takeReservedFSHTTPListener(),
 		ObsSink:                obsSink,
 		EffectivePrivKeyHex:    privHex,
 	}
-	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
+	indexDBPath := strings.TrimSpace(runCfg.Index.SQLitePath)
+	if indexDBPath == "" {
+		return fmt.Errorf("runtime index db path is empty")
+	}
 	if !filepath.IsAbs(indexDBPath) {
 		indexDBPath = filepath.Join(strings.TrimSpace(runCfg.Storage.DataDir), indexDBPath)
 	}
@@ -1076,13 +1120,13 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		return err
 	}
 
-	if !d.commitRuntimeStartup(seq, rt, cancel, runtimeAPI) {
+	if !d.commitRuntimeStartup(seq, rt, cancel, runtimeAPI, configPath, indexDBPath) {
 		_ = rt.Close()
 		cancel()
 		_ = d.reserveFSHTTPListener()
 		return nil
 	}
-	d.printUnlockedRuntimeSummary(runCfg, rt)
+	d.printUnlockedRuntimeSummary(runCfg, rt, configPath, indexDBPath)
 	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
 		"transport_peer_id": rt.Host.ID().String(),
 	})
@@ -1097,11 +1141,7 @@ func (d *managedDaemon) prepareSystemHomepage() error {
 	if state == nil {
 		return nil
 	}
-	if err := state.InstallIntoWorkspace(); err != nil {
-		return err
-	}
 	d.systemHomepage = state
-	logSystemHomepageInstalled(state)
 	return nil
 }
 
@@ -1137,6 +1177,12 @@ func (d *managedDaemon) applyDesktopRuntimeBootstrap(cfg *clientapp.Config) {
 	if d.systemHomepage == nil {
 		return
 	}
+	if strings.TrimSpace(cfg.Storage.WorkspaceDir) == "" {
+		// 设计说明：
+		// - workspace_dir 为空代表钱包模式；
+		// - 该模式不做系统首页落盘与启动全量扫描。
+		return
+	}
 	cfg.Scan.StartupFullScan = true
 }
 
@@ -1149,9 +1195,17 @@ func (d *managedDaemon) defaultHomeSeedHash() string {
 
 func (d *managedDaemon) printLockedStartupSummary() {
 	chainAccess := d.currentChainAccess()
+	configPath := strings.TrimSpace(d.startup.ConfigPath)
+	if configPath == "" {
+		configPath = "(pending unlock)"
+	}
+	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
+	if indexDBPath == "" {
+		indexDBPath = "(pending unlock)"
+	}
 	fmt.Fprintf(os.Stderr, "=== BitFS 客户端启动信息（待解锁）===\n")
 	fmt.Fprintf(os.Stderr, "vault_path: %s\n", d.startup.VaultPath)
-	fmt.Fprintf(os.Stderr, "config_path: %s\n", d.startup.ConfigPath)
+	fmt.Fprintf(os.Stderr, "config_path: %s\n", configPath)
 	fmt.Fprintf(os.Stderr, "key_path: %s\n", d.startup.KeyPath)
 	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
 	fmt.Fprintf(os.Stderr, "managed_api.listen_addr: %s\n", strings.TrimSpace(d.cfg.HTTP.ListenAddr))
@@ -1161,12 +1215,12 @@ func (d *managedDaemon) printLockedStartupSummary() {
 	if chainAccess.WOCProxyEnabled {
 		fmt.Fprintf(os.Stderr, "woc_proxy.listen_addr: %s\n", strings.TrimSpace(chainAccess.WOCProxyAddr))
 	}
-	fmt.Fprintf(os.Stderr, "index_db_path: %s\n", strings.TrimSpace(d.startup.IndexDBPath))
+	fmt.Fprintf(os.Stderr, "index_db_path: %s\n", indexDBPath)
 	fmt.Fprintf(os.Stderr, "runtime_config.status: %s\n", strings.TrimSpace(d.startup.RuntimeConfigStatus))
 	fmt.Fprintf(os.Stderr, "状态: 已启动（锁定），等待解锁密码或管理 API 解锁。\n")
 }
 
-func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt *clientapp.Runtime) {
+func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt *clientapp.Runtime, configPath string, indexDBPath string) {
 	if rt == nil {
 		return
 	}
@@ -1178,7 +1232,7 @@ func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt 
 	}
 	fmt.Fprintf(os.Stderr, "=== BitFS 客户端运行信息（已解锁）===\n")
 	fmt.Fprintf(os.Stderr, "vault_path: %s\n", d.startup.VaultPath)
-	fmt.Fprintf(os.Stderr, "config_path: %s\n", d.startup.ConfigPath)
+	fmt.Fprintf(os.Stderr, "config_path: %s\n", strings.TrimSpace(configPath))
 	fmt.Fprintf(os.Stderr, "key_path: %s\n", d.startup.KeyPath)
 	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
 	fmt.Fprintf(os.Stderr, "pubkey_hex: %s\n", strings.TrimSpace(pubLine))
@@ -1190,7 +1244,7 @@ func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt 
 	if chainAccess.WOCProxyEnabled {
 		fmt.Fprintf(os.Stderr, "woc_proxy.listen_addr: %s\n", strings.TrimSpace(chainAccess.WOCProxyAddr))
 	}
-	fmt.Fprintf(os.Stderr, "index_db_path: %s\n", strings.TrimSpace(d.startup.IndexDBPath))
+	fmt.Fprintf(os.Stderr, "index_db_path: %s\n", strings.TrimSpace(indexDBPath))
 }
 
 func runtimePubKeyHex(rt *clientapp.Runtime) (string, error) {
@@ -1412,7 +1466,17 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 	fsHTTPListenAddr := strings.TrimSpace(d.cfg.FSHTTP.ListenAddr)
 	network := d.currentNetworkName()
 	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
+	activeConfigPath := strings.TrimSpace(d.activeConfigPath)
+	activeIndexDBPath := strings.TrimSpace(d.activeIndexDBPath)
 	d.mu.RUnlock()
+	configPath := strings.TrimSpace(d.startup.ConfigPath)
+	if activeConfigPath != "" {
+		configPath = activeConfigPath
+	}
+	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
+	if activeIndexDBPath != "" {
+		indexDBPath = activeIndexDBPath
+	}
 	keyState := managedKeyStateMissing
 	switch {
 	case unlocked:
@@ -1433,9 +1497,9 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 		"last_error":             lastError,
 		"network":                strings.TrimSpace(network),
 		"vault_path":             strings.TrimSpace(d.startup.VaultPath),
-		"config_path":            strings.TrimSpace(d.startup.ConfigPath),
+		"config_path":            configPath,
 		"key_path":               strings.TrimSpace(d.startup.KeyPath),
-		"index_db_path":          strings.TrimSpace(d.startup.IndexDBPath),
+		"index_db_path":          indexDBPath,
 		"api_listen_addr":        apiListenAddr,
 		"fs_http_listen_addr":    fsHTTPListenAddr,
 		"startup_error_service":  strings.TrimSpace(startupErr.Service),
@@ -1592,6 +1656,8 @@ func (d *managedDaemon) clearUnlockedKey() {
 	d.runtimeFSHTTPReady = false
 	d.runtimeTipReady = false
 	d.runtimeUTXOReady = false
+	d.activeConfigPath = ""
+	d.activeIndexDBPath = ""
 	d.runtimeStartSeq++
 	d.mu.Unlock()
 	d.emitBackendSnapshot("key_locked")
@@ -1654,7 +1720,7 @@ func (d *managedDaemon) failRuntimeStartup(seq uint64, err error) {
 	d.emitPhaseEvent()
 }
 
-func (d *managedDaemon) commitRuntimeStartup(seq uint64, rt *clientapp.Runtime, cancel context.CancelFunc, runtimeAPI http.Handler) bool {
+func (d *managedDaemon) commitRuntimeStartup(seq uint64, rt *clientapp.Runtime, cancel context.CancelFunc, runtimeAPI http.Handler, configPath string, indexDBPath string) bool {
 	d.mu.Lock()
 	if seq != d.runtimeStartSeq || strings.TrimSpace(d.unlockedPrivHex) == "" {
 		d.mu.Unlock()
@@ -1669,6 +1735,8 @@ func (d *managedDaemon) commitRuntimeStartup(seq uint64, rt *clientapp.Runtime, 
 	d.rtAPI = runtimeAPI
 	d.runtimePhase = managedRuntimePhaseReady
 	d.runtimeErrorMessage = ""
+	d.activeConfigPath = strings.TrimSpace(configPath)
+	d.activeIndexDBPath = strings.TrimSpace(indexDBPath)
 	d.mu.Unlock()
 	d.emitBackendSnapshot("runtime_ready")
 	d.emitPhaseEvent()

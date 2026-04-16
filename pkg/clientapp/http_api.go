@@ -4936,7 +4936,7 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
-		{Key: "storage.workspace_dir", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "工作目录", RestartRequired: true},
+		{Key: "storage.workspace_dir", Type: adminConfigString, MinLen: 0, MaxLen: 512, Description: "工作目录（可空：钱包模式）", RestartRequired: true},
 		{Key: "storage.data_dir", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "数据目录", RestartRequired: true},
 		{Key: "storage.min_free_bytes", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 50, Description: "最小空闲空间"},
 		{Key: "index.sqlite_path", Type: adminConfigString, MinLen: 1, MaxLen: 512, Description: "SQLite 路径", RestartRequired: true},

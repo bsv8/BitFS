@@ -87,7 +87,6 @@ func NewDefaultConfig(network string) clientapp.Config {
 	cfg.HTTP.Enabled = true
 	cfg.FSHTTP.Enabled = true
 	cfg.Index.Backend = "sqlite"
-	cfg.Storage.WorkspaceDir = "workspace"
 	cfg.Storage.DataDir = "data"
 	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
@@ -172,7 +171,7 @@ func PubHexFromPrivHex(privHex string) (string, error) {
 		return "", err
 	}
 	pub := k.GetPublic()
-	raw, err := crypto.MarshalPublicKey(pub)
+	raw, err := pub.Raw()
 	if err != nil {
 		return "", err
 	}

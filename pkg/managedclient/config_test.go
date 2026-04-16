@@ -69,7 +69,7 @@ func TestLoadRuntimeConfigOrInit_ProductModeBackfillsExistingEmptyPeers(t *testi
 
 	vaultDir := t.TempDir()
 	configPath := vaultDir + "/config.yaml"
-	raw := []byte("bsv:\n  network: main\nnetwork:\n  gateways: []\n  arbiters: []\nstorage:\n  workspace_dir: workspace\n  data_dir: data\nindex:\n  backend: sqlite\n  sqlite_path: data/client-index.sqlite\nhttp:\n  enabled: true\n  listen_addr: 127.0.0.1:18080\nfs_http:\n  enabled: true\n  listen_addr: 127.0.0.1:18090\n")
+	raw := []byte("bsv:\n  network: main\nnetwork:\n  gateways: []\n  arbiters: []\nstorage:\n  data_dir: data\nindex:\n  backend: sqlite\n  sqlite_path: data/client-index.sqlite\nhttp:\n  enabled: true\n  listen_addr: 127.0.0.1:18080\nfs_http:\n  enabled: true\n  listen_addr: 127.0.0.1:18090\n")
 	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
@@ -92,5 +92,17 @@ func TestLoadRuntimeConfigOrInit_ProductModeBackfillsExistingEmptyPeers(t *testi
 	}
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 		t.Fatalf("config file should be deleted when there is no diff")
+	}
+}
+
+func TestNewDefaultConfig_WorkspaceDirStartsEmpty(t *testing.T) {
+	t.Parallel()
+
+	cfg := NewDefaultConfig("test")
+	if cfg.Storage.WorkspaceDir != "" {
+		t.Fatalf("workspace_dir should be empty by default, got=%q", cfg.Storage.WorkspaceDir)
+	}
+	if cfg.Storage.DataDir == "" {
+		t.Fatalf("data_dir should not be empty")
 	}
 }
