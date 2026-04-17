@@ -1274,6 +1274,91 @@ func TestHandleManagedControlCommand_PricingCommandsUnsupportedAction(t *testing
 	}
 }
 
+func TestHandleManagedControlCommand_WorkspaceCommands(t *testing.T) {
+	t.Run("wallet_mode_list_and_sync", func(t *testing.T) {
+		stream := &capturedManagedControlStream{}
+		rt := newManagedWorkspaceWalletRuntime(t)
+		d := &managedDaemon{
+			controlStream: stream,
+			backendPhase:  managedBackendPhaseAvailable,
+			runtimePhase:  managedRuntimePhaseStopped,
+			rootCtx:       t.Context(),
+			rt:            rt,
+		}
+
+		d.handleManagedControlCommand(ManagedControlCommandFrame{
+			Type:      "command",
+			CommandID: "cmd-workspace-list",
+			Action:    "workspace.list",
+		})
+		listEvent, ok := findManagedCommandEvent(stream.events, "cmd-workspace-list")
+		if !ok {
+			t.Fatal("workspace list result event not found")
+		}
+		assertManagedCommandResultFields(t, listEvent, "workspace.list")
+		if got, want := strings.TrimSpace(fmt.Sprint(listEvent.Payload["ok"])), "true"; got != want {
+			t.Fatalf("workspace list ok=%q, want %q", got, want)
+		}
+		if got, want := strings.TrimSpace(fmt.Sprint(listEvent.Payload["result"])), "listed"; got != want {
+			t.Fatalf("workspace list result=%q, want %q", got, want)
+		}
+		if got, want := strings.TrimSpace(fmt.Sprint(listEvent.Payload["total"])), "0"; got != want {
+			t.Fatalf("workspace list total=%q, want %q", got, want)
+		}
+
+		d.handleManagedControlCommand(ManagedControlCommandFrame{
+			Type:      "command",
+			CommandID: "cmd-workspace-sync",
+			Action:    "workspace.sync_once",
+		})
+		syncEvent, ok := findManagedCommandEvent(stream.events, "cmd-workspace-sync")
+		if !ok {
+			t.Fatal("workspace sync_once result event not found")
+		}
+		assertManagedCommandResultFields(t, syncEvent, "workspace.sync_once")
+		if got, want := strings.TrimSpace(fmt.Sprint(syncEvent.Payload["ok"])), "true"; got != want {
+			t.Fatalf("workspace sync ok=%q, want %q", got, want)
+		}
+		if got, want := strings.TrimSpace(fmt.Sprint(syncEvent.Payload["result"])), "synced"; got != want {
+			t.Fatalf("workspace sync result=%q, want %q", got, want)
+		}
+		if got, want := strings.TrimSpace(fmt.Sprint(syncEvent.Payload["seed_count"])), "0"; got != want {
+			t.Fatalf("workspace sync seed_count=%q, want %q", got, want)
+		}
+	})
+
+	t.Run("missing_params_and_unknown_action", func(t *testing.T) {
+		cases := []ManagedControlCommandFrame{
+			{Type: "command", CommandID: "cmd-workspace-add-missing", Action: "workspace.add"},
+			{Type: "command", CommandID: "cmd-workspace-update-missing", Action: "workspace.update", Payload: map[string]any{"workspace_path": "/tmp/demo"}},
+			{Type: "command", CommandID: "cmd-workspace-delete-missing", Action: "workspace.delete"},
+			{Type: "command", CommandID: "cmd-workspace-unknown", Action: "workspace.unknown"},
+		}
+		for _, tc := range cases {
+			stream := &capturedManagedControlStream{}
+			rt := newManagedWorkspaceWalletRuntime(t)
+			d := &managedDaemon{
+				controlStream: stream,
+				backendPhase:  managedBackendPhaseAvailable,
+				runtimePhase:  managedRuntimePhaseStopped,
+				rootCtx:       t.Context(),
+				rt:            rt,
+			}
+			d.handleManagedControlCommand(tc)
+			result, ok := findManagedCommandResult(stream.events, tc.CommandID)
+			if !ok {
+				t.Fatalf("command result event not found: %s", tc.CommandID)
+			}
+			if got, want := strings.TrimSpace(result["ok"]), "false"; got != want {
+				t.Fatalf("command ok=%q, want %q", got, want)
+			}
+			if strings.TrimSpace(result["error"]) == "" {
+				t.Fatalf("command error should not be empty: %s", tc.CommandID)
+			}
+		}
+	})
+}
+
 func TestManagedObsControlWhitelist_AllActionsRouted(t *testing.T) {
 	t.Parallel()
 
@@ -1297,9 +1382,12 @@ func TestManagedObsControlWhitelist_AllActionsRouted(t *testing.T) {
 		if lockID == "" {
 			t.Fatalf("obs control whitelist lock id should not be empty: action=%s", action)
 		}
-		if _, ok := managedObsControlLockHandler(lockID); !ok {
+		if !isManagedObsControlLockRouted(lockID) {
 			t.Fatalf("obs control action lock id has no daemon handler: action=%s lock_id=%s", action, lockID)
 		}
+	}
+	if !isManagedObsControlLockRouted("bitfs.managed.control.execute_workspace") {
+		t.Fatal("workspace execute lock should be routed")
 	}
 	if isManagedObsControlActionRouted("pricing.unknown") {
 		t.Fatal("pricing.unknown should not be treated as routed")
@@ -1475,4 +1563,28 @@ func newManagedPricingControlRuntime(t *testing.T) (*clientapp.Runtime, string) 
 		t.Fatalf("new pricing runtime: %v", err)
 	}
 	return rt, seedHash
+}
+
+func newManagedWorkspaceWalletRuntime(t *testing.T) *clientapp.Runtime {
+	t.Helper()
+	var cfg clientapp.Config
+	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeTest); err != nil {
+		t.Fatalf("apply config defaults: %v", err)
+	}
+	cfg.Storage.WorkspaceDir = ""
+	cfg.Storage.DataDir = filepath.Join(t.TempDir(), "data")
+	rt, err := clientapp.NewPricingTestRuntime(t.Context(), nil, cfg)
+	if err != nil {
+		t.Fatalf("new workspace runtime: %v", err)
+	}
+	cfgSvc := rt.RuntimeConfigService()
+	if cfgSvc == nil {
+		t.Fatal("runtime config service is nil")
+	}
+	next := cfgSvc.Snapshot()
+	next.Storage.WorkspaceDir = ""
+	if err := cfgSvc.UpdateMemoryOnly(next); err != nil {
+		t.Fatalf("set wallet workspace_dir: %v", err)
+	}
+	return rt
 }

@@ -88,6 +88,12 @@ const (
 	controlActionPricingGetAudits        = "pricing.get_audits"
 	controlActionPricingListSeeds        = "pricing.list_seeds"
 
+	controlActionWorkspaceList     = "workspace.list"
+	controlActionWorkspaceAdd      = "workspace.add"
+	controlActionWorkspaceUpdate   = "workspace.update"
+	controlActionWorkspaceDelete   = "workspace.delete"
+	controlActionWorkspaceSyncOnce = "workspace.sync_once"
+
 	managedUnlockResultSucceeded managedUnlockResult = "succeeded"
 	managedUnlockResultAlready   managedUnlockResult = "already_unlocked"
 )
@@ -592,16 +598,34 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
 		return result
 	}
-	handler, ok := managedObsControlLockHandler(lockID)
-	if !ok {
+	lockID = strings.TrimSpace(lockID)
+	var (
+		out controlCommandResult
+		err error
+	)
+	switch {
+	case lockID == "bitfs.managed.key.ensure_material":
+		out, err = managedObsControlHandleKeyEnsureMaterial(d, req)
+	case lockID == "bitfs.managed.key.unlock_with_password":
+		out, err = managedObsControlHandleKeyUnlock(d, req)
+	case lockID == "bitfs.managed.key.lock_runtime":
+		out, err = managedObsControlHandleKeyLock(d, req)
+	case lockID == "bitfs.managed.control.execute_pricing" || strings.HasPrefix(lockID, "bitfs.clientapp.pricing.trigger_"):
+		out, err = d.executeManagedPricingControlCommand(req)
+	case lockID == "bitfs.managed.control.execute_workspace" || strings.HasPrefix(lockID, "bitfs.clientapp.workspace.kernel_"):
+		out, err = d.executeManagedWorkspaceControlCommand(req)
+	default:
 		result.Result = "failed"
 		result.Error = fmt.Sprintf("obs control action is whitelisted but not routed: action=%s lock_id=%s", req.Action, lockID)
 		return result
 	}
-	return handler(d, req)
+	if err != nil {
+		result.Result = "failed"
+		result.Error = err.Error()
+		return result
+	}
+	return out
 }
-
-type managedObsControlCommandHandler func(d *managedDaemon, req controlCommandRequest) controlCommandResult
 
 // isManagedObsControlActionRouted 返回 action 是否已在 daemon 中实现分发。
 func isManagedObsControlActionRouted(action string) bool {
@@ -609,27 +633,10 @@ func isManagedObsControlActionRouted(action string) bool {
 	if !ok {
 		return false
 	}
-	_, ok = managedObsControlLockHandler(lockID)
-	return ok
+	return isManagedObsControlLockRouted(lockID)
 }
 
-func managedObsControlLockHandler(lockID string) (managedObsControlCommandHandler, bool) {
-	switch strings.TrimSpace(lockID) {
-	case "bitfs.managed.key.ensure_material":
-		return managedObsControlHandleKeyEnsureMaterial, true
-	case "bitfs.managed.key.unlock_with_password":
-		return managedObsControlHandleKeyUnlock, true
-	case "bitfs.managed.key.lock_runtime":
-		return managedObsControlHandleKeyLock, true
-	default:
-		if strings.HasPrefix(strings.TrimSpace(lockID), "bitfs.clientapp.pricing.trigger_") {
-			return managedObsControlHandlePricing, true
-		}
-		return nil, false
-	}
-}
-
-func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
 	result := controlCommandResult{
 		CommandID: req.CommandID,
 		Action:    req.Action,
@@ -641,7 +648,7 @@ func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlComma
 		result.BackendPhase = d.currentBackendPhase()
 		result.RuntimePhase = d.currentRuntimePhase()
 		result.KeyState = d.currentKeyState()
-		return result
+		return result, nil
 	}
 	ticket, err := d.ensureKeyMaterial(password)
 	if err != nil {
@@ -650,17 +657,17 @@ func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlComma
 		result.BackendPhase = d.currentBackendPhase()
 		result.RuntimePhase = d.currentRuntimePhase()
 		result.KeyState = d.currentKeyState()
-		return result
+		return result, nil
 	}
 	result.OK = true
 	result.Result = ticket.Result
 	result.BackendPhase = d.currentBackendPhase()
 	result.RuntimePhase = d.currentRuntimePhase()
 	result.KeyState = d.currentKeyState()
-	return result
+	return result, nil
 }
 
-func managedObsControlHandleKeyUnlock(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+func managedObsControlHandleKeyUnlock(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
 	result := controlCommandResult{
 		CommandID: req.CommandID,
 		Action:    req.Action,
@@ -672,7 +679,7 @@ func managedObsControlHandleKeyUnlock(d *managedDaemon, req controlCommandReques
 		result.BackendPhase = d.currentBackendPhase()
 		result.RuntimePhase = d.currentRuntimePhase()
 		result.KeyState = d.currentKeyState()
-		return result
+		return result, nil
 	}
 	ticket, err := d.unlockWithPassword(d.rootCtx, unlockSourceObs, password)
 	if err != nil {
@@ -681,7 +688,7 @@ func managedObsControlHandleKeyUnlock(d *managedDaemon, req controlCommandReques
 		result.BackendPhase = d.currentBackendPhase()
 		result.RuntimePhase = d.currentRuntimePhase()
 		result.KeyState = d.currentKeyState()
-		return result
+		return result, nil
 	}
 	result.OK = true
 	result.Result = string(ticket.Result)
@@ -690,10 +697,10 @@ func managedObsControlHandleKeyUnlock(d *managedDaemon, req controlCommandReques
 	result.BackendPhase = d.currentBackendPhase()
 	result.RuntimePhase = d.currentRuntimePhase()
 	result.KeyState = d.currentKeyState()
-	return result
+	return result, nil
 }
 
-func managedObsControlHandleKeyLock(d *managedDaemon, req controlCommandRequest) controlCommandResult {
+func managedObsControlHandleKeyLock(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
 	result := controlCommandResult{
 		CommandID: req.CommandID,
 		Action:    req.Action,
@@ -704,29 +711,35 @@ func managedObsControlHandleKeyLock(d *managedDaemon, req controlCommandRequest)
 		result.BackendPhase = d.currentBackendPhase()
 		result.RuntimePhase = d.currentRuntimePhase()
 		result.KeyState = d.currentKeyState()
-		return result
+		return result, nil
 	}
 	result.OK = true
 	result.Result = "locked"
 	result.BackendPhase = d.currentBackendPhase()
 	result.RuntimePhase = d.currentRuntimePhase()
 	result.KeyState = d.currentKeyState()
-	return result
+	return result, nil
 }
 
-func managedObsControlHandlePricing(d *managedDaemon, req controlCommandRequest) controlCommandResult {
-	pricingResult, err := d.executeManagedPricingControlCommand(req)
-	if err == nil {
-		return pricingResult
-	}
-	return controlCommandResult{
-		CommandID:    req.CommandID,
-		Action:       req.Action,
-		Result:       "failed",
-		Error:        err.Error(),
-		BackendPhase: d.currentBackendPhase(),
-		RuntimePhase: d.currentRuntimePhase(),
-		KeyState:     d.currentKeyState(),
+func isManagedObsControlLockRouted(lockID string) bool {
+	lockID = strings.TrimSpace(lockID)
+	switch {
+	case lockID == "bitfs.managed.key.ensure_material":
+		return true
+	case lockID == "bitfs.managed.key.unlock_with_password":
+		return true
+	case lockID == "bitfs.managed.key.lock_runtime":
+		return true
+	case lockID == "bitfs.managed.control.execute_workspace":
+		return true
+	case lockID == "bitfs.managed.control.execute_pricing":
+		return true
+	case strings.HasPrefix(lockID, "bitfs.clientapp.pricing.trigger_"):
+		return true
+	case strings.HasPrefix(lockID, "bitfs.clientapp.workspace.kernel_"):
+		return true
+	default:
+		return false
 	}
 }
 
@@ -755,7 +768,7 @@ func ensureManagedObsControlRouteCoverage() error {
 				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action lock id is empty: action=%s", action)
 				return
 			}
-			if _, ok := managedObsControlLockHandler(lockID); !ok {
+			if !isManagedObsControlLockRouted(lockID) {
 				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action is whitelisted but not routed: action=%s lock_id=%s", action, lockID)
 				return
 			}
@@ -784,6 +797,250 @@ func (d *managedDaemon) emitManagedCommandResult(result controlCommandResult) {
 		payload[key] = value
 	}
 	d.controlStream.Emit("backend.command.result", "private", "managed_daemon", "", payload)
+}
+
+func (d *managedDaemon) executeManagedWorkspaceControlCommand(req controlCommandRequest) (controlCommandResult, error) {
+	if d == nil {
+		return controlCommandResult{
+			CommandID: req.CommandID,
+			Action:    req.Action,
+			Result:    "failed",
+			Error:     "runtime not initialized",
+		}, nil
+	}
+	rt := d.currentRuntime()
+	if rt == nil || rt.ClientKernel() == nil {
+		return workspaceActionFailure(req, d, "workspace kernel not initialized", nil), nil
+	}
+	workspace := rt.ClientKernel().Workspace()
+	walletMode := strings.TrimSpace(rt.ConfigSnapshot().Storage.WorkspaceDir) == ""
+	if workspace == nil {
+		switch strings.TrimSpace(req.Action) {
+		case controlActionWorkspaceList:
+			if walletMode {
+				return workspaceActionSuccess(req, "listed", map[string]any{"items": []any{}, "total": 0}, d), nil
+			}
+			return workspaceActionFailure(req, d, "workspace manager not initialized", nil), nil
+		case controlActionWorkspaceSyncOnce:
+			if walletMode {
+				return workspaceActionSuccess(req, "synced", map[string]any{"seed_count": 0, "biz_seeds": []any{}}, d), nil
+			}
+			return workspaceActionFailure(req, d, "workspace manager not initialized", nil), nil
+		default:
+			return workspaceActionFailure(req, d, "workspace manager not initialized", nil), nil
+		}
+	}
+	ctx := d.rootCtx
+	if ctx == nil {
+		return workspaceActionFailure(req, d, "runtime context is not ready", nil), nil
+	}
+
+	switch strings.TrimSpace(req.Action) {
+	case controlActionWorkspaceList:
+		items, err := workspace.ListWithContext(ctx)
+		if err != nil {
+			return workspaceActionFailure(req, d, err.Error(), nil), nil
+		}
+		return workspaceActionSuccess(req, "listed", map[string]any{
+			"items": items,
+			"total": len(items),
+		}, d), nil
+
+	case controlActionWorkspaceAdd:
+		path := strings.TrimSpace(controlCommandPayloadString(req.Payload, "path"))
+		if path == "" {
+			return workspaceActionFailure(req, d, "path is required", nil), nil
+		}
+		maxBytes := uint64(0)
+		if value, ok := req.Payload["max_bytes"]; ok {
+			parsed, valid := workspacePayloadUint64(value)
+			if !valid {
+				return workspaceActionFailure(req, d, "max_bytes must be a number", nil), nil
+			}
+			maxBytes = parsed
+		}
+		item, err := workspace.AddWithContext(ctx, path, maxBytes)
+		payload := map[string]any{
+			"workspace":        item,
+			"mutation_applied": err == nil,
+		}
+		if err == nil {
+			syncSeeds, syncErr := workspace.SyncOnce(ctx)
+			payload["sync"] = map[string]any{
+				"seed_count": len(syncSeeds),
+				"biz_seeds":  []any{},
+			}
+			payload["need_sync"] = syncErr != nil
+			if syncErr != nil {
+				err = syncErr
+			}
+		}
+		if err != nil {
+			return workspaceActionFailure(req, d, err.Error(), payload), nil
+		}
+		return workspaceActionSuccess(req, "added", payload, d), nil
+
+	case controlActionWorkspaceUpdate:
+		workspacePath := strings.TrimSpace(controlCommandPayloadString(req.Payload, "workspace_path"))
+		if workspacePath == "" {
+			return workspaceActionFailure(req, d, "workspace_path is required", nil), nil
+		}
+		var maxBytes *uint64
+		if value, ok := req.Payload["max_bytes"]; ok {
+			parsed, valid := workspacePayloadUint64(value)
+			if !valid {
+				return workspaceActionFailure(req, d, "max_bytes must be a number", nil), nil
+			}
+			maxBytes = &parsed
+		}
+		var enabled *bool
+		if value, ok := req.Payload["enabled"]; ok {
+			parsed, valid := workspacePayloadBool(value)
+			if !valid {
+				return workspaceActionFailure(req, d, "enabled must be a boolean", nil), nil
+			}
+			enabled = &parsed
+		}
+		if maxBytes == nil && enabled == nil {
+			return workspaceActionFailure(req, d, "no fields to update", nil), nil
+		}
+		item, err := workspace.UpdateByPathWithContext(ctx, workspacePath, maxBytes, enabled)
+		payload := map[string]any{
+			"workspace":        item,
+			"mutation_applied": err == nil,
+		}
+		if err == nil {
+			syncSeeds, syncErr := workspace.SyncOnce(ctx)
+			payload["sync"] = map[string]any{
+				"seed_count": len(syncSeeds),
+				"biz_seeds":  []any{},
+			}
+			payload["need_sync"] = syncErr != nil
+			if syncErr != nil {
+				err = syncErr
+			}
+		}
+		if err != nil {
+			return workspaceActionFailure(req, d, err.Error(), payload), nil
+		}
+		return workspaceActionSuccess(req, "updated", payload, d), nil
+
+	case controlActionWorkspaceDelete:
+		workspacePath := strings.TrimSpace(controlCommandPayloadString(req.Payload, "workspace_path"))
+		if workspacePath == "" {
+			return workspaceActionFailure(req, d, "workspace_path is required", nil), nil
+		}
+		err := workspace.DeleteByPathWithContext(ctx, workspacePath)
+		payload := map[string]any{
+			"workspace_path":   workspacePath,
+			"mutation_applied": err == nil,
+		}
+		if err == nil {
+			syncSeeds, syncErr := workspace.SyncOnce(ctx)
+			payload["sync"] = map[string]any{
+				"seed_count": len(syncSeeds),
+				"biz_seeds":  []any{},
+			}
+			payload["need_sync"] = syncErr != nil
+			if syncErr != nil {
+				err = syncErr
+			}
+		}
+		if err != nil {
+			return workspaceActionFailure(req, d, err.Error(), payload), nil
+		}
+		return workspaceActionSuccess(req, "deleted", payload, d), nil
+
+	case controlActionWorkspaceSyncOnce:
+		seeds, err := workspace.SyncOnce(ctx)
+		if err != nil {
+			return workspaceActionFailure(req, d, err.Error(), nil), nil
+		}
+		return workspaceActionSuccess(req, "synced", map[string]any{
+			"seed_count": len(seeds),
+			"biz_seeds":  []any{},
+		}, d), nil
+
+	default:
+		return controlCommandResult{}, fmt.Errorf("unsupported control action: %s", req.Action)
+	}
+}
+
+func workspaceActionSuccess(req controlCommandRequest, result string, payload map[string]any, d *managedDaemon) controlCommandResult {
+	return controlCommandResult{
+		CommandID:    req.CommandID,
+		Action:       req.Action,
+		OK:           true,
+		Result:       result,
+		BackendPhase: d.currentBackendPhase(),
+		RuntimePhase: d.currentRuntimePhase(),
+		KeyState:     d.currentKeyState(),
+		Payload:      payload,
+	}
+}
+
+func workspaceActionFailure(req controlCommandRequest, d *managedDaemon, errText string, payload map[string]any) controlCommandResult {
+	return controlCommandResult{
+		CommandID:    req.CommandID,
+		Action:       req.Action,
+		Result:       "failed",
+		Error:        strings.TrimSpace(errText),
+		BackendPhase: d.currentBackendPhase(),
+		RuntimePhase: d.currentRuntimePhase(),
+		KeyState:     d.currentKeyState(),
+		Payload:      payload,
+	}
+}
+
+func workspacePayloadUint64(raw any) (uint64, bool) {
+	switch v := raw.(type) {
+	case uint64:
+		return v, true
+	case uint32:
+		return uint64(v), true
+	case uint:
+		return uint64(v), true
+	case int64:
+		if v < 0 {
+			return 0, false
+		}
+		return uint64(v), true
+	case int:
+		if v < 0 {
+			return 0, false
+		}
+		return uint64(v), true
+	case float64:
+		if v < 0 {
+			return 0, false
+		}
+		return uint64(v), true
+	case float32:
+		if v < 0 {
+			return 0, false
+		}
+		return uint64(v), true
+	default:
+		return 0, false
+	}
+}
+
+func workspacePayloadBool(raw any) (bool, bool) {
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
+	}
 }
 
 func controlCommandPayloadString(payload map[string]any, key string) string {
