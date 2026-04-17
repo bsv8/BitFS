@@ -61,6 +61,7 @@ func TestTriggerWalletBSVTransfer_Success(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	res, err := TriggerWalletBSVTransfer(context.Background(), newClientDB(db, nil), rt, WalletBSVTransferRequest{
 		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
@@ -118,6 +119,7 @@ func TestTriggerWalletBSVTransfer_InsufficientBalance(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 1); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRowsWithAmount: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	res, err := TriggerWalletBSVTransfer(context.Background(), newClientDB(db, nil), rt, WalletBSVTransferRequest{
 		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
@@ -150,7 +152,7 @@ func TestTriggerWalletBSVTransfer_FailsFastWhenUTXOSyncUnhealthy(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
-	seedTipStateForSyncGuardTest(t, db, time.Now().Unix(), "")
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 	seedUTXOSyncStateForSyncGuardTest(t, db, fromAddress, time.Now().Unix(), "http 418: teapot")
 
 	_, err = TriggerWalletBSVTransfer(context.Background(), newClientDB(db, nil), rt, WalletBSVTransferRequest{
@@ -178,6 +180,7 @@ func TestTriggerWalletBSVTransfer_OwnerStoredAsAddressFallback(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(fromAddress)), 10); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	res, err := TriggerWalletBSVTransfer(context.Background(), newClientDB(db, nil), rt, WalletBSVTransferRequest{
 		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
@@ -207,6 +210,7 @@ func TestTriggerWalletBSVTransfer_InvalidAddress(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	_, err = TriggerWalletBSVTransfer(context.Background(), newClientDB(db, nil), rt, WalletBSVTransferRequest{
 		ToAddress:     "not-an-address",
@@ -252,6 +256,7 @@ func TestTriggerBizOrderPayBSV_Success(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
 		OrderID:       "order_biz_pay_bsv_1",
@@ -292,6 +297,7 @@ func TestTriggerBizOrderPayBSV_Idempotency(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	req := BizOrderPayBSVRequest{
 		OrderID:       "order_biz_pay_bsv_2",
@@ -335,6 +341,7 @@ func TestTriggerBizOrderPayBSV_EmptyOrderIDAutoCreate(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 5, 6); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
 		OrderID:       "",
 		ToAddress:     "mwCwTceJvYV27KXBc3NJZys6CjsgsoeHmf",
@@ -361,6 +368,7 @@ func TestTriggerBizOrderPayBSV_InsufficientBalance(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 1); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
 		OrderID:       "order_biz_pay_bsv_3",
@@ -394,6 +402,7 @@ func TestTriggerBizOrderPayBSV_WaitingFundCanRetry(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 1); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	store := newClientDB(db, nil)
 	req := BizOrderPayBSVRequest{
@@ -480,6 +489,7 @@ func TestTriggerBizOrderPayBSV_BroadcastFailed(t *testing.T) {
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 10); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	resp, err := TriggerBizOrderPayBSV(context.Background(), newClientDB(db, nil), rt, BizOrderPayBSVRequest{
 		OrderID:       "order_biz_pay_bsv_4",
@@ -510,6 +520,7 @@ func TestTriggerBizOrderPayBSV_RepeatedSameOrderKeepsSingleBusiness(t *testing.T
 	if err := seedWalletBSVTransferTestRows(t, db, fromAddress, strings.ToLower(strings.TrimSpace(actor.PubHex)), 20); err != nil {
 		t.Fatalf("seedWalletBSVTransferTestRows: %v", err)
 	}
+	seedWalletTransferSyncStateReady(t, db, fromAddress)
 
 	store := newClientDB(db, nil)
 	orderID := "order_biz_pay_bsv_5"
@@ -544,6 +555,13 @@ func newWalletBSVTransferTestRuntime(t *testing.T) *Runtime {
 	rt := newRuntimeForTest(t, cfg, cfg.Keys.PrivkeyHex)
 	rt.ActionChain = walletBSVTransferMockChain{}
 	return rt
+}
+
+func seedWalletTransferSyncStateReady(t *testing.T, db *sql.DB, address string) {
+	t.Helper()
+	now := time.Now().Unix()
+	seedTipStateForSyncGuardTest(t, db, now, "")
+	seedUTXOSyncStateForSyncGuardTest(t, db, address, now, "")
 }
 
 func seedWalletBSVTransferTestRows(t *testing.T, db *sql.DB, address string, ownerPubkeyHex string, amounts ...uint64) error {

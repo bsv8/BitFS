@@ -70,9 +70,9 @@ func TestInitIndexDB_FreshSchemaKeepsFinanceColumns(t *testing.T) {
 
 	// 第六次迭代：只测试主口径字段
 	if _, err := db.Exec(`INSERT INTO order_settlements(
-		settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
-	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		"set_fresh_1", "ord_fresh_1", 1, "formal", "settlement_payment_attempt", "1", "c2c_transfer", "open", "chain", "posted", "posted", "client:self", "pool:peer", "", "", "idem_biz_2", "新业务", "{}", "{}", 1700000003, 1700000003,
+		settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
+	) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		"set_fresh_1", "ord_fresh_1", 1, "formal", "settlement_payment_attempt", "1", "c2c_transfer", "open", "chain", "posted", "posted", "client:self", "pool:peer", "", "", "新业务", "{}", "{}", 1700000003, 1700000003,
 	); err != nil {
 		t.Fatalf("insert fresh order_settlements failed: %v", err)
 	}
@@ -322,10 +322,10 @@ func TestSettlementPaymentAttemptWriteGuard_NoSharedEntryDirectCalls(t *testing.
 	}
 	allowed := map[string]map[string]bool{
 		"db_process_writes.go": {
-			"func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {": true,
+			"func dbAppendFinBusiness(ctx context.Context, store *clientDB, e finBusinessEntry) error {":    true,
 			"func dbAppendFinProcessEvent(ctx context.Context, tx *gen.Tx, e finProcessEventEntry) error {": true,
-			"return dbAppendFinBusinessTx(ctx, tx, e)":                                                     true,
-			"return dbAppendFinProcessEvent(ctx, tx, e)":                                                   true,
+			"return dbAppendFinBusinessTx(ctx, tx, e)":                                                      true,
+			"return dbAppendFinProcessEvent(ctx, tx, e)":                                                    true,
 		},
 	}
 

@@ -44,6 +44,11 @@ type inboxReceipt struct {
 	ReceivedAtUnix int64 `protobuf:"varint,2,opt,name=received_at_unix,json=receivedAtUnix,proto3" json:"received_at_unix"`
 }
 
+type peerCallPaymentDecision struct {
+	Scheme string
+	Option *ncall.PaymentOption
+}
+
 type routeIndexManifest struct {
 	Route               string `protobuf:"bytes,1,opt,name=route,proto3" json:"route"`
 	SeedHash            string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
@@ -76,7 +81,7 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 			body := clientCapabilitiesShowBody(rt)
 			return marshalNodeCallProto(&body)
 		case routeInboxMessage:
-			return storeInboxMessage(store, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
+			return storeInboxMessage(ctx, store, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
@@ -127,10 +132,14 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	if !isNodePaymentQuoted(out) {
 		return out, nil
 	}
-	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentQuoted(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
+	decision, err := decidePeerCallPayment(rt, p.PaymentScheme, out.PaymentSchemes)
+	if err != nil {
+		return ncall.CallResp{}, err
 	}
-	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, out.PaymentSchemes, p.RequireActiveFeePool)
+	if paymentMode == "quote" {
+		return quotePeerCallFromPaymentQuoted(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool)
+	}
+	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool)
 	if payErr != nil {
 		return ncall.CallResp{}, payErr
 	}
@@ -214,6 +223,38 @@ func normalizePeerCallPaymentMode(raw string) string {
 	}
 }
 
+// decidePeerCallPayment 是 payment_scheme 唯一决策入口。
+// 设计说明：
+// - quote/auto/pay 三种入口都调用这里；
+// - 执行层只消费这里给出的决策结果，不再维护平行规则。
+func decidePeerCallPayment(rt *Runtime, requestedScheme string, options []*ncall.PaymentOption) (peerCallPaymentDecision, error) {
+	preferred := strings.TrimSpace(requestedScheme)
+	if preferred == "" {
+		preferred = preferredPaymentScheme(rt)
+	}
+	normalized, err := normalizePreferredPaymentScheme(preferred)
+	if err != nil {
+		return peerCallPaymentDecision{}, err
+	}
+	if len(options) == 0 {
+		return peerCallPaymentDecision{Scheme: normalized}, nil
+	}
+	option, ok := choosePeerCallPaymentOption(options, normalized)
+	if !ok || option == nil {
+		if strings.TrimSpace(requestedScheme) != "" {
+			return peerCallPaymentDecision{}, fmt.Errorf("payment scheme unavailable: %s", normalized)
+		}
+		return peerCallPaymentDecision{}, fmt.Errorf("no supported payment option")
+	}
+	if strings.TrimSpace(requestedScheme) != "" && !strings.EqualFold(strings.TrimSpace(option.Scheme), normalized) {
+		return peerCallPaymentDecision{}, fmt.Errorf("payment scheme unavailable: %s", normalized)
+	}
+	return peerCallPaymentDecision{
+		Scheme: strings.TrimSpace(option.Scheme),
+		Option: option,
+	}, nil
+}
+
 func normalizeCallRoute(raw string) (string, string) {
 	route := strings.TrimSpace(raw)
 	if route == "" {
@@ -238,8 +279,8 @@ func normalizeContentType(raw string) (string, string) {
 	return contentType, ""
 }
 
-func storeInboxMessage(store *clientDB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
-	return dbStoreInboxMessage(context.Background(), store, messageID, senderPubKeyHex, targetInput, route, contentType, body)
+func storeInboxMessage(ctx context.Context, store *clientDB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
+	return dbStoreInboxMessage(ctx, store, messageID, senderPubKeyHex, targetInput, route, contentType, body)
 }
 
 func resolveClientTarget(raw string) (string, peer.ID, error) {

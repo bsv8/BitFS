@@ -29,9 +29,8 @@ type feePoolChargeContext struct {
 	SignedProofCommit  []byte
 }
 
-func retryPeerCallWithAutoPayment(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, options []*ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, error) {
-	option, ok := choosePeerCallPaymentOption(options, preferredPaymentScheme(rt))
-	if !ok {
+func retryPeerCallWithAutoPayment(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, error) {
+	if option == nil {
 		return ncall.CallResp{}, fmt.Errorf("no supported payment option")
 	}
 	switch strings.TrimSpace(option.Scheme) {
@@ -58,9 +57,8 @@ func retryPeerCallWithAutoPayment(ctx context.Context, rt *Runtime, store *clien
 	}
 }
 
-func quotePeerCallFromPaymentQuoted(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, options []*ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, error) {
-	option, ok := choosePeerCallPaymentOption(options, preferredPaymentScheme(rt))
-	if !ok {
+func quotePeerCallFromPaymentQuoted(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, error) {
+	if option == nil {
 		return ncall.CallResp{}, fmt.Errorf("no supported payment option")
 	}
 	switch strings.TrimSpace(option.Scheme) {
@@ -75,7 +73,7 @@ func quotePeerCallFromPaymentQuoted(ctx context.Context, rt *Runtime, store *cli
 	}
 }
 
-func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, rawQuote []byte, preferredScheme string, requireActiveFeePool bool) (ncall.CallResp, error) {
+func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, rawQuote []byte, scheme string, requireActiveFeePool bool) (ncall.CallResp, error) {
 	if rt == nil || rt.Host == nil {
 		return ncall.CallResp{}, fmt.Errorf("runtime not initialized")
 	}
@@ -90,13 +88,11 @@ func payPeerCallWithAcceptedQuote(ctx context.Context, rt *Runtime, store *clien
 	if err != nil {
 		return ncall.CallResp{}, err
 	}
-	if strings.TrimSpace(preferredScheme) == "" {
-		preferredScheme = preferredPaymentScheme(rt)
-	}
-	scheme, err := chooseAcceptedQuotePaymentScheme(preferredScheme)
+	decision, err := decidePeerCallPayment(rt, scheme, nil)
 	if err != nil {
 		return ncall.CallResp{}, err
 	}
+	scheme = decision.Scheme
 	option := &ncall.PaymentOption{
 		Scheme:              scheme,
 		PaymentDomain:       "",
@@ -175,10 +171,6 @@ func choosePeerCallPaymentOption(options []*ncall.PaymentOption, preferredScheme
 		}
 	}
 	return nil, false
-}
-
-func chooseAcceptedQuotePaymentScheme(preferredScheme string) (string, error) {
-	return normalizePreferredPaymentScheme(preferredScheme)
 }
 
 func quotePeerCallWithFeePool2of2(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, requireActiveFeePool bool) (ncall.CallResp, feePoolServiceQuoteBuilt, poolcore.InfoResp, error) {

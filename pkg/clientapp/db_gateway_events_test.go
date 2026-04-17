@@ -114,7 +114,7 @@ func TestGatewayEventWriteRequiresCommandIDAndQueryReturnsIt(t *testing.T) {
 		t.Fatalf("unexpected empty command_id rows: %d", count)
 	}
 
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/gateways/events?command_id=cmd-fee-1&gateway_pubkey_hex=gw1&limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
 	srv.handleGatewayEvents(rec, req)
@@ -166,7 +166,7 @@ func TestListenErrorWritesOrchestratorLog(t *testing.T) {
 	h, _ := newSecpHost(t)
 	defer h.Close()
 
-	rt := &Runtime{}
+	rt := newRuntimeForTest(t, Config{}, "", withRuntimeStore(store))
 	recordGatewayRuntimeError(rt, store, h.ID(), "fee_pool_open", context.Canceled)
 
 	var eventType, source, aggregateKey, gatewayPubkeyHex, errorMessage, payloadJSON string

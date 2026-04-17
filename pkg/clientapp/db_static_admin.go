@@ -90,23 +90,30 @@ func dbListLiveWorkspaceEntries(ctx context.Context, store *clientDB, pattern st
 	})
 }
 
-func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, prefix string) (int64, error) {
+// dbDeleteLiveStreamWorkspaceRows 只做直播流定向清理。
+// 设计说明：
+// - 只删除 live/<stream_id>/ 下的 biz_workspace_files 行；
+// - 同事务执行 orphan 清理，避免遗留孤儿 seed 状态；
+// - 不触发全量 workspace 扫描。
+func dbDeleteLiveStreamWorkspaceRows(ctx context.Context, store *clientDB, streamID string) (int64, error) {
 	if store == nil {
 		return 0, fmt.Errorf("client db is nil")
 	}
-	trimmed := strings.TrimSuffix(strings.TrimSpace(prefix), "%")
-	trimmed = filepath.Clean(trimmed)
-	streamID := filepath.Base(strings.TrimRight(trimmed, string(filepath.Separator)))
+	streamID = strings.ToLower(strings.TrimSpace(streamID))
 	if !isSeedHashHex(streamID) {
-		return 0, fmt.Errorf("invalid stream prefix")
+		return 0, fmt.Errorf("invalid stream_id")
 	}
 	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (int64, error) {
-		q := tx.BizWorkspaceFiles.Query().Where(bizworkspacefiles.FilePathHasPrefix("live/" + streamID + "/"))
+		pathPrefix := "live/" + streamID + "/"
+		q := tx.BizWorkspaceFiles.Query().Where(bizworkspacefiles.FilePathHasPrefix(pathPrefix))
 		before, err := q.Count(ctx)
 		if err != nil {
 			return 0, err
 		}
-		if _, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix("live/" + streamID + "/")).Exec(ctx); err != nil {
+		if _, err := tx.BizWorkspaceFiles.Delete().Where(bizworkspacefiles.FilePathHasPrefix(pathPrefix)).Exec(ctx); err != nil {
+			return 0, err
+		}
+		if err := dbCleanupOrphanSeedStateTx(ctx, tx); err != nil {
 			return 0, err
 		}
 		return int64(before), nil

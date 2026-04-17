@@ -266,135 +266,17 @@ func (s *httpAPIServer) runtimeConfigSnapshot() Config {
 func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 	mux := http.NewServeMux()
 	registerAPI := func(prefix string) {
-		mux.HandleFunc(prefix+"/v1/info", s.withAuth(s.handleInfo))
-		mux.HandleFunc(prefix+"/v1/balance", s.withAuth(s.handleBalance))
-		mux.HandleFunc(prefix+"/v1/wallet/summary", s.withAuth(s.handleWalletSummary))
-		mux.HandleFunc(prefix+"/v1/admin/wallet/consistency", s.withAuth(s.handleAdminWalletConsistency))
-		mux.HandleFunc(prefix+"/v1/wallet/sync-once", s.withAuth(s.handleWalletSyncOnce))
-		mux.HandleFunc(prefix+"/v1/wallet/order/preview", s.withAuth(s.handleWalletOrderPreview))
-		mux.HandleFunc(prefix+"/v1/wallet/order/sign", s.withAuth(s.handleWalletOrderSign))
-		mux.HandleFunc(prefix+"/v1/wallet/order/pay-bsv", s.withAuth(s.handleWalletOrderPayBSV))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/preview", s.withAuth(s.handleWalletTokenCreatePreview))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/sign", s.withAuth(s.handleWalletTokenCreateSign))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/create/submit", s.withAuth(s.handleWalletTokenCreateSubmit))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/preview", s.withAuth(s.handleWalletTokenSendPreview))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/sign", s.withAuth(s.handleWalletTokenSendSign))
-		mux.HandleFunc(prefix+"/v1/wallet/tokens/send/submit", s.withAuth(s.handleWalletTokenSendSubmit))
-		mux.HandleFunc(prefix+"/v1/wallet/fund-flows", s.withAuth(s.handleWalletFundFlows))
-		mux.HandleFunc(prefix+"/v1/wallet/fund-flows/detail", s.withAuth(s.handleWalletFundFlowDetail))
-		mux.HandleFunc(prefix+"/v1/direct/quotes", s.withAuth(s.handleDirectQuotes))
-		mux.HandleFunc(prefix+"/v1/direct/quotes/detail", s.withAuth(s.handleDirectQuoteDetail))
-		// 调试接口：proc_direct_transfer_pools 只表达协议运行态
-		// 业务状态查询请使用 /v1/downloads/settlement-status
-		mux.HandleFunc(prefix+"/v1/direct/transfer-pools", s.withAuth(s.handleDirectTransferPoolsDebug))
-		mux.HandleFunc(prefix+"/v1/direct/transfer-pools/detail", s.withAuth(s.handleDirectTransferPoolDetailDebug))
-		mux.HandleFunc(prefix+"/v1/transactions", s.withAuth(s.handleTransactions))
-		mux.HandleFunc(prefix+"/v1/transactions/detail", s.withAuth(s.handleTransactionDetail))
-		mux.HandleFunc(prefix+"/v1/biz_purchases", s.withAuth(s.handlePurchases))
-		mux.HandleFunc(prefix+"/v1/biz_purchases/detail", s.withAuth(s.handlePurchaseDetail))
-		mux.HandleFunc(prefix+"/v1/biz_purchases/summary", s.withAuth(s.handlePurchaseSummary))
-		mux.HandleFunc(prefix+"/v1/downloads/settlement-status", s.withAuth(s.handleDownloadSettlementStatus))
-		mux.HandleFunc(prefix+"/v1/gateways/events", s.withAuth(s.handleGatewayEvents))
-		mux.HandleFunc(prefix+"/v1/gateways/events/detail", s.withAuth(s.handleGatewayEventDetail))
-		mux.HandleFunc(prefix+"/v1/files/get-file", s.withAuth(s.handleGetFileStart))
-		mux.HandleFunc(prefix+"/v1/files/get-file/plan", s.withAuth(s.handleGetFilePlan))
-		mux.HandleFunc(prefix+"/v1/files/get-file/status", s.withAuth(s.handleGetFileStatus))
-		mux.HandleFunc(prefix+"/v1/files/get-file/ensure", s.withAuth(s.handleGetFileEnsure))
-		mux.HandleFunc(prefix+"/v1/files/get-file/content", s.withAuth(s.handleGetFileContent))
-		mux.HandleFunc(prefix+"/v1/files/get-file/job", s.withAuth(s.handleGetFileJob))
-		mux.HandleFunc(prefix+"/v1/files/get-file/jobs", s.withAuth(s.handleGetFileJobs))
-		mux.HandleFunc(prefix+"/v1/files/get-file/cancel", s.withAuth(s.handleGetFileCancel))
-		mux.HandleFunc(prefix+"/v1/call", s.withAuth(s.handleCall))
-		mux.HandleFunc(prefix+"/v1/resolve", s.withAuth(s.handleResolve))
-		mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
-		mux.HandleFunc(prefix+"/v1/domains/register", s.withAuth(s.handleDomainRegister))
-		mux.HandleFunc(prefix+"/v1/domains/set-target", s.withAuth(s.handleDomainSetTarget))
-		mux.HandleFunc(prefix+"/v1/domains/settlement-status", s.withAuth(s.handleDomainSettlementStatus))
-		mux.HandleFunc(prefix+"/v1/inbox/messages", s.withAuth(s.handleInboxMessages))
-		mux.HandleFunc(prefix+"/v1/inbox/messages/detail", s.withAuth(s.handleInboxMessageDetail))
-		mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
-		mux.HandleFunc(prefix+"/v1/workspace/sync-once", s.withAuth(s.handleWorkspaceSyncOnce))
-		mux.HandleFunc(prefix+"/v1/workspace/files", s.withAuth(s.handleWorkspaceFiles))
-		mux.HandleFunc(prefix+"/v1/workspace/biz_seeds", s.withAuth(s.handleWorkspaceSeeds))
-		mux.HandleFunc(prefix+"/v1/workspace/biz_seeds/price", s.withAuth(s.handleSeedPriceUpdate))
-		mux.HandleFunc(prefix+"/v1/admin/seed-cache/stats", s.withAuth(s.handleAdminSeedCacheStats))
-		mux.HandleFunc(prefix+"/v1/admin/seed-cache/presence", s.withAuth(s.handleAdminSeedCachePresence))
-		mux.HandleFunc(prefix+"/v1/live/subscribe-uri", s.withAuth(s.handleLiveSubscribeURI))
-		mux.HandleFunc(prefix+"/v1/live/subscribe", s.withAuth(s.handleLiveSubscribe))
-		mux.HandleFunc(prefix+"/v1/live/demand/publish", s.withAuth(s.handleLiveDemandPublish))
-		mux.HandleFunc(prefix+"/v1/live/quotes", s.withAuth(s.handleLiveQuotes))
-		mux.HandleFunc(prefix+"/v1/live/publish/segment", s.withAuth(s.handleLivePublishSegment))
-		mux.HandleFunc(prefix+"/v1/live/publish/latest", s.withAuth(s.handleLivePublishLatest))
-		mux.HandleFunc(prefix+"/v1/live/latest", s.withAuth(s.handleLiveLatest))
-		mux.HandleFunc(prefix+"/v1/live/plan", s.withAuth(s.handleLivePlan))
-		mux.HandleFunc(prefix+"/v1/live/follow/start", s.withAuth(s.handleLiveFollowStart))
-		mux.HandleFunc(prefix+"/v1/live/follow/stop", s.withAuth(s.handleLiveFollowStop))
-		mux.HandleFunc(prefix+"/v1/live/follow/status", s.withAuth(s.handleLiveFollowStatus))
-		// 网关管理 API
-		mux.HandleFunc(prefix+"/v1/gateways", s.withAuth(s.handleGateways))
-		mux.HandleFunc(prefix+"/v1/gateways/master", s.withAuth(s.handleGatewayMaster))
-		mux.HandleFunc(prefix+"/v1/gateways/health", s.withAuth(s.handleGatewayHealth))
-		mux.HandleFunc(prefix+"/v1/gateways/reachability/announce", s.withAuth(s.handleGatewayReachabilityAnnounce))
-		mux.HandleFunc(prefix+"/v1/gateways/reachability/query", s.withAuth(s.handleGatewayReachabilityQuery))
-		// 仲裁管理 API
-		mux.HandleFunc(prefix+"/v1/arbiters", s.withAuth(s.handleArbiters))
-		mux.HandleFunc(prefix+"/v1/arbiters/health", s.withAuth(s.handleArbiterHealth))
-		// 文件系统管理 API
-		mux.HandleFunc(prefix+"/v1/admin/biz_workspaces", s.withAuth(s.handleAdminWorkspaces))
-		mux.HandleFunc(prefix+"/v1/admin/downloads/resume", s.withAuth(s.handleAdminResumeDownload))
-		mux.HandleFunc(prefix+"/v1/admin/fs-http/strategy-debug-log", s.withAuth(s.handleAdminStrategyDebugLog))
-		mux.HandleFunc(prefix+"/v1/admin/live/streams", s.withAuth(s.handleAdminLiveStreams))
-		mux.HandleFunc(prefix+"/v1/admin/live/streams/detail", s.withAuth(s.handleAdminLiveStreamDetail))
-		mux.HandleFunc(prefix+"/v1/admin/live/storage/summary", s.withAuth(s.handleAdminLiveStorageSummary))
-		mux.HandleFunc(prefix+"/v1/admin/static/tree", s.withAuth(s.handleAdminStaticTree))
-		mux.HandleFunc(prefix+"/v1/admin/static/mkdir", s.withAuth(s.handleAdminStaticMkdir))
-		mux.HandleFunc(prefix+"/v1/admin/static/upload", s.withAuth(s.handleAdminStaticUpload))
-		mux.HandleFunc(prefix+"/v1/admin/workspace/register-downloaded-file", s.withAuth(s.handleAdminRegisterDownloadedFile))
-		mux.HandleFunc(prefix+"/v1/admin/static/move", s.withAuth(s.handleAdminStaticMove))
-		mux.HandleFunc(prefix+"/v1/admin/static/entry", s.withAuth(s.handleAdminStaticEntry))
-		mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
-		mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
-		mux.HandleFunc(prefix+"/v1/admin/routes/indexes", s.withAuth(s.handleAdminRouteIndexes))
-		// 费用池审计历史查询入口（非主入口，仅保留原始事实查询能力）
-		// 主排障入口请使用 /v1/admin/feepool/audit/gateway-timeline 和 command-timeline
-		mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/commands/detail", s.withAuth(s.handleAdminFeePoolCommandDetail))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/events", s.withAuth(s.handleAdminFeePoolEvents))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/events/detail", s.withAuth(s.handleAdminFeePoolEventDetail))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/states", s.withAuth(s.handleAdminFeePoolStates))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/states/detail", s.withAuth(s.handleAdminFeePoolStateDetail))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/observed-states", s.withAuth(s.handleAdminFeePoolObservedStates))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/observed-states/detail", s.withAuth(s.handleAdminFeePoolObservedStateDetail))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/effects", s.withAuth(s.handleAdminFeePoolEffects))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/effects/detail", s.withAuth(s.handleAdminFeePoolEffectDetail))
-		// 费用池审计主入口（时间线统一视角）
-		mux.HandleFunc(prefix+"/v1/admin/feepool/audit/gateway-timeline", s.withAuth(s.handleAdminFeePoolGatewayAuditTimeline))
-		mux.HandleFunc(prefix+"/v1/admin/feepool/audit/command-timeline", s.withAuth(s.handleAdminFeePoolCommandAuditTimeline))
-		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands", s.withAuth(s.handleAdminClientKernelCommands))
-		mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands/detail", s.withAuth(s.handleAdminClientKernelCommandDetail))
-		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
-		mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs/detail", s.withAuth(s.handleAdminOrchestratorLogDetail))
-		mux.HandleFunc(prefix+"/v1/admin/scheduler/tasks", s.withAuth(s.handleAdminSchedulerTasks))
-		mux.HandleFunc(prefix+"/v1/admin/scheduler/runs", s.withAuth(s.handleAdminSchedulerRuns))
-		mux.HandleFunc(prefix+"/v1/admin/chain/tip/status", s.withAuth(s.handleAdminChainTipStatus))
-		mux.HandleFunc(prefix+"/v1/admin/chain/tip/logs", s.withAuth(s.handleAdminChainTipLogs))
-		mux.HandleFunc(prefix+"/v1/admin/chain/utxo/status", s.withAuth(s.handleAdminChainUTXOStatus))
-		mux.HandleFunc(prefix+"/v1/admin/chain/utxo/logs", s.withAuth(s.handleAdminChainUTXOLogs))
-		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos", s.withAuth(s.handleAdminWalletUTXOs))
-		mux.HandleFunc(prefix+"/v1/admin/wallet/utxos/detail", s.withAuth(s.handleAdminWalletUTXODetail))
-		// 资产确认队列运维
-		mux.HandleFunc(prefix+"/v1/admin/verification/summary", s.withAuth(s.handleAdminVerificationSummary))
-		mux.HandleFunc(prefix+"/v1/admin/verification/failed", s.withAuth(s.handleAdminVerificationFailed))
-		mux.HandleFunc(prefix+"/v1/admin/verification/items", s.withAuth(s.handleAdminVerificationItems))
-		mux.HandleFunc(prefix+"/v1/admin/verification/reconcile", s.withAuth(s.handleAdminVerificationReconcile))
-		mux.HandleFunc(prefix+"/v1/admin/verification/reset", s.withAuth(s.handleAdminVerificationReset))
-		mux.HandleFunc(prefix+"/v1/admin/verification/batch-retry", s.withAuth(s.handleAdminVerificationBatchRetry))
-		mux.HandleFunc(prefix+"/v1/admin/finance/businesses", s.withAuth(s.handleAdminFinanceBusinesses))
-		mux.HandleFunc(prefix+"/v1/admin/finance/businesses/detail", s.withAuth(s.handleAdminFinanceBusinessDetail))
-		mux.HandleFunc(prefix+"/v1/admin/finance/process-events", s.withAuth(s.handleAdminFinanceProcessEvents))
-		mux.HandleFunc(prefix+"/v1/admin/finance/process-events/detail", s.withAuth(s.handleAdminFinanceProcessEventDetail))
-		mux.HandleFunc(prefix+"/v1/settings/user", s.withAuth(s.handleUserSettings))
-		mux.HandleFunc(prefix+"/v1/settings/user/schema", s.withAuth(s.handleUserSettingsSchema))
+		s.registerHTTPRouteCore(mux, prefix)
+		s.registerHTTPRouteWallet(mux, prefix)
+		s.registerHTTPRouteTrade(mux, prefix)
+		s.registerHTTPRouteFile(mux, prefix)
+		s.registerHTTPRouteNode(mux, prefix)
+		s.registerHTTPRouteWorkspace(mux, prefix)
+		s.registerHTTPRouteLive(mux, prefix)
+		s.registerHTTPRouteGateway(mux, prefix)
+		s.registerHTTPRouteArbiter(mux, prefix)
+		s.registerHTTPRouteAdmin(mux, prefix)
+		s.registerHTTPRouteSettings(mux, prefix)
 	}
 	registerAPI("/api")
 	registerAPI("")
@@ -3214,7 +3096,7 @@ func (s *httpAPIServer) handleLiveFollowStop(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
 	}
-	if err := TriggerLiveFollowStop(s.store, s.rt, req.StreamID); err != nil {
+	if err := TriggerLiveFollowStop(r.Context(), s.store, s.rt, req.StreamID); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
@@ -3231,7 +3113,7 @@ func (s *httpAPIServer) handleLiveFollowStatus(w http.ResponseWriter, r *http.Re
 		return
 	}
 	streamID := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream_id")))
-	st, err := TriggerLiveFollowStatus(s.store, s.rt, streamID)
+	st, err := TriggerLiveFollowStatus(r.Context(), s.store, s.rt, streamID)
 	if err != nil {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
@@ -4226,37 +4108,43 @@ func (s *httpAPIServer) handleAdminLiveStreams(w http.ResponseWriter, r *http.Re
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid stream_id"})
 			return
 		}
-		root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir)
-		if root == "" {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace_dir not configured"})
-			return
-		}
-		livePath, err := resolveWorkspacePath(root, filepath.Join("live", streamID))
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
-		}
-		prefix := filepath.Clean(livePath) + string(filepath.Separator) + "%"
-		_ = os.RemoveAll(livePath)
-		before, err := dbDeleteLiveStreamWorkspaceRows(r.Context(), httpStore(s), prefix)
+		sep := string(filepath.Separator)
+		pattern := "%" + sep + "live" + sep + streamID + sep + "%"
+		rows, err := dbListLiveWorkspaceEntries(r.Context(), httpStore(s), pattern, false)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
-			return
+		deleteDirs := make(map[string]struct{}, len(rows)+1)
+		for _, row := range rows {
+			streamFromPath, workspaceRoot, ok := extractLiveStreamIDFromPath(row.Path)
+			if !ok || streamFromPath != streamID {
+				continue
+			}
+			deleteDirs[filepath.Join(workspaceRoot, "live", streamID)] = struct{}{}
 		}
-		if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+		if root := strings.TrimSpace(s.runtimeConfigSnapshot().Storage.WorkspaceDir); root != "" {
+			deleteDirs[filepath.Join(root, "live", streamID)] = struct{}{}
+		}
+		for livePath := range deleteDirs {
+			_ = os.RemoveAll(livePath)
+		}
+		before, err := dbDeleteLiveStreamWorkspaceRows(r.Context(), httpStore(s), streamID)
+		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
+		}
+		deletedPrefix := ""
+		for livePath := range deleteDirs {
+			deletedPrefix = livePath
+			break
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
 			"deleted":        true,
 			"stream_id":      streamID,
 			"deleted_files":  before,
-			"deleted_prefix": livePath,
+			"deleted_prefix": deletedPrefix,
 		})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})

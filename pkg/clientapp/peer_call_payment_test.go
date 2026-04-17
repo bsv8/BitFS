@@ -158,23 +158,23 @@ func TestChoosePeerCallPaymentOptionPrefersChainTxWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestChooseAcceptedQuotePaymentScheme(t *testing.T) {
-	got, err := chooseAcceptedQuotePaymentScheme("")
+func TestDecidePeerCallPaymentWithoutQuotedOptions(t *testing.T) {
+	decision, err := decidePeerCallPayment(nil, "", nil)
 	if err != nil {
-		t.Fatalf("chooseAcceptedQuotePaymentScheme(default) error = %v", err)
+		t.Fatalf("decidePeerCallPayment(default) error = %v", err)
 	}
-	if got != ncall.PaymentSchemePool2of2V1 {
-		t.Fatalf("chooseAcceptedQuotePaymentScheme(default) = %s, want %s", got, ncall.PaymentSchemePool2of2V1)
+	if decision.Scheme != ncall.PaymentSchemePool2of2V1 {
+		t.Fatalf("decidePeerCallPayment(default) = %s, want %s", decision.Scheme, ncall.PaymentSchemePool2of2V1)
 	}
-	got, err = chooseAcceptedQuotePaymentScheme(ncall.PaymentSchemeChainTxV1)
+	decision, err = decidePeerCallPayment(nil, ncall.PaymentSchemeChainTxV1, nil)
 	if err != nil {
-		t.Fatalf("chooseAcceptedQuotePaymentScheme(chain_tx_v1) error = %v", err)
+		t.Fatalf("decidePeerCallPayment(chain_tx_v1) error = %v", err)
 	}
-	if got != ncall.PaymentSchemeChainTxV1 {
-		t.Fatalf("chooseAcceptedQuotePaymentScheme(chain_tx_v1) = %s, want %s", got, ncall.PaymentSchemeChainTxV1)
+	if decision.Scheme != ncall.PaymentSchemeChainTxV1 {
+		t.Fatalf("decidePeerCallPayment(chain_tx_v1) = %s, want %s", decision.Scheme, ncall.PaymentSchemeChainTxV1)
 	}
-	if _, err := chooseAcceptedQuotePaymentScheme("unknown"); err == nil {
-		t.Fatalf("chooseAcceptedQuotePaymentScheme(unknown) expected error")
+	if _, err := decidePeerCallPayment(nil, "unknown", nil); err == nil {
+		t.Fatalf("decidePeerCallPayment(unknown) expected error")
 	}
 }
 

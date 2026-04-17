@@ -70,7 +70,7 @@ func TestInitIndexDB_CreatesCurrentPoolSchema(t *testing.T) {
 		},
 		{
 			table: "order_settlements",
-			cols:  []string{"settlement_id", "order_id", "settlement_no", "business_role", "source_type", "source_id", "accounting_scene", "accounting_subtype", "settlement_method", "status", "settlement_status", "amount_satoshi", "from_party_id", "to_party_id", "target_type", "target_id", "idempotency_key", "note", "error_message", "payload_json", "settlement_payload_json", "created_at_unix", "updated_at_unix"},
+			cols:  []string{"settlement_id", "order_id", "settlement_no", "business_role", "source_type", "source_id", "accounting_scene", "accounting_subtype", "settlement_method", "status", "settlement_status", "amount_satoshi", "from_party_id", "to_party_id", "target_type", "target_id", "note", "error_message", "payload_json", "settlement_payload_json", "created_at_unix", "updated_at_unix"},
 		},
 		{
 			table: "wallet_local_broadcast_txs",

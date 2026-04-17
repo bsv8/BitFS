@@ -86,7 +86,6 @@ type financeBusinessItem struct {
 	ToPartyID      string          `json:"to_party_id"`
 	Status         string          `json:"status"`
 	OccurredAtUnix int64           `json:"occurred_at_unix"`
-	IdempotencyKey string          `json:"idempotency_key"`
 	Note           string          `json:"note"`
 	Payload        json.RawMessage `json:"payload"`
 }
@@ -136,7 +135,6 @@ type financeProcessEventItem struct {
 	EventType      string          `json:"event_type"`
 	Status         string          `json:"status"`
 	OccurredAtUnix int64           `json:"occurred_at_unix"`
-	IdempotencyKey string          `json:"idempotency_key"`
 	Note           string          `json:"note"`
 	Payload        json.RawMessage `json:"payload"`
 }
@@ -689,7 +687,6 @@ func dbListFinanceBusinesses(ctx context.Context, store *clientDB, f financeBusi
 				like := strings.ToLower(strings.TrimSpace(f.Query))
 				hit := strings.Contains(strings.ToLower(item.OrderID), like) ||
 					strings.Contains(strings.ToLower(item.Note), like) ||
-					strings.Contains(strings.ToLower(item.IdempotencyKey), like) ||
 					strings.Contains(strings.ToLower(item.SourceType), like) ||
 					strings.Contains(strings.ToLower(item.SourceID), like) ||
 					strings.Contains(strings.ToLower(item.AccountingScene), like) ||
@@ -803,7 +800,6 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 				EventType:         strings.TrimSpace(n.EventType),
 				Status:            strings.TrimSpace(n.Status),
 				OccurredAtUnix:    n.OccurredAtUnix,
-				IdempotencyKey:    strings.TrimSpace(n.OrderID),
 				Note:              strings.TrimSpace(n.Note),
 				Payload:           json.RawMessage(n.PayloadJSON),
 			}
@@ -832,7 +828,6 @@ func dbListFinanceProcessEvents(ctx context.Context, store *clientDB, f financeP
 				like := strings.ToLower(strings.TrimSpace(f.Query))
 				hit := strings.Contains(strings.ToLower(item.ProcessID), like) ||
 					strings.Contains(strings.ToLower(item.Note), like) ||
-					strings.Contains(strings.ToLower(item.IdempotencyKey), like) ||
 					strings.Contains(strings.ToLower(item.SourceType), like) ||
 					strings.Contains(strings.ToLower(item.SourceID), like) ||
 					strings.Contains(strings.ToLower(item.AccountingScene), like) ||
@@ -895,7 +890,6 @@ func dbGetFinanceProcessEvent(ctx context.Context, store *clientDB, id int64) (f
 			EventType:         strings.TrimSpace(node.EventType),
 			Status:            strings.TrimSpace(node.Status),
 			OccurredAtUnix:    node.OccurredAtUnix,
-			IdempotencyKey:    strings.TrimSpace(node.OrderID),
 			Note:              strings.TrimSpace(node.Note),
 			Payload:           json.RawMessage(node.PayloadJSON),
 		}, nil

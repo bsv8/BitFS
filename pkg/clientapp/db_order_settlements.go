@@ -96,7 +96,6 @@ func orderSettlementToFinanceBusinessItem(n *gen.OrderSettlements) financeBusine
 		ToPartyID:         strings.TrimSpace(n.ToPartyID),
 		Status:            strings.TrimSpace(n.Status),
 		OccurredAtUnix:    n.CreatedAtUnix,
-		IdempotencyKey:    strings.TrimSpace(n.OrderID),
 		Note:              strings.TrimSpace(n.Note),
 		Payload:           json.RawMessage(n.PayloadJSON),
 	}

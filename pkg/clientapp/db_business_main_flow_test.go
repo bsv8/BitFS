@@ -356,9 +356,9 @@ func TestBusinessMainFlow_QueryByTarget(t *testing.T) {
 		businessID := fmt.Sprintf("biz_target_test_%d", i)
 		// 先插入 order_settlements（必须带 business_role）
 		if _, err := db.Exec(`INSERT INTO order_settlements(
-			settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,idempotency_key,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
-		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			fmt.Sprintf("set_target_test_%d", i), businessID, 1, "formal", "test", "test", "test", "test", "chain", "pending", "pending", "client:self", "test:peer", "", "", fmt.Sprintf("idem_%d", i), "test", `{}`, `{}`, 1700000000+int64(i), 1700000000+int64(i),
+			settlement_id,order_id,settlement_no,business_role,source_type,source_id,accounting_scene,accounting_subtype,settlement_method,status,settlement_status,from_party_id,to_party_id,target_type,target_id,note,payload_json,settlement_payload_json,created_at_unix,updated_at_unix
+		) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+			fmt.Sprintf("set_target_test_%d", i), businessID, 1, "formal", "test", "test", "test", "test", "chain", "pending", "pending", "client:self", "test:peer", "", "", "test", `{}`, `{}`, 1700000000+int64(i), 1700000000+int64(i),
 		); err != nil {
 			t.Fatalf("insert order_settlements failed: %v", err)
 		}
