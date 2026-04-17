@@ -361,6 +361,7 @@ func NewPricingTestRuntime(ctx context.Context, db *sql.DB, cfg Config) (*Runtim
 		config: cfgSvc,
 	}
 	rt.Catalog = newSellerCatalog()
+	rt.kernel = newClientKernel(rt, store, nil)
 	if store != nil {
 		if seeds, err := dbLoadSeedCatalogSnapshot(ctx, store); err == nil {
 			rt.Catalog.Replace(seeds)
@@ -378,6 +379,15 @@ func (r *Runtime) Store() ClientStore {
 		return nil
 	}
 	return r.store
+}
+
+// ClientKernel 返回运行时内核能力。
+// 说明：跨包调用只拿 kernel，不再复制一层 workspace 控制壳。
+func (r *Runtime) ClientKernel() *Kernel {
+	if r == nil {
+		return nil
+	}
+	return r.kernel
 }
 
 func (r *Runtime) Close() error {
@@ -852,7 +862,7 @@ func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtim
 	rt.bgCancel = rtCancel
 	rt.taskSched = newTaskScheduler(store, "bitcast-client")
 	rt.taskSched.ctx = rtCtx
-	rt.kernel = newClientKernel(rt, store)
+	rt.kernel = newClientKernel(rt, store, workspaceMgr)
 	rt.orch = newOrchestrator(rt, store)
 	registerLiveHandlers(store, rt)
 	registerNodeRouteHandlers(rt, store)

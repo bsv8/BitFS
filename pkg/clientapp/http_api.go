@@ -183,6 +183,7 @@ type httpAPIServer struct {
 	h         host.Host
 	gateways  []peer.AddrInfo
 	workspace *workspaceManager
+	kernel    *Kernel
 	srvMu     sync.RWMutex
 	srv       *http.Server
 	startedAt time.Time
@@ -237,6 +238,12 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		h:         h,
 		gateways:  gateways,
 		workspace: workspace,
+		kernel: func() *Kernel {
+			if rt != nil {
+				return rt.ClientKernel()
+			}
+			return nil
+		}(),
 		startedAt: time.Now(),
 		getJobs:   map[string]*fileGetJob{},
 		rpcTrace:  trace,
@@ -1531,7 +1538,6 @@ var adminClientKernelCommandTypes = []string{
 	clientKernelCommandFeePoolCycleTick,
 	clientKernelCommandFeePoolMaintain,
 	clientKernelCommandLivePlanPurchase,
-	clientKernelCommandWorkspaceSync,
 	clientKernelCommandDirectDownloadCore,
 	clientKernelCommandTransferByStrategy,
 }
@@ -2562,18 +2568,27 @@ func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	biz_seeds, err := s.workspace.SyncOnce(r.Context())
+	var kernel *Kernel
+	if s != nil {
+		kernel = s.kernel
+	}
+	if s == nil || kernel == nil || kernel.Workspace() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+		return
+	}
+	seeds, err := kernel.Workspace().SyncOnce(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	seedCount := len(seeds)
 	cfg := s.runtimeConfigSnapshot()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":                  true,
-		"seed_count":          len(biz_seeds),
+		"seed_count":          seedCount,
 		"synced_at_unix":      time.Now().Unix(),
 		"workspace_dir":       cfg.Storage.WorkspaceDir,
-		"biz_workspace_files": len(biz_seeds),
+		"biz_workspace_files": seedCount,
 	})
 }
 
@@ -3976,13 +3991,21 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
-	if s.workspace == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace manager not initialized"})
-		return
+	kernel := (*Kernel)(nil)
+	if s != nil {
+		kernel = s.kernel
+	}
+	workspace := (*workspaceManager)(nil)
+	if kernel != nil {
+		workspace = kernel.Workspace()
 	}
 	switch r.Method {
 	case http.MethodGet:
-		items, err := s.workspace.List()
+		if s == nil || workspace == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			return
+		}
+		items, err := workspace.ListWithContext(r.Context())
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
@@ -3997,16 +4020,35 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 			return
 		}
-		it, err := s.workspace.Add(req.Path, req.MaxBytes)
+		if s == nil || workspace == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			return
+		}
+		item, err := workspace.AddWithContext(r.Context(), req.Path, req.MaxBytes)
+		res := WorkspaceAddResult{Workspace: item, MutationApplied: err == nil}
+		if err == nil {
+			syncSeeds, syncErr := workspace.SyncOnce(r.Context())
+			res.Sync = workspaceSyncResultFromSeeds(workspaceChunkPriceSatPer64K(s.cfgSource), syncSeeds)
+			if syncErr != nil {
+				res.NeedSync = true
+				err = syncErr
+			}
+		}
 		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			status := http.StatusBadRequest
+			if res.MutationApplied && res.NeedSync {
+				status = http.StatusInternalServerError
+			}
+			writeJSON(w, status, map[string]any{
+				"error":            err.Error(),
+				"mutation_applied": res.MutationApplied,
+				"need_sync":        res.NeedSync,
+				"workspace":        res.Workspace,
+				"sync":             res.Sync,
+			})
 			return
 		}
-		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": it})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": res.Workspace, "sync": res.Sync})
 	case http.MethodPut:
 		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
 		if workspacePath == "" {
@@ -4021,39 +4063,76 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 			return
 		}
-		it, err := s.workspace.UpdateByPath(workspacePath, req.MaxBytes, req.Enabled)
-		if err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
-				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
-				return
+		if s == nil || workspace == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			return
+		}
+		item, err := workspace.UpdateByPathWithContext(r.Context(), workspacePath, req.MaxBytes, req.Enabled)
+		res := WorkspaceUpdateResult{Workspace: item, MutationApplied: err == nil}
+		if err == nil {
+			syncSeeds, syncErr := workspace.SyncOnce(r.Context())
+			res.Sync = workspaceSyncResultFromSeeds(workspaceChunkPriceSatPer64K(s.cfgSource), syncSeeds)
+			if syncErr != nil {
+				res.NeedSync = true
+				err = syncErr
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		}
+		if err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				status = http.StatusNotFound
+			}
+			if res.MutationApplied && res.NeedSync {
+				status = http.StatusInternalServerError
+			}
+			writeJSON(w, status, map[string]any{
+				"error":            err.Error(),
+				"mutation_applied": res.MutationApplied,
+				"need_sync":        res.NeedSync,
+				"workspace":        res.Workspace,
+				"sync":             res.Sync,
+			})
 			return
 		}
-		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": it})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "workspace": res.Workspace, "sync": res.Sync})
 	case http.MethodDelete:
 		workspacePath := strings.TrimSpace(r.URL.Query().Get("workspace_path"))
 		if workspacePath == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "workspace_path is required"})
 			return
 		}
-		if err := s.workspace.DeleteByPath(workspacePath); err != nil {
-			if strings.Contains(strings.ToLower(err.Error()), "not found") {
-				writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
-				return
+		if s == nil || workspace == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			return
+		}
+		err := workspace.DeleteByPathWithContext(r.Context(), workspacePath)
+		res := WorkspaceDeleteResult{WorkspacePath: workspacePath, MutationApplied: err == nil}
+		if err == nil {
+			syncSeeds, syncErr := workspace.SyncOnce(r.Context())
+			res.Sync = workspaceSyncResultFromSeeds(workspaceChunkPriceSatPer64K(s.cfgSource), syncSeeds)
+			if syncErr != nil {
+				res.NeedSync = true
+				err = syncErr
 			}
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		}
+		if err != nil {
+			status := http.StatusBadRequest
+			if strings.Contains(strings.ToLower(err.Error()), "not found") {
+				status = http.StatusNotFound
+			}
+			if res.MutationApplied && res.NeedSync {
+				status = http.StatusInternalServerError
+			}
+			writeJSON(w, status, map[string]any{
+				"error":            err.Error(),
+				"mutation_applied": res.MutationApplied,
+				"need_sync":        res.NeedSync,
+				"workspace_path":   res.WorkspacePath,
+				"sync":             res.Sync,
+			})
 			return
 		}
-		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "workspace_path": workspacePath})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "workspace_path": res.WorkspacePath, "sync": res.Sync})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 	}
@@ -4164,11 +4243,13 @@ func (s *httpAPIServer) handleAdminLiveStreams(w http.ResponseWriter, r *http.Re
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		if s.workspace != nil {
-			if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-				return
-			}
+		if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			return
+		}
+		if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":             true,
@@ -4525,11 +4606,13 @@ func (s *httpAPIServer) handleAdminStaticUpload(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if s.workspace != nil {
-		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
+	if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+		return
+	}
+	if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
 	seedHash, _ := dbGetWorkspaceFileSeedHash(r.Context(), httpStore(s), dst)
 	relPath := filepath.ToSlash(filepath.Join(targetRel, fileName))
@@ -4678,11 +4761,13 @@ func (s *httpAPIServer) handleAdminStaticMove(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if s.workspace != nil {
-		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
+	if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+		return
+	}
+	if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
@@ -4732,11 +4817,13 @@ func (s *httpAPIServer) handleAdminStaticEntry(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	if s.workspace != nil {
-		if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
+	if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+		return
+	}
+	if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "path": rel})
 }

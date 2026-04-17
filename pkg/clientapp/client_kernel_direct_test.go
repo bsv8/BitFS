@@ -10,7 +10,7 @@ func TestKernelDirectDownloadCoreWritesJournal(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
 	rt := &Runtime{}
-	rt.kernel = newClientKernel(rt, newClientDB(db, nil))
+	rt.kernel = newClientKernel(rt, newClientDB(db, nil), nil)
 
 	_, err := runDirectDownloadCore(context.Background(), rt, directDownloadCoreParams{
 		SeedHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
@@ -42,7 +42,7 @@ func TestKernelTransferByStrategyWritesJournal(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
 	rt := &Runtime{}
-	rt.kernel = newClientKernel(rt, newClientDB(db, nil))
+	rt.kernel = newClientKernel(rt, newClientDB(db, nil), nil)
 
 	_, err := TriggerTransferChunksByStrategy(context.Background(), newClientDB(db, nil), rt, TransferChunksByStrategyParams{
 		DemandID: "dmd_test",
@@ -98,14 +98,6 @@ func TestKernelDispatchRejectedWritesJournal(t *testing.T) {
 			errorCode: "feepool_kernel_missing",
 		},
 		{
-			name: "workspace_not_initialized",
-			cmd: clientKernelCommand{
-				CommandType: clientKernelCommandWorkspaceSync,
-				RequestedBy: "test",
-			},
-			errorCode: "workspace_not_initialized",
-		},
-		{
 			name: "invalid_stream_id",
 			cmd: clientKernelCommand{
 				CommandType: clientKernelCommandLivePlanPurchase,
@@ -123,8 +115,8 @@ func TestKernelDispatchRejectedWritesJournal(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			db := newWalletAPITestDB(t)
 			rt := &Runtime{}
-			rt.kernel = newClientKernel(rt, newClientDB(db, nil))
-			k := newClientKernel(rt, newClientDB(db, nil))
+			rt.kernel = newClientKernel(rt, newClientDB(db, nil), nil)
+			k := newClientKernel(rt, newClientDB(db, nil), nil)
 			if c.prepare != nil {
 				c.prepare(k)
 			}

@@ -15,7 +15,6 @@ const (
 	clientKernelCommandFeePoolCycleTick    = "feepool.cycle_tick"
 	clientKernelCommandFeePoolMaintain     = "feepool.maintain"
 	clientKernelCommandLivePlanPurchase    = "live.plan_purchase"
-	clientKernelCommandWorkspaceSync       = "workspace.sync"
 	clientKernelCommandDirectDownloadCore  = "direct.download_core"
 	clientKernelCommandTransferByStrategy  = "direct.transfer_by_strategy"
 )
@@ -44,19 +43,34 @@ type clientKernelResult struct {
 	Data         map[string]any `json:"data,omitempty"`
 }
 
+// Kernel 对外暴露 clientKernel 类型，供 managed/e2e 直接调用 kernel 动作。
+type Kernel = clientKernel
+
 // clientKernel 是客户端统一业务内核入口：外部只发命令，不直接调用域内业务函数。
 type clientKernel struct {
-	rt      *Runtime
-	store   *clientDB
-	feePool *feePoolKernel
+	rt        *Runtime
+	store     *clientDB
+	workspace *workspaceManager
+	feePool   *feePoolKernel
 }
 
-func newClientKernel(rt *Runtime, store *clientDB) *clientKernel {
-	return &clientKernel{
-		rt:      rt,
-		store:   store,
-		feePool: newFeePoolKernel(rt, store),
+func newClientKernel(rt *Runtime, store *clientDB, workspace *workspaceManager) *clientKernel {
+	k := &clientKernel{
+		rt:        rt,
+		store:     store,
+		workspace: workspace,
+		feePool:   newFeePoolKernel(rt, store),
 	}
+	return k
+}
+
+// Workspace 返回 workspace 领域能力。
+// 说明：调用侧统一从 kernel 拿 workspace，再直接调领域动作。
+func (k *clientKernel) Workspace() *workspaceManager {
+	if k == nil {
+		return nil
+	}
+	return k.workspace
 }
 
 // prepareClientKernelCommand 只在命令创建/入口组装时补齐默认值。
@@ -102,15 +116,13 @@ func resolveFeePoolMaintainCommandType(rt *Runtime, gatewayPeerID string) string
 	return feePoolCommandEnsureActive
 }
 
-func (k *clientKernel) rejectWithAudit(cmd clientKernelCommand, gatewayPeerID, aggregateID, stateBefore, stateAfter, errorCode, errorMessage string) clientKernelResult {
+func (k *clientKernel) rejectWithAudit(ctx context.Context, cmd clientKernelCommand, gatewayPeerID, aggregateID, stateBefore, stateAfter, errorCode, errorMessage string) clientKernelResult {
 	cmd = normalizeClientKernelCommand(cmd)
 	if strings.TrimSpace(gatewayPeerID) == "" {
 		gatewayPeerID = strings.TrimSpace(cmd.GatewayPeerID)
 	}
 	if strings.TrimSpace(aggregateID) == "" {
 		switch strings.TrimSpace(cmd.CommandType) {
-		case clientKernelCommandWorkspaceSync:
-			aggregateID = "workspace:default"
 		case clientKernelCommandLivePlanPurchase:
 			streamID := strings.ToLower(strings.TrimSpace(anyToString(cmd.Payload["stream_id"])))
 			if streamID == "" {
@@ -136,8 +148,8 @@ func (k *clientKernel) rejectWithAudit(cmd clientKernelCommand, gatewayPeerID, a
 	if strings.TrimSpace(stateAfter) == "" {
 		stateAfter = stateBefore
 	}
-	if k != nil && k.rt != nil {
-		_ = dbAppendCommandJournal(context.Background(), k.store, commandJournalEntry{
+	if k != nil {
+		_ = dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 			CommandID:     cmd.CommandID,
 			CommandType:   cmd.CommandType,
 			GatewayPeerID: strings.TrimSpace(gatewayPeerID),
@@ -193,17 +205,17 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 	}
 	cmd = normalizeClientKernelCommand(prepareClientKernelCommand(cmd))
 	if strings.TrimSpace(cmd.CommandType) == "" {
-		return k.rejectWithAudit(cmd, "kernel", "kernel", "kernel", "kernel", "command_type_required", "command type required")
+		return k.rejectWithAudit(ctx, cmd, "kernel", "kernel", "kernel", "kernel", "command_type_required", "command type required")
 	}
 
 	switch cmd.CommandType {
 	case clientKernelCommandFeePoolEnsureActive, clientKernelCommandFeePoolCycleTick, clientKernelCommandFeePoolMaintain:
 		if k.feePool == nil {
-			return k.rejectWithAudit(cmd, cmd.GatewayPeerID, "", "feepool", "feepool", "feepool_kernel_missing", "fee pool kernel not initialized")
+			return k.rejectWithAudit(ctx, cmd, cmd.GatewayPeerID, "", "feepool", "feepool", "feepool_kernel_missing", "fee pool kernel not initialized")
 		}
 		gw, err := pickGatewayForBusiness(k.rt, cmd.GatewayPeerID)
 		if err != nil {
-			return k.rejectWithAudit(cmd, cmd.GatewayPeerID, "", "feepool", "feepool", "gateway_unavailable", err.Error())
+			return k.rejectWithAudit(ctx, cmd, cmd.GatewayPeerID, "", "feepool", "feepool", "gateway_unavailable", err.Error())
 		}
 		fpCmd := feePoolKernelCommand{
 			CommandID:       cmd.CommandID,
@@ -236,69 +248,8 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 
 	case clientKernelCommandLivePlanPurchase:
 		return k.dispatchLivePlanPurchase(ctx, cmd)
-	case clientKernelCommandWorkspaceSync:
-		return k.dispatchWorkspaceSync(ctx, cmd)
-
 	default:
-		return k.rejectWithAudit(cmd, cmd.GatewayPeerID, "", "kernel", "kernel", "unsupported_command", fmt.Sprintf("unsupported command: %s", cmd.CommandType))
-	}
-}
-
-func (k *clientKernel) dispatchWorkspaceSync(ctx context.Context, cmd clientKernelCommand) clientKernelResult {
-	// 设计约束：workspace 扫描由调度层触发，kernel 只负责执行与审计。
-	cmd = normalizeClientKernelCommand(cmd)
-	if k == nil || k.rt == nil || k.rt.Workspace == nil {
-		return k.rejectWithAudit(cmd, "workspace", "workspace:default", "workspace_sync", "workspace_sync", "workspace_not_initialized", "workspace not initialized")
-	}
-	startAt := time.Now()
-	out, err := TriggerWorkspaceSyncOnce(ctx, k.rt)
-	status := "applied"
-	errCode := ""
-	errMsg := ""
-	if err != nil {
-		status = "failed"
-		errCode = "workspace_sync_failed"
-		errMsg = err.Error()
-	}
-	_ = dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
-		CommandID:     cmd.CommandID,
-		CommandType:   cmd.CommandType,
-		GatewayPeerID: "workspace",
-		AggregateID:   "workspace:default",
-		RequestedBy:   cmd.RequestedBy,
-		RequestedAt:   cmd.RequestedAt,
-		Accepted:      true,
-		Status:        status,
-		ErrorCode:     errCode,
-		ErrorMessage:  errMsg,
-		StateBefore:   "workspace_sync",
-		StateAfter:    "workspace_sync",
-		DurationMS:    time.Since(startAt).Milliseconds(),
-		TriggerKey:    cmd.TriggerKey, // 传递链路键
-		Payload:       cmd.Payload,
-		Result: map[string]any{
-			"status":     status,
-			"seed_count": out.SeedCount,
-		},
-	})
-	if err != nil {
-		return clientKernelResult{
-			Accepted:     true,
-			Status:       "failed",
-			ErrorCode:    errCode,
-			ErrorMessage: errMsg,
-			StateBefore:  "workspace_sync",
-			StateAfter:   "workspace_sync",
-		}
-	}
-	return clientKernelResult{
-		Accepted:    true,
-		Status:      "applied",
-		StateBefore: "workspace_sync",
-		StateAfter:  "workspace_sync",
-		Data: map[string]any{
-			"seed_count": out.SeedCount,
-		},
+		return k.rejectWithAudit(ctx, cmd, cmd.GatewayPeerID, "", "kernel", "kernel", "unsupported_command", fmt.Sprintf("unsupported command: %s", cmd.CommandType))
 	}
 }
 
@@ -407,7 +358,7 @@ func (k *clientKernel) dispatchLivePlanPurchase(ctx context.Context, cmd clientK
 		if agg == "" {
 			agg = "unknown"
 		}
-		return k.rejectWithAudit(cmd, "live", "stream:"+agg, "live_plan", "live_plan", "invalid_stream_id", "invalid stream_id")
+		return k.rejectWithAudit(ctx, cmd, "live", "stream:"+agg, "live_plan", "live_plan", "invalid_stream_id", "invalid stream_id")
 	}
 	haveSegmentIndex := anyToInt64(cmd.Payload["have_segment_index"])
 	now := time.Now()
@@ -589,5 +540,57 @@ func anyToInt64(v any) int64 {
 		return n
 	default:
 		return 0
+	}
+}
+
+func anyToUint64(v any) uint64 {
+	switch x := v.(type) {
+	case uint:
+		return uint64(x)
+	case uint64:
+		return x
+	case uint32:
+		return uint64(x)
+	case int:
+		if x < 0 {
+			return 0
+		}
+		return uint64(x)
+	case int64:
+		if x < 0 {
+			return 0
+		}
+		return uint64(x)
+	case float64:
+		if x < 0 {
+			return 0
+		}
+		return uint64(x)
+	case json.Number:
+		n, _ := x.Int64()
+		if n < 0 {
+			return 0
+		}
+		return uint64(n)
+	default:
+		return 0
+	}
+}
+
+func anyToBool(v any) (bool, bool) {
+	switch x := v.(type) {
+	case bool:
+		return x, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(x)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		default:
+			return false, false
+		}
+	default:
+		return false, false
 	}
 }

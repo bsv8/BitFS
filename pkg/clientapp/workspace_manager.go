@@ -8,6 +8,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 type workspaceManager struct {
@@ -57,67 +60,320 @@ func (m *workspaceManager) EnsureDefaultWorkspace() error {
 }
 
 func (m *workspaceManager) List() ([]workspaceItem, error) {
+	return m.ListWithContext(m.ctx)
+}
+
+func (m *workspaceManager) ListWithContext(ctx context.Context) ([]workspaceItem, error) {
+	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeList)
+	startAt := time.Now()
+	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
+	obs.Business("bitcast-client", "evt_trigger_workspace_list_begin", map[string]any{
+		"wallet_mode": walletMode,
+	})
+	if walletMode {
+		items := []workspaceItem{}
+		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_list", "workspace_list", true, "applied", "", "", map[string]any{}, map[string]any{
+			"items": items,
+			"total": len(items),
+		}, time.Since(startAt))
+		obs.Business("bitcast-client", "evt_trigger_workspace_list_end", map[string]any{
+			"wallet_mode": walletMode,
+			"total":       0,
+		})
+		return items, nil
+	}
 	store := workspaceStore(m)
 	if store == nil {
-		return nil, fmt.Errorf("workspace manager not initialized")
+		err := workspaceRejected("workspace_not_initialized", "workspace manager not initialized")
+		m.auditWorkspaceRejected(ctx, meta, "workspace:default", "workspace_list", "workspace_list", err, map[string]any{})
+		return nil, err
 	}
-	if m.ctx == nil {
-		return nil, fmt.Errorf("ctx is required")
+	runCtx := resolveWorkspaceCtx(ctx, m.ctx)
+	if runCtx == nil {
+		err := workspaceRejected("ctx_required", "ctx is required")
+		m.auditWorkspaceRejected(ctx, meta, "workspace:default", "workspace_list", "workspace_list", err, map[string]any{})
+		return nil, err
 	}
-	return dbListWorkspaces(m.ctx, store)
+	items, err := dbListWorkspaces(runCtx, store)
+	if err != nil {
+		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_list", "workspace_list", true, "failed", "workspace_list_failed", err.Error(), map[string]any{}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_list_failed", map[string]any{
+			"wallet_mode": walletMode,
+			"error":       err.Error(),
+		})
+		return nil, err
+	}
+	m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_list", "workspace_list", true, "applied", "", "", map[string]any{}, map[string]any{
+		"items": items,
+		"total": len(items),
+	}, time.Since(startAt))
+	obs.Business("bitcast-client", "evt_trigger_workspace_list_end", map[string]any{
+		"wallet_mode": walletMode,
+		"total":       len(items),
+	})
+	return items, nil
 }
 
 func (m *workspaceManager) Add(path string, maxBytes uint64) (workspaceItem, error) {
+	return m.AddWithContext(m.ctx, path, maxBytes)
+}
+
+func (m *workspaceManager) AddWithContext(ctx context.Context, path string, maxBytes uint64) (workspaceItem, error) {
+	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeAdd)
+	startAt := time.Now()
+	path = strings.TrimSpace(path)
+	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
+	obs.Business("bitcast-client", "evt_trigger_workspace_add_begin", map[string]any{
+		"workspace_path": path,
+		"max_bytes":      maxBytes,
+		"wallet_mode":    walletMode,
+	})
+	if path == "" {
+		err := workspaceRejected("path_required", "path is required")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", err, map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		})
+		return workspaceItem{}, err
+	}
+	if walletMode {
+		err := fmt.Errorf("workspace_dir is not configured")
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", true, "failed", "workspace_add_failed", err.Error(), map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_add_failed", map[string]any{
+			"workspace_path": path,
+			"max_bytes":      maxBytes,
+			"wallet_mode":    walletMode,
+			"error":          err.Error(),
+		})
+		return workspaceItem{}, err
+	}
 	store := workspaceStore(m)
 	if store == nil {
-		return workspaceItem{}, fmt.Errorf("workspace manager not initialized")
+		err := workspaceRejected("workspace_not_initialized", "workspace manager not initialized")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", err, map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		})
+		return workspaceItem{}, err
 	}
-	abs, err := filepath.Abs(strings.TrimSpace(path))
+	abs, err := filepath.Abs(path)
 	if err != nil {
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", true, "failed", "workspace_add_failed", err.Error(), map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		}, map[string]any{}, time.Since(startAt))
 		return workspaceItem{}, err
 	}
 	st, err := os.Stat(abs)
 	if err != nil {
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", true, "failed", "workspace_add_failed", err.Error(), map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		}, map[string]any{}, time.Since(startAt))
 		return workspaceItem{}, err
 	}
 	if !st.IsDir() {
-		return workspaceItem{}, fmt.Errorf("workspace path is not directory")
+		err = fmt.Errorf("workspace path is not directory")
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", true, "failed", "workspace_add_failed", err.Error(), map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		}, map[string]any{}, time.Since(startAt))
+		return workspaceItem{}, err
 	}
-	if m.ctx == nil {
-		return workspaceItem{}, fmt.Errorf("ctx is required")
+	runCtx := resolveWorkspaceCtx(ctx, m.ctx)
+	if runCtx == nil {
+		err := workspaceRejected("ctx_required", "ctx is required")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_add", path), "workspace_add", "workspace_add", err, map[string]any{
+			"path":      path,
+			"max_bytes": maxBytes,
+		})
+		return workspaceItem{}, err
 	}
-	return dbAddWorkspace(m.ctx, store, abs, maxBytes)
+	item, err := dbAddWorkspace(runCtx, store, abs, maxBytes)
+	if err != nil {
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_add", abs), "workspace_add", "workspace_add", true, "failed", "workspace_add_failed", err.Error(), map[string]any{
+			"path":      abs,
+			"max_bytes": maxBytes,
+		}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_add_failed", map[string]any{
+			"workspace_path": abs,
+			"max_bytes":      maxBytes,
+			"wallet_mode":    walletMode,
+			"error":          err.Error(),
+		})
+		return workspaceItem{}, err
+	}
+	m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_add", abs), "workspace_add", "workspace_add", true, "applied", "", "", map[string]any{
+		"path":      abs,
+		"max_bytes": maxBytes,
+	}, map[string]any{"workspace": item}, time.Since(startAt))
+	obs.Business("bitcast-client", "evt_trigger_workspace_add_end", map[string]any{
+		"workspace_path": abs,
+		"max_bytes":      maxBytes,
+		"wallet_mode":    walletMode,
+	})
+	return item, nil
 }
 
 func (m *workspaceManager) DeleteByPath(workspacePath string) error {
+	return m.DeleteByPathWithContext(m.ctx, workspacePath)
+}
+
+func (m *workspaceManager) DeleteByPathWithContext(ctx context.Context, workspacePath string) error {
+	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeDelete)
+	startAt := time.Now()
+	workspacePath = strings.TrimSpace(workspacePath)
+	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
+	obs.Business("bitcast-client", "evt_trigger_workspace_delete_begin", map[string]any{
+		"workspace_path": workspacePath,
+		"wallet_mode":    walletMode,
+	})
+	if workspacePath == "" {
+		err := workspaceRejected("workspace_path_required", "workspace path is required")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return err
+	}
+	if walletMode {
+		err := fmt.Errorf("workspace_dir is not configured")
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", true, "failed", "workspace_delete_failed", err.Error(), map[string]any{
+			"workspace_path": workspacePath,
+		}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_delete_failed", map[string]any{
+			"workspace_path": workspacePath,
+			"wallet_mode":    walletMode,
+			"error":          err.Error(),
+		})
+		return err
+	}
 	store := workspaceStore(m)
 	if store == nil {
-		return fmt.Errorf("workspace manager not initialized")
+		err := workspaceRejected("workspace_not_initialized", "workspace manager not initialized")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return err
 	}
-	if strings.TrimSpace(workspacePath) == "" {
-		return fmt.Errorf("workspace path is required")
+	runCtx := resolveWorkspaceCtx(ctx, m.ctx)
+	if runCtx == nil {
+		err := workspaceRejected("ctx_required", "ctx is required")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return err
 	}
-	if m.ctx == nil {
-		return fmt.Errorf("ctx is required")
+	if err := dbDeleteWorkspaceByPath(runCtx, store, workspacePath); err != nil {
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", true, "failed", "workspace_delete_failed", err.Error(), map[string]any{
+			"workspace_path": workspacePath,
+		}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_delete_failed", map[string]any{
+			"workspace_path": workspacePath,
+			"wallet_mode":    walletMode,
+			"error":          err.Error(),
+		})
+		return err
 	}
-	return dbDeleteWorkspaceByPath(m.ctx, store, workspacePath)
+	m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", true, "applied", "", "", map[string]any{
+		"workspace_path": workspacePath,
+	}, map[string]any{}, time.Since(startAt))
+	obs.Business("bitcast-client", "evt_trigger_workspace_delete_end", map[string]any{
+		"workspace_path": workspacePath,
+		"wallet_mode":    walletMode,
+	})
+	return nil
 }
 
 func (m *workspaceManager) UpdateByPath(workspacePath string, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
-	store := workspaceStore(m)
-	if store == nil {
-		return workspaceItem{}, fmt.Errorf("workspace manager not initialized")
-	}
-	if strings.TrimSpace(workspacePath) == "" {
-		return workspaceItem{}, fmt.Errorf("workspace path is required")
+	return m.UpdateByPathWithContext(m.ctx, workspacePath, maxBytes, enabled)
+}
+
+func (m *workspaceManager) UpdateByPathWithContext(ctx context.Context, workspacePath string, maxBytes *uint64, enabled *bool) (workspaceItem, error) {
+	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeUpdate)
+	startAt := time.Now()
+	workspacePath = strings.TrimSpace(workspacePath)
+	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
+	obs.Business("bitcast-client", "evt_trigger_workspace_update_begin", map[string]any{
+		"workspace_path": workspacePath,
+		"wallet_mode":    walletMode,
+		"max_bytes": func() any {
+			if maxBytes == nil {
+				return nil
+			}
+			return *maxBytes
+		}(),
+		"enabled": func() any {
+			if enabled == nil {
+				return nil
+			}
+			return *enabled
+		}(),
+	})
+	if workspacePath == "" {
+		err := workspaceRejected("workspace_path_required", "workspace path is required")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return workspaceItem{}, err
 	}
 	if maxBytes == nil && enabled == nil {
-		return workspaceItem{}, fmt.Errorf("no fields to update")
+		err := workspaceRejected("no_fields_to_update", "no fields to update")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return workspaceItem{}, err
 	}
-	if m.ctx == nil {
-		return workspaceItem{}, fmt.Errorf("ctx is required")
+	if walletMode {
+		err := fmt.Errorf("workspace_dir is not configured")
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", true, "failed", "workspace_update_failed", err.Error(), map[string]any{
+			"workspace_path": workspacePath,
+		}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_update_failed", map[string]any{
+			"workspace_path": workspacePath,
+			"wallet_mode":    walletMode,
+			"error":          err.Error(),
+		})
+		return workspaceItem{}, err
 	}
-	return dbUpdateWorkspaceByPath(m.ctx, store, workspacePath, maxBytes, enabled)
+	store := workspaceStore(m)
+	if store == nil {
+		err := workspaceRejected("workspace_not_initialized", "workspace manager not initialized")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return workspaceItem{}, err
+	}
+	runCtx := resolveWorkspaceCtx(ctx, m.ctx)
+	if runCtx == nil {
+		err := workspaceRejected("ctx_required", "ctx is required")
+		m.auditWorkspaceRejected(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", err, map[string]any{
+			"workspace_path": workspacePath,
+		})
+		return workspaceItem{}, err
+	}
+	item, err := dbUpdateWorkspaceByPath(runCtx, store, workspacePath, maxBytes, enabled)
+	if err != nil {
+		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", true, "failed", "workspace_update_failed", err.Error(), map[string]any{
+			"workspace_path": workspacePath,
+		}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_update_failed", map[string]any{
+			"workspace_path": workspacePath,
+			"wallet_mode":    walletMode,
+			"error":          err.Error(),
+		})
+		return workspaceItem{}, err
+	}
+	m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", true, "applied", "", "", map[string]any{
+		"workspace_path": workspacePath,
+	}, map[string]any{"workspace": item}, time.Since(startAt))
+	obs.Business("bitcast-client", "evt_trigger_workspace_update_end", map[string]any{
+		"workspace_path": workspacePath,
+		"wallet_mode":    walletMode,
+	})
+	return item, nil
 }
 
 func (m *workspaceManager) SelectOutputPath(fileName string, fileSize uint64) (string, error) {
@@ -175,14 +431,35 @@ func (m *workspaceManager) selectOutputPath(relDir string, fileName string, file
 }
 
 func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed, error) {
+	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeSync)
+	startAt := time.Now()
+	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
+	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_begin", map[string]any{
+		"wallet_mode": walletMode,
+	})
+	if walletMode {
+		out := map[string]sellerSeed{}
+		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", true, "applied", "", "", map[string]any{}, map[string]any{
+			"seed_count": 0,
+		}, time.Since(startAt))
+		obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_end", map[string]any{
+			"wallet_mode": walletMode,
+			"seed_count":  0,
+		})
+		return out, nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m == nil || m.cfg == nil {
-		return nil, fmt.Errorf("workspace manager not initialized")
+		err := workspaceRejected("workspace_not_initialized", "workspace manager not initialized")
+		m.auditWorkspaceRejected(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", err, map[string]any{})
+		return nil, err
 	}
 	store := workspaceStore(m)
 	if store == nil {
-		return nil, fmt.Errorf("workspace manager not initialized")
+		err := workspaceRejected("workspace_not_initialized", "workspace manager not initialized")
+		m.auditWorkspaceRejected(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", err, map[string]any{})
+		return nil, err
 	}
 	if m.catalog != nil {
 		m.catalog.IncDBQueries(1)
@@ -192,11 +469,23 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 		if m.catalog != nil {
 			m.catalog.MarkStale()
 		}
+		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", true, "failed", "workspace_sync_failed", err.Error(), map[string]any{}, map[string]any{}, time.Since(startAt))
+		obs.Error("bitcast-client", "evt_trigger_workspace_sync_once_failed", map[string]any{
+			"wallet_mode": walletMode,
+			"error":       err.Error(),
+		})
 		return nil, err
 	}
 	if m.catalog != nil {
 		m.catalog.Replace(biz_seeds)
 	}
+	m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", true, "applied", "", "", map[string]any{}, map[string]any{
+		"seed_count": len(biz_seeds),
+	}, time.Since(startAt))
+	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_end", map[string]any{
+		"wallet_mode": walletMode,
+		"seed_count":  len(biz_seeds),
+	})
 	return biz_seeds, nil
 }
 

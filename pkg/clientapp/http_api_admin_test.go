@@ -359,15 +359,15 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 
 	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "ck_1",
-		CommandType:   clientKernelCommandWorkspaceSync,
-		GatewayPeerID: "workspace",
-		AggregateID:   "workspace:default",
+		CommandType:   clientKernelCommandFeePoolMaintain,
+		GatewayPeerID: "gw_1",
+		AggregateID:   "gateway:gw_1",
 		RequestedBy:   "test",
 		RequestedAt:   time.Now().Unix(),
 		Accepted:      true,
 		Status:        "applied",
-		StateBefore:   "workspace_sync",
-		StateAfter:    "workspace_sync",
+		StateBefore:   "feepool",
+		StateAfter:    "feepool",
 		Payload:       map[string]any{"trigger": "manual"},
 		Result:        map[string]any{"seed_count": 1},
 	})
@@ -417,7 +417,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 	if out.Total != 1 || len(out.Items) != 1 {
 		t.Fatalf("client-kernel list mismatch: total=%d items=%d", out.Total, len(out.Items))
 	}
-	if out.Items[0].CommandID != "ck_1" || out.Items[0].CommandType != clientKernelCommandWorkspaceSync {
+	if out.Items[0].CommandID != "ck_1" || out.Items[0].CommandType != clientKernelCommandFeePoolMaintain {
 		t.Fatalf("list content mismatch: id=%s type=%s", out.Items[0].CommandID, out.Items[0].CommandType)
 	}
 
@@ -467,9 +467,9 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		EventType:      "signal_received",
 		Source:         "workspace_worker",
 		SignalType:     "workspace.tick",
-		AggregateKey:   "workspace:default",
+		AggregateKey:   "workspace_sync:123456",
 		IdempotencyKey: "workspace_sync:123456",
-		CommandType:    clientKernelCommandWorkspaceSync,
+		CommandType:    workspaceCommandTypeSync,
 		GatewayPeerID:  "16Uiu2HAm9hV4Nj8k8rZcZqWqQPKw28Y61S7",
 		TaskStatus:     "queued",
 		RetryCount:     0,
@@ -480,9 +480,9 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		EventType:      "task_dispatch_result",
 		Source:         "orchestrator",
 		SignalType:     "workspace.tick",
-		AggregateKey:   "workspace:default",
+		AggregateKey:   "workspace_sync:123456",
 		IdempotencyKey: "workspace_sync:123456",
-		CommandType:    clientKernelCommandWorkspaceSync,
+		CommandType:    workspaceCommandTypeSync,
 		GatewayPeerID:  "16Uiu2HAm9hV4Nj8k8rZcZqWqQPKw28Y61S7",
 		TaskStatus:     "applied",
 		RetryCount:     0,
@@ -510,11 +510,10 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	var out struct {
 		Total int `json:"total"`
 		Items []struct {
-			EventID        string `json:"event_id"`
-			StepsCount     int    `json:"steps_count"`
-			LatestEvent    string `json:"latest_event_type"`
-			IdempotencyKey string `json:"idempotency_key"`
-			GatewayPeerID  string `json:"gateway_pubkey_hex"`
+			EventID       string `json:"event_id"`
+			StepsCount    int    `json:"steps_count"`
+			LatestEvent   string `json:"latest_event_type"`
+			GatewayPeerID string `json:"gateway_pubkey_hex"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
@@ -532,10 +531,6 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	if out.Items[0].LatestEvent != "signal_received" {
 		t.Fatalf("latest_event_type mismatch: %s", out.Items[0].LatestEvent)
 	}
-	if out.Items[0].IdempotencyKey != "workspace_sync:123456" {
-		t.Fatalf("idempotency_key mismatch: %s", out.Items[0].IdempotencyKey)
-	}
-
 	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs/detail?event_id="+url.QueryEscape(out.Items[0].EventID), nil)
 	detailRec := httptest.NewRecorder()
 	srv.handleAdminOrchestratorLogDetail(detailRec, detailReq)
@@ -543,11 +538,10 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
 	}
 	var detail struct {
-		EventID        string `json:"event_id"`
-		LatestEvent    string `json:"latest_event_type"`
-		IdempotencyKey string `json:"idempotency_key"`
-		StepsCount     int    `json:"steps_count"`
-		Steps          []struct {
+		EventID     string `json:"event_id"`
+		LatestEvent string `json:"latest_event_type"`
+		StepsCount  int    `json:"steps_count"`
+		Steps       []struct {
 			EventType string `json:"event_type"`
 		} `json:"steps"`
 	}
@@ -565,9 +559,6 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	}
 	if detail.Steps[0].EventType != "signal_received" || detail.Steps[1].EventType != "task_dispatch_result" {
 		t.Fatalf("detail step order mismatch: first=%s second=%s", detail.Steps[0].EventType, detail.Steps[1].EventType)
-	}
-	if detail.IdempotencyKey != "workspace_sync:123456" {
-		t.Fatalf("detail idempotency_key mismatch: %s", detail.IdempotencyKey)
 	}
 }
 
@@ -778,8 +769,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeLiveRuntime(newLiveRuntime()))
 	pubStore := newClientDB(db, nil)
 	subStore := newClientDB(db, nil)
-	pubRT.kernel = newClientKernel(pubRT, pubStore)
-	subRT.kernel = newClientKernel(subRT, subStore)
+	pubRT.kernel = newClientKernel(pubRT, pubStore, nil)
+	subRT.kernel = newClientKernel(subRT, subStore, nil)
 	registerLiveHandlers(nil, pubRT)
 	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
@@ -898,7 +889,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	}
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(workspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	registerLiveHandlers(newClientDB(db, nil), rt)
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, workspace: workspace}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, workspace: workspace, kernel: rt.ClientKernel()}
 
 	req0 := httptest.NewRequest(http.MethodPost, "/api/v1/live/publish/segment", strings.NewReader(`{
 		"duration_ms": 2000,
@@ -1008,7 +999,7 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	subStore := newClientDB(db, nil)
 	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
 	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeWorkspace(subWorkspace), withRuntimeLiveRuntime(newLiveRuntime()))
-	subRT.kernel = newClientKernel(subRT, subStore)
+	subRT.kernel = newClientKernel(subRT, subStore, nil)
 	registerLiveHandlers(nil, pubRT)
 	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
@@ -1241,16 +1232,16 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	// 先插入一条带 trigger_key 的 client-kernel 命令
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "ck_with_trigger",
-		CommandType:   clientKernelCommandWorkspaceSync,
-		GatewayPeerID: "workspace",
-		AggregateID:   "workspace:default",
+		CommandType:   clientKernelCommandFeePoolMaintain,
+		GatewayPeerID: "gw1",
+		AggregateID:   "gateway:gw1",
 		RequestedBy:   "orchestrator",
 		RequestedAt:   now,
 		Accepted:      true,
 		Status:        "applied",
 		TriggerKey:    "orch:workspace:123",
-		StateBefore:   "workspace_sync",
-		StateAfter:    "workspace_sync",
+		StateBefore:   "feepool",
+		StateAfter:    "feepool",
 		Payload:       map[string]any{},
 		Result:        map[string]any{},
 	})

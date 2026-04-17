@@ -64,6 +64,9 @@ func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*R
 			opt(rt)
 		}
 	}
+	if rt.config != nil {
+		rt.kernel = newClientKernel(rt, nil, rt.Workspace)
+	}
 	return rt
 }
 

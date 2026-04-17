@@ -20,6 +20,9 @@ func NewRuntimeAPIHandler(rt *Runtime) (http.Handler, error) {
 	if rt.Workspace == nil {
 		return nil, fmt.Errorf("runtime workspace is nil")
 	}
+	if rt.ClientKernel() == nil {
+		return nil, fmt.Errorf("workspace kernel not initialized")
+	}
 	var db *sql.DB
 	if rt.store != nil {
 		db = rt.store.db

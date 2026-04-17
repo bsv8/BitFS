@@ -301,7 +301,7 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 	case orchestratorSignalWorkspaceTick:
 		out = append(out, &orchestratorTask{
 			Command: prepareClientKernelCommand(clientKernelCommand{
-				CommandType: clientKernelCommandWorkspaceSync,
+				CommandType: workspaceCommandTypeSync,
 				RequestedBy: "orchestrator",
 				Payload: map[string]any{
 					"trigger": strings.TrimSpace(anyToString(sig.Payload["trigger"])),
@@ -459,7 +459,12 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 	// 显式传递链路键：orchestrator 的 task.IdempotencyKey 就是这条触发链路的标识
 	// 重试时沿用同一个 TriggerKey，不会新造
 	task.Command.TriggerKey = strings.TrimSpace(task.IdempotencyKey)
-	res := kernel.dispatch(ctx, task.Command)
+	res := clientKernelResult{}
+	if strings.TrimSpace(task.Command.CommandType) == workspaceCommandTypeSync {
+		res = o.dispatchWorkspaceSync(ctx, kernel, task.Command)
+	} else {
+		res = kernel.dispatch(ctx, task.Command)
+	}
 	switch strings.TrimSpace(res.Status) {
 	case "applied":
 		o.mu.Lock()
@@ -516,6 +521,37 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 			ErrorMessage:   err,
 		})
 		o.failTask(task, fmt.Errorf("%s", err), o.isRetryableFailure(res))
+	}
+}
+
+func (o *orchestrator) dispatchWorkspaceSync(ctx context.Context, kernel *clientKernel, cmd clientKernelCommand) clientKernelResult {
+	if kernel == nil || kernel.Workspace() == nil {
+		return clientKernelResult{
+			Accepted:     false,
+			Status:       "rejected",
+			ErrorCode:    "workspace_not_initialized",
+			ErrorMessage: "workspace manager not initialized",
+		}
+	}
+	meta := workspaceCommandMeta{
+		CommandID:   strings.TrimSpace(cmd.CommandID),
+		CommandType: workspaceCommandTypeSync,
+		RequestedBy: strings.TrimSpace(cmd.RequestedBy),
+		RequestedAt: cmd.RequestedAt,
+		TriggerKey:  strings.TrimSpace(cmd.TriggerKey),
+	}
+	seeds, err := kernel.Workspace().SyncOnce(withWorkspaceCommandMeta(ctx, meta))
+	accepted, status := workspaceManagerResultStatus(err)
+	return clientKernelResult{
+		Accepted:     accepted,
+		Status:       status,
+		ErrorCode:    workspaceManagerErrorCode("workspace_sync", err),
+		ErrorMessage: workspaceManagerErrorMessage(err),
+		Data: map[string]any{
+			"seed_count": len(seeds),
+			"biz_seeds":  seeds,
+			"status":     status,
+		},
 	}
 }
 

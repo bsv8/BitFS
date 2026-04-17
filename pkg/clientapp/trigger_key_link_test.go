@@ -42,7 +42,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	}
 
 	rt := newRuntimeForTest(t, cfg, "")
-	rt.kernel = newClientKernel(rt, store)
+	rt.kernel = newClientKernel(rt, store, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -92,7 +92,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	dbAppendOrchestratorLog(ctx, store, orchestratorLogEntry{
 		EventType:      orchestratorEventTaskDispatchBeg,
 		Source:         "orchestrator",
-		AggregateKey:   task.AggregateID,
+		AggregateKey:   task.IdempotencyKey,
 		IdempotencyKey: task.IdempotencyKey,
 		CommandType:    task.Command.CommandType,
 		TaskStatus:     "dispatching",
@@ -117,9 +117,9 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 		Result:        map[string]any{},
 	})
 
-	// 验证 proc_orchestrator_logs.idempotency_key = proc_command_journal.trigger_key
+	// 验证 proc_orchestrator_logs.aggregate_key = proc_command_journal.trigger_key
 	var orchIdempotencyKey string
-	err = db.QueryRow(`SELECT idempotency_key FROM proc_orchestrator_logs WHERE event_type=?`, orchestratorEventTaskDispatchBeg).Scan(&orchIdempotencyKey)
+	err = db.QueryRow(`SELECT aggregate_key FROM proc_orchestrator_logs WHERE event_type=?`, orchestratorEventTaskDispatchBeg).Scan(&orchIdempotencyKey)
 	if err != nil {
 		t.Fatalf("query proc_orchestrator_logs failed: %v", err)
 	}
@@ -428,16 +428,16 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	// 先插入一条 client-kernel 类型的命令（带 trigger_key）
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "ck_with_trigger",
-		CommandType:   clientKernelCommandWorkspaceSync,
-		GatewayPeerID: "workspace",
-		AggregateID:   "workspace:default",
+		CommandType:   clientKernelCommandFeePoolMaintain,
+		GatewayPeerID: "gw1",
+		AggregateID:   "gateway:gw1",
 		RequestedBy:   "orchestrator",
 		RequestedAt:   now,
 		Accepted:      true,
 		Status:        "applied",
 		TriggerKey:    "ck_test_key",
-		StateBefore:   "workspace_sync",
-		StateAfter:    "workspace_sync",
+		StateBefore:   "feepool",
+		StateAfter:    "feepool",
 		Payload:       map[string]any{},
 		Result:        map[string]any{},
 	})

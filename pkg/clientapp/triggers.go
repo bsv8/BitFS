@@ -8,7 +8,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -37,43 +36,6 @@ type WorkspaceSeed struct {
 	ChunkCount uint32 `json:"chunk_count"`
 	SeedPrice  uint64 `json:"seed_price"`
 	ChunkPrice uint64 `json:"chunk_price"`
-}
-
-type WorkspaceSyncResult struct {
-	SeedCount int             `json:"seed_count"`
-	Seeds     []WorkspaceSeed `json:"biz_seeds,omitempty"`
-}
-
-// TriggerWorkspaceSyncOnce 触发一次 workspace 扫描与同步（用于 e2e）。
-func TriggerWorkspaceSyncOnce(ctx context.Context, rt *Runtime) (WorkspaceSyncResult, error) {
-	if rt == nil || rt.Workspace == nil {
-		return WorkspaceSyncResult{}, fmt.Errorf("runtime not initialized")
-	}
-
-	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_begin", map[string]any{})
-	biz_seeds, err := rt.Workspace.SyncOnce(ctx)
-	if err != nil {
-		obs.Error("bitcast-client", "evt_trigger_workspace_sync_once_failed", map[string]any{"error": err.Error()})
-		return WorkspaceSyncResult{}, err
-	}
-
-	out := make([]WorkspaceSeed, 0, len(biz_seeds))
-	basePrice := uint64(0)
-	if rt != nil && rt.config != nil {
-		basePrice = rt.config.Snapshot().Seller.Pricing.FloorPriceSatPer64K
-	}
-	for _, s := range biz_seeds {
-		out = append(out, WorkspaceSeed{
-			SeedHash:   strings.ToLower(strings.TrimSpace(s.SeedHash)),
-			ChunkCount: s.ChunkCount,
-			SeedPrice:  basePrice * uint64(s.ChunkCount),
-			ChunkPrice: basePrice,
-		})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].SeedHash < out[j].SeedHash })
-
-	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_end", map[string]any{"seed_count": len(out)})
-	return WorkspaceSyncResult{SeedCount: len(out), Seeds: out}, nil
 }
 
 // TriggerBizOrderPayBSV 新的 BSV 业务下单入口。

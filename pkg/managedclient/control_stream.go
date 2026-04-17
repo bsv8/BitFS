@@ -279,7 +279,7 @@ func mapManagedObsEvents(ev obs.Event) []mappedManagedEvent {
 				},
 			},
 		)
-	case strings.TrimSpace(ev.Name) == "workspace_scanned" || strings.HasPrefix(strings.TrimSpace(ev.Name), "evt_trigger_workspace_sync_once_"):
+	case isWorkspaceChangedObsEvent(strings.TrimSpace(ev.Name)):
 		out = append(out, mappedManagedEvent{
 			Topic:    "resource.workspace.changed",
 			Scope:    "private",
@@ -295,6 +295,22 @@ func mapManagedObsEvents(ev obs.Event) []mappedManagedEvent {
 		})
 	}
 	return out
+}
+
+// workspace 事件里，只有真正完成变更的 end 事件才算“变更”。
+// list / begin / failed 都只是过程态，不能桥成 resource.workspace.changed。
+func isWorkspaceChangedObsEvent(name string) bool {
+	switch name {
+	case "workspace_scanned":
+		return true
+	}
+	if strings.HasPrefix(name, "evt_trigger_workspace_list_") {
+		return false
+	}
+	return name == "evt_trigger_workspace_sync_once_end" ||
+		name == "evt_trigger_workspace_add_end" ||
+		name == "evt_trigger_workspace_update_end" ||
+		name == "evt_trigger_workspace_delete_end"
 }
 
 func buildObsDerivedPayload(ev obs.Event) map[string]any {
