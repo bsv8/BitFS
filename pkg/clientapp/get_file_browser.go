@@ -91,7 +91,7 @@ func (s *httpAPIServer) handleGetFileContent(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid seed hash"})
 		return
 	}
-	if path, _, ok := findCompleteLocalFileBySeedHash(s.store, seedHash); ok {
+	if path, _, ok := findCompleteLocalFileBySeedHash(r.Context(), s.store, seedHash); ok {
 		serveSeedContentFile(w, r, path, mimeHintBySeedHash(r.Context(), s.store, seedHash))
 		return
 	}
@@ -168,8 +168,8 @@ func (s *httpAPIServer) handleGetFileEnsure(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid seed hash"})
 		return
 	}
-	if path, _, ok := findCompleteLocalFileBySeedHash(s.store, seedHash); ok {
-		status := buildLocalStaticResourceStatus(s.store, seedHash, path)
+	if path, _, ok := findCompleteLocalFileBySeedHash(r.Context(), s.store, seedHash); ok {
+		status := buildLocalStaticResourceStatus(r.Context(), s.store, seedHash, path)
 		writeJSON(w, http.StatusOK, status)
 		return
 	}
@@ -203,7 +203,7 @@ func (s *httpAPIServer) handleGetFileEnsure(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": err.Error()})
 		return
 	}
-	status := buildLocalStaticResourceStatus(s.store, seedHash, path)
+	status := buildLocalStaticResourceStatus(ctx, s.store, seedHash, path)
 	status.EstimatedTotalSat = item.EstimatedTotalSat
 	status.SeedPrice = item.SeedPrice
 	status.ChunkPrice = item.ChunkPrice
@@ -220,8 +220,8 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 	missing := make([]PublishDemandBatchItem, 0, len(hashes))
 	missingOrder := make([]string, 0, len(hashes))
 	for _, seedHash := range hashes {
-		if path, size, ok := findCompleteLocalFileBySeedHash(s.store, seedHash); ok {
-			recommendedName, mimeHint := localSeedMetadataBySeedHash(s.store, seedHash, path)
+		if path, size, ok := findCompleteLocalFileBySeedHash(ctx, s.store, seedHash); ok {
+			recommendedName, mimeHint := localSeedMetadataBySeedHash(ctx, s.store, seedHash, path)
 			item := staticResourcePlanItem{
 				SeedHash:            seedHash,
 				Status:              "local",
@@ -230,7 +230,7 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 				RecommendedFileName: recommendedName,
 				MIMEHint:            mimeHint,
 			}
-			if chunkCount, ok := loadSeedChunkCount(s.store, seedHash); ok {
+			if chunkCount, ok := loadSeedChunkCount(ctx, s.store, seedHash); ok {
 				item.ChunkCount = chunkCount
 			}
 			itemsBySeedHash[seedHash] = item
@@ -319,8 +319,8 @@ func (s *httpAPIServer) planStaticSeedResources(ctx context.Context, seedHashes 
 }
 
 func (s *httpAPIServer) buildStaticResourceStatus(ctx context.Context, seedHash string, gwOverride string) (staticResourceStatus, error) {
-	if path, _, ok := findCompleteLocalFileBySeedHash(s.store, seedHash); ok {
-		return buildLocalStaticResourceStatus(s.store, seedHash, path), nil
+	if path, _, ok := findCompleteLocalFileBySeedHash(ctx, s.store, seedHash); ok {
+		return buildLocalStaticResourceStatus(ctx, s.store, seedHash, path), nil
 	}
 	items, _, err := s.planStaticSeedResources(ctx, []string{seedHash}, gwOverride)
 	if err != nil {
@@ -343,7 +343,7 @@ func (s *httpAPIServer) buildStaticResourceStatus(ctx context.Context, seedHash 
 }
 
 func (s *httpAPIServer) downloadStaticSeedToWorkspace(ctx context.Context, seedHash string, quote DirectQuoteItem) (string, error) {
-	if path, _, ok := findCompleteLocalFileBySeedHash(s.store, seedHash); ok {
+	if path, _, ok := findCompleteLocalFileBySeedHash(ctx, s.store, seedHash); ok {
 		return path, nil
 	}
 	if s == nil || s.rt == nil || s.workspace == nil {
@@ -359,7 +359,7 @@ func (s *httpAPIServer) downloadStaticSeedToWorkspace(ctx context.Context, seedH
 	if err != nil {
 		return "", err
 	}
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer closeCancel()
 	defer func() { _ = closeTransferWorkers(closeCtx, workers) }()
 
@@ -486,11 +486,11 @@ func estimateStaticResourceTotal(q DirectQuoteItem) uint64 {
 	return q.SeedPrice + q.ChunkPrice*uint64(q.ChunkCount)
 }
 
-func findCompleteLocalFileBySeedHash(store *clientDB, seedHash string) (string, uint64, bool) {
+func findCompleteLocalFileBySeedHash(ctx context.Context, store *clientDB, seedHash string) (string, uint64, bool) {
 	if store == nil {
 		return "", 0, false
 	}
-	path, _, err := dbFindLatestWorkspaceFileBySeedHash(context.Background(), store, seedHash)
+	path, _, err := dbFindLatestWorkspaceFileBySeedHash(ctx, store, seedHash)
 	if err != nil {
 		return "", 0, false
 	}
@@ -501,19 +501,19 @@ func findCompleteLocalFileBySeedHash(store *clientDB, seedHash string) (string, 
 	return path, uint64(st.Size()), true
 }
 
-func loadSeedChunkCount(store *clientDB, seedHash string) (uint32, bool) {
+func loadSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) (uint32, bool) {
 	if store == nil {
 		return 0, false
 	}
-	return dbGetSeedChunkCount(context.Background(), store, seedHash)
+	return dbGetSeedChunkCount(ctx, store, seedHash)
 }
 
-func localSeedMetadataBySeedHash(store *clientDB, seedHash string, path string) (string, string) {
-	recommendedName := dbRecommendedFileNameBySeedHash(context.Background(), store, seedHash)
+func localSeedMetadataBySeedHash(ctx context.Context, store *clientDB, seedHash string, path string) (string, string) {
+	recommendedName := dbRecommendedFileNameBySeedHash(ctx, store, seedHash)
 	if recommendedName == "" {
 		recommendedName = sanitizeRecommendedFileName(filepath.Base(path))
 	}
-	mimeHint := dbMimeHintBySeedHash(context.Background(), store, seedHash)
+	mimeHint := dbMimeHintBySeedHash(ctx, store, seedHash)
 	if mimeHint == "" {
 		mimeHint = sanitizeMIMEHint(guessContentType(path, nil))
 	}
@@ -727,9 +727,9 @@ func collectPlanItemsByOrder(seedHashes []string, itemsBySeedHash map[string]sta
 	return items
 }
 
-func buildLocalStaticResourceStatus(store *clientDB, seedHash string, path string) staticResourceStatus {
+func buildLocalStaticResourceStatus(ctx context.Context, store *clientDB, seedHash string, path string) staticResourceStatus {
 	path = strings.TrimSpace(path)
-	recommendedName, mimeHint := localSeedMetadataBySeedHash(store, seedHash, path)
+	recommendedName, mimeHint := localSeedMetadataBySeedHash(ctx, store, seedHash, path)
 	status := staticResourceStatus{
 		staticResourcePlanItem: staticResourcePlanItem{
 			SeedHash:            strings.ToLower(strings.TrimSpace(seedHash)),
@@ -744,7 +744,7 @@ func buildLocalStaticResourceStatus(store *clientDB, seedHash string, path strin
 	if st, err := os.Stat(path); err == nil && st.Mode().IsRegular() {
 		status.FileSize = uint64(st.Size())
 	}
-	if chunkCount, ok := loadSeedChunkCount(store, seedHash); ok {
+	if chunkCount, ok := loadSeedChunkCount(ctx, store, seedHash); ok {
 		status.ChunkCount = chunkCount
 	}
 	return status

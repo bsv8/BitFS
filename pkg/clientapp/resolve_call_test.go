@@ -139,7 +139,7 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
 	senderSrv := &httpAPIServer{rt: senderRT, db: senderDB, store: senderStore}
-	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB}
+	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB, store: receiverStore}
 
 	if _, err := receiverDB.Exec(
 		`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,

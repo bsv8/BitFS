@@ -354,7 +354,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 
 	// 测试 1：按 trigger_key 过滤，应该只查到 orchestrator 命令
 	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?trigger_key=http_test_trigger_key", nil)

@@ -199,13 +199,13 @@ func snapshotHealthyGateways(rt *Runtime) []peer.AddrInfo {
 }
 
 func recordGatewayRuntimeError(rt *Runtime, store *clientDB, gw peer.ID, stage string, err error) {
-	if rt == nil || gw == "" || err == nil {
+	if rt == nil || rt.ctx == nil || gw == "" || err == nil {
 		return
 	}
 	if rt.gwManager != nil {
 		rt.gwManager.SetRuntimeError(gw, stage, err)
 	}
-	dbAppendOrchestratorLog(context.Background(), store, orchestratorLogEntry{
+	dbAppendOrchestratorLog(context.WithoutCancel(rt.ctx), store, orchestratorLogEntry{
 		EventType:     "listen_error",
 		Source:        "listen_loop",
 		AggregateKey:  "gateway:" + gw.String(),
@@ -800,7 +800,10 @@ func closeOldFeePoolWithRetry(store *clientDB, rt *Runtime, oldSpendTxID string,
 			time.Sleep(wait)
 		}
 		attempt := i + 1
-		closeCtx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		if rt == nil || rt.ctx == nil {
+			return fmt.Errorf("runtime ctx is required")
+		}
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(rt.ctx), attemptTimeout)
 		_, err := TriggerGatewayFeePoolCloseBySpendTxID(closeCtx, store, rt, FeePoolCloseBySpendTxIDParams{
 			SpendTxID:     oldSpendTxID,
 			GatewayPeerID: gatewayPeerID,

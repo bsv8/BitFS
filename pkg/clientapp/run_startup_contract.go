@@ -13,11 +13,11 @@ import (
 type StartupPhase string
 
 const (
-	StartupPhasePreflight      StartupPhase = "preflight"
-	StartupPhaseBuildCore      StartupPhase = "build_core"
+	StartupPhasePreflight       StartupPhase = "preflight"
+	StartupPhaseBuildCore       StartupPhase = "build_core"
 	StartupPhaseConnectExternal StartupPhase = "connect_external"
-	StartupPhaseStartServices  StartupPhase = "start_services"
-	StartupPhaseBindShutdown   StartupPhase = "bind_shutdown"
+	StartupPhaseStartServices   StartupPhase = "start_services"
+	StartupPhaseBindShutdown    StartupPhase = "bind_shutdown"
 )
 
 // StartupContractItem 描述一条启动依赖契约。
@@ -112,13 +112,14 @@ func StartupContractTable() []StartupContractItem {
 // - 当前只把 preflight 真正落地，其余阶段先给边界；
 // - 这样可以在不改业务行为前提下，先把“入口结构”固定下来。
 type runStartupPhases struct {
-	ctx context.Context
-	cfg Config
+	ctx  context.Context
+	cfg  Config
 	deps RunDeps
-	opt RunOptions
+	opt  RunOptions
 
 	startupMode StartupMode
 	runtimeCfg  Config
+	state       runStartupState
 }
 
 func newRunStartupPhases(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) *runStartupPhases {
@@ -163,39 +164,6 @@ func (p *runStartupPhases) Preflight() error {
 	return nil
 }
 
-// BuildCore 代表“本地核心能力组装”阶段。
-// 当前先保留骨架，后续把 Run 内对应逻辑迁入这里。
-func (p *runStartupPhases) BuildCore() error {
-	if p == nil {
-		return fmt.Errorf("startup phases are required")
-	}
-	return nil
-}
-
-// ConnectExternal 代表“外部连接与探活”阶段。
-func (p *runStartupPhases) ConnectExternal() error {
-	if p == nil {
-		return fmt.Errorf("startup phases are required")
-	}
-	return nil
-}
-
-// StartServices 代表“后台 loop 与服务启动”阶段。
-func (p *runStartupPhases) StartServices() error {
-	if p == nil {
-		return fmt.Errorf("startup phases are required")
-	}
-	return nil
-}
-
-// BindShutdown 代表“统一收尾路径绑定”阶段。
-func (p *runStartupPhases) BindShutdown() error {
-	if p == nil {
-		return fmt.Errorf("startup phases are required")
-	}
-	return nil
-}
-
 func (p *runStartupPhases) RuntimeConfig() Config {
 	if p == nil {
 		return Config{}
@@ -208,4 +176,11 @@ func (p *runStartupPhases) StartupMode() StartupMode {
 		return StartupModeProduct
 	}
 	return p.startupMode
+}
+
+func (p *runStartupPhases) Runtime() *Runtime {
+	if p == nil {
+		return nil
+	}
+	return p.state.rt
 }

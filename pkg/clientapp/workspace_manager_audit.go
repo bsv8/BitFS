@@ -27,7 +27,7 @@ type workspaceCommandMetaKey struct{}
 
 func withWorkspaceCommandMeta(ctx context.Context, meta workspaceCommandMeta) context.Context {
 	if ctx == nil {
-		ctx = context.Background()
+		return nil
 	}
 	return context.WithValue(ctx, workspaceCommandMetaKey{}, meta)
 }

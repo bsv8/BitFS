@@ -288,7 +288,7 @@ func (lr *liveRuntime) publishedSnapshot(streamID string) (string, []LiveSegment
 	return st.PublisherPubKey, append([]LiveSegmentRef(nil), st.RecentSegments...), true
 }
 
-func listLocalLiveQuoteSegments(store *clientDB, streamID string, window int) ([]LiveQuoteSegment, uint64, error) {
+func listLocalLiveQuoteSegments(ctx context.Context, store *clientDB, streamID string, window int) ([]LiveQuoteSegment, uint64, error) {
 	if store == nil {
 		return nil, 0, fmt.Errorf("db not initialized")
 	}
@@ -296,7 +296,7 @@ func listLocalLiveQuoteSegments(store *clientDB, streamID string, window int) ([
 	if !isSeedHashHex(streamID) {
 		return nil, 0, fmt.Errorf("invalid stream_id")
 	}
-	rows, err := dbListLiveSegmentWorkspaceEntries(context.Background(), store, streamID)
+	rows, err := dbListLiveSegmentWorkspaceEntries(ctx, store, streamID)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -398,7 +398,7 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 		})
 		return liveHeadPushResp{Status: "stored"}, nil
 	})
-	pproto.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(_ context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
+	pproto.HandleProto[liveQuoteSubmitReq, liveQuoteSubmitResp](h, ProtoLiveQuoteSubmit, clientSec(trace), func(ctx context.Context, req liveQuoteSubmitReq) (liveQuoteSubmitResp, error) {
 		if store == nil || strings.TrimSpace(req.DemandId) == "" || strings.TrimSpace(req.SellerPubkeyHex) == "" || !isSeedHashHex(strings.ToLower(strings.TrimSpace(req.StreamId))) || len(req.RecentSegments) == 0 {
 			return liveQuoteSubmitResp{}, fmt.Errorf("invalid live quote")
 		}
@@ -416,7 +416,7 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 		if len(recent) == 0 {
 			return liveQuoteSubmitResp{}, fmt.Errorf("empty live quote segments")
 		}
-		if err := dbUpsertLiveQuote(context.Background(), store, LiveQuoteItem{
+		if err := dbUpsertLiveQuote(ctx, store, LiveQuoteItem{
 			DemandID:           strings.TrimSpace(req.DemandId),
 			SellerPubHex:       strings.ToLower(strings.TrimSpace(req.SellerPubkeyHex)),
 			StreamID:           strings.ToLower(strings.TrimSpace(req.StreamId)),
@@ -432,9 +432,8 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 
 func BuildLiveSegment(ctx context.Context, rt *Runtime, data liveSegmentDataPB, mediaBytes []byte) ([]byte, string, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		return nil, "", fmt.Errorf("ctx is required")
 	}
-	_ = ctx
 	if rt == nil || rt.Host == nil {
 		return nil, "", fmt.Errorf("runtime not initialized")
 	}

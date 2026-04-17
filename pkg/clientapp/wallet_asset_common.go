@@ -12,8 +12,8 @@ import (
 // 这些 helper 只服务于当前保留下来的 bsv21 create/send 主链路。
 // 旧的 token/ordinal 查询面已经删除，因此这里不再承载任何历史资产影子逻辑。
 
-func loadWalletUTXOsByID(store *clientDB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
-	return dbLoadWalletUTXOsByID(context.Background(), store, address, utxoIDs)
+func loadWalletUTXOsByID(ctx context.Context, store *clientDB, address string, utxoIDs []string) ([]poolcore.UTXO, error) {
+	return dbLoadWalletUTXOsByID(ctx, store, address, utxoIDs)
 }
 
 func mustDecodeHex(raw string) []byte {

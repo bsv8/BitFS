@@ -36,20 +36,6 @@ func newClientDB(db *sql.DB, actor *sqliteactor.Actor) *clientDB {
 	return out
 }
 
-// clientDBFromDB 只给少量桥接入口使用。
-// 设计说明：
-// - 这里不是业务层新建入口，只是把已经打开的 *sql.DB 包装成同一套 store 能力；
-// - 真正的运行时入口仍然只允许走 newClientDB。
-func clientDBFromDB(db *sql.DB) *clientDB {
-	if db == nil {
-		return nil
-	}
-	return &clientDB{
-		db:  db,
-		ent: gen.NewClient(gen.Driver(entsql.OpenDB(dialect.SQLite, db))),
-	}
-}
-
 // NewClientStore 只给入口组装层使用。
 // 设计说明：
 // - 这里是把外层已经打开好的 db/actor 组装成业务能力；

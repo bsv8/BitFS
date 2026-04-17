@@ -490,7 +490,7 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 }
 
 func (m *workspaceManager) ValidateLiveCacheCapacity(maxBytes uint64) error {
-	if m == nil || m.db == nil {
+	if m == nil || workspaceStore(m) == nil {
 		return fmt.Errorf("workspace manager not initialized")
 	}
 	if maxBytes == 0 {
@@ -524,7 +524,7 @@ func (m *workspaceManager) ValidateLiveCacheCapacity(maxBytes uint64) error {
 // - 淘汰时不删单段，直接删整条流，避免播放器拿到断裂时间线；
 // - 删除顺序按“最近更新时间最老”的流优先。
 func (m *workspaceManager) EnforceLiveCacheLimit(maxBytes uint64) error {
-	if m == nil || m.db == nil {
+	if m == nil || workspaceStore(m) == nil {
 		return fmt.Errorf("workspace manager not initialized")
 	}
 	if maxBytes == 0 {
@@ -655,7 +655,7 @@ func containsString(items []string, want string) bool {
 // - 下载流程产出的 seed 是独立事实来源，不能再从当前文件反推 seed；
 // - 支持 partial 文件：biz_workspace_files 记录当前文件大小，biz_seeds 记录完整种子元信息。
 func (m *workspaceManager) RegisterDownloadedFile(p registerDownloadedFileParams) (sellerSeed, error) {
-	if m == nil || m.db == nil || m.cfg == nil {
+	if m == nil || workspaceStore(m) == nil || m.cfg == nil {
 		return sellerSeed{}, fmt.Errorf("workspace manager not initialized")
 	}
 	abs, err := filepath.Abs(strings.TrimSpace(p.FilePath))

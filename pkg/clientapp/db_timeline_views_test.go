@@ -72,7 +72,7 @@ func TestCommandDetailHydratesRelatedFacts_Timeline(t *testing.T) {
 		t.Fatalf("unexpected related facts: %+v", it)
 	}
 
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands/detail?id=1", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFeePoolCommandDetail(rec, req)

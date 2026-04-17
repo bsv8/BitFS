@@ -209,7 +209,7 @@ func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, r
 	if err := dbPersistLiveFollowStatus(ctx, store, st); err != nil {
 		return LiveFollowStatus{}, err
 	}
-	if err := scheduler.RegisterOrReplacePeriodicTask(context.Background(), periodicTaskSpec{
+	if err := scheduler.RegisterOrReplacePeriodicTask(ctx, periodicTaskSpec{
 		Name:      taskName,
 		Owner:     "live_follow",
 		Mode:      "dynamic",
@@ -224,7 +224,7 @@ func TriggerLiveFollowStart(ctx context.Context, store *clientDB, rt *Runtime, r
 			dst.LastError = err.Error()
 		})
 		if current, ok := rt.live.followStatus(streamID); ok {
-			_ = dbPersistLiveFollowStatus(context.Background(), store, current)
+			_ = dbPersistLiveFollowStatus(ctx, store, current)
 		}
 		return LiveFollowStatus{}, err
 	}
@@ -378,7 +378,7 @@ func bestLiveQuoteSnapshot(streamID string, quotes []LiveQuoteItem) (LiveSubscri
 	}, strings.ToLower(strings.TrimSpace(best.SellerPubHex)), true
 }
 
-func TriggerLiveFollowStop(store *clientDB, rt *Runtime, streamID string) error {
+func TriggerLiveFollowStop(ctx context.Context, store *clientDB, rt *Runtime, streamID string) error {
 	if store == nil || rt == nil || rt.live == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
@@ -387,18 +387,18 @@ func TriggerLiveFollowStop(store *clientDB, rt *Runtime, streamID string) error 
 	}
 	if st, ok := rt.live.followStatus(streamID); ok {
 		st.Status = "stopped"
-		_ = dbPersistLiveFollowStatus(context.Background(), store, st)
+		_ = dbPersistLiveFollowStatus(ctx, store, st)
 	}
 	return nil
 }
 
-func TriggerLiveFollowStatus(store *clientDB, rt *Runtime, streamID string) (LiveFollowStatus, error) {
+func TriggerLiveFollowStatus(ctx context.Context, store *clientDB, rt *Runtime, streamID string) (LiveFollowStatus, error) {
 	if store == nil || rt == nil || rt.live == nil {
 		return LiveFollowStatus{}, fmt.Errorf("runtime not initialized")
 	}
 	st, ok := rt.live.followStatus(streamID)
 	if !ok {
-		loaded, found, err := dbLoadLiveFollowStatus(context.Background(), store, streamID)
+		loaded, found, err := dbLoadLiveFollowStatus(ctx, store, streamID)
 		if err != nil {
 			return LiveFollowStatus{}, err
 		}

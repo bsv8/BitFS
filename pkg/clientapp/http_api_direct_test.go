@@ -11,7 +11,7 @@ import (
 func TestHandleDirectAPIs_ListAndDetail(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	_, err := db.Exec(`INSERT INTO biz_demands(demand_id,seed_hash,created_at_unix)
 		VALUES(?,?,?), (?,?,?)`,

@@ -88,6 +88,20 @@ func newFileHTTPServer(rt *Runtime, cfgSource configSnapshotter, store *clientDB
 	}
 }
 
+func fileHTTPServerContext(s *fileHTTPServer) (context.Context, bool) {
+	if s == nil || s.rt == nil || s.rt.ctx == nil {
+		return nil, false
+	}
+	return context.WithoutCancel(s.rt.ctx), true
+}
+
+func fileHTTPSessionContext(sess *fileDownloadSession) (context.Context, bool) {
+	if sess == nil {
+		return nil, false
+	}
+	return fileHTTPServerContext(sess.server)
+}
+
 func (s *fileHTTPServer) runtimeConfigSnapshot() Config {
 	if s == nil {
 		return Config{}
@@ -435,7 +449,11 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	if err := os.MkdirAll(filepath.Dir(sess.partPath), 0o755); err != nil {
 		return err
 	}
-	if err := sess.loadStateFromDB(); err != nil {
+	ctx, ok := fileHTTPSessionContext(sess)
+	if !ok {
+		return fmt.Errorf("runtime ctx is required")
+	}
+	if err := sess.loadStateFromDB(ctx); err != nil {
 		return err
 	}
 	sess.mu.Lock()
@@ -443,7 +461,6 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	sess.persistStateLocked()
 	sess.mu.Unlock()
 
-	ctx := context.Background()
 	gatewayPeerID, err := sess.server.rt.FeePoolGatewayPeerID()
 	if err != nil {
 		return err
@@ -509,19 +526,24 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 	if err != nil {
 		return err
 	}
+	closeWorkers := func() {
+		closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer closeCancel()
+		_ = closeTransferWorkers(closeCtx, workers)
+	}
 	if err := sess.initMeta(meta); err != nil {
-		_ = closeTransferWorkers(context.Background(), workers)
+		closeWorkers()
 		return err
 	}
 
 	f, err := os.OpenFile(sess.partPath, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
-		_ = closeTransferWorkers(context.Background(), workers)
+		closeWorkers()
 		return err
 	}
 	defer f.Close()
 	if err := f.Truncate(int64(meta.FileSize)); err != nil {
-		_ = closeTransferWorkers(context.Background(), workers)
+		closeWorkers()
 		return err
 	}
 
@@ -569,11 +591,13 @@ func (sess *fileDownloadSession) prepareAndDownload() error {
 			},
 		})
 		if err != nil {
-			_ = closeTransferWorkers(context.Background(), workers)
+			closeWorkers()
 			return err
 		}
 	}
-	if err := closeTransferWorkers(context.Background(), workers); err != nil {
+	closeCtx, closeCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+	defer closeCancel()
+	if err := closeTransferWorkers(closeCtx, workers); err != nil {
 		return err
 	}
 
@@ -643,13 +667,13 @@ func (sess *fileDownloadSession) initMeta(meta seedV1Meta) error {
 	return nil
 }
 
-func (sess *fileDownloadSession) loadStateFromDB() error {
-	state, err := dbGetFileDownloadStateNoUpdated(context.Background(), fileHTTPStore(sess.server), sess.seedHash)
+func (sess *fileDownloadSession) loadStateFromDB(ctx context.Context) error {
+	state, err := dbGetFileDownloadStateNoUpdated(ctx, fileHTTPStore(sess.server), sess.seedHash)
 	if err != nil {
 		if !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
-		return dbEnsureFileDownloadQueued(context.Background(), fileHTTPStore(sess.server), sess.seedHash, sess.partPath, encodeFileDownloadRuntimeState(sess.runtimeState))
+		return dbEnsureFileDownloadQueued(ctx, fileHTTPStore(sess.server), sess.seedHash, sess.partPath, encodeFileDownloadRuntimeState(sess.runtimeState))
 	}
 	sess.mu.Lock()
 	sess.partPath = strings.TrimSpace(state.FilePath)
@@ -666,7 +690,7 @@ func (sess *fileDownloadSession) loadStateFromDB() error {
 	sess.refreshChunkPolicySnapshotLocked()
 	sess.mu.Unlock()
 
-	rows, err := dbListFileDownloadChunks(context.Background(), fileHTTPStore(sess.server), sess.seedHash)
+	rows, err := dbListFileDownloadChunks(ctx, fileHTTPStore(sess.server), sess.seedHash)
 	if err != nil {
 		return err
 	}
@@ -686,7 +710,11 @@ func (sess *fileDownloadSession) persistStateLocked() {
 	if sess.server == nil || fileHTTPStore(sess.server) == nil {
 		return
 	}
-	_ = dbUpsertFileDownloadState(context.Background(), fileHTTPStore(sess.server), sess.seedHash, fileDownloadStateRow{
+	ctx, ok := fileHTTPSessionContext(sess)
+	if !ok {
+		return
+	}
+	_ = dbUpsertFileDownloadState(ctx, fileHTTPStore(sess.server), sess.seedHash, fileDownloadStateRow{
 		FilePath:   sess.partPath,
 		FileSize:   sess.fileSize,
 		ChunkCount: sess.chunkCount,
@@ -707,7 +735,11 @@ func (sess *fileDownloadSession) markChunkDone(idx uint32, sellerPeerID string, 
 	if sess.server == nil || fileHTTPStore(sess.server) == nil {
 		return
 	}
-	_ = dbUpsertFileDownloadChunkDone(context.Background(), fileHTTPStore(sess.server), sess.seedHash, idx, sellerPeerID, price)
+	ctx, ok := fileHTTPSessionContext(sess)
+	if !ok {
+		return
+	}
+	_ = dbUpsertFileDownloadChunkDone(ctx, fileHTTPStore(sess.server), sess.seedHash, idx, sellerPeerID, price)
 	sess.persistStateLocked()
 	sess.cond.Broadcast()
 }
@@ -879,7 +911,11 @@ func (sess *fileDownloadSession) removeWantedRange(start, end uint32) {
 }
 
 func (s *fileHTTPServer) findCompleteLocalFile(seedHash string) (string, uint64, bool) {
-	p, _, err := dbFindLatestWorkspaceFileBySeedHash(context.Background(), fileHTTPStore(s), seedHash)
+	ctx, ok := fileHTTPServerContext(s)
+	if !ok {
+		return "", 0, false
+	}
+	p, _, err := dbFindLatestWorkspaceFileBySeedHash(ctx, fileHTTPStore(s), seedHash)
 	if err != nil {
 		return "", 0, false
 	}
@@ -993,7 +1029,11 @@ func (s *fileHTTPServer) serveBytes(w http.ResponseWriter, r *http.Request, data
 }
 
 func (s *fileHTTPServer) listLocalLiveSegmentFiles(streamID string) ([]localLiveSegmentFile, error) {
-	rows, err := dbListLiveSegmentWorkspaceEntries(context.Background(), fileHTTPStore(s), streamID)
+	ctx, ok := fileHTTPServerContext(s)
+	if !ok {
+		return nil, fmt.Errorf("runtime ctx is required")
+	}
+	rows, err := dbListLiveSegmentWorkspaceEntries(ctx, fileHTTPStore(s), streamID)
 	if err != nil {
 		return nil, err
 	}

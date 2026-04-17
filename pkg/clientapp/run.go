@@ -21,7 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/dealprod"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
@@ -29,12 +28,10 @@ import (
 	"github.com/bsv8/BFTP/pkg/obs"
 	bitfsv1 "github.com/bsv8/bitfs-contract/gen/go/v1"
 	bitfsprotoid "github.com/bsv8/bitfs-contract/pkg/v1/protoid"
-	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/crypto"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/multiformats/go-multiaddr"
 	"github.com/pelletier/go-toml/v2"
 )
@@ -556,466 +553,29 @@ func (r *Runtime) SQLTraceSummaryPath() string {
 
 func Run(ctx context.Context, cfg Config, deps RunDeps, opt RunOptions) (*Runtime, error) {
 	phasePlan := newRunStartupPhases(ctx, cfg, deps, opt)
+	success := false
+	defer func() {
+		if !success {
+			phasePlan.Cleanup()
+		}
+	}()
 	if err := phasePlan.Preflight(); err != nil {
 		return nil, err
 	}
-	startupMode := phasePlan.StartupMode()
-	runtimeCfg := phasePlan.RuntimeConfig()
-
-	var removeObs func()
-	if opt.ObsSink != nil {
-		removeObs = obs.AddListener(func(ev obs.Event) {
-			if ev.Service != "bitcast-client" {
-				return
-			}
-			opt.ObsSink.Handle(ev)
-		})
-	}
-
-	if err := initDataDirs(&runtimeCfg); err != nil {
-		if removeObs != nil {
-			removeObs()
-		}
+	if err := phasePlan.BuildCore(); err != nil {
 		return nil, err
 	}
-	dbPath := runtimeCfg.Index.SQLitePath
-	if !filepath.IsAbs(dbPath) {
-		dbPath = filepath.Join(runtimeCfg.Storage.DataDir, dbPath)
-	}
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
-		if removeObs != nil {
-			removeObs()
-		}
+	if err := phasePlan.ConnectExternal(); err != nil {
 		return nil, err
 	}
-	logFile, logConsoleMinLevel := ResolveLogConfig(&runtimeCfg)
-	// 设计说明：
-	// - 日志路径只认这一份解析结果，SQL trace 和 raw trace 必须共用；
-	// - 先回填 cfg，再进入 trace 初始化，避免空路径和两套来源分叉。
-	runtimeCfg.Log.File = logFile
-	var sqlTraceDir string
-	var sqlTraceSummaryPath string
-	var sqlTraceEnabledOnce bool
-	defer func() {
-		if !sqlTraceEnabledOnce {
-			_ = closeSQLTrace()
-		}
-	}()
-	sqlTraceMgr, err := initSQLTrace(logFile, runtimeCfg.Debug)
-	if err != nil {
-		if removeObs != nil {
-			removeObs()
-		}
+	if err := phasePlan.StartServices(); err != nil {
 		return nil, err
 	}
-	sqlTraceEnabledOnce = true
-	if sqlTraceMgr != nil {
-		sqlTraceDir = sqlTraceMgr.TracePath()
-		sqlTraceSummaryPath = sqlTraceMgr.SummaryPath()
-	}
-	db := deps.RawDB
-	dbActor := deps.DBActor
-	store := deps.Store
-	closeOwnedDB := func() {
-		if !deps.OwnsDB {
-			return
-		}
-		if dbActor != nil {
-			_ = dbActor.Close()
-			return
-		}
-		if db != nil {
-			_ = db.Close()
-		}
-	}
-	// 设计说明：
-	// - BitFS 正式运行时不再做任何 DB 建表/迁移；
-	// - 运行入口只负责拿到“已准备好的”库；
-	// - 结构就绪由外部流程保证，入口只做能力组装。
-	if err := dbSyncSystemSeedPricingPolicies(ctx, store, runtimeCfg.Seller.Pricing.FloorPriceSatPer64K, runtimeCfg.Seller.Pricing.ResaleDiscountBPS); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
+	if err := phasePlan.BindShutdown(); err != nil {
 		return nil, err
 	}
-	// 启动时把配置文件里的 live_base_price_sat_per_64k 记进 DB，只做启动快照同步。
-	// 这里不是 DB 反向覆盖源，真正的运行值仍然以配置文件为准。
-	if err := dbUpsertPricingAutopilotConfig(ctx, store, PricingConfig{BasePriceSatPer64K: runtimeCfg.Seller.Pricing.LiveBasePriceSatPer64K}, time.Now().Unix()); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-
-	catalog := newSellerCatalog()
-	workspaceMgr := &workspaceManager{
-		ctx:     ctx,
-		cfg:     &runtimeCfg,
-		db:      db,
-		store:   store,
-		catalog: catalog,
-	}
-	if err := workspaceMgr.EnsureDefaultWorkspace(); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if err := workspaceMgr.ValidateLiveCacheCapacity(runtimeCfg.Live.CacheMaxBytes); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if _, err := workspaceMgr.LoadSeedCatalogSnapshot(ctx); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if runtimeCfg.Scan.StartupFullScan {
-		if _, err := workspaceMgr.SyncOnce(ctx); err != nil {
-			closeOwnedDB()
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-	}
-	if err := workspaceMgr.EnforceLiveCacheLimit(runtimeCfg.Live.CacheMaxBytes); err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if opt.PostWorkspaceBootstrap != nil {
-		if err := opt.PostWorkspaceBootstrap(ctx, store); err != nil {
-			closeOwnedDB()
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-	}
-
-	// 强制仅启用 TCP 传输，规避 QUIC 在当前工具链环境下的 TLS session ticket panic。
-	opts := []libp2p.Option{
-		libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"),
-		libp2p.NoTransports,
-		libp2p.Transport(libp2ptcp.NewTCPTransport),
-	}
-	effectivePrivHex, err := normalizeRawSecp256k1PrivKeyHex(opt.EffectivePrivKeyHex)
-	if err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if strings.TrimSpace(effectivePrivHex) == "" {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, fmt.Errorf("effective private key is required")
-	}
-	// 设计约束：client_pubkey_hex 与费用池签名必须来自同一私钥。
-	// 运行时有效私钥作为唯一真源，后续签名路径统一读取 cfg.Keys.PrivkeyHex。
-	runtimeCfg.Keys.PrivkeyHex = effectivePrivHex
-	priv, err := parsePrivHex(effectivePrivHex)
-	if err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	opts = append(opts, libp2p.Identity(priv))
-	h, err := libp2p.New(opts...)
-	if err != nil {
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	clientPubHex, err := localPubKeyHex(h)
-	if err != nil {
-		_ = h.Close()
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if runtimeCfg.ClientID != "" && !strings.EqualFold(strings.TrimSpace(runtimeCfg.ClientID), clientPubHex) {
-		obs.Info("bitcast-client", "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": runtimeCfg.ClientID, "effective_client_pubkey_hex": clientPubHex})
-	}
-	runtimeCfg.ClientID = clientPubHex
-	identity, err := buildClientIdentityCaps(runtimeCfg, effectivePrivHex)
-	if err != nil {
-		_ = h.Close()
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-
-	activeGWs, err := connectGateways(ctx, h, runtimeCfg.Network.Gateways)
-	if err != nil {
-		_ = h.Close()
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	if len(activeGWs) == 0 {
-		obs.Business("bitcast-client", "waiting_gateway_config", map[string]any{
-			"message": noEnabledGatewayMessage(runtimeCfg.HTTP.Enabled, runtimeCfg.FSHTTP.Enabled),
-		})
-	}
-	arbInfo, err := connectArbiters(ctx, h, runtimeCfg.Network.Arbiters)
-	if err != nil {
-		_ = h.Close()
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	trace := opt.RPCTrace
-	var closeTrace func() error
-	if trace == nil && runtimeCfg.Debug {
-		localTrace, err := pproto.NewLocalRawTraceSink(logFile)
-		if err != nil {
-			_ = h.Close()
-			closeOwnedDB()
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-		trace = localTrace
-		closeTrace = localTrace.Close
-	}
-	healthyGWs := checkPeerHealth(ctx, h, activeGWs, ProtoHealth, gwSec(trace), "gateway")
-	if len(activeGWs) > 0 && len(healthyGWs) == 0 {
-		obs.Error("bitcast-client", "gateway_health_all_failed", map[string]any{
-			"configured_gateway_count": len(activeGWs),
-			"fallback":                 "use_connected_gateways_and_retry_in_listen_loop",
-		})
-		healthyGWs = activeGWs
-	}
-	healthyArbiters := checkPeerHealth(ctx, h, arbInfo, ProtoArbHealth, arbSec(trace), "arbiter")
-	if len(healthyArbiters) == 0 && len(arbInfo) > 0 {
-		obs.Error("bitcast-client", "arbiter_health_all_failed", map[string]any{
-			"configured_arbiter_count": len(arbInfo),
-		})
-	}
-
-	obs.Important("bitcast-client", "started", map[string]any{
-		"transport_peer_id": h.ID().String(),
-		"pubkey_hex":        clientPubHex,
-		"client_pubkey_hex": runtimeCfg.ClientID,
-		"seller_enabled":    runtimeCfg.Seller.Enabled,
-		"listen_enabled":    cfgBool(runtimeCfg.Listen.Enabled, true),
-		"gateway_count":     len(healthyGWs),
-		"arbiter_count":     len(healthyArbiters),
-		"db":                dbPath,
-		"log_file":          logFile,
-		"log_console":       logConsoleMinLevel,
-		"protocol_suite":    BBroadcastSuiteVersion,
-		"protocol_doc_name": BBroadcastProtocolName,
-	})
-	runtimeCfgSvc, err := newRuntimeConfigService(runtimeCfg, opt.ConfigPath, startupMode)
-	if err != nil {
-		_ = h.Close()
-		closeOwnedDB()
-		if removeObs != nil {
-			removeObs()
-		}
-		return nil, err
-	}
-	rt := &Runtime{
-		Host:                     h,
-		ctx:                      ctx,
-		store:                    store,
-		identity:                 identity,
-		config:                   runtimeCfgSvc,
-		StartedAtUnix:            time.Now().Unix(),
-		HealthyGWs:               healthyGWs,
-		HealthyArbiters:          healthyArbiters,
-		Workspace:                workspaceMgr,
-		Catalog:                  catalog,
-		ActionChain:              opt.ActionChain,
-		WalletChain:              opt.WalletChain,
-		live:                     newLiveRuntime(),
-		sqlTraceDir:              sqlTraceDir,
-		sqlTraceSummaryPath:      sqlTraceSummaryPath,
-		feePools:                 map[string]*feePoolSession{},
-		feePoolPayLocks:          map[string]*sync.Mutex{},
-		triplePool:               map[string]*triplePoolSession{},
-		transferPoolSessionLocks: map[string]*sync.Mutex{},
-		rpcTrace:                 trace,
-	}
-	rtCtx, rtCancel := context.WithCancel(ctx)
-	rt.bgCancel = rtCancel
-	rt.taskSched = newTaskScheduler(store, "bitcast-client")
-	rt.taskSched.ctx = rtCtx
-	rt.kernel = newClientKernel(rt, store, workspaceMgr)
-	rt.orch = newOrchestrator(rt, store)
-	registerLiveHandlers(store, rt)
-	registerNodeRouteHandlers(rt, store)
-	registerResolverHandlers(rt)
-	registerDirectQuoteSubmitHandler(h, store, trace)
-	if runtimeCfg.Seller.Enabled {
-		registerSellerHandlers(rt, h, store, rt.live, trace, runtimeCfg)
-	}
-	if rt.ActionChain == nil {
-		actionChain, err := chainbridge.NewDefaultFeePoolChain(chainbridge.RouteConfig{
-			Provider: chainbridge.WhatsOnChainProvider,
-			Network:  runtimeCfg.BSV.Network,
-		})
-		if err != nil {
-			closeOwnedDB()
-			if closeTrace != nil {
-				_ = closeTrace()
-			}
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-		rt.ActionChain = actionChain
-	}
-	if rt.WalletChain == nil {
-		walletChain, err := NewWalletChainClient(chainbridge.Route{
-			Provider: chainbridge.WhatsOnChainProvider,
-			Network:  runtimeCfg.BSV.Network,
-		})
-		if err != nil {
-			closeOwnedDB()
-			if closeTrace != nil {
-				_ = closeTrace()
-			}
-			if removeObs != nil {
-				removeObs()
-			}
-			return nil, err
-		}
-		rt.WalletChain = walletChain
-	}
-
-	// 初始化网关管理器
-	rt.gwManager = newGatewayManager(rt, h)
-	_ = rt.gwManager.InitFromConfig(rtCtx, runtimeCfg.Network.Gateways)
-	// 更新 HealthyGWs 为已连接的网关
-	rt.HealthyGWs = rt.gwManager.GetConnectedGateways()
-
-	var wg sync.WaitGroup
-	if rt.orch != nil {
-		rt.orch.Start(rtCtx)
-	}
-	// 链维护进程：统一串行调度链 API 查询，业务侧只读本地快照。
-	startChainMaintainer(rtCtx, rt, store)
-	// listen 费用池自动 loop（按周期扣费/续费，网关联通后自动触发）。
-	startListenLoops(rtCtx, rt, store)
-	// 自动地址声明发布与 listen loop 并列存在：
-	// - listen 解决“我是否持续监听网关广播”；
-	// - reachability announce 解决“别人是否能通过 gateway 目录找到我”。
-	startAutoNodeReachabilityAnnounceLoop(rtCtx, rt, store)
-	if runtimeCfg.HTTP.Enabled && !opt.DisableHTTPServer {
-		rt.HTTP = newHTTPAPIServer(rt, runtimeCfgSvc, db, store, h, healthyGWs, workspaceMgr, trace)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := rt.HTTP.Start(); err != nil {
-				obs.Error("bitcast-client", "http_api_stopped", map[string]any{"error": err.Error()})
-			}
-		}()
-	}
-	if runtimeCfg.FSHTTP.Enabled {
-		rt.FSHTTP = newFileHTTPServer(rt, runtimeCfgSvc, store, workspaceMgr)
-		fsHTTPListener := opt.FSHTTPListener
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			var err error
-			if fsHTTPListener != nil {
-				err = rt.FSHTTP.StartOnListener(fsHTTPListener)
-			} else {
-				err = rt.FSHTTP.Start()
-			}
-			if err != nil {
-				obs.Error("bitcast-client", "fs_http_stopped", map[string]any{"error": err.Error()})
-			}
-		}()
-	}
-
-	go restorePersistedLiveFollows(rtCtx, store, rt)
-
-	rt.closeFn = func() error {
-		if rt.bgCancel != nil {
-			rt.bgCancel()
-		}
-		if rt.taskSched != nil {
-			if err := rt.taskSched.Shutdown(); err != nil {
-				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-					obs.Error("bitcast-client", "task_scheduler_shutdown_failed", map[string]any{"error": err.Error()})
-				}
-			}
-		}
-		if rt.chainMaint != nil {
-			rt.chainMaint.Wait()
-		}
-		if rt.HTTP != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(rtCtx), 5*time.Second)
-			_ = rt.HTTP.Shutdown(shutdownCtx)
-			cancel()
-		}
-		if rt.FSHTTP != nil {
-			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(rtCtx), 5*time.Second)
-			_ = rt.FSHTTP.Shutdown(shutdownCtx)
-			cancel()
-		}
-		wg.Wait()
-		if removeObs != nil {
-			removeObs()
-		}
-		var firstErr error
-		if err := h.Close(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		if deps.OwnsDB {
-			if dbActor != nil {
-				if err := dbActor.Close(); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			} else if db != nil {
-				if err := db.Close(); err != nil && firstErr == nil {
-					firstErr = err
-				}
-			}
-		}
-		if err := closeSQLTrace(); err != nil && firstErr == nil {
-			firstErr = err
-		}
-		return firstErr
-	}
-
-	go func() {
-		<-ctx.Done()
-		_ = rt.Close()
-	}()
-	return rt, nil
+	success = true
+	return phasePlan.Runtime(), nil
 }
 
 func ApplyConfigDefaults(cfg *Config) error {
@@ -1587,7 +1147,7 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 		if demandID == "" || !isSeedHashHex(streamID) || buyerPeerID == "" || req.Window == 0 {
 			return dealprod.LiveDemandAnnounceResp{}, fmt.Errorf("invalid live demand announce")
 		}
-		recentSegments, latestIndex, err := listLocalLiveQuoteSegments(store, streamID, int(req.Window))
+		recentSegments, latestIndex, err := listLocalLiveQuoteSegments(ctx, store, streamID, int(req.Window))
 		if err != nil {
 			return dealprod.LiveDemandAnnounceResp{}, err
 		}
@@ -1668,20 +1228,20 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 			Status:          "accepted",
 		}, nil
 	})
-	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
-		return handleDirectTransferPoolOpen(h, store, cfg, req)
+	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(ctx context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
+		return handleDirectTransferPoolOpen(ctx, h, store, cfg, req)
 	})
-	pproto.HandleProto[directTransferChunkGetReq, directTransferChunkGetResp](h, ProtoTransferChunkGet, clientSec(trace), func(_ context.Context, req directTransferChunkGetReq) (directTransferChunkGetResp, error) {
-		return handleDirectTransferChunkGet(h, store, cfg, req)
+	pproto.HandleProto[directTransferChunkGetReq, directTransferChunkGetResp](h, ProtoTransferChunkGet, clientSec(trace), func(ctx context.Context, req directTransferChunkGetReq) (directTransferChunkGetResp, error) {
+		return handleDirectTransferChunkGet(ctx, h, store, cfg, req)
 	})
-	pproto.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
-		return handleDirectTransferPoolPay(rt, h, store, cfg, req)
+	pproto.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(ctx context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
+		return handleDirectTransferPoolPay(ctx, rt, h, store, cfg, req)
 	})
 	pproto.HandleProto[directTransferArbitrateReq, directTransferArbitrateResp](h, ProtoTransferArbitrate, clientSec(trace), func(ctx context.Context, req directTransferArbitrateReq) (directTransferArbitrateResp, error) {
 		return handleDirectTransferArbitrate(ctx, rt, h, store, cfg, req)
 	})
-	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
-		return handleDirectTransferPoolClose(h, store, cfg, req)
+	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(ctx context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
+		return handleDirectTransferPoolClose(ctx, h, store, cfg, req)
 	})
 }
 

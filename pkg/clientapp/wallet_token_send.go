@@ -119,7 +119,7 @@ func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAss
 // - 广播后事实写失败不能只告警，必须留下能被运维追踪的重试记录；
 // - 当前不新增数据库迁移，所以先落到 orchestrator 日志；
 // - 这不是“继续成功”的旁路，而是明确的失败后补救痕迹。
-func recordWalletTokenSendRetryTask(rt *Runtime, txid string, stage string, cause error, txHex string) {
+func recordWalletTokenSendRetryTask(ctx context.Context, rt *Runtime, txid string, stage string, cause error, txHex string) {
 	if rt == nil {
 		return
 	}
@@ -148,7 +148,7 @@ func recordWalletTokenSendRetryTask(rt *Runtime, txid string, stage string, caus
 		return
 	}
 	if rt.store != nil {
-		dbAppendOrchestratorLog(context.Background(), rt.store, entry)
+		dbAppendOrchestratorLog(ctx, rt.store, entry)
 	}
 }
 
@@ -211,14 +211,14 @@ func prepareWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 		return preparedWalletTokenSend{}, err
 	}
 	tokenOutputCount := walletTokenOutputCount(changeText)
-	selectedFee, _, _, err := previewPlainBSVFunding(store, address, uint64(len(selected)), len(selected), tokenOutputCount, uint64(tokenOutputCount))
+	selectedFee, _, _, err := previewPlainBSVFunding(ctx, store, address, uint64(len(selected)), len(selected), tokenOutputCount, uint64(tokenOutputCount))
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}
 	if !selectedFee.Feasible {
 		return preparedWalletTokenSend{}, fmt.Errorf("insufficient plain bsv for miner fee")
 	}
-	feeUTXOs, err := loadWalletUTXOsByID(store, address, selectedFee.SelectedUTXOIDs)
+	feeUTXOs, err := loadWalletUTXOsByID(ctx, store, address, selectedFee.SelectedUTXOIDs)
 	if err != nil {
 		return preparedWalletTokenSend{}, err
 	}

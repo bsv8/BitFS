@@ -53,6 +53,7 @@ func TestHandleAdminStrategyDebugLog(t *testing.T) {
 		rt:        rt,
 		cfgSource: staticConfigSnapshot(cfg),
 		db:        db,
+		store:     newClientDB(db, nil),
 	}
 
 	{
@@ -259,7 +260,7 @@ func TestHandleAdminSchedulerTasksDefaultOrder(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/tasks", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminSchedulerTasks(rec, req)
@@ -315,7 +316,7 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/scheduler/runs?status=failed&mode=dynamic", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminSchedulerRuns(rec, req)
@@ -395,7 +396,7 @@ func TestHandleAdminClientKernelCommands(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
@@ -499,7 +500,7 @@ func TestHandleAdminOrchestratorLogs(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/orchestrator/logs?event_type=signal_received&limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
@@ -592,7 +593,7 @@ func TestHandleAdminConfigUpdateValidation(t *testing.T) {
 		t.Fatalf("save cfg: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeConfigPath(configPath))
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 
 	schemaReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/config/schema", nil)
 	schemaRec := httptest.NewRecorder()
@@ -889,7 +890,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	}
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(workspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	registerLiveHandlers(newClientDB(db, nil), rt)
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, workspace: workspace, kernel: rt.ClientKernel()}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil), workspace: workspace, kernel: rt.ClientKernel()}
 
 	req0 := httptest.NewRequest(http.MethodPost, "/api/v1/live/publish/segment", strings.NewReader(`{
 		"duration_ms": 2000,
@@ -1077,7 +1078,7 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	var loaded LiveFollowStatus
 	deadline = time.Now().Add(3 * time.Second)
 	for {
-		loaded, err = TriggerLiveFollowStatus(newClientDB(db, nil), subRT, streamID)
+		loaded, err = TriggerLiveFollowStatus(context.Background(), newClientDB(db, nil), subRT, streamID)
 		if err == nil {
 			break
 		}
@@ -1161,7 +1162,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 		t.Fatalf("apply defaults: %v", err)
 	}
 	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
 
 	// 测试 1：按匹配的 trigger_key 过滤，应该查到 orchestrator 命令
 	req1 := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/commands?trigger_key=workspace_sync:12345", nil)

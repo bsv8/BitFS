@@ -122,7 +122,7 @@ func buildWalletTokenCreatePreview(r *http.Request, s *httpAPIServer, req wallet
 	}
 	preview, err := httpDBValue(r.Context(), s, func(store *clientDB) (walletAssetActionPreview, error) {
 		// 这里运行在 actor 闭包里，禁止再走 actor 入口，避免重入阻塞。
-		return previewWalletTokenCreate(store, address, input)
+		return previewWalletTokenCreate(r.Context(), store, address, input)
 	})
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
@@ -316,9 +316,9 @@ func normalizeWalletTokenCreateInput(tokenStandard string, symbol string, maxSup
 	}, nil
 }
 
-func previewWalletTokenCreate(store *clientDB, address string, input walletTokenCreateInput) (walletAssetActionPreview, error) {
+func previewWalletTokenCreate(ctx context.Context, store *clientDB, address string, input walletTokenCreateInput) (walletAssetActionPreview, error) {
 	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan()
-	selectedFee, fee, fundingNeed, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
+	selectedFee, fee, fundingNeed, err := previewPlainBSVFunding(ctx, store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -368,14 +368,14 @@ func prepareWalletTokenCreate(ctx context.Context, store *clientDB, rt *Runtime,
 		return preparedWalletTokenCreate{}, err
 	}
 	outputCount, fixedOutputSatoshi := walletBSV21CreateOutputPlan()
-	selectedFee, _, _, err := previewPlainBSVFunding(store, address, 0, 0, outputCount, fixedOutputSatoshi)
+	selectedFee, _, _, err := previewPlainBSVFunding(ctx, store, address, 0, 0, outputCount, fixedOutputSatoshi)
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}
 	if !selectedFee.Feasible {
 		return preparedWalletTokenCreate{}, fmt.Errorf("insufficient plain bsv for miner fee")
 	}
-	feeUTXOs, err := loadWalletUTXOsByID(store, address, selectedFee.SelectedUTXOIDs)
+	feeUTXOs, err := loadWalletUTXOsByID(ctx, store, address, selectedFee.SelectedUTXOIDs)
 	if err != nil {
 		return preparedWalletTokenCreate{}, err
 	}

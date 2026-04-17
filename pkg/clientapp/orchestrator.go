@@ -634,8 +634,8 @@ func (o *orchestrator) setStartedAt(unix int64) {
 }
 
 func (o *orchestrator) logEvent(e orchestratorLogEntry) {
-	if o == nil || o.store == nil {
+	if o == nil || o.store == nil || o.rt == nil || o.rt.ctx == nil {
 		return
 	}
-	dbAppendOrchestratorLog(context.Background(), o.store, e)
+	dbAppendOrchestratorLog(context.WithoutCancel(o.rt.ctx), o.store, e)
 }

@@ -155,7 +155,7 @@ func (r *Runtime) releaseTransferPoolSessionMutex(sessionID string) {
 	delete(r.transferPoolSessionLocks, key)
 }
 
-func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
+func handleDirectTransferPoolOpen(ctx context.Context, h host.Host, store *clientDB, cfg Config, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 	sessionID := strings.TrimSpace(req.SessionId)
 	dealID := strings.TrimSpace(req.DealId)
 	buyerPubHex, err := normalizeCompressedPubKeyHex(req.BuyerPubkeyHex)
@@ -178,7 +178,7 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 	}
 
 	sellerPubHex := strings.ToLower(strings.TrimSpace(localPubHex(h)))
-	dealBuyerPubHex, dealSellerPubHex, dealArbiterPubHex, err := dbLoadDirectDealParties(context.Background(), store, dealID)
+	dealBuyerPubHex, dealSellerPubHex, dealArbiterPubHex, err := dbLoadDirectDealParties(ctx, store, dealID)
 	if err != nil {
 		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
@@ -229,7 +229,7 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
 
-	if err := dbUpsertDirectTransferPoolOpen(context.Background(), store, req, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, currentTxHex, baseTxHex); err != nil {
+	if err := dbUpsertDirectTransferPoolOpen(ctx, store, req, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, currentTxHex, baseTxHex); err != nil {
 		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_open_ok", map[string]any{
@@ -246,14 +246,14 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 	}, nil
 }
 
-func handleDirectTransferChunkGet(_ host.Host, store *clientDB, _ Config, req directTransferChunkGetReq) (directTransferChunkGetResp, error) {
+func handleDirectTransferChunkGet(ctx context.Context, _ host.Host, store *clientDB, _ Config, req directTransferChunkGetReq) (directTransferChunkGetResp, error) {
 	sessionID := strings.TrimSpace(req.SessionId)
 	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
 	if sessionID == "" || seedHash == "" || chunkHash == "" {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "invalid chunk_get request"}, nil
 	}
-	row, err := dbLoadDirectTransferPoolRow(context.Background(), store, sessionID)
+	row, err := dbLoadDirectTransferPoolRow(ctx, store, sessionID)
 	if err != nil {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
@@ -261,14 +261,14 @@ func handleDirectTransferChunkGet(_ host.Host, store *clientDB, _ Config, req di
 	if status == "expired" || status == "closed" || status == "arbitrated" || status == "arbitration_pending" || status == "arbitration_rejected" {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 	}
-	dealSeedHash, err := dbLoadDirectDealSeedHash(context.Background(), store, row.DealID)
+	dealSeedHash, err := dbLoadDirectDealSeedHash(ctx, store, row.DealID)
 	if err != nil {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
 	if seedHash != strings.ToLower(strings.TrimSpace(dealSeedHash)) {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "seed hash mismatch"}, nil
 	}
-	seedBytes, err := dbLoadSeedBytesBySeedHash(context.Background(), store, seedHash)
+	seedBytes, err := dbLoadSeedBytesBySeedHash(ctx, store, seedHash)
 	if err != nil {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
@@ -279,7 +279,7 @@ func handleDirectTransferChunkGet(_ host.Host, store *clientDB, _ Config, req di
 	if req.ChunkIndex != resolvedChunkIndex {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "chunk index mismatch"}, nil
 	}
-	chunk, err := dbLoadChunkBytesBySeedHash(context.Background(), store, seedHash, resolvedChunkIndex)
+	chunk, err := dbLoadChunkBytesBySeedHash(ctx, store, seedHash, resolvedChunkIndex)
 	if err != nil {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
@@ -287,7 +287,7 @@ func handleDirectTransferChunkGet(_ host.Host, store *clientDB, _ Config, req di
 	if hex.EncodeToString(sum[:]) != chunkHash {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "chunk hash verify failed"}, nil
 	}
-	if err := dbUpdateDirectTransferPoolStatus(context.Background(), store, sessionID, "delivering"); err != nil {
+	if err := dbUpdateDirectTransferPoolStatus(ctx, store, sessionID, "delivering"); err != nil {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_chunk_get_ok", map[string]any{
@@ -303,14 +303,14 @@ func handleDirectTransferChunkGet(_ host.Host, store *clientDB, _ Config, req di
 	}, nil
 }
 
-func handleDirectTransferPoolPay(rt *Runtime, _ host.Host, store *clientDB, cfg Config, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
+func handleDirectTransferPoolPay(ctx context.Context, rt *Runtime, _ host.Host, store *clientDB, cfg Config, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
 	sessionID := strings.TrimSpace(req.SessionId)
 	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
 	if sessionID == "" || seedHash == "" || chunkHash == "" || req.Sequence == 0 || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "invalid pay request"}, nil
 	}
-	row, err := dbLoadDirectTransferPoolRow(context.Background(), store, sessionID)
+	row, err := dbLoadDirectTransferPoolRow(ctx, store, sessionID)
 	if err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
@@ -324,14 +324,14 @@ func handleDirectTransferPoolPay(rt *Runtime, _ host.Host, store *clientDB, cfg 
 	if req.SellerAmount <= row.SellerAmount {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "seller amount must increase"}, nil
 	}
-	dealSeedHash, err := dbLoadDirectDealSeedHash(context.Background(), store, row.DealID)
+	dealSeedHash, err := dbLoadDirectDealSeedHash(ctx, store, row.DealID)
 	if err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "deal not found"}, nil
 	}
 	if seedHash != strings.ToLower(strings.TrimSpace(dealSeedHash)) {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "seed hash mismatch"}, nil
 	}
-	seedBytes, err := dbLoadSeedBytesBySeedHash(context.Background(), store, seedHash)
+	seedBytes, err := dbLoadSeedBytesBySeedHash(ctx, store, seedHash)
 	if err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
@@ -383,7 +383,7 @@ func handleDirectTransferPoolPay(rt *Runtime, _ host.Host, store *clientDB, cfg 
 	}
 
 	delta := req.SellerAmount - row.SellerAmount
-	if err := dbUpdateDirectTransferPoolPay(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta, "paid"); err != nil {
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta, "paid"); err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_pay_ok", map[string]any{
@@ -403,7 +403,7 @@ func handleDirectTransferPoolPay(rt *Runtime, _ host.Host, store *clientDB, cfg 
 
 func handleDirectTransferArbitrate(ctx context.Context, rt *Runtime, h host.Host, store *clientDB, cfg Config, req directTransferArbitrateReq) (directTransferArbitrateResp, error) {
 	if ctx == nil {
-		ctx = context.Background()
+		return directTransferArbitrateResp{SessionId: strings.TrimSpace(req.SessionId), Status: "rejected", Error: "ctx is required"}, nil
 	}
 	sessionID := strings.TrimSpace(req.SessionId)
 	if sessionID == "" {
@@ -630,12 +630,12 @@ func resolveChunkIndexByHashInSeed(seed []byte, chunkHash string) (uint32, error
 	return 0, fmt.Errorf("chunk hash not found")
 }
 
-func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
+func handleDirectTransferPoolClose(ctx context.Context, _ host.Host, store *clientDB, cfg Config, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 	sessionID := strings.TrimSpace(req.SessionId)
 	if sessionID == "" || len(req.CurrentTx) == 0 || len(req.BuyerSig) == 0 {
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "invalid close request"}, nil
 	}
-	row, err := dbLoadDirectTransferPoolRow(context.Background(), store, sessionID)
+	row, err := dbLoadDirectTransferPoolRow(ctx, store, sessionID)
 	if err != nil {
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
@@ -697,7 +697,7 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	if err != nil {
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
 	}
-	if err := dbUpdateDirectTransferPoolClosing(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex); err != nil {
+	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex); err != nil {
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_close_sign_ok", map[string]any{

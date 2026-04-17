@@ -125,14 +125,6 @@ func dbAppendSettlementRecord(ctx context.Context, store *clientDB, e settlement
 	})
 }
 
-// dbAppendSettlementRecordDB 写入结算消耗记录（*sql.DB 兼容入口）。
-func dbAppendSettlementRecordDB(ctx context.Context, db *sql.DB, e settlementRecordEntry) error {
-	if db == nil {
-		return fmt.Errorf("db is nil")
-	}
-	return dbAppendSettlementRecord(ctx, clientDBFromDB(db), e)
-}
-
 // dbListSettlementRecordsByCycle 查询某个 settlement_payment_attempt 的消耗记录。
 func dbListSettlementRecordsByCycle(ctx context.Context, store *clientDB, settlementPaymentAttemptID int64) ([]settlementRecordEntry, error) {
 	if store == nil {

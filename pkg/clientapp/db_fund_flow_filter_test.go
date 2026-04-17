@@ -13,7 +13,7 @@ import (
 func TestWalletFundFlows_MultiDirectionFilter(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 插入 fact_bsv_utxos 测试数据（不同方向）
 	// OUT 方向：utxo_state='spent'
@@ -154,7 +154,7 @@ func TestWalletFundFlows_MultiDirectionFilter(t *testing.T) {
 func TestWalletFundFlows_VisitIDDeprecated(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows?visit_id=some-visit-id", nil)
 	rec := httptest.NewRecorder()
@@ -177,7 +177,7 @@ func TestWalletFundFlows_VisitIDDeprecated(t *testing.T) {
 func TestWalletFundFlows_DirectionCaseInsensitive(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 插入 fact_bsv_utxos 测试数据
 	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
@@ -215,7 +215,7 @@ func TestWalletFundFlows_DirectionCaseInsensitive(t *testing.T) {
 func TestWalletFundFlows_PaginationStable(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 插入 10 条 BSV UTXO 记录（5个unspent, 5个spent）
 	for i := 1; i <= 5; i++ {
@@ -293,7 +293,7 @@ func TestWalletFundFlows_ExposesAssetKind(t *testing.T) {
 	t.Parallel()
 
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 插入 BSV UTXO 记录
 	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
@@ -359,7 +359,7 @@ func TestWalletFundFlows_ExposesAssetKind(t *testing.T) {
 func TestWalletFundFlowDetail_RequiresFlowType(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 不传 flow_type → 400（先传 ref_id，再测 flow_type）
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/wallet/fund-flows/detail?ref_id=1", nil)
@@ -383,7 +383,7 @@ func TestWalletFundFlowDetail_RequiresFlowType(t *testing.T) {
 func TestWalletFundFlowDetail_HitsCorrectRecord(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 插入 BSV UTXO spent 记录（chain_bsv_out）
 	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(
@@ -418,7 +418,7 @@ func TestWalletFundFlowDetail_HitsCorrectRecord(t *testing.T) {
 func TestWalletFundFlowDetail_WrongFlowTypeReturns404(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	// 插入 BSV UTXO unspent 记录
 	_, err := db.Exec(`INSERT INTO fact_bsv_utxos(

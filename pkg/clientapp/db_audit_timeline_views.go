@@ -45,33 +45,6 @@ func ListCommandAuditTimeline(ctx context.Context, store *clientDB, f AuditTimel
 	return dbListCommandAuditTimeline(ctx, store, f)
 }
 
-// ListGatewayAuditTimelineDB 仅给仓外调用方（如 e2e 协调层）保留的兼容入口。
-// 设计说明：
-// - 运行时主路径统一传入 store 能力，不再让业务直接创建 db 适配器；
-// - 这里保留 DB 版本是为了避免跨仓改动耦合，不参与运行时依赖组装。
-func ListGatewayAuditTimelineDB(ctx context.Context, db sqlConn, f AuditTimelineFilter) (AuditTimelinePage, error) {
-	if db == nil {
-		return AuditTimelinePage{}, fmt.Errorf("db is nil")
-	}
-	rawDB, ok := db.(*sql.DB)
-	if !ok {
-		return AuditTimelinePage{}, fmt.Errorf("db must be *sql.DB")
-	}
-	return dbListGatewayAuditTimeline(ctx, clientDBFromDB(rawDB), f)
-}
-
-// ListCommandAuditTimelineDB 仅给仓外调用方（如 e2e 协调层）保留的兼容入口。
-func ListCommandAuditTimelineDB(ctx context.Context, db sqlConn, f AuditTimelineFilter) (AuditTimelinePage, error) {
-	if db == nil {
-		return AuditTimelinePage{}, fmt.Errorf("db is nil")
-	}
-	rawDB, ok := db.(*sql.DB)
-	if !ok {
-		return AuditTimelinePage{}, fmt.Errorf("db must be *sql.DB")
-	}
-	return dbListCommandAuditTimeline(ctx, clientDBFromDB(rawDB), f)
-}
-
 func dbListGatewayAuditTimeline(ctx context.Context, store *clientDB, f AuditTimelineFilter) (AuditTimelinePage, error) {
 	if store == nil {
 		return AuditTimelinePage{}, fmt.Errorf("client db is nil")

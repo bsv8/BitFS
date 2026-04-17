@@ -471,7 +471,7 @@ func TriggerDomainPrepareRegister(ctx context.Context, store *clientDB, rt *Runt
 	allocMu.Lock()
 	defer allocMu.Unlock()
 
-	registerTxRaw, registerTxID, err := buildDomainRegisterTx(store, rt, lockResp.SignedQuoteJSON, quote)
+	registerTxRaw, registerTxID, err := buildDomainRegisterTx(ctx, store, rt, lockResp.SignedQuoteJSON, quote)
 	if err != nil {
 		return out, err
 	}
@@ -830,15 +830,15 @@ func verifyRegisterQuote(resolverPubkeyHex string, raw []byte) (domainRegisterQu
 	return out, nil
 }
 
-func buildDomainRegisterTx(store *clientDB, rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) ([]byte, string, error) {
-	built, err := buildDomainRegisterTxDetailed(store, rt, signedQuoteJSON, quote)
+func buildDomainRegisterTx(ctx context.Context, store *clientDB, rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) ([]byte, string, error) {
+	built, err := buildDomainRegisterTxDetailed(ctx, store, rt, signedQuoteJSON, quote)
 	if err != nil {
 		return nil, "", err
 	}
 	return built.RawTx, built.TxID, nil
 }
 
-func buildDomainRegisterTxDetailed(store *clientDB, rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) (builtDomainRegisterTx, error) {
+func buildDomainRegisterTxDetailed(ctx context.Context, store *clientDB, rt *Runtime, signedQuoteJSON []byte, quote domainRegisterQuote) (builtDomainRegisterTx, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("runtime chain not initialized")
 	}
@@ -850,7 +850,7 @@ func buildDomainRegisterTxDetailed(store *clientDB, rt *Runtime, signedQuoteJSON
 	if clientActor == nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("runtime not initialized")
 	}
-	utxos, err := getWalletUTXOsFromDB(context.Background(), store, rt)
+	utxos, err := getWalletUTXOsFromDB(ctx, store, rt)
 	if err != nil {
 		return builtDomainRegisterTx{}, fmt.Errorf("load wallet utxos from snapshot failed: %w", err)
 	}

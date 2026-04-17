@@ -1260,7 +1260,7 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 
 	// 第一次写入结算记录
 	recordID := fmt.Sprintf("rec_token_%d_%s", paymentAttemptIDInt, lotID)
-	err = dbAppendSettlementRecordDB(context.Background(), db, settlementRecordEntry{
+	err = dbAppendSettlementRecord(context.Background(), newClientDB(db, nil), settlementRecordEntry{
 		RecordID:                   recordID,
 		SettlementPaymentAttemptID: paymentAttemptIDInt,
 		AssetType:                  "TOKEN",
@@ -1276,7 +1276,7 @@ func TestSettlementRecordIdempotent_DoubleWriteNoDuplicate(t *testing.T) {
 	}
 
 	// 第二次写入结算记录（相同 record_id，应被幂等跳过）
-	err = dbAppendSettlementRecordDB(context.Background(), db, settlementRecordEntry{
+	err = dbAppendSettlementRecord(context.Background(), newClientDB(db, nil), settlementRecordEntry{
 		RecordID:                   recordID,
 		SettlementPaymentAttemptID: paymentAttemptIDInt,
 		AssetType:                  "TOKEN",

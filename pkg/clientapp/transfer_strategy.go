@@ -639,12 +639,16 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		want = seedMeta.ChunkCount
 	}
 	if want == 0 {
-		_ = closeTransferWorkers(context.Background(), workers)
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		_ = closeTransferWorkers(closeCtx, workers)
 		return TransferChunksByStrategyResult{}, fmt.Errorf("seed has zero chunks")
 	}
 	missing := missingChunkCoverage(want, workers)
 	if len(missing) > 0 {
-		_ = closeTransferWorkers(context.Background(), workers)
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
+		defer cancel()
+		_ = closeTransferWorkers(closeCtx, workers)
 		logTransferStrategy("evt_transfer_strategy_missing_chunks", map[string]any{
 			"demand_id":      strings.TrimSpace(p.DemandID),
 			"missing_count":  len(missing),
@@ -701,7 +705,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		},
 	})
 
-	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
 	defer cancel()
 	closeErr := closeTransferWorkers(closeCtx, workers)
 	logTransferStrategy("evt_transfer_strategy_closed_workers", map[string]any{

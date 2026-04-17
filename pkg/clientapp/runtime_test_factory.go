@@ -49,7 +49,7 @@ func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*R
 		t.Fatalf("create runtime config service: %v", err)
 	}
 	rt := &Runtime{
-		ctx:    context.Background(),
+		ctx:    context.WithoutCancel(t.Context()),
 		config: svc,
 	}
 	if privHex != "" {
@@ -64,8 +64,11 @@ func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*R
 			opt(rt)
 		}
 	}
+	if rt.store == nil && rt.Workspace != nil && rt.Workspace.store != nil {
+		rt.store = rt.Workspace.store
+	}
 	if rt.config != nil {
-		rt.kernel = newClientKernel(rt, nil, rt.Workspace)
+		rt.kernel = newClientKernel(rt, rt.store, rt.Workspace)
 	}
 	return rt
 }
@@ -82,6 +85,14 @@ func withRuntimeWorkspace(workspace *workspaceManager) func(*Runtime) {
 	return func(rt *Runtime) {
 		if rt != nil {
 			rt.Workspace = workspace
+		}
+	}
+}
+
+func withRuntimeStore(store *clientDB) func(*Runtime) {
+	return func(rt *Runtime) {
+		if rt != nil {
+			rt.store = store
 		}
 	}
 }

@@ -168,11 +168,11 @@ func TriggerWalletTokenSendSubmit(ctx context.Context, store *clientDB, rt *Runt
 		finalTxID = localTxID
 	}
 	if err := applyLocalBroadcastWalletTx(ctx, store, rt, txHex, "wallet_token_send_submit"); err != nil {
-		recordWalletTokenSendRetryTask(rt, finalTxID, "local_broadcast_projection", err, txHex)
+		recordWalletTokenSendRetryTask(ctx, rt, finalTxID, "local_broadcast_projection", err, txHex)
 		return WalletAssetActionSubmitResp{}, fmt.Errorf("project token send failed for txid %s: %w", finalTxID, err)
 	}
 	if err := appendBSV21TokenSendAccountingAfterBroadcast(ctx, store, rt, txHex, finalTxID); err != nil {
-		recordWalletTokenSendRetryTask(rt, finalTxID, "fact_write", err, txHex)
+		recordWalletTokenSendRetryTask(ctx, rt, finalTxID, "fact_write", err, txHex)
 		return WalletAssetActionSubmitResp{}, fmt.Errorf("append token send accounting failed for txid %s: %w", finalTxID, err)
 	}
 	return WalletAssetActionSubmitResp{

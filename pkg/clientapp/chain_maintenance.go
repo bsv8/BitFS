@@ -189,7 +189,7 @@ func startChainMaintainer(ctx context.Context, rt *Runtime, store *clientDB) {
 	if rt == nil {
 		return
 	}
-	if err := resetChainMaintainerStartupState(store); err != nil {
+	if err := resetChainMaintainerStartupState(ctx, store); err != nil {
 		obs.Error("bitcast-client", "chain_maintainer_startup_reset_failed", map[string]any{"error": err.Error()})
 	}
 	cm := newChainMaintainer(rt, store)
@@ -217,11 +217,11 @@ func runtimeStartedAtUnix(rt *Runtime) int64 {
 	return rt.StartedAtUnix
 }
 
-func resetChainMaintainerStartupState(store *clientDB) error {
+func resetChainMaintainerStartupState(ctx context.Context, store *clientDB) error {
 	if store == nil {
 		return nil
 	}
-	return dbResetWalletUTXOSyncStateOnStartup(context.Background(), store)
+	return dbResetWalletUTXOSyncStateOnStartup(ctx, store)
 }
 
 func (m *chainMaintainer) start(ctx context.Context) {
@@ -229,7 +229,7 @@ func (m *chainMaintainer) start(ctx context.Context) {
 		return
 	}
 	if ctx == nil {
-		ctx = context.Background()
+		return
 	}
 	m.wg.Add(1)
 	go func() {
@@ -260,60 +260,6 @@ func (m *chainMaintainer) snapshotStatus() chainSchedulerStatus {
 	return st
 }
 
-func (m *chainMaintainer) runTipWorker(ctx context.Context) {
-	if m == nil || m.rt == nil {
-		return
-	}
-	scheduler := ensureRuntimeTaskScheduler(m.rt, m.store)
-	if scheduler == nil {
-		return
-	}
-	if err := scheduler.RegisterPeriodicTask(ctx, periodicTaskSpec{
-		Name:      "chain_tip_sync",
-		Owner:     "chain_maintenance",
-		Mode:      "static",
-		Interval:  chainTipWorkerInterval,
-		Immediate: false,
-		Run: func(_ context.Context, trigger string) (map[string]any, error) {
-			m.enqueue(chainTaskTip, trigger)
-			return map[string]any{"task_type": chainTaskTip, "trigger": trigger}, nil
-		},
-	}); err != nil {
-		obs.Error("bitcast-client", "chain_tip_task_register_failed", map[string]any{"error": err.Error()})
-		return
-	}
-	obs.Info("bitcast-client", "chain_tip_task_registered", map[string]any{
-		"interval_sec": int64(chainTipWorkerInterval / time.Second),
-	})
-}
-
-func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
-	if m == nil || m.rt == nil {
-		return
-	}
-	scheduler := ensureRuntimeTaskScheduler(m.rt, m.store)
-	if scheduler == nil {
-		return
-	}
-	if err := scheduler.RegisterPeriodicTask(ctx, periodicTaskSpec{
-		Name:      "chain_utxo_sync",
-		Owner:     "chain_maintenance",
-		Mode:      "static",
-		Interval:  chainUTXOWorkerInterval,
-		Immediate: false,
-		Run: func(_ context.Context, trigger string) (map[string]any, error) {
-			m.enqueue(chainTaskUTXO, trigger)
-			return map[string]any{"task_type": chainTaskUTXO, "trigger": trigger}, nil
-		},
-	}); err != nil {
-		obs.Error("bitcast-client", "chain_utxo_task_register_failed", map[string]any{"error": err.Error()})
-		return
-	}
-	obs.Info("bitcast-client", "chain_utxo_task_registered", map[string]any{
-		"interval_sec": int64(chainUTXOWorkerInterval / time.Second),
-	})
-}
-
 func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
 	if m == nil || m.store == nil {
 		return
@@ -330,7 +276,7 @@ func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
 	if m.pendingByType[taskType] || m.inFlightByType[taskType] {
 		m.status.TaskSkippedCount++
 		m.mu.Unlock()
-		m.appendWorkerLog(taskType, chainWorkerLogEntry{
+		m.appendWorkerLog(runtimeLogContext(m.rt), taskType, chainWorkerLogEntry{
 			TriggeredAtUnix: now,
 			StartedAtUnix:   now,
 			EndedAtUnix:     now,
@@ -362,7 +308,7 @@ func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
 		m.status.TaskFailedCount++
 		m.status.LastError = "chain scheduler queue full"
 		m.mu.Unlock()
-		m.appendWorkerLog(taskType, chainWorkerLogEntry{
+		m.appendWorkerLog(runtimeLogContext(m.rt), taskType, chainWorkerLogEntry{
 			TriggeredAtUnix: now,
 			StartedAtUnix:   now,
 			EndedAtUnix:     now,
@@ -462,7 +408,7 @@ func (m *chainMaintainer) runTask(ctx context.Context, task chainTask) {
 		entry.ErrorMessage = ""
 	}
 	m.mu.Unlock()
-	m.appendWorkerLog(task.TaskType, entry)
+	m.appendWorkerLog(context.WithoutCancel(ctx), task.TaskType, entry)
 }
 
 // runTaskSync 供显式“手动刷新一次”入口使用。
@@ -558,44 +504,8 @@ func (m *chainMaintainer) runTaskSync(ctx context.Context, task chainTask) (map[
 		entry.ErrorMessage = ""
 	}
 	m.mu.Unlock()
-	m.appendWorkerLog(task.TaskType, entry)
+	m.appendWorkerLog(context.WithoutCancel(ctx), task.TaskType, entry)
 	return result, err
-}
-
-func (m *chainMaintainer) executeTipTask(ctx context.Context, task chainTask) (map[string]any, error) {
-	if m.rt == nil || m.rt.WalletChain == nil {
-		return map[string]any{"task_type": chainTaskTip}, fmt.Errorf("runtime wallet chain not initialized")
-	}
-	before, _ := dbLoadChainTipState(ctx, m.store)
-	tip, err := m.rt.WalletChain.GetChainInfo(ctx)
-	if err != nil {
-		_ = dbUpdateChainTipStateError(context.Background(), m.store, err.Error(), task.TriggerSource)
-		return map[string]any{"task_type": chainTaskTip}, err
-	}
-	if err := dbUpsertChainTipState(ctx, m.store, tip, "", task.TriggerSource, time.Now().Unix(), 0); err != nil {
-		return map[string]any{"task_type": chainTaskTip, "tip_height": tip}, err
-	}
-	emitted := false
-	if before.TipHeight > 0 && tip > before.TipHeight {
-		if m.rt != nil && m.rt.orch != nil {
-			m.rt.orch.EmitSignal(orchestratorSignal{
-				Source:       "chain_tip_worker",
-				Type:         orchestratorSignalChainTip,
-				AggregateKey: "chain:tip",
-				Payload: map[string]any{
-					"tip_from": before.TipHeight,
-					"tip_to":   tip,
-				},
-			})
-			emitted = true
-		}
-	}
-	return map[string]any{
-		"task_type":   chainTaskTip,
-		"tip_from":    before.TipHeight,
-		"tip_to":      tip,
-		"signal_emit": emitted,
-	}, nil
 }
 
 func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (map[string]any, error) {
@@ -632,7 +542,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	addr, err := clientWalletAddress(m.rt)
 	if err != nil {
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, "", meta, wrapWalletSyncStepError(meta, "load_wallet_address", "", err), task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, "", meta, wrapWalletSyncStepError(meta, "load_wallet_address", "", err), task.TriggerSource)
 		logWalletSyncStepError(meta, "load_wallet_address", err, nil)
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
@@ -660,8 +570,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if len(scriptHashes) == 0 {
 		err = fmt.Errorf("wallet script hash candidates are empty")
 		wrappedErr := wrapWalletSyncStepError(meta, "build_wallet_script_hashes", "", err)
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(ctx, m.store, addr, err.Error())
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
 			"address":       addr,
@@ -674,8 +584,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	tip, err := m.rt.WalletChain.GetChainInfo(ctx)
 	if err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "chain_get_tip", tipPath, err)
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(ctx, m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "chain_get_tip", err, map[string]any{
 			"upstream_path":    tipPath,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
@@ -693,8 +603,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	})
 	snapshot, err := collectCurrentWalletSnapshot(ctx, chain, addr, scriptHashes, meta)
 	if err != nil {
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, err, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, addr, meta, err, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(ctx, m.store, addr, err.Error())
 		return map[string]any{
 			"task_type":     chainTaskUTXO,
 			"address":       addr,
@@ -713,8 +623,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	bsv21TokenUTXOs, err := chain.GetAddressBSV21TokenUnspent(ctx, addr)
 	if err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "chain_get_bsv21_unspent", bsv21Path, err)
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(ctx, m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "chain_get_bsv21_unspent", err, map[string]any{
 			"upstream_path":    bsv21Path,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
@@ -734,8 +644,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	bsv21Upserted, bsv21Cleared, err := syncWalletBSV21HoldingsFromUnspent(ctx, m.store, addr, bsv21TokenUTXOs, time.Now().Unix())
 	if err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "sync_bsv21_holdings", bsv21Path, err)
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(ctx, m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "sync_bsv21_holdings", err, map[string]any{
 			"upstream_path":    bsv21Path,
 			"step_duration_ms": time.Since(stepStart).Milliseconds(),
@@ -768,8 +678,8 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	// - fact 写入是幂等的，失败后下次同步会重新尝试
 	if err := SyncWalletAndApplyFacts(ctx, m.store, addr, snapshot, history, nextCursor, newRuntimeWalletScriptEvidenceSource(m.rt), meta.RoundID, "", task.TriggerSource, time.Now().Unix(), durationMS); err != nil {
 		wrappedErr := wrapWalletSyncStepError(meta, "sync_wallet_and_apply_facts", "", err)
-		_ = dbUpdateWalletUTXOSyncStateError(context.Background(), m.store, addr, meta, wrappedErr, task.TriggerSource)
-		_ = dbUpdateWalletUTXOSyncCursorError(context.Background(), m.store, addr, err.Error())
+		_ = dbUpdateWalletUTXOSyncStateError(ctx, m.store, addr, meta, wrappedErr, task.TriggerSource)
+		_ = dbUpdateWalletUTXOSyncCursorError(ctx, m.store, addr, err.Error())
 		logWalletSyncStepError(meta, "sync_wallet_and_apply_facts", err, map[string]any{
 			"utxo_count":        snapshot.Count,
 			"history_tx_cnt":    len(history),
@@ -836,17 +746,6 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 		"api_base_url":    meta.APIBaseURL,
 		"chain_type":      meta.WalletChainTyp,
 	}, nil
-}
-
-func (m *chainMaintainer) appendWorkerLog(taskType string, entry chainWorkerLogEntry) {
-	if m == nil || m.store == nil {
-		return
-	}
-	if taskType == chainTaskTip {
-		dbAppendChainTipWorkerLog(context.Background(), m.store, entry)
-		return
-	}
-	dbAppendChainUTXOWorkerLog(context.Background(), m.store, entry)
 }
 
 func clientWalletAddress(rt *Runtime) (string, error) {
@@ -1613,82 +1512,4 @@ func isWalletUTXOSyncStateStaleForRuntime(rt *Runtime, s walletUTXOSyncState) bo
 		return false
 	}
 	return s.UpdatedAtUnix > 0 && s.UpdatedAtUnix < startedAtUnix
-}
-
-func getWalletUTXOsFromDB(ctx context.Context, store ClientStore, rt *Runtime) ([]poolcore.UTXO, error) {
-	return listEligiblePlainBSVWalletUTXOsFact(ctx, store, rt)
-}
-
-// listEligiblePlainBSVWalletUTXOsFact 从 fact 口径获取可花费的 plain_bsv UTXO
-// 设计说明：
-// - 按 spendable source flow 返回，剩余 > 0 的才返回
-// - 返回的是原始金额，实际使用由上层决定
-func listEligiblePlainBSVWalletUTXOsFact(ctx context.Context, store ClientStore, rt *Runtime) ([]poolcore.UTXO, error) {
-	if rt == nil {
-		return nil, fmt.Errorf("runtime not initialized")
-	}
-	addr, err := clientWalletAddress(rt)
-	if err != nil {
-		return nil, err
-	}
-	walletID := walletIDByAddress(addr)
-	if store == nil {
-		return nil, fmt.Errorf("store not initialized")
-	}
-
-	flows, err := dbListSpendableSourceFlows(ctx, store, walletID, "BSV", "")
-	if err != nil {
-		return nil, err
-	}
-
-	out := make([]poolcore.UTXO, 0, len(flows))
-	for _, f := range flows {
-		out = append(out, poolcore.UTXO{
-			TxID:  strings.ToLower(strings.TrimSpace(f.TxID)),
-			Vout:  f.Vout,
-			Value: uint64(f.Remaining),
-		})
-	}
-	return out, nil
-}
-
-func getWalletBalanceFromDB(ctx context.Context, store *clientDB, rt *Runtime) (string, uint64, error) {
-	if store == nil {
-		return "", 0, fmt.Errorf("store not initialized")
-	}
-	addr, err := clientWalletAddress(rt)
-	if err != nil {
-		return "", 0, err
-	}
-	walletID := walletIDByAddress(addr)
-
-	// Step 5：fact 优先读余额（严格口径：查询成功就返回，含 0 值）
-	bal, err := dbLoadWalletAssetBalanceFact(ctx, store, walletID, "BSV", "")
-	if err == nil {
-		return addr, uint64(bal.Remaining), nil
-	}
-
-	// fact 查询失败时回退 wallet_utxo_sync_state
-	s, err := dbLoadWalletUTXOSyncState(ctx, store, addr)
-	if err != nil {
-		return "", 0, err
-	}
-	if s.UpdatedAtUnix <= 0 {
-		return "", 0, fmt.Errorf("wallet utxo sync state not ready")
-	}
-	if isWalletUTXOSyncStateStaleForRuntime(rt, s) {
-		return "", 0, fmt.Errorf("wallet utxo sync state stale for current runtime")
-	}
-	stats, err := dbLoadWalletUTXOAggregate(ctx, store, addr)
-	if err != nil {
-		return "", 0, err
-	}
-	if strings.TrimSpace(s.LastError) != "" && stats.PlainBSVBalanceSatoshi == 0 {
-		return "", 0, fmt.Errorf("wallet utxo sync state unavailable: %s", strings.TrimSpace(s.LastError))
-	}
-	// 设计说明：
-	// - wallet_utxo 表是链上未花费输出的本地投影；
-	// - 只要这张表里已经有余额，就不应该因为后续某个 history 游标请求失败而把余额清零；
-	// - 同步错误仍然保留在 wallet_utxo_sync_last_error 等诊断字段里，前端可以继续展示告警。
-	return addr, stats.PlainBSVBalanceSatoshi, nil
 }

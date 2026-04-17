@@ -249,7 +249,7 @@ func previewWalletTokenSend(ctx context.Context, store *clientDB, rt *Runtime, a
 	if isPositiveDecimalText(changeText) {
 		assetOutputCount++
 	}
-	feeSelection, fee, fundingNeed, err := previewPlainBSVFeeFunding(store, address, assetInputSats, len(selected), assetOutputCount)
+	feeSelection, fee, fundingNeed, err := previewPlainBSVFeeFunding(ctx, store, address, assetInputSats, len(selected), assetOutputCount)
 	if err != nil {
 		return walletAssetActionPreview{}, err
 	}
@@ -376,8 +376,8 @@ type plainBSVPreviewSelection struct {
 	TotalSatoshi    uint64
 }
 
-func previewPlainBSVFeeFunding(store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int) (plainBSVPreviewSelection, uint64, uint64, error) {
-	return previewPlainBSVFunding(store, address, assetInputSatoshi, assetInputCount, assetOutputCount, uint64(assetOutputCount))
+func previewPlainBSVFeeFunding(ctx context.Context, store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int) (plainBSVPreviewSelection, uint64, uint64, error) {
+	return previewPlainBSVFunding(ctx, store, address, assetInputSatoshi, assetInputCount, assetOutputCount, uint64(assetOutputCount))
 }
 
 // previewPlainBSVFunding 按“固定输出总额 + 矿工费”的口径估算 plain BSV 选币。
@@ -385,8 +385,8 @@ func previewPlainBSVFeeFunding(store *clientDB, address string, assetInputSatosh
 // - 当前 wallet 资产面只保留 bsv21 send；
 // - fixedOutputSatoshi 只表示 token 承载输出需要预留的 1 sat/输出；
 // - 这样 preview/sign 能共用一套 BSV 资金判断，不会在真实构造时低估所需资金。
-func previewPlainBSVFunding(store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int, fixedOutputSatoshi uint64) (plainBSVPreviewSelection, uint64, uint64, error) {
-	candidates, err := listPlainBSVFundingCandidatesFromDB(store, address)
+func previewPlainBSVFunding(ctx context.Context, store *clientDB, address string, assetInputSatoshi uint64, assetInputCount int, assetOutputCount int, fixedOutputSatoshi uint64) (plainBSVPreviewSelection, uint64, uint64, error) {
+	candidates, err := listPlainBSVFundingCandidatesFromDB(ctx, store, address)
 	if err != nil {
 		return plainBSVPreviewSelection{}, 0, 0, err
 	}
@@ -456,8 +456,8 @@ func previewPlainBSVFunding(store *clientDB, address string, assetInputSatoshi u
 	}, fee, fundingNeed, nil
 }
 
-func listPlainBSVFundingCandidatesFromDB(store *clientDB, address string) ([]fundalloc.Candidate, error) {
-	return dbListPlainBSVFundingCandidates(context.Background(), store, address)
+func listPlainBSVFundingCandidatesFromDB(ctx context.Context, store *clientDB, address string) ([]fundalloc.Candidate, error) {
+	return dbListPlainBSVFundingCandidates(ctx, store, address)
 }
 
 func estimateProvisionalP2PKHSize(inputCount int, outputCount int) int {

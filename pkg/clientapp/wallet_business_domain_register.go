@@ -13,12 +13,12 @@ func (walletOrderTemplateDomainRegister) TemplateID() string {
 	return domainQuotePayloadVersion
 }
 
-func (walletOrderTemplateDomainRegister) Prepare(_ context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (walletOrderPreparedTx, error) {
+func (walletOrderTemplateDomainRegister) Prepare(ctx context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (walletOrderPreparedTx, error) {
 	quote, err := verifyRegisterQuote(req.SignerPubkeyHex, req.SignedEnvelope)
 	if err != nil {
 		return walletOrderPreparedTx{}, err
 	}
-	built, err := buildDomainRegisterTxDetailed(store, rt, req.SignedEnvelope, quote)
+	built, err := buildDomainRegisterTxDetailed(ctx, store, rt, req.SignedEnvelope, quote)
 	if err != nil {
 		return walletOrderPreparedTx{}, err
 	}

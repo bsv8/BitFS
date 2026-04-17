@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 type speedPriceBootstrapParams struct {
@@ -124,6 +125,8 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 		w.recordPurchaseDone(p.Ctx, 0, p.SeedHash, w.quote.SeedPrice)
 		return workers, meta, append([]byte(nil), seedRes.Seed...), nil
 	}
-	_ = closeTransferWorkers(context.Background(), workers)
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(p.Ctx), 2*time.Minute)
+	defer cancel()
+	_ = closeTransferWorkers(closeCtx, workers)
 	return nil, seedV1Meta{}, nil, fmt.Errorf("seed metadata load failed from all sellers")
 }

@@ -112,7 +112,7 @@ func TestAuditTimelineGatewayAndCommandOrdering(t *testing.T) {
 		}
 	}
 
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/audit/gateway-timeline?gateway_pubkey_hex=gw1&limit=50&offset=0", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFeePoolGatewayAuditTimeline(rec, req)

@@ -12,7 +12,7 @@ import (
 func TestHandleAdminFeePoolRecords_BasicAvailability(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 
 	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
 		CommandID:     "cmd-1",

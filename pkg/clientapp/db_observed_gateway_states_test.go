@@ -104,7 +104,7 @@ func TestObservedGatewayStateWriteAndQuery(t *testing.T) {
 		t.Fatalf("unexpected observed payload: %+v", payload)
 	}
 
-	srv := &httpAPIServer{db: db}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil)}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/feepool/observed-states?gateway_pubkey_hex=gw1&event_name=fee_pool_resumed_by_wallet_probe&limit=10&offset=0", nil)
 	rec := httptest.NewRecorder()
 	srv.handleAdminFeePoolObservedStates(rec, req)

@@ -101,8 +101,11 @@ func armSuspiciousFeePoolSettlementTask(rt *Runtime, store *clientDB, gatewayPee
 	if gwID == "" || spendTxID == "" {
 		return
 	}
+	if rt.ctx == nil {
+		return
+	}
 	taskName := "fee_pool_suspicious_settle:" + gwID + ":" + spendTxID
-	_ = scheduler.RegisterOrReplacePeriodicTask(context.Background(), periodicTaskSpec{
+	_ = scheduler.RegisterOrReplacePeriodicTask(context.WithoutCancel(rt.ctx), periodicTaskSpec{
 		Name:      taskName,
 		Owner:     "fee_pool",
 		Mode:      "dynamic",
@@ -115,7 +118,7 @@ func armSuspiciousFeePoolSettlementTask(rt *Runtime, store *clientDB, gatewayPee
 	})
 }
 
-func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, store *clientDB, gatewayPeerID string, spendTxID string) (map[string]any, error) {
+func runSuspiciousFeePoolSettlement(ctx context.Context, rt *Runtime, store *clientDB, gatewayPeerID string, spendTxID string) (map[string]any, error) {
 	if rt == nil || rt.ActionChain == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
@@ -150,7 +153,7 @@ func runSuspiciousFeePoolSettlement(_ context.Context, rt *Runtime, store *clien
 	if err != nil {
 		return nil, fmt.Errorf("broadcast suspicious fee pool current tx failed: %w", err)
 	}
-	if err := applyLocalBroadcastWalletTx(context.Background(), store, rt, session.CurrentTxHex, "fee_pool_suspicious_expiry_settle"); err != nil {
+	if err := applyLocalBroadcastWalletTx(ctx, store, rt, session.CurrentTxHex, "fee_pool_suspicious_expiry_settle"); err != nil {
 		return nil, fmt.Errorf("project suspicious fee pool current tx failed: %w", err)
 	}
 	session.FinalTxID = strings.TrimSpace(finalTxID)

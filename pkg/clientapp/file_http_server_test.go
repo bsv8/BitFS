@@ -229,7 +229,7 @@ func TestFileHTTPServerServeLivePlaylistAndMedia(t *testing.T) {
 	srv, _, _ := newLocalOnlyTestServer(t, nil)
 	h, _ := newSecpHost(t)
 	defer h.Close()
-	srv.rt = &Runtime{Host: h}
+	srv.rt = &Runtime{Host: h, ctx: context.WithoutCancel(context.Background())}
 
 	seg0, seed0, err := BuildLiveSegment(context.Background(), srv.rt, liveSegmentDataPB{
 		Version:           1,
@@ -341,7 +341,8 @@ func newLocalOnlyTestServer(t *testing.T, _ []byte) (*fileHTTPServer, string, st
 	cfg.FSHTTP.DownloadWaitTimeoutSeconds = 1
 	cfg.FSHTTP.MaxConcurrentSessions = 4
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
-	srv := newFileHTTPServer(&Runtime{}, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
+	rt := &Runtime{ctx: context.WithoutCancel(context.Background())}
+	srv := newFileHTTPServer(rt, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db, store: newClientDB(db, nil)})
 	seedHash := strings.Repeat("a", 64)
 	return srv, seedHash, cfg.Storage.WorkspaceDir
 }
@@ -393,7 +394,8 @@ func TestFileHTTPServer_StartAndShutdown(t *testing.T) {
 
 	cfg := &Config{}
 	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
-	srv := newFileHTTPServer(&Runtime{}, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db})
+	rt := &Runtime{ctx: context.WithoutCancel(context.Background())}
+	srv := newFileHTTPServer(rt, staticConfigSnapshot(*cfg), newClientDB(db, nil), &workspaceManager{ctx: context.Background(), cfg: cfg, db: db, store: newClientDB(db, nil)})
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
