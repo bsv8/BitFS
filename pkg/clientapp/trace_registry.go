@@ -48,12 +48,26 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		if kind == "resp" {
 			return &directTransferPoolOpenResp{}, true
 		}
+	case string(ProtoTransferChunkGet):
+		if kind == "req" {
+			return &directTransferChunkGetReq{}, true
+		}
+		if kind == "resp" {
+			return &directTransferChunkGetResp{}, true
+		}
 	case string(ProtoTransferPoolPay):
 		if kind == "req" {
 			return &directTransferPoolPayReq{}, true
 		}
 		if kind == "resp" {
 			return &directTransferPoolPayResp{}, true
+		}
+	case string(ProtoTransferArbitrate):
+		if kind == "req" {
+			return &directTransferArbitrateReq{}, true
+		}
+		if kind == "resp" {
+			return &directTransferArbitrateResp{}, true
 		}
 	case string(ProtoTransferPoolClose):
 		if kind == "req" {

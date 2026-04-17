@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -256,6 +257,21 @@ func (w *transferSellerWorker) fetchChunk(ctx context.Context, chunkIndex uint32
 		return nil, 0, err
 	}
 	begin := time.Now()
+	chunkRes, err := triggerDirectTransferChunkGet(ctx, w.store, w.buyer, directTransferChunkGetParams{
+		SellerPubHex: w.quote.SellerPubHex,
+		SessionID:    w.sessionID,
+		SeedHash:     w.seedHash,
+		ChunkHash:    chunkHash,
+		ChunkIndex:   chunkIndex,
+		Sequence:     w.lastPay + 1,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	sum := sha256.Sum256(chunkRes.Chunk)
+	if hex.EncodeToString(sum[:]) != strings.ToLower(strings.TrimSpace(chunkHash)) {
+		return nil, 0, fmt.Errorf("chunk hash mismatch")
+	}
 	payRes, err := triggerDirectTransferPoolPay(ctx, w.store, w.buyer, directTransferPoolPayParams{
 		SellerPubHex: w.quote.SellerPubHex,
 		SessionID:    w.sessionID,
@@ -265,13 +281,35 @@ func (w *transferSellerWorker) fetchChunk(ctx context.Context, chunkIndex uint32
 		ChunkIndex:   chunkIndex,
 	})
 	if err != nil {
+		evidenceJSON, _ := json.Marshal(map[string]any{
+			"demand_id":   strings.TrimSpace(w.quote.DemandID),
+			"session_id":  strings.TrimSpace(w.sessionID),
+			"seed_hash":   strings.ToLower(strings.TrimSpace(w.seedHash)),
+			"chunk_index": chunkIndex,
+			"chunk_hash":  strings.ToLower(strings.TrimSpace(chunkHash)),
+			"sequence":    w.lastPay + 1,
+		})
+		_, arbErr := triggerDirectTransferArbitrate(ctx, w.store, w.buyer, directTransferArbitrateParams{
+			SellerPubHex:  w.quote.SellerPubHex,
+			SessionID:     w.sessionID,
+			DemandID:      w.quote.DemandID,
+			SeedHash:      w.seedHash,
+			ChunkHash:     chunkHash,
+			ChunkIndex:    chunkIndex,
+			Sequence:      w.lastPay + 1,
+			ArbiterFeeSat: 0,
+			EvidenceJSON:  evidenceJSON,
+		})
+		if arbErr != nil {
+			return nil, 0, fmt.Errorf("pay_confirm_failed and arbitration_failed: %v | %v", err, arbErr)
+		}
 		return nil, 0, err
 	}
 	w.payCount++
 	w.lastPay = payRes.Sequence
 	elapsed := time.Since(begin)
 	w.recordPurchaseDone(ctx, chunkIndex, chunkHash, w.quote.ChunkPrice)
-	return payRes.Chunk, elapsed, nil
+	return chunkRes.Chunk, elapsed, nil
 }
 
 func (w *transferSellerWorker) closeSession(ctx context.Context) error {

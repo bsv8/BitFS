@@ -5,12 +5,14 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	tx "github.com/bsv-blockchain/go-sdk/transaction"
+	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/obs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -244,7 +246,64 @@ func handleDirectTransferPoolOpen(h host.Host, store *clientDB, cfg Config, req 
 	}, nil
 }
 
-func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
+func handleDirectTransferChunkGet(_ host.Host, store *clientDB, _ Config, req directTransferChunkGetReq) (directTransferChunkGetResp, error) {
+	sessionID := strings.TrimSpace(req.SessionId)
+	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
+	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
+	if sessionID == "" || seedHash == "" || chunkHash == "" {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "invalid chunk_get request"}, nil
+	}
+	row, err := dbLoadDirectTransferPoolRow(context.Background(), store, sessionID)
+	if err != nil {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
+	}
+	status := strings.ToLower(strings.TrimSpace(row.Status))
+	if status == "expired" || status == "closed" || status == "arbitrated" || status == "arbitration_pending" || status == "arbitration_rejected" {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
+	}
+	dealSeedHash, err := dbLoadDirectDealSeedHash(context.Background(), store, row.DealID)
+	if err != nil {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "deal not found"}, nil
+	}
+	if seedHash != strings.ToLower(strings.TrimSpace(dealSeedHash)) {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "seed hash mismatch"}, nil
+	}
+	seedBytes, err := dbLoadSeedBytesBySeedHash(context.Background(), store, seedHash)
+	if err != nil {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	resolvedChunkIndex, err := resolveChunkIndexByHashInSeed(seedBytes, chunkHash)
+	if err != nil {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	if req.ChunkIndex != resolvedChunkIndex {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "chunk index mismatch"}, nil
+	}
+	chunk, err := dbLoadChunkBytesBySeedHash(context.Background(), store, seedHash, resolvedChunkIndex)
+	if err != nil {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	sum := sha256.Sum256(chunk)
+	if hex.EncodeToString(sum[:]) != chunkHash {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: "chunk hash verify failed"}, nil
+	}
+	if err := dbUpdateDirectTransferPoolStatus(context.Background(), store, sessionID, "delivering"); err != nil {
+		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	obs.Business("bitcast-client", "direct_transfer_chunk_get_ok", map[string]any{
+		"session_id":  sessionID,
+		"chunk_hash":  chunkHash,
+		"chunk_index": resolvedChunkIndex,
+		"sequence":    req.Sequence,
+	})
+	return directTransferChunkGetResp{
+		SessionId: sessionID,
+		Status:    "delivering",
+		Chunk:     append([]byte(nil), chunk...),
+	}, nil
+}
+
+func handleDirectTransferPoolPay(rt *Runtime, _ host.Host, store *clientDB, cfg Config, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
 	sessionID := strings.TrimSpace(req.SessionId)
 	seedHash := strings.ToLower(strings.TrimSpace(req.SeedHash))
 	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
@@ -255,8 +314,9 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 	if err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
-	if row.Status != "active" {
-		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not active"}, nil
+	status := strings.ToLower(strings.TrimSpace(row.Status))
+	if status == "expired" || status == "closed" || status == "arbitrated" || status == "arbitration_pending" || status == "arbitration_rejected" {
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 	}
 	if req.Sequence <= row.SequenceNum {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "sequence must increase"}, nil
@@ -282,13 +342,8 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 	if req.ChunkIndex != resolvedChunkIndex {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "chunk index mismatch"}, nil
 	}
-	chunk, err := dbLoadChunkBytesBySeedHash(context.Background(), store, seedHash, resolvedChunkIndex)
-	if err != nil {
-		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
-	}
-	sum := sha256.Sum256(chunk)
-	if hex.EncodeToString(sum[:]) != chunkHash {
-		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "chunk hash verify failed"}, nil
+	if rt.directTransferTestOptions().ForceRejectPay {
+		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: "simulated pay reject"}, nil
 	}
 
 	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
@@ -328,7 +383,7 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 	}
 
 	delta := req.SellerAmount - row.SellerAmount
-	if err := dbUpdateDirectTransferPoolPay(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta); err != nil {
+	if err := dbUpdateDirectTransferPoolPay(context.Background(), store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta, "paid"); err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
 	obs.Business("bitcast-client", "direct_transfer_pool_pay_ok", map[string]any{
@@ -343,7 +398,213 @@ func handleDirectTransferPoolPay(_ host.Host, store *clientDB, cfg Config, req d
 		SessionId: sessionID,
 		Status:    "active",
 		SellerSig: append([]byte(nil), (*sellerSig)...),
-		Chunk:     append([]byte(nil), chunk...),
+	}, nil
+}
+
+func handleDirectTransferArbitrate(ctx context.Context, rt *Runtime, h host.Host, store *clientDB, cfg Config, req directTransferArbitrateReq) (directTransferArbitrateResp, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	sessionID := strings.TrimSpace(req.SessionId)
+	if sessionID == "" {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "session_id required"}, nil
+	}
+	row, err := dbLoadDirectTransferPoolRow(ctx, store, sessionID)
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
+	}
+	status := strings.ToLower(strings.TrimSpace(row.Status))
+	if status == "closed" || status == "expired" || status == "arbitrated" {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
+	}
+	if strings.ToLower(strings.TrimSpace(req.SellerPubkeyHex)) != strings.ToLower(strings.TrimSpace(row.SellerPubHex)) {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "seller mismatch"}, nil
+	}
+	if strings.ToLower(strings.TrimSpace(req.BuyerPubkeyHex)) != strings.ToLower(strings.TrimSpace(row.BuyerPubHex)) {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "buyer mismatch"}, nil
+	}
+	expectedArbiterPID, err := peerIDFromClientID(strings.TrimSpace(row.ArbiterPubHex))
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid arbiter in session"}, nil
+	}
+	if strings.TrimSpace(req.ArbiterPubkeyHex) != expectedArbiterPID.String() {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "arbiter mismatch"}, nil
+	}
+	if row.SellerAmount+req.ArbiterFee+row.SpendTxFee > row.PoolAmount {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "pool_insufficient", Error: "pool_insufficient"}, nil
+	}
+	currentTxBytes, err := hex.DecodeString(strings.TrimSpace(row.CurrentTxHex))
+	if err != nil || len(currentTxBytes) == 0 {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid current tx in session"}, nil
+	}
+
+	evidenceKey := fmt.Sprintf("%s:%d:%s:%d", sessionID, req.ChunkIndex, strings.ToLower(strings.TrimSpace(req.ChunkHash)), req.Sequence)
+	arbiterPID := expectedArbiterPID
+	evidenceRaw := append([]byte(nil), req.EvidencePayload...)
+	if len(evidenceRaw) == 0 {
+		evidenceRaw, _ = json.Marshal(map[string]any{
+			"demand_id":   strings.TrimSpace(req.DemandId),
+			"session_id":  sessionID,
+			"seed_hash":   strings.ToLower(strings.TrimSpace(req.SeedHash)),
+			"chunk_index": req.ChunkIndex,
+			"chunk_hash":  strings.ToLower(strings.TrimSpace(req.ChunkHash)),
+			"sequence":    req.Sequence,
+		})
+	}
+	evHash := sha256.Sum256(evidenceRaw)
+	arbReq := directTransferArbitrateReq{
+		DemandId:         strings.TrimSpace(req.DemandId),
+		SessionId:        sessionID,
+		SeedHash:         strings.ToLower(strings.TrimSpace(req.SeedHash)),
+		ChunkIndex:       req.ChunkIndex,
+		ChunkHash:        strings.ToLower(strings.TrimSpace(req.ChunkHash)),
+		Sequence:         req.Sequence,
+		SellerPubkeyHex:  strings.ToLower(strings.TrimSpace(req.SellerPubkeyHex)),
+		BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(req.BuyerPubkeyHex)),
+		ArbiterPubkeyHex: strings.ToLower(strings.TrimSpace(req.ArbiterPubkeyHex)),
+		SellerAmount:     row.SellerAmount,
+		BuyerAmount:      row.BuyerAmount,
+		ArbiterFee:       req.ArbiterFee,
+		SpendTxFee:       row.SpendTxFee,
+		CurrentTx:        append([]byte(nil), currentTxBytes...),
+		EvidenceHash:     evHash[:],
+		EvidencePayload:  append([]byte(nil), evidenceRaw...),
+	}
+	var arbResp directTransferArbitrateResp
+	if err := pproto.CallProto(
+		ctx,
+		h,
+		arbiterPID,
+		ProtoTransferArbitrate,
+		arbSec(nil),
+		arbReq,
+		&arbResp,
+	); err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	if strings.TrimSpace(arbResp.Status) == "fee_rejected" {
+		_ = dbUpsertDirectArbitrationState(ctx, store, sessionID, evidenceKey, "arbitration_rejected", "")
+		emitDirectTransferEvent(rt, "direct_transfer_arbitration_fee_rejected", map[string]any{
+			"event_id":            fmt.Sprintf("%s:arb:%d", sessionID, req.Sequence),
+			"demand_id":           strings.TrimSpace(req.DemandId),
+			"deal_id":             strings.TrimSpace(row.DealID),
+			"session_id":          sessionID,
+			"seller_pubkey_hex":   strings.TrimSpace(row.SellerPubHex),
+			"buyer_pubkey_hex":    strings.TrimSpace(row.BuyerPubHex),
+			"arbiter_pubkey_hex":  strings.TrimSpace(row.ArbiterPubHex),
+			"sequence":            req.Sequence,
+			"arbiter_fee_satoshi": arbResp.ArbiterFee,
+		})
+		return directTransferArbitrateResp{
+			SessionId:  sessionID,
+			Status:     "fee_rejected",
+			Error:      "fee_rejected",
+			ArbiterFee: arbResp.ArbiterFee,
+		}, nil
+	}
+	if strings.TrimSpace(arbResp.Status) != "arbitrated" {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: strings.TrimSpace(arbResp.Status), Error: strings.TrimSpace(arbResp.Error)}, nil
+	}
+	if rt.directTransferTestOptions().ForceRejectArbFee {
+		_ = dbUpsertDirectArbitrationState(ctx, store, sessionID, evidenceKey, "arbitration_rejected", "")
+		emitDirectTransferEvent(rt, "direct_transfer_arbitration_fee_rejected", map[string]any{
+			"event_id":            fmt.Sprintf("%s:arb:%d", sessionID, req.Sequence),
+			"demand_id":           strings.TrimSpace(req.DemandId),
+			"deal_id":             strings.TrimSpace(row.DealID),
+			"session_id":          sessionID,
+			"seller_pubkey_hex":   strings.TrimSpace(row.SellerPubHex),
+			"buyer_pubkey_hex":    strings.TrimSpace(row.BuyerPubHex),
+			"arbiter_pubkey_hex":  strings.TrimSpace(row.ArbiterPubHex),
+			"sequence":            req.Sequence,
+			"arbiter_fee_satoshi": arbResp.ArbiterFee,
+		})
+		return directTransferArbitrateResp{
+			SessionId:  sessionID,
+			Status:     "fee_rejected",
+			Error:      "fee_rejected",
+			ArbiterFee: arbResp.ArbiterFee,
+		}, nil
+	}
+	if rt == nil || rt.ActionChain == nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "runtime not initialized"}, nil
+	}
+	if len(arbResp.AwardTx) == 0 || len(arbResp.ArbiterSig) == 0 {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid arbitration award payload"}, nil
+	}
+	sellerPriv, err := ec.PrivateKeyFromHex(strings.TrimSpace(cfg.Keys.PrivkeyHex))
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid seller key"}, nil
+	}
+	buyerPub, err := ec.PublicKeyFromString(row.BuyerPubKeyHex)
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid buyer pubkey"}, nil
+	}
+	arbiterPub, err := ec.PublicKeyFromString(row.ArbiterPubKeyHex)
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid arbiter pubkey"}, nil
+	}
+	awardTxHex := strings.ToLower(hex.EncodeToString(arbResp.AwardTx))
+	awardTxObj, err := tx.NewTransactionFromHex(awardTxHex)
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "invalid award tx"}, nil
+	}
+	sellerSig, err := te.ClientBTripleFeePoolSpendTXUpdateSign(awardTxObj, arbiterPub, buyerPub, sellerPriv)
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "seller sign failed"}, nil
+	}
+	arbiterSig := append([]byte(nil), arbResp.ArbiterSig...)
+	merged, err := te.MergeTripleFeePoolSigForSpendTx(awardTxObj.Hex(), &arbiterSig, sellerSig)
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: "merge arbitration signatures failed"}, nil
+	}
+	finalTxID, err := rt.ActionChain.Broadcast(merged.Hex())
+	if err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: fmt.Sprintf("broadcast arbitration award failed: %v", err)}, nil
+	}
+	if err := applyLocalBroadcastWalletTx(ctx, store, rt, merged.Hex(), "direct_transfer_pool_arbitration_award"); err != nil {
+		obs.Error("bitcast-client", "direct_transfer_arbitration_wallet_projection_failed", map[string]any{
+			"session_id": sessionID,
+			"error":      err.Error(),
+		})
+	}
+	sequenceNum := req.Sequence
+	if len(merged.Inputs) > 0 && merged.Inputs[0].SequenceNumber != 0 {
+		sequenceNum = merged.Inputs[0].SequenceNumber
+	}
+	sellerAmount := req.SellerAmount
+	buyerAmount := req.BuyerAmount
+	if len(merged.Outputs) >= 2 {
+		sellerAmount = merged.Outputs[0].Satoshis
+		buyerAmount = merged.Outputs[1].Satoshis
+	}
+	if err := dbApplyDirectTransferPoolArbitrated(ctx, store, sessionID, sequenceNum, sellerAmount, buyerAmount, merged.Hex()); err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	if err := dbUpsertDirectArbitrationState(ctx, store, sessionID, evidenceKey, "arbitrated", strings.TrimSpace(finalTxID)); err != nil {
+		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
+	}
+	emitDirectTransferEvent(rt, "direct_transfer_arbitration_award_broadcasted", map[string]any{
+		"event_id":             fmt.Sprintf("%s:arb:%d", sessionID, req.Sequence),
+		"demand_id":            strings.TrimSpace(req.DemandId),
+		"deal_id":              strings.TrimSpace(row.DealID),
+		"session_id":           sessionID,
+		"seller_pubkey_hex":    strings.TrimSpace(row.SellerPubHex),
+		"buyer_pubkey_hex":     strings.TrimSpace(row.BuyerPubHex),
+		"arbiter_pubkey_hex":   strings.TrimSpace(row.ArbiterPubHex),
+		"sequence":             sequenceNum,
+		"seller_amount_sat":    sellerAmount,
+		"buyer_amount_sat":     buyerAmount,
+		"arbiter_fee_satoshi":  arbResp.ArbiterFee,
+		"award_broadcast_txid": strings.TrimSpace(finalTxID),
+	})
+	mergedTxBytes, _ := hex.DecodeString(merged.Hex())
+	return directTransferArbitrateResp{
+		SessionId:  sessionID,
+		Status:     "arbitrated",
+		AwardTxid:  strings.TrimSpace(finalTxID),
+		AwardTx:    mergedTxBytes,
+		ArbiterSig: arbiterSig,
+		ArbiterFee: arbResp.ArbiterFee,
 	}, nil
 }
 
@@ -379,7 +640,8 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool not found"}, nil
 	}
 	// 关单要支持丢包重试：第一次成功后库里会落成 closed，第二次还要能按同一请求重放。
-	if row.Status != "active" && row.Status != "closing" && row.Status != "closed" {
+	rowStatus := strings.ToLower(strings.TrimSpace(row.Status))
+	if rowStatus != "active" && rowStatus != "delivering" && rowStatus != "paid" && rowStatus != "arbitrated" && rowStatus != "closing" && rowStatus != "closed" {
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 	}
 	if req.SellerAmount != row.SellerAmount {
@@ -407,7 +669,7 @@ func handleDirectTransferPoolClose(_ host.Host, store *clientDB, cfg Config, req
 	if len(rawTx.Inputs) > 0 && rawTx.Inputs[0].SequenceNumber != 0 {
 		seq = rawTx.Inputs[0].SequenceNumber
 	}
-	if row.Status == "closed" {
+	if rowStatus == "closed" {
 		if strings.TrimSpace(row.CurrentTxHex) != currentTxHex || row.SequenceNum != req.Sequence || row.BuyerAmount != req.BuyerAmount {
 			return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: "transfer pool status invalid"}, nil
 		}

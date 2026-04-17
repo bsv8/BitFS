@@ -31,6 +31,8 @@ type purchaseDoneEntry struct {
 	ChunkIndex     uint32
 	ObjectHash     string
 	AmountSatoshi  uint64
+	Status         string
+	ErrorMessage   string
 	CreatedAtUnix  int64
 	FinishedAtUnix int64
 }
@@ -119,6 +121,10 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 		if e.AmountSatoshi == 0 {
 			return fmt.Errorf("amount_satoshi must be positive")
 		}
+		status := strings.TrimSpace(e.Status)
+		if status == "" {
+			status = "done"
+		}
 		now := time.Now().Unix()
 		createdAtUnix := e.CreatedAtUnix
 		if createdAtUnix <= 0 {
@@ -135,8 +141,8 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 			SetChunkIndex(int64(e.ChunkIndex)).
 			SetObjectHash(strings.ToLower(strings.TrimSpace(e.ObjectHash))).
 			SetAmountSatoshi(int64(e.AmountSatoshi)).
-			SetStatus("done").
-			SetErrorMessage("").
+			SetStatus(status).
+			SetErrorMessage(strings.TrimSpace(e.ErrorMessage)).
 			SetCreatedAtUnix(createdAtUnix).
 			SetFinishedAtUnix(finishedAtUnix).
 			Save(ctx)

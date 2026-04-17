@@ -252,9 +252,13 @@ func dbUpsertDirectTransferPoolOpen(ctx context.Context, store *clientDB, req di
 	})
 }
 
-func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, sessionID string, sequence uint32, sellerAmount uint64, buyerAmount uint64, currentTxHex string, delta uint64) error {
+func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, sessionID string, sequence uint32, sellerAmount uint64, buyerAmount uint64, currentTxHex string, delta uint64, nextStatus string) error {
 	if store == nil {
 		return fmt.Errorf("db is nil")
+	}
+	nextStatus = strings.TrimSpace(nextStatus)
+	if nextStatus == "" {
+		nextStatus = "paid"
 	}
 	now := time.Now().Unix()
 	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
@@ -275,6 +279,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 			return err
 		}
 		if _, err := tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+			SetStatus(nextStatus).
 			SetSequenceNum(int64(sequence)).
 			SetSellerAmount(int64(sellerAmount)).
 			SetBuyerAmount(int64(buyerAmount)).
@@ -298,7 +303,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 			FeeRateSatByte:     row.FeeRateSatByte,
 			LockBlocks:         row.LockBlocks,
 			OpenBaseTxID:       row.BaseTxID,
-			Status:             "active",
+			Status:             nextStatus,
 			CreatedAtUnix:      row.CreatedAtUnix,
 			UpdatedAtUnix:      now,
 		}); err != nil {
@@ -320,7 +325,7 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 			CycleFeeSat:        row.SpendTxFee,
 			AvailableSat:       buyerAmount,
 			NextSequenceNum:    sequence + 1,
-			Status:             "active",
+			Status:             nextStatus,
 			OpenBaseTxID:       row.BaseTxID,
 			OpenAllocationID:   openAllocationID,
 			CreatedAtUnix:      row.CreatedAtUnix,
@@ -344,6 +349,112 @@ func dbUpdateDirectTransferPoolPay(ctx context.Context, store *clientDB, session
 			CreatedAtUnix:    now,
 			UTXOFacts:        utxoFacts,
 		})
+	})
+}
+
+func dbUpdateDirectTransferPoolStatus(ctx context.Context, store *clientDB, sessionID string, status string) error {
+	if store == nil {
+		return fmt.Errorf("db is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	status = strings.TrimSpace(status)
+	if sessionID == "" || status == "" {
+		return fmt.Errorf("session_id and status are required")
+	}
+	now := time.Now().Unix()
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(sessionID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("transfer pool not found")
+			}
+			return err
+		}
+		if _, err := tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+			SetStatus(status).
+			SetUpdatedAtUnix(now).
+			Save(ctx); err != nil {
+			return err
+		}
+		return nil
+	})
+}
+
+func dbUpsertDirectArbitrationState(ctx context.Context, store *clientDB, sessionID string, evidenceKey string, status string, txid string) error {
+	if store == nil {
+		return fmt.Errorf("db is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	evidenceKey = strings.TrimSpace(evidenceKey)
+	status = strings.TrimSpace(status)
+	if sessionID == "" || evidenceKey == "" || status == "" {
+		return fmt.Errorf("session_id/evidence_key/status are required")
+	}
+	now := time.Now().Unix()
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		row, err := loadDirectTransferPoolRowEntTx(ctx, tx, sessionID)
+		if err != nil {
+			return err
+		}
+		// 状态机幂等：同状态重复请求直接视为成功。
+		if strings.EqualFold(strings.TrimSpace(row.Status), status) {
+			return nil
+		}
+		existing, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(sessionID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("transfer pool not found")
+			}
+			return err
+		}
+		_ = row
+		_ = evidenceKey
+		_ = txid
+		_, err = tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+			SetStatus(status).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
+		return err
+	})
+}
+
+// dbApplyDirectTransferPoolArbitrated 在仲裁交易上链后写入最终会话快照。
+// 说明：
+// - 这里不做“close 记账事实”的复用，避免把仲裁路径伪装成正常 close；
+// - 只同步会话主状态和金额快照，保证状态机与链上花费一致。
+func dbApplyDirectTransferPoolArbitrated(ctx context.Context, store *clientDB, sessionID string, sequence uint32, sellerAmount uint64, buyerAmount uint64, currentTxHex string) error {
+	if store == nil {
+		return fmt.Errorf("db is nil")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	currentTxHex = strings.TrimSpace(currentTxHex)
+	if sessionID == "" || currentTxHex == "" {
+		return fmt.Errorf("session_id/current_tx_hex are required")
+	}
+	now := time.Now().Unix()
+	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
+		existing, err := tx.ProcDirectTransferPools.Query().
+			Where(procdirecttransferpools.SessionIDEQ(sessionID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return fmt.Errorf("transfer pool not found")
+			}
+			return err
+		}
+		_, err = tx.ProcDirectTransferPools.UpdateOneID(existing.ID).
+			SetStatus("arbitrated").
+			SetSequenceNum(int64(sequence)).
+			SetSellerAmount(int64(sellerAmount)).
+			SetBuyerAmount(int64(buyerAmount)).
+			SetCurrentTxHex(currentTxHex).
+			SetUpdatedAtUnix(now).
+			Save(ctx)
+		return err
 	})
 }
 

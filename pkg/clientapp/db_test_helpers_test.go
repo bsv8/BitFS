@@ -311,7 +311,7 @@ func seedDirectTransferPoolFacts(t *testing.T, db *sql.DB) {
 	}, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, baseTxHex, baseTxHex); err != nil {
 		t.Fatalf("seed direct transfer open facts failed: %v", err)
 	}
-	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 2, 300, 690, baseTxHex, 300); err != nil {
+	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, 2, 300, 690, baseTxHex, 300, "paid"); err != nil {
 		t.Fatalf("seed direct transfer pay facts failed: %v", err)
 	}
 	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, 3, 700, 290, baseTxHex); err != nil {

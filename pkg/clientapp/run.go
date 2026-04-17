@@ -50,7 +50,9 @@ const (
 	ProtoLiveQuoteSubmit   protocol.ID = bitfsprotoid.ProtoLiveQuoteSubmit
 	ProtoDirectDealAccept  protocol.ID = bitfsprotoid.ProtoDirectDealAccept
 	ProtoTransferPoolOpen  protocol.ID = bitfsprotoid.ProtoTransferPoolOpen
+	ProtoTransferChunkGet  protocol.ID = bitfsprotoid.ProtoTransferChunkGet
 	ProtoTransferPoolPay   protocol.ID = bitfsprotoid.ProtoTransferPoolPay
+	ProtoTransferArbitrate protocol.ID = bitfsprotoid.ProtoTransferArbitrate
 	ProtoTransferPoolClose protocol.ID = bitfsprotoid.ProtoTransferPoolClose
 	ProtoLiveSubscribe     protocol.ID = bitfsprotoid.ProtoLiveSubscribe
 	ProtoLiveHeadPush      protocol.ID = bitfsprotoid.ProtoLiveHeadPush
@@ -87,8 +89,12 @@ type directDealAcceptReq = bitfsv1.DirectDealAcceptReq
 type directDealAcceptResp = bitfsv1.DirectDealAcceptResp
 type directTransferPoolOpenReq = bitfsv1.DirectTransferPoolOpenReq
 type directTransferPoolOpenResp = bitfsv1.DirectTransferPoolOpenResp
+type directTransferChunkGetReq = bitfsv1.DirectTransferChunkGetReq
+type directTransferChunkGetResp = bitfsv1.DirectTransferChunkGetResp
 type directTransferPoolPayReq = bitfsv1.DirectTransferPoolPayReq
 type directTransferPoolPayResp = bitfsv1.DirectTransferPoolPayResp
+type directTransferArbitrateReq = bitfsv1.DirectTransferArbitrateReq
+type directTransferArbitrateResp = bitfsv1.DirectTransferArbitrateResp
 type directTransferPoolCloseReq = bitfsv1.DirectTransferPoolCloseReq
 type directTransferPoolCloseResp = bitfsv1.DirectTransferPoolCloseResp
 type liveSegmentDataPB = bitfsv1.LiveSegmentData
@@ -312,6 +318,8 @@ type Runtime struct {
 	transferPoolOpenMu         sync.Mutex
 	transferPoolSessionLocksMu sync.Mutex
 	transferPoolSessionLocks   map[string]*sync.Mutex
+	directTransferTestMu       sync.RWMutex
+	directTransferTestOpts     DirectTransferTestOptions
 	// walletAllocMu 保证“钱包 UTXO 分配”串行执行，避免并发选中同一输入导致冲突。
 	// 分配完成后，基于专属 UTXO 的后续池内操作可并行。
 	walletAllocMu sync.Mutex
@@ -1663,8 +1671,14 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 	pproto.HandleProto[directTransferPoolOpenReq, directTransferPoolOpenResp](h, ProtoTransferPoolOpen, clientSec(trace), func(_ context.Context, req directTransferPoolOpenReq) (directTransferPoolOpenResp, error) {
 		return handleDirectTransferPoolOpen(h, store, cfg, req)
 	})
+	pproto.HandleProto[directTransferChunkGetReq, directTransferChunkGetResp](h, ProtoTransferChunkGet, clientSec(trace), func(_ context.Context, req directTransferChunkGetReq) (directTransferChunkGetResp, error) {
+		return handleDirectTransferChunkGet(h, store, cfg, req)
+	})
 	pproto.HandleProto[directTransferPoolPayReq, directTransferPoolPayResp](h, ProtoTransferPoolPay, clientSec(trace), func(_ context.Context, req directTransferPoolPayReq) (directTransferPoolPayResp, error) {
-		return handleDirectTransferPoolPay(h, store, cfg, req)
+		return handleDirectTransferPoolPay(rt, h, store, cfg, req)
+	})
+	pproto.HandleProto[directTransferArbitrateReq, directTransferArbitrateResp](h, ProtoTransferArbitrate, clientSec(trace), func(ctx context.Context, req directTransferArbitrateReq) (directTransferArbitrateResp, error) {
+		return handleDirectTransferArbitrate(ctx, rt, h, store, cfg, req)
 	})
 	pproto.HandleProto[directTransferPoolCloseReq, directTransferPoolCloseResp](h, ProtoTransferPoolClose, clientSec(trace), func(_ context.Context, req directTransferPoolCloseReq) (directTransferPoolCloseResp, error) {
 		return handleDirectTransferPoolClose(h, store, cfg, req)

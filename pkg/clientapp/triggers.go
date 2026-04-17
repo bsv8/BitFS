@@ -668,7 +668,37 @@ type directTransferPoolPayParams struct {
 
 type directTransferPoolPayResult struct {
 	Sequence uint32
-	Chunk    []byte
+}
+
+type directTransferChunkGetParams struct {
+	SellerPubHex string
+	SessionID    string
+	SeedHash     string
+	ChunkHash    string
+	ChunkIndex   uint32
+	Sequence     uint32
+}
+
+type directTransferChunkGetResult struct {
+	Chunk []byte
+}
+
+type directTransferArbitrateParams struct {
+	SellerPubHex  string
+	SessionID     string
+	DemandID      string
+	SeedHash      string
+	ChunkHash     string
+	ChunkIndex    uint32
+	Sequence      uint32
+	ArbiterFeeSat uint64
+	EvidenceJSON  []byte
+}
+
+type directTransferArbitrateResult struct {
+	Status    string
+	AwardTxID string
+	AwardTx   []byte
 }
 
 type directTransferPoolCloseParams struct {
@@ -1165,6 +1195,41 @@ func sumUTXOValue(utxos []poolcore.UTXO) uint64 {
 	return sum
 }
 
+func triggerDirectTransferChunkGet(ctx context.Context, _ *clientDB, buyer *Runtime, p directTransferChunkGetParams) (directTransferChunkGetResult, error) {
+	if buyer == nil || buyer.Host == nil {
+		return directTransferChunkGetResult{}, fmt.Errorf("runtime not initialized")
+	}
+	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
+	chunkHash := strings.ToLower(strings.TrimSpace(p.ChunkHash))
+	sessionID := strings.TrimSpace(p.SessionID)
+	if seedHash == "" || chunkHash == "" || sessionID == "" {
+		return directTransferChunkGetResult{}, fmt.Errorf("session_id/seed_hash/chunk_hash are required")
+	}
+	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
+	if err != nil {
+		return directTransferChunkGetResult{}, err
+	}
+	req := directTransferChunkGetReq{
+		SessionId:  sessionID,
+		SeedHash:   seedHash,
+		ChunkHash:  chunkHash,
+		ChunkIndex: p.ChunkIndex,
+		Sequence:   p.Sequence,
+	}
+	var resp directTransferChunkGetResp
+	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferChunkGet, clientSec(buyer.rpcTrace), req, &resp); err != nil {
+		return directTransferChunkGetResult{}, err
+	}
+	if strings.TrimSpace(resp.Status) != "delivering" && strings.TrimSpace(resp.Status) != "active" {
+		return directTransferChunkGetResult{}, fmt.Errorf("transfer chunk_get rejected: %s", strings.TrimSpace(resp.Error))
+	}
+	chunk := append([]byte(nil), resp.Chunk...)
+	if len(chunk) == 0 {
+		return directTransferChunkGetResult{}, fmt.Errorf("transfer chunk_get rejected: chunk missing")
+	}
+	return directTransferChunkGetResult{Chunk: chunk}, nil
+}
+
 func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolPayParams) (directTransferPoolPayResult, error) {
 	if buyer == nil || buyer.Host == nil {
 		return directTransferPoolPayResult{}, fmt.Errorf("runtime not initialized")
@@ -1251,14 +1316,6 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	if strings.TrimSpace(payResp.Status) != "active" || len(payResp.SellerSig) == 0 {
 		return directTransferPoolPayResult{}, fmt.Errorf("transfer pool pay rejected: %s", strings.TrimSpace(payResp.Error))
 	}
-	chunk := append([]byte(nil), payResp.Chunk...)
-	if len(chunk) == 0 {
-		return directTransferPoolPayResult{}, fmt.Errorf("transfer pool pay rejected: chunk missing")
-	}
-	got := sha256.Sum256(chunk)
-	if hex.EncodeToString(got[:]) != chunkHash {
-		return directTransferPoolPayResult{}, fmt.Errorf("chunk hash mismatch")
-	}
 	sellerSig := append([]byte(nil), payResp.SellerSig...)
 	merged, err := te.MergeTripleFeePoolSigForSpendTx(updatedTx.Hex(), buyerSig, &sellerSig)
 	if err != nil {
@@ -1281,7 +1338,6 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		"seed_hash":           seedHash,
 		"chunk_hash":          chunkHash,
 		"chunk_index":         p.ChunkIndex,
-		"chunk_bytes":         len(chunk),
 		"sequence":            req.Sequence,
 		"pay_count":           session.PayCount,
 		"last_pay_sequence":   session.LastPaySequence,
@@ -1335,7 +1391,58 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		"chunk_hash":    chunkHash,
 		"chunk_index":   p.ChunkIndex,
 	})
-	return directTransferPoolPayResult{Sequence: req.Sequence, Chunk: chunk}, nil
+	return directTransferPoolPayResult{Sequence: req.Sequence}, nil
+}
+
+func triggerDirectTransferArbitrate(ctx context.Context, _ *clientDB, buyer *Runtime, p directTransferArbitrateParams) (directTransferArbitrateResult, error) {
+	if buyer == nil || buyer.Host == nil {
+		return directTransferArbitrateResult{}, fmt.Errorf("runtime not initialized")
+	}
+	lock := buyer.transferPoolSessionMutex(p.SessionID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	session, ok := buyer.getTriplePool(strings.TrimSpace(p.SessionID))
+	if !ok || session == nil {
+		return directTransferArbitrateResult{}, fmt.Errorf("transfer pool session missing")
+	}
+	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
+	if err != nil {
+		return directTransferArbitrateResult{}, err
+	}
+	currentTxBytes, err := hex.DecodeString(strings.TrimSpace(session.CurrentTxHex))
+	if err != nil {
+		return directTransferArbitrateResult{}, fmt.Errorf("decode session current_tx failed: %w", err)
+	}
+	req := directTransferArbitrateReq{
+		DemandId:        strings.TrimSpace(p.DemandID),
+		SessionId:       strings.TrimSpace(session.SessionID),
+		SeedHash:        strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		ChunkIndex:      p.ChunkIndex,
+		ChunkHash:       strings.ToLower(strings.TrimSpace(p.ChunkHash)),
+		Sequence:        p.Sequence,
+		SellerPubkeyHex: strings.TrimSpace(session.SellerPubHex),
+		BuyerPubkeyHex:  strings.ToLower(strings.TrimSpace(buyer.ClientID())),
+		ArbiterPubkeyHex: strings.TrimSpace(session.ArbiterPubHex),
+		SellerAmount:    session.SellerAmount,
+		BuyerAmount:     session.BuyerAmount,
+		ArbiterFee:      p.ArbiterFeeSat,
+		SpendTxFee:      session.SpendTxFeeSat,
+		CurrentTx:       currentTxBytes,
+		EvidencePayload: append([]byte(nil), p.EvidenceJSON...),
+	}
+	var resp directTransferArbitrateResp
+	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferArbitrate, clientSec(buyer.rpcTrace), req, &resp); err != nil {
+		return directTransferArbitrateResult{}, err
+	}
+	if strings.TrimSpace(resp.Status) == "" || strings.TrimSpace(resp.Status) == "rejected" {
+		return directTransferArbitrateResult{}, fmt.Errorf("transfer arbitrate rejected: %s", strings.TrimSpace(resp.Error))
+	}
+	return directTransferArbitrateResult{
+		Status:    strings.TrimSpace(resp.Status),
+		AwardTxID: strings.TrimSpace(resp.AwardTxid),
+		AwardTx:   append([]byte(nil), resp.AwardTx...),
+	}, nil
 }
 
 func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolCloseParams) (directTransferPoolCloseResult, error) {
