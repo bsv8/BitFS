@@ -94,6 +94,25 @@ const (
 	controlActionWorkspaceDelete   = "workspace.delete"
 	controlActionWorkspaceSyncOnce = "workspace.sync_once"
 
+	controlActionWalletPayBSV           = "wallet.pay_bsv"
+	controlActionWalletTokenSendPreview = "wallet.token_send_preview"
+	controlActionWalletTokenSendSign    = "wallet.token_send_sign"
+	controlActionWalletTokenSendSubmit  = "wallet.token_send_submit"
+
+	controlActionGatewayPublishDemand                = "gateway.publish_demand"
+	controlActionGatewayPublishDemandBatch           = "gateway.publish_demand_batch"
+	controlActionGatewayPublishLiveDemand            = "gateway.publish_live_demand"
+	controlActionGatewayPublishDemandChainTxQuotePay = "gateway.publish_demand_chain_tx_quote_pay"
+	controlActionGatewayReachabilityAnnounce         = "gateway.reachability_announce"
+	controlActionGatewayReachabilityQuery            = "gateway.reachability_query"
+
+	controlActionDomainResolve   = "domain.resolve"
+	controlActionDomainRegister  = "domain.register"
+	controlActionDomainSetTarget = "domain.set_target"
+
+	controlActionPeerCall    = "peer.call"
+	controlActionPeerResolve = "peer.resolve"
+
 	managedUnlockResultSucceeded managedUnlockResult = "succeeded"
 	managedUnlockResultAlready   managedUnlockResult = "already_unlocked"
 )
@@ -610,6 +629,12 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		out, err = managedObsControlHandleKeyUnlock(d, req)
 	case lockID == "bitfs.managed.key.lock_runtime":
 		out, err = managedObsControlHandleKeyLock(d, req)
+	case lockID == "bitfs.managed.control.execute_business" ||
+		strings.HasPrefix(lockID, "bitfs.clientapp.wallet.trigger_") ||
+		strings.HasPrefix(lockID, "bitfs.clientapp.gateway.trigger_") ||
+		strings.HasPrefix(lockID, "bitfs.clientapp.domain.trigger_") ||
+		strings.HasPrefix(lockID, "bitfs.clientapp.peer.trigger_"):
+		out, err = d.executeManagedBusinessControlCommand(req)
 	case lockID == "bitfs.managed.control.execute_pricing" || strings.HasPrefix(lockID, "bitfs.clientapp.pricing.trigger_"):
 		out, err = d.executeManagedPricingControlCommand(req)
 	case lockID == "bitfs.managed.control.execute_workspace" || strings.HasPrefix(lockID, "bitfs.clientapp.workspace.kernel_"):
@@ -732,7 +757,17 @@ func isManagedObsControlLockRouted(lockID string) bool {
 		return true
 	case lockID == "bitfs.managed.control.execute_workspace":
 		return true
+	case lockID == "bitfs.managed.control.execute_business":
+		return true
 	case lockID == "bitfs.managed.control.execute_pricing":
+		return true
+	case strings.HasPrefix(lockID, "bitfs.clientapp.wallet.trigger_"):
+		return true
+	case strings.HasPrefix(lockID, "bitfs.clientapp.gateway.trigger_"):
+		return true
+	case strings.HasPrefix(lockID, "bitfs.clientapp.domain.trigger_"):
+		return true
+	case strings.HasPrefix(lockID, "bitfs.clientapp.peer.trigger_"):
 		return true
 	case strings.HasPrefix(lockID, "bitfs.clientapp.pricing.trigger_"):
 		return true

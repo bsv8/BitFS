@@ -93,93 +93,25 @@ func (s *httpAPIServer) handleWalletTokenSendSubmit(w http.ResponseWriter, r *ht
 }
 
 func buildWalletTokenSendSign(r *http.Request, s *httpAPIServer, req walletTokenSendSignRequest) (walletAssetActionSignResp, error) {
-	if s == nil || s.rt == nil {
-		return walletAssetActionSignResp{}, fmt.Errorf("runtime not initialized")
+	if s == nil {
+		return walletAssetActionSignResp{}, fmt.Errorf("http api server is nil")
 	}
-	standard := normalizeWalletTokenStandard(req.TokenStandard)
-	if standard == "" {
-		return walletAssetActionSignResp{}, fmt.Errorf("invalid token standard")
-	}
-	if err := validatePreviewAddress(strings.TrimSpace(req.ToAddress)); err != nil {
-		return walletAssetActionSignResp{}, err
-	}
-	address, err := resolveWalletAddressForHTTP(r.Context(), s)
-	if err != nil {
-		return walletAssetActionSignResp{}, err
-	}
-	prepared, err := httpDBValue(r.Context(), s, func(store *clientDB) (preparedWalletTokenSend, error) {
-		// 这里在 actor 闭包中，内部必须用 raw db，避免 actor 重入死锁。
-		return prepareWalletTokenSend(r.Context(), store, s.rt, address, standard, strings.TrimSpace(req.AssetKey), normalizePreviewQuantityText(req.AmountText), strings.TrimSpace(req.ToAddress))
+	return TriggerWalletTokenSendSign(r.Context(), httpStore(s), s.rt, WalletTokenSendSignRequest{
+		TokenStandard:       req.TokenStandard,
+		AssetKey:            req.AssetKey,
+		AmountText:          req.AmountText,
+		ToAddress:           req.ToAddress,
+		ExpectedPreviewHash: req.ExpectedPreviewHash,
 	})
-	if err != nil {
-		return walletAssetActionSignResp{}, err
-	}
-	expected := strings.ToLower(strings.TrimSpace(req.ExpectedPreviewHash))
-	if expected == "" {
-		return walletAssetActionSignResp{
-			Ok:      false,
-			Code:    "PREVIEW_REQUIRED",
-			Message: "expected preview hash is required",
-			Preview: prepared.Preview,
-		}, nil
-	}
-	if !strings.EqualFold(expected, prepared.Preview.PreviewHash) {
-		return walletAssetActionSignResp{
-			Ok:      false,
-			Code:    "PREVIEW_CHANGED",
-			Message: "wallet preview changed; retry",
-			Preview: prepared.Preview,
-		}, nil
-	}
-	return walletAssetActionSignResp{
-		Ok:          true,
-		Code:        "OK",
-		Message:     "",
-		Preview:     prepared.Preview,
-		SignedTxHex: prepared.SignedTxHex,
-		TxID:        prepared.TxID,
-	}, nil
 }
 
 func buildWalletTokenSendSubmit(r *http.Request, s *httpAPIServer, req walletAssetActionSubmitRequest) (walletAssetActionSubmitResp, error) {
-	if s == nil || s.rt == nil || s.rt.ActionChain == nil {
-		return walletAssetActionSubmitResp{}, fmt.Errorf("runtime not initialized")
+	if s == nil {
+		return walletAssetActionSubmitResp{}, fmt.Errorf("http api server is nil")
 	}
-	txHex := strings.ToLower(strings.TrimSpace(req.SignedTxHex))
-	if txHex == "" {
-		return walletAssetActionSubmitResp{}, fmt.Errorf("signed_tx_hex is required")
-	}
-	parsed, err := txsdk.NewTransactionFromHex(txHex)
-	if err != nil {
-		return walletAssetActionSubmitResp{}, fmt.Errorf("signed_tx_hex invalid: %w", err)
-	}
-	localTxID := strings.ToLower(strings.TrimSpace(parsed.TxID().String()))
-	broadcastTxID, err := s.rt.ActionChain.Broadcast(txHex)
-	if err != nil {
-		return walletAssetActionSubmitResp{}, fmt.Errorf("broadcast token send failed: %w", err)
-	}
-	finalTxID := strings.ToLower(strings.TrimSpace(broadcastTxID))
-	if finalTxID == "" {
-		finalTxID = localTxID
-	}
-	if err := applyLocalBroadcastWalletTx(r.Context(), s.store, s.rt, txHex, "wallet_token_send_submit"); err != nil {
-		recordWalletTokenSendRetryTask(s.rt, finalTxID, "local_broadcast_projection", err, txHex)
-		return walletAssetActionSubmitResp{}, fmt.Errorf("project token send failed for txid %s: %w", finalTxID, err)
-	}
-	// 这里把 BSV21 发送事实收口到单一入口：
-	// - 先落 1 条 business 和 1 条 settlement_payment_attempt；
-	// - 再按 lot 写入多条 settlement_records；
-	// - 最后再展开到本币资产事实层，避免先写资产再补结算把口径打散。
-	if err := appendBSV21TokenSendAccountingAfterBroadcast(r.Context(), s.store, s.rt, txHex, finalTxID); err != nil {
-		recordWalletTokenSendRetryTask(s.rt, finalTxID, "fact_write", err, txHex)
-		return walletAssetActionSubmitResp{}, fmt.Errorf("append token send accounting failed for txid %s: %w", finalTxID, err)
-	}
-	return walletAssetActionSubmitResp{
-		Ok:      true,
-		Code:    "OK",
-		Message: walletBSV21SubmitMessage(parsed),
-		TxID:    finalTxID,
-	}, nil
+	return TriggerWalletTokenSendSubmit(r.Context(), httpStore(s), s.rt, WalletAssetActionSubmitRequest{
+		SignedTxHex: req.SignedTxHex,
+	})
 }
 
 // recordWalletTokenSendRetryTask 记录 token 发送失败后的重试任务痕迹。
