@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -113,6 +114,8 @@ const (
 
 	controlActionPeerCall    = "peer.call"
 	controlActionPeerResolve = "peer.resolve"
+	controlActionPeerSelf    = "peer.self"
+	controlActionPeerConnect = "peer.connect"
 
 	managedUnlockResultSucceeded managedUnlockResult = "succeeded"
 	managedUnlockResultAlready   managedUnlockResult = "already_unlocked"
@@ -401,6 +404,8 @@ func (d *managedDaemon) httpRouteDecls() []lhttp.RouteDecl {
 				{Path: "/api/v1/key/export", Handler: d.handleKeyExport},
 				{Path: "/api/v1/key/unlock", Handler: d.handleKeyUnlock},
 				{Path: "/api/v1/key/lock", Handler: d.handleKeyLock},
+				{Path: "/api/v1/settings/keys", Handler: d.handleSettingsKeys},
+				{Path: "/api/v1/settings/default-key", Handler: d.handleSettingsDefaultKey},
 			},
 		},
 		{
@@ -441,36 +446,212 @@ func (d *managedDaemon) handleAPIProxyOrLocked(w http.ResponseWriter, r *http.Re
 	api.ServeHTTP(w, r)
 }
 
+func writeKeyAPISuccess(w http.ResponseWriter, data any) {
+	if data == nil {
+		data = map[string]any{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"data":   data,
+	})
+}
+
+func writeKeyAPIError(w http.ResponseWriter, status int, code string, message string) {
+	code = strings.TrimSpace(code)
+	if code == "" {
+		code = "INTERNAL_ERROR"
+	}
+	writeJSON(w, status, map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    code,
+			"message": strings.TrimSpace(message),
+		},
+	})
+}
+
+func keyAPIErrorCodeByStatus(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "BAD_REQUEST"
+	case http.StatusUnauthorized:
+		return "UNAUTHORIZED"
+	case http.StatusNotFound:
+		return "KEY_NOT_FOUND"
+	case http.StatusConflict:
+		return "CONFLICT"
+	case http.StatusMethodNotAllowed:
+		return "METHOD_NOT_ALLOWED"
+	default:
+		return "INTERNAL_ERROR"
+	}
+}
+
+type keyBusinessError struct {
+	Kind    string
+	Code    string
+	Message string
+}
+
+func (e *keyBusinessError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.Message)
+}
+
+func newKeyBusinessError(kind, code, message string) error {
+	return &keyBusinessError{
+		Kind:    strings.TrimSpace(kind),
+		Code:    strings.TrimSpace(code),
+		Message: strings.TrimSpace(message),
+	}
+}
+
+func keyBusinessErrorToHTTP(err error) (int, string) {
+	var kb *keyBusinessError
+	if errors.As(err, &kb) && kb != nil {
+		status := http.StatusInternalServerError
+		switch strings.TrimSpace(kb.Kind) {
+		case "invalid_input":
+			status = http.StatusBadRequest
+		case "not_found":
+			status = http.StatusNotFound
+		case "conflict":
+			status = http.StatusConflict
+		}
+		code := strings.TrimSpace(kb.Code)
+		if code == "" {
+			code = keyAPIErrorCodeByStatus(status)
+		}
+		return status, code
+	}
+	return http.StatusInternalServerError, "INTERNAL_ERROR"
+}
+
+func (d *managedDaemon) currentDefaultKeyPubHex() (string, error) {
+	cfg, _, err := LoadRootProfileConfig(d.startup.VaultPath)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(cfg.DefaultKey) == "" {
+		return "", nil
+	}
+	return NormalizePubkeyHex(cfg.DefaultKey)
+}
+
+func (d *managedDaemon) setDefaultKeyPubHex(pubKeyHex string) error {
+	pubHex, err := NormalizePubkeyHex(pubKeyHex)
+	if err != nil {
+		return newKeyBusinessError("invalid_input", "INVALID_PUBKEY_HEX", err.Error())
+	}
+	keyPath, err := ResolveProfileKeyPath(d.startup.VaultPath, pubHex)
+	if err != nil {
+		return err
+	}
+	env, exists, err := LoadEncryptedKeyEnvelope(keyPath)
+	if err != nil {
+		return err
+	}
+	if !exists || env == nil {
+		return newKeyBusinessError("not_found", "KEY_NOT_FOUND", "encrypted key not found")
+	}
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		return newKeyBusinessError("conflict", "CONFLICT", "client key is already unlocked, lock first")
+	}
+	if err := SaveRootProfileConfig(d.startup.VaultPath, RootProfileConfig{DefaultKey: pubHex}); err != nil {
+		return err
+	}
+	d.mu.Lock()
+	d.startup.KeyPath = keyPath
+	d.mu.Unlock()
+	d.emitBackendSnapshot("default_key_changed")
+	d.emitPhaseEvent()
+	return nil
+}
+
+func (d *managedDaemon) currentDefaultKeyPath() (string, string, error) {
+	pubHex, err := d.currentDefaultKeyPubHex()
+	if err != nil {
+		return "", "", err
+	}
+	if pubHex == "" {
+		legacyKeyPath := strings.TrimSpace(d.startup.KeyPath)
+		if legacyKeyPath != "" {
+			return "", legacyKeyPath, nil
+		}
+		return "", "", nil
+	}
+	keyPath, err := ResolveProfileKeyPath(d.startup.VaultPath, pubHex)
+	if err != nil {
+		return "", "", err
+	}
+	return pubHex, keyPath, nil
+}
+
+func (d *managedDaemon) requireDefaultKeyPath() (string, string, error) {
+	pubHex, keyPath, err := d.currentDefaultKeyPath()
+	if err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(keyPath) == "" {
+		return "", "", newKeyBusinessError("not_found", "DEFAULT_KEY_NOT_SET", "default key is not set")
+	}
+	return pubHex, keyPath, nil
+}
+
+func (d *managedDaemon) listKeyPubHexes() ([]string, error) {
+	root := strings.TrimSpace(d.startup.VaultPath)
+	if root == "" {
+		return nil, fmt.Errorf("config root is empty")
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	items := make([]string, 0, len(entries))
+	for _, one := range entries {
+		if !one.IsDir() {
+			continue
+		}
+		pubHex, err := NormalizePubkeyHex(one.Name())
+		if err != nil {
+			continue
+		}
+		keyPath, err := ResolveProfileKeyPath(root, pubHex)
+		if err != nil {
+			return nil, err
+		}
+		if _, statErr := os.Stat(keyPath); statErr == nil {
+			items = append(items, pubHex)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return nil, statErr
+		}
+	}
+	sort.Strings(items)
+	return items, nil
+}
+
 func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
-	_, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
+	_, keyPath, err := d.currentDefaultKeyPath()
+	exists := false
+	if err == nil && strings.TrimSpace(keyPath) != "" {
+		_, exists, err = LoadEncryptedKeyEnvelope(keyPath)
+	}
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeKeyAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
 	d.mu.RLock()
-	backendPhase := d.backendPhase
-	runtimePhase := d.runtimePhase
-	runtimeErrorMessage := strings.TrimSpace(d.runtimeErrorMessage)
 	unlocked := strings.TrimSpace(d.unlockedPrivHex) != ""
-	unlockToken := strings.TrimSpace(d.unlockSuccessToken)
-	unlockOwner := strings.TrimSpace(d.unlockSuccessBy)
-	startupErr := d.startupError
-	chainAccess := d.chainAccess
-	activeConfigPath := strings.TrimSpace(d.activeConfigPath)
-	activeIndexDBPath := strings.TrimSpace(d.activeIndexDBPath)
 	d.mu.RUnlock()
-	configPath := strings.TrimSpace(d.startup.ConfigPath)
-	if activeConfigPath != "" {
-		configPath = activeConfigPath
-	}
-	indexDBPath := strings.TrimSpace(d.startup.IndexDBPath)
-	if activeIndexDBPath != "" {
-		indexDBPath = activeIndexDBPath
-	}
 	keyState := managedKeyStateMissing
 	switch {
 	case unlocked:
@@ -478,28 +659,8 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	case exists:
 		keyState = managedKeyStateLocked
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"vault_path":             d.startup.VaultPath,
-		"config_path":            configPath,
-		"key_path":               d.startup.KeyPath,
-		"index_db_path":          indexDBPath,
-		"backend_phase":          string(backendPhase),
-		"runtime_phase":          string(runtimePhase),
-		"key_state":              string(keyState),
-		"startup_error_service":  startupErr.Service,
-		"startup_error_listen":   startupErr.ListenAddr,
-		"startup_error_message":  startupErr.Message,
-		"runtime_error_message":  runtimeErrorMessage,
-		"unlock_token":           unlockToken,
-		"unlock_owner":           unlockOwner,
-		"chain_access_mode":      chainAccess.Mode,
-		"wallet_chain_base_url":  chainAccess.BaseURL,
-		"woc_proxy_enabled":      chainAccess.WOCProxyEnabled,
-		"woc_proxy_listen_addr":  chainAccess.WOCProxyAddr,
-		"woc_upstream_root_url":  chainAccess.UpstreamRootURL,
-		"woc_min_interval":       chainAccess.MinInterval.String(),
-		"has_system_home_bundle": d.systemHomepage != nil && d.systemHomepage.HasBundle(),
-		"default_home_seed_hash": d.defaultHomeSeedHash(),
+	writeKeyAPISuccess(w, map[string]any{
+		"key_state": string(keyState),
 	})
 }
 
@@ -510,40 +671,184 @@ func (d *managedDaemon) createRandomKeyMaterial(password string) (keyMaterialTic
 	if d.currentKeyState() == managedKeyStateUnlocked {
 		return keyMaterialTicket{}, fmt.Errorf("client key is already unlocked, lock first")
 	}
-	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
-		return keyMaterialTicket{}, err
-	} else if exists {
-		return keyMaterialTicket{}, fmt.Errorf("encrypted key already exists")
-	}
 	privHex, err := GeneratePrivateKeyHex()
 	if err != nil {
 		return keyMaterialTicket{}, err
+	}
+	pubHex, err := PubHexFromPrivHex(privHex)
+	if err != nil {
+		return keyMaterialTicket{}, err
+	}
+	keyPath, err := ResolveProfileKeyPath(d.startup.VaultPath, pubHex)
+	if err != nil {
+		return keyMaterialTicket{}, err
+	}
+	if _, exists, err := LoadEncryptedKeyEnvelope(keyPath); err != nil {
+		return keyMaterialTicket{}, err
+	} else if exists {
+		return keyMaterialTicket{}, fmt.Errorf("encrypted key already exists")
 	}
 	env, err := EncryptPrivateKeyEnvelope(privHex, password)
 	if err != nil {
 		return keyMaterialTicket{}, err
 	}
-	if err := SaveEncryptedKeyEnvelope(d.startup.KeyPath, env); err != nil {
+	env.PubkeyHex = pubHex
+	if err := SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return keyMaterialTicket{}, err
 	}
+	defaultKey, err := d.currentDefaultKeyPubHex()
+	if err != nil {
+		return keyMaterialTicket{}, err
+	}
+	if strings.TrimSpace(defaultKey) == "" {
+		if err := SaveRootProfileConfig(d.startup.VaultPath, RootProfileConfig{DefaultKey: pubHex}); err != nil {
+			return keyMaterialTicket{}, err
+		}
+		d.mu.Lock()
+		d.startup.KeyPath = keyPath
+		d.mu.Unlock()
+	}
 	d.emitBackendSnapshot("key_material_ready")
-	pubHex, _ := PubHexFromPrivHex(privHex)
 	return keyMaterialTicket{
 		Result: "created",
 		PubHex: pubHex,
 	}, nil
 }
 
+func (d *managedDaemon) importEncryptedKeyMaterial(cipher *EncryptedKeyEnvelope) error {
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		return newKeyBusinessError("conflict", "CONFLICT", err.Error())
+	}
+	if d.currentKeyState() == managedKeyStateUnlocked {
+		return newKeyBusinessError("conflict", "CONFLICT", "client key is already unlocked, lock first")
+	}
+	if cipher == nil {
+		return newKeyBusinessError("invalid_input", "CIPHER_REQUIRED", "cipher is required")
+	}
+	targetPubHex := strings.TrimSpace(cipher.PubkeyHex)
+	if targetPubHex == "" {
+		currentDefault, err := d.currentDefaultKeyPubHex()
+		if err != nil {
+			return err
+		}
+		if currentDefault == "" {
+			return newKeyBusinessError("invalid_input", "CIPHER_PUBKEY_REQUIRED", "cipher pubkey_hex is required when default key is not set")
+		}
+		targetPubHex = currentDefault
+	}
+	targetPubHex, err := NormalizePubkeyHex(targetPubHex)
+	if err != nil {
+		return newKeyBusinessError("invalid_input", "INVALID_PUBKEY_HEX", err.Error())
+	}
+	keyPath, err := ResolveProfileKeyPath(d.startup.VaultPath, targetPubHex)
+	if err != nil {
+		return err
+	}
+	if _, exists, err := LoadEncryptedKeyEnvelope(keyPath); err != nil {
+		return err
+	} else if exists {
+		return newKeyBusinessError("conflict", "CONFLICT", "encrypted key already exists")
+	}
+	cipher.PubkeyHex = targetPubHex
+	if err := SaveEncryptedKeyEnvelope(keyPath, *cipher); err != nil {
+		return err
+	}
+	currentDefault, err := d.currentDefaultKeyPubHex()
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(currentDefault) == "" {
+		if err := SaveRootProfileConfig(d.startup.VaultPath, RootProfileConfig{DefaultKey: targetPubHex}); err != nil {
+			return err
+		}
+		currentDefault = targetPubHex
+	}
+	if strings.EqualFold(currentDefault, targetPubHex) {
+		d.mu.Lock()
+		d.startup.KeyPath = keyPath
+		d.mu.Unlock()
+	}
+	d.emitBackendSnapshot("key_material_ready")
+	return nil
+}
+
 func (d *managedDaemon) assertKeyMaterialExists() error {
 	if err := d.ensureKeyWorkflowReady(); err != nil {
 		return err
 	}
-	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
+	_, keyPath, err := d.requireDefaultKeyPath()
+	if err != nil {
+		return err
+	}
+	if _, exists, err := LoadEncryptedKeyEnvelope(keyPath); err != nil {
 		return err
 	} else if !exists {
 		return fmt.Errorf("encrypted key not found")
 	}
 	return nil
+}
+
+func (d *managedDaemon) exportEncryptedKeyMaterial() (*EncryptedKeyEnvelope, error) {
+	_, keyPath, err := d.requireDefaultKeyPath()
+	if err != nil {
+		return nil, err
+	}
+	env, exists, err := LoadEncryptedKeyEnvelope(keyPath)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, newKeyBusinessError("not_found", "KEY_NOT_FOUND", "encrypted key not found")
+	}
+	return env, nil
+}
+
+func (d *managedDaemon) handleSettingsKeys(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	defaultKey, err := d.currentDefaultKeyPubHex()
+	if err != nil {
+		writeKeyAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	keys, err := d.listKeyPubHexes()
+	if err != nil {
+		writeKeyAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
+		return
+	}
+	writeKeyAPISuccess(w, map[string]any{
+		"default_key": defaultKey,
+		"keys":        keys,
+	})
+}
+
+func (d *managedDaemon) handleSettingsDefaultKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
+		return
+	}
+	var req struct {
+		DefaultKey string `json:"default_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeKeyAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid json")
+		return
+	}
+	if strings.TrimSpace(req.DefaultKey) == "" {
+		writeKeyAPIError(w, http.StatusBadRequest, "DEFAULT_KEY_REQUIRED", "default_key is required")
+		return
+	}
+	if err := d.setDefaultKeyPubHex(req.DefaultKey); err != nil {
+		status, code := keyBusinessErrorToHTTP(err)
+		writeKeyAPIError(w, status, code, err.Error())
+		return
+	}
+	pubHex, _ := NormalizePubkeyHex(req.DefaultKey)
+	writeKeyAPISuccess(w, map[string]any{
+		"default_key": pubHex,
+	})
 }
 
 func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password string) (unlockTicket, error) {
@@ -561,7 +866,15 @@ func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password
 		}
 		return ticket, nil
 	}
-	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
+	defaultPubHex, keyPath, err := d.requireDefaultKeyPath()
+	if err != nil {
+		status, code := keyBusinessErrorToHTTP(err)
+		if code == "DEFAULT_KEY_NOT_SET" {
+			status = http.StatusNotFound
+		}
+		return unlockTicket{}, wrapUnlockHTTPError(status, err)
+	}
+	env, exists, err := LoadEncryptedKeyEnvelope(keyPath)
 	if err != nil {
 		return unlockTicket{}, wrapUnlockHTTPError(http.StatusInternalServerError, err)
 	}
@@ -573,6 +886,13 @@ func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password
 		obs.Error("bitcast-client", "unlock_decrypt_failed", map[string]any{"error": err.Error()})
 		fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
 		return unlockTicket{}, wrapUnlockHTTPError(http.StatusUnauthorized, err)
+	}
+	unlockPubHex, err := PubHexFromPrivHex(privHex)
+	if err != nil {
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusUnauthorized, err)
+	}
+	if strings.TrimSpace(defaultPubHex) != "" && !strings.EqualFold(strings.TrimSpace(defaultPubHex), strings.TrimSpace(unlockPubHex)) {
+		return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, fmt.Errorf("default key does not match key material"))
 	}
 	ticket := d.claimUnlockTicket(source, privHex)
 	if ticket.Result == managedUnlockResultAlready {
@@ -1129,87 +1449,74 @@ func controlCommandPayloadString(payload map[string]any, key string) string {
 
 func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	var req struct {
 		Password string `json:"password"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		writeKeyAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid json")
 		return
 	}
 	if strings.TrimSpace(req.Password) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password is required"})
+		writeKeyAPIError(w, http.StatusBadRequest, "PASSWORD_REQUIRED", "password is required")
 		return
 	}
 	ticket, err := d.createRandomKeyMaterial(req.Password)
 	if err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		writeKeyAPIError(w, http.StatusConflict, "CONFLICT", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pubkey_hex": ticket.PubHex})
+	writeKeyAPISuccess(w, map[string]any{
+		"pubkey_hex": ticket.PubHex,
+		"key_state":  string(managedKeyStateLocked),
+	})
 }
 
 func (d *managedDaemon) handleKeyImport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if err := d.ensureKeyWorkflowReady(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	if d.currentKeyState() == managedKeyStateUnlocked {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "client key is already unlocked, lock first"})
-		return
-	}
-	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	} else if exists {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "encrypted key already exists"})
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	var req struct {
 		Cipher *EncryptedKeyEnvelope `json:"cipher"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		writeKeyAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid json")
 		return
 	}
-	if req.Cipher == nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "cipher is required"})
+	if err := d.importEncryptedKeyMaterial(req.Cipher); err != nil {
+		status, code := keyBusinessErrorToHTTP(err)
+		writeKeyAPIError(w, status, code, err.Error())
 		return
 	}
-	if err := SaveEncryptedKeyEnvelope(d.startup.KeyPath, *req.Cipher); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	d.emitBackendSnapshot("key_material_ready")
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeKeyAPISuccess(w, map[string]any{
+		"key_state": string(managedKeyStateLocked),
+	})
 }
 
 func (d *managedDaemon) handleKeyExport(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
-	env, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath)
+	env, err := d.exportEncryptedKeyMaterial()
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		status, code := keyBusinessErrorToHTTP(err)
+		writeKeyAPIError(w, status, code, err.Error())
 		return
 	}
-	if !exists {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "encrypted key not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"cipher": env})
+	defaultKey, _ := d.currentDefaultKeyPubHex()
+	writeKeyAPISuccess(w, map[string]any{
+		"cipher":     env,
+		"pubkey_hex": defaultKey,
+	})
 }
 
 func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	var req struct {
@@ -1217,13 +1524,14 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 	}
 	if r.Body != nil {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+			writeKeyAPIError(w, http.StatusBadRequest, "INVALID_JSON", "invalid json")
 			return
 		}
 	}
 	ticket, err := d.unlockWithPassword(r.Context(), unlockSourceAPI, req.Password)
 	if err != nil {
-		writeJSON(w, unlockHTTPStatus(err), map[string]any{"error": err.Error()})
+		status := unlockHTTPStatus(err)
+		writeKeyAPIError(w, status, keyAPIErrorCodeByStatus(status), err.Error())
 		return
 	}
 	d.emitUnlockResult(unlockSourceAPI, ticket)
@@ -1232,18 +1540,20 @@ func (d *managedDaemon) handleKeyUnlock(w http.ResponseWriter, r *http.Request) 
 
 func (d *managedDaemon) handleKeyLock(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeKeyAPIError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	if err := d.ensureKeyWorkflowReady(); err != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
+		writeKeyAPIError(w, http.StatusConflict, "CONFLICT", err.Error())
 		return
 	}
 	if err := d.lockRuntime(); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		writeKeyAPIError(w, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "unlocked": false})
+	writeKeyAPISuccess(w, map[string]any{
+		"key_state": string(managedKeyStateLocked),
+	})
 }
 
 func (d *managedDaemon) waitRuntimeReadyForAPI(ctx context.Context) error {
@@ -1529,10 +1839,17 @@ func (d *managedDaemon) printLockedStartupSummary() {
 	if indexDBPath == "" {
 		indexDBPath = "(pending unlock)"
 	}
+	keyPath := strings.TrimSpace(d.startup.KeyPath)
+	if _, currentKeyPath, err := d.currentDefaultKeyPath(); err == nil && strings.TrimSpace(currentKeyPath) != "" {
+		keyPath = strings.TrimSpace(currentKeyPath)
+	}
+	if keyPath == "" {
+		keyPath = "(pending default_key)"
+	}
 	fmt.Fprintf(os.Stderr, "=== BitFS 客户端启动信息（待解锁）===\n")
 	fmt.Fprintf(os.Stderr, "vault_path: %s\n", d.startup.VaultPath)
 	fmt.Fprintf(os.Stderr, "config_path: %s\n", configPath)
-	fmt.Fprintf(os.Stderr, "key_path: %s\n", d.startup.KeyPath)
+	fmt.Fprintf(os.Stderr, "key_path: %s\n", keyPath)
 	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
 	fmt.Fprintf(os.Stderr, "managed_api.listen_addr: %s\n", strings.TrimSpace(d.cfg.HTTP.ListenAddr))
 	fmt.Fprintf(os.Stderr, "fs_http.listen_addr: %s\n", strings.TrimSpace(d.cfg.FSHTTP.ListenAddr))
@@ -1556,10 +1873,17 @@ func (d *managedDaemon) printUnlockedRuntimeSummary(runCfg clientapp.Config, rt 
 	if pubErr != nil {
 		pubLine = "unavailable (" + pubErr.Error() + ")"
 	}
+	keyPath := strings.TrimSpace(d.startup.KeyPath)
+	if _, currentKeyPath, err := d.currentDefaultKeyPath(); err == nil && strings.TrimSpace(currentKeyPath) != "" {
+		keyPath = strings.TrimSpace(currentKeyPath)
+	}
+	if keyPath == "" {
+		keyPath = "(pending default_key)"
+	}
 	fmt.Fprintf(os.Stderr, "=== BitFS 客户端运行信息（已解锁）===\n")
 	fmt.Fprintf(os.Stderr, "vault_path: %s\n", d.startup.VaultPath)
 	fmt.Fprintf(os.Stderr, "config_path: %s\n", strings.TrimSpace(configPath))
-	fmt.Fprintf(os.Stderr, "key_path: %s\n", d.startup.KeyPath)
+	fmt.Fprintf(os.Stderr, "key_path: %s\n", keyPath)
 	fmt.Fprintf(os.Stderr, "network: %s\n", d.currentNetworkName())
 	fmt.Fprintf(os.Stderr, "pubkey_hex: %s\n", strings.TrimSpace(pubLine))
 	fmt.Fprintf(os.Stderr, "transport_peer_id: %s\n", strings.TrimSpace(rt.Host.ID().String()))
@@ -1795,6 +2119,10 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 	activeConfigPath := strings.TrimSpace(d.activeConfigPath)
 	activeIndexDBPath := strings.TrimSpace(d.activeIndexDBPath)
 	d.mu.RUnlock()
+	keyPath := strings.TrimSpace(d.startup.KeyPath)
+	if _, currentKeyPath, err := d.currentDefaultKeyPath(); err == nil && strings.TrimSpace(currentKeyPath) != "" {
+		keyPath = strings.TrimSpace(currentKeyPath)
+	}
 	configPath := strings.TrimSpace(d.startup.ConfigPath)
 	if activeConfigPath != "" {
 		configPath = activeConfigPath
@@ -1824,7 +2152,7 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 		"network":                strings.TrimSpace(network),
 		"vault_path":             strings.TrimSpace(d.startup.VaultPath),
 		"config_path":            configPath,
-		"key_path":               strings.TrimSpace(d.startup.KeyPath),
+		"key_path":               keyPath,
 		"index_db_path":          indexDBPath,
 		"api_listen_addr":        apiListenAddr,
 		"fs_http_listen_addr":    fsHTTPListenAddr,
@@ -1846,7 +2174,11 @@ func (d *managedDaemon) buildBackendSnapshotPayload(step string) map[string]any 
 }
 
 func (d *managedDaemon) currentKeyExistsLocked() bool {
-	_, err := os.Stat(strings.TrimSpace(d.startup.KeyPath))
+	_, keyPath, err := d.currentDefaultKeyPath()
+	if err != nil || strings.TrimSpace(keyPath) == "" {
+		return false
+	}
+	_, err = os.Stat(keyPath)
 	return err == nil
 }
 
@@ -1963,12 +2295,9 @@ func (d *managedDaemon) emitUnlockResult(source string, ticket unlockTicket) {
 }
 
 func writeUnlockResponse(w http.ResponseWriter, ticket unlockTicket) {
-	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":            true,
-		"unlocked":      true,
+	writeKeyAPISuccess(w, map[string]any{
+		"key_state":     string(managedKeyStateUnlocked),
 		"unlock_result": string(ticket.Result),
-		"unlock_token":  strings.TrimSpace(ticket.Token),
-		"unlock_owner":  strings.TrimSpace(ticket.Winner),
 	})
 }
 

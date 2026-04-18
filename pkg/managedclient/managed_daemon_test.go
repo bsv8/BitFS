@@ -610,6 +610,17 @@ func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
 	}
+	var unlockBody map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &unlockBody); err != nil {
+		t.Fatalf("decode unlock body: %v", err)
+	}
+	if got, want := strings.TrimSpace(fmt.Sprint(unlockBody["status"])), "ok"; got != want {
+		t.Fatalf("unlock body status=%q, want %q", got, want)
+	}
+	data, _ := unlockBody["data"].(map[string]any)
+	if got, want := strings.TrimSpace(fmt.Sprint(data["key_state"])), "unlocked"; got != want {
+		t.Fatalf("unlock body data.key_state=%q, want %q", got, want)
+	}
 	select {
 	case <-runCalled:
 	case <-time.After(5 * time.Second):
@@ -625,6 +636,98 @@ func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
 	}
 	if d.rtAPI == nil {
 		t.Fatal("runtime api handler not committed")
+	}
+}
+
+func TestKeyBusiness_ImportAndExportEncryptedKeyMaterial(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	d := &managedDaemon{
+		startup: StartupSummary{
+			VaultPath: root,
+			KeyPath:   keyPath,
+		},
+		backendPhase: managedBackendPhaseAvailable,
+	}
+	env, err := EncryptPrivateKeyEnvelope(strings.Repeat("1", 64), "pass")
+	if err != nil {
+		t.Fatalf("encrypt private key envelope: %v", err)
+	}
+	pubHex, err := PubHexFromPrivHex(strings.Repeat("1", 64))
+	if err != nil {
+		t.Fatalf("pubkey from privkey failed: %v", err)
+	}
+	env.PubkeyHex = pubHex
+	if err := d.importEncryptedKeyMaterial(&env); err != nil {
+		t.Fatalf("importEncryptedKeyMaterial failed: %v", err)
+	}
+	if got, want := d.currentKeyState(), managedKeyStateLocked; got != want {
+		t.Fatalf("key state mismatch: got=%s want=%s", got, want)
+	}
+	exported, err := d.exportEncryptedKeyMaterial()
+	if err != nil {
+		t.Fatalf("exportEncryptedKeyMaterial failed: %v", err)
+	}
+	if exported == nil {
+		t.Fatal("exported envelope should not be nil")
+	}
+	if got, want := exported.CiphertextHex, env.CiphertextHex; got != want {
+		t.Fatalf("ciphertext mismatch: got=%q want=%q", got, want)
+	}
+	if got, want := exported.NonceHex, env.NonceHex; got != want {
+		t.Fatalf("nonce mismatch: got=%q want=%q", got, want)
+	}
+}
+
+func TestKeyBusiness_ImportEncryptedKeyMaterialCipherRequired(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	d := &managedDaemon{
+		startup: StartupSummary{
+			VaultPath: root,
+			KeyPath:   keyPath,
+		},
+		backendPhase: managedBackendPhaseAvailable,
+	}
+	err := d.importEncryptedKeyMaterial(nil)
+	if err == nil {
+		t.Fatal("expected cipher required error")
+	}
+	status, code := keyBusinessErrorToHTTP(err)
+	if got, want := status, http.StatusBadRequest; got != want {
+		t.Fatalf("status mismatch: got=%d want=%d err=%v", got, want, err)
+	}
+	if got, want := code, "CIPHER_REQUIRED"; got != want {
+		t.Fatalf("code mismatch: got=%q want=%q err=%v", got, want, err)
+	}
+}
+
+func TestKeyBusiness_ExportEncryptedKeyMaterialNotFound(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	d := &managedDaemon{
+		startup: StartupSummary{
+			VaultPath: root,
+			KeyPath:   keyPath,
+		},
+		backendPhase: managedBackendPhaseAvailable,
+	}
+	_, err := d.exportEncryptedKeyMaterial()
+	if err == nil {
+		t.Fatal("expected not found error")
+	}
+	status, code := keyBusinessErrorToHTTP(err)
+	if got, want := status, http.StatusNotFound; got != want {
+		t.Fatalf("status mismatch: got=%d want=%d err=%v", got, want, err)
+	}
+	if got, want := code, "KEY_NOT_FOUND"; got != want {
+		t.Fatalf("code mismatch: got=%q want=%q err=%v", got, want, err)
 	}
 }
 
@@ -668,6 +771,17 @@ func TestHandleKeyUnlock_KeyNotFoundReturnsNotFound(t *testing.T) {
 	d.handleKeyUnlock(rec, req)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusNotFound, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode unlock body: %v", err)
+	}
+	if got, want := strings.TrimSpace(fmt.Sprint(body["status"])), "error"; got != want {
+		t.Fatalf("unlock body status=%q, want %q", got, want)
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if got, want := strings.TrimSpace(fmt.Sprint(errObj["code"])), "KEY_NOT_FOUND"; got != want {
+		t.Fatalf("unlock body error.code=%q, want %q", got, want)
 	}
 	if !strings.Contains(rec.Body.String(), "encrypted key not found") {
 		t.Fatalf("unlock body mismatch: body=%s", rec.Body.String())
@@ -714,6 +828,17 @@ func TestHandleKeyUnlock_BackendNotReadyReturnsConflict(t *testing.T) {
 	d.handleKeyUnlock(rec, req)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("unlock status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode unlock body: %v", err)
+	}
+	if got, want := strings.TrimSpace(fmt.Sprint(body["status"])), "error"; got != want {
+		t.Fatalf("unlock body status=%q, want %q", got, want)
+	}
+	errObj, _ := body["error"].(map[string]any)
+	if got, want := strings.TrimSpace(fmt.Sprint(errObj["code"])), "CONFLICT"; got != want {
+		t.Fatalf("unlock body error.code=%q, want %q", got, want)
 	}
 	if !strings.Contains(rec.Body.String(), "client is still starting") {
 		t.Fatalf("unlock body mismatch: body=%s", rec.Body.String())
@@ -762,7 +887,18 @@ func TestHandleManagedControlCommand_CreateRandomCreatesLockedKey(t *testing.T) 
 		},
 	})
 
-	if _, exists, err := LoadEncryptedKeyEnvelope(keyPath); err != nil {
+	rootCfg, _, err := LoadRootProfileConfig(root)
+	if err != nil {
+		t.Fatalf("load root profile config: %v", err)
+	}
+	if strings.TrimSpace(rootCfg.DefaultKey) == "" {
+		t.Fatal("default key should be set after key.create_random")
+	}
+	createdKeyPath, err := ResolveProfileKeyPath(root, rootCfg.DefaultKey)
+	if err != nil {
+		t.Fatalf("resolve profile key path: %v", err)
+	}
+	if _, exists, err := LoadEncryptedKeyEnvelope(createdKeyPath); err != nil {
 		t.Fatalf("load encrypted key envelope: %v", err)
 	} else if !exists {
 		t.Fatal("encrypted key should exist after key.create_random")

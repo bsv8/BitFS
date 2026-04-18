@@ -70,7 +70,10 @@ func main() {
 	}
 
 	configRoot := clientapp.ResolveConfigRoot(opts.configRoot)
-	keyPath := clientapp.ResolveKeyFilePath(configRoot)
+	startupKeyPath, err := resolveStartupDefaultKeyPath(configRoot)
+	if err != nil {
+		log.Fatal(err)
+	}
 	cfg := managedclient.NewDefaultConfig(initNetwork)
 	if err := clientapp.ApplyConfigDefaultsForMode(&cfg, clientapp.StartupModeProduct); err != nil {
 		log.Fatal(err)
@@ -83,25 +86,25 @@ func main() {
 	runtimeConfigStatus := "按公钥目录运行时装配"
 	startup := startupSummary{
 		VaultPath:           configRoot,
-		ConfigPath:          "",
-		KeyPath:             keyPath,
+		ConfigPath:          managedclient.ResolveRootConfigPath(configRoot),
+		KeyPath:             startupKeyPath,
 		IndexDBPath:         "",
 		RuntimeConfigStatus: runtimeConfigStatus,
 	}
 
 	switch action {
 	case actionNew:
-		if err := runCLIKeyNew(keyPath); err != nil {
+		if err := runCLIKeyNew(configRoot); err != nil {
 			log.Fatal(err)
 		}
 		return
 	case actionImport:
-		if err := runCLIKeyImport(keyPath, opts.importPath); err != nil {
+		if err := runCLIKeyImport(configRoot, opts.importPath); err != nil {
 			log.Fatal(err)
 		}
 		return
 	case actionExport:
-		if err := runCLIKeyExport(keyPath, opts.exportPath); err != nil {
+		if err := runCLIKeyExport(configRoot, opts.exportPath); err != nil {
 			log.Fatal(err)
 		}
 		return
@@ -172,12 +175,7 @@ func resolveCLIAction(opts cliOptions) (cliAction, error) {
 	return actionRun, nil
 }
 
-func runCLIKeyNew(keyPath string) error {
-	if _, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath); err != nil {
-		return err
-	} else if exists {
-		return fmt.Errorf("%s", msg("err_key_exists"))
-	}
+func runCLIKeyNew(configRoot string) error {
 	p1, err := managedclient.ReadPassword(msg("prompt_password_new"))
 	if err != nil {
 		return err
@@ -200,15 +198,31 @@ func runCLIKeyNew(keyPath string) error {
 	if err != nil {
 		return err
 	}
+	pubHex, err := managedclient.PubHexFromPrivHex(privHex)
+	if err != nil {
+		return err
+	}
+	keyPath, err := managedclient.ResolveProfileKeyPath(configRoot, pubHex)
+	if err != nil {
+		return err
+	}
+	if _, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath); err != nil {
+		return err
+	} else if exists {
+		return fmt.Errorf("%s", msg("err_key_exists"))
+	}
+	env.PubkeyHex = pubHex
 	if err := managedclient.SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return err
 	}
-	pubHex, _ := managedclient.PubHexFromPrivHex(privHex)
+	if err := managedclient.SaveRootProfileConfig(configRoot, managedclient.RootProfileConfig{DefaultKey: pubHex}); err != nil {
+		return err
+	}
 	fmt.Printf("%s\nkey_path: %s\npubkey: %s\n", msg("new_done"), keyPath, pubHex)
 	return nil
 }
 
-func runCLIKeyImport(keyPath, importPath string) error {
+func runCLIKeyImport(configRoot, importPath string) error {
 	importPath = strings.TrimSpace(importPath)
 	if importPath == "" {
 		return fmt.Errorf("%s", msg("err_import_path_required"))
@@ -221,22 +235,67 @@ func runCLIKeyImport(keyPath, importPath string) error {
 	if err := json.Unmarshal(raw, &env); err != nil {
 		return fmt.Errorf("invalid key envelope json: %w", err)
 	}
+	targetPub := strings.TrimSpace(env.PubkeyHex)
+	if targetPub == "" {
+		rootCfg, _, err := managedclient.LoadRootProfileConfig(configRoot)
+		if err != nil {
+			return err
+		}
+		targetPub = strings.TrimSpace(rootCfg.DefaultKey)
+	}
+	if strings.TrimSpace(targetPub) == "" {
+		return fmt.Errorf("default key is not set and imported key has no pubkey_hex")
+	}
+	targetPub, err = managedclient.NormalizePubkeyHex(targetPub)
+	if err != nil {
+		return err
+	}
+	keyPath, err := managedclient.ResolveProfileKeyPath(configRoot, targetPub)
+	if err != nil {
+		return err
+	}
 	if _, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath); err != nil {
 		return err
 	} else if exists {
 		return fmt.Errorf("%s", msg("err_key_exists"))
 	}
+	env.PubkeyHex = targetPub
 	if err := managedclient.SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
 		return err
+	}
+	rootCfg, _, err := managedclient.LoadRootProfileConfig(configRoot)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(rootCfg.DefaultKey) == "" {
+		if err := managedclient.SaveRootProfileConfig(configRoot, managedclient.RootProfileConfig{DefaultKey: targetPub}); err != nil {
+			return err
+		}
 	}
 	fmt.Printf("%s\nfile: %s\n", msg("import_done"), importPath)
 	return nil
 }
 
-func runCLIKeyExport(keyPath, exportPath string) error {
+func runCLIKeyExport(configRoot, exportPath string) error {
 	exportPath = strings.TrimSpace(exportPath)
 	if exportPath == "" {
 		return fmt.Errorf("%s", msg("err_export_path_required"))
+	}
+	rootCfg, _, err := managedclient.LoadRootProfileConfig(configRoot)
+	if err != nil {
+		return err
+	}
+	defaultPub := strings.TrimSpace(rootCfg.DefaultKey)
+	if defaultPub == "" {
+		return fmt.Errorf("%s", msg("err_key_not_found"))
+	}
+	defaultPub, err = managedclient.NormalizePubkeyHex(defaultPub)
+	if err != nil {
+		return err
+	}
+	keyPath, err := managedclient.ResolveProfileKeyPath(configRoot, defaultPub)
+	if err != nil {
+		return err
 	}
 	env, exists, err := managedclient.LoadEncryptedKeyEnvelope(keyPath)
 	if err != nil {
@@ -244,6 +303,9 @@ func runCLIKeyExport(keyPath, exportPath string) error {
 	}
 	if !exists || env == nil {
 		return fmt.Errorf("%s", msg("err_key_not_found"))
+	}
+	if strings.TrimSpace(env.PubkeyHex) == "" {
+		env.PubkeyHex = defaultPub
 	}
 	data, err := json.MarshalIndent(env, "", "  ")
 	if err != nil {
@@ -257,6 +319,18 @@ func runCLIKeyExport(keyPath, exportPath string) error {
 	}
 	fmt.Printf("%s\nfile: %s\n", msg("export_done"), exportPath)
 	return nil
+}
+
+func resolveStartupDefaultKeyPath(configRoot string) (string, error) {
+	rootCfg, _, err := managedclient.LoadRootProfileConfig(configRoot)
+	if err != nil {
+		return "", err
+	}
+	pubHex := strings.TrimSpace(rootCfg.DefaultKey)
+	if pubHex == "" {
+		return "", nil
+	}
+	return managedclient.ResolveProfileKeyPath(configRoot, pubHex)
 }
 
 func detectCLILanguage() string {

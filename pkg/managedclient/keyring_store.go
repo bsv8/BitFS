@@ -23,6 +23,7 @@ const (
 )
 
 type EncryptedKeyEnvelope struct {
+	PubkeyHex     string                  `json:"pubkey_hex,omitempty"`
 	Version       string                  `json:"version"`
 	KeyID         string                  `json:"key_id"`
 	KDF           string                  `json:"kdf"`

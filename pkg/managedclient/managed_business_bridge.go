@@ -1,13 +1,18 @@
 package managedclient
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/libp2p/go-libp2p/core/peer"
+	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
 func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandRequest) (controlCommandResult, error) {
@@ -386,6 +391,51 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		}
 		return businessActionSuccess(req, "returned", payload, d), nil
 
+	case controlActionPeerSelf:
+		// 这里显式暴露 runtime 的节点身份，给 outproc e2e 做跨进程编排，
+		// 避免测试侧再去读进程内对象或推测地址格式。
+		info, err := businessBuildPeerSelfPayload(rt)
+		payload := map[string]any{"peer_self": info}
+		if err != nil {
+			return businessActionFailure(req, d, err.Error(), payload), nil
+		}
+		return businessActionSuccess(req, "returned", payload, d), nil
+
+	case controlActionPeerConnect:
+		// 只接受完整 /ip4/.../p2p/... 地址，确保 e2e 用的就是线上同款拨号输入。
+		addrText := strings.TrimSpace(controlCommandPayloadString(req.Payload, "addr"))
+		if addrText == "" {
+			return businessActionFailure(req, d, "addr is required", nil), nil
+		}
+		target, err := peer.AddrInfoFromString(addrText)
+		payload := map[string]any{
+			"peer_connect": map[string]any{
+				"addr":    addrText,
+				"peer_id": "",
+			},
+		}
+		if err != nil {
+			return businessActionFailure(req, d, "invalid addr", payload), nil
+		}
+		if target == nil || target.ID == "" || len(target.Addrs) == 0 {
+			return businessActionFailure(req, d, "addr must include peer id and transport address", payload), nil
+		}
+		payload["peer_connect"] = map[string]any{
+			"addr":    addrText,
+			"peer_id": target.ID.String(),
+		}
+		if rt.Host == nil {
+			return businessActionFailure(req, d, "runtime host not initialized", payload), nil
+		}
+		// 先写 peerstore，再主动 connect；失败直接回包，避免吞掉连通性问题。
+		rt.Host.Peerstore().AddAddrs(target.ID, target.Addrs, 2*time.Minute)
+		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		defer cancel()
+		if err := rt.Host.Connect(connectCtx, *target); err != nil {
+			return businessActionFailure(req, d, err.Error(), payload), nil
+		}
+		return businessActionSuccess(req, "connected", payload, d), nil
+
 	default:
 		return controlCommandResult{}, fmt.Errorf("unsupported control action: %s", req.Action)
 	}
@@ -565,4 +615,45 @@ func businessPeerCallResponseMap(resp ncall.CallResp) map[string]any {
 		out["service_receipt_base64"] = base64.StdEncoding.EncodeToString(resp.ServiceReceipt)
 	}
 	return out
+}
+
+func businessBuildPeerSelfPayload(rt *clientapp.Runtime) (map[string]any, error) {
+	if rt == nil || rt.Host == nil {
+		return map[string]any{
+			"pubkey_hex": "",
+			"peer_id":    "",
+			"addrs":      []string{},
+		}, fmt.Errorf("runtime host not initialized")
+	}
+	// 对外业务 ID 统一使用 client_pubkey_hex（33-byte 压缩公钥），
+	// 不能把 libp2p host 公钥编码（protobuf 封装）直接当业务 ID 回给上层。
+	cfgPubHex := strings.ToLower(strings.TrimSpace(rt.ConfigSnapshot().ClientID))
+	pubHex := cfgPubHex
+	if pubHex == "" {
+		rawPubHex, err := runtimePubKeyHex(rt)
+		if err != nil {
+			return map[string]any{
+				"pubkey_hex": "",
+				"peer_id":    strings.TrimSpace(rt.Host.ID().String()),
+				"addrs":      []string{},
+			}, err
+		}
+		pubHex = strings.ToLower(strings.TrimSpace(rawPubHex))
+	}
+	peerID := strings.TrimSpace(rt.Host.ID().String())
+	p2pTail := multiaddr.StringCast("/p2p/" + peerID)
+	addrs := make([]string, 0, len(rt.Host.Addrs()))
+	for _, addr := range rt.Host.Addrs() {
+		if addr == nil {
+			continue
+		}
+		// 控制面统一返回带 /p2p 的完整地址，测试可直接拿来拨号。
+		addrs = append(addrs, addr.Encapsulate(p2pTail).String())
+	}
+	sort.Strings(addrs)
+	return map[string]any{
+		"pubkey_hex": pubHex,
+		"peer_id":    peerID,
+		"addrs":      addrs,
+	}, nil
 }

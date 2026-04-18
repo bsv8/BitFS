@@ -12,6 +12,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
 )
 
 // StartupSummary 描述托管后端启动时需要对外暴露的路径摘要。
@@ -59,6 +60,14 @@ type DaemonOptions struct {
 	ControlStream        ManagedControlStream
 }
 
+// RootProfileConfig 是配置根目录下的系统级 key 选择配置。
+// 设计说明：
+// - 根 config.yaml 只保留 default_key；
+// - 业务配置仍然放在 [pubkey_hex]/config.yaml。
+type RootProfileConfig struct {
+	DefaultKey string `yaml:"default_key"`
+}
+
 func ReadPassword(prompt string) (string, error) {
 	if prompt == "" {
 		prompt = "password"
@@ -91,6 +100,70 @@ func NewDefaultConfig(network string) clientapp.Config {
 	cfg.Index.SQLitePath = filepath.ToSlash(filepath.Join("data", "client-index.sqlite"))
 	cfg.Log.File = filepath.ToSlash(filepath.Join("logs", "bitfs.log"))
 	return cfg
+}
+
+func ResolveRootConfigPath(configRoot string) string {
+	return filepath.Join(clientapp.ResolveConfigRoot(configRoot), "config.yaml")
+}
+
+func ResolveProfileConfigPath(configRoot string, pubKeyHex string) (string, error) {
+	pubHex, err := NormalizePubkeyHex(pubKeyHex)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(clientapp.ResolveConfigRoot(configRoot), pubHex, "config.yaml"), nil
+}
+
+func ResolveProfileKeyPath(configRoot string, pubKeyHex string) (string, error) {
+	pubHex, err := NormalizePubkeyHex(pubKeyHex)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(clientapp.ResolveConfigRoot(configRoot), pubHex, "key.json"), nil
+}
+
+func LoadRootProfileConfig(configRoot string) (RootProfileConfig, bool, error) {
+	path := ResolveRootConfigPath(configRoot)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return RootProfileConfig{}, false, nil
+		}
+		return RootProfileConfig{}, false, err
+	}
+	var cfg RootProfileConfig
+	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+		return RootProfileConfig{}, true, err
+	}
+	cfg.DefaultKey = strings.ToLower(strings.TrimSpace(cfg.DefaultKey))
+	return cfg, true, nil
+}
+
+func SaveRootProfileConfig(configRoot string, cfg RootProfileConfig) error {
+	cfg.DefaultKey = strings.ToLower(strings.TrimSpace(cfg.DefaultKey))
+	if _, err := NormalizePubkeyHex(cfg.DefaultKey); err != nil {
+		return err
+	}
+	path := ResolveRootConfigPath(configRoot)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o644)
+}
+
+func NormalizePubkeyHex(in string) (string, error) {
+	pubHex := strings.ToLower(strings.TrimSpace(in))
+	if len(pubHex) != 66 {
+		return "", fmt.Errorf("invalid pubkey hex")
+	}
+	if _, err := hex.DecodeString(pubHex); err != nil {
+		return "", fmt.Errorf("invalid pubkey hex")
+	}
+	return pubHex, nil
 }
 
 func LoadRuntimeConfigOrInit(configPath, initNetwork string) (clientapp.Config, bool, error) {
