@@ -10,6 +10,9 @@ import (
 // OneShotDownloadParams 描述“输入 seed hash 后一键直连下载”的触发参数。
 type OneShotDownloadParams struct {
 	SeedHash string `json:"seed_hash"`
+	// GatewayPeerID 对应业务统一网关 ID（gateway_pubkey_hex）。
+	// 规则：直连下载发布 demand 时必须显式带上，避免多网关场景误路由。
+	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
 
 	QuoteMaxRetry int           `json:"quote_max_retry,omitempty"`
 	QuoteInterval time.Duration `json:"quote_interval,omitempty"`
@@ -41,6 +44,7 @@ func TriggerOneShotDirectDownload(ctx context.Context, rt *Runtime, p OneShotDow
 		SeedHash:           seedHash,
 		DemandChunkCount:   1, // CLI 直连模式只需要触发需求，实际下载块数由策略层和 seed 元信息决定。
 		TransferChunkCount: 0,
+		GatewayPeerID:      strings.TrimSpace(p.GatewayPeerID),
 		QuoteMaxRetry:      p.QuoteMaxRetry,
 		QuoteInterval:      p.QuoteInterval,
 		ArbiterPubHex:      p.ArbiterPubHex,
