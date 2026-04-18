@@ -720,7 +720,7 @@ func TestHandleKeyUnlock_BackendNotReadyReturnsConflict(t *testing.T) {
 	}
 }
 
-func TestHandleManagedControlCommand_EnsureMaterialCreatesLockedKey(t *testing.T) {
+func TestHandleManagedControlCommand_CreateRandomCreatesLockedKey(t *testing.T) {
 	root := t.TempDir()
 	keyPath := filepath.Join(root, "key.json")
 	configPath := filepath.Join(root, "config.yaml")
@@ -755,8 +755,8 @@ func TestHandleManagedControlCommand_EnsureMaterialCreatesLockedKey(t *testing.T
 
 	d.handleManagedControlCommand(ManagedControlCommandFrame{
 		Type:      "command",
-		CommandID: "cmd-ensure-1",
-		Action:    "key.ensure_material",
+		CommandID: "cmd-create-random-1",
+		Action:    "key.create_random",
 		Payload: map[string]any{
 			"password": "pass",
 		},
@@ -765,16 +765,16 @@ func TestHandleManagedControlCommand_EnsureMaterialCreatesLockedKey(t *testing.T
 	if _, exists, err := LoadEncryptedKeyEnvelope(keyPath); err != nil {
 		t.Fatalf("load encrypted key envelope: %v", err)
 	} else if !exists {
-		t.Fatal("encrypted key should exist after ensure_material")
+		t.Fatal("encrypted key should exist after key.create_random")
 	}
 	if got, want := d.currentKeyState(), managedKeyStateLocked; got != want {
 		t.Fatalf("key state mismatch: got=%s want=%s", got, want)
 	}
-	result, ok := findControlCommandResult(stream.events, "cmd-ensure-1")
+	result, ok := findControlCommandResult(stream.events, "cmd-create-random-1")
 	if !ok {
 		t.Fatal("command result event not found")
 	}
-	if got, want := result["action"], "key.ensure_material"; got != want {
+	if got, want := result["action"], "key.create_random"; got != want {
 		t.Fatalf("command action=%q, want %q", got, want)
 	}
 	if got, want := strings.ToLower(strings.TrimSpace(result["ok"])), "true"; got != want {
@@ -782,6 +782,121 @@ func TestHandleManagedControlCommand_EnsureMaterialCreatesLockedKey(t *testing.T
 	}
 	if got, want := result["result"], "created"; got != want {
 		t.Fatalf("command result=%q, want %q", got, want)
+	}
+}
+
+func TestHandleManagedControlCommand_AssertExists(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+	env, err := EncryptPrivateKeyEnvelope(strings.Repeat("1", 64), "pass")
+	if err != nil {
+		t.Fatalf("encrypt private key envelope: %v", err)
+	}
+	if err := SaveEncryptedKeyEnvelope(keyPath, env); err != nil {
+		t.Fatalf("save encrypted key envelope: %v", err)
+	}
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-assert-exists-1",
+		Action:    "key.assert_exists",
+	})
+
+	result, ok := findControlCommandResult(stream.events, "cmd-assert-exists-1")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := result["action"], "key.assert_exists"; got != want {
+		t.Fatalf("command action=%q, want %q", got, want)
+	}
+	if got, want := strings.ToLower(strings.TrimSpace(result["ok"])), "true"; got != want {
+		t.Fatalf("command ok=%q, want %q", got, want)
+	}
+	if got, want := result["result"], "exists"; got != want {
+		t.Fatalf("command result=%q, want %q", got, want)
+	}
+}
+
+func TestHandleManagedControlCommand_AssertExistsFailsWhenMissing(t *testing.T) {
+	root := t.TempDir()
+	keyPath := filepath.Join(root, "key.json")
+	configPath := filepath.Join(root, "config.yaml")
+	indexDBPath := filepath.Join(root, "data", "client-index.sqlite")
+
+	cfg := clientapp.Config{}
+	cfg.BSV.Network = "test"
+	cfg.HTTP.ListenAddr = "127.0.0.1:0"
+	cfg.FSHTTP.ListenAddr = "127.0.0.1:0"
+	cfg.Index.SQLitePath = indexDBPath
+	if err := clientapp.ApplyConfigDefaults(&cfg); err != nil {
+		t.Fatalf("apply defaults: %v", err)
+	}
+
+	rootCtx, rootCancel := context.WithCancel(context.Background())
+	t.Cleanup(rootCancel)
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		cfg: cfg,
+		startup: StartupSummary{
+			VaultPath:   root,
+			ConfigPath:  configPath,
+			KeyPath:     keyPath,
+			IndexDBPath: indexDBPath,
+		},
+		rootCtx:       rootCtx,
+		rootCancel:    rootCancel,
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+	}
+
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-assert-exists-missing",
+		Action:    "key.assert_exists",
+	})
+
+	result, ok := findControlCommandResult(stream.events, "cmd-assert-exists-missing")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := result["action"], "key.assert_exists"; got != want {
+		t.Fatalf("command action=%q, want %q", got, want)
+	}
+	if got := strings.ToLower(strings.TrimSpace(result["ok"])); got == "true" {
+		t.Fatalf("command ok=%q, want false", got)
+	}
+	if got := strings.TrimSpace(result["error"]); !strings.Contains(got, "encrypted key not found") {
+		t.Fatalf("command error=%q, want contains %q", got, "encrypted key not found")
 	}
 }
 

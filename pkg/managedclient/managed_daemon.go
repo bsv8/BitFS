@@ -72,9 +72,10 @@ const (
 	unlockSourceCLI = "cli"
 	unlockSourceObs = "obs"
 
-	controlActionKeyEnsureMaterial = "key.ensure_material"
-	controlActionKeyUnlock         = "key.unlock"
-	controlActionKeyLock           = "key.lock"
+	controlActionKeyCreateRandom = "key.create_random"
+	controlActionKeyAssertExists = "key.assert_exists"
+	controlActionKeyUnlock       = "key.unlock"
+	controlActionKeyLock         = "key.lock"
 
 	controlActionPricingSetBase          = "pricing.set_base"
 	controlActionPricingResetSeed        = "pricing.reset_seed"
@@ -502,7 +503,7 @@ func (d *managedDaemon) handleKeyStatus(w http.ResponseWriter, r *http.Request) 
 	})
 }
 
-func (d *managedDaemon) ensureKeyMaterial(password string) (keyMaterialTicket, error) {
+func (d *managedDaemon) createRandomKeyMaterial(password string) (keyMaterialTicket, error) {
 	if err := d.ensureKeyWorkflowReady(); err != nil {
 		return keyMaterialTicket{}, err
 	}
@@ -512,7 +513,7 @@ func (d *managedDaemon) ensureKeyMaterial(password string) (keyMaterialTicket, e
 	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
 		return keyMaterialTicket{}, err
 	} else if exists {
-		return keyMaterialTicket{Result: "already_exists"}, nil
+		return keyMaterialTicket{}, fmt.Errorf("encrypted key already exists")
 	}
 	privHex, err := GeneratePrivateKeyHex()
 	if err != nil {
@@ -531,6 +532,18 @@ func (d *managedDaemon) ensureKeyMaterial(password string) (keyMaterialTicket, e
 		Result: "created",
 		PubHex: pubHex,
 	}, nil
+}
+
+func (d *managedDaemon) assertKeyMaterialExists() error {
+	if err := d.ensureKeyWorkflowReady(); err != nil {
+		return err
+	}
+	if _, exists, err := LoadEncryptedKeyEnvelope(d.startup.KeyPath); err != nil {
+		return err
+	} else if !exists {
+		return fmt.Errorf("encrypted key not found")
+	}
+	return nil
 }
 
 func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password string) (unlockTicket, error) {
@@ -623,8 +636,10 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		err error
 	)
 	switch {
-	case lockID == "bitfs.managed.key.ensure_material":
-		out, err = managedObsControlHandleKeyEnsureMaterial(d, req)
+	case lockID == "bitfs.managed.key.create_random":
+		out, err = managedObsControlHandleKeyCreateRandom(d, req)
+	case lockID == "bitfs.managed.key.assert_exists":
+		out, err = managedObsControlHandleKeyAssertExists(d, req)
 	case lockID == "bitfs.managed.key.unlock_with_password":
 		out, err = managedObsControlHandleKeyUnlock(d, req)
 	case lockID == "bitfs.managed.key.lock_runtime":
@@ -661,7 +676,7 @@ func isManagedObsControlActionRouted(action string) bool {
 	return isManagedObsControlLockRouted(lockID)
 }
 
-func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
+func managedObsControlHandleKeyCreateRandom(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
 	result := controlCommandResult{
 		CommandID: req.CommandID,
 		Action:    req.Action,
@@ -675,7 +690,7 @@ func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlComma
 		result.KeyState = d.currentKeyState()
 		return result, nil
 	}
-	ticket, err := d.ensureKeyMaterial(password)
+	ticket, err := d.createRandomKeyMaterial(password)
 	if err != nil {
 		result.Result = "failed"
 		result.Error = err.Error()
@@ -686,6 +701,27 @@ func managedObsControlHandleKeyEnsureMaterial(d *managedDaemon, req controlComma
 	}
 	result.OK = true
 	result.Result = ticket.Result
+	result.BackendPhase = d.currentBackendPhase()
+	result.RuntimePhase = d.currentRuntimePhase()
+	result.KeyState = d.currentKeyState()
+	return result, nil
+}
+
+func managedObsControlHandleKeyAssertExists(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
+	result := controlCommandResult{
+		CommandID: req.CommandID,
+		Action:    req.Action,
+	}
+	if err := d.assertKeyMaterialExists(); err != nil {
+		result.Result = "failed"
+		result.Error = err.Error()
+		result.BackendPhase = d.currentBackendPhase()
+		result.RuntimePhase = d.currentRuntimePhase()
+		result.KeyState = d.currentKeyState()
+		return result, nil
+	}
+	result.OK = true
+	result.Result = "exists"
 	result.BackendPhase = d.currentBackendPhase()
 	result.RuntimePhase = d.currentRuntimePhase()
 	result.KeyState = d.currentKeyState()
@@ -749,7 +785,9 @@ func managedObsControlHandleKeyLock(d *managedDaemon, req controlCommandRequest)
 func isManagedObsControlLockRouted(lockID string) bool {
 	lockID = strings.TrimSpace(lockID)
 	switch {
-	case lockID == "bitfs.managed.key.ensure_material":
+	case lockID == "bitfs.managed.key.create_random":
+		return true
+	case lockID == "bitfs.managed.key.assert_exists":
 		return true
 	case lockID == "bitfs.managed.key.unlock_with_password":
 		return true
@@ -1105,13 +1143,9 @@ func (d *managedDaemon) handleKeyNew(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "password is required"})
 		return
 	}
-	ticket, err := d.ensureKeyMaterial(req.Password)
+	ticket, err := d.createRandomKeyMaterial(req.Password)
 	if err != nil {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error()})
-		return
-	}
-	if ticket.Result == "already_exists" {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "encrypted key already exists"})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "pubkey_hex": ticket.PubHex})
