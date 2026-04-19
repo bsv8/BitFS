@@ -20,6 +20,8 @@ import (
 	oldproto "github.com/golang/protobuf/proto"
 )
 
+const defaultNodeResolveRoute = "index"
+
 func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	t.Parallel()
 

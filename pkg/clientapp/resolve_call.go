@@ -15,10 +15,6 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-const (
-	defaultNodeResolveRoute = "index"
-)
-
 type TriggerPeerCallParams struct {
 	To                   string
 	Route                string
