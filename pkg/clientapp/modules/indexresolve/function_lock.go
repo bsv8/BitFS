@@ -1,8 +1,6 @@
-//go:build with_indexresolve
-
 package indexresolve
 
-import "github.com/bsv8/BitFS/pkg/clientapp/modulelock"
+import "github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 
 // FunctionLocks 返回 indexresolve 模块本地的 obs 动作白名单。
 //
@@ -10,8 +8,8 @@ import "github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 // - 这里只保留模块本地动作锁，不落到 contract；
 // - 4 个动作共享同一套业务入口，只是在 obs 层分成 4 个动作名；
 // - ModuleIdentity 复用 spec.go 里的模块身份，保持口径统一。
-func FunctionLocks() []modulelock.LockedFunction {
-	return []modulelock.LockedFunction{
+func FunctionLocks() []moduleapi.LockedFunction {
+	return []moduleapi.LockedFunction{
 		{
 			ID:               "bitfs.indexresolve.obs_resolve",
 			Module:           ModuleIdentity,

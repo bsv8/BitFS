@@ -5,23 +5,24 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"go/ast"
 	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 )
 
 type moduleConfig struct {
 	name     string
 	dir      string
-	provider modulelock.Provider
+	provider func() []moduleapi.LockedFunction
 }
 
 var moduleConfigs map[string]moduleConfig
@@ -125,7 +126,22 @@ func sortedModuleNames(selected map[string]struct{}) []string {
 func registerModuleProviders(reg *modulelock.Registry, selected map[string]struct{}) error {
 	for _, name := range sortedModuleNames(selected) {
 		cfg := moduleConfigs[name]
-		if _, err := reg.Register(cfg.name, cfg.provider); err != nil {
+		if _, err := reg.Register(cfg.name, func() []modulelock.LockedFunction {
+			items := cfg.provider()
+			out := make([]modulelock.LockedFunction, 0, len(items))
+			for _, item := range items {
+				out = append(out, modulelock.LockedFunction{
+					ID:               item.ID,
+					Module:           item.Module,
+					Package:          item.Package,
+					Symbol:           item.Symbol,
+					Signature:        item.Signature,
+					ObsControlAction: item.ObsControlAction,
+					Note:             item.Note,
+				})
+			}
+			return out
+		}); err != nil {
 			return err
 		}
 	}
