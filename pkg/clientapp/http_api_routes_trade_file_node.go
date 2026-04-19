@@ -31,7 +31,6 @@ func (s *httpAPIServer) registerHTTPRouteFile(mux *http.ServeMux, prefix string)
 
 func (s *httpAPIServer) registerHTTPRouteNode(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/v1/call", s.withAuth(s.handleCall))
-	mux.HandleFunc(prefix+"/v1/resolve", s.withAuth(s.handleResolve))
 	mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
 	mux.HandleFunc(prefix+"/v1/domains/register", s.withAuth(s.handleDomainRegister))
 	mux.HandleFunc(prefix+"/v1/domains/set-target", s.withAuth(s.handleDomainSetTarget))

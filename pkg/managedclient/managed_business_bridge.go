@@ -366,32 +366,6 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		}
 		return businessActionSuccess(req, "returned", payload, d), nil
 
-	case controlActionPeerResolve:
-		// 这里只做查询型 peer.resolve，配置改动统一留在 HTTP settings。
-		to := strings.TrimSpace(controlCommandPayloadString(req.Payload, "to"))
-		route := strings.TrimSpace(controlCommandPayloadString(req.Payload, "route"))
-		if to == "" {
-			return businessActionFailure(req, d, "to is required", nil), nil
-		}
-		result, err := clientapp.TriggerPeerResolve(ctx, rt, clientapp.TriggerPeerResolveParams{
-			To:    to,
-			Route: route,
-			Store: store,
-		})
-		payload := map[string]any{
-			"peer_resolve_response": map[string]any{
-				"ok":           result.Ok,
-				"code":         strings.TrimSpace(result.Code),
-				"message":      strings.TrimSpace(result.Message),
-				"content_type": strings.TrimSpace(result.ContentType),
-				"body_base64":  base64.StdEncoding.EncodeToString(result.Body),
-			},
-		}
-		if err != nil {
-			return businessActionFailure(req, d, err.Error(), payload), nil
-		}
-		return businessActionSuccess(req, "returned", payload, d), nil
-
 	case controlActionPeerSelf:
 		return d.executeManagedPeerSelfControlCommand(req)
 

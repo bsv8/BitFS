@@ -27,12 +27,6 @@ type TriggerPeerCallParams struct {
 	RequireActiveFeePool bool
 }
 
-type TriggerPeerResolveParams struct {
-	To    string
-	Route string
-	Store *clientDB
-}
-
 type peerCallPaymentDecision struct {
 	Scheme string
 	Option *ncall.PaymentOption
@@ -159,26 +153,6 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		return ncall.CallResp{}, payErr
 	}
 	return paidOut, nil
-}
-
-func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolveParams) (ncall.ResolveResp, error) {
-	var out ncall.ResolveResp
-	if rt == nil || rt.Host == nil {
-		return out, fmt.Errorf("runtime not initialized")
-	}
-	to, peerID, err := resolveClientTarget(strings.TrimSpace(p.To))
-	if err != nil {
-		return out, err
-	}
-	if err := ensureTargetPeerReachable(ctx, p.Store, rt, to, peerID); err != nil {
-		return out, err
-	}
-	// 这里只发 resolve 查询，目标端如果要改 settings，必须走独立 HTTP 管理面。
-	err = pproto.CallProto(ctx, rt.Host, peerID, contractprotoid.ProtoNodeResolve, nodeSecForRuntime(rt), contractmessage.ResolveReq{
-		To:    to,
-		Route: strings.TrimSpace(p.Route),
-	}, &out)
-	return out, err
 }
 
 func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error) {

@@ -112,7 +112,6 @@ const (
 	controlActionDomainSetTarget = "domain.set_target"
 
 	controlActionPeerCall    = "peer.call"
-	controlActionPeerResolve = "peer.resolve"
 	controlActionPeerSelf    = "peer.self"
 	controlActionPeerConnect = "peer.connect"
 
@@ -962,7 +961,6 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		controlActionDomainRegister,
 		controlActionDomainSetTarget,
 		controlActionPeerCall,
-		controlActionPeerResolve,
 		controlActionPeerSelf,
 		controlActionPeerConnect:
 		out, err = d.executeManagedBusinessControlCommand(req)

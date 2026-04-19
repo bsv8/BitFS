@@ -86,24 +86,6 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected resolver response: %+v", resolveResp)
 	}
 
-	resolveRespFromTarget, err := TriggerPeerResolve(context.Background(), callerRT, TriggerPeerResolveParams{
-		To:    resolveResp.TargetPubkeyHex,
-		Route: "album",
-		Store: callerStore,
-	})
-	if err != nil {
-		t.Fatalf("trigger client resolve failed: %v", err)
-	}
-	if !resolveRespFromTarget.Ok {
-		t.Fatalf("resolve response not ok: %+v", resolveRespFromTarget)
-	}
-	var manifest routeIndexManifest
-	if err := oldproto.Unmarshal(resolveRespFromTarget.Body, &manifest); err != nil {
-		t.Fatalf("decode manifest: %v", err)
-	}
-	if manifest.SeedHash != strings.Repeat("ef", 32) {
-		t.Fatalf("unexpected manifest seed hash: %s", manifest.SeedHash)
-	}
 }
 
 func TestHTTPAPIResolverResolve(t *testing.T) {

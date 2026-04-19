@@ -387,18 +387,13 @@ function extractUnknownErrorDetail(reason: unknown): string {
 }
 
 async function fetchSeedHashFromNodeRoute(targetPubkeyHex: string, route: string, visit?: LocatorVisitContext): Promise<string> {
-  const body = await postJSON("/api/v1/resolve", {
-    to: targetPubkeyHex,
-    route
-  }, visit);
-  if (!body.ok) {
-    throw new Error(String(body.message || body.error || "node locator resolve failed"));
-  }
-  const seedHash = decodeRouteIndexSeedHash(String(body.body_base64 || "").trim());
-  if (!/^[0-9a-f]{64}$/i.test(seedHash)) {
-    throw new Error("node locator resolve returned invalid seed hash");
-  }
-  return seedHash;
+  void targetPubkeyHex;
+  void route;
+  void visit;
+  // 设计说明：
+  // - 旧版 /api/v1/resolve 已下线，壳层不再直接走 node resolve；
+  // - 后续由新的模块化能力提供可替代链路后再接回。
+  throw new Error("node route resolve is removed");
 }
 
 async function resolveLocatorName(resolverPubkeyHex: string, name: string, visit?: LocatorVisitContext): Promise<string> {

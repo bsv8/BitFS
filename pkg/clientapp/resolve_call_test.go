@@ -102,39 +102,6 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected inbox row: sender=%s target=%s", gotSenderPubKeyHex, gotTargetInput)
 	}
 
-	var routeCountBefore int
-	if err := receiverDB.QueryRow(`SELECT COUNT(*) FROM proc_index_resolve_routes`).Scan(&routeCountBefore); err != nil {
-		t.Fatalf("count route mappings before resolve: %v", err)
-	}
-
-	resolveOut, err := TriggerPeerResolve(context.Background(), senderRT, TriggerPeerResolveParams{
-		To:    receiverPubKeyHex,
-		Store: senderStore,
-	})
-	if err != nil {
-		t.Fatalf("resolve failed: %v", err)
-	}
-	if !resolveOut.Ok || resolveOut.Code != "OK" {
-		t.Fatalf("unexpected resolve response: %+v", resolveOut)
-	}
-	var manifest routeIndexManifest
-	if err := oldproto.Unmarshal(resolveOut.Body, &manifest); err != nil {
-		t.Fatalf("decode manifest: %v", err)
-	}
-	if manifest.SeedHash != strings.Repeat("ab", 32) {
-		t.Fatalf("unexpected seed hash: %s", manifest.SeedHash)
-	}
-	if manifest.Route != defaultNodeResolveRoute {
-		t.Fatalf("unexpected route: %s", manifest.Route)
-	}
-	var routeCountAfter int
-	if err := receiverDB.QueryRow(`SELECT COUNT(*) FROM proc_index_resolve_routes`).Scan(&routeCountAfter); err != nil {
-		t.Fatalf("count route mappings after resolve: %v", err)
-	}
-	if routeCountAfter != routeCountBefore {
-		t.Fatalf("resolve should not change route mappings: before=%d after=%d", routeCountBefore, routeCountAfter)
-	}
-
 	capOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
 		Route:       string(contractroute.RouteNodeV1CapabilitiesShow),
@@ -331,32 +298,6 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/resolve", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"index.mp3"}`))
-		rec := httptest.NewRecorder()
-		senderSrv.handleResolve(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("resolve api status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
-		}
-		var body struct {
-			BodyBase64 string `json:"body_base64"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode resolve api response: %v", err)
-		}
-		raw, err := decodeOptionalBase64(body.BodyBase64, "body_base64")
-		if err != nil {
-			t.Fatalf("decode resolve body base64: %v", err)
-		}
-		var manifest routeIndexManifest
-		if err := oldproto.Unmarshal(raw, &manifest); err != nil {
-			t.Fatalf("decode resolve proto body: %v", err)
-		}
-		if manifest.SeedHash != strings.Repeat("cd", 32) {
-			t.Fatalf("expected seed hash in resolve body: %+v", manifest)
-		}
-	}
-
-	{
 		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/index-resolve", strings.NewReader(`{"route":"","seed_hash":"`+strings.Repeat("cd", 32)+`"}`))
 		rec := httptest.NewRecorder()
 		receiverHandler.ServeHTTP(rec, req)
@@ -365,31 +306,6 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 		}
 	}
 
-	for _, route := range []string{"", "/", "/index", "index"} {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/resolve", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"`+route+`"}`))
-		rec := httptest.NewRecorder()
-		senderSrv.handleResolve(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("default route resolve status mismatch route=%q got=%d body=%s", route, rec.Code, rec.Body.String())
-		}
-		var body struct {
-			BodyBase64 string `json:"body_base64"`
-		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
-			t.Fatalf("decode default route resolve: %v", err)
-		}
-		raw, err := decodeOptionalBase64(body.BodyBase64, "body_base64")
-		if err != nil {
-			t.Fatalf("decode default route body: %v", err)
-		}
-		var manifest routeIndexManifest
-		if err := oldproto.Unmarshal(raw, &manifest); err != nil {
-			t.Fatalf("decode default route proto body: %v", err)
-		}
-		if manifest.SeedHash != strings.Repeat("cd", 32) {
-			t.Fatalf("expected default route seed hash: %+v", manifest)
-		}
-	}
 }
 
 func TestDecorateQuotedPaymentOptionUsesRealQuoteStatus(t *testing.T) {

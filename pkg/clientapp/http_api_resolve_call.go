@@ -63,31 +63,6 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, routeCallHTTPResponse(resp.Ok, resp.Code, resp.Message, resp.ContentType, resp.Body, routeCallPaymentHTTPExtras(resp)))
 }
 
-func (s *httpAPIServer) handleResolve(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.rt == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
-		return
-	}
-	var req struct {
-		To    string `json:"to"`
-		Route string `json:"route"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-		return
-	}
-	resp, err := TriggerPeerResolve(r.Context(), s.rt, TriggerPeerResolveParams{To: req.To, Route: req.Route, Store: s.store})
-	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, routeCallHTTPResponse(resp.Ok, resp.Code, resp.Message, resp.ContentType, resp.Body))
-}
-
 func decodeRouteCallBody(raw json.RawMessage, bodyBase64 string) ([]byte, error) {
 	if strings.TrimSpace(bodyBase64) != "" {
 		if len(strings.TrimSpace(string(raw))) != 0 && strings.TrimSpace(string(raw)) != "null" {
