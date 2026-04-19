@@ -328,7 +328,7 @@ func (p *runStartupPhases) StartServices() error {
 	rt.taskSched.ctx = st.rtCtx
 	rt.kernel = newClientKernel(rt, st.store, st.workspaceMgr)
 	rt.orch = newOrchestrator(rt, st.store)
-	if closeModule, err := registerIndexResolveModule(st.rtCtx, rt, st.store); err != nil {
+	if closeModule, err := registerOptionalModules(st.rtCtx, rt, st.store); err != nil {
 		return err
 	} else if closeModule != nil {
 		st.closeModules = append(st.closeModules, closeModule)

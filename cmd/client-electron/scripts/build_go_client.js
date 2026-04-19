@@ -32,6 +32,14 @@ function resolveGoBinary() {
   };
 }
 
+function normalizeGoTags(raw) {
+  return String(raw || "")
+    .split(/[,\s]+/)
+    .map((tag) => tag.trim())
+    .filter(Boolean)
+    .join(",");
+}
+
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
@@ -42,7 +50,12 @@ function main() {
   ensureDir(outputDir);
 
   const go = resolveGoBinary();
-  const args = ["build", "-o", outputPath, backendEntry];
+  const args = ["build"];
+  const tags = normalizeGoTags(process.env.BITFS_GO_TAGS);
+  if (tags) {
+    args.push("-tags", tags);
+  }
+  args.push("-o", outputPath, backendEntry);
   const child = spawnSync(go.command, args, {
     cwd: bitfsRoot,
     env: go.env,

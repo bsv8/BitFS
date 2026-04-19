@@ -1,8 +1,10 @@
+//go:build with_indexresolve
+
 package clientapp
 
 import "testing"
 
-func TestRegisterIndexResolveModuleRejectsDuplicateRegistration(t *testing.T) {
+func TestRegisterOptionalModulesRejectsDuplicateRegistration(t *testing.T) {
 	t.Parallel()
 
 	db := openResolveCallTestDB(t)
@@ -10,7 +12,7 @@ func TestRegisterIndexResolveModuleRejectsDuplicateRegistration(t *testing.T) {
 	store := newClientDB(db, nil)
 	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
 
-	firstClose, err := registerIndexResolveModule(t.Context(), rt, store)
+	firstClose, err := registerOptionalModules(t.Context(), rt, store)
 	if err != nil {
 		t.Fatalf("first register failed: %v", err)
 	}
@@ -18,7 +20,7 @@ func TestRegisterIndexResolveModuleRejectsDuplicateRegistration(t *testing.T) {
 		t.Fatalf("expected cleanup handle")
 	}
 
-	if _, err := registerIndexResolveModule(t.Context(), rt, store); err == nil {
+	if _, err := registerOptionalModules(t.Context(), rt, store); err == nil {
 		t.Fatalf("expected duplicate register error")
 	}
 

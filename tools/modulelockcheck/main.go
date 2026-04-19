@@ -11,7 +11,7 @@ import (
 	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
-	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
+	"github.com/bsv8/BitFS/pkg/clientapp/modulelocks"
 )
 
 type moduleConfig struct {
@@ -21,10 +21,10 @@ type moduleConfig struct {
 }
 
 var moduleConfigs = map[string]moduleConfig{
-	indexresolve.ModuleIdentity: {
-		name:     indexresolve.ModuleIdentity,
+	modulelocks.ModuleIdentity: {
+		name:     modulelocks.ModuleIdentity,
 		dir:      "BitFS",
-		provider: indexresolve.FunctionLocks,
+		provider: modulelocks.FunctionLocks,
 	},
 }
 
@@ -38,7 +38,7 @@ func main() {
 	)
 	flag.StringVar(&workspaceRootFlag, "workspace-root", "", "workspace root path (contains go.work)")
 	flag.StringVar(&goBin, "go-bin", "/home/david/.gvm/gos/go1.26.0/bin/go", "go binary path")
-	flag.StringVar(&modulesFlag, "modules", "indexresolve", "comma-separated modules to check")
+	flag.StringVar(&modulesFlag, "modules", "", "comma-separated modules to check")
 	flag.Parse()
 
 	workspaceRoot, err := resolveWorkspaceRoot(workspaceRootFlag)
@@ -96,6 +96,9 @@ func resolveWorkspaceRoot(input string) (string, error) {
 
 func parseModules(raw string) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
+	if strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
 	for _, item := range strings.Split(raw, ",") {
 		name := strings.TrimSpace(strings.ToLower(item))
 		if name == "" {
@@ -107,7 +110,7 @@ func parseModules(raw string) (map[string]struct{}, error) {
 		out[name] = struct{}{}
 	}
 	if len(out) == 0 {
-		return nil, errors.New("no module selected")
+		return out, nil
 	}
 	return out, nil
 }

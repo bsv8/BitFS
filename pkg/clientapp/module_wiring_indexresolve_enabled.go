@@ -1,4 +1,4 @@
-//go:build !indexresolve_disabled
+//go:build with_indexresolve
 
 package clientapp
 
@@ -9,6 +9,7 @@ import (
 	"net/http"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	"github.com/bsv8/BitFS/pkg/clientapp/modulelocks"
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
@@ -44,18 +45,20 @@ func (a indexResolveStoreAdapter) Do(ctx context.Context, fn func(indexresolve.C
 	})
 }
 
-// registerIndexResolveModule 只负责把模块接到主框架钩子上。
+// registerOptionalModules 只负责把可选模块接到主框架钩子上。
+//
 // 设计说明：
-// - 模块包只允许在这里被引用；
-// - 这里先建模块自己的 store/schema，再把能力和路由挂进注册表；
-// - 返回的 cleanup 会同时解绑钩子并把模块服务打失效，避免关闭后继续可用。
-func registerIndexResolveModule(ctx context.Context, rt *Runtime, store indexResolveBootstrapStore) (func(), error) {
+// - 这里是唯一允许引用 indexresolve 模块实现包的地方；
+// - 模块自己的 store、能力、settings 路由、白名单都在这里接线；
+// - cleanup 必须同时解绑钩子和关闭模块服务，避免关闭后还能继续读写。
+func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolveBootstrapStore) (func(), error) {
 	if rt == nil || store == nil {
 		return func() {}, nil
 	}
 	if ctx == nil {
 		return func() {}, fmt.Errorf("ctx is required")
 	}
+
 	serial, _ := store.(indexResolveSerialDoer)
 	adapter := indexResolveStoreAdapter{store: store}
 	var serialExec indexresolve.SerialExecutor
@@ -63,6 +66,7 @@ func registerIndexResolveModule(ctx context.Context, rt *Runtime, store indexRes
 		adapter.serial = serial
 		serialExec = adapter
 	}
+
 	moduleStore, err := indexresolve.BootstrapStore(ctx, adapter, serialExec)
 	if err != nil {
 		return nil, err
@@ -70,19 +74,22 @@ func registerIndexResolveModule(ctx context.Context, rt *Runtime, store indexRes
 	svc := indexresolve.NewService(moduleStore, rt)
 	reg := ensureModuleRegistry(rt)
 	if reg == nil {
+		svc.Close()
 		return func() {}, nil
 	}
-	moduleCleanup, err := reg.registerModuleLockProvider(indexresolve.ModuleIdentity, indexresolve.FunctionLocks)
+
+	moduleCleanup, err := reg.registerModuleLockProvider(modulelocks.ModuleIdentity, modulelocks.FunctionLocks)
 	if err != nil {
 		svc.Close()
 		return nil, err
 	}
+
 	cleanup, err := reg.registerIndexResolve(
 		func() *contractmessage.CapabilityItem {
 			return svc.Capability()
 		},
 		func(ctx context.Context, route string) (routeIndexManifest, error) {
-			// 这里只做查询映射，不给任何 settings 写入口留旁路。
+			// 这里只做查询映射，不给 settings 写入口留旁路。
 			manifest, err := svc.Resolve(ctx, route)
 			if err != nil {
 				return routeIndexManifest{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))

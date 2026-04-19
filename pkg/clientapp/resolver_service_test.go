@@ -1,3 +1,5 @@
+//go:build with_indexresolve
+
 package clientapp
 
 import (
@@ -35,7 +37,7 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	targetRT := &Runtime{Host: targetHost, ctx: t.Context(), modules: newModuleRegistry()}
 	callerStore := newClientDB(callerDB, nil)
 	targetStore := newClientDB(targetDB, nil)
-	closeModule, err := registerIndexResolveModule(t.Context(), targetRT, targetStore)
+	closeModule, err := registerOptionalModules(t.Context(), targetRT, targetStore)
 	if err != nil {
 		t.Fatalf("register module failed: %v", err)
 	}

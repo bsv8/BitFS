@@ -1,12 +1,12 @@
+//go:build with_indexresolve
+
 package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -36,7 +36,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	receiverRT := &Runtime{Host: receiverHost, ctx: t.Context(), modules: newModuleRegistry()}
 	senderStore := newClientDB(senderDB, nil)
 	receiverStore := newClientDB(receiverDB, nil)
-	closeModule, err := registerIndexResolveModule(t.Context(), receiverRT, receiverStore)
+	closeModule, err := registerOptionalModules(t.Context(), receiverRT, receiverStore)
 	if err != nil {
 		t.Fatalf("register module failed: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	receiverRT := &Runtime{Host: receiverHost, ctx: t.Context(), modules: newModuleRegistry()}
 	senderStore := newClientDB(senderDB, nil)
 	receiverStore := newClientDB(receiverDB, nil)
-	closeModule, err := registerIndexResolveModule(t.Context(), receiverRT, receiverStore)
+	closeModule, err := registerOptionalModules(t.Context(), receiverRT, receiverStore)
 	if err != nil {
 		t.Fatalf("register module failed: %v", err)
 	}
@@ -357,20 +357,4 @@ func TestDecorateQuotedPaymentOptionUsesRealQuoteStatus(t *testing.T) {
 	if got.ServiceQuantity != 1 || got.ServiceQuantityUnit != "call" {
 		t.Fatalf("service quantity mismatch: %+v", got)
 	}
-}
-
-func openResolveCallTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	if err := applySQLitePragmas(db); err != nil {
-		t.Fatalf("apply pragmas: %v", err)
-	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
-		t.Fatalf("schema init failed: %v", err)
-	}
-	return db
 }
