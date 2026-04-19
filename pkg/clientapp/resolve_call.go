@@ -2,7 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"strings"
 
@@ -61,7 +60,7 @@ type routeIndexManifest struct {
 // registerNodeRouteHandlers 把节点级 route-call / route-resolve 能力挂到统一 node 协议上。
 // 设计说明：
 // - bitfs.peer.call 未来会承接多支付协议，因此这里先统一“所有节点共用一个外壳”；
-// - client 自己目前只暴露 inbox.message、capabilities_show 与 route index resolve；
+// - client 自己目前只暴露 inbox.message、capabilities_show 与模块化的 index resolve；
 // - 业务层 route 继续由各自服务挂载，壳不需要知道 domain/gateway 的细节。
 func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 	if rt == nil || rt.Host == nil || store == nil {
@@ -86,12 +85,19 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
 		}
 	}, func(ctx context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
-		route := normalizeResolveRoute(req.Route)
-		body, err := buildRouteIndexManifest(ctx, store, route)
+		if rt == nil || rt.modules == nil {
+			return ncall.ResolveResp{Ok: false, Code: "MODULE_DISABLED", Message: "index_resolve module is disabled"}, nil
+		}
+		// 只读边界：这里仅允许读模块里的 route 映射，不允许挂载任何 settings 写动作。
+		manifest, err := rt.modules.resolveIndex(ctx, req.Route)
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return ncall.ResolveResp{Ok: false, Code: "NOT_FOUND", Message: "route not found"}, nil
+			if code := moduleHookCode(err); code != "" {
+				return ncall.ResolveResp{Ok: false, Code: code, Message: moduleHookMessage(err)}, nil
 			}
+			return ncall.ResolveResp{}, err
+		}
+		body, err := oldproto.Marshal(&manifest)
+		if err != nil {
 			return ncall.ResolveResp{}, err
 		}
 		return ncall.ResolveResp{
@@ -158,9 +164,10 @@ func TriggerPeerResolve(ctx context.Context, rt *Runtime, p TriggerPeerResolvePa
 	if err := ensureTargetPeerReachable(ctx, p.Store, rt, to, peerID); err != nil {
 		return out, err
 	}
+	// 这里只发 resolve 查询，目标端如果要改 settings，必须走独立 HTTP 管理面。
 	err = pproto.CallProto(ctx, rt.Host, peerID, contractprotoid.ProtoNodeResolve, nodeSecForRuntime(rt), contractmessage.ResolveReq{
 		To:    to,
-		Route: normalizeResolveRoute(p.Route),
+		Route: strings.TrimSpace(p.Route),
 	}, &out)
 	return out, err
 }
@@ -171,28 +178,6 @@ func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.C
 		return ncall.CallResp{}, err
 	}
 	return out, nil
-}
-
-func clientCapabilitiesShowBody(rt *Runtime) contractmessage.CapabilitiesShowBody {
-	nodePubkeyHex := ""
-	if rt != nil {
-		if identity := rt.mustIdentity(); identity != nil {
-			nodePubkeyHex = strings.TrimSpace(identity.ClientIDLower)
-		}
-	}
-	return contractmessage.CapabilitiesShowBody{
-		NodePubkeyHex: nodePubkeyHex,
-		Capabilities: []*contractmessage.CapabilityItem{
-			{
-				ID:      "wallet",
-				Version: 1,
-			},
-			{
-				ID:      "bitfs",
-				Version: 1,
-			},
-		},
-	}
 }
 
 func marshalNodeCallProto(msg oldproto.Message) (ncall.CallResp, error) {
@@ -261,14 +246,6 @@ func normalizeCallRoute(raw string) (string, string) {
 		return "", "route is required"
 	}
 	return route, ""
-}
-
-func normalizeResolveRoute(raw string) string {
-	route := strings.TrimSpace(raw)
-	if route == "" {
-		return defaultNodeResolveRoute
-	}
-	return route
 }
 
 func normalizeContentType(raw string) (string, string) {

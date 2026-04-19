@@ -288,6 +288,7 @@ type Runtime struct {
 	// DB              *sql.DB
 	// DBActor         *sqliteactor.Actor
 	store           *clientDB
+	modules         *moduleRegistry
 	identity        *clientIdentityCaps
 	config          *runtimeConfigService
 	StartedAtUnix   int64
@@ -363,6 +364,7 @@ func NewPricingTestRuntime(ctx context.Context, db *sql.DB, cfg Config) (*Runtim
 	rt := &Runtime{
 		ctx:    ctx,
 		store:  store,
+		modules: newModuleRegistry(),
 		config: cfgSvc,
 	}
 	rt.Catalog = newSellerCatalog()

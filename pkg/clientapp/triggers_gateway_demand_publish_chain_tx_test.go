@@ -142,7 +142,7 @@ func TestTriggerGatewayDemandPublishChainTxQuotePay_Success(t *testing.T) {
 		t.Fatalf("payment attempt id mismatch: row=%s cycle=%d", paymentAttemptRef, paymentAttemptID)
 	}
 
-	row, found, err := gatewayStore.LoadServiceQuotePayment(res.ServiceQuoteHash)
+	row, found, err := gatewayStore.LoadServiceQuotePayment(context.Background(), res.ServiceQuoteHash)
 	if err != nil {
 		t.Fatalf("load gateway service quote payment failed: %v", err)
 	}
@@ -351,8 +351,8 @@ func openGatewayStoreTestDB(t *testing.T) *sql.DB {
 }
 
 type gatewayQuotePaymentStore interface {
-	InsertServiceQuotePayment(poolcore.ServiceQuotePaymentRow) error
-	LoadServiceQuotePayment(string) (poolcore.ServiceQuotePaymentRow, bool, error)
+	InsertServiceQuotePayment(context.Context, poolcore.ServiceQuotePaymentRow) error
+	LoadServiceQuotePayment(context.Context, string) (poolcore.ServiceQuotePaymentRow, bool, error)
 }
 
 func poolcoreGatewayStoreForTest(db *sql.DB) gatewayQuotePaymentStore {
@@ -473,7 +473,7 @@ func registerGatewayDemandPublishMock(t *testing.T, h host.Host, store gatewayQu
 			if err != nil {
 				return ncall.CallResp{}, err
 			}
-			if err := store.InsertServiceQuotePayment(poolcore.ServiceQuotePaymentRow{
+			if err := store.InsertServiceQuotePayment(ctx, poolcore.ServiceQuotePaymentRow{
 				QuoteHash:       quoteHash,
 				OfferHash:       quote.OfferHash,
 				PaymentScheme:   ncall.PaymentSchemeChainTxV1,

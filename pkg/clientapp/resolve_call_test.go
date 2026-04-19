@@ -33,10 +33,22 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	defer receiverHost.Close()
 
 	senderRT := &Runtime{Host: senderHost}
-	receiverRT := &Runtime{Host: receiverHost}
+	receiverRT := &Runtime{Host: receiverHost, ctx: t.Context(), modules: newModuleRegistry()}
 	senderStore := newClientDB(senderDB, nil)
 	receiverStore := newClientDB(receiverDB, nil)
+	closeModule, err := registerIndexResolveModule(t.Context(), receiverRT, receiverStore)
+	if err != nil {
+		t.Fatalf("register module failed: %v", err)
+	}
+	if closeModule != nil {
+		t.Cleanup(closeModule)
+	}
 	registerNodeRouteHandlers(receiverRT, receiverStore)
+	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB, store: receiverStore}
+	receiverHandler, err := receiverSrv.Handler()
+	if err != nil {
+		t.Fatalf("build handler failed: %v", err)
+	}
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
@@ -51,8 +63,13 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := upsertPublishedRouteIndex(context.Background(), receiverStore, defaultNodeResolveRoute, strings.Repeat("ab", 32)); err != nil {
-		t.Fatalf("upsert route index: %v", err)
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/index-resolve", strings.NewReader(`{"route":"`+defaultNodeResolveRoute+`","seed_hash":"`+strings.Repeat("ab", 32)+`"}`))
+		rec := httptest.NewRecorder()
+		receiverHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upsert route index status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+		}
 	}
 
 	callOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
@@ -82,6 +99,11 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 		t.Fatalf("unexpected inbox row: sender=%s target=%s", gotSenderPubKeyHex, gotTargetInput)
 	}
 
+	var routeCountBefore int
+	if err := receiverDB.QueryRow(`SELECT COUNT(*) FROM proc_index_resolve_routes`).Scan(&routeCountBefore); err != nil {
+		t.Fatalf("count route mappings before resolve: %v", err)
+	}
+
 	resolveOut, err := TriggerPeerResolve(context.Background(), senderRT, TriggerPeerResolveParams{
 		To:    receiverPubKeyHex,
 		Store: senderStore,
@@ -102,6 +124,13 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	if manifest.Route != defaultNodeResolveRoute {
 		t.Fatalf("unexpected route: %s", manifest.Route)
 	}
+	var routeCountAfter int
+	if err := receiverDB.QueryRow(`SELECT COUNT(*) FROM proc_index_resolve_routes`).Scan(&routeCountAfter); err != nil {
+		t.Fatalf("count route mappings after resolve: %v", err)
+	}
+	if routeCountAfter != routeCountBefore {
+		t.Fatalf("resolve should not change route mappings: before=%d after=%d", routeCountBefore, routeCountAfter)
+	}
 
 	capOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
@@ -114,6 +143,20 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 	}
 	if !capOut.Ok {
 		t.Fatalf("capabilities_show response not ok: %+v", capOut)
+	}
+	var capBody contractmessage.CapabilitiesShowBody
+	if err := oldproto.Unmarshal(capOut.Body, &capBody); err != nil {
+		t.Fatalf("decode capabilities_show body: %v", err)
+	}
+	foundIndexResolve := false
+	for _, item := range capBody.Capabilities {
+		if item != nil && strings.EqualFold(strings.TrimSpace(item.ID), "index_resolve") && item.Version == 1 {
+			foundIndexResolve = true
+			break
+		}
+	}
+	if !foundIndexResolve {
+		t.Fatalf("expected index_resolve capability, got: %+v", capBody.Capabilities)
 	}
 }
 
@@ -131,15 +174,26 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	defer receiverHost.Close()
 
 	senderRT := &Runtime{Host: senderHost}
-	receiverRT := &Runtime{Host: receiverHost}
+	receiverRT := &Runtime{Host: receiverHost, ctx: t.Context(), modules: newModuleRegistry()}
 	senderStore := newClientDB(senderDB, nil)
 	receiverStore := newClientDB(receiverDB, nil)
+	closeModule, err := registerIndexResolveModule(t.Context(), receiverRT, receiverStore)
+	if err != nil {
+		t.Fatalf("register module failed: %v", err)
+	}
+	if closeModule != nil {
+		t.Cleanup(closeModule)
+	}
 	registerNodeRouteHandlers(receiverRT, receiverStore)
+	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB, store: receiverStore}
+	receiverHandler, err := receiverSrv.Handler()
+	if err != nil {
+		t.Fatalf("build handler failed: %v", err)
+	}
 
 	senderHost.Peerstore().AddAddrs(receiverHost.ID(), receiverHost.Addrs(), time.Minute)
 
 	senderSrv := &httpAPIServer{rt: senderRT, db: senderDB, store: senderStore}
-	receiverSrv := &httpAPIServer{rt: receiverRT, db: receiverDB, store: receiverStore}
 
 	if _, err := receiverDB.Exec(
 		`INSERT INTO biz_seeds(seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint) VALUES(?,?,?,?,?,?)`,
@@ -154,11 +208,14 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/admin/routes/indexes", strings.NewReader(`{"route":"index.mp3","seed_hash":"`+strings.Repeat("cd", 32)+`"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/index-resolve", strings.NewReader(`{"route":"index.mp3","seed_hash":"`+strings.Repeat("cd", 32)+`"}`))
 		rec := httptest.NewRecorder()
-		receiverSrv.handleAdminRouteIndexes(rec, req)
+		receiverHandler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
-			t.Fatalf("admin route indexes status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+			t.Fatalf("settings index resolve status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			t.Fatalf("expected unified ok body: %s", rec.Body.String())
 		}
 	}
 
@@ -232,6 +289,41 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 		}
 		if manifest.SeedHash != strings.Repeat("cd", 32) {
 			t.Fatalf("expected seed hash in resolve body: %+v", manifest)
+		}
+	}
+
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/index-resolve", strings.NewReader(`{"route":"","seed_hash":"`+strings.Repeat("cd", 32)+`"}`))
+		rec := httptest.NewRecorder()
+		receiverHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("default route settings status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+		}
+	}
+
+	for _, route := range []string{"", "/", "/index", "index"} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/resolve", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"`+route+`"}`))
+		rec := httptest.NewRecorder()
+		senderSrv.handleResolve(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("default route resolve status mismatch route=%q got=%d body=%s", route, rec.Code, rec.Body.String())
+		}
+		var body struct {
+			BodyBase64 string `json:"body_base64"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode default route resolve: %v", err)
+		}
+		raw, err := decodeOptionalBase64(body.BodyBase64, "body_base64")
+		if err != nil {
+			t.Fatalf("decode default route body: %v", err)
+		}
+		var manifest routeIndexManifest
+		if err := oldproto.Unmarshal(raw, &manifest); err != nil {
+			t.Fatalf("decode default route proto body: %v", err)
+		}
+		if manifest.SeedHash != strings.Repeat("cd", 32) {
+			t.Fatalf("expected default route seed hash: %+v", manifest)
 		}
 	}
 }

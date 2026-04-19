@@ -32,11 +32,23 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	defer targetHost.Close()
 
 	callerRT := &Runtime{Host: callerHost}
-	targetRT := &Runtime{Host: targetHost}
+	targetRT := &Runtime{Host: targetHost, ctx: t.Context(), modules: newModuleRegistry()}
 	callerStore := newClientDB(callerDB, nil)
 	targetStore := newClientDB(targetDB, nil)
+	closeModule, err := registerIndexResolveModule(t.Context(), targetRT, targetStore)
+	if err != nil {
+		t.Fatalf("register module failed: %v", err)
+	}
+	if closeModule != nil {
+		t.Cleanup(closeModule)
+	}
 	registerFakeDomainResolveHandler(resolverHost, "mp3.david", targetPubkeyHex, time.Now().Add(time.Hour).Unix())
 	registerNodeRouteHandlers(targetRT, targetStore)
+	targetSrv := &httpAPIServer{rt: targetRT, db: targetDB, store: targetStore}
+	targetHandler, err := targetSrv.Handler()
+	if err != nil {
+		t.Fatalf("build handler failed: %v", err)
+	}
 
 	callerHost.Peerstore().AddAddrs(resolverHost.ID(), resolverHost.Addrs(), time.Minute)
 	callerHost.Peerstore().AddAddrs(targetHost.ID(), targetHost.Addrs(), time.Minute)
@@ -52,8 +64,13 @@ func TestResolverResolveRoundTripOverP2P(t *testing.T) {
 	); err != nil {
 		t.Fatalf("insert seed: %v", err)
 	}
-	if _, err := upsertPublishedRouteIndex(context.Background(), targetStore, "album", strings.Repeat("ef", 32)); err != nil {
-		t.Fatalf("upsert route index: %v", err)
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/index-resolve", strings.NewReader(`{"route":"album","seed_hash":"`+strings.Repeat("ef", 32)+`"}`))
+		rec := httptest.NewRecorder()
+		targetHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("upsert route index status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+		}
 	}
 
 	resolveResp, err := TriggerResolverResolve(context.Background(), callerStore, callerRT, TriggerResolverResolveParams{

@@ -48,7 +48,8 @@ type runStartupState struct {
 	healthyGateways []peer.AddrInfo
 	healthyArbiters []peer.AddrInfo
 
-	cfgSvc *runtimeConfigService
+	cfgSvc       *runtimeConfigService
+	closeModules []func()
 
 	rtCtx    context.Context
 	rtCancel context.CancelFunc
@@ -82,6 +83,12 @@ func (p *runStartupPhases) Cleanup() {
 		st.closeOwnedDB()
 		st.closeOwnedDB = nil
 	}
+	for i := len(st.closeModules) - 1; i >= 0; i-- {
+		if st.closeModules[i] != nil {
+			st.closeModules[i]()
+		}
+	}
+	st.closeModules = nil
 	if st.removeObs != nil {
 		st.removeObs()
 		st.removeObs = nil
@@ -321,6 +328,11 @@ func (p *runStartupPhases) StartServices() error {
 	rt.taskSched.ctx = st.rtCtx
 	rt.kernel = newClientKernel(rt, st.store, st.workspaceMgr)
 	rt.orch = newOrchestrator(rt, st.store)
+	if closeModule, err := registerIndexResolveModule(st.rtCtx, rt, st.store); err != nil {
+		return err
+	} else if closeModule != nil {
+		st.closeModules = append(st.closeModules, closeModule)
+	}
 	registerLiveHandlers(st.store, rt)
 	registerNodeRouteHandlers(rt, st.store)
 	registerResolverHandlers(rt)
@@ -428,6 +440,15 @@ func (p *runStartupPhases) BindShutdown() error {
 		if st.removeObs != nil {
 			st.removeObs()
 			st.removeObs = nil
+		}
+		for i := len(st.closeModules) - 1; i >= 0; i-- {
+			if st.closeModules[i] != nil {
+				st.closeModules[i]()
+			}
+		}
+		st.closeModules = nil
+		if rt.modules != nil {
+			rt.modules = nil
 		}
 		var firstErr error
 		if err := st.host.Close(); err != nil && firstErr == nil {

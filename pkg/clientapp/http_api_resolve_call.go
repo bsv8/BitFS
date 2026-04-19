@@ -144,55 +144,6 @@ func (s *httpAPIServer) handleInboxMessageDetail(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, out)
 }
 
-func (s *httpAPIServer) handleAdminRouteIndexes(w http.ResponseWriter, r *http.Request) {
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "db not initialized"})
-		return
-	}
-	switch r.Method {
-	case http.MethodGet:
-		items, err := dbListRouteIndexes(r.Context(), httpStore(s))
-		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
-	case http.MethodPost:
-		var req struct {
-			Route    string `json:"route"`
-			SeedHash string `json:"seed_hash"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
-			return
-		}
-		updatedAtUnix, err := dbUpsertRouteIndex(r.Context(), httpStore(s), req.Route, req.SeedHash)
-		if err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":              true,
-			"route":           strings.TrimSpace(req.Route),
-			"seed_hash":       strings.ToLower(strings.TrimSpace(req.SeedHash)),
-			"updated_at_unix": updatedAtUnix,
-		})
-	case http.MethodDelete:
-		route := strings.TrimSpace(r.URL.Query().Get("route"))
-		if route == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"error": "route is required"})
-			return
-		}
-		if err := dbDeleteRouteIndex(r.Context(), httpStore(s), route); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-			return
-		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "deleted": true, "route": route})
-	default:
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-	}
-}
-
 func decodeRouteCallBody(raw json.RawMessage, bodyBase64 string) ([]byte, error) {
 	if strings.TrimSpace(bodyBase64) != "" {
 		if len(strings.TrimSpace(string(raw))) != 0 && strings.TrimSpace(string(raw)) != "null" {

@@ -367,6 +367,7 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		return businessActionSuccess(req, "returned", payload, d), nil
 
 	case controlActionPeerResolve:
+		// 这里只做查询型 peer.resolve，配置改动统一留在 HTTP settings。
 		to := strings.TrimSpace(controlCommandPayloadString(req.Payload, "to"))
 		route := strings.TrimSpace(controlCommandPayloadString(req.Payload, "route"))
 		if to == "" {
@@ -392,49 +393,10 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		return businessActionSuccess(req, "returned", payload, d), nil
 
 	case controlActionPeerSelf:
-		// 这里显式暴露 runtime 的节点身份，给 outproc e2e 做跨进程编排，
-		// 避免测试侧再去读进程内对象或推测地址格式。
-		info, err := businessBuildPeerSelfPayload(rt)
-		payload := map[string]any{"peer_self": info}
-		if err != nil {
-			return businessActionFailure(req, d, err.Error(), payload), nil
-		}
-		return businessActionSuccess(req, "returned", payload, d), nil
+		return d.executeManagedPeerSelfControlCommand(req)
 
 	case controlActionPeerConnect:
-		// 只接受完整 /ip4/.../p2p/... 地址，确保 e2e 用的就是线上同款拨号输入。
-		addrText := strings.TrimSpace(controlCommandPayloadString(req.Payload, "addr"))
-		if addrText == "" {
-			return businessActionFailure(req, d, "addr is required", nil), nil
-		}
-		target, err := peer.AddrInfoFromString(addrText)
-		payload := map[string]any{
-			"peer_connect": map[string]any{
-				"addr":    addrText,
-				"peer_id": "",
-			},
-		}
-		if err != nil {
-			return businessActionFailure(req, d, "invalid addr", payload), nil
-		}
-		if target == nil || target.ID == "" || len(target.Addrs) == 0 {
-			return businessActionFailure(req, d, "addr must include peer id and transport address", payload), nil
-		}
-		payload["peer_connect"] = map[string]any{
-			"addr":    addrText,
-			"peer_id": target.ID.String(),
-		}
-		if rt.Host == nil {
-			return businessActionFailure(req, d, "runtime host not initialized", payload), nil
-		}
-		// 先写 peerstore，再主动 connect；失败直接回包，避免吞掉连通性问题。
-		rt.Host.Peerstore().AddAddrs(target.ID, target.Addrs, 2*time.Minute)
-		connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		if err := rt.Host.Connect(connectCtx, *target); err != nil {
-			return businessActionFailure(req, d, err.Error(), payload), nil
-		}
-		return businessActionSuccess(req, "connected", payload, d), nil
+		return d.executeManagedPeerConnectControlCommand(req)
 
 	default:
 		return controlCommandResult{}, fmt.Errorf("unsupported control action: %s", req.Action)
@@ -465,6 +427,65 @@ func businessActionFailure(req controlCommandRequest, d *managedDaemon, errText 
 		KeyState:     d.currentKeyState(),
 		Payload:      payload,
 	}
+}
+
+func (d *managedDaemon) executeManagedPeerSelfControlCommand(req controlCommandRequest) (controlCommandResult, error) {
+	rt := d.currentRuntime()
+	if rt == nil {
+		return businessActionFailure(req, d, "runtime not initialized", nil), nil
+	}
+	// 这里显式暴露 runtime 的节点身份，给 outproc e2e 做跨进程编排，
+	// 避免测试侧再去读进程内对象或推测地址格式。
+	info, err := businessBuildPeerSelfPayload(rt)
+	payload := map[string]any{"peer_self": info}
+	if err != nil {
+		return businessActionFailure(req, d, err.Error(), payload), nil
+	}
+	return businessActionSuccess(req, "returned", payload, d), nil
+}
+
+func (d *managedDaemon) executeManagedPeerConnectControlCommand(req controlCommandRequest) (controlCommandResult, error) {
+	rt := d.currentRuntime()
+	if rt == nil {
+		return businessActionFailure(req, d, "runtime not initialized", nil), nil
+	}
+	ctx := d.rootCtx
+	if ctx == nil {
+		return businessActionFailure(req, d, "runtime context is not ready", nil), nil
+	}
+	// 只接受完整 /ip4/.../p2p/... 地址，确保 e2e 用的就是线上同款拨号输入。
+	addrText := strings.TrimSpace(controlCommandPayloadString(req.Payload, "addr"))
+	if addrText == "" {
+		return businessActionFailure(req, d, "addr is required", nil), nil
+	}
+	target, err := peer.AddrInfoFromString(addrText)
+	payload := map[string]any{
+		"peer_connect": map[string]any{
+			"addr":    addrText,
+			"peer_id": "",
+		},
+	}
+	if err != nil {
+		return businessActionFailure(req, d, "invalid addr", payload), nil
+	}
+	if target == nil || target.ID == "" || len(target.Addrs) == 0 {
+		return businessActionFailure(req, d, "addr must include peer id and transport address", payload), nil
+	}
+	payload["peer_connect"] = map[string]any{
+		"addr":    addrText,
+		"peer_id": target.ID.String(),
+	}
+	if rt.Host == nil {
+		return businessActionFailure(req, d, "runtime host not initialized", payload), nil
+	}
+	// 先写 peerstore，再主动 connect；失败直接回包，避免吞掉连通性问题。
+	rt.Host.Peerstore().AddAddrs(target.ID, target.Addrs, 2*time.Minute)
+	connectCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := rt.Host.Connect(connectCtx, *target); err != nil {
+		return businessActionFailure(req, d, err.Error(), payload), nil
+	}
+	return businessActionSuccess(req, "connected", payload, d), nil
 }
 
 func businessPayloadDemandBatchItems(payload map[string]any) ([]clientapp.PublishDemandBatchItem, error) {

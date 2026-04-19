@@ -1525,6 +1525,32 @@ func TestHandleManagedControlCommand_PricingCommandsUnsupportedAction(t *testing
 	}
 }
 
+func TestHandleManagedControlCommand_SettingsIndexResolveUnsupportedAction(t *testing.T) {
+	t.Parallel()
+
+	stream := &capturedManagedControlStream{}
+	rt, _ := newManagedPricingControlRuntime(t)
+	d := &managedDaemon{
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		rootCtx:       t.Context(),
+		rt:            rt,
+	}
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-settings-unsupported",
+		Action:    "settings.index_resolve.upsert",
+	})
+	result, ok := findManagedCommandResult(stream.events, "cmd-settings-unsupported")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got, want := strings.TrimSpace(result["error"]), "unsupported control action: settings.index_resolve.upsert"; got != want {
+		t.Fatalf("unsupported error=%q, want %q", got, want)
+	}
+}
+
 func TestHandleManagedControlCommand_WorkspaceCommands(t *testing.T) {
 	t.Run("wallet_mode_list_and_sync", func(t *testing.T) {
 		stream := &capturedManagedControlStream{}

@@ -17,7 +17,6 @@ func (s *httpAPIServer) registerHTTPRouteAdmin(mux *http.ServeMux, prefix string
 	mux.HandleFunc(prefix+"/v1/admin/static/entry", s.withAuth(s.handleAdminStaticEntry))
 	mux.HandleFunc(prefix+"/v1/admin/static/price/set", s.withAuth(s.handleAdminStaticPriceSet))
 	mux.HandleFunc(prefix+"/v1/admin/static/price", s.withAuth(s.handleAdminStaticPriceGet))
-	mux.HandleFunc(prefix+"/v1/admin/routes/indexes", s.withAuth(s.handleAdminRouteIndexes))
 	// 费用池审计历史查询入口（非主入口，仅保留原始事实查询能力）
 	// 主排障入口请使用 /v1/admin/feepool/audit/gateway-timeline 和 command-timeline
 	mux.HandleFunc(prefix+"/v1/admin/feepool/commands", s.withAuth(s.handleAdminFeePoolCommands))

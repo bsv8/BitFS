@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"time"
 
 	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/procinboxmessages"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procpublishedrouteindexes"
 )
 
 type inboxMessageListItem struct {
@@ -37,12 +35,6 @@ type inboxMessageDetailItem struct {
 	BodyBytes      []byte
 	BodySizeBytes  int64
 	ReceivedAtUnix int64
-}
-
-type routeIndexItem struct {
-	Route         string `json:"route"`
-	SeedHash      string `json:"seed_hash"`
-	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
 func dbListInboxMessages(ctx context.Context, store *clientDB) ([]inboxMessageListItem, error) {
@@ -96,88 +88,6 @@ func dbGetInboxMessageDetail(ctx context.Context, store *clientDB, id int64) (in
 		}
 		return out, nil
 	})
-}
-
-func dbListRouteIndexes(ctx context.Context, store *clientDB) ([]routeIndexItem, error) {
-	if store == nil {
-		return nil, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]routeIndexItem, error) {
-		var rows []struct {
-			Route         string `json:"route,omitempty"`
-			SeedHash      string `json:"seed_hash,omitempty"`
-			UpdatedAtUnix int64  `json:"updated_at_unix,omitempty"`
-		}
-		err := tx.ProcPublishedRouteIndexes.Query().
-			Order(procpublishedrouteindexes.ByRoute()).
-			Select(
-				procpublishedrouteindexes.FieldRoute,
-				procpublishedrouteindexes.FieldSeedHash,
-				procpublishedrouteindexes.FieldUpdatedAtUnix,
-			).
-			Scan(ctx, &rows)
-		if err != nil {
-			return nil, err
-		}
-		items := make([]routeIndexItem, 0, len(rows))
-		for _, row := range rows {
-			items = append(items, routeIndexItem{
-				Route:         row.Route,
-				SeedHash:      row.SeedHash,
-				UpdatedAtUnix: row.UpdatedAtUnix,
-			})
-		}
-		return items, nil
-	})
-}
-
-func dbDeleteRouteIndex(ctx context.Context, store *clientDB, route string) error {
-	if store == nil {
-		return fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		_, err := tx.ProcPublishedRouteIndexes.Delete().Where(procpublishedrouteindexes.RouteEQ(route)).Exec(ctx)
-		return err
-	})
-}
-
-func dbUpsertRouteIndex(ctx context.Context, store *clientDB, route string, seedHash string) (int64, error) {
-	if store == nil {
-		return 0, fmt.Errorf("client db is nil")
-	}
-	now := time.Now().Unix()
-	route = strings.TrimSpace(route)
-	seedHash = normalizeSeedHashHex(seedHash)
-	if route == "" || seedHash == "" {
-		return 0, fmt.Errorf("route and seed_hash are required")
-	}
-	if err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
-		count, err := tx.ProcPublishedRouteIndexes.Update().
-			Where(procpublishedrouteindexes.RouteEQ(route)).
-			SetSeedHash(seedHash).
-			SetUpdatedAtUnix(now).
-			Save(ctx)
-		if err != nil {
-			return err
-		}
-		if count > 0 {
-			return nil
-		}
-		_, err = tx.ProcPublishedRouteIndexes.Create().
-			SetRoute(route).
-			SetSeedHash(seedHash).
-			SetUpdatedAtUnix(now).
-			Save(ctx)
-		return err
-	}); err != nil {
-		return 0, err
-	}
-	return now, nil
-}
-
-// upsertPublishedRouteIndex 兼容旧测试入口。
-func upsertPublishedRouteIndex(ctx context.Context, store *clientDB, route string, seedHash string) (int64, error) {
-	return dbUpsertRouteIndex(ctx, store, route, seedHash)
 }
 
 func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) (uint32, bool) {

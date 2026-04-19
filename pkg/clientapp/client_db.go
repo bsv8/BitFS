@@ -22,6 +22,12 @@ type clientDB struct {
 	ent   *gen.Client
 }
 
+// SerialAccess 表示当前 store 是否由 actor 串行托管。
+// 模块层只看这个能力，不直接摸内部字段，避免把实现细节外泄。
+func (d *clientDB) SerialAccess() bool {
+	return d != nil && d.actor != nil
+}
+
 func newClientDB(db *sql.DB, actor *sqliteactor.Actor) *clientDB {
 	if db == nil && actor == nil {
 		return nil
