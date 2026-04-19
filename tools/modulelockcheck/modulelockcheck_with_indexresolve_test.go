@@ -76,7 +76,7 @@ func TestRunChecksRejectsSignatureMismatch(t *testing.T) {
 	}
 	selected := map[string]struct{}{indexresolve.ModuleIdentity: {}}
 	items := []modulelock.LockedFunction{
-		{ID: "bitfs.indexresolve.biz_resolve", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "BizResolve", Signature: "func BizResolve(ctx context.Context, state ModuleState, resolver ResolveReader, emitter ObsEmitter, rawRoute string) (Manifest, error)", Note: "n"},
+		{ID: "bitfs.indexresolve.biz_resolve", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "BizResolve", Signature: "func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (Manifest, error)", Note: "n"},
 	}
 	err := runChecks(tmp, goBin, selected, items)
 	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {

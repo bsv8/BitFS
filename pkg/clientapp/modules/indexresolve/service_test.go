@@ -105,9 +105,6 @@ func TestServiceSettingsAndResolve(t *testing.T) {
 		},
 	}
 	svc := NewService(store, nil)
-	if !svc.Enabled() {
-		t.Fatal("service should be enabled")
-	}
 	if cap := svc.Capability(); cap == nil || strings.TrimSpace(cap.ID) == "" {
 		t.Fatal("capability should exist")
 	}

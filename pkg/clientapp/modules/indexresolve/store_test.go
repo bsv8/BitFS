@@ -84,8 +84,7 @@ func TestBootstrapStoreAndLifecycle(t *testing.T) {
 	if err := svc.Delete(context.Background(), "movie"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	svc.Close()
-	if _, err := svc.Resolve(context.Background(), "/movie"); err == nil || CodeOf(err) != "MODULE_DISABLED" {
-		t.Fatalf("expected module disabled after close, got %v", err)
+	if _, err := svc.Resolve(context.Background(), "/movie"); err == nil || CodeOf(err) != "ROUTE_NOT_FOUND" {
+		t.Fatalf("expected route not found after delete, got %v", err)
 	}
 }

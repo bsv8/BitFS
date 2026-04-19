@@ -12,19 +12,15 @@ type settingsIndexResolveRouteItem struct {
 	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
-func NewHTTPSettingsIndexResolveHandler(state ModuleState, lister SettingsLister, upserter SettingsUpserter, deleter SettingsDeleter, emitter ObsEmitter) http.HandlerFunc {
+func NewHTTPSettingsIndexResolveHandler(lister SettingsLister, upserter SettingsUpserter, deleter SettingsDeleter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r == nil {
 			writeModuleSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "request is required")
 			return
 		}
-		if state == nil || lister == nil || upserter == nil || deleter == nil {
-			writeModuleSettingsError(w, http.StatusServiceUnavailable, "MODULE_DISABLED", "index_resolve module is disabled")
-			return
-		}
 		switch r.Method {
 		case http.MethodGet:
-			items, err := BizSettingsList(r.Context(), state, lister, emitter)
+			items, err := BizSettingsList(r.Context(), lister)
 			if err != nil {
 				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
 				return
@@ -50,7 +46,7 @@ func NewHTTPSettingsIndexResolveHandler(state ModuleState, lister SettingsLister
 				writeModuleSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json")
 				return
 			}
-			item, err := BizSettingsUpsert(r.Context(), state, upserter, emitter, req.Route, req.SeedHash)
+			item, err := BizSettingsUpsert(r.Context(), upserter, req.Route, req.SeedHash)
 			if err != nil {
 				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
 				return
@@ -62,14 +58,18 @@ func NewHTTPSettingsIndexResolveHandler(state ModuleState, lister SettingsLister
 			})
 		case http.MethodDelete:
 			route := r.URL.Query().Get("route")
-			deletedRoute, err := BizSettingsDelete(r.Context(), state, deleter, emitter, route)
+			normalizedRoute, err := NormalizeRoute(route)
 			if err != nil {
+				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
+				return
+			}
+			if err := BizSettingsDelete(r.Context(), deleter, normalizedRoute); err != nil {
 				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
 				return
 			}
 			writeModuleSettingsOK(w, map[string]any{
 				"deleted": true,
-				"route":   strings.TrimSpace(deletedRoute),
+				"route":   strings.TrimSpace(normalizedRoute),
 			})
 		default:
 			writeModuleSettingsError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")

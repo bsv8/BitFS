@@ -17,7 +17,7 @@ func FunctionLocks() []modulelock.LockedFunction {
 			Module:    ModuleIdentity,
 			Package:   "./pkg/clientapp/modules/indexresolve",
 			Symbol:    "BizResolve",
-			Signature: "func BizResolve(ctx context.Context, state ModuleState, resolver ResolveReader, emitter ObsEmitter, rawRoute string) (Manifest, error)",
+			Signature: "func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (Manifest, error)",
 			Note:      "冻结解析业务入口，只允许这里对外接线。",
 		},
 		{
@@ -25,7 +25,7 @@ func FunctionLocks() []modulelock.LockedFunction {
 			Module:    ModuleIdentity,
 			Package:   "./pkg/clientapp/modules/indexresolve",
 			Symbol:    "BizSettingsList",
-			Signature: "func BizSettingsList(ctx context.Context, state ModuleState, lister SettingsLister, emitter ObsEmitter) ([]RouteItem, error)",
+			Signature: "func BizSettingsList(ctx context.Context, lister SettingsLister) ([]RouteItem, error)",
 			Note:      "冻结 settings 列表业务入口。",
 		},
 		{
@@ -33,7 +33,7 @@ func FunctionLocks() []modulelock.LockedFunction {
 			Module:    ModuleIdentity,
 			Package:   "./pkg/clientapp/modules/indexresolve",
 			Symbol:    "BizSettingsUpsert",
-			Signature: "func BizSettingsUpsert(ctx context.Context, state ModuleState, upserter SettingsUpserter, emitter ObsEmitter, rawRoute string, rawSeedHash string) (RouteItem, error)",
+			Signature: "func BizSettingsUpsert(ctx context.Context, upserter SettingsUpserter, rawRoute string, rawSeedHash string) (RouteItem, error)",
 			Note:      "冻结 settings 写入业务入口。",
 		},
 		{
@@ -41,7 +41,7 @@ func FunctionLocks() []modulelock.LockedFunction {
 			Module:    ModuleIdentity,
 			Package:   "./pkg/clientapp/modules/indexresolve",
 			Symbol:    "BizSettingsDelete",
-			Signature: "func BizSettingsDelete(ctx context.Context, state ModuleState, deleter SettingsDeleter, emitter ObsEmitter, rawRoute string) (string, error)",
+			Signature: "func BizSettingsDelete(ctx context.Context, deleter SettingsDeleter, rawRoute string) error",
 			Note:      "冻结 settings 删除业务入口。",
 		},
 	}

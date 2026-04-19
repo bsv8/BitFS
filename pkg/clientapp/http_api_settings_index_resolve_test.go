@@ -114,7 +114,7 @@ func TestHTTPAPISettingsIndexResolve(t *testing.T) {
 	}
 }
 
-func TestHTTPAPISettingsIndexResolveDisabled(t *testing.T) {
+func TestHTTPAPISettingsIndexResolveCapturedHandlerStillWorksAfterCleanup(t *testing.T) {
 	t.Parallel()
 
 	db := openResolveCallTestDB(t)
@@ -137,10 +137,10 @@ func TestHTTPAPISettingsIndexResolveDisabled(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/index-resolve", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected module disabled status, got=%d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected handler to keep working, got=%d body=%s", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), `"code":"MODULE_DISABLED"`) {
-		t.Fatalf("unexpected disabled body: %s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("unexpected body after cleanup: %s", rec.Body.String())
 	}
 }

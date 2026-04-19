@@ -45,12 +45,8 @@ func BootstrapStore(ctx context.Context, db dbCapability, serial SerialExecutor)
 	}, nil
 }
 
-func (s *dbStore) Enabled() bool {
-	return s != nil && s.db != nil
-}
-
 func (s *dbStore) ListIndexResolveRoutes(ctx context.Context) ([]RouteItem, error) {
-	if !s.Enabled() {
+	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("index resolve store is disabled")
 	}
 	var out []RouteItem
@@ -76,7 +72,7 @@ func (s *dbStore) ListIndexResolveRoutes(ctx context.Context) ([]RouteItem, erro
 }
 
 func (s *dbStore) ResolveIndexRoute(ctx context.Context, rawRoute string) (Manifest, error) {
-	if !s.Enabled() {
+	if s == nil || s.db == nil {
 		return Manifest{}, fmt.Errorf("index resolve store is disabled")
 	}
 	route, err := NormalizeRoute(rawRoute)
@@ -130,7 +126,7 @@ func (s *dbStore) ResolveIndexRoute(ctx context.Context, rawRoute string) (Manif
 }
 
 func (s *dbStore) UpsertIndexResolveRoute(ctx context.Context, rawRoute string, rawSeedHash string, updatedAtUnix int64) (RouteItem, error) {
-	if !s.Enabled() {
+	if s == nil || s.db == nil {
 		return RouteItem{}, fmt.Errorf("index resolve store is disabled")
 	}
 	route, err := NormalizeRoute(rawRoute)
@@ -170,7 +166,7 @@ func (s *dbStore) UpsertIndexResolveRoute(ctx context.Context, rawRoute string, 
 }
 
 func (s *dbStore) DeleteIndexResolveRoute(ctx context.Context, rawRoute string) error {
-	if !s.Enabled() {
+	if s == nil || s.db == nil {
 		return fmt.Errorf("index resolve store is disabled")
 	}
 	route, err := NormalizeRoute(rawRoute)
@@ -184,7 +180,7 @@ func (s *dbStore) DeleteIndexResolveRoute(ctx context.Context, rawRoute string) 
 }
 
 func (s *dbStore) GetIndexResolveSeed(ctx context.Context, rawSeedHash string) (SeedItem, error) {
-	if !s.Enabled() {
+	if s == nil || s.db == nil {
 		return SeedItem{}, fmt.Errorf("index resolve store is disabled")
 	}
 	seedHash, err := NormalizeSeedHashHex(rawSeedHash)

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
@@ -63,7 +62,6 @@ func MessageOf(err error) string {
 type Service struct {
 	store         Store
 	nodePubkeyHex string
-	closed        uint32
 }
 
 type RouteItem struct {
@@ -100,10 +98,6 @@ func NewService(store Store, runtime RuntimeReader) *Service {
 	return svc
 }
 
-func (s *Service) Enabled() bool {
-	return s != nil && atomic.LoadUint32(&s.closed) == 0 && s.store != nil
-}
-
 func (s *Service) NodePubkeyHex() string {
 	if s == nil {
 		return ""
@@ -112,21 +106,18 @@ func (s *Service) NodePubkeyHex() string {
 }
 
 func (s *Service) Capability() *contractmessage.CapabilityItem {
-	if s == nil || !s.Enabled() {
+	if s == nil || s.store == nil {
 		return nil
 	}
 	return CapabilityItem()
 }
 
 func (s *Service) Close() {
-	if s == nil {
-		return
-	}
-	atomic.StoreUint32(&s.closed, 1)
+	// 这里保留关闭入口，实际启停由构建开关和外层 wiring 控制。
 }
 
 func (s *Service) Resolve(ctx context.Context, rawRoute string) (Manifest, error) {
-	if s == nil || !s.Enabled() {
+	if s == nil || s.store == nil {
 		return Manifest{}, moduleDisabledErr()
 	}
 	if ctx == nil {
@@ -151,7 +142,7 @@ func (s *Service) Resolve(ctx context.Context, rawRoute string) (Manifest, error
 }
 
 func (s *Service) List(ctx context.Context) ([]RouteItem, error) {
-	if s == nil || !s.Enabled() {
+	if s == nil || s.store == nil {
 		return nil, moduleDisabledErr()
 	}
 	if ctx == nil {
@@ -161,7 +152,7 @@ func (s *Service) List(ctx context.Context) ([]RouteItem, error) {
 }
 
 func (s *Service) Upsert(ctx context.Context, rawRoute string, rawSeedHash string, nowUnix int64) (RouteItem, error) {
-	if s == nil || !s.Enabled() {
+	if s == nil || s.store == nil {
 		return RouteItem{}, moduleDisabledErr()
 	}
 	if ctx == nil {
@@ -192,7 +183,7 @@ func (s *Service) Upsert(ctx context.Context, rawRoute string, rawSeedHash strin
 }
 
 func (s *Service) Delete(ctx context.Context, rawRoute string) error {
-	if s == nil || !s.Enabled() {
+	if s == nil || s.store == nil {
 		return moduleDisabledErr()
 	}
 	if ctx == nil {

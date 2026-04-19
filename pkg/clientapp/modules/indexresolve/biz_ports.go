@@ -25,33 +25,3 @@ type SettingsUpserter interface {
 type SettingsDeleter interface {
 	DeleteIndexResolveRoute(ctx context.Context, route string) error
 }
-
-// ModuleState 只表示模块当前是否还活着。
-//
-// 设计说明：
-// - 这是一个很小的状态能力，不是依赖聚合；
-// - 关闭后业务入口直接返回 MODULE_DISABLED，避免继续穿透到 store；
-// - 这样 with_indexresolve 的同生共死语义可以保住。
-type ModuleState interface {
-	Enabled() bool
-}
-
-// ObsEmitter 是可选的观察事件输出能力。
-//
-// 设计说明：
-// - 业务入口只负责决定何时发事件；
-// - emitter 可以为空，空值不影响主流程；
-// - 适配层只负责把事件送到进程级 obs 系统。
-type ObsEmitter interface {
-	Emit(level string, name string, fields map[string]any)
-}
-
-// ObsEmitterFunc 让普通函数也能作为观察事件输出。
-type ObsEmitterFunc func(level string, name string, fields map[string]any)
-
-func (f ObsEmitterFunc) Emit(level string, name string, fields map[string]any) {
-	if f == nil {
-		return
-	}
-	f(level, name, fields)
-}

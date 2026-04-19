@@ -7,11 +7,8 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
-	"strings"
-	"sync/atomic"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
@@ -28,27 +25,6 @@ type indexResolveSerialDoer interface {
 type indexResolveStoreAdapter struct {
 	store  indexResolveBootstrapStore
 	serial indexResolveSerialDoer
-}
-
-// indexResolveModuleState 只管模块生死，不承载业务数据。
-//
-// 设计说明：
-// - wiring 只需要知道模块是否还活着；
-// - 真正的读写能力走 store capability，不从这里分发；
-// - 关闭后立即返回 MODULE_DISABLED，避免旧请求穿透到 store。
-type indexResolveModuleState struct {
-	closed uint32
-}
-
-func (s *indexResolveModuleState) Enabled() bool {
-	return s != nil && atomic.LoadUint32(&s.closed) == 0
-}
-
-func (s *indexResolveModuleState) Close() {
-	if s == nil {
-		return
-	}
-	atomic.StoreUint32(&s.closed, 1)
 }
 
 func (a indexResolveStoreAdapter) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -73,7 +49,7 @@ func (a indexResolveStoreAdapter) Do(ctx context.Context, fn func(indexresolve.C
 // 设计说明：
 // - 这里是唯一允许引用 indexresolve 模块实现包的地方；
 // - 模块自己的 store、能力、settings 路由、白名单都在这里接线；
-// - cleanup 必须同时解绑钩子和关闭模块服务，避免关闭后还能继续读写。
+// - cleanup 只负责解绑钩子，模块能力的生死由编译期开关决定。
 func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolveBootstrapStore) (func(), error) {
 	if rt == nil || store == nil {
 		return func() {}, nil
@@ -94,10 +70,8 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 	if err != nil {
 		return nil, err
 	}
-	moduleState := &indexResolveModuleState{}
 	reg := ensureModuleRegistry(rt)
 	if reg == nil {
-		moduleState.Close()
 		return func() {}, nil
 	}
 
@@ -106,22 +80,12 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		return nil, err
 	}
 
-	emitter := indexresolve.ObsEmitterFunc(func(level string, name string, fields map[string]any) {
-		switch strings.TrimSpace(level) {
-		case "error":
-			obs.Error(ServiceName, name, fields)
-		default:
-			obs.Business(ServiceName, name, fields)
-		}
-	})
-
 	cleanup, err := reg.registerIndexResolve(
 		func() *contractmessage.CapabilityItem {
 			return indexresolve.CapabilityItem()
 		},
 		func(ctx context.Context, route string) (routeIndexManifest, error) {
-			// 这里只做查询映射，不给 settings 写入口留旁路。
-			manifest, err := indexresolve.BizResolve(ctx, moduleState, moduleStore, emitter, route)
+			manifest, err := indexresolve.BizResolve(ctx, moduleStore, route)
 			if err != nil {
 				return routeIndexManifest{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
 			}
@@ -138,15 +102,12 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 			if s == nil || mux == nil {
 				return
 			}
-			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(indexresolve.NewHTTPSettingsIndexResolveHandler(moduleState, moduleStore, moduleStore, moduleStore, emitter)))
+			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(indexresolve.NewHTTPSettingsIndexResolveHandler(moduleStore, moduleStore, moduleStore)))
 		},
-		func() {
-			moduleState.Close()
-		},
+		func() {},
 	)
 	if err != nil {
 		moduleCleanup()
-		moduleState.Close()
 		return nil, err
 	}
 	return func() {
