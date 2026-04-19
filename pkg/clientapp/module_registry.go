@@ -25,34 +25,54 @@ type OBSActionResponse struct {
 	Payload map[string]any
 }
 
-type OBSActionHandler func(context.Context, map[string]any) (OBSActionResponse, error)
+type P2PCallHook func(context.Context, string) (routeIndexManifest, error)
+type HTTPAPIHook func(*httpAPIServer, *http.ServeMux, string)
+type SettingsHook func(context.Context, string, map[string]any) (map[string]any, error)
+type OBSControlHook func(context.Context, string, map[string]any) (OBSActionResponse, error)
+type OpenHook func(context.Context) error
+type CloseHook func(context.Context) error
 
-type obsActionHook struct {
-	action  string
-	handler OBSActionHandler
-}
-
-// OBSActionCaller 只暴露 obs 渠道需要转发的能力。
+// ModuleHooks 暴露统一的模块钩子能力。
 //
 // 设计说明：
-// - 外层只能拿能力，不拿内部注册表；
-// - 这样托管进程只会拿到 obs 动作分发口，不会摸到实现细节；
-// - HTTP 和 libp2p 仍然在包内走更细的解析/挂载钩子。
-type OBSActionCaller interface {
-	CallOBSAction(context.Context, string, map[string]any) (OBSActionResponse, error)
+// - 外层只拿分发口和注册口，不拿模块内部状态；
+// - 生产代码只走 Dispatch* / Run*，注册只在单点装配里出现；
+// - 测试仍然可以用注册口挂入假钩子，验证分发是否只靠注册表。
+type ModuleHooks interface {
+	RegisterP2PCallHook(P2PCallHook) (func(), error)
+	RegisterHTTPAPIHook(HTTPAPIHook) (func(), error)
+	RegisterSettingsHook(SettingsHook) (func(), error)
+	RegisterOBSControlHook(OBSControlHook) (func(), error)
+	RegisterOpenHook(OpenHook) (func(), error)
+	RegisterCloseHook(CloseHook) (func(), error)
+	RegisterModuleLockProvider(string, modulelock.Provider) (func(), error)
+
+	DispatchP2PCall(context.Context, string) (routeIndexManifest, error)
+	MountHTTPAPI(*httpAPIServer, *http.ServeMux, string)
+	DispatchSettings(context.Context, string, map[string]any) (map[string]any, error)
+	DispatchOBSControl(context.Context, string, map[string]any) (OBSActionResponse, error)
+	RunOpenHooks(context.Context) error
+	RunCloseHooks(context.Context) error
+}
+
+type lifecycleHookEntry struct {
+	id   uint64
+	hook func(context.Context) error
 }
 
 type moduleRegistry struct {
 	mu sync.RWMutex
 
 	capabilityHook func() *contractmessage.CapabilityItem
-	resolveHook    func(context.Context, string) (routeIndexManifest, error)
-	resolveClose   func()
-	settingsHook   func(*httpAPIServer, *http.ServeMux, string)
-	settingsClose  func()
-	obsHooks       map[string]obsActionHook
-	obsPrefixCount map[string]int
-	moduleLocks    *modulelock.Registry
+
+	p2pCallHook   P2PCallHook
+	httpAPIHook   HTTPAPIHook
+	settingsHook  SettingsHook
+	obsHook       OBSControlHook
+	openHooks     []lifecycleHookEntry
+	closeHooks    []lifecycleHookEntry
+	nextHookID    uint64
+	moduleLocks   *modulelock.Registry
 }
 
 func newModuleRegistry() *moduleRegistry {
@@ -61,28 +81,16 @@ func newModuleRegistry() *moduleRegistry {
 	}
 }
 
-// RegisterResolveHook 绑定节点路由解析能力。
-//
-// 设计说明：
-// - 只放解析入口，不把 settings 写入口混进来；
-// - capabilityHook 由这里统一接到能力列表，避免单独再拼一次；
-// - closeHook 只负责解绑，不负责业务清理。
-func (r *moduleRegistry) RegisterResolveHook(
-	capabilityHook func() *contractmessage.CapabilityItem,
-	resolveHook func(context.Context, string) (routeIndexManifest, error),
-	closeHook func(),
-) (func(), error) {
+func (r *moduleRegistry) registerCapabilityHook(hook func() *contractmessage.CapabilityItem) (func(), error) {
 	if r == nil {
 		return func() {}, nil
 	}
 	r.mu.Lock()
-	if r.capabilityHook != nil || r.resolveHook != nil || r.resolveClose != nil {
+	if r.capabilityHook != nil {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("resolve hook is already registered")
+		return nil, fmt.Errorf("capability hook is already registered")
 	}
-	r.capabilityHook = capabilityHook
-	r.resolveHook = resolveHook
-	r.resolveClose = closeHook
+	r.capabilityHook = hook
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -91,34 +99,79 @@ func (r *moduleRegistry) RegisterResolveHook(
 				return
 			}
 			r.mu.Lock()
-			if r.resolveClose != nil {
-				r.resolveClose()
-			}
 			r.capabilityHook = nil
-			r.resolveHook = nil
-			r.resolveClose = nil
 			r.mu.Unlock()
 		})
 	}, nil
 }
 
-// RegisterSettingsHooks 绑定 settings 管理面挂载口。
-//
-// 设计说明：
-// - 这里只登记挂载动作，不登记业务实现；
-// - HTTP 层只负责把路由转给这里，避免再写模块分支；
-// - 该钩子和解析钩子分开，避免一处变动牵连另一处。
-func (r *moduleRegistry) RegisterSettingsHooks(settingsHook func(*httpAPIServer, *http.ServeMux, string), closeHook func()) (func(), error) {
+func (r *moduleRegistry) RegisterP2PCallHook(hook P2PCallHook) (func(), error) {
 	if r == nil {
 		return func() {}, nil
+	}
+	if hook == nil {
+		return nil, fmt.Errorf("hook is required")
+	}
+	r.mu.Lock()
+	if r.p2pCallHook != nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("p2p call hook is already registered")
+	}
+	r.p2pCallHook = hook
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if r == nil {
+				return
+			}
+			r.mu.Lock()
+			r.p2pCallHook = nil
+			r.mu.Unlock()
+		})
+	}, nil
+}
+
+func (r *moduleRegistry) RegisterHTTPAPIHook(hook HTTPAPIHook) (func(), error) {
+	if r == nil {
+		return func() {}, nil
+	}
+	if hook == nil {
+		return nil, fmt.Errorf("hook is required")
+	}
+	r.mu.Lock()
+	if r.httpAPIHook != nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("http api hook is already registered")
+	}
+	r.httpAPIHook = hook
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if r == nil {
+				return
+			}
+			r.mu.Lock()
+			r.httpAPIHook = nil
+			r.mu.Unlock()
+		})
+	}, nil
+}
+
+func (r *moduleRegistry) RegisterSettingsHook(hook SettingsHook) (func(), error) {
+	if r == nil {
+		return func() {}, nil
+	}
+	if hook == nil {
+		return nil, fmt.Errorf("hook is required")
 	}
 	r.mu.Lock()
 	if r.settingsHook != nil {
 		r.mu.Unlock()
 		return nil, fmt.Errorf("settings hook is already registered")
 	}
-	r.settingsHook = settingsHook
-	r.settingsClose = closeHook
+	r.settingsHook = hook
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -127,47 +180,62 @@ func (r *moduleRegistry) RegisterSettingsHooks(settingsHook func(*httpAPIServer,
 				return
 			}
 			r.mu.Lock()
-			if r.settingsClose != nil {
-				r.settingsClose()
-			}
 			r.settingsHook = nil
-			r.settingsClose = nil
 			r.mu.Unlock()
 		})
 	}, nil
 }
 
-// RegisterOBSAction 把一个 obs 动作接到通用动作表。
-//
-// 设计说明：
-// - 这里只记录“动作 -> handler”，不写模块分支；
-// - 前缀只用来区分“模块没启用”和“动作漏接线”；
-// - 这里不依赖 contract 白名单，避免把模块动作错放到契约层。
-func (r *moduleRegistry) RegisterOBSAction(action string, handler OBSActionHandler) (func(), error) {
+func (r *moduleRegistry) RegisterOBSControlHook(hook OBSControlHook) (func(), error) {
 	if r == nil {
 		return func() {}, nil
 	}
-	action = strings.TrimSpace(action)
-	if action == "" {
-		return nil, fmt.Errorf("action is required")
+	if hook == nil {
+		return nil, fmt.Errorf("hook is required")
 	}
 	r.mu.Lock()
-	if r.obsHooks == nil {
-		r.obsHooks = map[string]obsActionHook{}
-	}
-	if r.obsPrefixCount == nil {
-		r.obsPrefixCount = map[string]int{}
-	}
-	if _, exists := r.obsHooks[action]; exists {
+	if r.obsHook != nil {
 		r.mu.Unlock()
-		return nil, fmt.Errorf("obs action is already registered: %s", action)
+		return nil, fmt.Errorf("obs control hook is already registered")
 	}
-	prefix := obsActionPrefix(action)
-	r.obsHooks[action] = obsActionHook{
-		action:  action,
-		handler: handler,
+	r.obsHook = hook
+	r.mu.Unlock()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if r == nil {
+				return
+			}
+			r.mu.Lock()
+			r.obsHook = nil
+			r.mu.Unlock()
+		})
+	}, nil
+}
+
+func (r *moduleRegistry) RegisterOpenHook(hook OpenHook) (func(), error) {
+	return r.registerLifecycleHook(&r.openHooks, hook)
+}
+
+func (r *moduleRegistry) RegisterCloseHook(hook CloseHook) (func(), error) {
+	return r.registerLifecycleHook(&r.closeHooks, hook)
+}
+
+func (r *moduleRegistry) RegisterModuleLockProvider(module string, provider modulelock.Provider) (func(), error) {
+	return r.registerModuleLockProvider(module, provider)
+}
+
+func (r *moduleRegistry) registerLifecycleHook(dst *[]lifecycleHookEntry, hook func(context.Context) error) (func(), error) {
+	if r == nil {
+		return func() {}, nil
 	}
-	r.obsPrefixCount[prefix]++
+	if hook == nil {
+		return nil, fmt.Errorf("hook is required")
+	}
+	r.mu.Lock()
+	r.nextHookID++
+	entry := lifecycleHookEntry{id: r.nextHookID, hook: hook}
+	*dst = append(*dst, entry)
 	r.mu.Unlock()
 
 	var once sync.Once
@@ -177,16 +245,13 @@ func (r *moduleRegistry) RegisterOBSAction(action string, handler OBSActionHandl
 				return
 			}
 			r.mu.Lock()
-			entry, ok := r.obsHooks[action]
-			if ok {
-				delete(r.obsHooks, action)
-				prefix := obsActionPrefix(entry.action)
-				if count := r.obsPrefixCount[prefix]; count <= 1 {
-					delete(r.obsPrefixCount, prefix)
-				} else {
-					r.obsPrefixCount[prefix] = count - 1
+			items := (*dst)[:0]
+			for _, item := range *dst {
+				if item.id != entry.id {
+					items = append(items, item)
 				}
 			}
+			*dst = items
 			r.mu.Unlock()
 		})
 	}, nil
@@ -225,13 +290,18 @@ func (r *moduleRegistry) moduleLockItems(modules ...string) ([]modulelock.Locked
 	return r.moduleLocks.Items(modules...)
 }
 
-// ResolveRoute 走通用解析钩子。
-func (r *moduleRegistry) ResolveRoute(ctx context.Context, route string) (routeIndexManifest, error) {
+func (r *moduleRegistry) DispatchP2PCall(ctx context.Context, route string) (routeIndexManifest, error) {
+	if ctx == nil {
+		return routeIndexManifest{}, newModuleHookError("BAD_REQUEST", "ctx is required")
+	}
+	if ctx.Err() != nil {
+		return routeIndexManifest{}, newModuleHookError("REQUEST_CANCELED", ctx.Err().Error())
+	}
 	if r == nil {
 		return routeIndexManifest{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
 	r.mu.RLock()
-	hook := r.resolveHook
+	hook := r.p2pCallHook
 	r.mu.RUnlock()
 	if hook == nil {
 		return routeIndexManifest{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
@@ -239,13 +309,12 @@ func (r *moduleRegistry) ResolveRoute(ctx context.Context, route string) (routeI
 	return hook(ctx, route)
 }
 
-// MountSettingsRoutes 只做 settings 路由挂载，不碰业务分支。
-func (r *moduleRegistry) MountSettingsRoutes(s *httpAPIServer, mux *http.ServeMux, prefix string) {
+func (r *moduleRegistry) MountHTTPAPI(s *httpAPIServer, mux *http.ServeMux, prefix string) {
 	if r == nil || s == nil || mux == nil {
 		return
 	}
 	r.mu.RLock()
-	hook := r.settingsHook
+	hook := r.httpAPIHook
 	r.mu.RUnlock()
 	if hook == nil {
 		return
@@ -253,47 +322,121 @@ func (r *moduleRegistry) MountSettingsRoutes(s *httpAPIServer, mux *http.ServeMu
 	hook(s, mux, prefix)
 }
 
-// CallOBSAction 走通用 obs 动作表。
-//
-// 设计说明：
-// - 同一前缀下只要挂过一个动作，就说明模块已启用；
-// - 同前缀动作缺 handler 时，直接报 handler not registered，尽早暴露漏接线；
-// - 这里不回查 contract，避免把模块白名单放错层。
-func (r *moduleRegistry) CallOBSAction(ctx context.Context, action string, payload map[string]any) (OBSActionResponse, error) {
+func (r *moduleRegistry) DispatchSettings(ctx context.Context, action string, payload map[string]any) (map[string]any, error) {
 	action = strings.TrimSpace(action)
-	if action == "" {
-		return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "action is required")
+	if ctx == nil {
+		return nil, newModuleHookError("BAD_REQUEST", "ctx is required")
 	}
+	if ctx.Err() != nil {
+		return nil, newModuleHookError("REQUEST_CANCELED", ctx.Err().Error())
+	}
+	if action == "" {
+		return nil, newModuleHookError("BAD_REQUEST", "action is required")
+	}
+	if r == nil {
+		return nil, newModuleHookError("MODULE_DISABLED", "module is disabled")
+	}
+	r.mu.RLock()
+	hook := r.settingsHook
+	r.mu.RUnlock()
+	if hook == nil {
+		return nil, newModuleHookError("MODULE_DISABLED", "module is disabled")
+	}
+	return hook(ctx, action, payload)
+}
+
+func (r *moduleRegistry) DispatchOBSControl(ctx context.Context, action string, payload map[string]any) (OBSActionResponse, error) {
+	action = strings.TrimSpace(action)
 	if ctx == nil {
 		return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "ctx is required")
+	}
+	if ctx.Err() != nil {
+		return OBSActionResponse{}, newModuleHookError("REQUEST_CANCELED", ctx.Err().Error())
+	}
+	if action == "" {
+		return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "action is required")
 	}
 	if r == nil {
 		return OBSActionResponse{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
-
 	r.mu.RLock()
-	entry, exists := r.obsHooks[action]
-	enabled := r.obsPrefixCount[obsActionPrefix(action)] > 0
+	hook := r.obsHook
 	r.mu.RUnlock()
-
-	if !exists || entry.handler == nil {
-		if !enabled {
+	if hook == nil {
+		if r.hasRegisteredOBSControlAction(action) {
 			return OBSActionResponse{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
 		}
-		return OBSActionResponse{}, newModuleHookError("HANDLER_NOT_REGISTERED", "handler not registered")
+		return OBSActionResponse{}, newModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
 	}
-	return entry.handler(ctx, payload)
+	return hook(ctx, action, payload)
 }
 
-func obsActionPrefix(action string) string {
-	action = strings.TrimSpace(action)
-	if action == "" {
-		return ""
+func (r *moduleRegistry) hasRegisteredOBSControlAction(action string) bool {
+	if r == nil || r.moduleLocks == nil {
+		return false
 	}
-	if idx := strings.LastIndex(action, "."); idx > 0 {
-		return action[:idx]
+	items, _ := r.moduleLocks.Items()
+	if len(items) == 0 {
+		return false
 	}
-	return action
+	for _, item := range items {
+		if strings.TrimSpace(item.ObsControlAction) == action {
+			return true
+		}
+	}
+	return false
+}
+
+func (r *moduleRegistry) RunOpenHooks(ctx context.Context) error {
+	return r.runLifecycleHooks(ctx, r.snapshotLifecycleHooks(true))
+}
+
+func (r *moduleRegistry) RunCloseHooks(ctx context.Context) error {
+	return r.runLifecycleHooks(ctx, r.snapshotLifecycleHooks(false))
+}
+
+func (r *moduleRegistry) snapshotLifecycleHooks(open bool) []lifecycleHookEntry {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var src []lifecycleHookEntry
+	if open {
+		src = r.openHooks
+	} else {
+		src = r.closeHooks
+	}
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]lifecycleHookEntry, len(src))
+	copy(out, src)
+	return out
+}
+
+func (r *moduleRegistry) runLifecycleHooks(ctx context.Context, hooks []lifecycleHookEntry) error {
+	if ctx == nil {
+		return newModuleHookError("BAD_REQUEST", "ctx is required")
+	}
+	if ctx.Err() != nil {
+		return newModuleHookError("REQUEST_CANCELED", ctx.Err().Error())
+	}
+	if r == nil {
+		return newModuleHookError("MODULE_DISABLED", "module is disabled")
+	}
+	if len(hooks) == 0 {
+		return nil
+	}
+	for _, item := range hooks {
+		if item.hook == nil {
+			continue
+		}
+		if err := item.hook(ctx); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func ensureModuleRegistry(rt *Runtime) *moduleRegistry {
@@ -307,8 +450,11 @@ func ensureModuleRegistry(rt *Runtime) *moduleRegistry {
 }
 
 // Modules 只返回可转发的模块能力，不暴露内部注册表实现。
-func (rt *Runtime) Modules() OBSActionCaller {
+func (rt *Runtime) Modules() ModuleHooks {
 	if rt == nil {
+		return nil
+	}
+	if rt.modules == nil {
 		return nil
 	}
 	return rt.modules
@@ -359,6 +505,11 @@ func newModuleHookError(code, message string) error {
 		code:    strings.TrimSpace(code),
 		message: strings.TrimSpace(message),
 	}
+}
+
+// NewModuleHookError 只给外层测试和桥接层创建统一模块错误壳用。
+func NewModuleHookError(code, message string) error {
+	return newModuleHookError(code, message)
 }
 
 func moduleHookCode(err error) string {

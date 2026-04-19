@@ -12,10 +12,13 @@ func TestModuleRegistryOBSActionDispatchesThroughGenericTable(t *testing.T) {
 
 	reg := newModuleRegistry()
 	called := false
-	cleanup, err := reg.RegisterOBSAction("settings.index_resolve.resolve", func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
+	cleanup, err := reg.RegisterOBSControlHook(func(ctx context.Context, action string, payload map[string]any) (OBSActionResponse, error) {
 		called = true
 		if ctx == nil {
 			return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "ctx is required")
+		}
+		if strings.TrimSpace(action) != "settings.index_resolve.resolve" {
+			return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "unexpected action")
 		}
 		if got := strings.TrimSpace(fmt.Sprint(payload["route"])); got != "movie" {
 			return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "unexpected route")
@@ -34,7 +37,7 @@ func TestModuleRegistryOBSActionDispatchesThroughGenericTable(t *testing.T) {
 	}
 	defer cleanup()
 
-	resp, err := reg.CallOBSAction(context.Background(), "settings.index_resolve.resolve", map[string]any{"route": "movie"})
+	resp, err := reg.DispatchOBSControl(context.Background(), "settings.index_resolve.resolve", map[string]any{"route": "movie"})
 	if err != nil {
 		t.Fatalf("call obs action failed: %v", err)
 	}
@@ -54,11 +57,14 @@ func TestModuleRegistryOBSActionReportsDisabledAndMissingHandlers(t *testing.T) 
 
 	reg := newModuleRegistry()
 
-	if _, err := reg.CallOBSAction(context.Background(), "settings.index_resolve.resolve", map[string]any{"route": "movie"}); err == nil || moduleHookCode(err) != "MODULE_DISABLED" {
-		t.Fatalf("expected module disabled, got %v", err)
+	if _, err := reg.DispatchOBSControl(context.Background(), "pricing.unknown", map[string]any{"route": "movie"}); err == nil || moduleHookCode(err) != "UNSUPPORTED_CONTROL_ACTION" {
+		t.Fatalf("expected unsupported control action, got %v", err)
 	}
 
-	cleanup, err := reg.RegisterOBSAction("settings.index_resolve.resolve", func(context.Context, map[string]any) (OBSActionResponse, error) {
+	cleanup, err := reg.RegisterOBSControlHook(func(ctx context.Context, action string, payload map[string]any) (OBSActionResponse, error) {
+		if strings.TrimSpace(action) != "settings.index_resolve.resolve" {
+			return OBSActionResponse{}, newModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
+		}
 		return OBSActionResponse{OK: true, Result: "resolved"}, nil
 	})
 	if err != nil {
@@ -66,7 +72,7 @@ func TestModuleRegistryOBSActionReportsDisabledAndMissingHandlers(t *testing.T) 
 	}
 	defer cleanup()
 
-	if _, err := reg.CallOBSAction(context.Background(), "settings.index_resolve.upsert", map[string]any{"route": "movie"}); err == nil || moduleHookCode(err) != "HANDLER_NOT_REGISTERED" {
-		t.Fatalf("expected handler not registered, got %v", err)
+	if _, err := reg.DispatchOBSControl(context.Background(), "settings.index_resolve.upsert", map[string]any{"route": "movie"}); err == nil || moduleHookCode(err) != "UNSUPPORTED_CONTROL_ACTION" {
+		t.Fatalf("expected unsupported control action, got %v", err)
 	}
 }

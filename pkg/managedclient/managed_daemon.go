@@ -935,9 +935,6 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 	}
 	req.Action = strings.TrimSpace(req.Action)
 	result.Action = req.Action
-	if out, handled := d.executeManagedSettingsOBSControlCommand(req); handled {
-		return out
-	}
 	var (
 		out controlCommandResult
 		err error
@@ -988,9 +985,9 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		controlActionWorkspaceSyncOnce:
 		out, err = d.executeManagedWorkspaceControlCommand(req)
 	default:
-		result.Result = "failed"
-		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
-		return result
+		// 剩余动作统一交给注册表分发，不在这里按前缀拆渠道。
+		out, err = d.executeManagedOBSControlCommand(req)
+		return out
 	}
 	if err != nil {
 		result.Result = "failed"
@@ -1000,10 +997,7 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 	return out
 }
 
-func (d *managedDaemon) executeManagedSettingsOBSControlCommand(req controlCommandRequest) (controlCommandResult, bool) {
-	if !strings.HasPrefix(strings.TrimSpace(req.Action), "settings.") {
-		return controlCommandResult{}, false
-	}
+func (d *managedDaemon) executeManagedOBSControlCommand(req controlCommandRequest) (controlCommandResult, error) {
 	result := controlCommandResult{
 		CommandID:    req.CommandID,
 		Action:       strings.TrimSpace(req.Action),
@@ -1014,16 +1008,16 @@ func (d *managedDaemon) executeManagedSettingsOBSControlCommand(req controlComma
 	rt := d.currentRuntime()
 	if rt == nil {
 		result.Result = "failed"
-		result.Error = "runtime not initialized"
-		return result, true
+		result.Error = "MODULE_DISABLED"
+		return result, fmt.Errorf("MODULE_DISABLED")
 	}
 	hooks := rt.Modules()
 	if hooks == nil {
 		result.Result = "failed"
 		result.Error = "MODULE_DISABLED"
-		return result, true
+		return result, fmt.Errorf("MODULE_DISABLED")
 	}
-	resp, err := hooks.CallOBSAction(d.rootCtx, req.Action, req.Payload)
+	resp, err := hooks.DispatchOBSControl(d.rootCtx, req.Action, req.Payload)
 	if err != nil {
 		result.Result = "failed"
 		switch code := clientapp.ModuleHookCodeOf(err); code {
@@ -1031,18 +1025,20 @@ func (d *managedDaemon) executeManagedSettingsOBSControlCommand(req controlComma
 			result.Error = "MODULE_DISABLED"
 		case "HANDLER_NOT_REGISTERED":
 			result.Error = "handler not registered"
+		case "UNSUPPORTED_CONTROL_ACTION":
+			result.Error = fmt.Sprintf("unsupported control action: %s", result.Action)
 		case "":
 			result.Error = err.Error()
 		default:
 			result.Error = fmt.Sprintf("%s: %s", code, clientapp.ModuleHookMessageOf(err))
 		}
-		return result, true
+		return result, err
 	}
 	result.OK = resp.OK
 	result.Result = resp.Result
 	result.Error = resp.Error
 	result.Payload = resp.Payload
-	return result, true
+	return result, nil
 }
 
 func managedObsControlHandleKeyCreateRandom(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {

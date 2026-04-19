@@ -66,25 +66,24 @@ func TestBootstrapStoreAndLifecycle(t *testing.T) {
 		t.Fatalf("module table missing: %v", err)
 	}
 
-	svc := NewService(store, nil)
-	item, err := svc.Upsert(context.Background(), "movie", strings.Repeat("aa", 32), 123)
+	item, err := BizSettingsUpsert(context.Background(), store, "movie", strings.Repeat("aa", 32))
 	if err != nil {
 		t.Fatalf("upsert: %v", err)
 	}
 	if item.Route != "/movie" {
 		t.Fatalf("unexpected route item: %+v", item)
 	}
-	manifest, err := svc.Resolve(context.Background(), "/movie")
+	manifest, err := BizResolve(context.Background(), store, "/movie")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	if manifest.SeedHash != strings.Repeat("aa", 32) || manifest.RecommendedFileName != "movie.mp4" {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
-	if err := svc.Delete(context.Background(), "movie"); err != nil {
+	if err := BizSettingsDelete(context.Background(), store, "movie"); err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	if _, err := svc.Resolve(context.Background(), "/movie"); err == nil || CodeOf(err) != "ROUTE_NOT_FOUND" {
+	if _, err := BizResolve(context.Background(), store, "/movie"); err == nil || CodeOf(err) != "ROUTE_NOT_FOUND" {
 		t.Fatalf("expected route not found after delete, got %v", err)
 	}
 }

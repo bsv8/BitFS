@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 	"testing"
 )
 
@@ -91,32 +90,29 @@ func TestNormalizeRoute(t *testing.T) {
 	}
 }
 
-func TestServiceSettingsAndResolve(t *testing.T) {
+func TestBizSettingsAndResolve(t *testing.T) {
 	t.Parallel()
 	store := &fakeStore{
 		routes: map[string]Manifest{},
-	}
-	store.seeds = map[string]SeedItem{
-		"abababababababababababababababababababababababababababababababab": {
-			SeedHash:            "abababababababababababababababababababababababababababababababab",
-			RecommendedFileName: "movie.mp4",
-			MIMEHint:            "video/mp4",
-			FileSize:            1234,
+		seeds: map[string]SeedItem{
+			"abababababababababababababababababababababababababababababababab": {
+				SeedHash:            "abababababababababababababababababababababababababababababababab",
+				RecommendedFileName: "movie.mp4",
+				MIMEHint:            "video/mp4",
+				FileSize:            1234,
+			},
 		},
 	}
-	svc := NewService(store, nil)
-	if cap := svc.Capability(); cap == nil || strings.TrimSpace(cap.ID) == "" {
-		t.Fatal("capability should exist")
-	}
 
-	routeItem, err := svc.Upsert(context.Background(), "movie", "abababababababababababababababababababababababababababababababab", 100)
+	routeItem, err := BizSettingsUpsert(context.Background(), store, "movie", "abababababababababababababababababababababababababababababababab")
 	if err != nil {
 		t.Fatalf("upsert failed: %v", err)
 	}
 	if routeItem.Route != "/movie" {
 		t.Fatalf("unexpected route item: %+v", routeItem)
 	}
-	manifest, err := svc.Resolve(context.Background(), "/movie")
+
+	manifest, err := BizResolve(context.Background(), store, "/movie")
 	if err != nil {
 		t.Fatalf("resolve failed: %v", err)
 	}
@@ -124,27 +120,33 @@ func TestServiceSettingsAndResolve(t *testing.T) {
 		t.Fatalf("unexpected manifest: %+v", manifest)
 	}
 
-	if err := svc.Delete(context.Background(), "movie"); err != nil {
+	items, err := BizSettingsList(context.Background(), store)
+	if err != nil {
+		t.Fatalf("list failed: %v", err)
+	}
+	if len(items) != 1 || items[0].Route != "/movie" {
+		t.Fatalf("unexpected list: %+v", items)
+	}
+
+	if err := BizSettingsDelete(context.Background(), store, "movie"); err != nil {
 		t.Fatalf("delete failed: %v", err)
 	}
-	if _, err := svc.Resolve(context.Background(), "/movie"); err == nil || CodeOf(err) != "ROUTE_NOT_FOUND" {
+	if _, err := BizResolve(context.Background(), store, "/movie"); err == nil || CodeOf(err) != "ROUTE_NOT_FOUND" {
 		t.Fatalf("expected route not found, got %v", err)
 	}
 }
 
-func TestServiceRejectsBadSeedHash(t *testing.T) {
+func TestBizSettingsRejectsBadSeedHash(t *testing.T) {
 	t.Parallel()
-	svc := NewService(&fakeStore{}, nil)
-	_, err := svc.Upsert(context.Background(), "movie", "123", 0)
+	_, err := BizSettingsUpsert(context.Background(), &fakeStore{}, "movie", "123")
 	if err == nil || CodeOf(err) != "SEED_HASH_INVALID" {
 		t.Fatalf("expected seed hash invalid, got %v", err)
 	}
 }
 
-func TestServiceRejectsMissingSeed(t *testing.T) {
+func TestBizSettingsRejectsMissingSeed(t *testing.T) {
 	t.Parallel()
-	svc := NewService(&fakeStore{seeds: map[string]SeedItem{}}, nil)
-	_, err := svc.Upsert(context.Background(), "movie", "abababababababababababababababababababababababababababababababab", 0)
+	_, err := BizSettingsUpsert(context.Background(), &fakeStore{seeds: map[string]SeedItem{}}, "movie", "abababababababababababababababababababababababababababababababab")
 	if err == nil || CodeOf(err) != "SEED_NOT_FOUND" {
 		t.Fatalf("expected seed not found, got %v", err)
 	}

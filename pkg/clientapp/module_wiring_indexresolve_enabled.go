@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 
-	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
@@ -59,11 +58,15 @@ type settingsIndexResolveRouteItem struct {
 	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
+type indexResolveSettingsDispatcher interface {
+	DispatchSettings(context.Context, string, map[string]any) (map[string]any, error)
+}
+
 // registerOptionalModules 只负责把可选模块接到主框架钩子上。
 //
 // 设计说明：
 // - 这里是唯一允许引用 indexresolve 模块实现包的地方；
-// - 模块自己的 store、能力、settings 路由、obs 动作都在这里接线；
+// - 模块自己的 store、能力、HTTP 面、settings、obs 和生命周期都在这里接线；
 // - cleanup 只负责解绑钩子，模块能力的生死由编译期开关决定。
 func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolveBootstrapStore) (func(), error) {
 	if rt == nil || store == nil {
@@ -95,153 +98,171 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		return nil, err
 	}
 
-	resolveCleanup, err := reg.RegisterResolveHook(
-		func() *contractmessage.CapabilityItem {
-			return indexresolve.CapabilityItem()
-		},
-		func(ctx context.Context, route string) (routeIndexManifest, error) {
-			manifest, err := indexresolve.BizResolve(ctx, moduleStore, route)
-			if err != nil {
-				return routeIndexManifest{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
-			}
-			return routeIndexManifest{
-				Route:               manifest.Route,
-				SeedHash:            manifest.SeedHash,
-				RecommendedFileName: manifest.RecommendedFileName,
-				MIMEHint:            manifest.MIMEHint,
-				FileSize:            manifest.FileSize,
-				UpdatedAtUnix:       manifest.UpdatedAtUnix,
-			}, nil
-		},
-		func() {},
-	)
+	capabilityCleanup, err := reg.registerCapabilityHook(indexresolve.CapabilityItem)
 	if err != nil {
 		moduleCleanup()
 		return nil, err
 	}
-	settingsCleanup, err := reg.RegisterSettingsHooks(
-		func(s *httpAPIServer, mux *http.ServeMux, prefix string) {
-			if s == nil || mux == nil {
-				return
-			}
-			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(newIndexResolveSettingsHTTPHandler(reg)))
-		},
-		func() {},
-	)
-	if err != nil {
-		resolveCleanup()
-		moduleCleanup()
-		return nil, err
-	}
-	registerAction := func(action string, fn OBSActionHandler) (func(), error) {
-		return reg.RegisterOBSAction(action, fn)
-	}
-	resolveActionCleanup, err := registerAction(obsActionIndexResolveResolve, func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
-		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+	p2pCleanup, err := reg.RegisterP2PCallHook(func(ctx context.Context, route string) (routeIndexManifest, error) {
 		manifest, err := indexresolve.BizResolve(ctx, moduleStore, route)
 		if err != nil {
-			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+			return routeIndexManifest{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
 		}
-		return OBSActionResponse{
-			OK:     true,
-			Result: "resolved",
-			Payload: map[string]any{
+		return routeIndexManifest{
+			Route:               manifest.Route,
+			SeedHash:            manifest.SeedHash,
+			RecommendedFileName: manifest.RecommendedFileName,
+			MIMEHint:            manifest.MIMEHint,
+			FileSize:            manifest.FileSize,
+			UpdatedAtUnix:       manifest.UpdatedAtUnix,
+		}, nil
+	})
+	if err != nil {
+		capabilityCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	httpAPICleanup, err := reg.RegisterHTTPAPIHook(func(s *httpAPIServer, mux *http.ServeMux, prefix string) {
+		if s == nil || mux == nil {
+			return
+		}
+		mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(newIndexResolveSettingsHTTPHandler(reg)))
+	})
+	if err != nil {
+		p2pCleanup()
+		capabilityCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	settingsCleanup, err := reg.RegisterSettingsHook(func(ctx context.Context, action string, payload map[string]any) (map[string]any, error) {
+		switch strings.TrimSpace(action) {
+		case obsActionIndexResolveResolve:
+			route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+			manifest, err := indexresolve.BizResolve(ctx, moduleStore, route)
+			if err != nil {
+				return nil, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+			}
+			return map[string]any{
 				"route":                 manifest.Route,
 				"seed_hash":             manifest.SeedHash,
 				"recommended_file_name": manifest.RecommendedFileName,
 				"mime_hint":             manifest.MIMEHint,
 				"file_size":             manifest.FileSize,
 				"updated_at_unix":       manifest.UpdatedAtUnix,
-			},
-		}, nil
-	})
-	if err != nil {
-		settingsCleanup()
-		resolveCleanup()
-		moduleCleanup()
-		return nil, err
-	}
-	listActionCleanup, err := registerAction(obsActionIndexResolveList, func(ctx context.Context, _ map[string]any) (OBSActionResponse, error) {
-		items, err := indexresolve.BizSettingsList(ctx, moduleStore)
-		if err != nil {
-			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
-		}
-		return OBSActionResponse{
-			OK:     true,
-			Result: "listed",
-			Payload: map[string]any{
+			}, nil
+		case obsActionIndexResolveList:
+			items, err := indexresolve.BizSettingsList(ctx, moduleStore)
+			if err != nil {
+				return nil, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+			}
+			return map[string]any{
 				"total": len(items),
 				"items": items,
-			},
-		}, nil
-	})
-	if err != nil {
-		resolveActionCleanup()
-		settingsCleanup()
-		resolveCleanup()
-		moduleCleanup()
-		return nil, err
-	}
-	upsertActionCleanup, err := registerAction(obsActionIndexResolveUpsert, func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
-		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
-		seedHash := strings.TrimSpace(fmt.Sprint(payload["seed_hash"]))
-		item, err := indexresolve.BizSettingsUpsert(ctx, moduleStore, route, seedHash)
-		if err != nil {
-			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
-		}
-		return OBSActionResponse{
-			OK:     true,
-			Result: "upserted",
-			Payload: map[string]any{
+			}, nil
+		case obsActionIndexResolveUpsert:
+			route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+			seedHash := strings.TrimSpace(fmt.Sprint(payload["seed_hash"]))
+			item, err := indexresolve.BizSettingsUpsert(ctx, moduleStore, route, seedHash)
+			if err != nil {
+				return nil, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+			}
+			return map[string]any{
 				"route":           item.Route,
 				"seed_hash":       item.SeedHash,
 				"updated_at_unix": item.UpdatedAtUnix,
-			},
-		}, nil
+			}, nil
+		case obsActionIndexResolveDelete:
+			route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+			if err := indexresolve.BizSettingsDelete(ctx, moduleStore, route); err != nil {
+				return nil, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+			}
+			return map[string]any{
+				"deleted": true,
+				"route":   strings.TrimSpace(route),
+			}, nil
+		default:
+			return nil, newModuleHookError("UNSUPPORTED_SETTINGS_ACTION", "unsupported settings action")
+		}
 	})
 	if err != nil {
-		listActionCleanup()
-		resolveActionCleanup()
-		settingsCleanup()
-		resolveCleanup()
+		httpAPICleanup()
+		p2pCleanup()
+		capabilityCleanup()
 		moduleCleanup()
 		return nil, err
 	}
-	deleteActionCleanup, err := registerAction(obsActionIndexResolveDelete, func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
-		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
-		if err := indexresolve.BizSettingsDelete(ctx, moduleStore, route); err != nil {
-			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+	obsCleanup, err := reg.RegisterOBSControlHook(func(ctx context.Context, action string, payload map[string]any) (OBSActionResponse, error) {
+		switch strings.TrimSpace(action) {
+		case obsActionIndexResolveResolve:
+			out, err := reg.DispatchSettings(ctx, obsActionIndexResolveResolve, payload)
+			if err != nil {
+				return OBSActionResponse{}, err
+			}
+			return OBSActionResponse{OK: true, Result: "resolved", Payload: out}, nil
+		case obsActionIndexResolveList:
+			out, err := reg.DispatchSettings(ctx, obsActionIndexResolveList, payload)
+			if err != nil {
+				return OBSActionResponse{}, err
+			}
+			return OBSActionResponse{OK: true, Result: "listed", Payload: out}, nil
+		case obsActionIndexResolveUpsert:
+			out, err := reg.DispatchSettings(ctx, obsActionIndexResolveUpsert, payload)
+			if err != nil {
+				return OBSActionResponse{}, err
+			}
+			return OBSActionResponse{OK: true, Result: "upserted", Payload: out}, nil
+		case obsActionIndexResolveDelete:
+			out, err := reg.DispatchSettings(ctx, obsActionIndexResolveDelete, payload)
+			if err != nil {
+				return OBSActionResponse{}, err
+			}
+			return OBSActionResponse{OK: true, Result: "deleted", Payload: out}, nil
+		default:
+			return OBSActionResponse{}, newModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
 		}
-		return OBSActionResponse{
-			OK:     true,
-			Result: "deleted",
-			Payload: map[string]any{
-				"deleted": true,
-				"route":   strings.TrimSpace(route),
-			},
-		}, nil
 	})
 	if err != nil {
-		upsertActionCleanup()
-		listActionCleanup()
-		resolveActionCleanup()
 		settingsCleanup()
-		resolveCleanup()
+		httpAPICleanup()
+		p2pCleanup()
+		capabilityCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	openCleanup, err := reg.RegisterOpenHook(func(context.Context) error { return nil })
+	if err != nil {
+		obsCleanup()
+		settingsCleanup()
+		httpAPICleanup()
+		p2pCleanup()
+		capabilityCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	closeCleanup, err := reg.RegisterCloseHook(func(context.Context) error { return nil })
+	if err != nil {
+		openCleanup()
+		obsCleanup()
+		settingsCleanup()
+		httpAPICleanup()
+		p2pCleanup()
+		capabilityCleanup()
 		moduleCleanup()
 		return nil, err
 	}
 	return func() {
-		deleteActionCleanup()
-		upsertActionCleanup()
-		listActionCleanup()
-		resolveActionCleanup()
+		closeCleanup()
+		openCleanup()
+		obsCleanup()
 		settingsCleanup()
-		resolveCleanup()
+		httpAPICleanup()
+		p2pCleanup()
+		capabilityCleanup()
 		moduleCleanup()
 	}, nil
 }
 
-func newIndexResolveSettingsHTTPHandler(reg OBSActionCaller) http.HandlerFunc {
+func newIndexResolveSettingsHTTPHandler(reg indexResolveSettingsDispatcher) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r == nil {
 			writeModuleSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "request is required")
@@ -256,12 +277,12 @@ func newIndexResolveSettingsHTTPHandler(reg OBSActionCaller) http.HandlerFunc {
 			writeModuleSettingsError(w, http.StatusServiceUnavailable, "MODULE_DISABLED", "module is disabled")
 			return
 		}
-		resp, err := reg.CallOBSAction(r.Context(), action, payload)
+		out, err := reg.DispatchSettings(r.Context(), action, payload)
 		if err != nil {
 			writeModuleSettingsError(w, moduleSettingsStatusFromHookErr(err), ModuleHookCodeOf(err), ModuleHookMessageOf(err))
 			return
 		}
-		writeModuleSettingsOK(w, indexResolveSettingsPayloadForHTTP(action, resp.Payload))
+		writeModuleSettingsOK(w, indexResolveSettingsPayloadForHTTP(action, out))
 	}
 }
 

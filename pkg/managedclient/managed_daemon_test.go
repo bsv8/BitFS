@@ -17,6 +17,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/chainbridge"
 	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
 	libp2p "github.com/libp2p/go-libp2p"
@@ -24,10 +25,11 @@ import (
 )
 
 type managedOBSActionRegistrar interface {
-	RegisterOBSAction(string, clientapp.OBSActionHandler) (func(), error)
+	RegisterOBSControlHook(clientapp.OBSControlHook) (func(), error)
+	RegisterModuleLockProvider(string, modulelock.Provider) (func(), error)
 }
 
-func mustRegisterManagedOBSAction(t *testing.T, rt *clientapp.Runtime, action string, handler clientapp.OBSActionHandler) func() {
+func mustRegisterManagedOBSAction(t *testing.T, rt *clientapp.Runtime, action string, handler func(context.Context, map[string]any) (clientapp.OBSActionResponse, error)) func() {
 	t.Helper()
 	if rt == nil {
 		t.Fatal("runtime is nil")
@@ -36,7 +38,31 @@ func mustRegisterManagedOBSAction(t *testing.T, rt *clientapp.Runtime, action st
 	if !ok || registrar == nil {
 		t.Fatal("runtime modules do not support obs registration")
 	}
-	cleanup, err := registrar.RegisterOBSAction(action, handler)
+	lockCleanup, err := registrar.RegisterModuleLockProvider("managed_test_obs", func() []modulelock.LockedFunction {
+		return []modulelock.LockedFunction{
+			{
+				ID:               "managed_test_obs." + strings.ReplaceAll(strings.TrimSpace(action), ".", "_"),
+				Module:           "managed_test_obs",
+				Package:          "./pkg/managedclient",
+				Symbol:           "mustRegisterManagedOBSAction",
+				Signature:        "func(ctx context.Context, payload map[string]any) (OBSActionResponse, error)",
+				ObsControlAction: strings.TrimSpace(action),
+				Note:             "managed client test hook",
+			},
+		}
+	})
+	if err != nil {
+		t.Fatalf("register obs action lock %s failed: %v", action, err)
+	}
+	if lockCleanup != nil {
+		t.Cleanup(lockCleanup)
+	}
+	cleanup, err := registrar.RegisterOBSControlHook(func(ctx context.Context, gotAction string, payload map[string]any) (clientapp.OBSActionResponse, error) {
+		if strings.TrimSpace(gotAction) != strings.TrimSpace(action) {
+			return clientapp.OBSActionResponse{}, clientapp.NewModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
+		}
+		return handler(ctx, payload)
+	})
 	if err != nil {
 		t.Fatalf("register obs action %s failed: %v", action, err)
 	}
@@ -1660,8 +1686,8 @@ func TestHandleManagedControlCommand_SettingsIndexResolveMissingHandlerReturnsRe
 	if !ok {
 		t.Fatal("command result event not found")
 	}
-	if got := strings.TrimSpace(result["error"]); !strings.Contains(got, "handler not registered") {
-		t.Fatalf("unexpected error=%q, want handler not registered", got)
+	if got := strings.TrimSpace(result["error"]); !strings.Contains(got, "unsupported control action") {
+		t.Fatalf("unexpected error=%q, want unsupported control action", got)
 	}
 }
 
@@ -1763,15 +1789,15 @@ func TestManagedObsControlDispatchUsesGenericRegistry(t *testing.T) {
 	mustRegisterManagedOBSAction(t, rt, "settings.index_resolve.resolve", func(context.Context, map[string]any) (clientapp.OBSActionResponse, error) {
 		return clientapp.OBSActionResponse{OK: true, Result: "resolved"}, nil
 	})
-	resp, err := rt.Modules().CallOBSAction(t.Context(), "settings.index_resolve.resolve", map[string]any{"route": "movie"})
+	resp, err := rt.Modules().DispatchOBSControl(t.Context(), "settings.index_resolve.resolve", map[string]any{"route": "movie"})
 	if err != nil {
 		t.Fatalf("call obs action failed: %v", err)
 	}
 	if !resp.OK || strings.TrimSpace(resp.Result) != "resolved" {
 		t.Fatalf("unexpected obs response: %+v", resp)
 	}
-	if _, err := rt.Modules().CallOBSAction(t.Context(), "settings.index_resolve.upsert", map[string]any{"route": "movie"}); err == nil || clientapp.ModuleHookCodeOf(err) != "HANDLER_NOT_REGISTERED" {
-		t.Fatalf("expected handler not registered, got %v", err)
+	if _, err := rt.Modules().DispatchOBSControl(t.Context(), "settings.index_resolve.upsert", map[string]any{"route": "movie"}); err == nil || clientapp.ModuleHookCodeOf(err) != "UNSUPPORTED_CONTROL_ACTION" {
+		t.Fatalf("expected unsupported control action, got %v", err)
 	}
 }
 

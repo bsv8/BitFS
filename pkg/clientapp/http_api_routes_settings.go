@@ -7,6 +7,6 @@ func (s *httpAPIServer) registerHTTPRouteSettings(mux *http.ServeMux, prefix str
 	mux.HandleFunc(prefix+"/v1/settings/user", s.withAuth(s.handleUserSettings))
 	mux.HandleFunc(prefix+"/v1/settings/user/schema", s.withAuth(s.handleUserSettingsSchema))
 	if s != nil && s.rt != nil && s.rt.modules != nil {
-		s.rt.modules.MountSettingsRoutes(s, mux, prefix)
+		s.rt.modules.MountHTTPAPI(s, mux, prefix)
 	}
 }

@@ -333,6 +333,17 @@ func (p *runStartupPhases) StartServices() error {
 	} else if closeModule != nil {
 		st.closeModules = append(st.closeModules, closeModule)
 	}
+	if rt.modules != nil {
+		if err := rt.modules.RunOpenHooks(st.rtCtx); err != nil {
+			for i := len(st.closeModules) - 1; i >= 0; i-- {
+				if st.closeModules[i] != nil {
+					st.closeModules[i]()
+				}
+			}
+			st.closeModules = nil
+			return err
+		}
+	}
 	registerLiveHandlers(st.store, rt)
 	registerNodeRouteHandlers(rt, st.store)
 	registerResolverHandlers(rt)
@@ -441,6 +452,14 @@ func (p *runStartupPhases) BindShutdown() error {
 			st.removeObs()
 			st.removeObs = nil
 		}
+		var firstErr error
+		if rt.modules != nil {
+			shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(rtCtx), 5*time.Second)
+			if err := rt.modules.RunCloseHooks(shutdownCtx); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			cancel()
+		}
 		for i := len(st.closeModules) - 1; i >= 0; i-- {
 			if st.closeModules[i] != nil {
 				st.closeModules[i]()
@@ -450,7 +469,6 @@ func (p *runStartupPhases) BindShutdown() error {
 		if rt.modules != nil {
 			rt.modules = nil
 		}
-		var firstErr error
 		if err := st.host.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
