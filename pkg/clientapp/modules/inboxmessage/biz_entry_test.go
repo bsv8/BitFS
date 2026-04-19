@@ -169,7 +169,7 @@ func TestBizDetailNotFound(t *testing.T) {
 		receipt   InboxReceipt
 	})}
 	_, err := BizDetail(context.Background(), store, 999)
-	if err == nil || !stringsContains(CodeOf(err), "NOT_FOUND") && !stringsContains(err.Error(), "NOT_FOUND") {
+	if err == nil || CodeOf(err) != "NOT_FOUND" {
 		t.Fatalf("expected NOT_FOUND, got: %v", err)
 	}
 }
@@ -209,15 +209,39 @@ func TestErrorHelpers(t *testing.T) {
 	}
 }
 
-func stringsContains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsSubstring(s, substr))
+func TestMapBizStoreErrorNoRows(t *testing.T) {
+	t.Parallel()
+	err := mapBizStoreError(sql.ErrNoRows)
+	if err == nil || CodeOf(err) != "NOT_FOUND" {
+		t.Fatalf("expected NOT_FOUND, got: %v", err)
+	}
 }
 
-func containsSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
+func TestMapBizStoreErrorCanceled(t *testing.T) {
+	t.Parallel()
+	err := mapBizStoreError(context.Canceled)
+	if err == nil || CodeOf(err) != "REQUEST_CANCELED" {
+		t.Fatalf("expected REQUEST_CANCELED, got: %v", err)
 	}
-	return false
+	err = mapBizStoreError(context.DeadlineExceeded)
+	if err == nil || CodeOf(err) != "REQUEST_CANCELED" {
+		t.Fatalf("expected REQUEST_CANCELED, got: %v", err)
+	}
+}
+
+func TestMapBizStoreErrorPreservesTypedError(t *testing.T) {
+	t.Parallel()
+	input := NewError("BAD_REQUEST", "typed")
+	err := mapBizStoreError(input)
+	if CodeOf(err) != "BAD_REQUEST" {
+		t.Fatalf("expected typed error to pass through, got: %v", err)
+	}
+}
+
+func TestMapBizStoreErrorFallbackInternal(t *testing.T) {
+	t.Parallel()
+	err := mapBizStoreError(errors.New("boom"))
+	if err == nil || CodeOf(err) != "INTERNAL_ERROR" {
+		t.Fatalf("expected INTERNAL_ERROR, got: %v", err)
+	}
 }

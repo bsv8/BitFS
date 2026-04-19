@@ -16,6 +16,7 @@ import (
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
 	oldproto "github.com/golang/protobuf/proto"
 )
 
@@ -74,7 +75,7 @@ func TestCallAndResolveRoundTripOverP2P(t *testing.T) {
 
 	callOut, err := TriggerPeerCall(context.Background(), senderRT, TriggerPeerCallParams{
 		To:          receiverPubKeyHex,
-		Route:       routeInboxMessage,
+		Route:       inboxmessage.InboxMessageRoute,
 		ContentType: "application/json",
 		Body:        []byte(`{"subject":"hello","message":"world"}`),
 		Store:       senderStore,
@@ -220,7 +221,7 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/call", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"inbox.message","content_type":"application/json","body":{"hello":"world"}}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/call", strings.NewReader(`{"to":"`+receiverPubKeyHex+`","route":"`+inboxmessage.InboxMessageRoute+`","content_type":"application/json","body":{"hello":"world"}}`))
 		rec := httptest.NewRecorder()
 		senderSrv.handleCall(rec, req)
 		if rec.Code != http.StatusOK {
@@ -236,33 +237,94 @@ func TestHTTPAPICallResolveInboxAndRouteIndex(t *testing.T) {
 	}
 
 	{
-		req := httptest.NewRequest(http.MethodGet, "/api/v1/inbox/messages", nil)
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/settings/inbox/messages", nil)
 		rec := httptest.NewRecorder()
-		receiverSrv.handleInboxMessages(rec, req)
+		receiverHandler.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("inbox list status mismatch: got=%d body=%s", rec.Code, rec.Body.String())
 		}
+		if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			t.Fatalf("expected unified ok body: %s", rec.Body.String())
+		}
 		var body struct {
-			Total int `json:"total"`
-			Items []struct {
-				ID int64 `json:"id"`
-			} `json:"items"`
+			Status string `json:"status"`
+			Data   struct {
+				Total int `json:"total"`
+				Items []struct {
+					ID int64 `json:"id"`
+				} `json:"items"`
+			} `json:"data"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
 			t.Fatalf("decode inbox list: %v", err)
 		}
-		if body.Total != 1 || len(body.Items) != 1 {
+		if body.Data.Total != 1 || len(body.Data.Items) != 1 {
 			t.Fatalf("unexpected inbox list: %s", rec.Body.String())
 		}
+	}
 
-		detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/inbox/messages/detail?id="+strconv.FormatInt(body.Items[0].ID, 10), nil)
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/inbox/messages", nil)
+		rec := httptest.NewRecorder()
+		receiverHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("inbox list method check mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Status string `json:"status"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode inbox list 405 response: %v", err)
+		}
+		if body.Status != "error" || body.Error.Code != "METHOD_NOT_ALLOWED" || body.Error.Message != "method not allowed" {
+			t.Fatalf("unexpected inbox list 405 body: %s", rec.Body.String())
+		}
+	}
+
+	{
+		detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/settings/inbox/messages/detail?id="+strconv.FormatInt(1, 10), nil)
 		detailRec := httptest.NewRecorder()
-		receiverSrv.handleInboxMessageDetail(detailRec, detailReq)
+		receiverHandler.ServeHTTP(detailRec, detailReq)
 		if detailRec.Code != http.StatusOK {
 			t.Fatalf("inbox detail status mismatch: got=%d body=%s", detailRec.Code, detailRec.Body.String())
 		}
 		if !strings.Contains(detailRec.Body.String(), `"body_json"`) {
 			t.Fatalf("expected decoded json body in detail: %s", detailRec.Body.String())
+		}
+	}
+
+	{
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/settings/inbox/messages/detail?id=1", nil)
+		rec := httptest.NewRecorder()
+		receiverHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("inbox detail method check mismatch: got=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var body struct {
+			Status string `json:"status"`
+			Error  struct {
+				Code    string `json:"code"`
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode inbox detail 405 response: %v", err)
+		}
+		if body.Status != "error" || body.Error.Code != "METHOD_NOT_ALLOWED" || body.Error.Message != "method not allowed" {
+			t.Fatalf("unexpected inbox detail 405 body: %s", rec.Body.String())
+		}
+	}
+
+	{
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/inbox/messages", nil)
+		rec := httptest.NewRecorder()
+		receiverHandler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("old inbox path should return 404, got=%d body=%s", rec.Code, rec.Body.String())
 		}
 	}
 

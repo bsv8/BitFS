@@ -2,6 +2,8 @@ package inboxmessage
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"time"
 )
@@ -97,11 +99,15 @@ func mapBizStoreError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if strings.Contains(err.Error(), "NOT_FOUND") || strings.Contains(err.Error(), "no rows in result") {
+	if errors.Is(err, sql.ErrNoRows) {
 		return NewError("NOT_FOUND", "inbox message not found")
 	}
-	if strings.Contains(err.Error(), "context cancel") || strings.Contains(err.Error(), "context deadline") {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return NewError("REQUEST_CANCELED", err.Error())
+	}
+	var typed *Error
+	if errors.As(err, &typed) {
+		return err
 	}
 	return NewError("INTERNAL_ERROR", err.Error())
 }

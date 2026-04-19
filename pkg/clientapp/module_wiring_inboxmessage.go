@@ -121,57 +121,41 @@ func registerInboxMessageModule(ctx context.Context, rt *Runtime, store moduleBo
 func handleInboxMessagesSettings(store inboxmessage.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			writeInboxMessageSettingsError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 			return
 		}
 		if store == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "error", "error": map[string]any{"code": "MODULE_DISABLED", "message": "module disabled"}})
+			writeInboxMessageSettingsError(w, http.StatusServiceUnavailable, "MODULE_DISABLED", "module is disabled")
 			return
 		}
 		items, err := inboxmessage.BizList(r.Context(), store)
 		if err != nil {
-			code := inboxmessage.CodeOf(err)
-			msg := inboxmessage.MessageOf(err)
-			if code == "" {
-				code = "INTERNAL_ERROR"
-				msg = err.Error()
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "error": map[string]any{"code": code, "message": msg}})
+			writeInboxMessageSettingsError(w, inboxMessageSettingsStatusFromError(err), inboxMessageErrorCode(err), inboxMessageErrorMessage(err))
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "data": map[string]any{"total": len(items), "items": items}})
+		writeInboxMessageSettingsOK(w, map[string]any{"total": len(items), "items": items})
 	}
 }
 
 func handleInboxMessageDetailSettings(store inboxmessage.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+			writeInboxMessageSettingsError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 			return
 		}
 		if store == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"status": "error", "error": map[string]any{"code": "MODULE_DISABLED", "message": "module disabled"}})
+			writeInboxMessageSettingsError(w, http.StatusServiceUnavailable, "MODULE_DISABLED", "module is disabled")
 			return
 		}
 		idStr := strings.TrimSpace(r.URL.Query().Get("id"))
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil || id <= 0 {
-			writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "error": map[string]any{"code": "BAD_REQUEST", "message": "invalid id"}})
+			writeInboxMessageSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid id")
 			return
 		}
 		detail, err := inboxmessage.BizDetail(r.Context(), store, id)
 		if err != nil {
-			code := inboxmessage.CodeOf(err)
-			msg := inboxmessage.MessageOf(err)
-			if code == "NOT_FOUND" {
-				writeJSON(w, http.StatusNotFound, map[string]any{"status": "error", "error": map[string]any{"code": code, "message": msg}})
-				return
-			}
-			if code == "" {
-				code = "INTERNAL_ERROR"
-				msg = err.Error()
-			}
-			writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "error": map[string]any{"code": code, "message": msg}})
+			writeInboxMessageSettingsError(w, inboxMessageSettingsStatusFromError(err), inboxMessageErrorCode(err), inboxMessageErrorMessage(err))
 			return
 		}
 		out := map[string]any{
@@ -193,6 +177,53 @@ func handleInboxMessageDetailSettings(store inboxmessage.Store) http.HandlerFunc
 				}
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "data": out})
+		writeInboxMessageSettingsOK(w, out)
 	}
+}
+
+func writeInboxMessageSettingsOK(w http.ResponseWriter, data any) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"data":   data,
+	})
+}
+
+func writeInboxMessageSettingsError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    strings.TrimSpace(code),
+			"message": strings.TrimSpace(message),
+		},
+	})
+}
+
+func inboxMessageSettingsStatusFromError(err error) int {
+	switch inboxmessage.CodeOf(err) {
+	case "BAD_REQUEST":
+		return http.StatusBadRequest
+	case "NOT_FOUND":
+		return http.StatusNotFound
+	case "MODULE_DISABLED":
+		return http.StatusServiceUnavailable
+	case "REQUEST_CANCELED":
+		return 499
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func inboxMessageErrorCode(err error) string {
+	code := inboxmessage.CodeOf(err)
+	if code != "" {
+		return code
+	}
+	return "INTERNAL_ERROR"
+}
+
+func inboxMessageErrorMessage(err error) string {
+	if msg := inboxmessage.MessageOf(err); msg != "" {
+		return msg
+	}
+	return "internal error"
 }

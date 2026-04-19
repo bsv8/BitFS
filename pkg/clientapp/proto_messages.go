@@ -6,10 +6,6 @@ func (m *healthReq) Reset()         { *m = healthReq{} }
 func (m *healthReq) String() string { return oldproto.CompactTextString(m) }
 func (*healthReq) ProtoMessage()    {}
 
-func (m *inboxReceipt) Reset()         { *m = inboxReceipt{} }
-func (m *inboxReceipt) String() string { return oldproto.CompactTextString(m) }
-func (*inboxReceipt) ProtoMessage()    {}
-
 func (m *routeIndexManifest) Reset()         { *m = routeIndexManifest{} }
 func (m *routeIndexManifest) String() string { return oldproto.CompactTextString(m) }
 func (*routeIndexManifest) ProtoMessage()    {}
