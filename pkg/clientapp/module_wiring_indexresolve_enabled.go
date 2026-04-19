@@ -9,7 +9,6 @@ import (
 	"net/http"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	"github.com/bsv8/BitFS/pkg/clientapp/modulelocks"
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
@@ -78,7 +77,7 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		return func() {}, nil
 	}
 
-	moduleCleanup, err := reg.registerModuleLockProvider(modulelocks.ModuleIdentity, modulelocks.FunctionLocks)
+	moduleCleanup, err := reg.registerModuleLockProvider(indexresolve.ModuleIdentity, indexresolve.FunctionLocks)
 	if err != nil {
 		svc.Close()
 		return nil, err

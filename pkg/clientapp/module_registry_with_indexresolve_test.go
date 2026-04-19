@@ -1,3 +1,5 @@
+//go:build with_indexresolve
+
 package clientapp
 
 import (
@@ -6,7 +8,7 @@ import (
 	"testing"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	"github.com/bsv8/BitFS/pkg/clientapp/modulelocks"
+	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
 func TestModuleRegistryResolveDoesNotTriggerSettingsHook(t *testing.T) {
@@ -50,7 +52,7 @@ func TestModuleRegistrySeparatesCapabilityAndModuleLocks(t *testing.T) {
 	t.Parallel()
 
 	reg := newModuleRegistry()
-	cleanupLocks, err := reg.registerModuleLockProvider(modulelocks.ModuleIdentity, modulelocks.FunctionLocks)
+	cleanupLocks, err := reg.registerModuleLockProvider(indexresolve.ModuleIdentity, indexresolve.FunctionLocks)
 	if err != nil {
 		t.Fatalf("register module locks failed: %v", err)
 	}
@@ -60,7 +62,7 @@ func TestModuleRegistrySeparatesCapabilityAndModuleLocks(t *testing.T) {
 		t.Fatalf("capability items should stay empty before capability hook, got %d", len(caps))
 	}
 
-	items, missing := reg.moduleLockItems(modulelocks.ModuleIdentity)
+	items, missing := reg.moduleLockItems(indexresolve.ModuleIdentity)
 	if len(missing) != 0 {
 		t.Fatalf("unexpected missing modules: %#v", missing)
 	}
@@ -91,13 +93,13 @@ func TestModuleRegistrySeparatesCapabilityAndModuleLocks(t *testing.T) {
 	}
 
 	closeFn()
-	items, missing = reg.moduleLockItems(modulelocks.ModuleIdentity)
+	items, missing = reg.moduleLockItems(indexresolve.ModuleIdentity)
 	if len(items) == 0 || len(missing) != 0 {
 		t.Fatalf("module locks should stay until lock cleanup, got items=%#v missing=%#v", items, missing)
 	}
 
 	cleanupLocks()
-	if items, missing := reg.moduleLockItems(modulelocks.ModuleIdentity); len(items) != 0 || len(missing) != 1 {
+	if items, missing := reg.moduleLockItems(indexresolve.ModuleIdentity); len(items) != 0 || len(missing) != 1 {
 		t.Fatalf("module locks should be removed with lock cleanup, got items=%#v missing=%#v", items, missing)
 	}
 }

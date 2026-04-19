@@ -10,7 +10,7 @@ echo "[bitfs-modulelock] check module function signatures"
 normalized_tags="$(printf '%s' "${BITFS_GO_TAGS:-}" | sed -E 's/[[:space:],]+/,/g; s/^,+//; s/,+$//')"
 case ",${normalized_tags}," in
   *",with_indexresolve,"*)
-    "$go_bin" run "$workspace_root/BitFS/tools/modulelockcheck" \
+    "$go_bin" run -tags "$normalized_tags" "$workspace_root/BitFS/tools/modulelockcheck" \
       -workspace-root "$workspace_root" \
       -go-bin "$go_bin" \
       -modules indexresolve

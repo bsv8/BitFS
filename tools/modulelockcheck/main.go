@@ -1,17 +1,21 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"go/ast"
+	"go/parser"
+	"go/printer"
+	"go/token"
 	"sort"
 	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
-	"github.com/bsv8/BitFS/pkg/clientapp/modulelocks"
 )
 
 type moduleConfig struct {
@@ -20,13 +24,7 @@ type moduleConfig struct {
 	provider modulelock.Provider
 }
 
-var moduleConfigs = map[string]moduleConfig{
-	modulelocks.ModuleIdentity: {
-		name:     modulelocks.ModuleIdentity,
-		dir:      "BitFS",
-		provider: modulelocks.FunctionLocks,
-	},
-}
+var moduleConfigs map[string]moduleConfig
 
 var readSignatureFn = readSignature
 
@@ -221,6 +219,9 @@ func readSignature(goBin string, goRoot string, goBinDir string, moduleDir strin
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
+		if sig, parseErr := readSignatureFromSource(moduleDir, pkg, symbol); parseErr == nil {
+			return sig, nil
+		}
 		if text == "" {
 			text = err.Error()
 		}
@@ -231,6 +232,9 @@ func readSignature(goBin string, goRoot string, goBinDir string, moduleDir strin
 		if strings.HasPrefix(line, "func ") {
 			return line, nil
 		}
+	}
+	if sig, parseErr := readSignatureFromSource(moduleDir, pkg, symbol); parseErr == nil {
+		return sig, nil
 	}
 	return "", fmt.Errorf("cannot find func signature from go doc output: %s", text)
 }
@@ -247,7 +251,107 @@ func enrichEnv(goRoot string, goBinDir string) []string {
 	if strings.TrimSpace(goRoot) != "" {
 		base = append(base, "GOROOT="+goRoot)
 	}
+	if tags := normalizeGoTags(os.Getenv("BITFS_GO_TAGS")); tags != "" {
+		goFlags := os.Getenv("GOFLAGS")
+		if strings.TrimSpace(goFlags) != "" {
+			goFlags = strings.TrimSpace(goFlags) + " "
+		}
+		goFlags += "-tags=" + tags
+		base = append(base, "GOFLAGS="+goFlags)
+	}
 	return base
+}
+
+func normalizeGoTags(raw string) string {
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ' ' || r == '\t' || r == '\n' || r == '\r'
+	})
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, ",")
+}
+
+func readSignatureFromSource(moduleDir string, pkg string, symbol string) (string, error) {
+	pkgDir := filepath.Join(moduleDir, filepath.FromSlash(strings.TrimPrefix(strings.TrimSpace(pkg), "./")))
+	files, err := filepath.Glob(filepath.Join(pkgDir, "*.go"))
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", fmt.Errorf("no source files found in %s", pkgDir)
+	}
+
+	fset := token.NewFileSet()
+	targetName, recvType := splitSymbol(strings.TrimSpace(symbol))
+	for _, file := range files {
+		parsed, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			continue
+		}
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || fn.Name == nil {
+				continue
+			}
+			if !matchesDeclSymbol(fn, targetName, recvType) {
+				continue
+			}
+			var buf bytes.Buffer
+			if err := printer.Fprint(&buf, fset, fn); err != nil {
+				return "", err
+			}
+			text := strings.TrimSpace(buf.String())
+			if idx := strings.Index(text, "{"); idx >= 0 {
+				text = strings.TrimSpace(text[:idx])
+			}
+			if text != "" {
+				return text, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("cannot find func signature from source: %s %s", pkg, symbol)
+}
+
+func splitSymbol(symbol string) (string, string) {
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return "", ""
+	}
+	if idx := strings.LastIndex(symbol, "."); idx >= 0 {
+		return symbol[idx+1:], symbol[:idx]
+	}
+	return symbol, ""
+}
+
+func matchesDeclSymbol(fn *ast.FuncDecl, name string, recvType string) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	if fn.Name.Name != name {
+		return false
+	}
+	if recvType == "" {
+		return fn.Recv == nil
+	}
+	if fn.Recv == nil || len(fn.Recv.List) != 1 {
+		return false
+	}
+	got := receiverTypeName(fn.Recv.List[0].Type)
+	return got == recvType
+}
+
+func receiverTypeName(expr ast.Expr) string {
+	switch v := expr.(type) {
+	case *ast.StarExpr:
+		return receiverTypeName(v.X)
+	case *ast.Ident:
+		return v.Name
+	case *ast.SelectorExpr:
+		return v.Sel.Name
+	default:
+		return ""
+	}
 }
 
 func exitErr(err error) {
