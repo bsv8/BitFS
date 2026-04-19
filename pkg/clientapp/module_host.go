@@ -3,9 +3,12 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
@@ -16,6 +19,35 @@ import (
 type moduleHost struct {
 	rt    *Runtime
 	store moduleBootstrapStore
+}
+
+func validateModuleSpec(spec moduleapi.ModuleSpec) error {
+	for _, hr := range spec.HTTP {
+		if hr.Handler == nil {
+			return fmt.Errorf("http route %s: handler is required", hr.Path)
+		}
+	}
+	for _, lp := range spec.LibP2P {
+		if lp.Handler == nil {
+			return fmt.Errorf("libp2p %s/%s: handler is required", lp.Protocol, lp.Route)
+		}
+	}
+	for _, sa := range spec.Settings {
+		if sa.Handler == nil {
+			return fmt.Errorf("settings action %s: handler is required", sa.Action)
+		}
+	}
+	for _, oa := range spec.OBS {
+		if oa.Handler == nil {
+			return fmt.Errorf("obs action %s: handler is required", oa.Action)
+		}
+	}
+	for _, dr := range spec.DomainResolvers {
+		if dr.Handler == nil {
+			return fmt.Errorf("domain resolver %s: handler is required", dr.Name)
+		}
+	}
+	return nil
 }
 
 func newModuleHost(rt *Runtime, store moduleBootstrapStore) moduleapi.Host {
@@ -448,4 +480,216 @@ func cloneMapAny(in map[string]any) map[string]any {
 		out[key] = value
 	}
 	return out
+}
+
+type moduleRuntimeGate struct {
+	flag atomic.Bool
+}
+
+func (g *moduleRuntimeGate) isEnabled() bool {
+	if g == nil {
+		return false
+	}
+	return g.flag.Load()
+}
+
+func (g *moduleRuntimeGate) enable() {
+	if g == nil {
+		return
+	}
+	g.flag.Store(true)
+}
+
+func (g *moduleRuntimeGate) disable() {
+	if g == nil {
+		return
+	}
+	g.flag.Store(false)
+}
+
+func writeModuleDisabledHTTP(w http.ResponseWriter) {
+	if w == nil {
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    "MODULE_DISABLED",
+			"message": "module is disabled",
+		},
+	})
+}
+
+func (h *moduleHost) InstallModule(spec moduleapi.ModuleSpec) (func(), error) {
+	if h == nil || h.rt == nil {
+		return nil, fmt.Errorf("runtime is required")
+	}
+	if h.store == nil {
+		return nil, fmt.Errorf("store is required")
+	}
+
+	// 预检查所有 handler/provider/hook 是否为空，避免半安装状态
+	if err := validateModuleSpec(spec); err != nil {
+		return nil, err
+	}
+
+	gate := &moduleRuntimeGate{}
+	gate.enable()
+
+	type registeredCleanup struct {
+		cleanup func()
+		name    string
+	}
+	var registered []registeredCleanup
+
+	rollBack := func() {
+		gate.disable()
+
+		for i := len(registered) - 1; i >= 0; i-- {
+			if registered[i].cleanup != nil {
+				registered[i].cleanup()
+			}
+		}
+		registered = nil
+
+		if spec.Cleanup != nil {
+			spec.Cleanup()
+		}
+	}
+
+	tryRegister := func(name string, fn func() (func(), error)) (func(), error) {
+		cleanup, err := fn()
+		if err != nil {
+			rollBack()
+			return nil, fmt.Errorf("install %s failed: %w", name, err)
+		}
+		registered = append(registered, registeredCleanup{cleanup: cleanup, name: name})
+		return cleanup, nil
+	}
+
+	// 注册 capability
+	if spec.ID != "" && spec.Version != 0 {
+		if _, err := tryRegister("capability", func() (func(), error) {
+			return h.RegisterCapability(spec.ID, spec.Version)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 module lock
+	if spec.ModuleLockProvider != nil {
+		lockName := spec.ModuleLockName
+		if lockName == "" {
+			lockName = spec.ID
+		}
+		if _, err := tryRegister("module lock", func() (func(), error) {
+			return h.RegisterModuleLockProvider(lockName, spec.ModuleLockProvider)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 domain resolvers
+	for _, dr := range spec.DomainResolvers {
+		dr := dr
+		if _, err := tryRegister("domain resolver "+dr.Name, func() (func(), error) {
+			return h.RegisterDomainResolveHook(dr.Name, dr.Handler)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 libp2p hooks
+	for _, lp := range spec.LibP2P {
+		lp := lp
+		if _, err := tryRegister("libp2p "+string(lp.Protocol)+"/"+lp.Route, func() (func(), error) {
+			return h.RegisterLibP2P(lp.Protocol, lp.Route, lp.Handler)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 settings actions
+	for _, sa := range spec.Settings {
+		sa := sa
+		if _, err := tryRegister("settings "+sa.Action, func() (func(), error) {
+			return h.RegisterSettingsAction(sa.Action, sa.Handler)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 obs actions
+	for _, oa := range spec.OBS {
+		oa := oa
+		if _, err := tryRegister("obs "+oa.Action, func() (func(), error) {
+			return h.RegisterOBSAction(oa.Action, oa.Handler)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 http routes
+	for _, hr := range spec.HTTP {
+		hr := hr
+		wrappedHandler := moduleHTTPHandlerForGate(hr.Handler, gate)
+		if _, err := tryRegister("http "+hr.Path, func() (func(), error) {
+			return h.RegisterHTTPRoute(hr.Path, wrappedHandler)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 open hooks
+	for i, oh := range spec.OpenHooks {
+		oh := oh
+		if _, err := tryRegister(fmt.Sprintf("open hook %d", i), func() (func(), error) {
+			return h.RegisterOpenHook(oh)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 注册 close hooks
+	for i, ch := range spec.CloseHooks {
+		ch := ch
+		if _, err := tryRegister(fmt.Sprintf("close hook %d", i), func() (func(), error) {
+			return h.RegisterCloseHook(ch)
+		}); err != nil {
+			return nil, err
+		}
+	}
+
+	// 组装最终的 cleanup 函数
+	var finalCleanupOnce sync.Once
+	finalCleanup := func() {
+		finalCleanupOnce.Do(func() {
+			gate.disable()
+
+			for i := len(registered) - 1; i >= 0; i-- {
+				if registered[i].cleanup != nil {
+					registered[i].cleanup()
+				}
+			}
+			registered = nil
+
+			if spec.Cleanup != nil {
+				spec.Cleanup()
+			}
+		})
+	}
+
+	return finalCleanup, nil
+}
+
+func moduleHTTPHandlerForGate(handler moduleapi.HTTPHandler, gate *moduleRuntimeGate) moduleapi.HTTPHandler {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if gate == nil || !gate.isEnabled() {
+			writeModuleDisabledHTTP(w)
+			return
+		}
+		handler(w, r)
+	}
 }

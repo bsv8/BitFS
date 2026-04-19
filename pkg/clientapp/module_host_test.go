@@ -183,3 +183,329 @@ func TestModuleHostRegisterLibP2PTypeConversion(t *testing.T) {
 		t.Fatalf("unexpected libp2p response: %+v", out.CallResp)
 	}
 }
+
+func TestInstallModuleHTTPUsesAuthWrapper(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	cleanup, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module",
+		Version: 1,
+		HTTP: []moduleapi.HTTPRoute{
+			{
+				Path: "/v1/install-module/auth",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					meta := requestVisitMetaFromContext(r.Context())
+					if meta.VisitID != "visit-1" || meta.VisitLocator != "locator-1" {
+						t.Fatalf("request meta not injected: %+v", meta)
+					}
+					writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("install module failed: %v", err)
+	}
+	t.Cleanup(cleanup)
+
+	srv := newHTTPAPIServer(rt, rt, db, store, nil, nil, nil, nil)
+	handler, err := srv.Handler()
+	if err != nil {
+		t.Fatalf("build handler failed: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/install-module/auth", nil)
+	req.Header.Set(headerVisitID, "visit-1")
+	req.Header.Set(headerVisitLocator, "locator-1")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"ok"`) {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestInstallModuleCleanupDisablesHTTPHandler(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	cleanup, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module",
+		Version: 1,
+		HTTP: []moduleapi.HTTPRoute{
+			{
+				Path: "/v1/install-module/cleanup",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("install module failed: %v", err)
+	}
+
+	srv := newHTTPAPIServer(rt, rt, db, store, nil, nil, nil, nil)
+	handler, err := srv.Handler()
+	if err != nil {
+		t.Fatalf("build handler failed: %v", err)
+	}
+
+	cleanup()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/install-module/cleanup", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected handler to be disabled, got=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"code":"MODULE_DISABLED"`) {
+		t.Fatalf("unexpected body after cleanup: %s", rec.Body.String())
+	}
+}
+
+func TestInstallModuleCleanupIsIdempotent(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	cleanup, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module",
+		Version: 1,
+		HTTP: []moduleapi.HTTPRoute{
+			{
+				Path: "/v1/install-module/idempotent",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("install module failed: %v", err)
+	}
+
+	cleanup()
+	cleanup()
+}
+
+func TestInstallModulePreCheckFailsBeforeAnyRegistration(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	_, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-precheck",
+		Version: 1,
+		Settings: []moduleapi.SettingsAction{
+			{
+				Action: "settings.precheck.test",
+				Handler: func(ctx context.Context, gotAction string, payload map[string]any) (map[string]any, error) {
+					return map[string]any{"ok": true}, nil
+				},
+			},
+		},
+		OBS: []moduleapi.OBSAction{
+			{
+				Action: "settings.precheck.obs",
+				Handler: func(ctx context.Context, gotAction string, payload map[string]any) (moduleapi.OBSActionResponse, error) {
+					return moduleapi.OBSActionResponse{OK: true, Result: "ok"}, nil
+				},
+			},
+		},
+		HTTP: []moduleapi.HTTPRoute{
+			{
+				Path:    "/v1/precheck/test",
+				Handler: nil,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected pre-check to fail due to nil HTTP handler")
+	}
+
+	_, err = rt.modules.DispatchSettings(context.Background(), "settings.precheck.test", map[string]any{})
+	if err == nil {
+		t.Fatalf("settings action should not be registered after failed install")
+	}
+
+	_, err = rt.modules.DispatchOBSControl(context.Background(), "settings.precheck.obs", map[string]any{})
+	if err == nil {
+		t.Fatalf("obs action should not be registered after failed install")
+	}
+}
+
+func TestInstallModulePreCheckCatchesNilLibP2PHandler(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	_, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-nil-libp2p",
+		Version: 1,
+		LibP2P: []moduleapi.LibP2PRoute{
+			{
+				Protocol: moduleapi.LibP2PProtocolNodeCall,
+				Route:    "test.nil.libp2p",
+				Handler:  nil,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected pre-check to fail due to nil libp2p handler")
+	}
+}
+
+func TestInstallModulePreCheckCatchesNilSettingsHandler(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	_, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-nil-settings",
+		Version: 1,
+		Settings: []moduleapi.SettingsAction{
+			{
+				Action:  "settings.nil.handler",
+				Handler: nil,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected pre-check to fail due to nil settings handler")
+	}
+}
+
+func TestInstallModulePreCheckCatchesNilOBSHandler(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	_, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-nil-obs",
+		Version: 1,
+		OBS: []moduleapi.OBSAction{
+			{
+				Action:  "settings.nil.obs",
+				Handler: nil,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected pre-check to fail due to nil obs handler")
+	}
+}
+
+func TestInstallModulePreCheckCatchesNilDomainResolverHandler(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	_, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-nil-domain",
+		Version: 1,
+		DomainResolvers: []moduleapi.DomainResolver{
+			{
+				Name:    "nil.resolver",
+				Handler: nil,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected pre-check to fail due to nil domain resolver handler")
+	}
+}
+
+func TestInstallModuleRollbackOnFailure(t *testing.T) {
+	t.Parallel()
+
+	db := openResolveCallTestDB(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := newClientDB(db, nil)
+	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
+	host := newModuleHost(rt, store)
+
+	_, err := host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-rollback",
+		Version: 1,
+		HTTP: []moduleapi.HTTPRoute{
+			{
+				Path: "/v1/install-module/rollback",
+				Handler: func(w http.ResponseWriter, r *http.Request) {
+					writeJSON(w, http.StatusOK, map[string]any{"status": "ok"})
+				},
+			},
+		},
+		Settings: []moduleapi.SettingsAction{
+			{
+				Action: "settings.module_host.rollback_test",
+				Handler: func(ctx context.Context, gotAction string, payload map[string]any) (map[string]any, error) {
+					return map[string]any{"ok": true}, nil
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("first install should succeed: %v", err)
+	}
+
+	_, err = host.InstallModule(moduleapi.ModuleSpec{
+		ID:      "test-module-rollback-2",
+		Version: 1,
+		Settings: []moduleapi.SettingsAction{
+			{
+				Action: "settings.module_host.rollback_test",
+				Handler: func(ctx context.Context, gotAction string, payload map[string]any) (map[string]any, error) {
+					return map[string]any{"ok": true}, nil
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected duplicate registration failure")
+	}
+
+	_, err = rt.modules.DispatchSettings(context.Background(), "settings.module_host.rollback_test", map[string]any{})
+	if err != nil {
+		t.Fatalf("expected action to still be registered from first module: %v", err)
+	}
+}
