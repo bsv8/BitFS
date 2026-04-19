@@ -217,6 +217,7 @@ type Installer func(context.Context, Host) (func(), error)
 type Host interface {
 	Store() Store
 
+	InstallModule(ModuleSpec) (func(), error)
 	RegisterCapability(moduleID string, version uint32) (func(), error)
 	RegisterLibP2P(protocol LibP2PProtocol, route string, hook LibP2PHook) (func(), error)
 	RegisterHTTPRoute(path string, handler HTTPHandler) (func(), error)
@@ -229,4 +230,47 @@ type Host interface {
 
 	PeerCall(context.Context, PeerCallRequest) (PeerCallResponse, error)
 	GatewaySnapshot() []PeerNode
+}
+
+type HTTPRoute struct {
+	Path    string
+	Handler HTTPHandler
+}
+
+type LibP2PRoute struct {
+	Protocol LibP2PProtocol
+	Route    string
+	Handler  LibP2PHook
+}
+
+type SettingsAction struct {
+	Action  string
+	Handler SettingsHook
+}
+
+type OBSAction struct {
+	Action  string
+	Handler OBSControlHook
+}
+
+type DomainResolver struct {
+	Name    string
+	Handler DomainResolveHook
+}
+
+type ModuleSpec struct {
+	ID      string
+	Version uint32
+
+	HTTP            []HTTPRoute
+	LibP2P          []LibP2PRoute
+	Settings        []SettingsAction
+	OBS             []OBSAction
+	DomainResolvers []DomainResolver
+	OpenHooks       []OpenHook
+	CloseHooks      []CloseHook
+
+	ModuleLockProvider func() []LockedFunction
+	ModuleLockName     string
+	Cleanup            func()
 }

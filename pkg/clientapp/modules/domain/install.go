@@ -17,8 +17,7 @@ import (
 //
 // 设计说明：
 // - 这里只注册解析 provider 和能力声明；
-// - 远端解析只依赖 host 的节点快照和 peer call 窄能力；
-// - cleanup 负责把当前模块已挂上的解析入口回收掉。
+// - 远端解析只依赖 host 的节点快照和 peer call 窄能力。
 func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
@@ -27,41 +26,18 @@ func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 		return nil, fmt.Errorf("host is required")
 	}
 
-	cleanups := make([]func(), 0, 2)
-	pushCleanup := func(cleanup func()) {
-		if cleanup != nil {
-			cleanups = append(cleanups, cleanup)
-		}
-	}
-	closeAll := func() {
-		for i := len(cleanups) - 1; i >= 0; i-- {
-			if cleanups[i] != nil {
-				cleanups[i]()
-			}
-		}
-	}
-	fail := func(err error) (func(), error) {
-		closeAll()
-		return nil, err
-	}
-
-	cleanup, err := host.RegisterCapability(ModuleID, CapabilityVersion)
-	if err != nil {
-		return fail(err)
-	}
-	pushCleanup(cleanup)
-
-	cleanup, err = host.RegisterDomainResolveHook(ResolveProviderName, func(ctx context.Context, rawDomain string) (string, error) {
-		return resolveDomainRemote(ctx, host, rawDomain)
+	return host.InstallModule(moduleapi.ModuleSpec{
+		ID:      ModuleID,
+		Version: CapabilityVersion,
+		DomainResolvers: []moduleapi.DomainResolver{
+			{
+				Name: ResolveProviderName,
+				Handler: func(ctx context.Context, rawDomain string) (string, error) {
+					return resolveDomainRemote(ctx, host, rawDomain)
+				},
+			},
+		},
 	})
-	if err != nil {
-		return fail(err)
-	}
-	pushCleanup(cleanup)
-
-	return func() {
-		closeAll()
-	}, nil
 }
 
 func resolveDomainRemote(ctx context.Context, host moduleapi.Host, rawDomain string) (string, error) {
