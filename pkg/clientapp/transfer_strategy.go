@@ -132,7 +132,7 @@ func logTransferStrategy(event string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
 	}
-	obs.Business("bitcast-client", event, fields)
+	obs.Business(ServiceName, event, fields)
 }
 
 func (w *transferSellerWorker) updateSuccess(bytes int, elapsed time.Duration) {

@@ -148,11 +148,11 @@ var networkInitDefaultsByNetwork = map[string]NetworkInitDefaults{
 }
 
 var (
-	errCannotModifyBuiltInGateway = errors.New("cannot modify built-in gateway")
-	errCannotDeleteBuiltInGateway = errors.New("cannot delete built-in gateway")
+	errCannotModifyBuiltInGateway  = errors.New("cannot modify built-in gateway")
+	errCannotDeleteBuiltInGateway  = errors.New("cannot delete built-in gateway")
 	errCannotDisableBuiltInGateway = errors.New("cannot disable built-in gateway")
-	errCannotModifyBuiltInArbiter = errors.New("cannot modify built-in arbiter")
-	errCannotDeleteBuiltInArbiter = errors.New("cannot delete built-in arbiter")
+	errCannotModifyBuiltInArbiter  = errors.New("cannot modify built-in arbiter")
+	errCannotDeleteBuiltInArbiter  = errors.New("cannot delete built-in arbiter")
 	errCannotDisableBuiltInArbiter = errors.New("cannot disable built-in arbiter")
 )
 
@@ -302,9 +302,9 @@ func warnMandatoryPeerOverrides(kind string, existing []PeerNode, defaults []Ini
 	if len(overridden) == 0 {
 		return
 	}
-	obs.Important("bitcast-client", "mandatory_peer_override_ignored", map[string]any{
-		"kind":      kind,
-		"count":     len(overridden),
-		"pubkeys":   overridden,
+	obs.Important(ServiceName, "mandatory_peer_override_ignored", map[string]any{
+		"kind":    kind,
+		"count":   len(overridden),
+		"pubkeys": overridden,
 	})
 }

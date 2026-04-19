@@ -469,7 +469,7 @@ func emitVerificationThresholdAlerts(ctx context.Context, store *clientDB, trigg
 	}
 	summary, err := dbGetVerificationQueueSummary(ctx, store)
 	if err != nil {
-		obs.Error("bitcast-client", "verification_threshold_alert", map[string]any{
+		obs.Error(ServiceName, "verification_threshold_alert", map[string]any{
 			"error":   err.Error(),
 			"trigger": trigger,
 		})
@@ -477,7 +477,7 @@ func emitVerificationThresholdAlerts(ctx context.Context, store *clientDB, trigg
 	}
 	report, err := dbCheckVerificationReconciliation(ctx, store)
 	if err != nil {
-		obs.Error("bitcast-client", "verification_threshold_alert", map[string]any{
+		obs.Error(ServiceName, "verification_threshold_alert", map[string]any{
 			"error":   err.Error(),
 			"trigger": trigger,
 		})
@@ -489,10 +489,10 @@ func emitVerificationThresholdAlerts(ctx context.Context, store *clientDB, trigg
 		"trigger":                trigger,
 	}
 	if summary.Failed > verificationAlertFailedThreshold || report.Summary["confirmed_without_fact"] > 0 {
-		obs.Error("bitcast-client", "verification_threshold_alert", fields)
+		obs.Error(ServiceName, "verification_threshold_alert", fields)
 		return
 	}
-	obs.Info("bitcast-client", "verification_threshold_alert", fields)
+	obs.Info(ServiceName, "verification_threshold_alert", fields)
 }
 
 // ==================== 审计日志 ====================
@@ -510,10 +510,10 @@ func emitVerificationAuditLog(ctx context.Context, store *clientDB, action strin
 	}
 	if err != nil {
 		fields["error"] = err.Error()
-		obs.Error("bitcast-client", "verification_audit_log", fields)
+		obs.Error(ServiceName, "verification_audit_log", fields)
 		return
 	}
-	obs.Info("bitcast-client", "verification_audit_log", fields)
+	obs.Info(ServiceName, "verification_audit_log", fields)
 }
 
 // ==================== 日志发射 ====================
@@ -528,7 +528,7 @@ func emitVerificationQueueSummaryLog(ctx context.Context, store *clientDB, trigg
 	}
 	summary, err := dbGetVerificationQueueSummary(ctx, store)
 	if err != nil {
-		obs.Error("bitcast-client", "verification_queue_summary", map[string]any{
+		obs.Error(ServiceName, "verification_queue_summary", map[string]any{
 			"error":   err.Error(),
 			"trigger": trigger,
 		})
@@ -547,7 +547,7 @@ func emitVerificationQueueSummaryLog(ctx context.Context, store *clientDB, trigg
 		errorReasons[key]++
 	}
 
-	obs.Info("bitcast-client", "verification_queue_summary", map[string]any{
+	obs.Info(ServiceName, "verification_queue_summary", map[string]any{
 		"pending":             summary.Pending,
 		"confirmed_bsv20":     summary.ConfirmedBSV20,
 		"confirmed_bsv21":     summary.ConfirmedBSV21,
@@ -570,7 +570,7 @@ func emitVerificationReconcileReportLog(ctx context.Context, store *clientDB, tr
 	}
 	report, err := dbCheckVerificationReconciliation(ctx, store)
 	if err != nil {
-		obs.Error("bitcast-client", "verification_reconcile_report", map[string]any{
+		obs.Error(ServiceName, "verification_reconcile_report", map[string]any{
 			"error":   err.Error(),
 			"trigger": trigger,
 		})
@@ -587,7 +587,7 @@ func emitVerificationReconcileReportLog(ctx context.Context, store *clientDB, tr
 		if consecutive >= 3 {
 			level = "critical"
 		}
-		obs.Error("bitcast-client", "verification_reconcile_report", map[string]any{
+		obs.Error(ServiceName, "verification_reconcile_report", map[string]any{
 			"confirmed_without_fact":  report.Summary["confirmed_without_fact"],
 			"fact_pending_or_missing": report.Summary["fact_pending_or_missing"],
 			"confirmed_no_fact_items": report.ConfirmedNoFact,
@@ -598,7 +598,7 @@ func emitVerificationReconcileReportLog(ctx context.Context, store *clientDB, tr
 		})
 	} else {
 		verificationReconcileConsecutiveAnomaly.Reset()
-		obs.Info("bitcast-client", "verification_reconcile_report", map[string]any{
+		obs.Info(ServiceName, "verification_reconcile_report", map[string]any{
 			"confirmed_without_fact":  report.Summary["confirmed_without_fact"],
 			"fact_pending_or_missing": report.Summary["fact_pending_or_missing"],
 			"confirmed_no_fact_items": report.ConfirmedNoFact,

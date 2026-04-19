@@ -151,7 +151,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 		return out, fmt.Errorf("submitted_unknown_projection: %w", err)
 	}
 	// 资金流水已迁移到 fact_* 事实表组装
-	obs.Business("bitcast-client", "evt_trigger_peer_call_chain_tx_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_peer_call_chain_tx_end", map[string]any{
 		"quote_charge_sat":     quoted.ServiceQuote.ChargeAmountSatoshi,
 		"miner_fee_sat":        built.MinerFeeSatoshi,
 		"change_satoshi":       built.ChangeSatoshi,

@@ -299,7 +299,7 @@ func liveFollowOnce(ctx context.Context, store *clientDB, rt *Runtime, streamID 
 	if st, ok := rt.live.followStatus(streamID); ok {
 		_ = dbPersistLiveFollowStatus(ctx, store, st)
 	}
-	obs.Business("bitcast-client", "live_follow_bought_segment", map[string]any{
+	obs.Business(ServiceName, "live_follow_bought_segment", map[string]any{
 		"stream_id":     streamID,
 		"segment_index": res.SegmentIndex,
 		"seed_hash":     res.SeedHash,
@@ -417,7 +417,7 @@ func restorePersistedLiveFollows(ctx context.Context, store *clientDB, rt *Runti
 	}
 	items, err := dbListRunningLiveFollowStatuses(ctx, store)
 	if err != nil {
-		obs.Error("bitcast-client", "live_follow_restore_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "live_follow_restore_failed", map[string]any{"error": err.Error()})
 		return
 	}
 	for _, it := range items {
@@ -425,13 +425,13 @@ func restorePersistedLiveFollows(ctx context.Context, store *clientDB, rt *Runti
 			continue
 		}
 		if _, err := TriggerLiveFollowStart(ctx, store, rt, it.StreamURI); err != nil {
-			obs.Error("bitcast-client", "live_follow_restore_item_failed", map[string]any{
+			obs.Error(ServiceName, "live_follow_restore_item_failed", map[string]any{
 				"stream_id": it.StreamID,
 				"error":     err.Error(),
 			})
 			continue
 		}
-		obs.Business("bitcast-client", "live_follow_restored", map[string]any{
+		obs.Business(ServiceName, "live_follow_restored", map[string]any{
 			"stream_id":          it.StreamID,
 			"have_segment_index": it.HaveSegmentIndex,
 		})

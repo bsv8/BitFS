@@ -67,7 +67,7 @@ func (m *workspaceManager) ListWithContext(ctx context.Context) ([]workspaceItem
 	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeList)
 	startAt := time.Now()
 	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
-	obs.Business("bitcast-client", "evt_trigger_workspace_list_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_list_begin", map[string]any{
 		"wallet_mode": walletMode,
 	})
 	if walletMode {
@@ -76,7 +76,7 @@ func (m *workspaceManager) ListWithContext(ctx context.Context) ([]workspaceItem
 			"items": items,
 			"total": len(items),
 		}, time.Since(startAt))
-		obs.Business("bitcast-client", "evt_trigger_workspace_list_end", map[string]any{
+		obs.Business(ServiceName, "evt_trigger_workspace_list_end", map[string]any{
 			"wallet_mode": walletMode,
 			"total":       0,
 		})
@@ -97,7 +97,7 @@ func (m *workspaceManager) ListWithContext(ctx context.Context) ([]workspaceItem
 	items, err := dbListWorkspaces(runCtx, store)
 	if err != nil {
 		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_list", "workspace_list", true, "failed", "workspace_list_failed", err.Error(), map[string]any{}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_list_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_list_failed", map[string]any{
 			"wallet_mode": walletMode,
 			"error":       err.Error(),
 		})
@@ -107,7 +107,7 @@ func (m *workspaceManager) ListWithContext(ctx context.Context) ([]workspaceItem
 		"items": items,
 		"total": len(items),
 	}, time.Since(startAt))
-	obs.Business("bitcast-client", "evt_trigger_workspace_list_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_list_end", map[string]any{
 		"wallet_mode": walletMode,
 		"total":       len(items),
 	})
@@ -123,7 +123,7 @@ func (m *workspaceManager) AddWithContext(ctx context.Context, path string, maxB
 	startAt := time.Now()
 	path = strings.TrimSpace(path)
 	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
-	obs.Business("bitcast-client", "evt_trigger_workspace_add_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_add_begin", map[string]any{
 		"workspace_path": path,
 		"max_bytes":      maxBytes,
 		"wallet_mode":    walletMode,
@@ -142,7 +142,7 @@ func (m *workspaceManager) AddWithContext(ctx context.Context, path string, maxB
 			"path":      path,
 			"max_bytes": maxBytes,
 		}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_add_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_add_failed", map[string]any{
 			"workspace_path": path,
 			"max_bytes":      maxBytes,
 			"wallet_mode":    walletMode,
@@ -198,7 +198,7 @@ func (m *workspaceManager) AddWithContext(ctx context.Context, path string, maxB
 			"path":      abs,
 			"max_bytes": maxBytes,
 		}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_add_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_add_failed", map[string]any{
 			"workspace_path": abs,
 			"max_bytes":      maxBytes,
 			"wallet_mode":    walletMode,
@@ -210,7 +210,7 @@ func (m *workspaceManager) AddWithContext(ctx context.Context, path string, maxB
 		"path":      abs,
 		"max_bytes": maxBytes,
 	}, map[string]any{"workspace": item}, time.Since(startAt))
-	obs.Business("bitcast-client", "evt_trigger_workspace_add_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_add_end", map[string]any{
 		"workspace_path": abs,
 		"max_bytes":      maxBytes,
 		"wallet_mode":    walletMode,
@@ -227,7 +227,7 @@ func (m *workspaceManager) DeleteByPathWithContext(ctx context.Context, workspac
 	startAt := time.Now()
 	workspacePath = strings.TrimSpace(workspacePath)
 	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
-	obs.Business("bitcast-client", "evt_trigger_workspace_delete_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_delete_begin", map[string]any{
 		"workspace_path": workspacePath,
 		"wallet_mode":    walletMode,
 	})
@@ -243,7 +243,7 @@ func (m *workspaceManager) DeleteByPathWithContext(ctx context.Context, workspac
 		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", true, "failed", "workspace_delete_failed", err.Error(), map[string]any{
 			"workspace_path": workspacePath,
 		}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_delete_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_delete_failed", map[string]any{
 			"workspace_path": workspacePath,
 			"wallet_mode":    walletMode,
 			"error":          err.Error(),
@@ -270,7 +270,7 @@ func (m *workspaceManager) DeleteByPathWithContext(ctx context.Context, workspac
 		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", true, "failed", "workspace_delete_failed", err.Error(), map[string]any{
 			"workspace_path": workspacePath,
 		}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_delete_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_delete_failed", map[string]any{
 			"workspace_path": workspacePath,
 			"wallet_mode":    walletMode,
 			"error":          err.Error(),
@@ -280,7 +280,7 @@ func (m *workspaceManager) DeleteByPathWithContext(ctx context.Context, workspac
 	m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_delete", workspacePath), "workspace_delete", "workspace_delete", true, "applied", "", "", map[string]any{
 		"workspace_path": workspacePath,
 	}, map[string]any{}, time.Since(startAt))
-	obs.Business("bitcast-client", "evt_trigger_workspace_delete_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_delete_end", map[string]any{
 		"workspace_path": workspacePath,
 		"wallet_mode":    walletMode,
 	})
@@ -296,7 +296,7 @@ func (m *workspaceManager) UpdateByPathWithContext(ctx context.Context, workspac
 	startAt := time.Now()
 	workspacePath = strings.TrimSpace(workspacePath)
 	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
-	obs.Business("bitcast-client", "evt_trigger_workspace_update_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_update_begin", map[string]any{
 		"workspace_path": workspacePath,
 		"wallet_mode":    walletMode,
 		"max_bytes": func() any {
@@ -331,7 +331,7 @@ func (m *workspaceManager) UpdateByPathWithContext(ctx context.Context, workspac
 		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", true, "failed", "workspace_update_failed", err.Error(), map[string]any{
 			"workspace_path": workspacePath,
 		}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_update_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_update_failed", map[string]any{
 			"workspace_path": workspacePath,
 			"wallet_mode":    walletMode,
 			"error":          err.Error(),
@@ -359,7 +359,7 @@ func (m *workspaceManager) UpdateByPathWithContext(ctx context.Context, workspac
 		m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", true, "failed", "workspace_update_failed", err.Error(), map[string]any{
 			"workspace_path": workspacePath,
 		}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_update_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_update_failed", map[string]any{
 			"workspace_path": workspacePath,
 			"wallet_mode":    walletMode,
 			"error":          err.Error(),
@@ -369,7 +369,7 @@ func (m *workspaceManager) UpdateByPathWithContext(ctx context.Context, workspac
 	m.auditWorkspaceCommand(ctx, meta, workspaceAggregateID("workspace_update", workspacePath), "workspace_update", "workspace_update", true, "applied", "", "", map[string]any{
 		"workspace_path": workspacePath,
 	}, map[string]any{"workspace": item}, time.Since(startAt))
-	obs.Business("bitcast-client", "evt_trigger_workspace_update_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_update_end", map[string]any{
 		"workspace_path": workspacePath,
 		"wallet_mode":    walletMode,
 	})
@@ -434,7 +434,7 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 	meta := workspaceCommandMetaFromContext(ctx, workspaceCommandTypeSync)
 	startAt := time.Now()
 	walletMode := m != nil && m.cfg != nil && strings.TrimSpace(m.cfg.Storage.WorkspaceDir) == ""
-	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_sync_once_begin", map[string]any{
 		"wallet_mode": walletMode,
 	})
 	if walletMode {
@@ -442,7 +442,7 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", true, "applied", "", "", map[string]any{}, map[string]any{
 			"seed_count": 0,
 		}, time.Since(startAt))
-		obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_end", map[string]any{
+		obs.Business(ServiceName, "evt_trigger_workspace_sync_once_end", map[string]any{
 			"wallet_mode": walletMode,
 			"seed_count":  0,
 		})
@@ -470,7 +470,7 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 			m.catalog.MarkStale()
 		}
 		m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", true, "failed", "workspace_sync_failed", err.Error(), map[string]any{}, map[string]any{}, time.Since(startAt))
-		obs.Error("bitcast-client", "evt_trigger_workspace_sync_once_failed", map[string]any{
+		obs.Error(ServiceName, "evt_trigger_workspace_sync_once_failed", map[string]any{
 			"wallet_mode": walletMode,
 			"error":       err.Error(),
 		})
@@ -482,7 +482,7 @@ func (m *workspaceManager) SyncOnce(ctx context.Context) (map[string]sellerSeed,
 	m.auditWorkspaceCommand(ctx, meta, "workspace:default", "workspace_sync", "workspace_sync", true, "applied", "", "", map[string]any{}, map[string]any{
 		"seed_count": len(biz_seeds),
 	}, time.Since(startAt))
-	obs.Business("bitcast-client", "evt_trigger_workspace_sync_once_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_workspace_sync_once_end", map[string]any{
 		"wallet_mode": walletMode,
 		"seed_count":  len(biz_seeds),
 	})

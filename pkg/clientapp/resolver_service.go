@@ -88,7 +88,7 @@ func TriggerResolverResolve(ctx context.Context, store *clientDB, rt *Runtime, p
 		}
 	}
 	if out.Ok {
-		obs.Business("bitcast-client", "evt_trigger_domain_resolve_end", map[string]any{
+		obs.Business(ServiceName, "evt_trigger_domain_resolve_end", map[string]any{
 			"resolver_pubkey_hex": resolverPubkeyHex,
 			"name":                name,
 			"target_pubkey_hex":   out.TargetPubkeyHex,

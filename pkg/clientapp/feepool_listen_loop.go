@@ -37,7 +37,7 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 	}
 	// 自动触发约束：auto_renew_rounds=0 视为显式关闭监听资金池自动动作。
 	if cfg.Listen.AutoRenewRounds == 0 {
-		obs.Error("bitcast-client", "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": "all"})
+		obs.Error(ServiceName, "listen_loop_disabled_missing_initial_fund", map[string]any{"gateway": "all"})
 		return
 	}
 	intervalSec := cfg.Listen.TickSeconds
@@ -95,7 +95,7 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 			err = scheduler.RegisterPeriodicTask(ctx, spec)
 		}
 		if err != nil {
-			obs.Error("bitcast-client", "listen_billing_task_register_failed", map[string]any{
+			obs.Error(ServiceName, "listen_billing_task_register_failed", map[string]any{
 				"gateway":   gwID,
 				"task_name": taskName,
 				"error":     err.Error(),
@@ -126,7 +126,7 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 		}
 		gws := snapshotHealthyGateways(rt)
 		if len(gws) == 0 {
-			obs.Info("bitcast-client", "listen_loop_wait_gateway_connection", map[string]any{"reason": "no_connected_gateway"})
+			obs.Info(ServiceName, "listen_loop_wait_gateway_connection", map[string]any{"reason": "no_connected_gateway"})
 		}
 		active := make(map[string]struct{}, len(gws))
 		seen := make(map[string]struct{}, len(gws))
@@ -143,14 +143,14 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 					if !waitRechargeState[gwID] {
 						gatewayID := gatewayBusinessID(rt, gw.ID)
 						appendObservedFeePoolState(ctx, store, gatewayID, st, st, gatewayID, time.Now().Unix(), "pause_watch", "fee_pool_pause_observed", nil)
-						obs.Info("bitcast-client", "fee_pool_wait_wallet_recharge", map[string]any{"gateway": gwID})
+						obs.Info(ServiceName, "fee_pool_wait_wallet_recharge", map[string]any{"gateway": gwID})
 						waitRechargeState[gwID] = true
 					}
 					continue
 				}
 			}
 			if waitRechargeState[gwID] {
-				obs.Business("bitcast-client", "fee_pool_recharge_detected_resume", map[string]any{"gateway": gwID})
+				obs.Business(ServiceName, "fee_pool_recharge_detected_resume", map[string]any{"gateway": gwID})
 				delete(waitRechargeState, gwID)
 			}
 			active[gwID] = struct{}{}
@@ -177,7 +177,7 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 			return map[string]any{"action": "reconcile_gateways"}, nil
 		},
 	}); err != nil {
-		obs.Error("bitcast-client", "listen_reconcile_task_register_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "listen_reconcile_task_register_failed", map[string]any{"error": err.Error()})
 	}
 }
 
@@ -646,7 +646,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, store *clientDB, gw pee
 		return nil
 	}
 	if s.ClientAmount < s.SingleCycleFeeSatoshi+s.SpendTxFeeSat {
-		obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{"gateway": gw.String(), "client_amount": s.ClientAmount, "need": s.SingleCycleFeeSatoshi + s.SpendTxFeeSat})
+		obs.Error(ServiceName, "fee_pool_insufficient", map[string]any{"gateway": gw.String(), "client_amount": s.ClientAmount, "need": s.SingleCycleFeeSatoshi + s.SpendTxFeeSat})
 		return errListenFeePoolRotateRequired
 	}
 	offerPayment := listenOfferPaymentSatoshi(rt, s)
@@ -748,7 +748,7 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, store *clientDB, gw p
 	if rt == nil || old == nil {
 		return nil, fmt.Errorf("session missing")
 	}
-	obs.Business("bitcast-client", "fee_pool_rotate_begin", map[string]any{
+	obs.Business(ServiceName, "fee_pool_rotate_begin", map[string]any{
 		"gateway":         gw.ID.String(),
 		"old_spend_txid":  old.SpendTxID,
 		"old_client_fund": old.ClientAmount,
@@ -762,7 +762,7 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, store *clientDB, gw p
 		return nil, err
 	}
 	rt.setFeePool(gw.ID.String(), next)
-	obs.Business("bitcast-client", "fee_pool_rotate_switch_active", map[string]any{
+	obs.Business(ServiceName, "fee_pool_rotate_switch_active", map[string]any{
 		"gateway":        gw.ID.String(),
 		"old_spend_txid": old.SpendTxID,
 		"new_spend_txid": next.SpendTxID,
@@ -770,19 +770,19 @@ func rotateListenFeePool(ctx context.Context, rt *Runtime, store *clientDB, gw p
 
 	old.Status = "retired"
 	go func(oldSpendTxID string, gatewayPeerID string) {
-		obs.Business("bitcast-client", "fee_pool_rotate_close_old_begin", map[string]any{
+		obs.Business(ServiceName, "fee_pool_rotate_close_old_begin", map[string]any{
 			"gateway":        gatewayPeerID,
 			"old_spend_txid": oldSpendTxID,
 		})
 		if closeErr := closeOldFeePoolWithRetry(store, rt, oldSpendTxID, gatewayPeerID); closeErr != nil {
-			obs.Error("bitcast-client", "fee_pool_rotate_close_old_failed", map[string]any{
+			obs.Error(ServiceName, "fee_pool_rotate_close_old_failed", map[string]any{
 				"gateway":        gatewayPeerID,
 				"old_spend_txid": oldSpendTxID,
 				"error":          closeErr.Error(),
 			})
 			return
 		}
-		obs.Business("bitcast-client", "fee_pool_rotate_close_old_ok", map[string]any{
+		obs.Business(ServiceName, "fee_pool_rotate_close_old_ok", map[string]any{
 			"gateway":        gatewayPeerID,
 			"old_spend_txid": oldSpendTxID,
 		})
@@ -813,7 +813,7 @@ func closeOldFeePoolWithRetry(store *clientDB, rt *Runtime, oldSpendTxID string,
 			return nil
 		}
 		lastErr = err
-		obs.Error("bitcast-client", "fee_pool_rotate_close_old_retry", map[string]any{
+		obs.Error(ServiceName, "fee_pool_rotate_close_old_retry", map[string]any{
 			"gateway":        gatewayPeerID,
 			"old_spend_txid": oldSpendTxID,
 			"attempt":        attempt,

@@ -108,7 +108,7 @@ func (p *runStartupPhases) BuildCore() error {
 
 	if p.opt.ObsSink != nil {
 		st.removeObs = obs.AddListener(func(ev obs.Event) {
-			if ev.Service != "bitcast-client" {
+			if ev.Service != ServiceName {
 				return
 			}
 			p.opt.ObsSink.Handle(ev)
@@ -219,7 +219,7 @@ func (p *runStartupPhases) BuildCore() error {
 		return err
 	}
 	if runtimeCfg.ClientID != "" && !strings.EqualFold(strings.TrimSpace(runtimeCfg.ClientID), st.clientPubkeyHex) {
-		obs.Info("bitcast-client", "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": runtimeCfg.ClientID, "effective_client_pubkey_hex": st.clientPubkeyHex})
+		obs.Info(ServiceName, "client_pubkey_hex_overridden_by_pubkey", map[string]any{"configured_client_pubkey_hex": runtimeCfg.ClientID, "effective_client_pubkey_hex": st.clientPubkeyHex})
 	}
 	runtimeCfg.ClientID = st.clientPubkeyHex
 	st.identity, err = buildClientIdentityCaps(runtimeCfg, effectivePrivHex)
@@ -242,7 +242,7 @@ func (p *runStartupPhases) ConnectExternal() error {
 		return err
 	}
 	if len(activeGWs) == 0 {
-		obs.Business("bitcast-client", "waiting_gateway_config", map[string]any{
+		obs.Business(ServiceName, "waiting_gateway_config", map[string]any{
 			"message": noEnabledGatewayMessage(runtimeCfg.HTTP.Enabled, runtimeCfg.FSHTTP.Enabled),
 		})
 	}
@@ -261,7 +261,7 @@ func (p *runStartupPhases) ConnectExternal() error {
 	}
 	st.healthyGateways = checkPeerHealth(p.ctx, st.host, activeGWs, ProtoHealth, gwSec(st.trace), "gateway")
 	if len(activeGWs) > 0 && len(st.healthyGateways) == 0 {
-		obs.Error("bitcast-client", "gateway_health_all_failed", map[string]any{
+		obs.Error(ServiceName, "gateway_health_all_failed", map[string]any{
 			"configured_gateway_count": len(activeGWs),
 			"fallback":                 "use_connected_gateways_and_retry_in_listen_loop",
 		})
@@ -269,11 +269,11 @@ func (p *runStartupPhases) ConnectExternal() error {
 	}
 	st.healthyArbiters = checkPeerHealth(p.ctx, st.host, arbInfo, ProtoArbHealth, arbSec(st.trace), "arbiter")
 	if len(st.healthyArbiters) == 0 && len(arbInfo) > 0 {
-		obs.Error("bitcast-client", "arbiter_health_all_failed", map[string]any{
+		obs.Error(ServiceName, "arbiter_health_all_failed", map[string]any{
 			"configured_arbiter_count": len(arbInfo),
 		})
 	}
-	obs.Important("bitcast-client", "started", map[string]any{
+	obs.Important(ServiceName, "started", map[string]any{
 		"transport_peer_id": st.host.ID().String(),
 		"pubkey_hex":        st.clientPubkeyHex,
 		"client_pubkey_hex": runtimeCfg.ClientID,
@@ -324,7 +324,7 @@ func (p *runStartupPhases) StartServices() error {
 	}
 	st.rtCtx, st.rtCancel = context.WithCancel(p.ctx)
 	rt.bgCancel = st.rtCancel
-	rt.taskSched = newTaskScheduler(st.store, "bitcast-client")
+	rt.taskSched = newTaskScheduler(st.store, ServiceName)
 	rt.taskSched.ctx = st.rtCtx
 	rt.kernel = newClientKernel(rt, st.store, st.workspaceMgr)
 	rt.orch = newOrchestrator(rt, st.store)
@@ -376,7 +376,7 @@ func (p *runStartupPhases) StartServices() error {
 		go func() {
 			defer st.wg.Done()
 			if err := rt.HTTP.Start(); err != nil {
-				obs.Error("bitcast-client", "http_api_stopped", map[string]any{"error": err.Error()})
+				obs.Error(ServiceName, "http_api_stopped", map[string]any{"error": err.Error()})
 			}
 		}()
 	}
@@ -393,7 +393,7 @@ func (p *runStartupPhases) StartServices() error {
 				err = rt.FSHTTP.Start()
 			}
 			if err != nil {
-				obs.Error("bitcast-client", "fs_http_stopped", map[string]any{"error": err.Error()})
+				obs.Error(ServiceName, "fs_http_stopped", map[string]any{"error": err.Error()})
 			}
 		}()
 	}
@@ -419,7 +419,7 @@ func (p *runStartupPhases) BindShutdown() error {
 		if rt.taskSched != nil {
 			if err := rt.taskSched.Shutdown(); err != nil {
 				if !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-					obs.Error("bitcast-client", "task_scheduler_shutdown_failed", map[string]any{"error": err.Error()})
+					obs.Error(ServiceName, "task_scheduler_shutdown_failed", map[string]any{"error": err.Error()})
 				}
 			}
 		}

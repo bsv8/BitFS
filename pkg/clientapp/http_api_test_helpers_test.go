@@ -51,7 +51,7 @@ func newTestWorkspaceKernel(t *testing.T, cfg Config, workspace *workspaceManage
 }
 
 func newTestTaskScheduler(ctx context.Context, store *clientDB) *taskScheduler {
-	s := newTaskScheduler(store, "bitcast-client")
+	s := newTaskScheduler(store, ServiceName)
 	s.ctx = ctx
 	return s
 }

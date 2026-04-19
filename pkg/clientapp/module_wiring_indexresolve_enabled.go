@@ -109,9 +109,9 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 	emitter := indexresolve.ObsEmitterFunc(func(level string, name string, fields map[string]any) {
 		switch strings.TrimSpace(level) {
 		case "error":
-			obs.Error("bitfs-client", name, fields)
+			obs.Error(ServiceName, name, fields)
 		default:
-			obs.Business("bitfs-client", name, fields)
+			obs.Business(ServiceName, name, fields)
 		}
 	})
 

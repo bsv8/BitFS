@@ -375,7 +375,7 @@ func dbUpsertDirectTransferPoolAllocationTx(ctx context.Context, tx *gen.Tx, in 
 		return fmt.Errorf("allocation_id is required")
 	}
 	if IsPoolFactAllocationDisallowed(kind) {
-		obs.Important("bitcast-client", "pool_allocation_fact_write_deprecated", map[string]any{
+		obs.Important(ServiceName, "pool_allocation_fact_write_deprecated", map[string]any{
 			"session_id":          sessionID,
 			"allocation_id":       allocID,
 			"allocation_kind":     kind,

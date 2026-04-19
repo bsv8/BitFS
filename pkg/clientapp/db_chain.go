@@ -78,7 +78,7 @@ func dbUpdateChainTipStateError(ctx context.Context, store *clientDB, errMsg, tr
 	now := time.Now().Unix()
 	cur, loadErr := dbLoadChainTipState(ctx, store)
 	if loadErr != nil {
-		obs.Error("bitcast-client", "proc_chain_tip_state_load_failed", map[string]any{"error": loadErr.Error()})
+		obs.Error(ServiceName, "proc_chain_tip_state_load_failed", map[string]any{"error": loadErr.Error()})
 		return loadErr
 	}
 	return dbUpsertChainTipState(ctx, store, cur.TipHeight, errMsg, trigger, now, 0)

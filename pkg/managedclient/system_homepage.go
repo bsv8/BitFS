@@ -233,7 +233,7 @@ func logSystemHomepageInstalled(state *systemHomepageState) {
 	if state == nil {
 		return
 	}
-	obs.Important("bitcast-client", "system_homepage_installed", map[string]any{
+	obs.Important(obs.ServiceBitFSClient, "system_homepage_installed", map[string]any{
 		"bundle_dir":          state.BundleDir,
 		"workspace_dir":       state.WorkspaceDir,
 		"default_seed_hash":   state.DefaultSeedHash,

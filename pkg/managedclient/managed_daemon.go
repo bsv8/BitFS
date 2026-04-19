@@ -381,13 +381,13 @@ func (d *managedDaemon) startHTTPServer() error {
 	}
 	d.srv = started.Server
 	d.cfg.HTTP.ListenAddr = started.Listener.Addr().String()
-	obs.Important("bitcast-client", "managed_api_started", map[string]any{
+	obs.Important(obs.ServiceBitFSClient, "managed_api_started", map[string]any{
 		"listen_addr":   started.Listener.Addr().String(),
 		"config_path":   d.startup.ConfigPath,
 		"backend_phase": string(d.currentBackendPhase()),
 	})
 	lhttp.ServeInBackground(started, func(err error) {
-		obs.Error("bitcast-client", "managed_api_stopped", map[string]any{"error": err.Error()})
+		obs.Error(obs.ServiceBitFSClient, "managed_api_stopped", map[string]any{"error": err.Error()})
 		d.rootCancel()
 	})
 	return nil
@@ -861,7 +861,7 @@ func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password
 			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
 		}
 		if err := d.waitRuntimeReadyForAPI(ctx); err != nil {
-			obs.Error("bitcast-client", "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+			obs.Error(obs.ServiceBitFSClient, "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
 			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
 		}
 		return ticket, nil
@@ -883,7 +883,7 @@ func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password
 	}
 	privHex, err := DecryptPrivateKeyEnvelope(*env, password)
 	if err != nil {
-		obs.Error("bitcast-client", "unlock_decrypt_failed", map[string]any{"error": err.Error()})
+		obs.Error(obs.ServiceBitFSClient, "unlock_decrypt_failed", map[string]any{"error": err.Error()})
 		fmt.Fprintf(os.Stderr, "解锁失败（密码或密钥材料错误）: %s\n", err.Error())
 		return unlockTicket{}, wrapUnlockHTTPError(http.StatusUnauthorized, err)
 	}
@@ -900,7 +900,7 @@ func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password
 			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
 		}
 		if err := d.waitRuntimeReadyForAPI(ctx); err != nil {
-			obs.Error("bitcast-client", "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+			obs.Error(obs.ServiceBitFSClient, "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
 			fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
 			return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
 		}
@@ -908,12 +908,12 @@ func (d *managedDaemon) unlockWithPassword(ctx context.Context, source, password
 	}
 	if err := d.startRuntimeAsync(); err != nil {
 		d.clearUnlockedKey()
-		obs.Error("bitcast-client", "unlock_start_runtime_failed", map[string]any{"error": err.Error()})
+		obs.Error(obs.ServiceBitFSClient, "unlock_start_runtime_failed", map[string]any{"error": err.Error()})
 		fmt.Fprintf(os.Stderr, "解锁失败（运行时启动失败）: %s\n", err.Error())
 		return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
 	}
 	if err := d.waitRuntimeReadyForAPI(ctx); err != nil {
-		obs.Error("bitcast-client", "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
+		obs.Error(obs.ServiceBitFSClient, "unlock_wait_runtime_failed", map[string]any{"error": err.Error()})
 		fmt.Fprintf(os.Stderr, "解锁失败（运行时未就绪）: %s\n", err.Error())
 		return unlockTicket{}, wrapUnlockHTTPError(http.StatusConflict, err)
 	}
@@ -1603,7 +1603,7 @@ func (d *managedDaemon) runtimeObsSink(next obs.Sink) obs.Sink {
 }
 
 func (d *managedDaemon) captureRuntimeReadySignals(ev obs.Event) {
-	if strings.TrimSpace(ev.Service) != "bitcast-client" {
+	if strings.TrimSpace(ev.Service) != obs.ServiceBitFSClient {
 		return
 	}
 	eventName := strings.TrimSpace(ev.Name)
@@ -1763,7 +1763,7 @@ func (d *managedDaemon) startRuntime(privHex string, seq uint64) error {
 		return nil
 	}
 	d.printUnlockedRuntimeSummary(runCfg, rt, configPath, indexDBPath)
-	obs.Important("bitcast-client", "managed_runtime_started", map[string]any{
+	obs.Important(obs.ServiceBitFSClient, "managed_runtime_started", map[string]any{
 		"transport_peer_id": rt.Host.ID().String(),
 	})
 	return nil
@@ -2029,7 +2029,7 @@ func (d *managedDaemon) setStartupError(service, listenAddr string, err error) {
 		Message:    message,
 	}
 	d.mu.Unlock()
-	obs.Error("bitcast-client", "managed_startup_failed", map[string]any{
+	obs.Error(obs.ServiceBitFSClient, "managed_startup_failed", map[string]any{
 		"service":     strings.TrimSpace(service),
 		"listen_addr": strings.TrimSpace(listenAddr),
 		"error":       message,
@@ -2290,7 +2290,7 @@ func unlockResultPayload(ticket unlockTicket) map[string]any {
 func (d *managedDaemon) emitUnlockResult(source string, ticket unlockTicket) {
 	eventName := unlockResultEventName(source, ticket.Result)
 	fields := unlockResultPayload(ticket)
-	obs.Important("bitcast-client", eventName, fields)
+	obs.Important(obs.ServiceBitFSClient, eventName, fields)
 	d.emitManagedBackendObs(eventName, fields)
 }
 
@@ -2350,7 +2350,7 @@ func (d *managedDaemon) startRuntimeAsync() error {
 
 	go func() {
 		if err := d.startRuntime(privHex, seq); err != nil {
-			obs.Error("bitcast-client", "managed_runtime_start_failed", map[string]any{"error": err.Error()})
+			obs.Error(obs.ServiceBitFSClient, "managed_runtime_start_failed", map[string]any{"error": err.Error()})
 			fmt.Fprintf(os.Stderr, "运行时启动失败: %s\n", err.Error())
 			d.failRuntimeStartup(seq, err)
 		}
@@ -2453,7 +2453,7 @@ func (d *managedDaemon) startManagedWOCProxy() error {
 	d.chainAccess.WOCProxyAddr = ln.Addr().String()
 	d.chainAccess.BaseURL = wocproxy.BaseURLForNetwork("http://"+ln.Addr().String(), d.currentNetworkName())
 	d.mu.Unlock()
-	obs.Important("bitcast-client", "managed_woc_proxy_started", map[string]any{
+	obs.Important(obs.ServiceBitFSClient, "managed_woc_proxy_started", map[string]any{
 		"listen_addr":       ln.Addr().String(),
 		"upstream_root_url": proxy.UpstreamRootURL(),
 		"min_interval":      d.currentChainAccess().MinInterval.String(),
@@ -2462,7 +2462,7 @@ func (d *managedDaemon) startManagedWOCProxy() error {
 	})
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			obs.Error("bitcast-client", "managed_woc_proxy_stopped", map[string]any{"error": err.Error()})
+			obs.Error(obs.ServiceBitFSClient, "managed_woc_proxy_stopped", map[string]any{"error": err.Error()})
 			d.setStartupError("woc_proxy", ln.Addr().String(), err)
 		}
 	}()
@@ -2498,7 +2498,7 @@ func (d *managedDaemon) stopRuntime() error {
 	if rt == nil && runtimeWasStarting {
 		d.emitBackendSnapshot("runtime_stopped")
 		d.emitPhaseEvent()
-		obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
+		obs.Important(obs.ServiceBitFSClient, "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 		d.emitManagedBackendObs("managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 		return nil
 	}
@@ -2508,7 +2508,7 @@ func (d *managedDaemon) stopRuntime() error {
 	}
 	d.emitBackendSnapshot("runtime_stopped")
 	d.emitPhaseEvent()
-	obs.Important("bitcast-client", "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
+	obs.Important(obs.ServiceBitFSClient, "managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 	d.emitManagedBackendObs("managed_runtime_stopped", map[string]any{"vault_path": d.startup.VaultPath})
 	return nil
 }
@@ -2541,7 +2541,7 @@ func (d *managedDaemon) lockRuntime() error {
 func (d *managedDaemon) cliUnlockLoop() {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
-		obs.Info("bitcast-client", "cli_unlock_loop_skipped_non_interactive_stdin", map[string]any{"vault_path": d.startup.VaultPath})
+		obs.Info(obs.ServiceBitFSClient, "cli_unlock_loop_skipped_non_interactive_stdin", map[string]any{"vault_path": d.startup.VaultPath})
 		return
 	}
 	for {
@@ -2560,7 +2560,7 @@ func (d *managedDaemon) cliUnlockLoop() {
 		}
 		password, cancelled, err := d.readPasswordCancelable(d.unlockPasswordPrompt)
 		if err != nil {
-			obs.Error("bitcast-client", "cli_unlock_read_password_failed", map[string]any{"error": err.Error()})
+			obs.Error(obs.ServiceBitFSClient, "cli_unlock_read_password_failed", map[string]any{"error": err.Error()})
 			time.Sleep(300 * time.Millisecond)
 			continue
 		}
@@ -2570,12 +2570,12 @@ func (d *managedDaemon) cliUnlockLoop() {
 		}
 		password = strings.TrimSpace(password)
 		if password == "" {
-			obs.Info("bitcast-client", "cli_unlock_empty_password", map[string]any{"vault_path": d.startup.VaultPath})
+			obs.Info(obs.ServiceBitFSClient, "cli_unlock_empty_password", map[string]any{"vault_path": d.startup.VaultPath})
 			continue
 		}
 		ticket, err := d.unlockWithPassword(d.rootCtx, unlockSourceCLI, password)
 		if err != nil {
-			obs.Error("bitcast-client", "cli_unlock_failed", map[string]any{"error": err.Error()})
+			obs.Error(obs.ServiceBitFSClient, "cli_unlock_failed", map[string]any{"error": err.Error()})
 			continue
 		}
 		d.emitUnlockResult(unlockSourceCLI, ticket)

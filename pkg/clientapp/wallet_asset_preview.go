@@ -105,7 +105,7 @@ func (s *httpAPIServer) handleWalletTokenSendPreview(w http.ResponseWriter, r *h
 		return
 	}
 	startedAt := time.Now()
-	obs.Info("bitcast-client", "wallet_token_send_preview_started", map[string]any{
+	obs.Info(ServiceName, "wallet_token_send_preview_started", map[string]any{
 		"asset_key":      strings.TrimSpace(req.AssetKey),
 		"token_standard": strings.TrimSpace(req.TokenStandard),
 		"amount_text":    strings.TrimSpace(req.AmountText),
@@ -113,7 +113,7 @@ func (s *httpAPIServer) handleWalletTokenSendPreview(w http.ResponseWriter, r *h
 	})
 	resp, err := buildWalletTokenSendPreview(r, s, req)
 	if err != nil {
-		obs.Error("bitcast-client", "wallet_token_send_preview_failed", map[string]any{
+		obs.Error(ServiceName, "wallet_token_send_preview_failed", map[string]any{
 			"asset_key":          strings.TrimSpace(req.AssetKey),
 			"amount_text":        strings.TrimSpace(req.AmountText),
 			"to_address":         strings.TrimSpace(req.ToAddress),
@@ -127,7 +127,7 @@ func (s *httpAPIServer) handleWalletTokenSendPreview(w http.ResponseWriter, r *h
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	obs.Info("bitcast-client", "wallet_token_send_preview_succeeded", map[string]any{
+	obs.Info(ServiceName, "wallet_token_send_preview_succeeded", map[string]any{
 		"asset_key":      strings.TrimSpace(req.AssetKey),
 		"amount_text":    strings.TrimSpace(req.AmountText),
 		"to_address":     strings.TrimSpace(req.ToAddress),
@@ -145,7 +145,7 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 	if standard == "" {
 		return walletAssetActionPreviewResp{}, fmt.Errorf("invalid token standard")
 	}
-	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+	obs.Info(ServiceName, "wallet_token_send_preview_stage", map[string]any{
 		"stage":       "validated_standard",
 		"duration_ms": time.Since(stageStarted).Milliseconds(),
 		"standard":    standard,
@@ -164,7 +164,7 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 	if err := validatePreviewAddress(toAddress); err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
-	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+	obs.Info(ServiceName, "wallet_token_send_preview_stage", map[string]any{
 		"stage":       "validated_request_fields",
 		"duration_ms": time.Since(stageStarted).Milliseconds(),
 		"asset_key":   assetKey,
@@ -176,7 +176,7 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
-	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+	obs.Info(ServiceName, "wallet_token_send_preview_stage", map[string]any{
 		"stage":          "resolved_wallet_address",
 		"duration_ms":    time.Since(stageStarted).Milliseconds(),
 		"wallet_address": address,
@@ -189,7 +189,7 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 	if err != nil {
 		return walletAssetActionPreviewResp{}, err
 	}
-	obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+	obs.Info(ServiceName, "wallet_token_send_preview_stage", map[string]any{
 		"stage":       "preview_wallet_token_send_done",
 		"duration_ms": time.Since(stageStarted).Milliseconds(),
 		"feasible":    preview.Feasible,
@@ -203,13 +203,13 @@ func buildWalletTokenSendPreview(r *http.Request, s *httpAPIServer, req walletTo
 		})
 		if prepareErr == nil {
 			preview = prepared.Preview
-			obs.Info("bitcast-client", "wallet_token_send_preview_stage", map[string]any{
+			obs.Info(ServiceName, "wallet_token_send_preview_stage", map[string]any{
 				"stage":       "prepare_wallet_token_send_done",
 				"duration_ms": time.Since(stageStarted).Milliseconds(),
 				"txid":        strings.TrimSpace(prepared.TxID),
 			})
 		} else {
-			obs.Error("bitcast-client", "wallet_token_send_preview_stage_failed", map[string]any{
+			obs.Error(ServiceName, "wallet_token_send_preview_stage_failed", map[string]any{
 				"stage":       "prepare_wallet_token_send",
 				"duration_ms": time.Since(stageStarted).Milliseconds(),
 				"error":       prepareErr.Error(),

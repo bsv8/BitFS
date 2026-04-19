@@ -183,7 +183,7 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 	settlementID := "set_domain_reg_" + uniqueSuffix
 	p.Name = strings.ToLower(strings.TrimSpace(p.Name))
 	if err := createDomainRegisterBusinessChain(ctx, store, frontOrderID, businessID, settlementID, p); err != nil {
-		obs.Error("bitcast-client", "domain_register_chain_init_failed", map[string]any{"error": err.Error(), "name": p.Name})
+		obs.Error(ServiceName, "domain_register_chain_init_failed", map[string]any{"error": err.Error(), "name": p.Name})
 		// 主链骨架创建失败，直接返回
 		return TriggerDomainRegisterNameResult{}, fmt.Errorf("create domain register business chain: %w", err)
 	}
@@ -214,17 +214,17 @@ func TriggerDomainRegisterName(ctx context.Context, store *clientDB, rt *Runtime
 	if !submitResp.Ok {
 		// 提交失败，回写 settlement 状态为 failed
 		if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, false, "", submitResp.Message); err != nil {
-			obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
+			obs.Error(ServiceName, "domain_register_settlement_failed", map[string]any{"error": err.Error()})
 		}
 		return out, nil
 	}
 	// 提交成功，回写 settlement 状态为 settled
 	// 硬要求：target_id 必须写 fact_settlement_channel_chain_quote_pay.id，查不到则报错
 	if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, true, out.RegisterTxID, ""); err != nil {
-		obs.Error("bitcast-client", "domain_register_settlement_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "domain_register_settlement_failed", map[string]any{"error": err.Error()})
 		return out, fmt.Errorf("finalize domain register settlement: %w", err)
 	}
-	obs.Business("bitcast-client", "evt_trigger_domain_register_name_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_domain_register_name_end", map[string]any{
 		"resolver_pubkey_hex":        strings.TrimSpace(p.ResolverPubkeyHex),
 		"name":                       out.Name,
 		"target_pubkey_hex":          out.TargetPubkeyHex,
@@ -635,7 +635,7 @@ func TriggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, p
 	out.OwnerPubkeyHex = strings.TrimSpace(resp.OwnerPubkeyHex)
 	out.TargetPubkeyHex = strings.TrimSpace(resp.TargetPubkeyHex)
 	out.ExpireAtUnix = resp.ExpireAtUnix
-	obs.Business("bitcast-client", "evt_trigger_domain_set_target_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_domain_set_target_end", map[string]any{
 		"resolver_pubkey_hex":        resolverPubkeyHex,
 		"name":                       out.Name,
 		"target_pubkey_hex":          out.TargetPubkeyHex,

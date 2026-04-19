@@ -287,7 +287,7 @@ func dbRefreshWalletAssetProjection(ctx context.Context, store *clientDB, addres
 		"trigger":            strings.TrimSpace(trigger),
 		"current_utxo_count": len(current),
 	}
-	obs.Info("bitcast-client", "wallet_asset_projection_refreshed", payload)
+	obs.Info(ServiceName, "wallet_asset_projection_refreshed", payload)
 	return nil
 }
 

@@ -365,7 +365,7 @@ func emitFactBSVSpentAppliedEvent(ctx context.Context, tx *gen.Tx, address strin
 	if err != nil {
 		return
 	}
-	obs.Info("bitcast-client", "fact_bsv_spent_applied", map[string]any{
+	obs.Info(ServiceName, "fact_bsv_spent_applied", map[string]any{
 		"address":         address,
 		"spent_by_txid":   spentByTxid,
 		"spent_row_count": spentRowCount,
@@ -399,7 +399,7 @@ func emitFactBSVSpentAppliedEventConn(ctx context.Context, db sqlConn, address s
 	if err := QueryRowContext(ctx, db, `SELECT COUNT(1) FROM fact_bsv_utxos WHERE address=? AND utxo_state='spent' AND spent_by_txid=?`, address, spentByTxid).Scan(&spentRowCount); err != nil {
 		return
 	}
-	obs.Info("bitcast-client", "fact_bsv_spent_applied", map[string]any{
+	obs.Info(ServiceName, "fact_bsv_spent_applied", map[string]any{
 		"address":         address,
 		"spent_by_txid":   spentByTxid,
 		"spent_row_count": spentRowCount,

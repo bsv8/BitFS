@@ -373,7 +373,7 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 			Addrs:  append([]string(nil), req.SubscriberAddrs...),
 			Window: window,
 		})
-		obs.Business("bitcast-client", "live_subscriber_registered", map[string]any{
+		obs.Business(ServiceName, "live_subscriber_registered", map[string]any{
 			"stream_id":       streamID,
 			"subscriber_peer": req.SubscriberPubkeyHex,
 			"recent_count":    len(recent),
@@ -392,7 +392,7 @@ func registerLiveHandlers(store *clientDB, rt *Runtime) {
 			return liveHeadPushResp{}, fmt.Errorf("invalid params")
 		}
 		rt.live.storeReceived(streamID, publisherPubKey, liveSegmentRefsFromPB(req.RecentSegments), req.SentAtUnix)
-		obs.Business("bitcast-client", "live_head_received", map[string]any{
+		obs.Business(ServiceName, "live_head_received", map[string]any{
 			"stream_id":     streamID,
 			"segment_count": len(req.RecentSegments),
 		})
@@ -613,7 +613,7 @@ func TriggerLivePublishLatest(ctx context.Context, rt *Runtime, streamID string,
 		}
 		var resp liveHeadPushResp
 		if err := pproto.CallProto(ctx, rt.Host, subscriberID, ProtoLiveHeadPush, clientSec(rt.rpcTrace), req, &resp); err != nil {
-			obs.Error("bitcast-client", "live_head_push_failed", map[string]any{
+			obs.Error(ServiceName, "live_head_push_failed", map[string]any{
 				"stream_id":         streamID,
 				"transport_peer_id": target.PeerID,
 				"error":             err.Error(),

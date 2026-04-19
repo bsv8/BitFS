@@ -184,7 +184,7 @@ func (o *orchestrator) EmitSignal(sig orchestratorSignal) {
 			AggregateKey: strings.TrimSpace(sig.AggregateKey),
 			TaskStatus:   "dropped_channel_full",
 		})
-		obs.Error("bitcast-client", "orchestrator_signal_dropped", map[string]any{"type": sig.Type, "aggregate": sig.AggregateKey})
+		obs.Error(ServiceName, "orchestrator_signal_dropped", map[string]any{"type": sig.Type, "aggregate": sig.AggregateKey})
 	}
 }
 
@@ -240,7 +240,7 @@ func (o *orchestrator) runWorkspaceSignalWorker(ctx context.Context) {
 			}, nil
 		},
 	}); err != nil {
-		obs.Error("bitcast-client", "workspace_signal_task_register_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "workspace_signal_task_register_failed", map[string]any{"error": err.Error()})
 	}
 }
 

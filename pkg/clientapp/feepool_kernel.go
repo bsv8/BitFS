@@ -161,7 +161,7 @@ func (k *feePoolKernel) tryResumePausedGateway(ctx context.Context, gw peer.Addr
 	st.LastError = ""
 	k.setState(gwID, st)
 	appendObservedFeePoolState(ctx, k.store, gwBusinessID, before, st, gwBusinessID, time.Now().Unix(), "wallet_probe", "fee_pool_resumed_by_wallet_probe", nil)
-	obs.Business("bitcast-client", "fee_pool_resume_ready", map[string]any{
+	obs.Business(ServiceName, "fee_pool_resume_ready", map[string]any{
 		"gateway":                gwBusinessID,
 		"wallet_balance_satoshi": sum,
 	})
@@ -280,12 +280,12 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_info_failed"
 			result.ErrorMessage = infoErr.Error()
-			obs.Error("bitcast-client", "fee_pool_info_failed", map[string]any{"gateway": gwID, "error": infoErr.Error()})
+			obs.Error(ServiceName, "fee_pool_info_failed", map[string]any{"gateway": gwID, "error": infoErr.Error()})
 			logEffect("rpc", "fee_pool_info", "failed", infoErr, nil)
 			addEvent("fee_pool_info_failed", map[string]any{"error": infoErr.Error()}, beforeState.State, st.State)
 			return persist(st)
 		}
-		obs.Business("bitcast-client", "fee_pool_info_ack", map[string]any{
+		obs.Business(ServiceName, "fee_pool_info_ack", map[string]any{
 			"gateway":                     gwID,
 			"billing_cycle_seconds":       info.BillingCycleSeconds,
 			"single_cycle_fee_satoshi":    info.SingleCycleFeeSatoshi,
@@ -333,7 +333,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			result.Status = "paused"
 			result.ErrorCode = "wallet_insufficient"
 			result.ErrorMessage = errMsg
-			obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{
+			obs.Error(ServiceName, "fee_pool_insufficient", map[string]any{
 				"gateway": gwID,
 				"need":    need,
 				"have":    have,
@@ -358,7 +358,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 				result.Status = "paused"
 				result.ErrorCode = "wallet_insufficient"
 				result.ErrorMessage = err.Error()
-				obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{
+				obs.Error(ServiceName, "fee_pool_insufficient", map[string]any{
 					"gateway": gwID,
 					"need":    need,
 					"have":    have,
@@ -375,7 +375,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_open_failed"
 			result.ErrorMessage = err.Error()
-			obs.Error("bitcast-client", "fee_pool_open_failed", map[string]any{"gateway": gwID, "error": err.Error()})
+			obs.Error(ServiceName, "fee_pool_open_failed", map[string]any{"gateway": gwID, "error": err.Error()})
 			logEffect("chain", "fee_pool_open", "failed", err, nil)
 			addEvent("fee_pool_open_failed", map[string]any{"error": err.Error()}, beforeState.State, st.State)
 			return persist(st)
@@ -431,7 +431,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_pay_failed"
 			result.ErrorMessage = payErr.Error()
-			obs.Error("bitcast-client", "fee_pool_listen_pay_failed", map[string]any{"gateway": gwID, "error": payErr.Error()})
+			obs.Error(ServiceName, "fee_pool_listen_pay_failed", map[string]any{"gateway": gwID, "error": payErr.Error()})
 			logEffect("rpc", "fee_pool_pay", "failed", payErr, nil)
 			addEvent("fee_pool_pay_failed", map[string]any{"error": payErr.Error()}, beforeState.State, st.State)
 			return persist(st)
@@ -480,7 +480,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			result.Status = "paused"
 			result.ErrorCode = "wallet_insufficient"
 			result.ErrorMessage = errMsg
-			obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{
+			obs.Error(ServiceName, "fee_pool_insufficient", map[string]any{
 				"gateway": gwID,
 				"need":    need,
 				"have":    have,
@@ -504,8 +504,8 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 				result.Status = "paused"
 				result.ErrorCode = "wallet_insufficient"
 				result.ErrorMessage = rotateErr.Error()
-				obs.Error("bitcast-client", "fee_pool_listen_stopped", map[string]any{"gateway": gwID, "error": rotateErr.Error()})
-				obs.Error("bitcast-client", "fee_pool_insufficient", map[string]any{
+				obs.Error(ServiceName, "fee_pool_listen_stopped", map[string]any{"gateway": gwID, "error": rotateErr.Error()})
+				obs.Error(ServiceName, "fee_pool_insufficient", map[string]any{
 					"gateway": gwID,
 					"need":    need,
 					"have":    have,
@@ -522,7 +522,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 			result.Status = "failed"
 			result.ErrorCode = "fee_pool_rotate_failed"
 			result.ErrorMessage = rotateErr.Error()
-			obs.Error("bitcast-client", "fee_pool_rotate_failed", map[string]any{"gateway": gwID, "error": rotateErr.Error()})
+			obs.Error(ServiceName, "fee_pool_rotate_failed", map[string]any{"gateway": gwID, "error": rotateErr.Error()})
 			logEffect("chain", "fee_pool_rotate_open", "failed", rotateErr, nil)
 			addEvent("fee_pool_rotate_failed", map[string]any{"error": rotateErr.Error()}, beforeState.State, st.State)
 			return persist(st)

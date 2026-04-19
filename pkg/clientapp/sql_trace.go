@@ -132,14 +132,14 @@ func flushSQLTraceRoundSummary(roundID string) {
 	}
 	path, err := mgr.FlushRoundSummary(roundID)
 	if err != nil {
-		obs.Error("bitcast-client", "sql_trace_round_summary_flush_failed", map[string]any{
+		obs.Error(ServiceName, "sql_trace_round_summary_flush_failed", map[string]any{
 			"round_id": roundID,
 			"error":    err.Error(),
 		})
 		return
 	}
 	if strings.TrimSpace(path) != "" {
-		obs.Info("bitcast-client", "sql_trace_round_summary_flushed", map[string]any{
+		obs.Info(ServiceName, "sql_trace_round_summary_flushed", map[string]any{
 			"round_id": roundID,
 			"path":     path,
 		})
@@ -209,7 +209,7 @@ func (m *sqlTraceManager) Handle(ev sqliteactor.TraceEvent) {
 	if m.count < m.ringSize {
 		m.count++
 	}
-	obs.SQL("bitcast-client", "sql_trace", map[string]any{
+	obs.SQL(ServiceName, "sql_trace", map[string]any{
 		"round_id":        ev.RoundID,
 		"trigger":         ev.Trigger,
 		"intent":          ev.Intent,

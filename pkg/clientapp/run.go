@@ -362,10 +362,10 @@ func NewPricingTestRuntime(ctx context.Context, db *sql.DB, cfg Config) (*Runtim
 		store = newClientDB(db, nil)
 	}
 	rt := &Runtime{
-		ctx:    ctx,
-		store:  store,
+		ctx:     ctx,
+		store:   store,
 		modules: newModuleRegistry(),
-		config: cfgSvc,
+		config:  cfgSvc,
 	}
 	rt.Catalog = newSellerCatalog()
 	rt.kernel = newClientKernel(rt, store, nil)
@@ -1083,7 +1083,7 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 		}
 		seed, ok := rt.Catalog.Get(seedHash)
 		if !ok {
-			obs.Business("bitcast-client", "demand_announce_ignored_no_seed", map[string]any{
+			obs.Business(ServiceName, "demand_announce_ignored_no_seed", map[string]any{
 				"demand_id":   demandID,
 				"seed_hash":   seedHash,
 				"buyer_peer":  buyerPeerID,
@@ -1106,7 +1106,7 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 			return dealprod.DemandAnnounceResp{}, err
 		}
 		if len(availableChunks) == 0 {
-			obs.Business("bitcast-client", "demand_announce_ignored_no_chunks", map[string]any{
+			obs.Business(ServiceName, "demand_announce_ignored_no_chunks", map[string]any{
 				"demand_id":  demandID,
 				"seed_hash":  seedHash,
 				"buyer_peer": buyerPeerID,
@@ -1132,7 +1132,7 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 		}); err != nil {
 			return dealprod.DemandAnnounceResp{}, err
 		}
-		obs.Business("bitcast-client", "demand_announce_quote_submitted", map[string]any{
+		obs.Business(ServiceName, "demand_announce_quote_submitted", map[string]any{
 			"demand_id":   demandID,
 			"seed_hash":   seedHash,
 			"buyer_peer":  buyerPeerID,
@@ -1154,7 +1154,7 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 			return dealprod.LiveDemandAnnounceResp{}, err
 		}
 		if len(recentSegments) == 0 {
-			obs.Business("bitcast-client", "live_demand_announce_ignored_no_stream", map[string]any{
+			obs.Business(ServiceName, "live_demand_announce_ignored_no_stream", map[string]any{
 				"demand_id":  demandID,
 				"stream_id":  streamID,
 				"buyer_peer": buyerPeerID,
@@ -1172,7 +1172,7 @@ func registerSellerHandlers(rt *Runtime, h host.Host, store *clientDB, live *liv
 		}); err != nil {
 			return dealprod.LiveDemandAnnounceResp{}, err
 		}
-		obs.Business("bitcast-client", "live_demand_announce_quote_submitted", map[string]any{
+		obs.Business(ServiceName, "live_demand_announce_quote_submitted", map[string]any{
 			"demand_id":            demandID,
 			"stream_id":            streamID,
 			"buyer_peer":           buyerPeerID,
@@ -1455,14 +1455,14 @@ func connectGateways(ctx context.Context, h host.Host, gateways []PeerNode) ([]p
 		}
 		ai, err := parseAddr(g.Addr)
 		if err != nil {
-			obs.Error("bitcast-client", "gateway_addr_invalid", map[string]any{"addr": g.Addr, "error": err.Error()})
+			obs.Error(ServiceName, "gateway_addr_invalid", map[string]any{"addr": g.Addr, "error": err.Error()})
 			continue
 		}
 		if err := h.Connect(ctx, *ai); err != nil {
-			obs.Error("bitcast-client", "gateway_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
+			obs.Error(ServiceName, "gateway_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
 			continue
 		}
-		obs.Business("bitcast-client", "gateway_connected", map[string]any{"transport_peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
+		obs.Business(ServiceName, "gateway_connected", map[string]any{"transport_peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
 		out = append(out, *ai)
 	}
 	// 允许零网关，返回空列表
@@ -1477,7 +1477,7 @@ func connectArbiters(ctx context.Context, h host.Host, arbiters []PeerNode) ([]p
 		}
 		ai, err := parseAddr(a.Addr)
 		if err != nil {
-			obs.Error("bitcast-client", "arbiter_addr_invalid", map[string]any{
+			obs.Error(ServiceName, "arbiter_addr_invalid", map[string]any{
 				"index": i,
 				"addr":  a.Addr,
 				"error": err.Error(),
@@ -1485,14 +1485,14 @@ func connectArbiters(ctx context.Context, h host.Host, arbiters []PeerNode) ([]p
 			continue
 		}
 		if err := h.Connect(ctx, *ai); err != nil {
-			obs.Error("bitcast-client", "arbiter_connect_failed", map[string]any{
+			obs.Error(ServiceName, "arbiter_connect_failed", map[string]any{
 				"index":             i,
 				"transport_peer_id": ai.ID.String(),
 				"error":             err.Error(),
 			})
 			continue
 		}
-		obs.Business("bitcast-client", "arbiter_connected", map[string]any{"transport_peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
+		obs.Business(ServiceName, "arbiter_connected", map[string]any{"transport_peer_id": ai.ID.String(), "addr_count": len(ai.Addrs)})
 		out = append(out, *ai)
 	}
 	return out, nil
@@ -1508,7 +1508,7 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 			var health healthResp
 			err := pproto.CallProto(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
 			if err == nil {
-				obs.Business("bitcast-client", kind+"_health_ok", map[string]any{
+				obs.Business(ServiceName, kind+"_health_ok", map[string]any{
 					"transport_peer_id": p.ID.String(),
 					"status":            health.Status,
 					"attempt":           attempt,
@@ -1517,7 +1517,7 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 				break
 			}
 			lastErr = err
-			obs.Error("bitcast-client", kind+"_health_failed", map[string]any{
+			obs.Error(ServiceName, kind+"_health_failed", map[string]any{
 				"transport_peer_id": p.ID.String(),
 				"attempt":           attempt,
 				"error":             err.Error(),
@@ -1530,7 +1530,7 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 			out = append(out, p)
 			continue
 		}
-		obs.Error("bitcast-client", kind+"_unhealthy", map[string]any{
+		obs.Error(ServiceName, kind+"_unhealthy", map[string]any{
 			"transport_peer_id": p.ID.String(),
 			"error":             errString(lastErr),
 		})
@@ -1756,7 +1756,7 @@ func arbSec(trace pproto.TraceSink) pproto.SecurityConfig {
 	return pproto.SecurityConfig{Domain: "arbiter-mr", Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
 func clientSec(trace pproto.TraceSink) pproto.SecurityConfig {
-	return pproto.SecurityConfig{Domain: "bitcast-client", Network: "test", TTL: 30 * time.Second, Trace: trace}
+	return pproto.SecurityConfig{Domain: ServiceName, Network: "test", TTL: 30 * time.Second, Trace: trace}
 }
 
 func nodeSecForRuntime(rt *Runtime) pproto.SecurityConfig {

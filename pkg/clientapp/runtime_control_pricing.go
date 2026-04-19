@@ -168,7 +168,7 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 	persistConfig := configPath != ""
 	if !persistConfig && mode == StartupModeProduct {
 		err := fmt.Errorf("config path is required in product mode")
-		obs.Error("bitcast-client", "pricing_control_set_base_rejected", map[string]any{
+		obs.Error(ServiceName, "pricing_control_set_base_rejected", map[string]any{
 			"base_price_sat_per_64k": base,
 			"startup_mode":           string(mode),
 			"config_path":            configPath,
@@ -184,7 +184,7 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 	nextCfg := cfgSvc.SnapshotWithSellerLiveBasePrice(base)
 	if persistConfig {
 		if err := cfgSvc.UpdateAndPersist(nextCfg); err != nil {
-			obs.Error("bitcast-client", "pricing_control_set_base_config_write_failed", map[string]any{
+			obs.Error(ServiceName, "pricing_control_set_base_config_write_failed", map[string]any{
 				"base_price_sat_per_64k": base,
 				"startup_mode":           string(mode),
 				"config_path":            configPath,
@@ -194,7 +194,7 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 		}
 	} else {
 		if err := cfgSvc.UpdateMemoryOnly(nextCfg); err != nil {
-			obs.Error("bitcast-client", "pricing_control_set_base_memory_update_failed", map[string]any{
+			obs.Error(ServiceName, "pricing_control_set_base_memory_update_failed", map[string]any{
 				"base_price_sat_per_64k": base,
 				"startup_mode":           string(mode),
 				"config_path":            configPath,
@@ -236,13 +236,13 @@ func TriggerPricingSetBase(ctx context.Context, rt *Runtime, base uint64) (Prici
 		}
 		if rollbackErr != nil {
 			fields["rollback_error"] = rollbackErr.Error()
-			obs.Error("bitcast-client", "pricing_control_set_base_rollback_failed", fields)
+			obs.Error(ServiceName, "pricing_control_set_base_rollback_failed", fields)
 			return PricingSetBaseResult{}, fmt.Errorf("pricing.set_base db update failed: %w; rollback failed: %v", err, rollbackErr)
 		}
-		obs.Error("bitcast-client", "pricing_control_set_base_failed", fields)
+		obs.Error(ServiceName, "pricing_control_set_base_failed", fields)
 		return PricingSetBaseResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_set_base", map[string]any{
+	obs.Business(ServiceName, "pricing_control_set_base", map[string]any{
 		"base_price_sat_per_64k": base,
 		"startup_mode":           string(mode),
 		"config_path":            configPath,
@@ -284,7 +284,7 @@ func TriggerPricingResetSeed(ctx context.Context, rt *Runtime, seedHash string) 
 	if err != nil {
 		return PricingStateResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_reset_seed", map[string]any{"seed_hash": seedHash})
+	obs.Business(ServiceName, "pricing_control_reset_seed", map[string]any{"seed_hash": seedHash})
 	return PricingStateResult{State: seed}, nil
 }
 
@@ -317,7 +317,7 @@ func TriggerPricingFeedSeed(ctx context.Context, rt *Runtime, req PricingFeedReq
 	if err != nil {
 		return PricingStateResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_feed_seed", map[string]any{
+	obs.Business(ServiceName, "pricing_control_feed_seed", map[string]any{
 		"seed_hash":     seedHash,
 		"query_count":   req.QueryCount,
 		"deal_count":    req.DealCount,
@@ -365,7 +365,7 @@ func TriggerPricingSetForce(ctx context.Context, rt *Runtime, req ForcePriceRequ
 	if err != nil {
 		return PricingStateResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_set_force", map[string]any{
+	obs.Business(ServiceName, "pricing_control_set_force", map[string]any{
 		"seed_hash":               seedHash,
 		"force_price_sat_per_64k": req.PriceSatPer64K,
 		"force_hours":             req.ForceHours,
@@ -406,7 +406,7 @@ func TriggerPricingReleaseForce(ctx context.Context, rt *Runtime, seedHash strin
 	if err != nil {
 		return PricingStateResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_release_force", map[string]any{"seed_hash": seedHash})
+	obs.Business(ServiceName, "pricing_control_release_force", map[string]any{"seed_hash": seedHash})
 	return PricingStateResult{State: seed}, nil
 }
 
@@ -467,7 +467,7 @@ func TriggerPricingRunTick(ctx context.Context, rt *Runtime, hours uint32) (Pric
 	}); err != nil {
 		return PricingRunTickResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_run_tick", map[string]any{
+	obs.Business(ServiceName, "pricing_control_run_tick", map[string]any{
 		"hours": hours,
 	})
 	return PricingRunTickResult{
@@ -533,7 +533,7 @@ func TriggerPricingReconcile(ctx context.Context, rt *Runtime, seedHash string, 
 	}); err != nil {
 		return PricingReconcileResult{}, err
 	}
-	obs.Business("bitcast-client", "pricing_control_trigger_reconcile", map[string]any{
+	obs.Business(ServiceName, "pricing_control_trigger_reconcile", map[string]any{
 		"seed_hash": seedHash,
 		"now_unix":  nowUnix,
 		"changed":   changed,

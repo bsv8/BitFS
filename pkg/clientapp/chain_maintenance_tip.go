@@ -27,10 +27,10 @@ func (m *chainMaintainer) runTipWorker(ctx context.Context) {
 			return map[string]any{"task_type": chainTaskTip, "trigger": trigger}, nil
 		},
 	}); err != nil {
-		obs.Error("bitcast-client", "chain_tip_task_register_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "chain_tip_task_register_failed", map[string]any{"error": err.Error()})
 		return
 	}
-	obs.Info("bitcast-client", "chain_tip_task_registered", map[string]any{
+	obs.Info(ServiceName, "chain_tip_task_registered", map[string]any{
 		"interval_sec": int64(chainTipWorkerInterval / time.Second),
 	})
 }

@@ -51,7 +51,7 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 	// 第二阶段：写入 fact（幂等，可重试）
 	if len(changes) > 0 {
 		if applyErr := ApplyConfirmedUTXOChanges(sqlTraceContextWithMeta(ctx, syncRoundID, trigger, "apply_confirmed_utxo_facts", "wallet_fact_orchestrator"), store, changes, updatedAt); applyErr != nil {
-			obs.Error("bitcast-client", "apply_confirmed_utxo_changes_failed", map[string]any{
+			obs.Error(ServiceName, "apply_confirmed_utxo_changes_failed", map[string]any{
 				"wallet_id":    walletID,
 				"address":      address,
 				"change_count": len(changes),
@@ -59,7 +59,7 @@ func SyncWalletAndApplyFacts(ctx context.Context, store *clientDB, address strin
 			})
 			return fmt.Errorf("apply confirmed utxo changes: %w", applyErr)
 		}
-		obs.Info("bitcast-client", "apply_confirmed_utxo_changes_success", map[string]any{
+		obs.Info(ServiceName, "apply_confirmed_utxo_changes_success", map[string]any{
 			"wallet_id":    walletID,
 			"address":      address,
 			"change_count": len(changes),
@@ -316,7 +316,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 		return nil
 	}
 	startedAt := time.Now()
-	obs.Info("bitcast-client", "fact_apply_confirmed_utxo_changes_started", map[string]any{
+	obs.Info(ServiceName, "fact_apply_confirmed_utxo_changes_started", map[string]any{
 		"change_count": len(changes),
 		"updated_at":   updatedAt,
 	})
@@ -365,7 +365,7 @@ func ApplyConfirmedUTXOChanges(ctx context.Context, store *clientDB, changes []c
 				return fmt.Errorf("backfill fact spent from wallet_utxo failed: wallet_id=%s address=%s: %w", walletID, address, err)
 			}
 		}
-		obs.Info("bitcast-client", "fact_apply_confirmed_utxo_changes_finished", map[string]any{
+		obs.Info(ServiceName, "fact_apply_confirmed_utxo_changes_finished", map[string]any{
 			"change_count": len(changes),
 			"updated_at":   updatedAt,
 			"duration_ms":  time.Since(startedAt).Milliseconds(),
@@ -443,7 +443,7 @@ WHERE utxo_id=? AND (utxo_state<>'spent' OR COALESCE(spent_by_txid,'')='')`,
 	for spentTxID := range spentTxIDs {
 		emitFactBSVSpentAppliedEventConn(ctx, db, address, spentTxID)
 	}
-	obs.Info("bitcast-client", "fact_backfill_spent_from_wallet_finished", map[string]any{
+	obs.Info(ServiceName, "fact_backfill_spent_from_wallet_finished", map[string]any{
 		"wallet_id":        walletID,
 		"address":          address,
 		"updated_at":       updatedAt,

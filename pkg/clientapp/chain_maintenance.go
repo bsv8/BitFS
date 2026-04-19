@@ -190,14 +190,14 @@ func startChainMaintainer(ctx context.Context, rt *Runtime, store *clientDB) {
 		return
 	}
 	if err := resetChainMaintainerStartupState(ctx, store); err != nil {
-		obs.Error("bitcast-client", "chain_maintainer_startup_reset_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "chain_maintainer_startup_reset_failed", map[string]any{"error": err.Error()})
 	}
 	cm := newChainMaintainer(rt, store)
 	if cm == nil {
 		return
 	}
 	rt.chainMaint = cm
-	obs.Info("bitcast-client", "chain_maintainer_started", map[string]any{
+	obs.Info(ServiceName, "chain_maintainer_started", map[string]any{
 		"runtime_started_at_unix": runtimeStartedAtUnix(rt),
 	})
 	cm.start(ctx)
@@ -297,7 +297,7 @@ func (m *chainMaintainer) enqueue(taskType string, triggerSource string) {
 	select {
 	case m.queue <- task:
 		if triggerSource == "startup" {
-			obs.Info("bitcast-client", "chain_task_startup_enqueued", map[string]any{
+			obs.Info(ServiceName, "chain_task_startup_enqueued", map[string]any{
 				"task_type":      taskType,
 				"trigger_source": triggerSource,
 			})
@@ -329,7 +329,7 @@ func (m *chainMaintainer) runScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case task := <-m.queue:
-			obs.Info("bitcast-client", "chain_task_dequeued", map[string]any{
+			obs.Info(ServiceName, "chain_task_dequeued", map[string]any{
 				"task_type":               task.TaskType,
 				"trigger_source":          task.TriggerSource,
 				"triggered_at_unix":       task.TriggeredAt,
@@ -345,7 +345,7 @@ func (m *chainMaintainer) runTask(ctx context.Context, task chainTask) {
 		return
 	}
 	startedAt := time.Now()
-	obs.Info("bitcast-client", "chain_task_started", map[string]any{
+	obs.Info(ServiceName, "chain_task_started", map[string]any{
 		"task_type":               task.TaskType,
 		"trigger_source":          task.TriggerSource,
 		"triggered_at_unix":       task.TriggeredAt,
@@ -447,7 +447,7 @@ func (m *chainMaintainer) runTaskSync(ctx context.Context, task chainTask) (map[
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	obs.Info("bitcast-client", "chain_task_started", map[string]any{
+	obs.Info(ServiceName, "chain_task_started", map[string]any{
 		"task_type":               task.TaskType,
 		"trigger_source":          task.TriggerSource,
 		"triggered_at_unix":       task.TriggeredAt,
@@ -512,7 +512,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	if m.rt == nil || m.rt.WalletChain == nil {
 		return map[string]any{"task_type": chainTaskUTXO}, fmt.Errorf("runtime wallet chain not initialized")
 	}
-	obs.Info("bitcast-client", "chain_utxo_task_entered", map[string]any{
+	obs.Info(ServiceName, "chain_utxo_task_entered", map[string]any{
 		"trigger_source":          strings.TrimSpace(task.TriggerSource),
 		"triggered_at_unix":       task.TriggeredAt,
 		"runtime_started_at_unix": runtimeStartedAtUnix(m.rt),
@@ -855,10 +855,10 @@ func logWalletSyncStep(level string, meta walletSyncRoundMeta, step string, fiel
 		payload["started_at_unix"] = meta.StartedAtUnix
 	}
 	if level == obs.LevelError {
-		obs.Error("bitcast-client", "wallet_utxo_sync_step", payload)
+		obs.Error(ServiceName, "wallet_utxo_sync_step", payload)
 		return
 	}
-	obs.Info("bitcast-client", "wallet_utxo_sync_step", payload)
+	obs.Info(ServiceName, "wallet_utxo_sync_step", payload)
 }
 
 func cloneLogFields(fields map[string]any) map[string]any {

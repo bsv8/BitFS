@@ -54,17 +54,17 @@ func (gm *gatewayManager) InitFromConfig(ctx context.Context, gateways []PeerNod
 		}
 		ai, err := parseAddr(g.Addr)
 		if err != nil {
-			obs.Error("bitcast-client", "gateway_init_addr_invalid", map[string]any{"addr": g.Addr, "error": err.Error()})
+			obs.Error(ServiceName, "gateway_init_addr_invalid", map[string]any{"addr": g.Addr, "error": err.Error()})
 			continue
 		}
 		if err := gm.h.Connect(ctx, *ai); err != nil {
 			gm.setConnectErrorLocked(ai.ID, err)
-			obs.Error("bitcast-client", "gateway_init_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
+			obs.Error(ServiceName, "gateway_init_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
 			continue
 		}
 		gm.connectedGWs[ai.ID] = *ai
 		gm.setConnectedLocked(ai.ID)
-		obs.Business("bitcast-client", "gateway_init_connected", map[string]any{"transport_peer_id": ai.ID.String()})
+		obs.Business(ServiceName, "gateway_init_connected", map[string]any{"transport_peer_id": ai.ID.String()})
 	}
 
 	// 选举主网关
@@ -120,7 +120,7 @@ func (gm *gatewayManager) AddGateway(ctx context.Context, node PeerNode) (int, e
 			gm.mu.Lock()
 			gm.setConnectErrorLocked(newAI.ID, err)
 			gm.mu.Unlock()
-			obs.Error("bitcast-client", "gateway_add_connect_failed", map[string]any{"transport_peer_id": newAI.ID.String(), "error": err.Error()})
+			obs.Error(ServiceName, "gateway_add_connect_failed", map[string]any{"transport_peer_id": newAI.ID.String(), "error": err.Error()})
 			return idx, nil // 返回索引，但连接失败
 		}
 		gm.mu.Lock()
@@ -128,7 +128,7 @@ func (gm *gatewayManager) AddGateway(ctx context.Context, node PeerNode) (int, e
 		gm.setConnectedLocked(newAI.ID)
 		gm.electMasterLocked()
 		gm.mu.Unlock()
-		obs.Business("bitcast-client", "gateway_added_and_connected", map[string]any{"transport_peer_id": newAI.ID.String(), "index": idx})
+		obs.Business(ServiceName, "gateway_added_and_connected", map[string]any{"transport_peer_id": newAI.ID.String(), "index": idx})
 	}
 
 	return idx, nil
@@ -182,7 +182,7 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 			// 从 enable -> disable，断开连接
 			delete(gm.connectedGWs, oldAI.ID)
 			_ = gm.h.Network().ClosePeer(oldAI.ID)
-			obs.Business("bitcast-client", "gateway_disabled", map[string]any{"transport_peer_id": oldAI.ID.String()})
+			obs.Business(ServiceName, "gateway_disabled", map[string]any{"transport_peer_id": oldAI.ID.String()})
 			gm.electMasterLocked()
 		} else if !oldNode.Enabled && node.Enabled {
 			// 从 disable -> enable，建立连接
@@ -190,11 +190,11 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 			if err == nil {
 				if err := gm.h.Connect(ctx, *newAI); err != nil {
 					gm.setConnectErrorLocked(newAI.ID, err)
-					obs.Error("bitcast-client", "gateway_enable_connect_failed", map[string]any{"transport_peer_id": newAI.ID.String(), "error": err.Error()})
+					obs.Error(ServiceName, "gateway_enable_connect_failed", map[string]any{"transport_peer_id": newAI.ID.String(), "error": err.Error()})
 				} else {
 					gm.connectedGWs[newAI.ID] = *newAI
 					gm.setConnectedLocked(newAI.ID)
-					obs.Business("bitcast-client", "gateway_enabled_and_connected", map[string]any{"transport_peer_id": newAI.ID.String()})
+					obs.Business(ServiceName, "gateway_enabled_and_connected", map[string]any{"transport_peer_id": newAI.ID.String()})
 					gm.electMasterLocked()
 				}
 			}
@@ -206,11 +206,11 @@ func (gm *gatewayManager) UpdateGateway(ctx context.Context, index int, node Pee
 			if err == nil {
 				if err := gm.h.Connect(ctx, *newAI); err != nil {
 					gm.setConnectErrorLocked(newAI.ID, err)
-					obs.Error("bitcast-client", "gateway_addr_change_connect_failed", map[string]any{"transport_peer_id": newAI.ID.String(), "error": err.Error()})
+					obs.Error(ServiceName, "gateway_addr_change_connect_failed", map[string]any{"transport_peer_id": newAI.ID.String(), "error": err.Error()})
 				} else {
 					gm.connectedGWs[newAI.ID] = *newAI
 					gm.setConnectedLocked(newAI.ID)
-					obs.Business("bitcast-client", "gateway_addr_changed_and_connected", map[string]any{"transport_peer_id": newAI.ID.String()})
+					obs.Business(ServiceName, "gateway_addr_changed_and_connected", map[string]any{"transport_peer_id": newAI.ID.String()})
 					gm.electMasterLocked()
 				}
 			}
@@ -249,7 +249,7 @@ func (gm *gatewayManager) DeleteGateway(index int) error {
 	if err := cfgSvc.UpdateAndPersist(next); err != nil {
 		return err
 	}
-	obs.Business("bitcast-client", "gateway_deleted", map[string]any{"index": index})
+	obs.Business(ServiceName, "gateway_deleted", map[string]any{"index": index})
 	return nil
 }
 
@@ -305,9 +305,9 @@ func (gm *gatewayManager) electMasterLocked() {
 	gm.rt.SetMasterGateway(newMaster)
 	if newMaster != oldMaster {
 		if newMaster != "" {
-			obs.Business("bitcast-client", "master_gateway_elected", map[string]any{"transport_peer_id": newMaster.String()})
+			obs.Business(ServiceName, "master_gateway_elected", map[string]any{"transport_peer_id": newMaster.String()})
 		} else {
-			obs.Business("bitcast-client", "master_gateway_cleared", map[string]any{"reason": "no_enabled_connected_gateway"})
+			obs.Business(ServiceName, "master_gateway_cleared", map[string]any{"reason": "no_enabled_connected_gateway"})
 		}
 	}
 }
@@ -330,7 +330,7 @@ func (gm *gatewayManager) RefreshConnections(ctx context.Context) {
 		if gm.h.Network().Connectedness(id) == libnetwork.NotConnected {
 			delete(gm.connectedGWs, id)
 			gm.setConnectErrorLocked(id, fmt.Errorf("connection lost"))
-			obs.Business("bitcast-client", "gateway_connection_lost", map[string]any{"transport_peer_id": id.String()})
+			obs.Business(ServiceName, "gateway_connection_lost", map[string]any{"transport_peer_id": id.String()})
 		}
 	}
 
@@ -348,11 +348,11 @@ func (gm *gatewayManager) RefreshConnections(ctx context.Context) {
 		}
 		if err := gm.h.Connect(ctx, *ai); err != nil {
 			gm.setConnectErrorLocked(ai.ID, err)
-			obs.Error("bitcast-client", "gateway_refresh_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
+			obs.Error(ServiceName, "gateway_refresh_connect_failed", map[string]any{"transport_peer_id": ai.ID.String(), "error": err.Error()})
 		} else {
 			gm.connectedGWs[ai.ID] = *ai
 			gm.setConnectedLocked(ai.ID)
-			obs.Business("bitcast-client", "gateway_refreshed_connected", map[string]any{"transport_peer_id": ai.ID.String()})
+			obs.Business(ServiceName, "gateway_refreshed_connected", map[string]any{"transport_peer_id": ai.ID.String()})
 		}
 	}
 

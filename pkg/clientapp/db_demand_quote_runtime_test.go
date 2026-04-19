@@ -132,7 +132,7 @@ func TestTriggerGatewayPublishDemandBeginObsOnlySeedHash(t *testing.T) {
 
 	eventCh := make(chan obs.Event, 1)
 	remove := obs.AddListener(func(ev obs.Event) {
-		if ev.Service != "bitcast-client" || ev.Name != "evt_trigger_gateway_demand_publish_begin" {
+		if ev.Service != ServiceName || ev.Name != "evt_trigger_gateway_demand_publish_begin" {
 			return
 		}
 		select {

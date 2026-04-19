@@ -233,7 +233,7 @@ func TestHandleManagedControlCommand_UnlockSuccess_StartsRuntimeAndEmitsResult(t
 		if opt.ObsSink != nil {
 			for _, name := range []string{"fs_http_started", "chain_tip_task_registered", "chain_utxo_task_registered"} {
 				opt.ObsSink.Handle(obs.Event{
-					Service: "bitcast-client",
+					Service: obs.ServiceBitFSClient,
 					Name:    name,
 				})
 			}
@@ -583,7 +583,7 @@ func TestHandleKeyUnlockStartsRuntimeAndBuildsHandler(t *testing.T) {
 		if opt.ObsSink != nil {
 			for _, name := range []string{"fs_http_started", "chain_tip_task_registered", "chain_utxo_task_registered"} {
 				opt.ObsSink.Handle(obs.Event{
-					Service: "bitcast-client",
+					Service: obs.ServiceBitFSClient,
 					Name:    name,
 				})
 			}
@@ -1210,7 +1210,7 @@ func TestHandleManagedControlCommand_ConcurrentUnlockOnlyOneSucceeds(t *testing.
 		if opt.ObsSink != nil {
 			for _, name := range []string{"fs_http_started", "chain_tip_task_registered", "chain_utxo_task_registered"} {
 				opt.ObsSink.Handle(obs.Event{
-					Service: "bitcast-client",
+					Service: obs.ServiceBitFSClient,
 					Name:    name,
 				})
 			}

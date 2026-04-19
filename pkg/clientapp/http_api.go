@@ -318,7 +318,7 @@ func (s *httpAPIServer) Start() error {
 	s.srvMu.Lock()
 	s.srv = srv
 	s.srvMu.Unlock()
-	obs.Important("bitcast-client", "http_api_started", map[string]any{"listen_addr": cfg.HTTP.ListenAddr})
+	obs.Important(ServiceName, "http_api_started", map[string]any{"listen_addr": cfg.HTTP.ListenAddr})
 	err = srv.ListenAndServe()
 	if errors.Is(err, http.ErrServerClosed) {
 		return nil
@@ -595,7 +595,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 	}
 	if onchainBalErr != "" {
 		resp["onchain_balance_error"] = onchainBalErr
-		obs.Error("bitcast-client", "wallet_summary_degraded", map[string]any{
+		obs.Error(ServiceName, "wallet_summary_degraded", map[string]any{
 			"wallet_address":                                  walletAddr,
 			"wallet_chain_type":                               walletChainType,
 			"wallet_chain_base_url":                           walletChainBaseURL,
@@ -626,7 +626,7 @@ func (s *httpAPIServer) handleWalletSummary(w http.ResponseWriter, r *http.Reque
 			"onchain_balance_error":                           onchainBalErr,
 		})
 	} else {
-		obs.Info("bitcast-client", "wallet_summary_served", map[string]any{
+		obs.Info(ServiceName, "wallet_summary_served", map[string]any{
 			"wallet_address":                    walletAddr,
 			"wallet_chain_type":                 walletChainType,
 			"wallet_chain_base_url":             walletChainBaseURL,
@@ -3464,7 +3464,7 @@ func (s *httpAPIServer) handleGatewayMaster(w http.ResponseWriter, r *http.Reque
 		old := s.rt.SetMasterGateway(targetID)
 		changed := old != targetID
 		if changed {
-			obs.Business("bitcast-client", "master_gateway_set_by_admin", map[string]any{
+			obs.Business(ServiceName, "master_gateway_set_by_admin", map[string]any{
 				"old_master_gateway_pubkey_hex": old.String(),
 				"new_master_gateway_pubkey_hex": targetID.String(),
 			})
@@ -3792,11 +3792,11 @@ func (s *httpAPIServer) refreshHealthyArbiters(ctx context.Context) {
 		}
 		ai, err := parseAddr(strings.TrimSpace(a.Addr))
 		if err != nil {
-			obs.Error("bitcast-client", "arbiter_addr_invalid", map[string]any{"index": i, "addr": a.Addr, "error": err.Error()})
+			obs.Error(ServiceName, "arbiter_addr_invalid", map[string]any{"index": i, "addr": a.Addr, "error": err.Error()})
 			continue
 		}
 		if err := s.h.Connect(ctx, *ai); err != nil {
-			obs.Error("bitcast-client", "arbiter_connect_failed", map[string]any{"index": i, "transport_peer_id": ai.ID.String(), "error": err.Error()})
+			obs.Error(ServiceName, "arbiter_connect_failed", map[string]any{"index": i, "transport_peer_id": ai.ID.String(), "error": err.Error()})
 			continue
 		}
 		infos = append(infos, *ai)
@@ -4080,7 +4080,7 @@ func (s *httpAPIServer) handleAdminStrategyDebugLog(w http.ResponseWriter, r *ht
 			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 			return
 		}
-		obs.Business("bitcast-client", "admin_strategy_debug_log_updated", map[string]any{
+		obs.Business(ServiceName, "admin_strategy_debug_log_updated", map[string]any{
 			"enabled": req.Enabled,
 		})
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -5064,7 +5064,7 @@ func (s *httpAPIServer) handleUserSettings(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if err := cfgSvc.UpdateAndPersist(nextCfg); err != nil {
-			obs.Error("bitcast-client", "user_settings_update_failed", map[string]any{
+			obs.Error(ServiceName, "user_settings_update_failed", map[string]any{
 				"error":        err.Error(),
 				"applied_keys": applied,
 			})
@@ -5182,7 +5182,7 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if err := cfgSvc.UpdateAndPersist(nextCfg); err != nil {
-			obs.Error("bitcast-client", "admin_config_update_failed", map[string]any{
+			obs.Error(ServiceName, "admin_config_update_failed", map[string]any{
 				"error":        err.Error(),
 				"applied_keys": applied,
 			})

@@ -166,7 +166,7 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 	if err != nil {
 		msg := err.Error()
 		if state.LastAttemptError != msg || state.LastAttemptReason != reason {
-			obs.Error("bitcast-client", "auto_node_reachability_snapshot_failed", map[string]any{
+			obs.Error(ServiceName, "auto_node_reachability_snapshot_failed", map[string]any{
 				"reason": reason,
 				"error":  msg,
 			})
@@ -187,7 +187,7 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 	}); err != nil {
 		msg := err.Error()
 		if state.LastAttemptError != msg || state.LastAttemptReason != reason {
-			obs.Error("bitcast-client", "auto_node_reachability_announce_failed", map[string]any{
+			obs.Error(ServiceName, "auto_node_reachability_announce_failed", map[string]any{
 				"reason":             reason,
 				"gateway_pubkey_hex": gateway,
 				"node_pubkey_hex":    nodePubkeyHex,
@@ -205,7 +205,7 @@ func runAutoNodeReachabilityAnnouncePass(ctx context.Context, rt *Runtime, store
 	state.LastAttemptReason = reason
 	state.LastAnnouncedAtUnix = nowUnix
 	state.LastAnnouncedNodeID = nodePubkeyHex
-	obs.Business("bitcast-client", "auto_node_reachability_announced", map[string]any{
+	obs.Business(ServiceName, "auto_node_reachability_announced", map[string]any{
 		"reason":             reason,
 		"gateway_pubkey_hex": gateway,
 		"node_pubkey_hex":    nodePubkeyHex,
@@ -300,7 +300,7 @@ func TriggerGatewayAnnounceNodeReachability(ctx context.Context, store *clientDB
 	}); err != nil {
 		return contractmessage.NodeReachabilityAnnouncePaidResp{}, err
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_node_reachability_announce_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_node_reachability_announce_end", map[string]any{
 		"gateway_pubkey_hex":     gatewayBusinessID(rt, gw.ID),
 		"node_pubkey_hex":        nodePubkeyHex,
 		"head_height":            headHeight,
@@ -357,7 +357,7 @@ func TriggerGatewayQueryNodeReachability(ctx context.Context, store *clientDB, r
 			return contractmessage.NodeReachabilityQueryPaidResp{}, err
 		}
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_node_reachability_query_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_node_reachability_query_end", map[string]any{
 		"gateway_pubkey_hex":     gatewayBusinessID(rt, gw.ID),
 		"target_node_pubkey_hex": targetNodePubkeyHex,
 		"found":                  resp.Found,

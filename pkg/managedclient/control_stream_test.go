@@ -43,7 +43,7 @@ func TestMapManagedObsEvents_WorkspaceListDoesNotBridgeChanged(t *testing.T) {
 
 	mapped := mapManagedObsEvents(obs.Event{
 		Level:   obs.LevelBusiness,
-		Service: "bitcast-client",
+		Service: obs.ServiceBitFSClient,
 		Name:    "evt_trigger_workspace_list_begin",
 	})
 	if len(mapped) != 0 {
@@ -56,7 +56,7 @@ func TestMapManagedObsEvents_WorkspaceMutationBridgesChanged(t *testing.T) {
 
 	mapped := mapManagedObsEvents(obs.Event{
 		Level:   obs.LevelBusiness,
-		Service: "bitcast-client",
+		Service: obs.ServiceBitFSClient,
 		Name:    "evt_trigger_workspace_add_end",
 	})
 	if len(mapped) != 1 {
@@ -82,7 +82,7 @@ func TestMapManagedObsEvents_WorkspaceBeginAndFailedDoNotBridgeChanged(t *testin
 	} {
 		mapped := mapManagedObsEvents(obs.Event{
 			Level:   obs.LevelBusiness,
-			Service: "bitcast-client",
+			Service: obs.ServiceBitFSClient,
 			Name:    name,
 		})
 		if len(mapped) != 0 {

@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/orders"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/ordersettlementevents"
-	"github.com/bsv8/BFTP/pkg/obs"
 )
 
 // SettlementMethod 结算方式枚举
@@ -139,7 +139,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			Note:             in.FrontOrderNote,
 			Payload:          in.FrontOrderPayload,
 		}); err != nil {
-			obs.Error("bitcast-client", "bridge_front_order_failed", map[string]any{
+			obs.Error(ServiceName, "bridge_front_order_failed", map[string]any{
 				"error":    err.Error(),
 				"order_id": in.FrontOrderID,
 			})
@@ -172,7 +172,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			SettlementErrorMessage: "",
 			SettlementPayload:      in.SettlementPayload,
 		}); err != nil {
-			obs.Error("bitcast-client", "bridge_business_failed", map[string]any{
+			obs.Error(ServiceName, "bridge_business_failed", map[string]any{
 				"error":    err.Error(),
 				"order_id": in.BusinessID,
 			})
@@ -191,7 +191,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			UpdatedAtUnix:    now,
 			Payload:          in.SettlementPayload,
 		}); err != nil {
-			obs.Error("bitcast-client", "bridge_settlement_failed", map[string]any{
+			obs.Error(ServiceName, "bridge_settlement_failed", map[string]any{
 				"error":         err.Error(),
 				"settlement_id": in.SettlementID,
 				"order_id":      in.BusinessID,
@@ -212,7 +212,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			Note:           in.TriggerNote,
 			Payload:        in.TriggerPayload,
 		}); err != nil {
-			obs.Error("bitcast-client", "bridge_trigger_failed", map[string]any{
+			obs.Error(ServiceName, "bridge_trigger_failed", map[string]any{
 				"error":      err.Error(),
 				"trigger_id": triggerID,
 				"order_id":   in.BusinessID,
@@ -220,7 +220,7 @@ func CreateBusinessWithFrontTriggerAndPendingSettlement(ctx context.Context, sto
 			return fmt.Errorf("append business_trigger: %w", err)
 		}
 
-		obs.Info("bitcast-client", "bridge_success", map[string]any{
+		obs.Info(ServiceName, "bridge_success", map[string]any{
 			"front_order_id":    in.FrontOrderID,
 			"order_id":          in.BusinessID,
 			"trigger_id":        triggerID,

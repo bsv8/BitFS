@@ -34,13 +34,13 @@ func TriggerGatewayFeePoolState(ctx context.Context, rt *Runtime, p FeePoolGatew
 		return FeePoolStateResult{}, err
 	}
 	gatewayID := gatewayBusinessID(rt, gw.ID)
-	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_begin", map[string]any{"gateway_pubkey_hex": gatewayID})
+	obs.Business(ServiceName, "evt_trigger_gateway_fee_pool_state_begin", map[string]any{"gateway_pubkey_hex": gatewayID})
 	resp, err := callNodePoolSessionState(ctx, rt, gw.ID, "")
 	if err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_fee_pool_state_failed", map[string]any{"error": err.Error()})
 		return FeePoolStateResult{}, err
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_state_end", map[string]any{"gateway_pubkey_hex": gatewayID, "spend_txid": resp.SpendTxID, "sequence": resp.Sequence})
+	obs.Business(ServiceName, "evt_trigger_gateway_fee_pool_state_end", map[string]any{"gateway_pubkey_hex": gatewayID, "spend_txid": resp.SpendTxID, "sequence": resp.Sequence})
 	return FeePoolStateResult{GatewayPeerID: gatewayID, State: resp}, nil
 }
 
@@ -361,7 +361,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 	if err != nil {
 		return FeePoolCloseResult{}, err
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_fee_pool_close_by_spend_txid_begin", map[string]any{
 		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":         spendTxID,
 	})
@@ -387,7 +387,7 @@ func TriggerGatewayFeePoolCloseBySpendTxID(ctx context.Context, store *clientDB,
 		sess.FinalTxID = finalTxID
 		rt.setFeePool(gw.ID.String(), sess)
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_fee_pool_close_by_spend_txid_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_fee_pool_close_by_spend_txid_end", map[string]any{
 		"gateway_pubkey_hex": gatewayID,
 		"spend_txid":         spendTxID,
 		"final_txid":         finalTxID,

@@ -26,10 +26,10 @@ func (m *chainMaintainer) runUTXOWorker(ctx context.Context) {
 			return map[string]any{"task_type": chainTaskUTXO, "trigger": trigger}, nil
 		},
 	}); err != nil {
-		obs.Error("bitcast-client", "chain_utxo_task_register_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "chain_utxo_task_register_failed", map[string]any{"error": err.Error()})
 		return
 	}
-	obs.Info("bitcast-client", "chain_utxo_task_registered", map[string]any{
+	obs.Info(ServiceName, "chain_utxo_task_registered", map[string]any{
 		"interval_sec": int64(chainUTXOWorkerInterval / time.Second),
 	})
 }

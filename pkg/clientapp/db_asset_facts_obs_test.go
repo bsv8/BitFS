@@ -47,7 +47,7 @@ func TestMarkBSVUTXOSpentConn_EmitsFactSpentEvent(t *testing.T) {
 
 	eventCh := make(chan obs.Event, 8)
 	remove := obs.AddListener(func(ev obs.Event) {
-		if ev.Service != "bitcast-client" || ev.Name != "fact_bsv_spent_applied" {
+		if ev.Service != ServiceName || ev.Name != "fact_bsv_spent_applied" {
 			return
 		}
 		select {

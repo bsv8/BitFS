@@ -179,7 +179,7 @@ func dbScanAndSyncWorkspace(ctx context.Context, store *clientDB, cfg Config) (m
 			return nil, err
 		}
 
-		obs.Business("bitcast-client", "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(bizWorkspaces)})
+		obs.Business(ServiceName, "workspace_scanned", map[string]any{"seed_count": len(catalog), "workspace_count": len(bizWorkspaces)})
 		return catalog, nil
 	})
 }

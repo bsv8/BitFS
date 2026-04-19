@@ -103,11 +103,11 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	bodyRaw, err := oldproto.Marshal(body)
 	if err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_begin", map[string]any{
 		"seed_hash":   seedHash,
 		"chunk_count": p.ChunkCount,
 		"gateway":     out.GatewayPubkeyHex,
@@ -121,13 +121,13 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	})
 	if err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 	out.PreflightCode = strings.TrimSpace(preflightResp.Code)
 	if err := validateGatewayDemandPublishChainTxPreflight(preflightResp); err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 
@@ -146,12 +146,12 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 	})
 	if err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 	if err := validateGatewayDemandPublishChainTxQuoteBuilt(quoted); err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 	out.QuoteOfferHash = strings.TrimSpace(quoted.ServiceQuote.OfferHash)
@@ -186,19 +186,19 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 				out.PaymentTxID = txid
 			}
 		}
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": payErr.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": payErr.Error()})
 		return out, payErr
 	}
 
 	demandResp, txid, err := parseDemandPublishPaidResp(paidResp)
 	if err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 	if err := validateDemandPublishPaidResp(demandResp); err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 
@@ -210,11 +210,11 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 
 	if err := dbRecordDemand(ctx, store, out.DemandID, seedHash); err != nil {
 		out.Error = err.Error()
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
 		return out, err
 	}
 
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_chain_tx_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_end", map[string]any{
 		"demand_id":          out.DemandID,
 		"payment_txid":       out.PaymentTxID,
 		"quote_offer_hash":   out.QuoteOfferHash,

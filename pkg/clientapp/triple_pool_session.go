@@ -232,7 +232,7 @@ func handleDirectTransferPoolOpen(ctx context.Context, h host.Host, store *clien
 	if err := dbUpsertDirectTransferPoolOpen(ctx, store, req, sessionID, dealID, buyerPubHex, sellerPubHex, arbiterPubHex, currentTxHex, baseTxHex); err != nil {
 		return directTransferPoolOpenResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
-	obs.Business("bitcast-client", "direct_transfer_pool_open_ok", map[string]any{
+	obs.Business(ServiceName, "direct_transfer_pool_open_ok", map[string]any{
 		"session_id":    sessionID,
 		"deal_id":       dealID,
 		"pool_amount":   req.PoolAmount,
@@ -290,7 +290,7 @@ func handleDirectTransferChunkGet(ctx context.Context, _ host.Host, store *clien
 	if err := dbUpdateDirectTransferPoolStatus(ctx, store, sessionID, "delivering"); err != nil {
 		return directTransferChunkGetResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
-	obs.Business("bitcast-client", "direct_transfer_chunk_get_ok", map[string]any{
+	obs.Business(ServiceName, "direct_transfer_chunk_get_ok", map[string]any{
 		"session_id":  sessionID,
 		"chunk_hash":  chunkHash,
 		"chunk_index": resolvedChunkIndex,
@@ -386,7 +386,7 @@ func handleDirectTransferPoolPay(ctx context.Context, rt *Runtime, _ host.Host, 
 	if err := dbUpdateDirectTransferPoolPay(ctx, store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex, delta, "paid"); err != nil {
 		return directTransferPoolPayResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
-	obs.Business("bitcast-client", "direct_transfer_pool_pay_ok", map[string]any{
+	obs.Business(ServiceName, "direct_transfer_pool_pay_ok", map[string]any{
 		"session_id":    sessionID,
 		"sequence":      req.Sequence,
 		"seller_amount": req.SellerAmount,
@@ -562,7 +562,7 @@ func handleDirectTransferArbitrate(ctx context.Context, rt *Runtime, h host.Host
 		return directTransferArbitrateResp{SessionId: sessionID, Status: "rejected", Error: fmt.Sprintf("broadcast arbitration award failed: %v", err)}, nil
 	}
 	if err := applyLocalBroadcastWalletTx(ctx, store, rt, merged.Hex(), "direct_transfer_pool_arbitration_award"); err != nil {
-		obs.Error("bitcast-client", "direct_transfer_arbitration_wallet_projection_failed", map[string]any{
+		obs.Error(ServiceName, "direct_transfer_arbitration_wallet_projection_failed", map[string]any{
 			"session_id": sessionID,
 			"error":      err.Error(),
 		})
@@ -700,7 +700,7 @@ func handleDirectTransferPoolClose(ctx context.Context, _ host.Host, store *clie
 	if err := dbUpdateDirectTransferPoolClosing(ctx, store, sessionID, req.Sequence, req.SellerAmount, req.BuyerAmount, currentTxHex); err != nil {
 		return directTransferPoolCloseResp{SessionId: sessionID, Status: "rejected", Error: err.Error()}, nil
 	}
-	obs.Business("bitcast-client", "direct_transfer_pool_close_sign_ok", map[string]any{
+	obs.Business(ServiceName, "direct_transfer_pool_close_sign_ok", map[string]any{
 		"session_id": sessionID,
 		"sequence":   req.Sequence,
 	})

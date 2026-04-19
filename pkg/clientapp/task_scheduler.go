@@ -65,7 +65,7 @@ type taskScheduler struct {
 func newTaskScheduler(store *clientDB, service string) *taskScheduler {
 	service = strings.TrimSpace(service)
 	if service == "" {
-		service = "bitcast-client"
+		service = ServiceName
 	}
 	return &taskScheduler{
 		service: service,
@@ -81,7 +81,7 @@ func ensureRuntimeTaskScheduler(rt *Runtime, store *clientDB) *taskScheduler {
 	rt.taskSchedMu.Lock()
 	defer rt.taskSchedMu.Unlock()
 	if rt.taskSched == nil {
-		rt.taskSched = newTaskScheduler(store, "bitcast-client")
+		rt.taskSched = newTaskScheduler(store, ServiceName)
 	}
 	if rt.taskSched.ctx == nil {
 		rt.taskSched.ctx = rt.ctx

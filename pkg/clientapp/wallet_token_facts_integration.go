@@ -101,7 +101,7 @@ func hasFactTokenHistory(ctx context.Context, store *clientDB, walletID string, 
 
 // logTokenBalanceSuccess 记录主路径成功日志
 func logTokenBalanceSuccess(ctx context.Context, walletID string, assetKind string, tokenID string, quantityText string) {
-	obs.Info("bitcast-client", "wallet_token_balance_success", map[string]any{
+	obs.Info(ServiceName, "wallet_token_balance_success", map[string]any{
 		"wallet_id":     strings.TrimSpace(walletID),
 		"asset_kind":    strings.TrimSpace(assetKind),
 		"token_id":      strings.TrimSpace(tokenID),

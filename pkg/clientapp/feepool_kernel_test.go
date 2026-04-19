@@ -38,10 +38,10 @@ func TestProbeListenOpenNeedAndWallet(t *testing.T) {
 	privHex := "1111111111111111111111111111111111111111111111111111111111111111"
 	rt := newRuntimeForTest(t, cfg, privHex)
 	rt.ActionChain = &feePoolKernelMockChain{
-			utxos: []poolcore.UTXO{
-				{TxID: "tx1", Vout: 0, Value: 50000},
-				{TxID: "tx2", Vout: 1, Value: 48560},
-			},
+		utxos: []poolcore.UTXO{
+			{TxID: "tx1", Vout: 0, Value: 50000},
+			{TxID: "tx2", Vout: 1, Value: 48560},
+		},
 	}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {
@@ -74,9 +74,9 @@ func TestProbeListenOpenNeedAndWallet_MinimumTakesEffect(t *testing.T) {
 	privHex := "1111111111111111111111111111111111111111111111111111111111111111"
 	rt := newRuntimeForTest(t, cfg, privHex)
 	rt.ActionChain = &feePoolKernelMockChain{
-			utxos: []poolcore.UTXO{
-				{TxID: "tx1", Vout: 0, Value: 500},
-			},
+		utxos: []poolcore.UTXO{
+			{TxID: "tx1", Vout: 0, Value: 500},
+		},
 	}
 	addr, err := clientWalletAddress(rt)
 	if err != nil {

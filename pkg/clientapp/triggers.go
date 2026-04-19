@@ -230,17 +230,17 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		ChunkCount: p.ChunkCount,
 		BuyerAddrs: buyerAddrs,
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash})
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash})
 	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublish), body, decodeDemandPublishRouteResp)
 	if err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	if err := validateDemandPublishPaidResp(resp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishPaidResp{}, err
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_end", map[string]any{
 		"demand_id": resp.DemandID,
 		"status":    resp.Status,
 		"success":   resp.Success,
@@ -279,17 +279,17 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 		Items:      reqItems,
 		BuyerAddrs: localAdvertiseAddrs(rt),
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
 	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublishBatch), body, decodeDemandPublishBatchRouteResp)
 	if err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
 	if err := validateDemandPublishBatchPaidResp(resp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishBatchPaidResp{}, err
 	}
-	obs.Business("bitcast-client", "evt_trigger_gateway_demand_publish_batch_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_batch_end", map[string]any{
 		"published_count": resp.PublishedCount,
 		"status":          resp.Status,
 		"success":         resp.Success,
@@ -810,7 +810,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"status":            "pending",
 		},
 	}); err != nil {
-		obs.Error("bitcast-client", "download_pool_chain_init_failed", map[string]any{"error": err.Error(), "demand_id": p.DemandID, "seller_pubkey_hex": p.SellerPubHex})
+		obs.Error(ServiceName, "download_pool_chain_init_failed", map[string]any{"error": err.Error(), "demand_id": p.DemandID, "seller_pubkey_hex": p.SellerPubHex})
 		return directTransferPoolOpenResult{}, fmt.Errorf("create download pool business chain: %w", err)
 	}
 
@@ -890,7 +890,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			if isRetryableTransferPoolSplitErr(err) && attempt < maxOpenAttempt {
 				lastErr = err
 				wait := time.Duration(attempt) * 800 * time.Millisecond
-				obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_retry", map[string]any{
+				obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_open_retry", map[string]any{
 					"session_id": reqSessionIDOrFallback(curSessionID, sessionID),
 					"deal_id":    dealID,
 					"attempt":    attempt,
@@ -907,7 +907,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			}
 			return directTransferPoolOpenResult{}, fmt.Errorf("prepare exact pool utxo failed: %w", err)
 		}
-		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_fund_prepared", map[string]any{
+		obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_open_fund_prepared", map[string]any{
 			"session_id":     curSessionID,
 			"deal_id":        dealID,
 			"attempt":        attempt,
@@ -965,14 +965,14 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			FeeRateSatByte:   0.5,
 			LockBlocks:       lockBlocks,
 		}
-		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_begin", map[string]any{
+		obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_open_begin", map[string]any{
 			"session_id": req.SessionId,
 			"deal_id":    req.DealId,
 			"attempt":    attempt,
 		})
 		var openResp directTransferPoolOpenResp
 		if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolOpen, clientSec(buyer.rpcTrace), req, &openResp); err != nil {
-			obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_open_failed", map[string]any{"error": err.Error()})
+			obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_open_failed", map[string]any{"error": err.Error()})
 			return directTransferPoolOpenResult{}, err
 		}
 		if strings.TrimSpace(openResp.Status) != "active" || len(openResp.SellerSig) == 0 {
@@ -988,7 +988,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			if isRetryableTransferPoolBaseTxBroadcastErr(err) && attempt < maxOpenAttempt {
 				lastErr = err
 				wait := time.Duration(attempt) * 800 * time.Millisecond
-				obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_retry", map[string]any{
+				obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_open_retry", map[string]any{
 					"session_id": req.SessionId,
 					"deal_id":    req.DealId,
 					"attempt":    attempt,
@@ -1057,10 +1057,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			PoolAmountSatoshi: req.PoolAmount,
 			SellerPubHex:      strings.TrimSpace(p.SellerPubHex),
 		}); err != nil {
-			obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_open_accounting_failed", map[string]any{"error": err.Error(), "session_id": curSessionID})
+			obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_open_accounting_failed", map[string]any{"error": err.Error(), "session_id": curSessionID})
 			return directTransferPoolOpenResult{}, err
 		}
-		obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_open_end", map[string]any{
+		obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_open_end", map[string]any{
 			"session_id": req.SessionId,
 			"base_txid":  baseTxID,
 			"status":     openResp.Status,
@@ -1301,7 +1301,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		CurrentTx:    updatedTxBytes,
 		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
-	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_pay_begin", map[string]any{
 		"session_id":    req.SessionId,
 		"sequence":      req.Sequence,
 		"seller_amount": req.SellerAmount,
@@ -1310,7 +1310,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	})
 	var payResp directTransferPoolPayResp
 	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolPay, clientSec(buyer.rpcTrace), req, &payResp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_pay_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolPayResult{}, err
 	}
 	if strings.TrimSpace(payResp.Status) != "active" || len(payResp.SellerSig) == 0 {
@@ -1356,7 +1356,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		p.Amount,
 		strings.TrimSpace(merged.TxID().String()),
 	); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_pay_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
+		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_pay_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
 		return directTransferPoolPayResult{}, err
 	}
 
@@ -1369,21 +1369,21 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		_, allocID := directTransferPoolAccountingSource(session.SessionID, "pay", req.Sequence)
 		poolAllocationID, err := dbGetPoolAllocationIDByAllocationID(ctx, store, allocID)
 		if err != nil {
-			obs.Error("bitcast-client", "download_pool_settlement_pay_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
+			obs.Error(ServiceName, "download_pool_settlement_pay_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
 			return directTransferPoolPayResult{}, fmt.Errorf("resolve pool_allocation id for settlement: %w", err)
 		}
 		if err := dbUpdateBusinessSettlementStatus(ctx, store, settlementID, "settled", ""); err != nil {
-			obs.Error("bitcast-client", "download_pool_settlement_update_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
+			obs.Error(ServiceName, "download_pool_settlement_update_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
 			return directTransferPoolPayResult{}, fmt.Errorf("update settlement status: %w", err)
 		}
 		// 回写 target_type='pool_allocation', target_id=<pool_allocation.id>
 		if err := dbUpdateBusinessSettlementTarget(ctx, store, settlementID, "pool_allocation", fmt.Sprintf("%d", poolAllocationID)); err != nil {
-			obs.Error("bitcast-client", "download_pool_settlement_target_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
+			obs.Error(ServiceName, "download_pool_settlement_target_failed", map[string]any{"error": err.Error(), "settlement_id": settlementID})
 			return directTransferPoolPayResult{}, fmt.Errorf("update settlement target: %w", err)
 		}
 	}
 
-	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
 		"session_id":    req.SessionId,
 		"sequence":      req.Sequence,
 		"seller_amount": req.SellerAmount,
@@ -1415,21 +1415,21 @@ func triggerDirectTransferArbitrate(ctx context.Context, _ *clientDB, buyer *Run
 		return directTransferArbitrateResult{}, fmt.Errorf("decode session current_tx failed: %w", err)
 	}
 	req := directTransferArbitrateReq{
-		DemandId:        strings.TrimSpace(p.DemandID),
-		SessionId:       strings.TrimSpace(session.SessionID),
-		SeedHash:        strings.ToLower(strings.TrimSpace(p.SeedHash)),
-		ChunkIndex:      p.ChunkIndex,
-		ChunkHash:       strings.ToLower(strings.TrimSpace(p.ChunkHash)),
-		Sequence:        p.Sequence,
-		SellerPubkeyHex: strings.TrimSpace(session.SellerPubHex),
-		BuyerPubkeyHex:  strings.ToLower(strings.TrimSpace(buyer.ClientID())),
+		DemandId:         strings.TrimSpace(p.DemandID),
+		SessionId:        strings.TrimSpace(session.SessionID),
+		SeedHash:         strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		ChunkIndex:       p.ChunkIndex,
+		ChunkHash:        strings.ToLower(strings.TrimSpace(p.ChunkHash)),
+		Sequence:         p.Sequence,
+		SellerPubkeyHex:  strings.TrimSpace(session.SellerPubHex),
+		BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
 		ArbiterPubkeyHex: strings.TrimSpace(session.ArbiterPubHex),
-		SellerAmount:    session.SellerAmount,
-		BuyerAmount:     session.BuyerAmount,
-		ArbiterFee:      p.ArbiterFeeSat,
-		SpendTxFee:      session.SpendTxFeeSat,
-		CurrentTx:       currentTxBytes,
-		EvidencePayload: append([]byte(nil), p.EvidenceJSON...),
+		SellerAmount:     session.SellerAmount,
+		BuyerAmount:      session.BuyerAmount,
+		ArbiterFee:       p.ArbiterFeeSat,
+		SpendTxFee:       session.SpendTxFeeSat,
+		CurrentTx:        currentTxBytes,
+		EvidencePayload:  append([]byte(nil), p.EvidenceJSON...),
 	}
 	var resp directTransferArbitrateResp
 	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferArbitrate, clientSec(buyer.rpcTrace), req, &resp); err != nil {
@@ -1507,13 +1507,13 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		CurrentTx:    finalTxBytes,
 		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
-	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_close_begin", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_close_begin", map[string]any{
 		"session_id": req.SessionId,
 		"sequence":   req.Sequence,
 	})
 	var closeResp directTransferPoolCloseResp
 	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolClose, clientSec(buyer.rpcTrace), req, &closeResp); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_close_failed", map[string]any{"error": err.Error()})
+		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_close_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolCloseResult{}, err
 	}
 	if len(closeResp.SellerSig) == 0 {
@@ -1566,12 +1566,12 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		session.BuyerAmount,
 		strings.TrimSpace(session.SellerPubHex),
 	); err != nil {
-		obs.Error("bitcast-client", "evt_trigger_direct_transfer_pool_close_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
+		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_close_accounting_failed", map[string]any{"error": err.Error(), "session_id": session.SessionID})
 		return directTransferPoolCloseResult{}, err
 	}
 	buyer.deleteTriplePool(session.SessionID)
 	buyer.releaseTransferPoolSessionMutex(session.SessionID)
-	obs.Business("bitcast-client", "evt_trigger_direct_transfer_pool_close_end", map[string]any{
+	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_close_end", map[string]any{
 		"session_id": session.SessionID,
 		"final_txid": finalTxID,
 		"status":     "closed",
@@ -1606,7 +1606,7 @@ func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
 			}
 		}
 	}
-	obs.Business("bitcast-client", name, fields)
+	obs.Business(ServiceName, name, fields)
 }
 
 func isRetryableTransferPoolSplitErr(err error) bool {

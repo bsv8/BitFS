@@ -138,7 +138,7 @@ func (s *fileHTTPServer) startOnListener(ln net.Listener) error {
 	s.srvMu.Lock()
 	s.srv = srv
 	s.srvMu.Unlock()
-	obs.Important("bitcast-client", "fs_http_started", map[string]any{"listen_addr": cfg.FSHTTP.ListenAddr})
+	obs.Important(ServiceName, "fs_http_started", map[string]any{"listen_addr": cfg.FSHTTP.ListenAddr})
 	var err error
 	if ln != nil {
 		err = srv.Serve(ln)
@@ -1223,7 +1223,7 @@ func (sess *fileDownloadSession) strategyLog(event string, fields map[string]any
 	if strings.TrimSpace(sess.demandID) != "" {
 		fields["demand_id"] = sess.demandID
 	}
-	obs.Info("bitcast-client", "fs_strategy_"+event, fields)
+	obs.Info(ServiceName, "fs_strategy_"+event, fields)
 }
 
 func (s *fileHTTPServer) writeJSON(w http.ResponseWriter, status int, payload any) {

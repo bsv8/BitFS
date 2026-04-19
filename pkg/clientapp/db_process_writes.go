@@ -98,7 +98,7 @@ func dbAppendTxHistory(ctx context.Context, store *clientDB, e txHistoryEntry) {
 				Save(ctx)
 		}
 		if err != nil {
-			obs.Error("bitcast-client", "fact_pool_session_events_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
+			obs.Error(ServiceName, "fact_pool_session_events_append_failed", map[string]any{"error": err.Error(), "event_type": e.EventType})
 		}
 		return err
 	})
@@ -147,7 +147,7 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 			SetFinishedAtUnix(finishedAtUnix).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "purchase_append_failed", map[string]any{
+			obs.Error(ServiceName, "purchase_append_failed", map[string]any{
 				"error":       err.Error(),
 				"demand_id":   strings.TrimSpace(e.DemandID),
 				"chunk_index": e.ChunkIndex,
@@ -167,7 +167,7 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 	commandID := strings.TrimSpace(e.CommandID)
 	if commandID == "" {
 		err := fmt.Errorf("command_id is required")
-		obs.Error("bitcast-client", "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
+		obs.Error(ServiceName, "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
 		return err
 	}
 	err := clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
@@ -189,7 +189,7 @@ func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEn
 			SetPayloadJSON(mustJSONString(e.Payload)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action, "command_id": commandID})
+			obs.Error(ServiceName, "gateway_event_append_failed", map[string]any{"error": err.Error(), "action": e.Action, "command_id": commandID})
 		}
 		return nil
 	})
@@ -216,7 +216,7 @@ func dbAppendOrchestratorLog(ctx context.Context, store *clientDB, e orchestrato
 			SetPayloadJSON(mustJSON(e.Payload)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "orchestrator_log_append_failed", map[string]any{
+			obs.Error(ServiceName, "orchestrator_log_append_failed", map[string]any{
 				"error":      err.Error(),
 				"event_type": strings.TrimSpace(e.EventType),
 			})
@@ -232,7 +232,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 	commandID := strings.TrimSpace(e.CommandID)
 	if commandID == "" {
 		err := fmt.Errorf("command_id is required")
-		obs.Error("bitcast-client", "proc_command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
+		obs.Error(ServiceName, "proc_command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
 		return err
 	}
 	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
@@ -263,7 +263,7 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 			SetResultJSON(mustJSON(e.Result)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "proc_command_journal_append_failed", map[string]any{"error": err.Error(), "command_type": e.CommandType})
+			obs.Error(ServiceName, "proc_command_journal_append_failed", map[string]any{"error": err.Error(), "command_type": e.CommandType})
 		}
 		return err
 	})
@@ -276,7 +276,7 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 	commandID := strings.TrimSpace(e.CommandID)
 	if commandID == "" {
 		err := fmt.Errorf("command_id is required")
-		obs.Error("bitcast-client", "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
+		obs.Error(ServiceName, "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
 		return err
 	}
 	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
@@ -290,7 +290,7 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 			SetPayloadJSON(mustJSON(e.Payload)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "domain_event_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
+			obs.Error(ServiceName, "domain_event_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
 		}
 		return err
 	})
@@ -303,7 +303,7 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 	commandID := strings.TrimSpace(e.CommandID)
 	if commandID == "" {
 		err := fmt.Errorf("command_id is required")
-		obs.Error("bitcast-client", "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
+		obs.Error(ServiceName, "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
 		return err
 	}
 	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
@@ -319,7 +319,7 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 			SetPayloadJSON(mustJSON(e.Payload)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "state_snapshot_append_failed", map[string]any{"error": err.Error(), "state": e.State})
+			obs.Error(ServiceName, "state_snapshot_append_failed", map[string]any{"error": err.Error(), "state": e.State})
 		}
 		return err
 	})
@@ -363,7 +363,7 @@ func dbAppendObservedGatewayState(ctx context.Context, store *clientDB, e observ
 			SetPayloadJSON(mustJSON(e.Payload)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "observed_gateway_state_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
+			obs.Error(ServiceName, "observed_gateway_state_append_failed", map[string]any{"error": err.Error(), "event_name": e.EventName})
 		}
 		return err
 	})
@@ -376,7 +376,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 	commandID := strings.TrimSpace(e.CommandID)
 	if commandID == "" {
 		err := fmt.Errorf("command_id is required")
-		obs.Error("bitcast-client", "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
+		obs.Error(ServiceName, "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
 		return err
 	}
 	return clientDBEntTx(ctx, store, func(tx *gen.Tx) error {
@@ -391,7 +391,7 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 			SetPayloadJSON(mustJSON(e.Payload)).
 			Save(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "effect_log_append_failed", map[string]any{"error": err.Error(), "effect_type": e.EffectType, "stage": e.Stage})
+			obs.Error(ServiceName, "effect_log_append_failed", map[string]any{"error": err.Error(), "effect_type": e.EffectType, "stage": e.Stage})
 		}
 		return err
 	})
@@ -447,7 +447,7 @@ func dbAppendChainWorkerLog(ctx context.Context, store *clientDB, table string, 
 			return fmt.Errorf("unknown worker log table: %s", strings.TrimSpace(table))
 		}
 		if err != nil {
-			obs.Error("bitcast-client", errorEvent, map[string]any{"error": err.Error()})
+			obs.Error(ServiceName, errorEvent, map[string]any{"error": err.Error()})
 			return nil
 		}
 		dbTrimWorkerLogsEntTx(ctx, tx, table, chainWorkerLogKeepCount)
@@ -466,7 +466,7 @@ func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep i
 			Limit(keep).
 			IDs(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+			obs.Error(ServiceName, "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 			return
 		}
 		if len(ids) == 0 {
@@ -475,7 +475,7 @@ func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep i
 		if _, err := tx.ProcChainTipWorkerLogs.Delete().
 			Where(procchaintipworkerlogs.IDNotIn(ids...)).
 			Exec(ctx); err != nil {
-			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+			obs.Error(ServiceName, "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 		}
 	case "proc_chain_utxo_worker_logs":
 		ids, err := tx.ProcChainUtxoWorkerLogs.Query().
@@ -483,7 +483,7 @@ func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep i
 			Limit(keep).
 			IDs(ctx)
 		if err != nil {
-			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+			obs.Error(ServiceName, "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 			return
 		}
 		if len(ids) == 0 {
@@ -492,10 +492,10 @@ func dbTrimWorkerLogsEntTx(ctx context.Context, tx *gen.Tx, table string, keep i
 		if _, err := tx.ProcChainUtxoWorkerLogs.Delete().
 			Where(procchainutxoworkerlogs.IDNotIn(ids...)).
 			Exec(ctx); err != nil {
-			obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
+			obs.Error(ServiceName, "chain_worker_log_trim_failed", map[string]any{"error": err.Error(), "table": table})
 		}
 	default:
-		obs.Error("bitcast-client", "chain_worker_log_trim_failed", map[string]any{"error": "unknown worker log table", "table": table})
+		obs.Error(ServiceName, "chain_worker_log_trim_failed", map[string]any{"error": "unknown worker log table", "table": table})
 	}
 }
 
@@ -922,7 +922,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		if baseTxHex != "" {
 			t, err := transaction.NewTransactionFromHex(baseTxHex)
 			if err != nil {
-				obs.Error("bitcast-client", "fee_pool_open_parse_base_tx_failed", map[string]any{"error": err.Error(), "base_txid": baseTxID})
+				obs.Error(ServiceName, "fee_pool_open_parse_base_tx_failed", map[string]any{"error": err.Error(), "base_txid": baseTxID})
 			} else {
 				for _, input := range t.Inputs {
 					if input.SourceTxOutput() != nil {
@@ -959,7 +959,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，别再把旧 fee_pool 口径塞回写入口。
 		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, strings.TrimSpace(in.SpendTxID))
 		if err != nil {
-			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error(ServiceName, "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
 		if err := dbAppendSettlementPaymentAttemptFinBusiness(ctx, tx, settlementPaymentAttemptID, finBusinessEntry{
@@ -978,7 +978,7 @@ func dbRecordFeePoolOpenAccounting(ctx context.Context, store *clientDB, in feeP
 				"base_txid":  baseTxID,
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
+			obs.Error(ServiceName, "fee_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_open"})
 			return
 		}
 		// 旧 tx 拆解层已下线，业务主事实只保留 order_settlements。
@@ -991,7 +991,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 		// 这里直接按 chain_payment 反查 settlement_payment_attempt，保证写入和查询走同一条路。
 		settlementPaymentAttemptID, err := resolveChainPaymentSourceToSettlementPaymentAttempt(ctx, store, strings.TrimSpace(spendTxID))
 		if err != nil {
-			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			obs.Error(ServiceName, "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 			return
 		}
 		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
@@ -1010,7 +1010,7 @@ func dbRecordFeePoolCycleEvent(ctx context.Context, store *clientDB, spendTxID s
 				"financial_affected": false,
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
+			obs.Error(ServiceName, "fee_pool_cycle_record_failed", map[string]any{"error": err.Error(), "scene": "fee_pool_cycle"})
 		}
 	})
 }
@@ -1416,7 +1416,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				"process_type":  "pool_open", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
+			obs.Error(ServiceName, "direct_pool_open_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_open_process"})
 			return err
 		}
 		if err := dbAppendSettlementPaymentAttemptFinProcessEvent(ctx, tx, settlementPaymentAttemptID, finProcessEventEntry{
@@ -1435,7 +1435,7 @@ func dbRecordDirectPoolOpenAccounting(ctx context.Context, store *clientDB, in d
 				"allocation_id": allocID, // 保留业务键在 payload 中
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_open_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
+			obs.Error(ServiceName, "direct_pool_open_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_open"})
 			return err
 		}
 		// 旧 tx 拆解层已下线，过程事实只保留 order_settlements 和流程事件。
@@ -1486,7 +1486,7 @@ func dbRecordDirectPoolPayAccounting(ctx context.Context, store *clientDB, downl
 				"order_id":      downloadBusinessID, // 指向正式下载 order
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_pay_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
+			obs.Error(ServiceName, "direct_pool_pay_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_pay"})
 			return err
 		}
 
@@ -1513,7 +1513,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 		if txHex != "" {
 			t, err := transaction.NewTransactionFromHex(txHex)
 			if err != nil {
-				obs.Error("bitcast-client", "direct_pool_close_parse_final_tx_failed", map[string]any{"error": err.Error(), "final_txid": finalTxID})
+				obs.Error(ServiceName, "direct_pool_close_parse_final_tx_failed", map[string]any{"error": err.Error(), "final_txid": finalTxID})
 			} else {
 				parsedFinalTx = t
 				if finalTxID == "" {
@@ -1551,7 +1551,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				"process_type":          "pool_close", // 标记为过程类型
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_close_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
+			obs.Error(ServiceName, "direct_pool_close_record_failed", map[string]any{"error": err.Error(), "scene": "c2c_close_process"})
 			return err
 		}
 		// 过程事件继续使用统一的过程追踪 id
@@ -1570,7 +1570,7 @@ func dbRecordDirectPoolCloseAccounting(ctx context.Context, store *clientDB, ses
 				"allocation_id":         allocID, // 保留业务键在 payload 中
 			},
 		}); err != nil {
-			obs.Error("bitcast-client", "direct_pool_close_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
+			obs.Error(ServiceName, "direct_pool_close_process_event_failed", map[string]any{"error": err.Error(), "scene": "c2c_close"})
 			return err
 		}
 		// 旧 tx 拆解层已下线，过程事实只保留 order_settlements 和流程事件。

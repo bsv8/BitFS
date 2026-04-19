@@ -195,13 +195,13 @@ func (s *socketManagedControlStream) readCommandLoop(conn net.Conn) {
 		}
 		var cmd ManagedControlCommandFrame
 		if err := json.Unmarshal([]byte(line), &cmd); err != nil {
-			obs.Error("bitcast-client", "managed_control_command_decode_failed", map[string]any{
+			obs.Error(obs.ServiceBitFSClient, "managed_control_command_decode_failed", map[string]any{
 				"error": err.Error(),
 			})
 			return
 		}
 		if !isManagedControlCommandFrame(cmd) {
-			obs.Error("bitcast-client", "managed_control_command_invalid", map[string]any{
+			obs.Error(obs.ServiceBitFSClient, "managed_control_command_invalid", map[string]any{
 				"command_id": strings.TrimSpace(cmd.CommandID),
 				"action":     strings.TrimSpace(cmd.Action),
 			})
@@ -215,7 +215,7 @@ func (s *socketManagedControlStream) readCommandLoop(conn net.Conn) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		obs.Error("bitcast-client", "managed_control_command_read_failed", map[string]any{
+		obs.Error(obs.ServiceBitFSClient, "managed_control_command_read_failed", map[string]any{
 			"error": err.Error(),
 		})
 	}
@@ -252,7 +252,7 @@ type mappedManagedEvent struct {
 }
 
 func mapManagedObsEvents(ev obs.Event) []mappedManagedEvent {
-	if strings.TrimSpace(ev.Service) != "bitcast-client" {
+	if strings.TrimSpace(ev.Service) != obs.ServiceBitFSClient {
 		return nil
 	}
 	privatePayload := buildObsDerivedPayload(ev)
