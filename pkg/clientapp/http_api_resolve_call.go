@@ -1,12 +1,10 @@
 package clientapp
 
 import (
-	"database/sql"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
@@ -88,60 +86,6 @@ func (s *httpAPIServer) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, routeCallHTTPResponse(resp.Ok, resp.Code, resp.Message, resp.ContentType, resp.Body))
-}
-
-func (s *httpAPIServer) handleInboxMessages(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "db not initialized"})
-		return
-	}
-	items, err := dbListInboxMessages(r.Context(), httpStore(s))
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": len(items), "items": items})
-}
-
-func (s *httpAPIServer) handleInboxMessageDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	if s == nil || s.db == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "db not initialized"})
-		return
-	}
-	id, err := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("id")), 10, 64)
-	if err != nil || id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid id"})
-		return
-	}
-	detail, err := dbGetInboxMessageDetail(r.Context(), httpStore(s), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "not found"})
-		return
-	}
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	out := map[string]any{
-		"id":                detail.ID,
-		"message_id":        detail.MessageID,
-		"sender_pubkey_hex": detail.SenderPubKey,
-		"target_input":      detail.TargetInput,
-		"route":             detail.Route,
-		"content_type":      detail.ContentType,
-		"body_size_bytes":   detail.BodySizeBytes,
-		"received_at_unix":  detail.ReceivedAtUnix,
-	}
-	attachHTTPBodyPayload(out, detail.ContentType, detail.BodyBytes)
-	writeJSON(w, http.StatusOK, out)
 }
 
 func decodeRouteCallBody(raw json.RawMessage, bodyBase64 string) ([]byte, error) {

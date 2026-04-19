@@ -4,71 +4,15 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"strings"
 	"time"
 
-	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	broadcastmodule "github.com/bsv8/BFTP/pkg/modules/broadcast"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procinboxmessages"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/proclivefollows"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/procnodereachabilitycache"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/procselfnodereachabilitystate"
-	oldproto "github.com/golang/protobuf/proto"
 )
-
-func dbStoreInboxMessage(ctx context.Context, store *clientDB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
-	if store == nil {
-		return ncall.CallResp{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (ncall.CallResp, error) {
-		now := time.Now().Unix()
-		messageID = strings.TrimSpace(messageID)
-		senderPubKeyHex = strings.TrimSpace(senderPubKeyHex)
-		targetInput = strings.TrimSpace(targetInput)
-		route = strings.TrimSpace(route)
-		contentType = strings.TrimSpace(contentType)
-		row, err := tx.ProcInboxMessages.Query().Where(
-			procinboxmessages.SenderPubkeyHexEQ(senderPubKeyHex),
-			procinboxmessages.MessageIDEQ(messageID),
-		).Only(ctx)
-		inboxID := int64(0)
-		switch {
-		case err == nil:
-			inboxID = int64(row.ID)
-			now = row.ReceivedAtUnix
-		case gen.IsNotFound(err):
-			row, err := tx.ProcInboxMessages.Create().
-				SetMessageID(messageID).
-				SetSenderPubkeyHex(senderPubKeyHex).
-				SetTargetInput(targetInput).
-				SetRoute(route).
-				SetContentType(contentType).
-				SetBodyBytes(append([]byte(nil), body...)).
-				SetBodySizeBytes(int64(len(body))).
-				SetReceivedAtUnix(now).
-				Save(ctx)
-			if err != nil {
-				return ncall.CallResp{}, err
-			}
-			inboxID = int64(row.ID)
-		default:
-			return ncall.CallResp{}, err
-		}
-		ack, err := oldproto.Marshal(&inboxReceipt{InboxMessageID: inboxID, ReceivedAtUnix: now})
-		if err != nil {
-			return ncall.CallResp{}, err
-		}
-		return ncall.CallResp{
-			Ok:          true,
-			Code:        "OK",
-			ContentType: contractmessage.ContentTypeProto,
-			Body:        ack,
-		}, nil
-	})
-}
 
 func dbPersistLiveFollowStatus(ctx context.Context, store *clientDB, st LiveFollowStatus) error {
 	if store == nil {

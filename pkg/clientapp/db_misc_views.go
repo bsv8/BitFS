@@ -7,88 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	entsql "entgo.io/ent/dialect/sql"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizseeds"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen/bizworkspacefiles"
-	"github.com/bsv8/bitfs-contract/ent/v1/gen/procinboxmessages"
 )
-
-type inboxMessageListItem struct {
-	ID             int64  `json:"id"`
-	MessageID      string `json:"message_id"`
-	SenderPubKey   string `json:"sender_pubkey_hex"`
-	TargetInput    string `json:"target_input"`
-	Route          string `json:"route"`
-	ContentType    string `json:"content_type"`
-	BodySizeBytes  int64  `json:"body_size_bytes"`
-	ReceivedAtUnix int64  `json:"received_at_unix"`
-}
-
-type inboxMessageDetailItem struct {
-	ID             int64
-	MessageID      string
-	SenderPubKey   string
-	TargetInput    string
-	Route          string
-	ContentType    string
-	BodyBytes      []byte
-	BodySizeBytes  int64
-	ReceivedAtUnix int64
-}
-
-func dbListInboxMessages(ctx context.Context, store *clientDB) ([]inboxMessageListItem, error) {
-	if store == nil {
-		return nil, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) ([]inboxMessageListItem, error) {
-		rows, err := tx.ProcInboxMessages.Query().Order(procinboxmessages.ByReceivedAtUnix(entsql.OrderDesc()), procinboxmessages.ByID(entsql.OrderDesc())).All(ctx)
-		if err != nil {
-			return nil, err
-		}
-		items := make([]inboxMessageListItem, 0, len(rows))
-		for _, row := range rows {
-			items = append(items, inboxMessageListItem{
-				ID:             int64(row.ID),
-				MessageID:      row.MessageID,
-				SenderPubKey:   row.SenderPubkeyHex,
-				TargetInput:    row.TargetInput,
-				Route:          row.Route,
-				ContentType:    row.ContentType,
-				BodySizeBytes:  row.BodySizeBytes,
-				ReceivedAtUnix: row.ReceivedAtUnix,
-			})
-		}
-		return items, nil
-	})
-}
-
-func dbGetInboxMessageDetail(ctx context.Context, store *clientDB, id int64) (inboxMessageDetailItem, error) {
-	if store == nil {
-		return inboxMessageDetailItem{}, fmt.Errorf("client db is nil")
-	}
-	return clientDBEntTxValue(ctx, store, func(tx *gen.Tx) (inboxMessageDetailItem, error) {
-		row, err := tx.ProcInboxMessages.Query().Where(procinboxmessages.IDEQ(int(id))).Only(ctx)
-		if err != nil {
-			if gen.IsNotFound(err) {
-				return inboxMessageDetailItem{}, sql.ErrNoRows
-			}
-			return inboxMessageDetailItem{}, err
-		}
-		out := inboxMessageDetailItem{
-			ID:             int64(row.ID),
-			MessageID:      row.MessageID,
-			SenderPubKey:   row.SenderPubkeyHex,
-			TargetInput:    row.TargetInput,
-			Route:          row.Route,
-			ContentType:    row.ContentType,
-			BodyBytes:      row.BodyBytes,
-			BodySizeBytes:  row.BodySizeBytes,
-			ReceivedAtUnix: row.ReceivedAtUnix,
-		}
-		return out, nil
-	})
-}
 
 func dbGetSeedChunkCount(ctx context.Context, store *clientDB, seedHash string) (uint32, bool) {
 	if store == nil {
