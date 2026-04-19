@@ -18,7 +18,7 @@ func TestBuiltinModulesOrderAndCapabilityRegistration(t *testing.T) {
 		t.Cleanup(closeModule)
 	}
 
-	modules := builtinModules()
+	modules := builtinModuleCatalog()
 	if len(modules) != 3 {
 		t.Fatalf("unexpected builtin module count: %d", len(modules))
 	}
