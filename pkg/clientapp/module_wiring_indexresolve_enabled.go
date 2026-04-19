@@ -7,8 +7,11 @@ import (
 	"database/sql"
 	"fmt"
 	"net/http"
+	"strings"
+	"sync/atomic"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	"github.com/bsv8/BFTP/pkg/obs"
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
@@ -25,6 +28,27 @@ type indexResolveSerialDoer interface {
 type indexResolveStoreAdapter struct {
 	store  indexResolveBootstrapStore
 	serial indexResolveSerialDoer
+}
+
+// indexResolveModuleState 只管模块生死，不承载业务数据。
+//
+// 设计说明：
+// - wiring 只需要知道模块是否还活着；
+// - 真正的读写能力走 store capability，不从这里分发；
+// - 关闭后立即返回 MODULE_DISABLED，避免旧请求穿透到 store。
+type indexResolveModuleState struct {
+	closed uint32
+}
+
+func (s *indexResolveModuleState) Enabled() bool {
+	return s != nil && atomic.LoadUint32(&s.closed) == 0
+}
+
+func (s *indexResolveModuleState) Close() {
+	if s == nil {
+		return
+	}
+	atomic.StoreUint32(&s.closed, 1)
 }
 
 func (a indexResolveStoreAdapter) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
@@ -70,26 +94,34 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 	if err != nil {
 		return nil, err
 	}
-	svc := indexresolve.NewService(moduleStore, rt)
+	moduleState := &indexResolveModuleState{}
 	reg := ensureModuleRegistry(rt)
 	if reg == nil {
-		svc.Close()
+		moduleState.Close()
 		return func() {}, nil
 	}
 
 	moduleCleanup, err := reg.registerModuleLockProvider(indexresolve.ModuleIdentity, indexresolve.FunctionLocks)
 	if err != nil {
-		svc.Close()
 		return nil, err
 	}
 
+	emitter := indexresolve.ObsEmitterFunc(func(level string, name string, fields map[string]any) {
+		switch strings.TrimSpace(level) {
+		case "error":
+			obs.Error("bitfs-client", name, fields)
+		default:
+			obs.Business("bitfs-client", name, fields)
+		}
+	})
+
 	cleanup, err := reg.registerIndexResolve(
 		func() *contractmessage.CapabilityItem {
-			return svc.Capability()
+			return indexresolve.CapabilityItem()
 		},
 		func(ctx context.Context, route string) (routeIndexManifest, error) {
 			// 这里只做查询映射，不给 settings 写入口留旁路。
-			manifest, err := svc.Resolve(ctx, route)
+			manifest, err := indexresolve.BizResolve(ctx, moduleState, moduleStore, emitter, route)
 			if err != nil {
 				return routeIndexManifest{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
 			}
@@ -106,15 +138,15 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 			if s == nil || mux == nil {
 				return
 			}
-			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(indexresolve.NewHTTPSettingsIndexResolveHandler(svc)))
+			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(indexresolve.NewHTTPSettingsIndexResolveHandler(moduleState, moduleStore, moduleStore, moduleStore, emitter)))
 		},
 		func() {
-			svc.Close()
+			moduleState.Close()
 		},
 	)
 	if err != nil {
 		moduleCleanup()
-		svc.Close()
+		moduleState.Close()
 		return nil, err
 	}
 	return func() {

@@ -40,6 +40,18 @@ func TestValidateWhitelistShapeRejectsEmptyField(t *testing.T) {
 	}
 }
 
+func TestIndexResolveWhitelistKeepsOnlyBizEntrypoints(t *testing.T) {
+	items := indexresolve.FunctionLocks()
+	if len(items) != 4 {
+		t.Fatalf("expected 4 whitelist items, got %d", len(items))
+	}
+	for _, item := range items {
+		if !strings.HasPrefix(item.Symbol, "Biz") {
+			t.Fatalf("unexpected lock symbol: %s", item.Symbol)
+		}
+	}
+}
+
 func TestRegistryItemsReportsMissingModule(t *testing.T) {
 	reg := modulelock.NewRegistry()
 	items, missing := reg.Items(indexresolve.ModuleIdentity)
@@ -64,7 +76,7 @@ func TestRunChecksRejectsSignatureMismatch(t *testing.T) {
 	}
 	selected := map[string]struct{}{indexresolve.ModuleIdentity: {}}
 	items := []modulelock.LockedFunction{
-		{ID: "bitfs.indexresolve.resolve", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "Resolve", Signature: "func Resolve(ctx context.Context, rawRoute string) (Manifest, error)", Note: "n"},
+		{ID: "bitfs.indexresolve.biz_resolve", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "BizResolve", Signature: "func BizResolve(ctx context.Context, state ModuleState, resolver ResolveReader, emitter ObsEmitter, rawRoute string) (Manifest, error)", Note: "n"},
 	}
 	err := runChecks(tmp, goBin, selected, items)
 	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {

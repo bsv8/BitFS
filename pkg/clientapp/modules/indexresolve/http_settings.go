@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"strings"
-	"time"
 )
 
 type settingsIndexResolveRouteItem struct {
@@ -13,19 +12,19 @@ type settingsIndexResolveRouteItem struct {
 	UpdatedAtUnix int64  `json:"updated_at_unix"`
 }
 
-func NewHTTPSettingsIndexResolveHandler(svc *Service) http.HandlerFunc {
+func NewHTTPSettingsIndexResolveHandler(state ModuleState, lister SettingsLister, upserter SettingsUpserter, deleter SettingsDeleter, emitter ObsEmitter) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r == nil {
 			writeModuleSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "request is required")
 			return
 		}
-		if svc == nil || !svc.Enabled() {
+		if state == nil || lister == nil || upserter == nil || deleter == nil {
 			writeModuleSettingsError(w, http.StatusServiceUnavailable, "MODULE_DISABLED", "index_resolve module is disabled")
 			return
 		}
 		switch r.Method {
 		case http.MethodGet:
-			items, err := svc.List(r.Context())
+			items, err := BizSettingsList(r.Context(), state, lister, emitter)
 			if err != nil {
 				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
 				return
@@ -51,7 +50,7 @@ func NewHTTPSettingsIndexResolveHandler(svc *Service) http.HandlerFunc {
 				writeModuleSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid json")
 				return
 			}
-			item, err := svc.Upsert(r.Context(), req.Route, req.SeedHash, time.Now().Unix())
+			item, err := BizSettingsUpsert(r.Context(), state, upserter, emitter, req.Route, req.SeedHash)
 			if err != nil {
 				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
 				return
@@ -63,17 +62,14 @@ func NewHTTPSettingsIndexResolveHandler(svc *Service) http.HandlerFunc {
 			})
 		case http.MethodDelete:
 			route := r.URL.Query().Get("route")
-			if err := svc.Delete(r.Context(), route); err != nil {
+			deletedRoute, err := BizSettingsDelete(r.Context(), state, deleter, emitter, route)
+			if err != nil {
 				writeModuleSettingsError(w, moduleSettingsStatusFromErr(err), CodeOf(err), MessageOf(err))
 				return
 			}
-			normRoute, err := NormalizeRoute(route)
-			if err != nil {
-				normRoute = strings.TrimSpace(route)
-			}
 			writeModuleSettingsOK(w, map[string]any{
 				"deleted": true,
-				"route":   normRoute,
+				"route":   strings.TrimSpace(deletedRoute),
 			})
 		default:
 			writeModuleSettingsError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
@@ -111,6 +107,8 @@ func moduleSettingsStatusFromErr(err error) int {
 	switch CodeOf(err) {
 	case "ROUTE_INVALID", "SEED_HASH_INVALID", "SEED_NOT_FOUND", "BAD_REQUEST":
 		return http.StatusBadRequest
+	case "REQUEST_CANCELED":
+		return 499
 	case "MODULE_DISABLED":
 		return http.StatusServiceUnavailable
 	case "ROUTE_NOT_FOUND":

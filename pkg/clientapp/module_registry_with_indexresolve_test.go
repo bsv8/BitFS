@@ -66,8 +66,8 @@ func TestModuleRegistrySeparatesCapabilityAndModuleLocks(t *testing.T) {
 	if len(missing) != 0 {
 		t.Fatalf("unexpected missing modules: %#v", missing)
 	}
-	if len(items) == 0 {
-		t.Fatal("expected module lock items")
+	if len(items) != 4 {
+		t.Fatalf("expected 4 module lock items, got %d", len(items))
 	}
 
 	closeFn, err := reg.registerIndexResolve(
