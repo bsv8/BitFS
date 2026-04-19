@@ -13,18 +13,12 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
-type indexResolveBootstrapStore interface {
-	ExecContext(context.Context, string, ...any) (sql.Result, error)
-	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
-	SerialAccess() bool
-}
-
 type indexResolveSerialDoer interface {
 	Do(context.Context, func(SQLConn) error) error
 }
 
 type indexResolveStoreAdapter struct {
-	store  indexResolveBootstrapStore
+	store  moduleBootstrapStore
 	serial indexResolveSerialDoer
 }
 
@@ -65,15 +59,19 @@ type indexResolveSettingsDispatcher interface {
 // registerOptionalModules 只负责把可选模块接到主框架钩子上。
 //
 // 设计说明：
-// - 这里是唯一允许引用 indexresolve 模块实现包的地方；
-// - 模块自己的 store、能力、HTTP 面、settings、obs 和生命周期都在这里接线；
+// - 这里是唯一允许引用可选模块实现包的地方；
+// - 模块自己的 store、能力、HTTP 面、settings、obs、node 路由和生命周期都在这里接线；
 // - cleanup 只负责解绑钩子，模块能力的生死由编译期开关决定。
-func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolveBootstrapStore) (func(), error) {
+func registerOptionalModules(ctx context.Context, rt *Runtime, store moduleBootstrapStore) (func(), error) {
 	if rt == nil || store == nil {
 		return func() {}, nil
 	}
 	if ctx == nil {
 		return func() {}, fmt.Errorf("ctx is required")
+	}
+	reg := ensureModuleRegistry(rt)
+	if reg == nil {
+		return func() {}, nil
 	}
 
 	serial, _ := store.(indexResolveSerialDoer)
@@ -88,11 +86,6 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 	if err != nil {
 		return nil, err
 	}
-	reg := ensureModuleRegistry(rt)
-	if reg == nil {
-		return func() {}, nil
-	}
-
 	moduleCleanup, err := reg.registerModuleLockProvider(indexresolve.ModuleIdentity, indexresolve.FunctionLocks)
 	if err != nil {
 		return nil, err
@@ -103,19 +96,26 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		moduleCleanup()
 		return nil, err
 	}
-	p2pCleanup, err := reg.RegisterP2PCallHook(func(ctx context.Context, route string) (routeIndexManifest, error) {
-		manifest, err := indexresolve.BizResolve(ctx, moduleStore, route)
+	// resolve 只挂一个入口，注册键留空，实际要查的 route 放在 Req.Route。
+	resolveCleanup, err := reg.RegisterLibP2PHook(LibP2PProtocolNodeResolve, "", func(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
+		manifest, err := indexresolve.BizResolve(ctx, moduleStore, ev.Req.Route)
 		if err != nil {
-			return routeIndexManifest{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+			code := indexresolve.CodeOf(err)
+			msg := indexresolve.MessageOf(err)
+			if code == "" {
+				code = "INTERNAL_ERROR"
+				msg = err.Error()
+			}
+			return LibP2PResult{}, newModuleHookError(code, msg)
 		}
-		return routeIndexManifest{
+		return LibP2PResult{ResolveManifest: routeIndexManifest{
 			Route:               manifest.Route,
 			SeedHash:            manifest.SeedHash,
 			RecommendedFileName: manifest.RecommendedFileName,
 			MIMEHint:            manifest.MIMEHint,
 			FileSize:            manifest.FileSize,
 			UpdatedAtUnix:       manifest.UpdatedAtUnix,
-		}, nil
+		}}, nil
 	})
 	if err != nil {
 		capabilityCleanup()
@@ -129,7 +129,16 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(newIndexResolveSettingsHTTPHandler(reg)))
 	})
 	if err != nil {
-		p2pCleanup()
+		resolveCleanup()
+		capabilityCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	inboxCleanup, err := registerInboxMessageModule(ctx, rt, store)
+	if err != nil {
+		httpAPICleanup()
+		resolveCleanup()
+		inboxCleanup()
 		capabilityCleanup()
 		moduleCleanup()
 		return nil, err
@@ -186,7 +195,8 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 	})
 	if err != nil {
 		httpAPICleanup()
-		p2pCleanup()
+		resolveCleanup()
+		inboxCleanup()
 		capabilityCleanup()
 		moduleCleanup()
 		return nil, err
@@ -224,7 +234,8 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 	if err != nil {
 		settingsCleanup()
 		httpAPICleanup()
-		p2pCleanup()
+		resolveCleanup()
+		inboxCleanup()
 		capabilityCleanup()
 		moduleCleanup()
 		return nil, err
@@ -234,7 +245,8 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		obsCleanup()
 		settingsCleanup()
 		httpAPICleanup()
-		p2pCleanup()
+		resolveCleanup()
+		inboxCleanup()
 		capabilityCleanup()
 		moduleCleanup()
 		return nil, err
@@ -245,9 +257,10 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		obsCleanup()
 		settingsCleanup()
 		httpAPICleanup()
-		p2pCleanup()
+		resolveCleanup()
 		capabilityCleanup()
 		moduleCleanup()
+		inboxCleanup()
 		return nil, err
 	}
 	return func() {
@@ -256,8 +269,9 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		obsCleanup()
 		settingsCleanup()
 		httpAPICleanup()
-		p2pCleanup()
+		resolveCleanup()
 		capabilityCleanup()
+		inboxCleanup()
 		moduleCleanup()
 	}, nil
 }

@@ -17,7 +17,6 @@ import (
 
 const (
 	defaultNodeResolveRoute = "index"
-	routeInboxMessage       = "inbox.message"
 )
 
 type TriggerPeerCallParams struct {
@@ -38,11 +37,6 @@ type TriggerPeerResolveParams struct {
 	Store *clientDB
 }
 
-type inboxReceipt struct {
-	InboxMessageID int64 `protobuf:"varint,1,opt,name=inbox_message_id,json=inboxMessageId,proto3" json:"inbox_message_id"`
-	ReceivedAtUnix int64 `protobuf:"varint,2,opt,name=received_at_unix,json=receivedAtUnix,proto3" json:"received_at_unix"`
-}
-
 type peerCallPaymentDecision struct {
 	Scheme string
 	Option *ncall.PaymentOption
@@ -57,10 +51,10 @@ type routeIndexManifest struct {
 	UpdatedAtUnix       int64  `protobuf:"varint,6,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix"`
 }
 
-// registerNodeRouteHandlers 把节点级 route-call / route-resolve 能力挂到统一 node 协议上。
+// registerNodeRouteHandlers 把节点级 route-call / route-resolve 能力挂到统一 libp2p 协议上。
 // 设计说明：
 // - bitfs.peer.call 未来会承接多支付协议，因此这里先统一“所有节点共用一个外壳”；
-// - client 自己目前只暴露 inbox.message、capabilities_show 与模块化的 index resolve；
+// - 壳只认协议路由，不认具体模块；模块细节只通过注册表分发；
 // - 业务层 route 继续由各自服务挂载，壳不需要知道 domain/gateway 的细节。
 func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 	if rt == nil || rt.Host == nil || store == nil {
@@ -79,23 +73,43 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 		case string(contractroute.RouteNodeV1CapabilitiesShow):
 			body := clientCapabilitiesShowBody(rt)
 			return marshalNodeCallProto(&body)
-		case routeInboxMessage:
-			return storeInboxMessage(ctx, store, meta.MessageID, meta.SenderPubkeyHex, strings.TrimSpace(req.To), route, contentType, req.Body)
 		default:
-			return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+			if rt.modules == nil {
+				return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
+			}
+			out, err := rt.modules.DispatchLibP2P(ctx, LibP2PEvent{
+				Protocol:    LibP2PProtocolNodeCall,
+				Route:       route,
+				Meta:        meta,
+				Req:         req,
+				ContentType: contentType,
+			})
+			if err != nil {
+				if code := moduleHookCode(err); code != "" {
+					return ncall.CallResp{Ok: false, Code: code, Message: moduleHookMessage(err)}, nil
+				}
+				return ncall.CallResp{}, err
+			}
+			return out.CallResp, nil
 		}
 	}, func(ctx context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
 		if rt == nil || rt.modules == nil {
 			return ncall.ResolveResp{Ok: false, Code: "MODULE_DISABLED", Message: "module is disabled"}, nil
 		}
-		manifest, err := rt.modules.DispatchP2PCall(ctx, req.Route)
+		// resolve 的注册键固定留空，真正要查的路由还在 Req.Route 里。
+		out, err := rt.modules.DispatchLibP2P(ctx, LibP2PEvent{
+			Protocol:    LibP2PProtocolNodeResolve,
+			Route:       "",
+			Req:         ncall.CallReq{Route: req.Route},
+			ContentType: contractmessage.ContentTypeProto,
+		})
 		if err != nil {
 			if code := moduleHookCode(err); code != "" {
 				return ncall.ResolveResp{Ok: false, Code: code, Message: moduleHookMessage(err)}, nil
 			}
 			return ncall.ResolveResp{}, err
 		}
-		body, err := oldproto.Marshal(&manifest)
+		body, err := oldproto.Marshal(&out.ResolveManifest)
 		if err != nil {
 			return ncall.ResolveResp{}, err
 		}
@@ -253,10 +267,6 @@ func normalizeContentType(raw string) (string, string) {
 		return "", "content_type is required"
 	}
 	return contentType, ""
-}
-
-func storeInboxMessage(ctx context.Context, store *clientDB, messageID, senderPubKeyHex, targetInput, route, contentType string, body []byte) (ncall.CallResp, error) {
-	return dbStoreInboxMessage(ctx, store, messageID, senderPubKeyHex, targetInput, route, contentType, body)
 }
 
 func resolveClientTarget(raw string) (string, peer.ID, error) {

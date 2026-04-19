@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 )
 
@@ -25,7 +26,26 @@ type OBSActionResponse struct {
 	Payload map[string]any
 }
 
-type P2PCallHook func(context.Context, string) (routeIndexManifest, error)
+type LibP2PProtocol string
+type LibP2PHook func(context.Context, LibP2PEvent) (LibP2PResult, error)
+
+const (
+	LibP2PProtocolNodeCall    LibP2PProtocol = "node.call"
+	LibP2PProtocolNodeResolve LibP2PProtocol = "node.resolve"
+)
+
+type LibP2PEvent struct {
+	Protocol    LibP2PProtocol
+	Route       string
+	Meta        ncall.CallContext
+	Req         ncall.CallReq
+	ContentType string
+}
+
+type LibP2PResult struct {
+	CallResp        ncall.CallResp
+	ResolveManifest routeIndexManifest
+}
 type HTTPAPIHook func(*httpAPIServer, *http.ServeMux, string)
 type SettingsHook func(context.Context, string, map[string]any) (map[string]any, error)
 type OBSControlHook func(context.Context, string, map[string]any) (OBSActionResponse, error)
@@ -39,7 +59,7 @@ type CloseHook func(context.Context) error
 // - 生产代码只走 Dispatch* / Run*，注册只在单点装配里出现；
 // - 测试仍然可以用注册口挂入假钩子，验证分发是否只靠注册表。
 type ModuleHooks interface {
-	RegisterP2PCallHook(P2PCallHook) (func(), error)
+	RegisterLibP2PHook(LibP2PProtocol, string, LibP2PHook) (func(), error)
 	RegisterHTTPAPIHook(HTTPAPIHook) (func(), error)
 	RegisterSettingsHook(SettingsHook) (func(), error)
 	RegisterOBSControlHook(OBSControlHook) (func(), error)
@@ -47,7 +67,7 @@ type ModuleHooks interface {
 	RegisterCloseHook(CloseHook) (func(), error)
 	RegisterModuleLockProvider(string, modulelock.Provider) (func(), error)
 
-	DispatchP2PCall(context.Context, string) (routeIndexManifest, error)
+	DispatchLibP2P(context.Context, LibP2PEvent) (LibP2PResult, error)
 	MountHTTPAPI(*httpAPIServer, *http.ServeMux, string)
 	DispatchSettings(context.Context, string, map[string]any) (map[string]any, error)
 	DispatchOBSControl(context.Context, string, map[string]any) (OBSActionResponse, error)
@@ -60,19 +80,29 @@ type lifecycleHookEntry struct {
 	hook func(context.Context) error
 }
 
+type capabilityHookEntry struct {
+	id   uint64
+	hook func() *contractmessage.CapabilityItem
+}
+
+type httpAPIHookEntry struct {
+	id   uint64
+	hook HTTPAPIHook
+}
+
 type moduleRegistry struct {
 	mu sync.RWMutex
 
-	capabilityHook func() *contractmessage.CapabilityItem
+	capabilityHooks []capabilityHookEntry
 
-	p2pCallHook   P2PCallHook
-	httpAPIHook   HTTPAPIHook
-	settingsHook  SettingsHook
-	obsHook       OBSControlHook
-	openHooks     []lifecycleHookEntry
-	closeHooks    []lifecycleHookEntry
-	nextHookID    uint64
-	moduleLocks   *modulelock.Registry
+	libP2PHooks  map[string]LibP2PHook
+	httpAPIHooks []httpAPIHookEntry
+	settingsHook SettingsHook
+	obsHook      OBSControlHook
+	openHooks    []lifecycleHookEntry
+	closeHooks   []lifecycleHookEntry
+	nextHookID   uint64
+	moduleLocks  *modulelock.Registry
 }
 
 func newModuleRegistry() *moduleRegistry {
@@ -86,11 +116,9 @@ func (r *moduleRegistry) registerCapabilityHook(hook func() *contractmessage.Cap
 		return func() {}, nil
 	}
 	r.mu.Lock()
-	if r.capabilityHook != nil {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("capability hook is already registered")
-	}
-	r.capabilityHook = hook
+	r.nextHookID++
+	id := r.nextHookID
+	r.capabilityHooks = append(r.capabilityHooks, capabilityHookEntry{id: id, hook: hook})
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -99,25 +127,42 @@ func (r *moduleRegistry) registerCapabilityHook(hook func() *contractmessage.Cap
 				return
 			}
 			r.mu.Lock()
-			r.capabilityHook = nil
+			for i, entry := range r.capabilityHooks {
+				if entry.id == id {
+					r.capabilityHooks = append(r.capabilityHooks[:i], r.capabilityHooks[i+1:]...)
+					break
+				}
+			}
 			r.mu.Unlock()
 		})
 	}, nil
 }
 
-func (r *moduleRegistry) RegisterP2PCallHook(hook P2PCallHook) (func(), error) {
+func (r *moduleRegistry) RegisterLibP2PHook(protocol LibP2PProtocol, route string, hook LibP2PHook) (func(), error) {
 	if r == nil {
 		return func() {}, nil
+	}
+	protocol = normalizeLibP2PProtocol(protocol)
+	if protocol == "" {
+		return nil, fmt.Errorf("protocol is required")
 	}
 	if hook == nil {
 		return nil, fmt.Errorf("hook is required")
 	}
-	r.mu.Lock()
-	if r.p2pCallHook != nil {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("p2p call hook is already registered")
+	route = strings.TrimSpace(route)
+	if protocol == LibP2PProtocolNodeCall && strings.TrimSpace(route) == "" {
+		return nil, fmt.Errorf("route is required")
 	}
-	r.p2pCallHook = hook
+	key := libP2PHookKey(protocol, route)
+	r.mu.Lock()
+	if r.libP2PHooks == nil {
+		r.libP2PHooks = make(map[string]LibP2PHook)
+	}
+	if _, exists := r.libP2PHooks[key]; exists {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("libp2p hook already registered for protocol=%s route=%q", protocol, route)
+	}
+	r.libP2PHooks[key] = hook
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -126,7 +171,7 @@ func (r *moduleRegistry) RegisterP2PCallHook(hook P2PCallHook) (func(), error) {
 				return
 			}
 			r.mu.Lock()
-			r.p2pCallHook = nil
+			delete(r.libP2PHooks, key)
 			r.mu.Unlock()
 		})
 	}, nil
@@ -140,11 +185,9 @@ func (r *moduleRegistry) RegisterHTTPAPIHook(hook HTTPAPIHook) (func(), error) {
 		return nil, fmt.Errorf("hook is required")
 	}
 	r.mu.Lock()
-	if r.httpAPIHook != nil {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("http api hook is already registered")
-	}
-	r.httpAPIHook = hook
+	r.nextHookID++
+	id := r.nextHookID
+	r.httpAPIHooks = append(r.httpAPIHooks, httpAPIHookEntry{id: id, hook: hook})
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -153,7 +196,12 @@ func (r *moduleRegistry) RegisterHTTPAPIHook(hook HTTPAPIHook) (func(), error) {
 				return
 			}
 			r.mu.Lock()
-			r.httpAPIHook = nil
+			for i, entry := range r.httpAPIHooks {
+				if entry.id == id {
+					r.httpAPIHooks = append(r.httpAPIHooks[:i], r.httpAPIHooks[i+1:]...)
+					break
+				}
+			}
 			r.mu.Unlock()
 		})
 	}, nil
@@ -263,14 +311,18 @@ func (r *moduleRegistry) capabilityItems() []*contractmessage.CapabilityItem {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if r.capabilityHook == nil {
+	if len(r.capabilityHooks) == 0 {
 		return nil
 	}
-	item := r.capabilityHook()
-	if item != nil {
-		return []*contractmessage.CapabilityItem{item}
+	out := make([]*contractmessage.CapabilityItem, 0, len(r.capabilityHooks))
+	for _, entry := range r.capabilityHooks {
+		if entry.hook != nil {
+			if item := entry.hook(); item != nil {
+				out = append(out, item)
+			}
+		}
 	}
-	return nil
+	return out
 }
 
 func (r *moduleRegistry) registerModuleLockProvider(module string, provider modulelock.Provider) (func(), error) {
@@ -290,23 +342,50 @@ func (r *moduleRegistry) moduleLockItems(modules ...string) ([]modulelock.Locked
 	return r.moduleLocks.Items(modules...)
 }
 
-func (r *moduleRegistry) DispatchP2PCall(ctx context.Context, route string) (routeIndexManifest, error) {
+func (r *moduleRegistry) DispatchLibP2P(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
 	if ctx == nil {
-		return routeIndexManifest{}, newModuleHookError("BAD_REQUEST", "ctx is required")
+		return LibP2PResult{}, newModuleHookError("BAD_REQUEST", "ctx is required")
 	}
 	if ctx.Err() != nil {
-		return routeIndexManifest{}, newModuleHookError("REQUEST_CANCELED", ctx.Err().Error())
+		return LibP2PResult{}, newModuleHookError("REQUEST_CANCELED", ctx.Err().Error())
 	}
 	if r == nil {
-		return routeIndexManifest{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
+		return LibP2PResult{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
+	protocol := normalizeLibP2PProtocol(ev.Protocol)
+	if protocol == "" {
+		return LibP2PResult{}, newModuleHookError("BAD_REQUEST", "protocol is required")
+	}
+	route := ev.Route
+	if protocol == LibP2PProtocolNodeCall {
+		route = strings.TrimSpace(route)
+		if route == "" {
+			return LibP2PResult{}, newModuleHookError("BAD_REQUEST", "route is required")
+		}
+	}
+	route = strings.TrimSpace(route)
+	key := libP2PHookKey(protocol, route)
 	r.mu.RLock()
-	hook := r.p2pCallHook
+	hook := r.libP2PHooks[key]
 	r.mu.RUnlock()
 	if hook == nil {
-		return routeIndexManifest{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
+		return LibP2PResult{}, newModuleHookError("ROUTE_NOT_FOUND", "route not found")
 	}
-	return hook(ctx, route)
+	out, err := hook(ctx, ev)
+	if err != nil {
+		return LibP2PResult{}, err
+	}
+	switch protocol {
+	case LibP2PProtocolNodeCall:
+		if !isValidLibP2PCallResult(out.CallResp) {
+			return LibP2PResult{}, newModuleHookError("INTERNAL_ERROR", "call response is required")
+		}
+	case LibP2PProtocolNodeResolve:
+		if !isValidLibP2PResolveResult(out.ResolveManifest) {
+			return LibP2PResult{}, newModuleHookError("INTERNAL_ERROR", "resolve manifest is required")
+		}
+	}
+	return out, nil
 }
 
 func (r *moduleRegistry) MountHTTPAPI(s *httpAPIServer, mux *http.ServeMux, prefix string) {
@@ -314,12 +393,13 @@ func (r *moduleRegistry) MountHTTPAPI(s *httpAPIServer, mux *http.ServeMux, pref
 		return
 	}
 	r.mu.RLock()
-	hook := r.httpAPIHook
+	hooks := r.httpAPIHooks
 	r.mu.RUnlock()
-	if hook == nil {
-		return
+	for _, entry := range hooks {
+		if entry.hook != nil {
+			entry.hook(s, mux, prefix)
+		}
 	}
-	hook(s, mux, prefix)
 }
 
 func (r *moduleRegistry) DispatchSettings(ctx context.Context, action string, payload map[string]any) (map[string]any, error) {
@@ -539,4 +619,27 @@ func ModuleHookCodeOf(err error) string {
 // ModuleHookMessageOf 只给外层读取通用模块错误信息用。
 func ModuleHookMessageOf(err error) string {
 	return moduleHookMessage(err)
+}
+
+func normalizeLibP2PProtocol(protocol LibP2PProtocol) LibP2PProtocol {
+	switch strings.TrimSpace(string(protocol)) {
+	case string(LibP2PProtocolNodeCall):
+		return LibP2PProtocolNodeCall
+	case string(LibP2PProtocolNodeResolve):
+		return LibP2PProtocolNodeResolve
+	default:
+		return ""
+	}
+}
+
+func libP2PHookKey(protocol LibP2PProtocol, route string) string {
+	return string(protocol) + "\n" + route
+}
+
+func isValidLibP2PCallResult(resp ncall.CallResp) bool {
+	return strings.TrimSpace(resp.Code) != ""
+}
+
+func isValidLibP2PResolveResult(manifest routeIndexManifest) bool {
+	return strings.TrimSpace(manifest.Route) != ""
 }
