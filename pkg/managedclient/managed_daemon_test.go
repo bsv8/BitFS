@@ -25,7 +25,7 @@ import (
 )
 
 type managedOBSActionRegistrar interface {
-	RegisterOBSControlHook(clientapp.OBSControlHook) (func(), error)
+	RegisterOBSControlHook(string, clientapp.OBSControlHook) (func(), error)
 	RegisterModuleLockProvider(string, modulelock.Provider) (func(), error)
 }
 
@@ -57,7 +57,7 @@ func mustRegisterManagedOBSAction(t *testing.T, rt *clientapp.Runtime, action st
 	if lockCleanup != nil {
 		t.Cleanup(lockCleanup)
 	}
-	cleanup, err := registrar.RegisterOBSControlHook(func(ctx context.Context, gotAction string, payload map[string]any) (clientapp.OBSActionResponse, error) {
+	cleanup, err := registrar.RegisterOBSControlHook(action, func(ctx context.Context, gotAction string, payload map[string]any) (clientapp.OBSActionResponse, error) {
 		if strings.TrimSpace(gotAction) != strings.TrimSpace(action) {
 			return clientapp.OBSActionResponse{}, clientapp.NewModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
 		}

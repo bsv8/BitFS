@@ -1,5 +1,3 @@
-//go:build with_indexresolve
-
 package main
 
 import (
@@ -49,6 +47,12 @@ func TestIndexResolveWhitelistKeepsOnlyBizEntrypoints(t *testing.T) {
 		if !strings.HasPrefix(item.Symbol, "Biz") {
 			t.Fatalf("unexpected lock symbol: %s", item.Symbol)
 		}
+	}
+}
+
+func TestModuleConfigsIncludesIndexResolve(t *testing.T) {
+	if _, ok := moduleConfigs[indexresolve.ModuleIdentity]; !ok {
+		t.Fatalf("expected module config for %s", indexresolve.ModuleIdentity)
 	}
 }
 

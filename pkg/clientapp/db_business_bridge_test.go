@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 )
 
 // TestBusinessBridge_MultipleBusinessesFromOneFrontOrder 一前台单多条 business 测试
@@ -236,7 +238,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 		t.Fatalf("create chain_payment failed: %v", err)
 	}
 
-	if err := finalizeDomainRegisterSettlement(ctx, store, settlementID, true, txID, ""); err != nil {
+	if err := domainbiz.FinalizeDomainRegisterSettlement(ctx, newDomainModuleAdapter(nil, store), settlementID, true, txID, ""); err != nil {
 		t.Fatalf("finalize settlement failed: %v", err)
 	}
 
@@ -264,7 +266,7 @@ func TestBusinessBridge_RealDomainRegisterIntegration(t *testing.T) {
 	}
 
 	// 回写失败状态
-	if err := finalizeDomainRegisterSettlement(ctx, store, failedSettlementID, false, "", "payment timeout"); err != nil {
+	if err := domainbiz.FinalizeDomainRegisterSettlement(ctx, newDomainModuleAdapter(nil, store), failedSettlementID, false, "", "payment timeout"); err != nil {
 		t.Fatalf("finalize settlement failed failed: %v", err)
 	}
 

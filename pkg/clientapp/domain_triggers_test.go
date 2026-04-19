@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	txsdk "github.com/bsv-blockchain/go-sdk/transaction"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 )
 
 func TestApplyDomainRegisterSubmitResultFailureClearsOkAndUppercasesCode(t *testing.T) {
 	t.Parallel()
 
-	base := domainRegisterNameResultFromPrepared(TriggerDomainPrepareRegisterResult{
+	base := domainbiz.DomainRegisterNameResultFromPrepared(TriggerDomainPrepareRegisterResult{
 		Ok:                         true,
 		Code:                       "PREPARED",
 		Name:                       "example.eth",
@@ -27,7 +28,7 @@ func TestApplyDomainRegisterSubmitResultFailureClearsOkAndUppercasesCode(t *test
 		TotalRegisterPaySatoshi:    2,
 	})
 
-	got := applyDomainRegisterSubmitResult(base, TriggerDomainSubmitPreparedRegisterResult{
+	got := domainbiz.ApplyDomainRegisterSubmitResult(base, TriggerDomainSubmitPreparedRegisterResult{
 		Ok:      false,
 		Code:    "broadcast_failed",
 		Message: "forced reject",
@@ -50,7 +51,7 @@ func TestApplyDomainRegisterSubmitResultFailureClearsOkAndUppercasesCode(t *test
 func TestApplyDomainRegisterSubmitResultSuccessMarksOk(t *testing.T) {
 	t.Parallel()
 
-	base := domainRegisterNameResultFromPrepared(TriggerDomainPrepareRegisterResult{
+	base := domainbiz.DomainRegisterNameResultFromPrepared(TriggerDomainPrepareRegisterResult{
 		Ok:              true,
 		Code:            "PREPARED",
 		Name:            "example.eth",
@@ -59,7 +60,7 @@ func TestApplyDomainRegisterSubmitResultSuccessMarksOk(t *testing.T) {
 		RegisterTxID:    "prepared_txid",
 	})
 
-	got := applyDomainRegisterSubmitResult(base, TriggerDomainSubmitPreparedRegisterResult{
+	got := domainbiz.ApplyDomainRegisterSubmitResult(base, TriggerDomainSubmitPreparedRegisterResult{
 		Ok:              true,
 		Name:            "example.eth",
 		OwnerPubkeyHex:  "owner_after",

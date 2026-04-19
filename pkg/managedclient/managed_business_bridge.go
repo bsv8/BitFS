@@ -241,34 +241,24 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		return businessActionSuccess(req, "queried", payload, d), nil
 
 	case controlActionDomainResolve:
-		resolverPubkeyHex := strings.TrimSpace(controlCommandPayloadString(req.Payload, "resolver_pubkey_hex"))
-		name := strings.TrimSpace(controlCommandPayloadString(req.Payload, "name"))
-		if resolverPubkeyHex == "" || name == "" {
-			return businessActionFailure(req, d, "resolver_pubkey_hex and name are required", nil), nil
+		domain := strings.TrimSpace(controlCommandPayloadString(req.Payload, "domain"))
+		if domain == "" {
+			return businessActionFailure(req, d, "domain is required", nil), nil
 		}
-		result, err := clientapp.TriggerResolverResolve(ctx, store, rt, clientapp.TriggerResolverResolveParams{
-			ResolverPubkeyHex: resolverPubkeyHex,
-			Name:              name,
-		})
+		pubkeyHex, err := clientapp.ResolveDomainToPubkey(ctx, rt, domain)
 		payload := map[string]any{
 			"domain_resolve_result": map[string]any{
-				"ok":                result.Ok,
-				"code":              result.Code,
-				"message":           result.Message,
-				"name":              result.Name,
-				"target_pubkey_hex": result.TargetPubkeyHex,
-				"updated_at_unix":   result.UpdatedAtUnix,
+				"domain":     domain,
+				"pubkey_hex": pubkeyHex,
 			},
 		}
 		if err != nil {
-			return businessActionFailure(req, d, err.Error(), payload), nil
-		}
-		if !result.Ok {
-			msg := strings.TrimSpace(result.Message)
+			code := clientapp.ModuleHookCodeOf(err)
+			msg := clientapp.ModuleHookMessageOf(err)
 			if msg == "" {
-				msg = "domain resolve failed"
+				msg = err.Error()
 			}
-			return businessActionFailure(req, d, msg, payload), nil
+			return businessActionFailure(req, d, fmt.Sprintf("%s: %s", code, msg), payload), nil
 		}
 		return businessActionSuccess(req, "resolved", payload, d), nil
 

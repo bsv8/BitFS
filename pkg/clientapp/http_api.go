@@ -4877,10 +4877,11 @@ func (s *httpAPIServer) rewriteStaticPricePaths(fromAbs, toAbs string) error {
 type adminConfigValueType string
 
 const (
-	adminConfigString adminConfigValueType = "string"
-	adminConfigInt    adminConfigValueType = "int"
-	adminConfigFloat  adminConfigValueType = "float"
-	adminConfigBool   adminConfigValueType = "bool"
+	adminConfigString     adminConfigValueType = "string"
+	adminConfigInt        adminConfigValueType = "int"
+	adminConfigFloat      adminConfigValueType = "float"
+	adminConfigBool       adminConfigValueType = "bool"
+	adminConfigStringList adminConfigValueType = "string_list"
 )
 
 type adminConfigRule struct {
@@ -4908,6 +4909,7 @@ func adminConfigRules() []adminConfigRule {
 		{Key: "listen.offer_payment_satoshi", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 40, Description: "监听续费每次向 gateway 主动提出的预算 sat"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
 		{Key: "payment.preferred_scheme", Type: adminConfigString, MinLen: 1, MaxLen: 32, Description: "系统默认优先支付通道：pool_2of2_v1 或 chain_tx_v1"},
+		{Key: "domain.resolve_order", Type: adminConfigStringList, MinLen: 0, MaxLen: 16, Description: "域名解析 provider 顺序，空值按注册顺序"},
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布本节点地址声明到 gateway 目录"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "scan.rescan_interval_seconds", Type: adminConfigInt, MinInt: 5, MaxInt: 86400, Description: "全量扫描间隔秒"},
@@ -4951,6 +4953,7 @@ func userConfigRules() []adminConfigRule {
 		{Key: "listen.offer_payment_satoshi", Type: adminConfigInt, MinInt: 0, MaxInt: 1 << 40, Description: "监听续费预算 sat"},
 		{Key: "listen.tick_seconds", Type: adminConfigInt, MinInt: 1, MaxInt: 3600, Description: "监听循环调度周期秒"},
 		{Key: "payment.preferred_scheme", Type: adminConfigString, MinLen: 1, MaxLen: 32, Description: "默认优先支付通道"},
+		{Key: "domain.resolve_order", Type: adminConfigStringList, MinLen: 0, MaxLen: 16, Description: "域名解析 provider 顺序，空值按注册顺序"},
 		{Key: "reachability.auto_announce_enabled", Type: adminConfigBool, Description: "是否自动发布节点可达地址"},
 		{Key: "reachability.announce_ttl_seconds", Type: adminConfigInt, MinInt: 60, MaxInt: 604800, Description: "地址声明有效期秒"},
 		{Key: "seller.enabled", Type: adminConfigBool, Description: "是否启用卖方模式"},
@@ -5051,6 +5054,10 @@ func (s *httpAPIServer) handleUserSettings(w http.ResponseWriter, r *http.Reques
 			applied = append(applied, key)
 		}
 		if err := validateConfigForMode(&nextCfg, cfgSvc.StartupMode()); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		if err := validateDomainResolveOrderForRuntime(s.rt, nextCfg.Domain.ResolveOrder); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
@@ -5172,6 +5179,10 @@ func (s *httpAPIServer) handleAdminConfig(w http.ResponseWriter, r *http.Request
 			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
 		}
+		if err := validateDomainResolveOrderForRuntime(s.rt, nextCfg.Domain.ResolveOrder); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
 		if req.ValidateOnly {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"ok":            true,
@@ -5212,6 +5223,7 @@ func adminConfigSnapshot(cfg Config) map[string]any {
 		"listen.offer_payment_satoshi":                cfg.Listen.OfferPaymentSatoshi,
 		"listen.tick_seconds":                         cfg.Listen.TickSeconds,
 		"payment.preferred_scheme":                    cfg.Payment.PreferredScheme,
+		"domain.resolve_order":                        append([]string(nil), cfg.Domain.ResolveOrder...),
 		"reachability.auto_announce_enabled":          cfgBool(cfg.Reachability.AutoAnnounceEnabled, true),
 		"reachability.announce_ttl_seconds":           cfg.Reachability.AnnounceTTLSeconds,
 		"scan.rescan_interval_seconds":                cfg.Scan.RescanIntervalSeconds,
@@ -5286,6 +5298,19 @@ func adminConfigApplyOne(cfg *Config, rule adminConfigRule, raw any) error {
 			return err
 		}
 		return adminConfigSetBool(cfg, rule.Key, v)
+	case adminConfigStringList:
+		v, err := adminConfigAsStringList(raw)
+		if err != nil {
+			return err
+		}
+		l := len(v)
+		if rule.MinLen > 0 && l < rule.MinLen {
+			return fmt.Errorf("%s length must be >= %d", rule.Key, rule.MinLen)
+		}
+		if rule.MaxLen > 0 && l > rule.MaxLen {
+			return fmt.Errorf("%s length must be <= %d", rule.Key, rule.MaxLen)
+		}
+		return adminConfigSetStringList(cfg, rule.Key, v)
 	default:
 		return fmt.Errorf("unsupported value type: %s", rule.Type)
 	}
@@ -5352,6 +5377,25 @@ func adminConfigAsBool(v any) (bool, error) {
 	return b, nil
 }
 
+func adminConfigAsStringList(v any) ([]string, error) {
+	raw, ok := v.([]any)
+	if !ok {
+		if strs, ok := v.([]string); ok {
+			return normalizeStringList(strs), nil
+		}
+		return nil, fmt.Errorf("value must be string array")
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		s, ok := item.(string)
+		if !ok {
+			return nil, fmt.Errorf("value must be string array")
+		}
+		out = append(out, strings.TrimSpace(s))
+	}
+	return normalizeStringList(out), nil
+}
+
 func adminConfigSetString(cfg *Config, key, v string) error {
 	switch key {
 	case "http.listen_addr":
@@ -5368,6 +5412,16 @@ func adminConfigSetString(cfg *Config, key, v string) error {
 		cfg.Payment.PreferredScheme = scheme
 	default:
 		return fmt.Errorf("unsupported string key: %s", key)
+	}
+	return nil
+}
+
+func adminConfigSetStringList(cfg *Config, key string, v []string) error {
+	switch key {
+	case "domain.resolve_order":
+		cfg.Domain.ResolveOrder = normalizeStringList(v)
+	default:
+		return fmt.Errorf("unsupported string_list key: %s", key)
 	}
 	return nil
 }

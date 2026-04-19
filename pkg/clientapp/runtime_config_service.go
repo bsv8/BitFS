@@ -194,6 +194,11 @@ func (s *runtimeConfigService) PreferredPaymentScheme() string {
 	return strings.TrimSpace(s.Snapshot().Payment.PreferredScheme)
 }
 
+func (s *runtimeConfigService) DomainResolveOrder() []string {
+	cfg := s.Snapshot()
+	return append([]string(nil), cfg.Domain.ResolveOrder...)
+}
+
 func (s *runtimeConfigService) ReachabilityAutoAnnounceEnabled() bool {
 	cfg := s.Snapshot()
 	return cfgBool(cfg.Reachability.AutoAnnounceEnabled, true)
@@ -229,6 +234,7 @@ func cloneConfig(in Config) Config {
 	out := in
 	out.Network.Gateways = append([]PeerNode(nil), in.Network.Gateways...)
 	out.Network.Arbiters = append([]PeerNode(nil), in.Network.Arbiters...)
+	out.Domain.ResolveOrder = append([]string(nil), in.Domain.ResolveOrder...)
 	if in.Listen.Enabled != nil {
 		v := *in.Listen.Enabled
 		out.Listen.Enabled = &v

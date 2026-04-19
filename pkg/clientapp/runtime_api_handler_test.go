@@ -1,9 +1,13 @@
 package clientapp
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 )
 
 func TestNewRuntimeAPIHandler_DoesNotRequireRuntimeHTTPServer(t *testing.T) {
@@ -17,6 +21,12 @@ func TestNewRuntimeAPIHandler_DoesNotRequireRuntimeHTTPServer(t *testing.T) {
 	cfg.Storage.DataDir = t.TempDir()
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(&workspaceManager{}))
 	rt.HTTP = nil
+	rt.modules = newModuleRegistry()
+	if _, err := rt.modules.RegisterDomainResolveHook(domainbiz.ResolveProviderName, func(ctx context.Context, domain string) (string, error) {
+		return "021111111111111111111111111111111111111111111111111111111111111111", nil
+	}); err != nil {
+		t.Fatalf("register domain resolve hook: %v", err)
+	}
 
 	handler, err := NewRuntimeAPIHandler(rt)
 	if err != nil {
@@ -38,5 +48,25 @@ func TestNewRuntimeAPIHandler_DoesNotRequireRuntimeHTTPServer(t *testing.T) {
 	handler.ServeHTTP(badRec, badReq)
 	if badRec.Code != http.StatusNotFound {
 		t.Fatalf("admin config route should be removed: got=%d want=%d body=%s", badRec.Code, http.StatusNotFound, badRec.Body.String())
+	}
+
+	resolveReq := httptest.NewRequest(http.MethodPost, "/api/v1/resolvers/resolve", strings.NewReader(`{"domain":"movie.david"}`))
+	resolveRec := httptest.NewRecorder()
+	handler.ServeHTTP(resolveRec, resolveReq)
+	if resolveRec.Code != http.StatusOK {
+		t.Fatalf("resolve status mismatch: got=%d body=%s", resolveRec.Code, resolveRec.Body.String())
+	}
+	if !strings.Contains(resolveRec.Body.String(), `"status":"ok"`) || !strings.Contains(resolveRec.Body.String(), `"pubkey_hex":"021111111111111111111111111111111111111111111111111111111111111111"`) {
+		t.Fatalf("unexpected resolve body: %s", resolveRec.Body.String())
+	}
+
+	legacyReq := httptest.NewRequest(http.MethodPost, "/api/v1/resolvers/resolve", strings.NewReader(`{"resolver_pubkey_hex":"03deadbeef","name":"movie.david"}`))
+	legacyRec := httptest.NewRecorder()
+	handler.ServeHTTP(legacyRec, legacyReq)
+	if legacyRec.Code != http.StatusBadRequest {
+		t.Fatalf("legacy status mismatch: got=%d body=%s", legacyRec.Code, legacyRec.Body.String())
+	}
+	if !strings.Contains(legacyRec.Body.String(), `"code":"BAD_REQUEST"`) {
+		t.Fatalf("unexpected legacy body: %s", legacyRec.Body.String())
 	}
 }

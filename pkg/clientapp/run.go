@@ -162,6 +162,9 @@ type Config struct {
 		// - 缺省保持旧行为，优先走 pool_2of2_v1。
 		PreferredScheme string `yaml:"preferred_scheme" toml:"preferred_scheme"`
 	} `yaml:"payment" toml:"payment"`
+	Domain struct {
+		ResolveOrder []string `yaml:"resolve_order" toml:"resolve_order"`
+	} `yaml:"domain" toml:"domain"`
 	Reachability struct {
 		// AutoAnnounceEnabled 控制“客户端自动把自己当前可达地址发布到 gateway 目录”。
 		// 设计说明：
@@ -670,6 +673,7 @@ func applyConfigDefaultsForMode(cfg *Config, mode StartupMode) error {
 		return err
 	}
 	cfg.Payment.PreferredScheme = scheme
+	cfg.Domain.ResolveOrder = normalizeStringList(cfg.Domain.ResolveOrder)
 	if cfg.Reachability.AutoAnnounceEnabled == nil {
 		v := true
 		cfg.Reachability.AutoAnnounceEnabled = &v
@@ -810,6 +814,26 @@ func ResolveLogConfig(cfg *Config) (string, string) {
 		consoleMin = obs.LevelNone
 	}
 	return filepath.Clean(logFile), consoleMin
+}
+
+func normalizeStringList(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, raw := range in {
+		value := strings.TrimSpace(raw)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func validateConfig(cfg *Config) error {

@@ -1,5 +1,3 @@
-//go:build with_indexresolve
-
 package clientapp
 
 import (
@@ -18,7 +16,7 @@ func TestHTTPAPISettingsIndexResolve(t *testing.T) {
 
 	store := newClientDB(db, nil)
 	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
-	closeModule, err := registerOptionalModules(t.Context(), rt, store)
+	closeModule, err := installBuiltinModules(t.Context(), rt, store)
 	if err != nil {
 		t.Fatalf("register module failed: %v", err)
 	}
@@ -121,7 +119,7 @@ func TestHTTPAPISettingsIndexResolveCapturedHandlerReturnsDisabledAfterCleanup(t
 	defer db.Close()
 	store := newClientDB(db, nil)
 	rt := &Runtime{ctx: t.Context(), modules: newModuleRegistry()}
-	closeModule, err := registerOptionalModules(t.Context(), rt, store)
+	closeModule, err := installBuiltinModules(t.Context(), rt, store)
 	if err != nil {
 		t.Fatalf("register module failed: %v", err)
 	}

@@ -1,5 +1,3 @@
-//go:build !with_indexresolve
-
 package main
 
 import (
@@ -9,13 +7,20 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 )
 
-func TestModuleConfigsEmptyWithoutIndexResolve(t *testing.T) {
-	if len(moduleConfigs) != 0 {
-		t.Fatalf("expected empty module configs, got %#v", moduleConfigs)
+func TestParseModulesAcceptsIndexResolve(t *testing.T) {
+	selected, err := parseModules("indexresolve")
+	if err != nil {
+		t.Fatalf("parse modules failed: %v", err)
+	}
+	if len(selected) != 1 {
+		t.Fatalf("expected one selected module, got %#v", selected)
+	}
+	if _, ok := selected["indexresolve"]; !ok {
+		t.Fatalf("expected indexresolve selected, got %#v", selected)
 	}
 }
 
-func TestParseModulesWithoutIndexResolveKeepsEmptyInput(t *testing.T) {
+func TestParseModulesKeepsEmptyInput(t *testing.T) {
 	selected, err := parseModules("")
 	if err != nil {
 		t.Fatalf("parse modules failed: %v", err)
@@ -25,9 +30,9 @@ func TestParseModulesWithoutIndexResolveKeepsEmptyInput(t *testing.T) {
 	}
 }
 
-func TestValidateWhitelistShapeRejectsUnsupportedModuleWithoutIndexResolve(t *testing.T) {
+func TestValidateWhitelistShapeRejectsUnsupportedModule(t *testing.T) {
 	items := []modulelock.LockedFunction{
-		{ID: "one", Module: "indexresolve", Package: "./pkg/clientapp/modules/indexresolve", Symbol: "A", Signature: "func A()", Note: "n"},
+		{ID: "one", Module: "other", Package: "./other", Symbol: "A", Signature: "func A()", Note: "n"},
 	}
 	if err := validateWhitelistShape(items); err == nil || !strings.Contains(err.Error(), "unsupported module") {
 		t.Fatalf("expected unsupported module error, got %v", err)

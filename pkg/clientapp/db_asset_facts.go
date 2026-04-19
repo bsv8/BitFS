@@ -448,9 +448,45 @@ func dbUpsertBSVUTXODB(ctx context.Context, db sqlConn, e bsvUTXOEntry) error {
 		spentAt = now
 	}
 	spentByTxid := strings.ToLower(strings.TrimSpace(e.SpentByTxid))
-	var currentSpentByTxid string
-	if err := QueryRowContext(ctx, db, `SELECT COALESCE(spent_by_txid,''), COALESCE(spent_at_unix,0) FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(&currentSpentByTxid, new(int64)); err == nil {
-		if currentSpentByTxid == spentByTxid && utxoState == "spent" {
+	var (
+		currentOwnerPubkeyHex string
+		currentAddress        string
+		currentTxid           string
+		currentVout           int64
+		currentValueSatoshi   int64
+		currentUTXOState      string
+		currentCarrierType    string
+		currentSpentByTxid    string
+		currentSpentAt        int64
+		currentNote           string
+		currentPayloadJSON    string
+	)
+	if err := QueryRowContext(ctx, db, `SELECT owner_pubkey_hex,address,txid,vout,value_satoshi,utxo_state,carrier_type,COALESCE(spent_by_txid,''),created_at_unix,updated_at_unix,COALESCE(spent_at_unix,0),COALESCE(note,''),COALESCE(payload_json,'') FROM fact_bsv_utxos WHERE utxo_id=?`, utxoID).Scan(
+		&currentOwnerPubkeyHex,
+		&currentAddress,
+		&currentTxid,
+		&currentVout,
+		&currentValueSatoshi,
+		&currentUTXOState,
+		&currentCarrierType,
+		&currentSpentByTxid,
+		new(int64),
+		new(int64),
+		&currentSpentAt,
+		&currentNote,
+		&currentPayloadJSON,
+	); err == nil {
+		if currentOwnerPubkeyHex == ownerPubkey &&
+			strings.TrimSpace(currentAddress) == strings.TrimSpace(e.Address) &&
+			currentTxid == txid &&
+			currentVout == int64(e.Vout) &&
+			currentValueSatoshi == e.ValueSatoshi &&
+			currentUTXOState == utxoState &&
+			currentCarrierType == carrierType &&
+			currentSpentByTxid == spentByTxid &&
+			currentSpentAt == spentAt &&
+			strings.TrimSpace(currentNote) == strings.TrimSpace(e.Note) &&
+			currentPayloadJSON == mustJSONString(e.Payload) {
 			return nil
 		}
 	}

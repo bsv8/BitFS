@@ -117,7 +117,7 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
 	}
-	to, peerID, err := resolveClientTarget(strings.TrimSpace(p.To))
+	to, peerID, err := resolvePeerCallTarget(ctx, rt, strings.TrimSpace(p.To))
 	if err != nil {
 		return out, err
 	}
@@ -244,9 +244,6 @@ func resolveClientTarget(raw string) (string, peer.ID, error) {
 	if target == "" {
 		return "", "", fmt.Errorf("target is required")
 	}
-	if strings.HasSuffix(strings.ToLower(target), ".bsv") {
-		return "", "", fmt.Errorf("shortname resolver not implemented yet")
-	}
 	pubKeyHex, err := normalizeCompressedPubKeyHex(target)
 	if err != nil {
 		return "", "", fmt.Errorf("target invalid: %w", err)
@@ -256,4 +253,23 @@ func resolveClientTarget(raw string) (string, peer.ID, error) {
 		return "", "", err
 	}
 	return pubKeyHex, pid, nil
+}
+
+func resolvePeerCallTarget(ctx context.Context, rt *Runtime, raw string) (string, peer.ID, error) {
+	target := strings.TrimSpace(raw)
+	if target == "" {
+		return "", "", fmt.Errorf("target is required")
+	}
+	if pubkeyHex, peerID, err := resolveClientTarget(target); err == nil {
+		return pubkeyHex, peerID, nil
+	}
+	pubkeyHex, err := ResolveDomainToPubkey(ctx, rt, target)
+	if err != nil {
+		return "", "", err
+	}
+	pid, err := poolcore.PeerIDFromClientID(pubkeyHex)
+	if err != nil {
+		return "", "", err
+	}
+	return pubkeyHex, pid, nil
 }

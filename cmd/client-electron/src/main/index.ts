@@ -106,7 +106,7 @@ async function bootstrap(): Promise<void> {
       };
     },
     resolveResolverLocator: async (locator, visit) => {
-      const targetPubkeyHex = await resolveLocatorName(locator.resolverPubkeyHex, locator.name, visit);
+      const targetPubkeyHex = await resolveLocatorName(locator.name, visit);
       return {
         seedHash: await fetchSeedHashFromNodeRoute(targetPubkeyHex, locator.route, visit),
         targetPubkeyHex
@@ -396,13 +396,12 @@ async function fetchSeedHashFromNodeRoute(targetPubkeyHex: string, route: string
   throw new Error("node route resolve is removed");
 }
 
-async function resolveLocatorName(resolverPubkeyHex: string, name: string, visit?: LocatorVisitContext): Promise<string> {
+async function resolveLocatorName(name: string, visit?: LocatorVisitContext): Promise<string> {
   // 设计说明：
-  // - 壳只把 locator 翻译成“先名字解析，再 node get”的业务链；
-  // - 解析服务仍然是普通 node，真正的寻址与重试逻辑放在后端；
-  // - 这轮先把 resolve 查询协议接通，收费/注册协议后续继续补。
+  // - 壳层只认 domain，不再保留 resolver 公钥双轨；
+  // - 解析服务由后端基座统一分发，壳只消费最终 pubkey；
+  // - 出错时直接抛明确错误，不做静默回退。
   debugLogger.log("runtime", "locator_resolve_request", {
-    resolver_pubkey_hex: resolverPubkeyHex,
     name,
     visit_id: String(visit?.visitID || "").trim(),
     visit_locator: String(visit?.visitLocator || "").trim()
@@ -410,45 +409,39 @@ async function resolveLocatorName(resolverPubkeyHex: string, name: string, visit
   let body: Record<string, unknown>;
   try {
     body = await postJSON("/api/v1/resolvers/resolve", {
-      resolver_pubkey_hex: resolverPubkeyHex,
-      name
+      domain: name
     }, visit);
   } catch (error) {
     debugLogger.log("runtime", "locator_resolve_http_error", {
-      resolver_pubkey_hex: resolverPubkeyHex,
       name,
       error: error instanceof Error ? error.message : String(error)
     });
     throw error;
   }
   debugLogger.log("runtime", "locator_resolve_response", {
-    resolver_pubkey_hex: resolverPubkeyHex,
     name,
-    ok: Boolean(body.ok),
-    code: String(body.code || "").trim(),
-    message: String(body.message || "").trim(),
-    error: String(body.error || "").trim(),
-    response_name: String(body.name || "").trim(),
-    target_pubkey_hex: String(body.target_pubkey_hex || "").trim(),
-    updated_at_unix: Number(body.updated_at_unix || 0)
+    status: String(body.status || "").trim(),
+    code: String((body.error as { code?: unknown } | undefined)?.code || "").trim(),
+    message: String((body.error as { message?: unknown } | undefined)?.message || "").trim(),
+    pubkey_hex: String((body.data as { pubkey_hex?: unknown } | undefined)?.pubkey_hex || "").trim()
   });
-  if (!body.ok) {
+  if (String(body.status || "").trim() !== "ok") {
+    const error = body.error && typeof body.error === "object" ? body.error as { code?: unknown; message?: unknown } : {};
     debugLogger.log("runtime", "locator_resolve_rejected", {
-      resolver_pubkey_hex: resolverPubkeyHex,
       name,
-      code: String(body.code || "").trim(),
-      message: String(body.message || body.error || "").trim()
+      code: String(error.code || "").trim(),
+      message: String(error.message || "").trim()
     });
-    throw new Error(String(body.message || body.error || "resolver resolve failed"));
+    throw new Error(String(error.message || "resolver resolve failed"));
   }
-  const targetPubkeyHex = String(body.target_pubkey_hex || "").trim().toLowerCase();
+  const data = body.data && typeof body.data === "object" ? body.data as { pubkey_hex?: unknown } : {};
+  const targetPubkeyHex = String(data.pubkey_hex || "").trim().toLowerCase();
   if (!/^(02|03)[0-9a-f]{64}$/i.test(targetPubkeyHex)) {
     debugLogger.log("runtime", "locator_resolve_invalid_target", {
-      resolver_pubkey_hex: resolverPubkeyHex,
       name,
-      target_pubkey_hex: targetPubkeyHex
+      pubkey_hex: targetPubkeyHex
     });
-    throw new Error("resolver resolve returned invalid target pubkey hex");
+    throw new Error("domain resolve returned invalid pubkey hex");
   }
   return targetPubkeyHex;
 }

@@ -3,39 +3,74 @@ package clientapp
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
+
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 )
 
 func (s *httpAPIServer) handleResolverResolve(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
+		writeModuleResolveError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 	if s == nil || s.rt == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
+		writeModuleResolveError(w, http.StatusServiceUnavailable, domainbiz.CodeDomainResolverUnavailable, "runtime not initialized")
 		return
 	}
 	var req struct {
+		Domain            string `json:"domain"`
 		ResolverPubkeyHex string `json:"resolver_pubkey_hex"`
 		Name              string `json:"name"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
+		writeModuleResolveError(w, http.StatusBadRequest, domainbiz.CodeBadRequest, "invalid json")
 		return
 	}
-	resp, err := TriggerResolverResolve(r.Context(), s.store, s.rt, TriggerResolverResolveParams{
-		ResolverPubkeyHex: req.ResolverPubkeyHex,
-		Name:              req.Name,
-	})
+	if strings.TrimSpace(req.ResolverPubkeyHex) != "" || strings.TrimSpace(req.Name) != "" {
+		writeModuleResolveError(w, http.StatusBadRequest, domainbiz.CodeBadRequest, "legacy resolver protocol is not supported")
+		return
+	}
+	pubkeyHex, err := ResolveDomainToPubkey(r.Context(), s.rt, req.Domain)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		code := strings.TrimSpace(domainbiz.CodeOf(err))
+		if code == "" {
+			code = "INTERNAL_ERROR"
+		}
+		writeModuleResolveError(w, domainResolveHTTPStatusFromCode(code), code, domainbiz.MessageOf(err))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":                resp.Ok,
-		"code":              resp.Code,
-		"message":           resp.Message,
-		"name":              resp.Name,
-		"target_pubkey_hex": resp.TargetPubkeyHex,
-		"updated_at_unix":   resp.UpdatedAtUnix,
+		"status": "ok",
+		"data": map[string]any{
+			"domain":     strings.TrimSpace(req.Domain),
+			"pubkey_hex": pubkeyHex,
+		},
 	})
+}
+
+func writeModuleResolveError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    strings.TrimSpace(code),
+			"message": strings.TrimSpace(message),
+		},
+	})
+}
+
+func domainResolveHTTPStatusFromCode(code string) int {
+	switch strings.ToUpper(strings.TrimSpace(code)) {
+	case domainbiz.CodeBadRequest:
+		return http.StatusBadRequest
+	case domainbiz.CodeRequestCanceled:
+		return 499
+	case domainbiz.CodeDomainResolverUnavailable:
+		return http.StatusServiceUnavailable
+	case domainbiz.CodeDomainNotResolved:
+		return http.StatusNotFound
+	case domainbiz.CodeDomainProviderSignatureInvalid:
+		return http.StatusBadRequest
+	default:
+		return http.StatusBadRequest
+	}
 }

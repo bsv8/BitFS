@@ -11,6 +11,7 @@ import (
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 )
 
 // OBSActionResponse 是通用 obs 动作的返回壳。
@@ -51,6 +52,7 @@ type SettingsHook func(context.Context, string, map[string]any) (map[string]any,
 type OBSControlHook func(context.Context, string, map[string]any) (OBSActionResponse, error)
 type OpenHook func(context.Context) error
 type CloseHook func(context.Context) error
+type DomainResolveHook = domainbiz.Hook
 
 // ModuleHooks 暴露统一的模块钩子能力。
 //
@@ -61,13 +63,15 @@ type CloseHook func(context.Context) error
 type ModuleHooks interface {
 	RegisterLibP2PHook(LibP2PProtocol, string, LibP2PHook) (func(), error)
 	RegisterHTTPAPIHook(HTTPAPIHook) (func(), error)
-	RegisterSettingsHook(SettingsHook) (func(), error)
-	RegisterOBSControlHook(OBSControlHook) (func(), error)
+	RegisterSettingsHook(string, SettingsHook) (func(), error)
+	RegisterOBSControlHook(string, OBSControlHook) (func(), error)
+	RegisterDomainResolveHook(string, DomainResolveHook) (func(), error)
 	RegisterOpenHook(OpenHook) (func(), error)
 	RegisterCloseHook(CloseHook) (func(), error)
 	RegisterModuleLockProvider(string, modulelock.Provider) (func(), error)
 
 	DispatchLibP2P(context.Context, LibP2PEvent) (LibP2PResult, error)
+	DispatchDomainResolve(context.Context, string, ...string) (domainbiz.ResolveResult, error)
 	MountHTTPAPI(*httpAPIServer, *http.ServeMux, string)
 	DispatchSettings(context.Context, string, map[string]any) (map[string]any, error)
 	DispatchOBSControl(context.Context, string, map[string]any) (OBSActionResponse, error)
@@ -85,9 +89,25 @@ type capabilityHookEntry struct {
 	hook func() *contractmessage.CapabilityItem
 }
 
+type domainResolveHookEntry struct {
+	id   uint64
+	name string
+	hook DomainResolveHook
+}
+
 type httpAPIHookEntry struct {
 	id   uint64
 	hook HTTPAPIHook
+}
+
+type settingsHookEntry struct {
+	id   uint64
+	hook SettingsHook
+}
+
+type obsHookEntry struct {
+	id   uint64
+	hook OBSControlHook
 }
 
 type moduleRegistry struct {
@@ -95,14 +115,18 @@ type moduleRegistry struct {
 
 	capabilityHooks []capabilityHookEntry
 
-	libP2PHooks  map[string]LibP2PHook
-	httpAPIHooks []httpAPIHookEntry
-	settingsHook SettingsHook
-	obsHook      OBSControlHook
-	openHooks    []lifecycleHookEntry
-	closeHooks   []lifecycleHookEntry
-	nextHookID   uint64
-	moduleLocks  *modulelock.Registry
+	libP2PHooks        map[string]LibP2PHook
+	domainResolveHooks map[string]domainResolveHookEntry
+	domainResolveOrder []string
+	httpAPIHooks       []httpAPIHookEntry
+	settingsHooks      map[string]settingsHookEntry
+	settingsActions    map[string]struct{}
+	obsHooks           map[string]obsHookEntry
+	obsActions         map[string]struct{}
+	openHooks          []lifecycleHookEntry
+	closeHooks         []lifecycleHookEntry
+	nextHookID         uint64
+	moduleLocks        *modulelock.Registry
 }
 
 func newModuleRegistry() *moduleRegistry {
@@ -207,19 +231,32 @@ func (r *moduleRegistry) RegisterHTTPAPIHook(hook HTTPAPIHook) (func(), error) {
 	}, nil
 }
 
-func (r *moduleRegistry) RegisterSettingsHook(hook SettingsHook) (func(), error) {
+func (r *moduleRegistry) RegisterSettingsHook(action string, hook SettingsHook) (func(), error) {
 	if r == nil {
 		return func() {}, nil
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return nil, fmt.Errorf("action is required")
 	}
 	if hook == nil {
 		return nil, fmt.Errorf("hook is required")
 	}
 	r.mu.Lock()
-	if r.settingsHook != nil {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("settings hook is already registered")
+	if r.settingsHooks == nil {
+		r.settingsHooks = make(map[string]settingsHookEntry)
 	}
-	r.settingsHook = hook
+	if r.settingsActions == nil {
+		r.settingsActions = make(map[string]struct{})
+	}
+	if _, exists := r.settingsHooks[action]; exists {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("settings hook is already registered for action=%s", action)
+	}
+	r.nextHookID++
+	id := r.nextHookID
+	r.settingsHooks[action] = settingsHookEntry{id: id, hook: hook}
+	r.settingsActions[action] = struct{}{}
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -228,25 +265,40 @@ func (r *moduleRegistry) RegisterSettingsHook(hook SettingsHook) (func(), error)
 				return
 			}
 			r.mu.Lock()
-			r.settingsHook = nil
+			if entry, ok := r.settingsHooks[action]; ok && entry.id == id {
+				delete(r.settingsHooks, action)
+			}
 			r.mu.Unlock()
 		})
 	}, nil
 }
 
-func (r *moduleRegistry) RegisterOBSControlHook(hook OBSControlHook) (func(), error) {
+func (r *moduleRegistry) RegisterOBSControlHook(action string, hook OBSControlHook) (func(), error) {
 	if r == nil {
 		return func() {}, nil
+	}
+	action = strings.TrimSpace(action)
+	if action == "" {
+		return nil, fmt.Errorf("action is required")
 	}
 	if hook == nil {
 		return nil, fmt.Errorf("hook is required")
 	}
 	r.mu.Lock()
-	if r.obsHook != nil {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("obs control hook is already registered")
+	if r.obsHooks == nil {
+		r.obsHooks = make(map[string]obsHookEntry)
 	}
-	r.obsHook = hook
+	if r.obsActions == nil {
+		r.obsActions = make(map[string]struct{})
+	}
+	if _, exists := r.obsHooks[action]; exists {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("obs control hook is already registered for action=%s", action)
+	}
+	r.nextHookID++
+	id := r.nextHookID
+	r.obsHooks[action] = obsHookEntry{id: id, hook: hook}
+	r.obsActions[action] = struct{}{}
 	r.mu.Unlock()
 	var once sync.Once
 	return func() {
@@ -255,10 +307,96 @@ func (r *moduleRegistry) RegisterOBSControlHook(hook OBSControlHook) (func(), er
 				return
 			}
 			r.mu.Lock()
-			r.obsHook = nil
+			if entry, ok := r.obsHooks[action]; ok && entry.id == id {
+				delete(r.obsHooks, action)
+			}
 			r.mu.Unlock()
 		})
 	}, nil
+}
+
+func (r *moduleRegistry) RegisterDomainResolveHook(name string, hook DomainResolveHook) (func(), error) {
+	if r == nil {
+		return func() {}, nil
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil, fmt.Errorf("provider name is required")
+	}
+	if hook == nil {
+		return nil, fmt.Errorf("hook is required")
+	}
+	r.mu.Lock()
+	if r.domainResolveHooks == nil {
+		r.domainResolveHooks = make(map[string]domainResolveHookEntry)
+	}
+	if _, exists := r.domainResolveHooks[name]; exists {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("domain resolve hook already registered: %s", name)
+	}
+	r.nextHookID++
+	entry := domainResolveHookEntry{id: r.nextHookID, name: name, hook: hook}
+	r.domainResolveHooks[name] = entry
+	r.domainResolveOrder = append(r.domainResolveOrder, name)
+	r.mu.Unlock()
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if r == nil {
+				return
+			}
+			r.mu.Lock()
+			delete(r.domainResolveHooks, name)
+			if len(r.domainResolveOrder) > 0 {
+				next := r.domainResolveOrder[:0]
+				for _, item := range r.domainResolveOrder {
+					if item != name {
+						next = append(next, item)
+					}
+				}
+				r.domainResolveOrder = next
+			}
+			r.mu.Unlock()
+		})
+	}, nil
+}
+
+func (r *moduleRegistry) domainResolveRegisteredNames() []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.domainResolveOrder) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(r.domainResolveOrder))
+	for _, name := range r.domainResolveOrder {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if _, ok := r.domainResolveHooks[name]; !ok {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+func (r *moduleRegistry) domainResolveHasProvider(name string) bool {
+	if r == nil {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.domainResolveHooks[name]
+	return ok
 }
 
 func (r *moduleRegistry) RegisterOpenHook(hook OpenHook) (func(), error) {
@@ -388,6 +526,86 @@ func (r *moduleRegistry) DispatchLibP2P(ctx context.Context, ev LibP2PEvent) (Li
 	return out, nil
 }
 
+func (r *moduleRegistry) DispatchDomainResolve(ctx context.Context, rawDomain string, order ...string) (domainbiz.ResolveResult, error) {
+	if ctx == nil {
+		return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeBadRequest, "ctx is required")
+	}
+	if ctx.Err() != nil {
+		return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeRequestCanceled, ctx.Err().Error())
+	}
+	if r == nil {
+		return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeDomainResolverUnavailable, "domain resolver is unavailable")
+	}
+	domain := strings.TrimSpace(rawDomain)
+	if domain == "" {
+		return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeBadRequest, "domain is required")
+	}
+	r.mu.RLock()
+	hooks := make(map[string]DomainResolveHook, len(r.domainResolveHooks))
+	registeredOrder := append([]string(nil), r.domainResolveOrder...)
+	for name, entry := range r.domainResolveHooks {
+		hooks[name] = entry.hook
+	}
+	r.mu.RUnlock()
+	if len(hooks) == 0 {
+		return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeDomainResolverUnavailable, "domain resolver is unavailable")
+	}
+	ordered := normalizeDomainResolveOrder(order, registeredOrder)
+	if len(ordered) == 0 {
+		return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeDomainResolverUnavailable, "domain resolver is unavailable")
+	}
+	for _, name := range ordered {
+		hook, ok := hooks[name]
+		if !ok {
+			continue
+		}
+		pubkeyHex, err := hook(ctx, domain)
+		if err != nil {
+			if domainbiz.IsHardError(err) {
+				return domainbiz.ResolveResult{}, err
+			}
+			continue
+		}
+		pubkeyHex = strings.ToLower(strings.TrimSpace(pubkeyHex))
+		if pubkeyHex == "" {
+			continue
+		}
+		if normalizedPubkeyHex, err := normalizeCompressedPubKeyHex(pubkeyHex); err == nil {
+			return domainbiz.ResolveResult{
+				Domain:    domain,
+				PubkeyHex: normalizedPubkeyHex,
+				Provider:  name,
+			}, nil
+		}
+	}
+	return domainbiz.ResolveResult{}, domainbiz.NewError(domainbiz.CodeDomainNotResolved, "domain not resolved")
+}
+
+func normalizeDomainResolveOrder(order []string, fallback []string) []string {
+	seen := make(map[string]struct{}, len(order)+len(fallback))
+	out := make([]string, 0, len(order)+len(fallback))
+	appendOne := func(raw string) {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			return
+		}
+		if _, ok := seen[name]; ok {
+			return
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	for _, name := range order {
+		appendOne(name)
+	}
+	if len(out) == 0 {
+		for _, name := range fallback {
+			appendOne(name)
+		}
+	}
+	return out
+}
+
 func (r *moduleRegistry) MountHTTPAPI(s *httpAPIServer, mux *http.ServeMux, prefix string) {
 	if r == nil || s == nil || mux == nil {
 		return
@@ -417,12 +635,16 @@ func (r *moduleRegistry) DispatchSettings(ctx context.Context, action string, pa
 		return nil, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
 	r.mu.RLock()
-	hook := r.settingsHook
+	entry, ok := r.settingsHooks[action]
+	_, known := r.settingsActions[action]
 	r.mu.RUnlock()
-	if hook == nil {
+	if ok && entry.hook != nil {
+		return entry.hook(ctx, action, payload)
+	}
+	if known {
 		return nil, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
-	return hook(ctx, action, payload)
+	return nil, newModuleHookError("UNSUPPORTED_SETTINGS_ACTION", "unsupported settings action")
 }
 
 func (r *moduleRegistry) DispatchOBSControl(ctx context.Context, action string, payload map[string]any) (OBSActionResponse, error) {
@@ -440,31 +662,16 @@ func (r *moduleRegistry) DispatchOBSControl(ctx context.Context, action string, 
 		return OBSActionResponse{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
 	r.mu.RLock()
-	hook := r.obsHook
+	entry, ok := r.obsHooks[action]
+	_, known := r.obsActions[action]
 	r.mu.RUnlock()
-	if hook == nil {
-		if r.hasRegisteredOBSControlAction(action) {
-			return OBSActionResponse{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
-		}
-		return OBSActionResponse{}, newModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
+	if ok && entry.hook != nil {
+		return entry.hook(ctx, action, payload)
 	}
-	return hook(ctx, action, payload)
-}
-
-func (r *moduleRegistry) hasRegisteredOBSControlAction(action string) bool {
-	if r == nil || r.moduleLocks == nil {
-		return false
+	if known {
+		return OBSActionResponse{}, newModuleHookError("MODULE_DISABLED", "module is disabled")
 	}
-	items, _ := r.moduleLocks.Items()
-	if len(items) == 0 {
-		return false
-	}
-	for _, item := range items {
-		if strings.TrimSpace(item.ObsControlAction) == action {
-			return true
-		}
-	}
-	return false
+	return OBSActionResponse{}, newModuleHookError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")
 }
 
 func (r *moduleRegistry) RunOpenHooks(ctx context.Context) error {
@@ -619,6 +826,21 @@ func ModuleHookCodeOf(err error) string {
 // ModuleHookMessageOf 只给外层读取通用模块错误信息用。
 func ModuleHookMessageOf(err error) string {
 	return moduleHookMessage(err)
+}
+
+func moduleSettingsStatusFromHookErr(err error) int {
+	switch strings.ToUpper(strings.TrimSpace(ModuleHookCodeOf(err))) {
+	case "BAD_REQUEST", "ROUTE_INVALID", "SEED_HASH_INVALID":
+		return http.StatusBadRequest
+	case "SEED_NOT_FOUND", "ROUTE_NOT_FOUND":
+		return http.StatusNotFound
+	case "MODULE_DISABLED":
+		return http.StatusServiceUnavailable
+	case "REQUEST_CANCELED":
+		return 499
+	default:
+		return http.StatusInternalServerError
+	}
 }
 
 func normalizeLibP2PProtocol(protocol LibP2PProtocol) LibP2PProtocol {

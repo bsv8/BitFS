@@ -5,6 +5,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+
+	domainbiz "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 )
 
 type walletOrderTemplateDomainRegister struct{}
@@ -14,11 +16,12 @@ func (walletOrderTemplateDomainRegister) TemplateID() string {
 }
 
 func (walletOrderTemplateDomainRegister) Prepare(ctx context.Context, store *clientDB, rt *Runtime, req WalletOrderRequest) (walletOrderPreparedTx, error) {
-	quote, err := verifyRegisterQuote(req.SignerPubkeyHex, req.SignedEnvelope)
+	adapter := newDomainModuleAdapter(rt, store)
+	quote, err := adapter.VerifyRegisterQuote(req.SignerPubkeyHex, req.SignedEnvelope)
 	if err != nil {
 		return walletOrderPreparedTx{}, err
 	}
-	built, err := buildDomainRegisterTxDetailed(ctx, store, rt, req.SignedEnvelope, quote)
+	built, err := adapter.BuildDomainRegisterTx(ctx, req.SignedEnvelope, quote)
 	if err != nil {
 		return walletOrderPreparedTx{}, err
 	}
@@ -46,7 +49,7 @@ func (walletOrderTemplateDomainRegister) Prepare(ctx context.Context, store *cli
 	}, nil
 }
 
-func buildDomainRegisterPreviewLines(signerPubkeyHex string, quote domainRegisterQuote, built builtDomainRegisterTx) []string {
+func buildDomainRegisterPreviewLines(signerPubkeyHex string, quote domainbiz.DomainRegisterQuote, built domainbiz.BuiltDomainRegisterTx) []string {
 	return []string{
 		fmt.Sprintf("业务: 注册域名 %s", quote.Name),
 		fmt.Sprintf("服务节点公钥: %s", strings.ToLower(strings.TrimSpace(signerPubkeyHex))),
