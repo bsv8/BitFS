@@ -5,8 +5,10 @@ package clientapp
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
@@ -44,11 +46,24 @@ func (a indexResolveStoreAdapter) Do(ctx context.Context, fn func(indexresolve.C
 	})
 }
 
+const (
+	obsActionIndexResolveResolve = "settings.index_resolve.resolve"
+	obsActionIndexResolveList    = "settings.index_resolve.list"
+	obsActionIndexResolveUpsert  = "settings.index_resolve.upsert"
+	obsActionIndexResolveDelete  = "settings.index_resolve.delete"
+)
+
+type settingsIndexResolveRouteItem struct {
+	Route         string `json:"route"`
+	SeedHash      string `json:"seed_hash"`
+	UpdatedAtUnix int64  `json:"updated_at_unix"`
+}
+
 // registerOptionalModules 只负责把可选模块接到主框架钩子上。
 //
 // 设计说明：
 // - 这里是唯一允许引用 indexresolve 模块实现包的地方；
-// - 模块自己的 store、能力、settings 路由、白名单都在这里接线；
+// - 模块自己的 store、能力、settings 路由、obs 动作都在这里接线；
 // - cleanup 只负责解绑钩子，模块能力的生死由编译期开关决定。
 func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolveBootstrapStore) (func(), error) {
 	if rt == nil || store == nil {
@@ -80,7 +95,7 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 		return nil, err
 	}
 
-	cleanup, err := reg.registerIndexResolve(
+	resolveCleanup, err := reg.RegisterResolveHook(
 		func() *contractmessage.CapabilityItem {
 			return indexresolve.CapabilityItem()
 		},
@@ -98,20 +113,273 @@ func registerOptionalModules(ctx context.Context, rt *Runtime, store indexResolv
 				UpdatedAtUnix:       manifest.UpdatedAtUnix,
 			}, nil
 		},
-		func(s *httpAPIServer, mux *http.ServeMux, prefix string) {
-			if s == nil || mux == nil {
-				return
-			}
-			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(indexresolve.NewHTTPSettingsIndexResolveHandler(moduleStore, moduleStore, moduleStore)))
-		},
 		func() {},
 	)
 	if err != nil {
 		moduleCleanup()
 		return nil, err
 	}
+	settingsCleanup, err := reg.RegisterSettingsHooks(
+		func(s *httpAPIServer, mux *http.ServeMux, prefix string) {
+			if s == nil || mux == nil {
+				return
+			}
+			mux.HandleFunc(prefix+"/v1/settings/index-resolve", s.withAuth(newIndexResolveSettingsHTTPHandler(reg)))
+		},
+		func() {},
+	)
+	if err != nil {
+		resolveCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	registerAction := func(action string, fn OBSActionHandler) (func(), error) {
+		return reg.RegisterOBSAction(action, fn)
+	}
+	resolveActionCleanup, err := registerAction(obsActionIndexResolveResolve, func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
+		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+		manifest, err := indexresolve.BizResolve(ctx, moduleStore, route)
+		if err != nil {
+			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+		}
+		return OBSActionResponse{
+			OK:     true,
+			Result: "resolved",
+			Payload: map[string]any{
+				"route":                 manifest.Route,
+				"seed_hash":             manifest.SeedHash,
+				"recommended_file_name": manifest.RecommendedFileName,
+				"mime_hint":             manifest.MIMEHint,
+				"file_size":             manifest.FileSize,
+				"updated_at_unix":       manifest.UpdatedAtUnix,
+			},
+		}, nil
+	})
+	if err != nil {
+		settingsCleanup()
+		resolveCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	listActionCleanup, err := registerAction(obsActionIndexResolveList, func(ctx context.Context, _ map[string]any) (OBSActionResponse, error) {
+		items, err := indexresolve.BizSettingsList(ctx, moduleStore)
+		if err != nil {
+			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+		}
+		return OBSActionResponse{
+			OK:     true,
+			Result: "listed",
+			Payload: map[string]any{
+				"total": len(items),
+				"items": items,
+			},
+		}, nil
+	})
+	if err != nil {
+		resolveActionCleanup()
+		settingsCleanup()
+		resolveCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	upsertActionCleanup, err := registerAction(obsActionIndexResolveUpsert, func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
+		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+		seedHash := strings.TrimSpace(fmt.Sprint(payload["seed_hash"]))
+		item, err := indexresolve.BizSettingsUpsert(ctx, moduleStore, route, seedHash)
+		if err != nil {
+			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+		}
+		return OBSActionResponse{
+			OK:     true,
+			Result: "upserted",
+			Payload: map[string]any{
+				"route":           item.Route,
+				"seed_hash":       item.SeedHash,
+				"updated_at_unix": item.UpdatedAtUnix,
+			},
+		}, nil
+	})
+	if err != nil {
+		listActionCleanup()
+		resolveActionCleanup()
+		settingsCleanup()
+		resolveCleanup()
+		moduleCleanup()
+		return nil, err
+	}
+	deleteActionCleanup, err := registerAction(obsActionIndexResolveDelete, func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
+		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
+		if err := indexresolve.BizSettingsDelete(ctx, moduleStore, route); err != nil {
+			return OBSActionResponse{}, newModuleHookError(indexresolve.CodeOf(err), indexresolve.MessageOf(err))
+		}
+		return OBSActionResponse{
+			OK:     true,
+			Result: "deleted",
+			Payload: map[string]any{
+				"deleted": true,
+				"route":   strings.TrimSpace(route),
+			},
+		}, nil
+	})
+	if err != nil {
+		upsertActionCleanup()
+		listActionCleanup()
+		resolveActionCleanup()
+		settingsCleanup()
+		resolveCleanup()
+		moduleCleanup()
+		return nil, err
+	}
 	return func() {
-		cleanup()
+		deleteActionCleanup()
+		upsertActionCleanup()
+		listActionCleanup()
+		resolveActionCleanup()
+		settingsCleanup()
+		resolveCleanup()
 		moduleCleanup()
 	}, nil
+}
+
+func newIndexResolveSettingsHTTPHandler(reg OBSActionCaller) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r == nil {
+			writeModuleSettingsError(w, http.StatusBadRequest, "BAD_REQUEST", "request is required")
+			return
+		}
+		action, payload, status, err := indexResolveSettingsActionRequest(r)
+		if err != nil {
+			writeModuleSettingsError(w, status, ModuleHookCodeOf(err), ModuleHookMessageOf(err))
+			return
+		}
+		if reg == nil {
+			writeModuleSettingsError(w, http.StatusServiceUnavailable, "MODULE_DISABLED", "module is disabled")
+			return
+		}
+		resp, err := reg.CallOBSAction(r.Context(), action, payload)
+		if err != nil {
+			writeModuleSettingsError(w, moduleSettingsStatusFromHookErr(err), ModuleHookCodeOf(err), ModuleHookMessageOf(err))
+			return
+		}
+		writeModuleSettingsOK(w, indexResolveSettingsPayloadForHTTP(action, resp.Payload))
+	}
+}
+
+func writeModuleSettingsOK(w http.ResponseWriter, data any) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok",
+		"data":   data,
+	})
+}
+
+func writeModuleSettingsError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]any{
+		"status": "error",
+		"error": map[string]any{
+			"code":    strings.TrimSpace(code),
+			"message": strings.TrimSpace(message),
+		},
+	})
+}
+
+func indexResolveSettingsActionRequest(r *http.Request) (string, map[string]any, int, error) {
+	switch r.Method {
+	case http.MethodGet:
+		return obsActionIndexResolveList, map[string]any{}, 0, nil
+	case http.MethodPost:
+		var req struct {
+			Route    string `json:"route"`
+			SeedHash string `json:"seed_hash"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return "", nil, http.StatusBadRequest, newModuleHookError("BAD_REQUEST", "invalid json")
+		}
+		return obsActionIndexResolveUpsert, map[string]any{
+			"route":     strings.TrimSpace(req.Route),
+			"seed_hash": strings.TrimSpace(req.SeedHash),
+		}, 0, nil
+	case http.MethodDelete:
+		return obsActionIndexResolveDelete, map[string]any{
+			"route": strings.TrimSpace(r.URL.Query().Get("route")),
+		}, 0, nil
+	default:
+		return "", nil, http.StatusMethodNotAllowed, newModuleHookError("METHOD_NOT_ALLOWED", "method not allowed")
+	}
+}
+
+func indexResolveSettingsPayloadForHTTP(action string, payload map[string]any) any {
+	switch action {
+	case obsActionIndexResolveList:
+		items, _ := payload["items"].([]indexresolve.RouteItem)
+		out := make([]settingsIndexResolveRouteItem, 0, len(items))
+		for _, item := range items {
+			out = append(out, settingsIndexResolveRouteItem{
+				Route:         strings.TrimSpace(item.Route),
+				SeedHash:      strings.TrimSpace(item.SeedHash),
+				UpdatedAtUnix: item.UpdatedAtUnix,
+			})
+		}
+		return map[string]any{
+			"total": len(out),
+			"items": out,
+		}
+	case obsActionIndexResolveUpsert:
+		return settingsIndexResolveRouteItem{
+			Route:         strings.TrimSpace(fmt.Sprint(payload["route"])),
+			SeedHash:      strings.TrimSpace(fmt.Sprint(payload["seed_hash"])),
+			UpdatedAtUnix: obsPayloadInt64(payload, "updated_at_unix"),
+		}
+	case obsActionIndexResolveDelete:
+		return map[string]any{
+			"deleted": obsPayloadBool(payload, "deleted"),
+			"route":   strings.TrimSpace(fmt.Sprint(payload["route"])),
+		}
+	default:
+		return payload
+	}
+}
+
+func moduleSettingsStatusFromHookErr(err error) int {
+	switch ModuleHookCodeOf(err) {
+	case "ROUTE_INVALID", "SEED_HASH_INVALID", "SEED_NOT_FOUND", "BAD_REQUEST":
+		return http.StatusBadRequest
+	case "REQUEST_CANCELED":
+		return 499
+	case "MODULE_DISABLED":
+		return http.StatusServiceUnavailable
+	case "HANDLER_NOT_REGISTERED":
+		return http.StatusServiceUnavailable
+	case "ROUTE_NOT_FOUND":
+		return http.StatusNotFound
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func obsPayloadInt64(payload map[string]any, key string) int64 {
+	value, ok := payload[key]
+	if !ok {
+		return 0
+	}
+	switch v := value.(type) {
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	case float64:
+		return int64(v)
+	case float32:
+		return int64(v)
+	default:
+		return 0
+	}
+}
+
+func obsPayloadBool(payload map[string]any, key string) bool {
+	value, ok := payload[key]
+	if !ok {
+		return false
+	}
+	v, _ := value.(bool)
+	return v
 }

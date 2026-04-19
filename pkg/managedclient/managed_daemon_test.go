@@ -19,10 +19,32 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
-	contractfnlock "github.com/bsv8/bitfs-contract/pkg/v1/fnlock"
 	libp2p "github.com/libp2p/go-libp2p"
 	libp2ptcp "github.com/libp2p/go-libp2p/p2p/transport/tcp"
 )
+
+type managedOBSActionRegistrar interface {
+	RegisterOBSAction(string, clientapp.OBSActionHandler) (func(), error)
+}
+
+func mustRegisterManagedOBSAction(t *testing.T, rt *clientapp.Runtime, action string, handler clientapp.OBSActionHandler) func() {
+	t.Helper()
+	if rt == nil {
+		t.Fatal("runtime is nil")
+	}
+	registrar, ok := rt.Modules().(managedOBSActionRegistrar)
+	if !ok || registrar == nil {
+		t.Fatal("runtime modules do not support obs registration")
+	}
+	cleanup, err := registrar.RegisterOBSAction(action, handler)
+	if err != nil {
+		t.Fatalf("register obs action %s failed: %v", action, err)
+	}
+	if cleanup != nil {
+		t.Cleanup(cleanup)
+	}
+	return cleanup
+}
 
 type capturedManagedControlStream struct {
 	events []ManagedRuntimeEvent
@@ -1525,11 +1547,35 @@ func TestHandleManagedControlCommand_PricingCommandsUnsupportedAction(t *testing
 	}
 }
 
-func TestHandleManagedControlCommand_SettingsIndexResolveUnsupportedAction(t *testing.T) {
+func TestHandleManagedControlCommand_SettingsIndexResolveUpsertDispatchesThroughRegistry(t *testing.T) {
 	t.Parallel()
 
+	rt, err := clientapp.NewPricingTestRuntime(t.Context(), nil, clientapp.Config{})
+	if err != nil {
+		t.Fatalf("new test runtime: %v", err)
+	}
+	mustRegisterManagedOBSAction(t, rt, "settings.index_resolve.upsert", func(ctx context.Context, payload map[string]any) (clientapp.OBSActionResponse, error) {
+		if ctx == nil {
+			return clientapp.OBSActionResponse{}, fmt.Errorf("ctx is required")
+		}
+		if got := strings.TrimSpace(fmt.Sprint(payload["route"])); got != "movie" {
+			return clientapp.OBSActionResponse{}, fmt.Errorf("unexpected route")
+		}
+		if got := strings.TrimSpace(fmt.Sprint(payload["seed_hash"])); got != strings.Repeat("ab", 32) {
+			return clientapp.OBSActionResponse{}, fmt.Errorf("unexpected seed hash")
+		}
+		return clientapp.OBSActionResponse{
+			OK:     true,
+			Result: "upserted",
+			Payload: map[string]any{
+				"route":           "/movie",
+				"seed_hash":       strings.Repeat("ab", 32),
+				"updated_at_unix": int64(123),
+			},
+		}, nil
+	})
+
 	stream := &capturedManagedControlStream{}
-	rt, _ := newManagedPricingControlRuntime(t)
 	d := &managedDaemon{
 		controlStream: stream,
 		backendPhase:  managedBackendPhaseAvailable,
@@ -1539,15 +1585,83 @@ func TestHandleManagedControlCommand_SettingsIndexResolveUnsupportedAction(t *te
 	}
 	d.handleManagedControlCommand(ManagedControlCommandFrame{
 		Type:      "command",
-		CommandID: "cmd-settings-unsupported",
+		CommandID: "cmd-settings-upsert",
 		Action:    "settings.index_resolve.upsert",
+		Payload: map[string]any{
+			"route":     "movie",
+			"seed_hash": strings.Repeat("ab", 32),
+		},
 	})
-	result, ok := findManagedCommandResult(stream.events, "cmd-settings-unsupported")
+	result, ok := findManagedCommandResult(stream.events, "cmd-settings-upsert")
 	if !ok {
 		t.Fatal("command result event not found")
 	}
-	if got, want := strings.TrimSpace(result["error"]), "unsupported control action: settings.index_resolve.upsert"; got != want {
-		t.Fatalf("unsupported error=%q, want %q", got, want)
+	if got, want := strings.TrimSpace(fmt.Sprint(result["ok"])), "true"; got != want {
+		t.Fatalf("unexpected ok=%q, want %q", got, want)
+	}
+	if got, want := strings.TrimSpace(fmt.Sprint(result["result"])), "upserted"; got != want {
+		t.Fatalf("unexpected result=%q, want %q", got, want)
+	}
+	if got, want := strings.TrimSpace(fmt.Sprint(result["route"])), "/movie"; got != want {
+		t.Fatalf("unexpected route=%q, want %q", got, want)
+	}
+}
+
+func TestHandleManagedControlCommand_SettingsIndexResolveDisabledReturnsModuleDisabled(t *testing.T) {
+	t.Parallel()
+
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		rootCtx:       t.Context(),
+		rt:            &clientapp.Runtime{},
+	}
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-settings-disabled",
+		Action:    "settings.index_resolve.upsert",
+	})
+	result, ok := findManagedCommandResult(stream.events, "cmd-settings-disabled")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got := strings.TrimSpace(result["error"]); !strings.Contains(got, "MODULE_DISABLED") {
+		t.Fatalf("unexpected error=%q, want MODULE_DISABLED", got)
+	}
+}
+
+func TestHandleManagedControlCommand_SettingsIndexResolveMissingHandlerReturnsRegisteredError(t *testing.T) {
+	t.Parallel()
+
+	rt, err := clientapp.NewPricingTestRuntime(t.Context(), nil, clientapp.Config{})
+	if err != nil {
+		t.Fatalf("new test runtime: %v", err)
+	}
+	mustRegisterManagedOBSAction(t, rt, "settings.index_resolve.resolve", func(context.Context, map[string]any) (clientapp.OBSActionResponse, error) {
+		return clientapp.OBSActionResponse{OK: true, Result: "resolved"}, nil
+	})
+
+	stream := &capturedManagedControlStream{}
+	d := &managedDaemon{
+		controlStream: stream,
+		backendPhase:  managedBackendPhaseAvailable,
+		runtimePhase:  managedRuntimePhaseStopped,
+		rootCtx:       t.Context(),
+		rt:            rt,
+	}
+	d.handleManagedControlCommand(ManagedControlCommandFrame{
+		Type:      "command",
+		CommandID: "cmd-settings-missing-handler",
+		Action:    "settings.index_resolve.upsert",
+	})
+	result, ok := findManagedCommandResult(stream.events, "cmd-settings-missing-handler")
+	if !ok {
+		t.Fatal("command result event not found")
+	}
+	if got := strings.TrimSpace(result["error"]); !strings.Contains(got, "handler not registered") {
+		t.Fatalf("unexpected error=%q, want handler not registered", got)
 	}
 }
 
@@ -1636,38 +1750,28 @@ func TestHandleManagedControlCommand_WorkspaceCommands(t *testing.T) {
 	})
 }
 
-func TestManagedObsControlWhitelist_AllActionsRouted(t *testing.T) {
+func TestManagedObsControlDispatchUsesGenericRegistry(t *testing.T) {
 	t.Parallel()
 
-	if err := ensureManagedObsControlRouteCoverage(); err != nil {
-		t.Fatalf("obs control route coverage mismatch: %v", err)
+	rt, err := clientapp.NewPricingTestRuntime(t.Context(), nil, clientapp.Config{})
+	if err != nil {
+		t.Fatalf("new test runtime: %v", err)
 	}
-
-	for _, action := range contractfnlock.ObsControlActions() {
-		action = strings.TrimSpace(action)
-		if action == "" {
-			t.Fatal("obs control whitelist action should not be empty")
-		}
-		if !isManagedObsControlActionRouted(action) {
-			t.Fatalf("obs control whitelist action is not routed: %s", action)
-		}
-		lockID, ok := contractfnlock.ObsControlActionLockID(action)
-		if !ok {
-			t.Fatalf("obs control action lock id mapping missing: %s", action)
-		}
-		lockID = strings.TrimSpace(lockID)
-		if lockID == "" {
-			t.Fatalf("obs control whitelist lock id should not be empty: action=%s", action)
-		}
-		if !isManagedObsControlLockRouted(lockID) {
-			t.Fatalf("obs control action lock id has no daemon handler: action=%s lock_id=%s", action, lockID)
-		}
+	if rt.Modules() == nil {
+		t.Fatal("runtime modules should not be nil")
 	}
-	if !isManagedObsControlLockRouted("bitfs.managed.control.execute_workspace") {
-		t.Fatal("workspace execute lock should be routed")
+	mustRegisterManagedOBSAction(t, rt, "settings.index_resolve.resolve", func(context.Context, map[string]any) (clientapp.OBSActionResponse, error) {
+		return clientapp.OBSActionResponse{OK: true, Result: "resolved"}, nil
+	})
+	resp, err := rt.Modules().CallOBSAction(t.Context(), "settings.index_resolve.resolve", map[string]any{"route": "movie"})
+	if err != nil {
+		t.Fatalf("call obs action failed: %v", err)
 	}
-	if isManagedObsControlActionRouted("pricing.unknown") {
-		t.Fatal("pricing.unknown should not be treated as routed")
+	if !resp.OK || strings.TrimSpace(resp.Result) != "resolved" {
+		t.Fatalf("unexpected obs response: %+v", resp)
+	}
+	if _, err := rt.Modules().CallOBSAction(t.Context(), "settings.index_resolve.upsert", map[string]any{"route": "movie"}); err == nil || clientapp.ModuleHookCodeOf(err) != "HANDLER_NOT_REGISTERED" {
+		t.Fatalf("expected handler not registered, got %v", err)
 	}
 }
 

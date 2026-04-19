@@ -27,7 +27,6 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/WOCProxy/pkg/whatsonchain"
 	"github.com/bsv8/WOCProxy/pkg/wocproxy"
-	contractfnlock "github.com/bsv8/bitfs-contract/pkg/v1/fnlock"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
 	"golang.org/x/sys/unix"
 	"golang.org/x/term"
@@ -123,9 +122,6 @@ const (
 
 var runClientRuntime = clientapp.Run
 var buildRuntimeAPIHandler = clientapp.NewRuntimeAPIHandler
-
-var managedObsControlRouteCoverageOnce sync.Once
-var managedObsControlRouteCoverageErr error
 
 type startupErrorState struct {
 	Service    string
@@ -937,46 +933,63 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 		RuntimePhase: d.currentRuntimePhase(),
 		KeyState:     d.currentKeyState(),
 	}
-	if err := ensureManagedObsControlRouteCoverage(); err != nil {
-		result.Result = "failed"
-		result.Error = err.Error()
-		return result
-	}
 	req.Action = strings.TrimSpace(req.Action)
 	result.Action = req.Action
-	lockID, ok := contractfnlock.ObsControlActionLockID(req.Action)
-	if !ok {
-		result.Result = "failed"
-		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
-		return result
+	if out, handled := d.executeManagedSettingsOBSControlCommand(req); handled {
+		return out
 	}
-	lockID = strings.TrimSpace(lockID)
 	var (
 		out controlCommandResult
 		err error
 	)
-	switch {
-	case lockID == "bitfs.managed.key.create_random":
+	switch req.Action {
+	case controlActionKeyCreateRandom:
 		out, err = managedObsControlHandleKeyCreateRandom(d, req)
-	case lockID == "bitfs.managed.key.assert_exists":
+	case controlActionKeyAssertExists:
 		out, err = managedObsControlHandleKeyAssertExists(d, req)
-	case lockID == "bitfs.managed.key.unlock_with_password":
+	case controlActionKeyUnlock:
 		out, err = managedObsControlHandleKeyUnlock(d, req)
-	case lockID == "bitfs.managed.key.lock_runtime":
+	case controlActionKeyLock:
 		out, err = managedObsControlHandleKeyLock(d, req)
-	case lockID == "bitfs.managed.control.execute_business" ||
-		strings.HasPrefix(lockID, "bitfs.clientapp.wallet.trigger_") ||
-		strings.HasPrefix(lockID, "bitfs.clientapp.gateway.trigger_") ||
-		strings.HasPrefix(lockID, "bitfs.clientapp.domain.trigger_") ||
-		strings.HasPrefix(lockID, "bitfs.clientapp.peer.trigger_"):
+	case controlActionWalletPayBSV,
+		controlActionWalletTokenSendPreview,
+		controlActionWalletTokenSendSign,
+		controlActionWalletTokenSendSubmit,
+		controlActionGatewayPublishDemand,
+		controlActionGatewayPublishDemandBatch,
+		controlActionGatewayPublishLiveDemand,
+		controlActionGatewayPublishDemandChainTxQuotePay,
+		controlActionGatewayReachabilityAnnounce,
+		controlActionGatewayReachabilityQuery,
+		controlActionDomainResolve,
+		controlActionDomainRegister,
+		controlActionDomainSetTarget,
+		controlActionPeerCall,
+		controlActionPeerResolve,
+		controlActionPeerSelf,
+		controlActionPeerConnect:
 		out, err = d.executeManagedBusinessControlCommand(req)
-	case lockID == "bitfs.managed.control.execute_pricing" || strings.HasPrefix(lockID, "bitfs.clientapp.pricing.trigger_"):
+	case controlActionPricingSetBase,
+		controlActionPricingResetSeed,
+		controlActionPricingFeedSeed,
+		controlActionPricingSetForce,
+		controlActionPricingReleaseForce,
+		controlActionPricingRunTick,
+		controlActionPricingTriggerReconcile,
+		controlActionPricingGetConfig,
+		controlActionPricingGetState,
+		controlActionPricingGetAudits,
+		controlActionPricingListSeeds:
 		out, err = d.executeManagedPricingControlCommand(req)
-	case lockID == "bitfs.managed.control.execute_workspace" || strings.HasPrefix(lockID, "bitfs.clientapp.workspace.kernel_"):
+	case controlActionWorkspaceList,
+		controlActionWorkspaceAdd,
+		controlActionWorkspaceUpdate,
+		controlActionWorkspaceDelete,
+		controlActionWorkspaceSyncOnce:
 		out, err = d.executeManagedWorkspaceControlCommand(req)
 	default:
 		result.Result = "failed"
-		result.Error = fmt.Sprintf("obs control action is whitelisted but not routed: action=%s lock_id=%s", req.Action, lockID)
+		result.Error = fmt.Sprintf("unsupported control action: %s", req.Action)
 		return result
 	}
 	if err != nil {
@@ -987,13 +1000,49 @@ func (d *managedDaemon) executeManagedControlCommand(req controlCommandRequest) 
 	return out
 }
 
-// isManagedObsControlActionRouted 返回 action 是否已在 daemon 中实现分发。
-func isManagedObsControlActionRouted(action string) bool {
-	lockID, ok := contractfnlock.ObsControlActionLockID(strings.TrimSpace(action))
-	if !ok {
-		return false
+func (d *managedDaemon) executeManagedSettingsOBSControlCommand(req controlCommandRequest) (controlCommandResult, bool) {
+	if !strings.HasPrefix(strings.TrimSpace(req.Action), "settings.") {
+		return controlCommandResult{}, false
 	}
-	return isManagedObsControlLockRouted(lockID)
+	result := controlCommandResult{
+		CommandID:    req.CommandID,
+		Action:       strings.TrimSpace(req.Action),
+		BackendPhase: d.currentBackendPhase(),
+		RuntimePhase: d.currentRuntimePhase(),
+		KeyState:     d.currentKeyState(),
+	}
+	rt := d.currentRuntime()
+	if rt == nil {
+		result.Result = "failed"
+		result.Error = "runtime not initialized"
+		return result, true
+	}
+	hooks := rt.Modules()
+	if hooks == nil {
+		result.Result = "failed"
+		result.Error = "MODULE_DISABLED"
+		return result, true
+	}
+	resp, err := hooks.CallOBSAction(d.rootCtx, req.Action, req.Payload)
+	if err != nil {
+		result.Result = "failed"
+		switch code := clientapp.ModuleHookCodeOf(err); code {
+		case "MODULE_DISABLED":
+			result.Error = "MODULE_DISABLED"
+		case "HANDLER_NOT_REGISTERED":
+			result.Error = "handler not registered"
+		case "":
+			result.Error = err.Error()
+		default:
+			result.Error = fmt.Sprintf("%s: %s", code, clientapp.ModuleHookMessageOf(err))
+		}
+		return result, true
+	}
+	result.OK = resp.OK
+	result.Result = resp.Result
+	result.Error = resp.Error
+	result.Payload = resp.Payload
+	return result, true
 }
 
 func managedObsControlHandleKeyCreateRandom(d *managedDaemon, req controlCommandRequest) (controlCommandResult, error) {
@@ -1100,74 +1149,6 @@ func managedObsControlHandleKeyLock(d *managedDaemon, req controlCommandRequest)
 	result.RuntimePhase = d.currentRuntimePhase()
 	result.KeyState = d.currentKeyState()
 	return result, nil
-}
-
-func isManagedObsControlLockRouted(lockID string) bool {
-	lockID = strings.TrimSpace(lockID)
-	switch {
-	case lockID == "bitfs.managed.key.create_random":
-		return true
-	case lockID == "bitfs.managed.key.assert_exists":
-		return true
-	case lockID == "bitfs.managed.key.unlock_with_password":
-		return true
-	case lockID == "bitfs.managed.key.lock_runtime":
-		return true
-	case lockID == "bitfs.managed.control.execute_workspace":
-		return true
-	case lockID == "bitfs.managed.control.execute_business":
-		return true
-	case lockID == "bitfs.managed.control.execute_pricing":
-		return true
-	case strings.HasPrefix(lockID, "bitfs.clientapp.wallet.trigger_"):
-		return true
-	case strings.HasPrefix(lockID, "bitfs.clientapp.gateway.trigger_"):
-		return true
-	case strings.HasPrefix(lockID, "bitfs.clientapp.domain.trigger_"):
-		return true
-	case strings.HasPrefix(lockID, "bitfs.clientapp.peer.trigger_"):
-		return true
-	case strings.HasPrefix(lockID, "bitfs.clientapp.pricing.trigger_"):
-		return true
-	case strings.HasPrefix(lockID, "bitfs.clientapp.workspace.kernel_"):
-		return true
-	default:
-		return false
-	}
-}
-
-func ensureManagedObsControlRouteCoverage() error {
-	managedObsControlRouteCoverageOnce.Do(func() {
-		whitelistedAction := map[string]struct{}{}
-		for _, action := range contractfnlock.ObsControlActions() {
-			action = strings.TrimSpace(action)
-			if action == "" {
-				managedObsControlRouteCoverageErr = fmt.Errorf("obs control whitelist action is empty")
-				return
-			}
-			if _, exists := whitelistedAction[action]; exists {
-				managedObsControlRouteCoverageErr = fmt.Errorf("obs control whitelist action is duplicated: %s", action)
-				return
-			}
-			whitelistedAction[action] = struct{}{}
-
-			lockID, ok := contractfnlock.ObsControlActionLockID(action)
-			if !ok {
-				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action lock id mapping missing: %s", action)
-				return
-			}
-			lockID = strings.TrimSpace(lockID)
-			if lockID == "" {
-				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action lock id is empty: action=%s", action)
-				return
-			}
-			if !isManagedObsControlLockRouted(lockID) {
-				managedObsControlRouteCoverageErr = fmt.Errorf("obs control action is whitelisted but not routed: action=%s lock_id=%s", action, lockID)
-				return
-			}
-		}
-	})
-	return managedObsControlRouteCoverageErr
 }
 
 func (d *managedDaemon) emitManagedCommandResult(result controlCommandResult) {

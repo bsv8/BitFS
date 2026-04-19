@@ -86,10 +86,10 @@ func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
 		}
 	}, func(ctx context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
 		if rt == nil || rt.modules == nil {
-			return ncall.ResolveResp{Ok: false, Code: "MODULE_DISABLED", Message: "index_resolve module is disabled"}, nil
+			return ncall.ResolveResp{Ok: false, Code: "MODULE_DISABLED", Message: "module is disabled"}, nil
 		}
 		// 只读边界：这里仅允许读模块里的 route 映射，不允许挂载任何 settings 写动作。
-		manifest, err := rt.modules.resolveIndex(ctx, req.Route)
+		manifest, err := rt.modules.ResolveRoute(ctx, req.Route)
 		if err != nil {
 			if code := moduleHookCode(err); code != "" {
 				return ncall.ResolveResp{Ok: false, Code: code, Message: moduleHookMessage(err)}, nil

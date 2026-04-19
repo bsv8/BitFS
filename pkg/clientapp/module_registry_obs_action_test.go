@@ -1,0 +1,72 @@
+package clientapp
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func TestModuleRegistryOBSActionDispatchesThroughGenericTable(t *testing.T) {
+	t.Parallel()
+
+	reg := newModuleRegistry()
+	called := false
+	cleanup, err := reg.RegisterOBSAction("settings.index_resolve.resolve", func(ctx context.Context, payload map[string]any) (OBSActionResponse, error) {
+		called = true
+		if ctx == nil {
+			return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "ctx is required")
+		}
+		if got := strings.TrimSpace(fmt.Sprint(payload["route"])); got != "movie" {
+			return OBSActionResponse{}, newModuleHookError("BAD_REQUEST", "unexpected route")
+		}
+		return OBSActionResponse{
+			OK:     true,
+			Result: "resolved",
+			Payload: map[string]any{
+				"route":     "/movie",
+				"seed_hash": strings.Repeat("ab", 32),
+			},
+		}, nil
+	})
+	if err != nil {
+		t.Fatalf("register obs action failed: %v", err)
+	}
+	defer cleanup()
+
+	resp, err := reg.CallOBSAction(context.Background(), "settings.index_resolve.resolve", map[string]any{"route": "movie"})
+	if err != nil {
+		t.Fatalf("call obs action failed: %v", err)
+	}
+	if !called {
+		t.Fatal("handler was not called")
+	}
+	if !resp.OK || resp.Result != "resolved" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if got := strings.TrimSpace(resp.Payload["route"].(string)); got != "/movie" {
+		t.Fatalf("unexpected payload route: %q", got)
+	}
+}
+
+func TestModuleRegistryOBSActionReportsDisabledAndMissingHandlers(t *testing.T) {
+	t.Parallel()
+
+	reg := newModuleRegistry()
+
+	if _, err := reg.CallOBSAction(context.Background(), "settings.index_resolve.resolve", map[string]any{"route": "movie"}); err == nil || moduleHookCode(err) != "MODULE_DISABLED" {
+		t.Fatalf("expected module disabled, got %v", err)
+	}
+
+	cleanup, err := reg.RegisterOBSAction("settings.index_resolve.resolve", func(context.Context, map[string]any) (OBSActionResponse, error) {
+		return OBSActionResponse{OK: true, Result: "resolved"}, nil
+	})
+	if err != nil {
+		t.Fatalf("register resolve action failed: %v", err)
+	}
+	defer cleanup()
+
+	if _, err := reg.CallOBSAction(context.Background(), "settings.index_resolve.upsert", map[string]any{"route": "movie"}); err == nil || moduleHookCode(err) != "HANDLER_NOT_REGISTERED" {
+		t.Fatalf("expected handler not registered, got %v", err)
+	}
+}
