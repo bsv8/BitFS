@@ -6,14 +6,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
-	"github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
+	"github.com/bsv8/BitFS/pkg/clientapp"
+	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
 func TestValidateWhitelistShapeRejectsDuplicateID(t *testing.T) {
-	items := []modulelock.LockedFunction{
-		{ID: "dup", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "A", Signature: "func A()", Note: "n"},
-		{ID: "dup", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "B", Signature: "func B()", Note: "n"},
+	items := []moduleapi.LockedFunction{
+		{ID: "dup", Module: "indexresolve", Package: "./pkg/clientapp/modules/indexresolve", Symbol: "A", Signature: "func A()", Note: "n"},
+		{ID: "dup", Module: "indexresolve", Package: "./pkg/clientapp/modules/indexresolve", Symbol: "B", Signature: "func B()", Note: "n"},
 	}
 	if err := validateWhitelistShape(items); err == nil || !strings.Contains(err.Error(), "duplicated id") {
 		t.Fatalf("expected duplicate id error, got %v", err)
@@ -21,8 +21,8 @@ func TestValidateWhitelistShapeRejectsDuplicateID(t *testing.T) {
 }
 
 func TestValidateWhitelistShapeRejectsBadSignature(t *testing.T) {
-	items := []modulelock.LockedFunction{
-		{ID: "one", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "A", Signature: "not a func", Note: "n"},
+	items := []moduleapi.LockedFunction{
+		{ID: "one", Module: "indexresolve", Package: "./pkg/clientapp/modules/indexresolve", Symbol: "A", Signature: "not a func", Note: "n"},
 	}
 	if err := validateWhitelistShape(items); err == nil || !strings.Contains(err.Error(), "signature must start with func") {
 		t.Fatalf("expected signature error, got %v", err)
@@ -30,8 +30,8 @@ func TestValidateWhitelistShapeRejectsBadSignature(t *testing.T) {
 }
 
 func TestValidateWhitelistShapeRejectsEmptyField(t *testing.T) {
-	items := []modulelock.LockedFunction{
-		{ID: "one", Module: indexresolve.ModuleIdentity, Package: "", Symbol: "A", Signature: "func A()", Note: "n"},
+	items := []moduleapi.LockedFunction{
+		{ID: "one", Module: "indexresolve", Package: "", Symbol: "A", Signature: "func A()", Note: "n"},
 	}
 	if err := validateWhitelistShape(items); err == nil || !strings.Contains(err.Error(), "package is required") {
 		t.Fatalf("expected empty field error, got %v", err)
@@ -39,7 +39,7 @@ func TestValidateWhitelistShapeRejectsEmptyField(t *testing.T) {
 }
 
 func TestIndexResolveWhitelistKeepsOnlyBizEntrypoints(t *testing.T) {
-	items := indexresolve.FunctionLocks()
+	items, _ := clientapp.BuiltinModuleLockItems("indexresolve")
 	if len(items) != 4 {
 		t.Fatalf("expected 4 whitelist items, got %d", len(items))
 	}
@@ -47,23 +47,6 @@ func TestIndexResolveWhitelistKeepsOnlyBizEntrypoints(t *testing.T) {
 		if !strings.HasPrefix(item.Symbol, "Biz") {
 			t.Fatalf("unexpected lock symbol: %s", item.Symbol)
 		}
-	}
-}
-
-func TestModuleConfigsIncludesIndexResolve(t *testing.T) {
-	if _, ok := moduleConfigs[indexresolve.ModuleIdentity]; !ok {
-		t.Fatalf("expected module config for %s", indexresolve.ModuleIdentity)
-	}
-}
-
-func TestRegistryItemsReportsMissingModule(t *testing.T) {
-	reg := modulelock.NewRegistry()
-	items, missing := reg.Items(indexresolve.ModuleIdentity)
-	if len(items) != 0 {
-		t.Fatalf("expected no items, got %d", len(items))
-	}
-	if len(missing) != 1 || missing[0] != indexresolve.ModuleIdentity {
-		t.Fatalf("unexpected missing modules: %#v", missing)
 	}
 }
 
@@ -78,9 +61,9 @@ func TestRunChecksRejectsSignatureMismatch(t *testing.T) {
 	readSignatureFn = func(goBin string, goRoot string, goBinDir string, moduleDir string, pkg string, symbol string) (string, error) {
 		return "func wrong()", nil
 	}
-	selected := map[string]struct{}{indexresolve.ModuleIdentity: {}}
-	items := []modulelock.LockedFunction{
-		{ID: "bitfs.indexresolve.biz_resolve", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "BizResolve", Signature: "func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (Manifest, error)", Note: "n"},
+	selected := map[string]struct{}{"indexresolve": {}}
+	items := []moduleapi.LockedFunction{
+		{ID: "bitfs.indexresolve.biz_resolve", Module: "indexresolve", Package: "./pkg/clientapp/modules/indexresolve", Symbol: "BizResolve", Signature: "func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (Manifest, error)", Note: "n"},
 	}
 	err := runChecks(tmp, goBin, selected, items)
 	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {
@@ -88,14 +71,24 @@ func TestRunChecksRejectsSignatureMismatch(t *testing.T) {
 	}
 }
 
-func TestRegisterModuleProvidersRejectsDuplicate(t *testing.T) {
-	reg := modulelock.NewRegistry()
-	selected := map[string]struct{}{indexresolve.ModuleIdentity: {}}
-	if err := registerModuleProviders(reg, selected); err != nil {
-		t.Fatalf("register providers failed: %v", err)
+func TestRunChecksRejectsSignatureMismatchWhenSelectedEmpty(t *testing.T) {
+	tmp := t.TempDir()
+	goBin := filepath.Join(tmp, "go")
+	if err := os.WriteFile(goBin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("setup fake go bin failed: %v", err)
 	}
-	if err := registerModuleProviders(reg, selected); err == nil {
-		t.Fatal("expected duplicate registration error")
+	originalReader := readSignatureFn
+	t.Cleanup(func() { readSignatureFn = originalReader })
+	readSignatureFn = func(goBin string, goRoot string, goBinDir string, moduleDir string, pkg string, symbol string) (string, error) {
+		return "func wrong()", nil
+	}
+	selected := map[string]struct{}{}
+	items := []moduleapi.LockedFunction{
+		{ID: "bitfs.indexresolve.biz_resolve", Module: "indexresolve", Package: "./pkg/clientapp/modules/indexresolve", Symbol: "BizResolve", Signature: "func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (Manifest, error)", Note: "n"},
+	}
+	err := runChecks(tmp, goBin, selected, items)
+	if err == nil || !strings.Contains(err.Error(), "signature mismatch") {
+		t.Fatalf("expected signature mismatch with empty selected, got %v", err)
 	}
 }
 
@@ -103,22 +96,5 @@ func TestReadSignatureRejectsMissingGoDoc(t *testing.T) {
 	_, err := readSignature("/bin/false", "", "", t.TempDir(), "./pkg/clientapp/modules/indexresolve", "Resolve")
 	if err == nil {
 		t.Fatal("expected go doc error")
-	}
-}
-
-func TestRegistryItemsKeepModuleFiltered(t *testing.T) {
-	reg := modulelock.NewRegistry()
-	_, _ = reg.Register(indexresolve.ModuleIdentity, func() []modulelock.LockedFunction {
-		return []modulelock.LockedFunction{{ID: "one", Module: indexresolve.ModuleIdentity, Package: "./pkg/clientapp/modules/indexresolve", Symbol: "A", Signature: "func A()", Note: "n"}}
-	})
-	_, _ = reg.Register("other", func() []modulelock.LockedFunction {
-		return []modulelock.LockedFunction{{ID: "two", Module: "other", Package: "./other", Symbol: "B", Signature: "func B()", Note: "n"}}
-	})
-	items, missing := reg.Items(indexresolve.ModuleIdentity)
-	if len(missing) != 0 {
-		t.Fatalf("unexpected missing modules: %#v", missing)
-	}
-	if len(items) != 1 || items[0].ID != "one" {
-		t.Fatalf("unexpected filtered items: %#v", items)
 	}
 }

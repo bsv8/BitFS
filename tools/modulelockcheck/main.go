@@ -15,17 +15,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 )
-
-type moduleConfig struct {
-	name     string
-	dir      string
-	provider func() []moduleapi.LockedFunction
-}
-
-var moduleConfigs map[string]moduleConfig
 
 var readSignatureFn = readSignature
 
@@ -40,7 +32,7 @@ func main() {
 	flag.StringVar(&modulesFlag, "modules", "", "comma-separated modules to check")
 	flag.Parse()
 
-	workspaceRoot, err := resolveWorkspaceRoot(workspaceRootFlag)
+	bitfsRoot, err := resolveBitFSRoot(workspaceRootFlag)
 	if err != nil {
 		exitErr(err)
 	}
@@ -48,18 +40,14 @@ func main() {
 	if err != nil {
 		exitErr(err)
 	}
-	reg := modulelock.NewRegistry()
-	if err := registerModuleProviders(reg, selectedModules); err != nil {
-		exitErr(err)
-	}
-	items, missing := reg.Items(sortedModuleNames(selectedModules)...)
+	items, missing := clientapp.BuiltinModuleLockItems(sortedModuleNames(selectedModules)...)
 	if len(missing) > 0 {
-		exitErr(fmt.Errorf("module not registered: %s", strings.Join(missing, ", ")))
+		exitErr(fmt.Errorf("module function lock not found: %s", strings.Join(missing, ", ")))
 	}
 	if err := validateWhitelistShape(items); err != nil {
 		exitErr(err)
 	}
-	if err := runChecks(workspaceRoot, goBin, selectedModules, items); err != nil {
+	if err := runChecks(bitfsRoot, goBin, selectedModules, items); err != nil {
 		exitErr(err)
 	}
 	fmt.Println("[modulelock] ok")
@@ -93,17 +81,33 @@ func resolveWorkspaceRoot(input string) (string, error) {
 	return "", errors.New("cannot find workspace root with go.work")
 }
 
+func resolveBitFSRoot(workspaceRootFlag string) (string, error) {
+	workspaceRoot, err := resolveWorkspaceRoot(workspaceRootFlag)
+	if err != nil {
+		return "", err
+	}
+	bitfsRoot := filepath.Join(workspaceRoot, "BitFS")
+	if _, err := os.Stat(filepath.Join(bitfsRoot, "go.mod")); err != nil {
+		return "", fmt.Errorf("BitFS root missing go.mod: %s", bitfsRoot)
+	}
+	return bitfsRoot, nil
+}
+
 func parseModules(raw string) (map[string]struct{}, error) {
 	out := map[string]struct{}{}
 	if strings.TrimSpace(raw) == "" {
 		return out, nil
+	}
+	supported := make(map[string]struct{})
+	for _, m := range clientapp.BuiltinModuleLockModules() {
+		supported[m] = struct{}{}
 	}
 	for _, item := range strings.Split(raw, ",") {
 		name := strings.TrimSpace(strings.ToLower(item))
 		if name == "" {
 			continue
 		}
-		if _, ok := moduleConfigs[name]; !ok {
+		if _, ok := supported[name]; !ok {
 			return nil, fmt.Errorf("unsupported module: %s", item)
 		}
 		out[name] = struct{}{}
@@ -123,34 +127,13 @@ func sortedModuleNames(selected map[string]struct{}) []string {
 	return out
 }
 
-func registerModuleProviders(reg *modulelock.Registry, selected map[string]struct{}) error {
-	for _, name := range sortedModuleNames(selected) {
-		cfg := moduleConfigs[name]
-		if _, err := reg.Register(cfg.name, func() []modulelock.LockedFunction {
-			items := cfg.provider()
-			out := make([]modulelock.LockedFunction, 0, len(items))
-			for _, item := range items {
-				out = append(out, modulelock.LockedFunction{
-					ID:               item.ID,
-					Module:           item.Module,
-					Package:          item.Package,
-					Symbol:           item.Symbol,
-					Signature:        item.Signature,
-					ObsControlAction: item.ObsControlAction,
-					Note:             item.Note,
-				})
-			}
-			return out
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateWhitelistShape(items []modulelock.LockedFunction) error {
+func validateWhitelistShape(items []moduleapi.LockedFunction) error {
 	seenID := map[string]struct{}{}
 	seenSymbol := map[string]struct{}{}
+	supportedModules := make(map[string]struct{})
+	for _, m := range clientapp.BuiltinModuleLockModules() {
+		supportedModules[m] = struct{}{}
+	}
 	for i, item := range items {
 		prefix := fmt.Sprintf("whitelist[%d]", i)
 		if strings.TrimSpace(item.ID) == "" {
@@ -163,7 +146,7 @@ func validateWhitelistShape(items []modulelock.LockedFunction) error {
 		if strings.TrimSpace(item.Module) == "" {
 			return fmt.Errorf("%s module is required", prefix)
 		}
-		if _, ok := moduleConfigs[strings.TrimSpace(item.Module)]; !ok {
+		if _, ok := supportedModules[strings.TrimSpace(item.Module)]; !ok {
 			return fmt.Errorf("%s unsupported module: %s", prefix, item.Module)
 		}
 		if strings.TrimSpace(item.Package) == "" {
@@ -190,7 +173,7 @@ func validateWhitelistShape(items []modulelock.LockedFunction) error {
 	return nil
 }
 
-func runChecks(workspaceRoot string, goBin string, selected map[string]struct{}, items []modulelock.LockedFunction) error {
+func runChecks(bitfsRoot string, goBin string, selected map[string]struct{}, items []moduleapi.LockedFunction) error {
 	goBin = strings.TrimSpace(goBin)
 	if goBin == "" {
 		return errors.New("go-bin is required")
@@ -205,13 +188,15 @@ func runChecks(workspaceRoot string, goBin string, selected map[string]struct{},
 	goRoot := filepath.Dir(filepath.Dir(goBinAbs))
 	pathPrefix := filepath.Dir(goBinAbs)
 
+	moduleDir := bitfsRoot
+
 	var failed []string
 	for _, item := range items {
-		if _, ok := selected[strings.TrimSpace(item.Module)]; !ok {
-			continue
+		if len(selected) > 0 {
+			if _, ok := selected[strings.TrimSpace(item.Module)]; !ok {
+				continue
+			}
 		}
-		cfg := moduleConfigs[strings.TrimSpace(item.Module)]
-		moduleDir := filepath.Join(workspaceRoot, cfg.dir)
 		got, err := readSignatureFn(goBinAbs, goRoot, pathPrefix, moduleDir, item.Package, item.Symbol)
 		if err != nil {
 			failed = append(failed, fmt.Sprintf("%s: %v", item.ID, err))
