@@ -71,10 +71,8 @@ func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 	}
 
 	return host.InstallModule(moduleapi.ModuleSpec{
-		ID:                 ModuleID,
-		Version:            CapabilityVersion,
-		ModuleLockName:     ModuleIdentity,
-		ModuleLockProvider: FunctionLocks,
+		ID:      ModuleID,
+		Version: CapabilityVersion,
 		LibP2P: []moduleapi.LibP2PRoute{
 			{Protocol: moduleapi.LibP2PProtocolNodeResolve, Handler: resolveIndexRoute(moduleStore)},
 		},

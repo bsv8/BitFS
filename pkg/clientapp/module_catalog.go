@@ -4,48 +4,23 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 	domainmodule "github.com/bsv8/BitFS/pkg/clientapp/modules/domain"
 	inboxmessage "github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
 	indexresolve "github.com/bsv8/BitFS/pkg/clientapp/modules/indexresolve"
 )
 
-// builtinModuleEntry 描述一个内置模块的元信息。
-type builtinModuleEntry struct {
-	Name               string
-	Install            moduleapi.Installer
-	ModuleLockName     string
-	ModuleLockProvider func() []moduleapi.LockedFunction
-}
-
-// builtinModuleCatalog 返回当前发行版默认启用的模块顺序。
-//
-// 设计说明：
-// - 这是唯一的模块插拔清单，也是唯一的模块锁项挂载清单；
-// - 需要增删模块时，只改这里，不再用 tag 分叉；
-// - 顺序就是依赖顺序，依赖关系不做自动拓扑排序；
-// - 有 ModuleLockProvider 的模块会提供锁项，供工具静态检查使用。
-func builtinModuleCatalog() []builtinModuleEntry {
-	return []builtinModuleEntry{
-		{
-			Name:    domainmodule.ModuleIdentity,
-			Install: domainmodule.Install,
-		},
-		{
-			Name:               indexresolve.ModuleIdentity,
-			Install:            indexresolve.Install,
-			ModuleLockName:     indexresolve.ModuleIdentity,
-			ModuleLockProvider: indexresolve.FunctionLocks,
-		},
-		{
-			Name:    inboxmessage.ModuleIdentity,
-			Install: inboxmessage.Install,
-		},
+func builtinModuleCatalog() []moduleapi.ModuleDescriptor {
+	return []moduleapi.ModuleDescriptor{
+		domainmodule.Descriptor(),
+		indexresolve.Descriptor(),
+		inboxmessage.Descriptor(),
 	}
 }
 
-// BuiltinModuleLockModules 返回当前 catalog 里有锁项的模块名，排序后返回。
 func BuiltinModuleLockModules() []string {
 	var out []string
 	for _, entry := range builtinModuleCatalog() {
@@ -57,13 +32,11 @@ func BuiltinModuleLockModules() []string {
 	return out
 }
 
-// BuiltinModuleLockItems 返回指定模块的锁项。
-//
-// 参数：
-//   - modules 为空时返回所有启用模块的锁项；
-//   - 指定模块不存在或无锁项时放进 missing；
-//   - 返回项按 Module + ID 排序，保证检查输出稳定。
-func BuiltinModuleLockItems(modules ...string) ([]moduleapi.LockedFunction, []string) {
+func BuiltinModuleLockItems(modules ...string) ([]moduleapi.LockedFunction, []string, error) {
+	if err := ValidateBuiltinModuleLockDescriptors(); err != nil {
+		return nil, nil, err
+	}
+
 	var all []moduleapi.LockedFunction
 	var missing []string
 
@@ -71,13 +44,6 @@ func BuiltinModuleLockItems(modules ...string) ([]moduleapi.LockedFunction, []st
 	moduleSet := make(map[string]struct{})
 	for _, m := range modules {
 		moduleSet[m] = struct{}{}
-	}
-
-	moduleToLockName := make(map[string]string)
-	for _, entry := range builtinModuleCatalog() {
-		if entry.ModuleLockProvider != nil {
-			moduleToLockName[entry.Name] = entry.ModuleLockName
-		}
 	}
 
 	for _, entry := range builtinModuleCatalog() {
@@ -92,8 +58,18 @@ func BuiltinModuleLockItems(modules ...string) ([]moduleapi.LockedFunction, []st
 			}
 			continue
 		}
+		lockName := entry.ModuleLockName
+		if lockName == "" {
+			lockName = entry.Name
+		}
 		items := entry.ModuleLockProvider()
-		all = append(all, items...)
+		for _, item := range items {
+			itemModule := strings.TrimSpace(item.Module)
+			if itemModule != lockName {
+				return nil, nil, fmt.Errorf("descriptor %s: item.Module=%q != lockName=%q", entry.Name, itemModule, lockName)
+			}
+			all = append(all, item)
+		}
 	}
 
 	if hasFilter {
@@ -118,10 +94,48 @@ func BuiltinModuleLockItems(modules ...string) ([]moduleapi.LockedFunction, []st
 		return all[i].ID < all[j].ID
 	})
 
-	return all, missing
+	return all, missing, nil
 }
 
-// installBuiltinModules 统一安装默认模块，并在失败时倒序回收。
+func ValidateBuiltinModuleLockDescriptors() error {
+	for _, entry := range builtinModuleCatalog() {
+		if entry.ModuleLockProvider == nil {
+			continue
+		}
+		lockName := entry.ModuleLockName
+		if lockName == "" {
+			lockName = entry.Name
+		}
+		items := entry.ModuleLockProvider()
+		for _, item := range items {
+			itemModule := strings.TrimSpace(item.Module)
+			if itemModule != lockName {
+				return fmt.Errorf("descriptor %s: item.Module=%q != lockName=%q", entry.Name, itemModule, lockName)
+			}
+		}
+	}
+	return nil
+}
+
+func toModuleLockProvider(provider func() []moduleapi.LockedFunction) modulelock.Provider {
+	return func() []modulelock.LockedFunction {
+		items := provider()
+		out := make([]modulelock.LockedFunction, 0, len(items))
+		for _, item := range items {
+			out = append(out, modulelock.LockedFunction{
+				ID:               strings.TrimSpace(item.ID),
+				Module:           strings.TrimSpace(item.Module),
+				Package:          strings.TrimSpace(item.Package),
+				Symbol:           strings.TrimSpace(item.Symbol),
+				Signature:        strings.TrimSpace(item.Signature),
+				ObsControlAction: strings.TrimSpace(item.ObsControlAction),
+				Note:             strings.TrimSpace(item.Note),
+			})
+		}
+		return out
+	}
+}
+
 func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstrapStore) (func(), error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
@@ -136,11 +150,26 @@ func installBuiltinModules(ctx context.Context, rt *Runtime, store moduleBootstr
 	host := newModuleHost(rt, store)
 	catalog := builtinModuleCatalog()
 	cleanups := make([]func(), 0, len(catalog))
+
 	for _, entry := range catalog {
 		if entry.Install == nil {
 			closeInstalledModules(cleanups)
 			return nil, fmt.Errorf("module %s installer is required", entry.Name)
 		}
+
+		if entry.ModuleLockProvider != nil {
+			lockName := entry.ModuleLockName
+			if lockName == "" {
+				lockName = entry.Name
+			}
+			cleanup, err := rt.modules.RegisterModuleLockProvider(lockName, toModuleLockProvider(entry.ModuleLockProvider))
+			if err != nil {
+				closeInstalledModules(cleanups)
+				return nil, err
+			}
+			cleanups = append(cleanups, cleanup)
+		}
+
 		cleanup, err := entry.Install(ctx, host)
 		if err != nil {
 			closeInstalledModules(cleanups)

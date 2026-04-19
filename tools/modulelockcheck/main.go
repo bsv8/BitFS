@@ -40,7 +40,10 @@ func main() {
 	if err != nil {
 		exitErr(err)
 	}
-	items, missing := clientapp.BuiltinModuleLockItems(sortedModuleNames(selectedModules)...)
+	items, missing, err := clientapp.BuiltinModuleLockItems(sortedModuleNames(selectedModules)...)
+	if err != nil {
+		exitErr(err)
+	}
 	if len(missing) > 0 {
 		exitErr(fmt.Errorf("module function lock not found: %s", strings.Join(missing, ", ")))
 	}

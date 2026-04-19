@@ -205,6 +205,19 @@ type LockedFunction struct {
 	Note             string
 }
 
+// ModuleDescriptor 是模块对 catalog 暴露的最小描述。
+//
+// 设计说明：
+// - catalog 只引用 descriptor，不直接拼模块内部字段；
+// - Install 只挂业务能力，锁项由 catalog 统一注册；
+// - 静态检查器和运行时安装共享同一份模块事实。
+type ModuleDescriptor struct {
+	Name               string
+	Install            Installer
+	ModuleLockName     string
+	ModuleLockProvider func() []LockedFunction
+}
+
 // Installer 是模块统一安装入口。
 type Installer func(context.Context, Host) (func(), error)
 
@@ -226,7 +239,6 @@ type Host interface {
 	RegisterDomainResolveHook(name string, hook DomainResolveHook) (func(), error)
 	RegisterOpenHook(hook OpenHook) (func(), error)
 	RegisterCloseHook(hook CloseHook) (func(), error)
-	RegisterModuleLockProvider(module string, provider func() []LockedFunction) (func(), error)
 
 	PeerCall(context.Context, PeerCallRequest) (PeerCallResponse, error)
 	GatewaySnapshot() []PeerNode
@@ -270,7 +282,5 @@ type ModuleSpec struct {
 	OpenHooks       []OpenHook
 	CloseHooks      []CloseHook
 
-	ModuleLockProvider func() []LockedFunction
-	ModuleLockName     string
-	Cleanup            func()
+	Cleanup func()
 }

@@ -49,7 +49,10 @@ func TestBuiltinModuleLockModulesReturnsIndexResolve(t *testing.T) {
 }
 
 func TestBuiltinModuleLockItemsIncludesIndexResolve(t *testing.T) {
-	items, missing := clientapp.BuiltinModuleLockItems("indexresolve")
+	items, missing, err := clientapp.BuiltinModuleLockItems("indexresolve")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(missing) != 0 {
 		t.Fatalf("expected no missing modules, got %v", missing)
 	}
@@ -64,7 +67,10 @@ func TestBuiltinModuleLockItemsIncludesIndexResolve(t *testing.T) {
 }
 
 func TestBuiltinModuleLockItemsReportsMissingModule(t *testing.T) {
-	items, missing := clientapp.BuiltinModuleLockItems("domain")
+	items, missing, err := clientapp.BuiltinModuleLockItems("domain")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(items) != 0 {
 		t.Fatalf("expected no items for domain (no lock provider), got %d", len(items))
 	}
@@ -74,7 +80,10 @@ func TestBuiltinModuleLockItemsReportsMissingModule(t *testing.T) {
 }
 
 func TestBuiltinModuleLockItemsWithUnknownModule(t *testing.T) {
-	_, missing := clientapp.BuiltinModuleLockItems("unknownmodule")
+	_, missing, err := clientapp.BuiltinModuleLockItems("unknownmodule")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(missing) != 1 || missing[0] != "unknownmodule" {
 		t.Fatalf("expected unknownmodule in missing, got %v", missing)
 	}

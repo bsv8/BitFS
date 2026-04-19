@@ -39,7 +39,10 @@ func TestValidateWhitelistShapeRejectsEmptyField(t *testing.T) {
 }
 
 func TestIndexResolveWhitelistKeepsOnlyBizEntrypoints(t *testing.T) {
-	items, _ := clientapp.BuiltinModuleLockItems("indexresolve")
+	items, _, err := clientapp.BuiltinModuleLockItems("indexresolve")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(items) != 4 {
 		t.Fatalf("expected 4 whitelist items, got %d", len(items))
 	}

@@ -10,10 +10,9 @@ import (
 	"sync"
 	"sync/atomic"
 
-	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
+	contractmessage "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
-	"github.com/bsv8/BitFS/pkg/clientapp/modulelock"
 )
 
 type moduleHost struct {
@@ -242,35 +241,6 @@ func (h *moduleHost) RegisterCloseHook(hook moduleapi.CloseHook) (func(), error)
 			return err
 		}
 		return nil
-	})
-}
-
-func (h *moduleHost) RegisterModuleLockProvider(module string, provider func() []moduleapi.LockedFunction) (func(), error) {
-	if h == nil || h.rt == nil {
-		return nil, fmt.Errorf("runtime is required")
-	}
-	if provider == nil {
-		return nil, fmt.Errorf("provider is required")
-	}
-	reg := ensureModuleRegistry(h.rt)
-	if reg == nil {
-		return nil, fmt.Errorf("module registry is required")
-	}
-	return reg.registerModuleLockProvider(module, func() []modulelock.LockedFunction {
-		items := provider()
-		out := make([]modulelock.LockedFunction, 0, len(items))
-		for _, item := range items {
-			out = append(out, modulelock.LockedFunction{
-				ID:               strings.TrimSpace(item.ID),
-				Module:           strings.TrimSpace(item.Module),
-				Package:          strings.TrimSpace(item.Package),
-				Symbol:           strings.TrimSpace(item.Symbol),
-				Signature:        strings.TrimSpace(item.Signature),
-				ObsControlAction: strings.TrimSpace(item.ObsControlAction),
-				Note:             strings.TrimSpace(item.Note),
-			})
-		}
-		return out
 	})
 }
 
@@ -573,19 +543,6 @@ func (h *moduleHost) InstallModule(spec moduleapi.ModuleSpec) (func(), error) {
 	if spec.ID != "" && spec.Version != 0 {
 		if _, err := tryRegister("capability", func() (func(), error) {
 			return h.RegisterCapability(spec.ID, spec.Version)
-		}); err != nil {
-			return nil, err
-		}
-	}
-
-	// 注册 module lock
-	if spec.ModuleLockProvider != nil {
-		lockName := spec.ModuleLockName
-		if lockName == "" {
-			lockName = spec.ID
-		}
-		if _, err := tryRegister("module lock", func() (func(), error) {
-			return h.RegisterModuleLockProvider(lockName, spec.ModuleLockProvider)
 		}); err != nil {
 			return nil, err
 		}
