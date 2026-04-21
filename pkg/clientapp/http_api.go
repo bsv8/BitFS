@@ -175,22 +175,22 @@ func normalizeFinanceQuerySource(ctx context.Context, store *clientDB, sourceTyp
 }
 
 type httpAPIServer struct {
-	ctx       context.Context
-	rt        *Runtime
-	cfgSource configSnapshotter
-	db        *sql.DB
-	store     *clientDB
-	h         host.Host
-	gateways  []peer.AddrInfo
-	workspace *workspaceManager
-	kernel    *Kernel
-	srvMu     sync.RWMutex
-	srv       *http.Server
-	startedAt time.Time
-	jobsMu    sync.RWMutex
-	getJobs   map[string]*fileGetJob
-	rpcTrace  pproto.TraceSink
-	getFileByHashHandler *getfilebyhashHTTPHandler
+	ctx                 context.Context
+	rt                  *Runtime
+	cfgSource           configSnapshotter
+	db                  *sql.DB
+	store               *clientDB
+	h                   host.Host
+	gateways            []peer.AddrInfo
+	workspace           *workspaceManager
+	kernel              *Kernel
+	srvMu               sync.RWMutex
+	srv                 *http.Server
+	startedAt           time.Time
+	jobsMu              sync.RWMutex
+	getJobs             map[string]*fileGetJob
+	rpcTrace            pproto.TraceSink
+	downloadFileHandler *downloadFileHTTPHandler
 }
 
 // 说明：
@@ -250,8 +250,12 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		rpcTrace:  trace,
 	}
 	if store != nil {
-		caps := newGetFileByHashModuleCaps(store)
-		s.getFileByHashHandler = caps.HTTPHandler()
+		var demandEnv gatewayDemandPublishChainTxEnv
+		if rt != nil {
+			demandEnv = rt
+		}
+		caps := newDownloadFileCaps(store, demandEnv)
+		s.downloadFileHandler = caps.HTTPHandler()
 	}
 	return s
 }
