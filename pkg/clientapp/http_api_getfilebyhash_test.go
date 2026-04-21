@@ -109,6 +109,14 @@ func (p httpTestDownloadPolicy) SelectQuotes(ctx context.Context, req filedownlo
 	}, nil
 }
 
+type httpTestBlockedBudgetPolicy struct{}
+
+func (httpTestBlockedBudgetPolicy) SelectQuotes(ctx context.Context, req filedownload.StartRequest, quotes []filedownload.QuoteReport) (filedownload.QuoteSelection, error) {
+	return filedownload.QuoteSelection{
+		Reason: "blocked_by_budget",
+	}, nil
+}
+
 type httpTestDownloadTransferRunner struct {
 	results       map[uint32]filedownload.ChunkTransferResult
 	calls         []filedownload.ChunkTransferRequest
@@ -590,12 +598,79 @@ func TestHTTPHandlerHandleStartQuoteTimeout(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerHandleStartBlockedByBudget(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := NewClientStore(db, nil)
+	caps := &DownloadFileCaps{
+		store:       store,
+		jobStore:    newDownloadFileJobStoreAdapter(store),
+		frontBinder: newDownloadFileOrderAdapter(store, ""),
+		fileStore:   &httpTestDownloadFileStore{completeFound: false},
+		seedStore:   httpTestDownloadSeedStore{found: true, meta: filedownload.SeedMeta{SeedHash: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ChunkCount: 1, FileSize: 4}},
+		demandPublisher: httpTestDownloadDemandPublisher{result: filedownload.PublishDemandResult{
+			DemandID: "demand_blocked_budget",
+			Status:   "submitted",
+		}},
+		quoteReader: httpTestDownloadQuoteReader{quotes: []filedownload.QuoteReport{{
+			SellerPubkey:        "seller_budget",
+			SeedPriceSat:        100,
+			ChunkPriceSat:       100,
+			ChunkCount:          1,
+			FileSizeBytes:       4,
+			RecommendedFileName: "budget.bin",
+			MimeType:            "application/octet-stream",
+		}}},
+		policy: httpTestBlockedBudgetPolicy{},
+	}
+	handler := newDownloadFileHTTPHandler(caps)
+
+	reqBody := `{"seed_hash":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","chunk_count":1,"max_seed_price_sat":1,"max_chunk_price_sat":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/getfilebyhash", strings.NewReader(reqBody))
+	req = req.WithContext(context.Background())
+	rec := httptest.NewRecorder()
+
+	handler.handleStart(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Status struct {
+				State    string `json:"state"`
+				DemandID string `json:"demand_id,omitempty"`
+				Error    string `json:"error,omitempty"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v, body: %s", err, rec.Body.String())
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status=ok, got %s", resp.Status)
+	}
+	if resp.Data.Status.State != filedownload.StateBlockedByBudget {
+		t.Fatalf("expected state=%s, got %s", filedownload.StateBlockedByBudget, resp.Data.Status.State)
+	}
+	if resp.Data.Status.DemandID != "demand_blocked_budget" {
+		t.Fatalf("expected demand_id=demand_blocked_budget, got %s", resp.Data.Status.DemandID)
+	}
+	if resp.Data.Status.Error != "blocked_by_budget" {
+		t.Fatalf("expected error blocked_by_budget, got %s", resp.Data.Status.Error)
+	}
+}
+
 func TestHTTPHandlerHandleStatusGET(t *testing.T) {
 	t.Parallel()
 
 	db := newGetFileByHashTestDB(t)
 	store := NewClientStore(db, nil)
 	handler := newDownloadFileHTTPTestHandler(store)
+	jobStore := newDownloadFileJobStoreAdapter(store)
 
 	startReq := `{"seed_hash":"b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2","chunk_count":5}`
 	startRec := httptest.NewRecorder()
@@ -621,6 +696,21 @@ func TestHTTPHandlerHandleStatusGET(t *testing.T) {
 	}
 	if jobID == "" {
 		t.Fatalf("job_id is empty, body: %s", startRec.Body.String())
+	}
+	if err := jobStore.SetFrontOrderID(context.Background(), jobID, "fo_status_get"); err != nil {
+		t.Fatalf("set front order id failed: %v", err)
+	}
+	if err := jobStore.SetDemandID(context.Background(), jobID, "demand_status_get"); err != nil {
+		t.Fatalf("set demand id failed: %v", err)
+	}
+	if err := jobStore.AppendChunkReport(context.Background(), jobID, filedownload.ChunkReport{
+		ChunkIndex:    0,
+		State:         filedownload.ChunkStateStored,
+		SellerPubkey:  "seller_status",
+		ChunkPriceSat: 10,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append chunk report failed: %v", err)
 	}
 
 	statusReq := httptest.NewRequest(http.MethodGet, "/api/v1/files/getfilebyhash/status?job_id="+jobID, nil)
@@ -656,11 +746,17 @@ func TestHTTPHandlerHandleStatusGET(t *testing.T) {
 	if resp.Data.JobID != jobID {
 		t.Fatalf("expected job_id=%s, got %s", jobID, resp.Data.JobID)
 	}
+	if resp.Data.FrontOrderID != "fo_status_get" {
+		t.Fatalf("expected front_order_id=fo_status_get, got %s", resp.Data.FrontOrderID)
+	}
+	if resp.Data.DemandID != "demand_status_get" {
+		t.Fatalf("expected demand_id=demand_status_get, got %s", resp.Data.DemandID)
+	}
 	if resp.Data.State != filedownload.StateLocal {
 		t.Fatalf("expected state=%s, got %s", filedownload.StateLocal, resp.Data.State)
 	}
-	if resp.Data.CompletedChunks != 0 {
-		t.Fatalf("expected completed_chunks=0, got %d", resp.Data.CompletedChunks)
+	if resp.Data.CompletedChunks != 1 {
+		t.Fatalf("expected completed_chunks=1, got %d", resp.Data.CompletedChunks)
 	}
 	if resp.Data.Error != "" {
 		t.Fatalf("expected empty error, got %s", resp.Data.Error)

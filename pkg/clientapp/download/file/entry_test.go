@@ -1325,6 +1325,9 @@ func TestStartByHashTransferFailureFails(t *testing.T) {
 	if status.State != StateFailed {
 		t.Fatalf("expected failed state, got %s", status.State)
 	}
+	if status.Error != "chunk download failed" {
+		t.Fatalf("expected error=chunk download failed, got %s", status.Error)
+	}
 	chunks, found := store.ListChunks(ctx, job.JobID)
 	if !found {
 		t.Fatalf("chunks not found")
