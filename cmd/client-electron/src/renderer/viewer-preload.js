@@ -233,10 +233,10 @@
     return value;
   }
 
-  function normalizeRoute(raw, allowEmpty) {
+  function normalizeProtocolID(raw, allowEmpty) {
     const value = String(raw || "").trim();
     if (!value && !allowEmpty) {
-      throw new Error("bitfs route is required");
+      throw new Error("bitfs protocol_id is required");
     }
     return value;
   }
@@ -247,7 +247,7 @@
     }
     const payload = {
       to: normalizeTarget(input.to),
-      route: normalizeRoute(input.route, false),
+      protocol_id: normalizeProtocolID(input.protocol_id, false),
       content_type: String(input.contentType || input.content_type || "").trim()
     };
     if (!payload.content_type) {
@@ -367,7 +367,7 @@
         const option = Array.isArray(quoted && quoted.payment_schemes) && quoted.payment_schemes.length > 0 ? quoted.payment_schemes[0] : null;
         const approved = await normalizedOptions.onQuote({
           to: normalized.to,
-          route: normalized.route,
+          protocol_id: normalized.protocol_id,
           payment_scheme: String(option && option.scheme || ""),
           payment_domain: String(option && option.payment_domain || ""),
           quote_status: String(option && option.quote_status || ""),

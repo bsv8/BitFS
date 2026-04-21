@@ -9,11 +9,12 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	oldproto "github.com/golang/protobuf/proto"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-type apiRouteCallRequest struct {
+type apiLibP2PCallRequest struct {
 	To              string          `json:"to"`
-	Route           string          `json:"route"`
+	ProtocolID      string          `json:"protocol_id"`
 	ContentType     string          `json:"content_type"`
 	Body            json.RawMessage `json:"body,omitempty"`
 	BodyBase64      string          `json:"body_base64,omitempty"`
@@ -31,7 +32,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "runtime not initialized"})
 		return
 	}
-	var req apiRouteCallRequest
+	var req apiLibP2PCallRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid json"})
 		return
@@ -48,7 +49,7 @@ func (s *httpAPIServer) handleCall(w http.ResponseWriter, r *http.Request) {
 	}
 	resp, err := TriggerPeerCall(r.Context(), s.rt, TriggerPeerCallParams{
 		To:            req.To,
-		Route:         req.Route,
+		ProtocolID:    protocol.ID(strings.TrimSpace(req.ProtocolID)),
 		ContentType:   req.ContentType,
 		Body:          body,
 		Store:         s.store,

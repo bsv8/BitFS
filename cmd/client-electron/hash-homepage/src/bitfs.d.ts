@@ -338,7 +338,7 @@ type BitfsLocatorResolveResult = {
 
 type BitfsPeerCallRequest = {
   to: string;
-  route: string;
+  protocol_id: string;
   contentType?: string;
   content_type?: string;
   body?: unknown;
@@ -371,7 +371,7 @@ type BitfsPaymentOption = {
 
 type BitfsPeerQuoteDecision = {
   to: string;
-  route: string;
+  protocol_id: string;
   payment_scheme: string;
   payment_domain: string;
   quote_status: string;

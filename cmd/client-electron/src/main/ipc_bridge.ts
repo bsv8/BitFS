@@ -327,11 +327,11 @@ export function registerShellIPC(
       headers: runtime.getCurrentVisitHeaders()
     });
   });
-  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; route?: string; content_type?: string; body?: unknown; body_base64?: string; payment_mode?: string; payment_scheme?: string; service_quote_base64?: string }) => {
+  ipcMain.handle("bitfs-viewer:peer-call", (_event, payload: { to?: string; protocol_id?: string; protocolId?: string; content_type?: string; contentType?: string; body?: unknown; body_base64?: string; bodyBase64?: string; payment_mode?: string; paymentMode?: string; payment_scheme?: string; paymentScheme?: string; service_quote_base64?: string; serviceQuoteBase64?: string }) => {
     const normalized = normalizeViewerPeerCallRequest(payload);
     debugLogger.log("ipc", "viewer_peer_call", {
       to: normalized.to,
-      route: normalized.route,
+      protocol_id: normalized.protocol_id,
       content_type: normalized.content_type,
       has_body_json: Object.prototype.hasOwnProperty.call(normalized, "body"),
       has_body_base64: Object.prototype.hasOwnProperty.call(normalized, "body_base64")
@@ -340,7 +340,7 @@ export function registerShellIPC(
       if (!approved) {
         debugLogger.log("ipc", "viewer_peer_call_denied", {
           to: normalized.to,
-          route: normalized.route,
+          protocol_id: normalized.protocol_id,
           content_type: normalized.content_type
         });
         return {
@@ -351,12 +351,12 @@ export function registerShellIPC(
       }
       debugLogger.log("ipc", "viewer_peer_call_approved", {
         to: normalized.to,
-        route: normalized.route,
+        protocol_id: normalized.protocol_id,
         content_type: normalized.content_type
       });
       return supervisor.requestManagedJSON({
         method: "POST",
-        pathname: "/api/v1/call",
+        pathname: "/api/v1/libp2p/call",
         body: normalized,
         timeout_ms: 30_000,
         headers: runtime.getCurrentVisitHeaders()
@@ -666,9 +666,9 @@ function normalizeManagedSettingsMethod(raw: string | undefined): "GET" | "POST"
   return "GET";
 }
 
-function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; content_type?: string; contentType?: string; body?: unknown; body_base64?: string; bodyBase64?: string; payment_mode?: string; paymentMode?: string; payment_scheme?: string; paymentScheme?: string; service_quote_base64?: string; serviceQuoteBase64?: string }): {
+function normalizeViewerPeerCallRequest(payload: { to?: string; protocol_id?: string; protocolId?: string; content_type?: string; contentType?: string; body?: unknown; body_base64?: string; bodyBase64?: string; payment_mode?: string; paymentMode?: string; payment_scheme?: string; paymentScheme?: string; service_quote_base64?: string; serviceQuoteBase64?: string }): {
   to: string;
-  route: string;
+  protocol_id: string;
   content_type: string;
   body?: unknown;
   body_base64?: string;
@@ -680,9 +680,9 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
   if (to === "") {
     throw new Error("bitfs target is required");
   }
-  const route = String(payload?.route || "").trim();
-  if (route === "") {
-    throw new Error("bitfs route is required");
+  const protocolID = String(payload?.protocolId || payload?.protocol_id || "").trim();
+  if (protocolID === "") {
+    throw new Error("bitfs protocol_id is required");
   }
   const contentType = String(payload?.contentType || payload?.content_type || "").trim();
   if (contentType === "") {
@@ -690,7 +690,7 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
   }
   const out: {
     to: string;
-    route: string;
+    protocol_id: string;
     content_type: string;
     body?: unknown;
     body_base64?: string;
@@ -699,7 +699,7 @@ function normalizeViewerPeerCallRequest(payload: { to?: string; route?: string; 
     service_quote_base64?: string;
   } = {
     to,
-    route,
+    protocol_id: protocolID,
     content_type: contentType
   };
   const bodyBase64 = String(payload?.bodyBase64 || payload?.body_base64 || "").trim();
@@ -755,21 +755,21 @@ function normalizeViewerWalletOrderRequest(payload: { signer_pubkey_hex?: string
 // - 这里先走壳弹框逐次确认，后续如果加侧栏策略，也可以复用同一摘要口径。
 async function confirmViewerPeerCall(
   window: BrowserWindow,
-  payload: { to: string; route: string; content_type: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string },
+  payload: { to: string; protocol_id: string; content_type: string; body?: unknown; body_base64?: string; payment_mode?: string; service_quote_base64?: string },
   e2eViewerPolicy: ElectronE2EViewerPolicyStore | null
 ): Promise<boolean> {
   const policy = e2eViewerPolicy?.snapshot();
   if (policy?.auto_approve_peer_call) {
     debugLogger.log("ipc", "viewer_peer_call_auto_approved", {
       to: payload.to,
-      route: payload.route,
+      protocol_id: payload.protocol_id,
       content_type: payload.content_type
     });
     return true;
   }
   const detailLines = [
     `目标: ${payload.to}`,
-    `路由: ${payload.route}`,
+    `协议: ${payload.protocol_id}`,
     `类型: ${payload.content_type}`,
     `大小: ${estimateViewerPeerCallBodyBytes(payload)} bytes`
   ];

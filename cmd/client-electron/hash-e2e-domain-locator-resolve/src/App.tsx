@@ -123,7 +123,7 @@ export default function App() {
     try {
       const capabilityResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "node.v1.capabilities_show",
+        protocol_id: "/bsv-transfer/capabilities/show/1.0.0",
         contentType: "application/json",
         body: {}
       });

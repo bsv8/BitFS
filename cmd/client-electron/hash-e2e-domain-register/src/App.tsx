@@ -135,7 +135,7 @@ export default function App() {
     try {
       const capabilityResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "node.v1.capabilities_show",
+        protocol_id: "/bsv-transfer/capabilities/show/1.0.0",
         contentType: protoContentType
       });
       const capabilityBody = readCapabilitiesShowBody(capabilityResp);
@@ -147,7 +147,7 @@ export default function App() {
 
       const pricingResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "domain.v1.pricing",
+        protocol_id: "/bsv-transfer/domain/pricing/1.0.0",
         contentType: protoContentType
       });
       const pricing = readDomainPricingBody(pricingResp);
@@ -155,7 +155,7 @@ export default function App() {
 
       const queryResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "domain.v1.query",
+        protocol_id: "/bsv-transfer/domain/query_name_paid/1.0.0",
         contentType: protoContentType,
         body: encodeProtoNameRouteReq(normalizedName)
       });
@@ -167,7 +167,7 @@ export default function App() {
 
       const lockResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "domain.v1.lock",
+        protocol_id: "/bsv-transfer/domain/register_lock_paid/1.0.0",
         contentType: protoContentType,
         body: encodeProtoNameTargetRouteReq(normalizedName, normalizedTarget)
       });
@@ -188,7 +188,7 @@ export default function App() {
 
       const submitResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "domain.v1.register_submit",
+        protocol_id: "/bsv-transfer/domain/register_submit_paid/1.0.0",
         contentType: protoContentType,
         body: encodeProtoRegisterSubmitReq(String(sign.signed_tx_hex || ""))
       });
@@ -200,7 +200,7 @@ export default function App() {
 
       const listOwnedResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "domain.v1.list_owned",
+        protocol_id: "/bsv-transfer/domain/list_owned/1.0.0",
         contentType: protoContentType,
         body: encodeProtoListOwnedReq(walletPubkeyHex)
       });
@@ -213,7 +213,7 @@ export default function App() {
 
       const resolveResp = await bridge.peer.call({
         to: normalizedResolver,
-        route: "domain.v1.resolve",
+        protocol_id: "/bsv-transfer/domain/resolve_name_paid/1.0.0",
         contentType: protoContentType,
         body: encodeProtoNameRouteReq(normalizedName)
       });

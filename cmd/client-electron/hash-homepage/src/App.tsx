@@ -256,7 +256,7 @@ export default function App() {
     try {
       const capabilityResp = await bridge.peer.call({
         to: resolverPubkeyHex,
-        route: "node.v1.capabilities_show",
+        protocol_id: "/bsv-transfer/capabilities/show/1.0.0",
         contentType: "application/json",
         body: {}
       });
@@ -268,7 +268,7 @@ export default function App() {
 
       const listResp = await bridge.peer.call({
         to: resolverPubkeyHex,
-        route: "domain.v1.list_owned",
+        protocol_id: "/bsv-transfer/domain/list_owned/1.0.0",
         contentType: "application/json",
         body: { limit: 24 }
       });
@@ -307,7 +307,7 @@ export default function App() {
     try {
       const pricingResp = await bridge.peer.call({
         to: resolverPubkeyHex,
-        route: "domain.v1.pricing",
+        protocol_id: "/bsv-transfer/domain/pricing/1.0.0",
         contentType: "application/json",
         body: {}
       });
@@ -354,7 +354,7 @@ export default function App() {
     try {
       const queryResp = await bridge.peer.call({
         to: resolverPubkeyHex,
-        route: "domain.v1.query",
+        protocol_id: "/bsv-transfer/domain/query_name_paid/1.0.0",
         contentType: "application/json",
         body: { name: normalizedName }
       });
@@ -405,7 +405,7 @@ export default function App() {
     try {
       const lockResp = await bridge.peer.call({
         to: resolverPubkeyHex,
-        route: "domain.v1.lock",
+        protocol_id: "/bsv-transfer/domain/register_lock_paid/1.0.0",
         contentType: "application/json",
         body: {
           name: normalizedName,
@@ -488,7 +488,7 @@ export default function App() {
     try {
       const submitResp = await bridge.peer.call({
         to: resolverPubkeyHex,
-        route: "domain.v1.register_submit",
+        protocol_id: "/bsv-transfer/domain/register_submit_paid/1.0.0",
         contentType: "application/json",
         body: {
           register_tx_hex: signedTxHex
@@ -658,8 +658,8 @@ export default function App() {
               <strong>我名下的域名</strong>
             </div>
             <p className="history-intro">
-              输入 domain 节点公钥后，页面会通过 `node.v1.capabilities_show` 与 `domain.v1.list_owned`
-              查询当前钱包身份名下的有效域名，并可直接跳到该 domain 的 `index` 首页。
+              输入 domain 节点公钥后，页面会通过 capabilities_show 与 list_owned
+              查询当前钱包身份名下的有效域名，并可直接跳到该 domain 的首页。
             </p>
             <form className="search-panel domain-search-panel" onSubmit={handleSearchOwnedDomains}>
               <label className="sr-only" htmlFor="domain-resolver-input">输入 domain 节点公钥</label>
@@ -703,7 +703,7 @@ export default function App() {
               </div>
               <p className="history-intro">
                 现在这块会先走 pricing、query、lock，然后把 domain 返回的签名业务原文交给钱包解释并弹框确认。
-                钱包只返回已签名交易，不替页面广播；最后仍然由页面通过 `peer.call` 提交给 `domain.v1.register_submit`。
+                钱包只返回已签名交易，不替页面广播；最后仍然由页面通过 peer.call 提交给 register_submit。
               </p>
               <div className="domain-pricing-bar">
                 <button type="button" className="ghost-button domain-pricing-button" onClick={() => void handleLoadDomainPricing()} disabled={domainPricingBusy}>
