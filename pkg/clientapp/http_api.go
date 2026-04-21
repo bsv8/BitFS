@@ -190,6 +190,7 @@ type httpAPIServer struct {
 	jobsMu    sync.RWMutex
 	getJobs   map[string]*fileGetJob
 	rpcTrace  pproto.TraceSink
+	getFileByHashHandler *getfilebyhashHTTPHandler
 }
 
 // 说明：
@@ -224,7 +225,7 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 	if cfgSource == nil && rt != nil {
 		cfgSource = rt
 	}
-	return &httpAPIServer{
+	s := &httpAPIServer{
 		ctx: func() context.Context {
 			if rt != nil {
 				return rt.ctx
@@ -248,6 +249,11 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		getJobs:   map[string]*fileGetJob{},
 		rpcTrace:  trace,
 	}
+	if store != nil {
+		caps := newGetFileByHashModuleCaps(store)
+		s.getFileByHashHandler = caps.HTTPHandler()
+	}
+	return s
 }
 
 func (s *httpAPIServer) runtimeConfigSnapshot() Config {
@@ -277,6 +283,7 @@ func (s *httpAPIServer) buildMux() (*http.ServeMux, error) {
 		s.registerHTTPRouteArbiter(mux, prefix)
 		s.registerHTTPRouteAdmin(mux, prefix)
 		s.registerHTTPRouteSettings(mux, prefix)
+		s.registerHTTPRouteGetFileByHash(mux, prefix)
 	}
 	registerAPI("/api")
 	registerAPI("")

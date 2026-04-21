@@ -29,6 +29,17 @@ func (s *httpAPIServer) registerHTTPRouteFile(mux *http.ServeMux, prefix string)
 	mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
 }
 
+func (s *httpAPIServer) registerHTTPRouteGetFileByHash(mux *http.ServeMux, prefix string) {
+	if s.getFileByHashHandler == nil {
+		return
+	}
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash", s.withAuth(s.getFileByHashHandler.handleStart))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/status", s.withAuth(s.getFileByHashHandler.handleStatus))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/chunks", s.withAuth(s.getFileByHashHandler.handleChunks))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/nodes", s.withAuth(s.getFileByHashHandler.handleNodes))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/quotes", s.withAuth(s.getFileByHashHandler.handleQuotes))
+}
+
 func (s *httpAPIServer) registerHTTPRouteNode(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/v1/libp2p/call", s.withAuth(s.handleCall))
 	mux.HandleFunc(prefix+"/v1/resolvers/resolve", s.withAuth(s.handleResolverResolve))
