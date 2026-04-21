@@ -33,9 +33,9 @@ type walletScriptEvidenceSource interface {
 }
 
 type runtimeWalletScriptEvidenceSource struct {
-	rt *Runtime
+	rt transferRuntimeCaps
 }
 
-func newRuntimeWalletScriptEvidenceSource(rt *Runtime) runtimeWalletScriptEvidenceSource {
+func newRuntimeWalletScriptEvidenceSource(rt transferRuntimeCaps) runtimeWalletScriptEvidenceSource {
 	return runtimeWalletScriptEvidenceSource{rt: rt}
 }

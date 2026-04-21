@@ -23,6 +23,7 @@ import (
 	kmlibs "github.com/bsv8/MultisigPool/pkg/libs"
 	te "github.com/bsv8/MultisigPool/pkg/triple_endpoint"
 	crypto "github.com/libp2p/go-libp2p/core/crypto"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
@@ -715,8 +716,8 @@ type directTransferPoolCloseResult struct {
 // - FrontOrderID 是正式下载主流程的必填字段，用于关联 front_order -> business -> settlement 主线
 // - 缺失 FrontOrderID 表示调用方试图绕过新主线，直接拒绝
 // - 如需临时调试老路径，应使用专门的 debug 包装函数，不能共用此正式入口
-func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
-	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
+func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer transferRuntimeCaps, p directTransferPoolOpenParams) (directTransferPoolOpenResult, error) {
+	if buyer == nil || buyer.TransferHost() == nil || buyer.TransferActionChain() == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("runtime not initialized")
 	}
 
@@ -831,7 +832,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	if err != nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("invalid arbiter pubkey hex: %w", err)
 	}
-	arbiterPub := buyer.Host.Peerstore().PubKey(arbiterPID)
+	arbiterPub := buyer.TransferHost().Peerstore().PubKey(arbiterPID)
 	if arbiterPub == nil {
 		return directTransferPoolOpenResult{}, fmt.Errorf("missing arbiter pubkey in peerstore")
 	}
@@ -971,7 +972,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 			"attempt":    attempt,
 		})
 		var openResp directTransferPoolOpenResp
-		if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolOpen, clientSec(buyer.rpcTrace), req, &openResp); err != nil {
+		if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferPoolOpen, clientSec(buyer.TransferRPCTrace()), req, &openResp); err != nil {
 			obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_open_failed", map[string]any{"error": err.Error()})
 			return directTransferPoolOpenResult{}, err
 		}
@@ -983,7 +984,7 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 		if err != nil {
 			return directTransferPoolOpenResult{}, err
 		}
-		baseTxID, err := buyer.ActionChain.Broadcast(baseResp.Tx.Hex())
+		baseTxID, err := buyer.TransferActionChain().Broadcast(baseResp.Tx.Hex())
 		if err != nil {
 			if isRetryableTransferPoolBaseTxBroadcastErr(err) && attempt < maxOpenAttempt {
 				lastErr = err
@@ -1071,8 +1072,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer *
 	return directTransferPoolOpenResult{}, fmt.Errorf("broadcast transfer pool base tx failed after retries: %w", lastErr)
 }
 
-func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt *Runtime, flowID string, actor *poolcore.Actor, selected []poolcore.UTXO, target uint64, feeRateSatPerKB float64) ([]poolcore.UTXO, string, error) {
-	if rt == nil || rt.ActionChain == nil {
+func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt transferRuntimeCaps, flowID string, actor *poolcore.Actor, selected []poolcore.UTXO, target uint64, feeRateSatPerKB float64) ([]poolcore.UTXO, string, error) {
+	if rt == nil || rt.TransferActionChain() == nil {
 		return nil, "", fmt.Errorf("runtime chain not initialized")
 	}
 	if actor == nil {
@@ -1141,7 +1142,7 @@ func splitUTXOsToTarget(ctx context.Context, store *clientDB, rt *Runtime, flowI
 	}
 
 	localTxID := strings.ToLower(strings.TrimSpace(splitTx.TxID().String()))
-	broadcastTxID, err := rt.ActionChain.Broadcast(splitTx.Hex())
+	broadcastTxID, err := rt.TransferActionChain().Broadcast(splitTx.Hex())
 	if err != nil {
 		return nil, "", fmt.Errorf("broadcast split tx failed: %w", err)
 	}
@@ -1195,8 +1196,8 @@ func sumUTXOValue(utxos []poolcore.UTXO) uint64 {
 	return sum
 }
 
-func triggerDirectTransferChunkGet(ctx context.Context, _ *clientDB, buyer *Runtime, p directTransferChunkGetParams) (directTransferChunkGetResult, error) {
-	if buyer == nil || buyer.Host == nil {
+func triggerDirectTransferChunkGet(ctx context.Context, _ *clientDB, buyer transferRuntimeCaps, p directTransferChunkGetParams) (directTransferChunkGetResult, error) {
+	if buyer == nil || buyer.TransferHost() == nil {
 		return directTransferChunkGetResult{}, fmt.Errorf("runtime not initialized")
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
@@ -1217,7 +1218,7 @@ func triggerDirectTransferChunkGet(ctx context.Context, _ *clientDB, buyer *Runt
 		Sequence:   p.Sequence,
 	}
 	var resp directTransferChunkGetResp
-	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferChunkGet, clientSec(buyer.rpcTrace), req, &resp); err != nil {
+	if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferChunkGet, clientSec(buyer.TransferRPCTrace()), req, &resp); err != nil {
 		return directTransferChunkGetResult{}, err
 	}
 	if strings.TrimSpace(resp.Status) != "delivering" && strings.TrimSpace(resp.Status) != "active" {
@@ -1230,8 +1231,8 @@ func triggerDirectTransferChunkGet(ctx context.Context, _ *clientDB, buyer *Runt
 	return directTransferChunkGetResult{Chunk: chunk}, nil
 }
 
-func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolPayParams) (directTransferPoolPayResult, error) {
-	if buyer == nil || buyer.Host == nil {
+func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer transferRuntimeCaps, p directTransferPoolPayParams) (directTransferPoolPayResult, error) {
+	if buyer == nil || buyer.TransferHost() == nil {
 		return directTransferPoolPayResult{}, fmt.Errorf("runtime not initialized")
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
@@ -1309,7 +1310,7 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 		"chunk_index":   p.ChunkIndex,
 	})
 	var payResp directTransferPoolPayResp
-	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolPay, clientSec(buyer.rpcTrace), req, &payResp); err != nil {
+	if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferPoolPay, clientSec(buyer.TransferRPCTrace()), req, &payResp); err != nil {
 		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_pay_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolPayResult{}, err
 	}
@@ -1394,8 +1395,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer *R
 	return directTransferPoolPayResult{Sequence: req.Sequence}, nil
 }
 
-func triggerDirectTransferArbitrate(ctx context.Context, _ *clientDB, buyer *Runtime, p directTransferArbitrateParams) (directTransferArbitrateResult, error) {
-	if buyer == nil || buyer.Host == nil {
+func triggerDirectTransferArbitrate(ctx context.Context, _ *clientDB, buyer transferRuntimeCaps, p directTransferArbitrateParams) (directTransferArbitrateResult, error) {
+	if buyer == nil || buyer.TransferHost() == nil {
 		return directTransferArbitrateResult{}, fmt.Errorf("runtime not initialized")
 	}
 	lock := buyer.transferPoolSessionMutex(p.SessionID)
@@ -1432,7 +1433,7 @@ func triggerDirectTransferArbitrate(ctx context.Context, _ *clientDB, buyer *Run
 		EvidencePayload:  append([]byte(nil), p.EvidenceJSON...),
 	}
 	var resp directTransferArbitrateResp
-	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferArbitrate, clientSec(buyer.rpcTrace), req, &resp); err != nil {
+	if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferArbitrate, clientSec(buyer.TransferRPCTrace()), req, &resp); err != nil {
 		return directTransferArbitrateResult{}, err
 	}
 	if strings.TrimSpace(resp.Status) == "" || strings.TrimSpace(resp.Status) == "rejected" {
@@ -1445,8 +1446,8 @@ func triggerDirectTransferArbitrate(ctx context.Context, _ *clientDB, buyer *Run
 	}, nil
 }
 
-func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer *Runtime, p directTransferPoolCloseParams) (directTransferPoolCloseResult, error) {
-	if buyer == nil || buyer.Host == nil || buyer.ActionChain == nil {
+func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer transferRuntimeCaps, p directTransferPoolCloseParams) (directTransferPoolCloseResult, error) {
+	if buyer == nil || buyer.TransferHost() == nil || buyer.TransferActionChain() == nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("runtime not initialized")
 	}
 	lock := buyer.transferPoolSessionMutex(p.SessionID)
@@ -1512,7 +1513,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		"sequence":   req.Sequence,
 	})
 	var closeResp directTransferPoolCloseResp
-	if err := pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoTransferPoolClose, clientSec(buyer.rpcTrace), req, &closeResp); err != nil {
+	if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferPoolClose, clientSec(buyer.TransferRPCTrace()), req, &closeResp); err != nil {
 		obs.Error(ServiceName, "evt_trigger_direct_transfer_pool_close_failed", map[string]any{"error": err.Error()})
 		return directTransferPoolCloseResult{}, err
 	}
@@ -1524,7 +1525,7 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 	if err != nil {
 		return directTransferPoolCloseResult{}, err
 	}
-	finalTxID, err := buyer.ActionChain.Broadcast(merged.Hex())
+	finalTxID, err := buyer.TransferActionChain().Broadcast(merged.Hex())
 	if err != nil {
 		return directTransferPoolCloseResult{}, fmt.Errorf("broadcast transfer pool final tx failed: %w", err)
 	}
@@ -1589,7 +1590,10 @@ func isRetryableTransferPoolBaseTxBroadcastErr(err error) bool {
 		strings.Contains(msg, "bad-txns-inputs-spent")
 }
 
-func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
+func emitDirectTransferEvent(rt interface {
+	ClientID() string
+	TransferHost() host.Host
+}, name string, fields map[string]any) {
 	if fields == nil {
 		fields = map[string]any{}
 	}
@@ -1600,9 +1604,9 @@ func emitDirectTransferEvent(rt *Runtime, name string, fields map[string]any) {
 				fields["client_pubkey_hex"] = clientID
 			}
 		}
-		if rt.Host != nil {
+		if rt.TransferHost() != nil {
 			if _, ok := fields["client_transport_peer_id"]; !ok {
-				fields["client_transport_peer_id"] = rt.Host.ID().String()
+				fields["client_transport_peer_id"] = rt.TransferHost().ID().String()
 			}
 		}
 	}
@@ -1768,8 +1772,8 @@ type DirectDealAcceptParams struct {
 	ArbiterPubHex string `json:"arbiter_pubkey_hex,omitempty"`
 }
 
-func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p DirectDealAcceptParams) (directDealAcceptResp, error) {
-	if buyer == nil || buyer.Host == nil {
+func TriggerClientAcceptDirectDeal(ctx context.Context, buyer transferRuntimeCaps, p DirectDealAcceptParams) (directDealAcceptResp, error) {
+	if buyer == nil || buyer.TransferHost() == nil {
 		return directDealAcceptResp{}, fmt.Errorf("runtime not initialized")
 	}
 	sellerPID, err := peerIDFromClientID(strings.TrimSpace(p.SellerPubHex))
@@ -1777,7 +1781,7 @@ func TriggerClientAcceptDirectDeal(ctx context.Context, buyer *Runtime, p Direct
 		return directDealAcceptResp{}, err
 	}
 	var resp directDealAcceptResp
-	err = pproto.CallProto(ctx, buyer.Host, sellerPID, ProtoDirectDealAccept, clientSec(buyer.rpcTrace), directDealAcceptReq{
+	err = pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoDirectDealAccept, clientSec(buyer.TransferRPCTrace()), directDealAcceptReq{
 		DemandId:         strings.TrimSpace(p.DemandID),
 		BuyerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
 		SeedHash:         strings.ToLower(strings.TrimSpace(p.SeedHash)),

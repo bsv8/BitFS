@@ -13,6 +13,7 @@ import (
 // - 只做能力转接，不写业务流程；
 // - 运行入口禁止使用 NewMemoryJobStoreForTest。
 type DownloadFileCaps struct {
+	transferEnv     transferRuntimeCaps
 	store           *clientDB
 	jobStore        filedownload.JobStore
 	seedStore       filedownload.SeedStore
@@ -23,11 +24,12 @@ type DownloadFileCaps struct {
 	transferRunner  filedownload.TransferRunner
 }
 
-func newDownloadFileCaps(store *clientDB, demandEnv gatewayDemandPublishChainTxEnv) *DownloadFileCaps {
+func newDownloadFileCaps(transferEnv transferRuntimeCaps, store *clientDB, demandEnv gatewayDemandPublishChainTxEnv) *DownloadFileCaps {
 	if store == nil {
 		return nil
 	}
 	return &DownloadFileCaps{
+		transferEnv:     transferEnv,
 		store:           store,
 		jobStore:        newDownloadFileJobStoreAdapter(store),
 		seedStore:       newDownloadFileSeedAdapter(store),
@@ -35,7 +37,7 @@ func newDownloadFileCaps(store *clientDB, demandEnv gatewayDemandPublishChainTxE
 		demandPublisher: newDownloadFileDemandAdapter(store, demandEnv),
 		quoteReader:     newDownloadFileQuoteAdapter(store),
 		policy:          newDownloadFilePolicyAdapter(),
-		transferRunner:  newDownloadFileTransferAdapter(),
+		transferRunner:  newDownloadFileTransferAdapter(transferEnv, store),
 	}
 }
 

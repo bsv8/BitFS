@@ -37,10 +37,14 @@ func (a *downloadFileSeedAdapter) LoadSeedMeta(ctx context.Context, seedHash str
 	if !found {
 		return filedownload.SeedMeta{}, false, nil
 	}
+	if seed.ChunkCount == 0 || len(seed.ChunkHashes) != int(seed.ChunkCount) {
+		return filedownload.SeedMeta{}, false, filedownload.NewError(filedownload.CodeModuleDisabled, "seed meta is not available")
+	}
 	return filedownload.SeedMeta{
-		SeedHash:   seed.SeedHash,
-		ChunkCount: seed.ChunkCount,
-		FileSize:   seed.FileSize,
+		SeedHash:    seed.SeedHash,
+		ChunkHashes: append([]string(nil), seed.ChunkHashes...),
+		ChunkCount:  seed.ChunkCount,
+		FileSize:    seed.FileSize,
 	}, true, nil
 }
 

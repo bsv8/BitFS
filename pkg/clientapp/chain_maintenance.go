@@ -748,7 +748,7 @@ func (m *chainMaintainer) executeUTXOTask(ctx context.Context, task chainTask) (
 	}, nil
 }
 
-func clientWalletAddress(rt *Runtime) (string, error) {
+func clientWalletAddress(rt walletIdentityCaps) (string, error) {
 	if rt == nil {
 		return "", fmt.Errorf("runtime not initialized")
 	}

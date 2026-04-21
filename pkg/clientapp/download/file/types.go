@@ -88,6 +88,7 @@ type ChunkReport struct {
 	ChunkPriceSat uint64 `json:"chunk_price_sat"`
 	SpeedBps      uint64 `json:"speed_bps,omitempty"`
 	Selected      bool   `json:"selected"`
+	Error         string `json:"error,omitempty"`
 	RejectReason  string `json:"reject_reason,omitempty"`
 }
 

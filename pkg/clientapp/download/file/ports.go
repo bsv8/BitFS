@@ -59,6 +59,7 @@ type TransferRunner interface {
 type ChunkTransferRequest struct {
 	DemandID      string
 	SeedHash      string
+	ChunkHash     string
 	SellerPubkey  string
 	ChunkIndex    uint32
 	ChunkPriceSat uint64

@@ -40,11 +40,11 @@ type walletBSV20WOCUnspentResp struct {
 // 设计说明：
 // - 复用 BSV21 查询的结构和模式，但查询不同的 WOC 端点
 // - 用于资产确认流程判断 1-sat UTXO 是否为 BSV20 token
-func queryWalletBSV20WOCUnspent(ctx context.Context, rt *Runtime, address string) ([]walletBSV20WOCCandidate, error) {
-	if rt == nil || rt.WalletChain == nil {
+func queryWalletBSV20WOCUnspent(ctx context.Context, rt transferRuntimeCaps, address string) ([]walletBSV20WOCCandidate, error) {
+	if rt == nil || rt.WalletChainClient() == nil {
 		return nil, fmt.Errorf("wallet chain not initialized")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(rt.WalletChain.BaseURL()), "/")
+	baseURL := strings.TrimRight(strings.TrimSpace(rt.WalletChainClient().BaseURL()), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("wallet chain base url is empty")
 	}

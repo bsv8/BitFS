@@ -219,6 +219,7 @@ type sellerSeed struct {
 	SeedHash            string
 	FileSize            uint64
 	ChunkCount          uint32
+	ChunkHashes         []string
 	SeedPrice           uint64
 	ChunkPrice          uint64
 	RecommendedFileName string
@@ -417,6 +418,34 @@ func (r *Runtime) ClientID() string {
 		return ""
 	}
 	return strings.TrimSpace(identity.ClientID)
+}
+
+func (r *Runtime) TransferHost() host.Host {
+	if r == nil {
+		return nil
+	}
+	return r.Host
+}
+
+func (r *Runtime) TransferActionChain() poolcore.ChainClient {
+	if r == nil {
+		return nil
+	}
+	return r.ActionChain
+}
+
+func (r *Runtime) WalletChainClient() walletChainClient {
+	if r == nil {
+		return nil
+	}
+	return r.WalletChain
+}
+
+func (r *Runtime) TransferRPCTrace() pproto.TraceSink {
+	if r == nil {
+		return nil
+	}
+	return r.rpcTrace
 }
 
 // runtimeIdentity 返回运行时只读身份能力。

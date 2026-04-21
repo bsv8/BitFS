@@ -14,6 +14,8 @@ const (
 	CodeQuoteUnavailable = "QUOTE_UNAVAILABLE"
 	CodeQuoteTimeout     = "QUOTE_TIMEOUT"
 	CodeDownloadFailed   = "DOWNLOAD_FAILED"
+	CodeTransferFailed   = "TRANSFER_FAILED"
+	CodeChunkStoreFailed = "CHUNK_STORE_FAILED"
 	CodeModuleDisabled   = "MODULE_DISABLED"
 )
 
@@ -62,7 +64,7 @@ func MessageOf(err error) string {
 // IsRetryable 判断错误是否可重试
 func IsRetryable(err error) bool {
 	switch CodeOf(err) {
-	case CodeQuoteUnavailable, CodeQuoteTimeout, CodeDownloadFailed:
+	case CodeQuoteUnavailable, CodeQuoteTimeout, CodeDownloadFailed, CodeTransferFailed, CodeChunkStoreFailed:
 		return true
 	default:
 		return false

@@ -33,8 +33,8 @@ func NewWalletChainClientWithBaseURL(route chainbridge.Route, baseURL string, au
 }
 
 func (s runtimeWalletScriptEvidenceSource) GetTxHex(ctx context.Context, txid string) (string, error) {
-	if s.rt == nil || s.rt.WalletChain == nil {
+	if s.rt == nil || s.rt.WalletChainClient() == nil {
 		return "", fmt.Errorf("wallet chain not initialized")
 	}
-	return s.rt.WalletChain.GetTxHex(ctx, txid)
+	return s.rt.WalletChainClient().GetTxHex(ctx, txid)
 }

@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -27,6 +29,7 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		var out result
 		var unitPrice uint64
 		var policyFound bool
+		var seedFilePath string
 		if err := QueryRowContext(ctx, db,
 			`SELECT floor_unit_price_sat_per_64k
 			   FROM biz_seed_pricing_policy
@@ -40,11 +43,11 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 
 		var seed sellerSeed
 		if err := QueryRowContext(ctx, db,
-			`SELECT seed_hash,chunk_count,file_size,recommended_file_name,mime_hint
+			`SELECT seed_hash,chunk_count,file_size,seed_file_path,recommended_file_name,mime_hint
 			   FROM biz_seeds
 			  WHERE seed_hash=?`,
 			seedHash,
-		).Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {
+		).Scan(&seed.SeedHash, &seed.ChunkCount, &seed.FileSize, &seedFilePath, &seed.RecommendedFileName, &seed.MIMEHint); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return result{}, nil
 			}
@@ -58,6 +61,15 @@ func dbLoadSellerSeedSnapshot(ctx context.Context, store *clientDB, seedHash str
 		if !policyFound {
 			seed.ChunkPrice = 0
 			seed.SeedPrice = 0
+		}
+		seedFilePath = strings.TrimSpace(seedFilePath)
+		if seedFilePath == "" {
+			return result{}, fmt.Errorf("seed file path is required")
+		}
+		if seedBytes, err := os.ReadFile(filepath.Clean(seedFilePath)); err == nil {
+			if meta, err := parseSeedV1(seedBytes); err == nil && meta.ChunkCount == seed.ChunkCount {
+				seed.ChunkHashes = append([]string(nil), meta.ChunkHashes...)
+			}
 		}
 		out.seed = seed
 		out.ok = true

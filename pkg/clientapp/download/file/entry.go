@@ -158,6 +158,10 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 			quote.RejectReason = ""
 		}
 		if err := caps.Jobs.AppendQuote(ctx, job.JobID, quote); err != nil {
+			failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+			if failErr != nil {
+				return result, failErr
+			}
 			return result, err
 		}
 	}
@@ -184,33 +188,259 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 		return result, nil
 	}
 
+	if caps.Seeds == nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "seed store is not available"))
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, NewError(CodeModuleDisabled, "seed store is not available")
+	}
+	seedMeta, foundMeta, err := caps.Seeds.LoadSeedMeta(ctx, seedHash)
+	if err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, err
+	}
+	if !foundMeta {
+		cause := NewError(CodeModuleDisabled, "seed meta is not available")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
+	}
+	if seedMeta.ChunkCount == 0 {
+		cause := NewError(CodeBadRequest, "seed chunk count is required")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
+	}
+	if req.ChunkCount > 0 && req.ChunkCount != seedMeta.ChunkCount {
+		cause := NewError(CodeBadRequest, "chunk count does not match seed metadata")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
+	}
+	if len(seedMeta.ChunkHashes) != int(seedMeta.ChunkCount) {
+		cause := NewError(CodeBadRequest, "chunk hashes do not match chunk count")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
+	}
+	if selectedQuote.FileSizeBytes > 0 && selectedQuote.FileSizeBytes != seedMeta.FileSize {
+		cause := NewError(CodeBadRequest, "quote file size does not match seed metadata")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
+	}
+	for _, chunkHash := range seedMeta.ChunkHashes {
+		if strings.TrimSpace(chunkHash) == "" {
+			cause := NewError(CodeBadRequest, "chunk hash is required")
+			failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, cause
+		}
+	}
+
+	if caps.Transfers == nil {
+		cause := NewError(CodeModuleDisabled, "transfer runner is not available")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
+	}
 	if caps.Files == nil {
-		return result, NewError(CodeModuleDisabled, "file store is not available")
+		cause := NewError(CodeModuleDisabled, "file store is not available")
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, cause)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, cause
 	}
 	partFile, err := caps.Files.PreparePartFile(ctx, PreparePartFileInput{
 		SeedHash: seedHash,
-		FileSize: selectedQuote.FileSizeBytes,
+		FileSize: seedMeta.FileSize,
 	})
 	if err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
 		return result, err
 	}
 	if err := caps.Jobs.SetPartFilePath(ctx, job.JobID, partFile.PartFilePath); err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
 		return result, err
 	}
 	if err := caps.Jobs.UpdateJobState(ctx, job.JobID, StateRunning); err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
 		return result, err
 	}
 	if err := caps.Jobs.SetError(ctx, job.JobID, ""); err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
 		return result, err
 	}
 
+	var completed uint32
+	var paidTotal uint64
+	for chunkIndex, chunkHash := range seedMeta.ChunkHashes {
+		transferRes, transferErr := caps.Transfers.RunChunkTransfer(ctx, ChunkTransferRequest{
+			DemandID:      demandRes.DemandID,
+			SeedHash:      seedHash,
+			ChunkHash:     chunkHash,
+			SellerPubkey:  selectedQuote.SellerPubkey,
+			ChunkIndex:    uint32(chunkIndex),
+			ChunkPriceSat: selectedQuote.ChunkPriceSat,
+			MaxRetries:    0,
+		})
+		if transferErr != nil {
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, uint32(chunkIndex), selectedQuote.SellerPubkey, 0, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		if len(transferRes.Data) == 0 {
+			transferErr = NewError(CodeTransferFailed, "chunk bytes are empty")
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, uint32(chunkIndex), selectedQuote.SellerPubkey, transferRes.PaidSat, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		if err := caps.Files.MarkChunkStored(ctx, StoredChunkInput{
+			SeedHash:   seedHash,
+			ChunkIndex: uint32(chunkIndex),
+			ChunkBytes: transferRes.Data,
+		}); err != nil {
+			transferErr = NewError(CodeChunkStoreFailed, err.Error())
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, uint32(chunkIndex), selectedQuote.SellerPubkey, transferRes.PaidSat, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		report := ChunkReport{
+			ChunkIndex:    uint32(chunkIndex),
+			State:         ChunkStateStored,
+			SellerPubkey:  selectedQuote.SellerPubkey,
+			ChunkPriceSat: transferRes.PaidSat,
+			SpeedBps:      transferRes.SpeedBps,
+			Selected:      true,
+		}
+		if err := caps.Jobs.AppendChunkReport(ctx, job.JobID, report); err != nil {
+			transferErr = NewError(CodeChunkStoreFailed, err.Error())
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, uint32(chunkIndex), selectedQuote.SellerPubkey, transferRes.PaidSat, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		completed++
+		paidTotal += transferRes.PaidSat
+	}
+
+	if err := caps.Jobs.SetError(ctx, job.JobID, ""); err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, err
+	}
+	if err := caps.Jobs.UpdateJobState(ctx, job.JobID, StateRunning); err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, err
+	}
 	if refreshed, ok := caps.Jobs.GetJob(ctx, job.JobID); ok {
+		refreshed.State = StateRunning
+		refreshed.PartFilePath = partFile.PartFilePath
+		refreshed.CompletedChunks = completed
+		refreshed.PaidTotalSat = paidTotal
 		return resultFromJob(refreshed), nil
 	}
 	job.State = StateRunning
 	job.PartFilePath = partFile.PartFilePath
 	job.Error = ""
+	job.CompletedChunks = completed
+	job.PaidTotalSat = paidTotal
 	return resultFromJob(job), nil
+}
+
+func markDownloadJobFailed(ctx context.Context, jobs JobStore, jobID string, cause error) error {
+	if jobs == nil {
+		return cause
+	}
+	if cause == nil {
+		cause = NewError(CodeDownloadFailed, "download failed")
+	}
+	var firstErr error
+	if err := jobs.SetError(ctx, jobID, MessageOf(cause)); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := jobs.UpdateJobState(ctx, jobID, StateFailed); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return cause
+}
+
+func markDownloadChunkFailed(ctx context.Context, jobs JobStore, jobID string, chunkIndex uint32, sellerPubkey string, paidSat uint64, cause error) error {
+	if jobs == nil {
+		return cause
+	}
+	if cause == nil {
+		cause = NewError(CodeDownloadFailed, "chunk transfer failed")
+	}
+	report := ChunkReport{
+		ChunkIndex:    chunkIndex,
+		State:         ChunkStateFailed,
+		SellerPubkey:  sellerPubkey,
+		ChunkPriceSat: paidSat,
+		Selected:      false,
+		Error:         MessageOf(cause),
+		RejectReason:  MessageOf(cause),
+	}
+	var firstErr error
+	if err := jobs.SetError(ctx, jobID, MessageOf(cause)); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := jobs.UpdateJobState(ctx, jobID, StateFailed); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := jobs.AppendChunkReport(ctx, jobID, report); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	return cause
 }
 
 // GetStatus 查询 job 状态（只读查询，不触发业务）

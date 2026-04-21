@@ -254,7 +254,7 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		if rt != nil {
 			demandEnv = rt
 		}
-		caps := newDownloadFileCaps(store, demandEnv)
+		caps := newDownloadFileCaps(rt, store, demandEnv)
 		s.downloadFileHandler = caps.HTTPHandler()
 	}
 	return s

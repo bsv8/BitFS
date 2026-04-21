@@ -73,11 +73,11 @@ func (q walletWOCQuantityText) String() string {
 	return strings.TrimSpace(string(q))
 }
 
-func queryWalletBSV21WOCUnspent(ctx context.Context, rt *Runtime, address string) ([]walletBSV21WOCCandidate, error) {
-	if rt == nil || rt.WalletChain == nil {
+func queryWalletBSV21WOCUnspent(ctx context.Context, rt transferRuntimeCaps, address string) ([]walletBSV21WOCCandidate, error) {
+	if rt == nil || rt.WalletChainClient() == nil {
 		return nil, fmt.Errorf("wallet chain not initialized")
 	}
-	baseURL := strings.TrimRight(strings.TrimSpace(rt.WalletChain.BaseURL()), "/")
+	baseURL := strings.TrimRight(strings.TrimSpace(rt.WalletChainClient().BaseURL()), "/")
 	if baseURL == "" {
 		return nil, fmt.Errorf("wallet chain base url is empty")
 	}

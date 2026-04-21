@@ -301,6 +301,7 @@ func (s *downloadFileJobStoreAdapter) AppendChunkReport(ctx context.Context, job
 		}
 
 		seedHash := entJob.SeedHash
+		countChunk := report.State == filedownload.ChunkStateStored
 
 		existingChunk, err := tx.ProcGetFileByHashChunks.Query().
 			Where(
@@ -312,6 +313,7 @@ func (s *downloadFileJobStoreAdapter) AppendChunkReport(ctx context.Context, job
 			return fmt.Errorf("check existing chunk: %w", err)
 		}
 
+		wasStored := existingChunk != nil && existingChunk.State == filedownload.ChunkStateStored
 		if existingChunk != nil {
 			_, err = tx.ProcGetFileByHashChunks.Update().
 				Where(procgetfilebyhashchunks.IDEQ(existingChunk.ID)).
@@ -325,6 +327,17 @@ func (s *downloadFileJobStoreAdapter) AppendChunkReport(ctx context.Context, job
 				Save(ctx)
 			if err != nil {
 				return fmt.Errorf("update chunk report failed: %w", err)
+			}
+			if countChunk && !wasStored {
+				_, err = tx.ProcGetFileByHashJobs.Update().
+					Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
+					SetCompletedChunks(entJob.CompletedChunks + 1).
+					SetPaidTotalSat(entJob.PaidTotalSat + int64(report.ChunkPriceSat)).
+					SetUpdatedAtUnix(now).
+					Save(ctx)
+				if err != nil {
+					return fmt.Errorf("update job progress failed: %w", err)
+				}
 			}
 			return nil
 		}
@@ -343,6 +356,17 @@ func (s *downloadFileJobStoreAdapter) AppendChunkReport(ctx context.Context, job
 			Save(ctx)
 		if err != nil {
 			return fmt.Errorf("append chunk report failed: %w", err)
+		}
+		if countChunk {
+			_, err = tx.ProcGetFileByHashJobs.Update().
+				Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
+				SetCompletedChunks(entJob.CompletedChunks + 1).
+				SetPaidTotalSat(entJob.PaidTotalSat + int64(report.ChunkPriceSat)).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+			if err != nil {
+				return fmt.Errorf("update job progress failed: %w", err)
+			}
 		}
 		return nil
 	})
@@ -499,6 +523,7 @@ func (s *downloadFileJobStoreAdapter) ListChunks(ctx context.Context, jobID stri
 				ChunkPriceSat: uint64(c.ChunkPriceSat),
 				SpeedBps:      uint64(c.SpeedBps),
 				Selected:      c.Selected,
+				Error:         c.RejectReason,
 				RejectReason:  c.RejectReason,
 			})
 		}

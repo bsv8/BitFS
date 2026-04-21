@@ -25,6 +25,10 @@ type walletFundingCandidate struct {
 	AllocationReason string
 }
 
+type walletIdentityCaps interface {
+	runtimeIdentity() (*clientIdentityCaps, error)
+}
+
 // listWalletFundingCandidates 走显式 store 读取钱包快照，返回候选输出与保护信息。
 // 设计说明：
 // - 这里保留“识别结果 + 金额”一起读出的方式，让后续分配器先看保护分类，再谈选币；
@@ -32,7 +36,7 @@ type walletFundingCandidate struct {
 
 // allocatePlainBSVWalletUTXOs 为普通 BSV 支出选择一组输入。
 // Step 6：改为从 fact 口径选源，不再扫 wallet_utxo
-func allocatePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt *Runtime, purpose string, target uint64) ([]poolcore.UTXO, error) {
+func allocatePlainBSVWalletUTXOs(ctx context.Context, store *clientDB, rt walletIdentityCaps, purpose string, target uint64) ([]poolcore.UTXO, error) {
 	_ = strings.TrimSpace(purpose)
 	if rt == nil {
 		return nil, fmt.Errorf("runtime not initialized")

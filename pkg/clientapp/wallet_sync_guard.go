@@ -24,7 +24,7 @@ func requireFreshTipState(ctx context.Context, store *clientDB) (chainTipState, 
 	return validateFreshTipState(s)
 }
 
-func requireHealthyUTXOSyncState(ctx context.Context, store *clientDB, rt *Runtime) (walletUTXOSyncState, error) {
+func requireHealthyUTXOSyncState(ctx context.Context, store *clientDB, rt walletIdentityCaps) (walletUTXOSyncState, error) {
 	if store == nil {
 		return walletUTXOSyncState{}, fmt.Errorf("store not initialized")
 	}

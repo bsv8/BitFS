@@ -234,12 +234,19 @@ func (s *MemoryJobStore) AppendChunkReport(ctx context.Context, jobID string, re
 		return NewError(CodeJobNotFound, "job not found: "+jobID)
 	}
 
+	_, hadChunk := job.chunkReports[report.ChunkIndex]
+	wasStored := hadChunk && job.chunkReports[report.ChunkIndex].State == ChunkStateStored
 	job.chunkReports[report.ChunkIndex] = report
 
-	if report.Selected {
+	if report.State == ChunkStateStored {
 		if !job.completedChunks[report.ChunkIndex] {
 			job.completedChunks[report.ChunkIndex] = true
 			job.CompletedChunks++
+			if report.ChunkPriceSat > 0 {
+				job.PaidTotalSat += report.ChunkPriceSat
+			}
+		} else if !wasStored && report.ChunkPriceSat > 0 {
+			job.PaidTotalSat += report.ChunkPriceSat
 		}
 	}
 

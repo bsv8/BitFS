@@ -62,7 +62,7 @@ type transferChunkResult struct {
 }
 
 type transferSellerWorker struct {
-	buyer         *Runtime
+	buyer         transferRuntimeCaps
 	store         *clientDB
 	frontOrderID  string // 本次下载发起唯一，显式参数
 	quote         DirectQuoteItem
