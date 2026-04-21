@@ -12,6 +12,7 @@ type speedPriceBootstrapParams struct {
 	Ctx             context.Context
 	Buyer           transferRuntimeCaps
 	Store           *clientDB
+	JobID           string
 	FrontOrderID    string // 本次下载发起唯一，显式传递
 	Quotes          []DirectQuoteItem
 	SeedHash        string
@@ -68,6 +69,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 		workers = append(workers, &transferSellerWorker{
 			buyer:           p.Buyer,
 			store:           p.Store,
+			jobID:           strings.TrimSpace(p.JobID),
 			frontOrderID:    p.FrontOrderID,
 			quote:           q,
 			arbiterPubHex:   arbiterPubHex,

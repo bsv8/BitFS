@@ -120,6 +120,7 @@ type ChunkTransferResult struct {
 
 // StrategyTransferRequest 多卖家策略传输请求。
 type StrategyTransferRequest struct {
+	JobID           string
 	FrontOrderID    string
 	DemandID        string
 	SeedHash        string

@@ -35,15 +35,19 @@ type OneShotDownloadResult struct {
 }
 
 // TriggerOneShotDirectDownload 触发“发布需求 -> 等待报价 -> 主流程下载”的一次性下载流程。
-func TriggerOneShotDirectDownload(ctx context.Context, rt *Runtime, p OneShotDownloadParams) (OneShotDownloadResult, error) {
+// 这里显式收 store，避免入口层偷偷回头取 rt.store。
+func TriggerOneShotDirectDownload(ctx context.Context, store *clientDB, rt *Runtime, p OneShotDownloadParams) (OneShotDownloadResult, error) {
 	if rt == nil {
 		return OneShotDownloadResult{}, fmt.Errorf("runtime not initialized")
+	}
+	if store == nil {
+		return OneShotDownloadResult{}, fmt.Errorf("client db is nil")
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" {
 		return OneShotDownloadResult{}, fmt.Errorf("seed_hash required")
 	}
-	caps := newDownloadFileCaps(rt, rt.store, rt, rt)
+	caps := newDownloadFileCaps(rt, store, rt, rt)
 	if caps == nil {
 		return OneShotDownloadResult{}, fmt.Errorf("download caps not available")
 	}

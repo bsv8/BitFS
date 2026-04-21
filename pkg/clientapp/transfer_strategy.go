@@ -23,6 +23,7 @@ const (
 // TransferChunksByStrategyParams 描述多卖家分块下载输入。
 // 说明：只放业务参数，不依赖 HTTP 管理接口。
 type TransferChunksByStrategyParams struct {
+	JobID           string                     `json:"job_id"`
 	FrontOrderID    string                     `json:"front_order_id"`
 	DemandID        string                     `json:"demand_id"`
 	SeedHash        string                     `json:"seed_hash"`
@@ -66,6 +67,7 @@ type transferChunkResult struct {
 type transferSellerWorker struct {
 	buyer         transferRuntimeCaps
 	store         *clientDB
+	jobID         string
 	frontOrderID  string // 本次下载发起唯一，显式参数
 	quote         DirectQuoteItem
 	arbiterPubHex string
@@ -211,6 +213,8 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 		return nil
 	}
 	logTransferStrategy("evt_transfer_strategy_open_session_begin", map[string]any{
+		"job_id":            strings.TrimSpace(w.jobID),
+		"front_order_id":    strings.TrimSpace(w.frontOrderID),
 		"seller_pubkey_hex": shortID(w.quote.SellerPubHex),
 		"demand_id":         strings.TrimSpace(w.quote.DemandID),
 		"seed_hash":         shortID(w.seedHash),
@@ -218,6 +222,7 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 		"seed_price":        w.quote.SeedPrice,
 	})
 	openRes, err := triggerDirectTransferPoolOpen(ctx, w.store, w.buyer, directTransferPoolOpenParams{
+		JobID:         w.jobID,
 		SellerPubHex:  w.quote.SellerPubHex,
 		ArbiterPubHex: w.arbiterPubHex,
 		FrontOrderID:  w.frontOrderID,
@@ -247,6 +252,8 @@ func (w *transferSellerWorker) ensureSession(ctx context.Context) error {
 	w.closed = false
 	w.closeTxID = ""
 	logTransferStrategy("evt_transfer_strategy_open_session_ok", map[string]any{
+		"job_id":            strings.TrimSpace(w.jobID),
+		"front_order_id":    strings.TrimSpace(w.frontOrderID),
 		"seller_pubkey_hex": shortID(w.quote.SellerPubHex),
 		"deal_id":           strings.TrimSpace(w.dealID),
 		"session_id":        strings.TrimSpace(w.sessionID),
@@ -581,6 +588,7 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		Ctx:           ctx,
 		Buyer:         buyer,
 		Store:         store,
+		JobID:         strings.TrimSpace(p.JobID),
 		FrontOrderID:  frontOrderID,
 		Quotes:        filtered,
 		SeedHash:      seedHash,

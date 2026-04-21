@@ -118,7 +118,10 @@ func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decis
 	if rt == nil || rt.Workspace == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("runtime not initialized")
 	}
-	caps := newDownloadFileCaps(rt, rt.store, rt, rt)
+	if store == nil {
+		return liveAutoBuyResult{}, fmt.Errorf("client db is nil")
+	}
+	caps := newDownloadFileCaps(rt, store, rt, rt)
 	if caps == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("download caps not available")
 	}

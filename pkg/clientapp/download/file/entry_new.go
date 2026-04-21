@@ -222,6 +222,7 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "transfer runner is not available"))
 	}
 	transferRes, err := caps.Transfers.RunTransferByStrategy(ctx, StrategyTransferRequest{
+		JobID:           job.JobID,
 		FrontOrderID:    frontOrderID,
 		DemandID:        demandRes.DemandID,
 		SeedHash:        seedHash,
@@ -397,6 +398,7 @@ func resumeRunningJobV2(ctx context.Context, caps DownloadCaps, job Job, req Sta
 		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeQuoteUnavailable, "selected quote is not available"))
 	}
 	transferRes, err := caps.Transfers.RunTransferByStrategy(ctx, StrategyTransferRequest{
+		JobID:           job.JobID,
 		FrontOrderID:    job.FrontOrderID,
 		DemandID:        job.DemandID,
 		SeedHash:        seedHash,

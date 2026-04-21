@@ -33,6 +33,7 @@ func (a *downloadFileTransferAdapter) RunTransferByStrategy(ctx context.Context,
 		return filedownload.StrategyTransferResult{}, filedownload.NewError(filedownload.CodeBadRequest, "front_order_id/demand_id/seed_hash are required")
 	}
 	res, err := TriggerTransferChunksByStrategy(ctx, a.store, a.env, TransferChunksByStrategyParams{
+		JobID:           strings.TrimSpace(req.JobID),
 		FrontOrderID:    frontOrderID,
 		DemandID:        demandID,
 		SeedHash:        seedHash,

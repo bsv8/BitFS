@@ -253,13 +253,13 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 	}
 }
 
-func (k *clientKernel) runDownloadByHashImpl(ctx context.Context, p downloadByHashParams, hooks downloadByHashHooks) (downloadByHashResult, error) {
+func (k *clientKernel) runDownloadByHashImpl(ctx context.Context, p downloadByHashParams) (downloadByHashResult, error) {
 	if k == nil || k.rt == nil {
 		return downloadByHashResult{}, fmt.Errorf("runtime not initialized")
 	}
 	cmdID := newKernelCommandID()
 	startAt := time.Now()
-	out, err := runDownloadByHashImpl(ctx, k.store, k.rt, p, hooks)
+	out, err := runDownloadByHashCore(ctx, k.store, k.rt, p)
 	status := "applied"
 	errCode := ""
 	errMsg := ""
@@ -271,7 +271,7 @@ func (k *clientKernel) runDownloadByHashImpl(ctx context.Context, p downloadByHa
 	_ = dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 		CommandID:     cmdID,
 		CommandType:   clientKernelCommandDownloadByHash,
-		GatewayPeerID: strings.TrimSpace(out.GatewayPeerID),
+		GatewayPeerID: strings.TrimSpace(p.GatewayPeerID),
 		AggregateID:   "seed:" + strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		RequestedBy:   "client_kernel",
 		RequestedAt:   time.Now().Unix(),
@@ -285,7 +285,6 @@ func (k *clientKernel) runDownloadByHashImpl(ctx context.Context, p downloadByHa
 		TriggerKey:    "", // 直接调用 kernel 的命令，非 orchestrator 发起，链路键为空
 		Payload: map[string]any{
 			"seed_hash":            strings.ToLower(strings.TrimSpace(p.SeedHash)),
-			"demand_chunk_count":   p.DemandChunkCount,
 			"transfer_chunk_count": p.TransferChunkCount,
 			"gateway_pubkey_hex":   strings.TrimSpace(p.GatewayPeerID),
 			"strategy":             strings.TrimSpace(p.Strategy),
@@ -293,10 +292,12 @@ func (k *clientKernel) runDownloadByHashImpl(ctx context.Context, p downloadByHa
 			"max_seed_price":       p.MaxSeedPrice,
 		},
 		Result: map[string]any{
-			"status":     status,
-			"gateway_id": strings.TrimSpace(out.GatewayPeerID),
-			"demand_id":  strings.TrimSpace(out.DemandID),
-			"file_name":  strings.TrimSpace(out.FileName),
+			"status":         status,
+			"job_id":         strings.TrimSpace(out.JobID),
+			"front_order_id": strings.TrimSpace(out.FrontOrderID),
+			"demand_id":      strings.TrimSpace(out.DemandID),
+			"output_path":    strings.TrimSpace(out.OutputFilePath),
+			"state":          strings.TrimSpace(out.State),
 		},
 	})
 	return out, err

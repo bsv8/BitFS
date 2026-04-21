@@ -12,9 +12,9 @@ func TestKernelDownloadByHashWritesJournal(t *testing.T) {
 	rt := &Runtime{}
 	rt.kernel = newClientKernel(rt, newClientDB(db, nil), nil)
 
-	_, err := runDownloadByHash(context.Background(), rt, downloadByHashParams{
+	_, err := runDownloadByHash(context.Background(), newClientDB(db, nil), rt, downloadByHashParams{
 		SeedHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-	}, downloadByHashHooks{})
+	})
 	if err == nil {
 		t.Fatalf("expected download by hash to fail on incomplete runtime")
 	}
@@ -45,6 +45,7 @@ func TestKernelTransferByStrategyWritesJournal(t *testing.T) {
 	rt.kernel = newClientKernel(rt, newClientDB(db, nil), nil)
 
 	_, err := TriggerTransferChunksByStrategy(context.Background(), newClientDB(db, nil), rt, TransferChunksByStrategyParams{
+		JobID:    "job_test",
 		DemandID: "dmd_test",
 		SeedHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
 	})

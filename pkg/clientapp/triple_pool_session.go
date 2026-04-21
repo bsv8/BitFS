@@ -21,7 +21,10 @@ import (
 // triplePoolSession 是 buyer 侧维护的“3-of-3 费用池会话”状态。
 // 这里的金额变化来自真实可签名交易，不是数据库记账余额。
 type triplePoolSession struct {
+	JobID            string
+	FrontOrderID     string
 	DemandID         string
+	SeedHash         string
 	SessionID        string
 	DealID           string
 	BusinessID       string // 正式下载 business_id（biz_download_pool_*），用于 pay 时挂 tx_breakdown

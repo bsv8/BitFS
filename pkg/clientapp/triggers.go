@@ -645,6 +645,7 @@ func TriggerClientSeedGet(ctx context.Context, rt *Runtime, p SeedGetParams) (Se
 }
 
 type directTransferPoolOpenParams struct {
+	JobID         string
 	SellerPubHex  string
 	ArbiterPubHex string
 	FrontOrderID  string // 本次下载发起唯一，显式参数
@@ -777,9 +778,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 		TargetObjectID:   strings.TrimSpace(p.DemandID),
 		FrontOrderNote:   "下载: " + strings.TrimSpace(p.DemandID),
 		FrontOrderPayload: map[string]any{
-			"demand_id":         strings.TrimSpace(p.DemandID),
-			"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
-			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+			"job_id":         strings.TrimSpace(p.JobID),
+			"front_order_id": strings.TrimSpace(p.FrontOrderID),
+			"demand_id":      strings.TrimSpace(p.DemandID),
+			"seed_hash":      strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		},
 
 		// 业务（第七阶段整改：调用方显式传 business_role）
@@ -793,9 +795,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 		ToPartyID:         "seller:" + strings.TrimSpace(p.SellerPubHex),
 		BusinessNote:      "下载池支付: " + strings.TrimSpace(p.DemandID),
 		BusinessPayload: map[string]any{
-			"demand_id":         strings.TrimSpace(p.DemandID),
-			"seed_hash":         strings.ToLower(strings.TrimSpace(p.SeedHash)),
-			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
+			"job_id":         strings.TrimSpace(p.JobID),
+			"front_order_id": strings.TrimSpace(p.FrontOrderID),
+			"demand_id":      strings.TrimSpace(p.DemandID),
+			"seed_hash":      strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		},
 
 		// 触发器
@@ -804,7 +807,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 		TriggerRole:    "primary",
 		TriggerNote:    "前台订单触发池支付",
 		TriggerPayload: map[string]any{
-			"trigger_reason": "download_initiated",
+			"job_id":         strings.TrimSpace(p.JobID),
+			"front_order_id": strings.TrimSpace(p.FrontOrderID),
+			"demand_id":      strings.TrimSpace(p.DemandID),
+			"seed_hash":      strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		},
 
 		// 结算
@@ -813,10 +819,12 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 		SettlementTargetType: "", // Open 阶段未确定 allocation，保持空
 		SettlementTargetID:   "",
 		SettlementPayload: map[string]any{
-			"demand_id":         strings.TrimSpace(p.DemandID),
-			"seller_pubkey_hex": strings.TrimSpace(p.SellerPubHex),
-			"session_id":        sessionID,
-			"status":            "pending",
+			"job_id":         strings.TrimSpace(p.JobID),
+			"front_order_id": strings.TrimSpace(p.FrontOrderID),
+			"demand_id":      strings.TrimSpace(p.DemandID),
+			"seed_hash":      strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"session_id":     sessionID,
+			"status":         "pending",
 		},
 	}); err != nil {
 		obs.Error(ServiceName, "download_pool_chain_init_failed", map[string]any{"error": err.Error(), "demand_id": p.DemandID, "seller_pubkey_hex": p.SellerPubHex})
@@ -1017,7 +1025,10 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 			return directTransferPoolOpenResult{}, fmt.Errorf("project transfer pool base tx failed: %w", err)
 		}
 		buyer.setTriplePool(&triplePoolSession{
+			JobID:            strings.TrimSpace(p.JobID),
+			FrontOrderID:     strings.TrimSpace(p.FrontOrderID),
 			DemandID:         strings.TrimSpace(p.DemandID),
+			SeedHash:         strings.ToLower(strings.TrimSpace(p.SeedHash)),
 			SessionID:        curSessionID,
 			DealID:           dealID,
 			BusinessID:       businessID, // 正式下载 business_id，供 pay 挂 tx_breakdown
@@ -1043,6 +1054,8 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 		})
 		emitDirectTransferEvent(buyer, "direct_transfer_context_opened", map[string]any{
 			"event_id":                fmt.Sprintf("%s:open", curSessionID),
+			"job_id":                  strings.TrimSpace(p.JobID),
+			"front_order_id":          strings.TrimSpace(p.FrontOrderID),
 			"demand_id":               strings.TrimSpace(p.DemandID),
 			"deal_id":                 dealID,
 			"session_id":              curSessionID,
@@ -1070,10 +1083,12 @@ func triggerDirectTransferPoolOpen(ctx context.Context, store *clientDB, buyer t
 			return directTransferPoolOpenResult{}, err
 		}
 		obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_open_end", map[string]any{
-			"session_id": req.SessionId,
-			"base_txid":  baseTxID,
-			"status":     openResp.Status,
-			"attempt":    attempt,
+			"job_id":         strings.TrimSpace(p.JobID),
+			"front_order_id": strings.TrimSpace(p.FrontOrderID),
+			"session_id":     req.SessionId,
+			"base_txid":      baseTxID,
+			"status":         openResp.Status,
+			"attempt":        attempt,
 		})
 		return directTransferPoolOpenResult{DealID: dealID, SessionID: curSessionID, BaseTxID: baseTxID, Sequence: 1, PoolAmount: req.PoolAmount}, nil
 	}
@@ -1311,11 +1326,15 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer tr
 		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
 	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_pay_begin", map[string]any{
-		"session_id":    req.SessionId,
-		"sequence":      req.Sequence,
-		"seller_amount": req.SellerAmount,
-		"chunk_hash":    chunkHash,
-		"chunk_index":   p.ChunkIndex,
+		"job_id":         strings.TrimSpace(session.JobID),
+		"front_order_id": strings.TrimSpace(session.FrontOrderID),
+		"demand_id":      strings.TrimSpace(session.DemandID),
+		"seed_hash":      seedHash,
+		"session_id":     req.SessionId,
+		"sequence":       req.Sequence,
+		"seller_amount":  req.SellerAmount,
+		"chunk_hash":     chunkHash,
+		"chunk_index":    p.ChunkIndex,
 	})
 	var payResp directTransferPoolPayResp
 	if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferPoolPay, clientSec(buyer.TransferRPCTrace()), req, &payResp); err != nil {
@@ -1339,6 +1358,8 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer tr
 	buyer.setTriplePool(session)
 	emitDirectTransferEvent(buyer, "direct_transfer_chunk_paid", map[string]any{
 		"event_id":            fmt.Sprintf("%s:%d:%d", session.SessionID, req.Sequence, p.ChunkIndex),
+		"job_id":              strings.TrimSpace(session.JobID),
+		"front_order_id":      strings.TrimSpace(session.FrontOrderID),
 		"demand_id":           strings.TrimSpace(session.DemandID),
 		"deal_id":             strings.TrimSpace(session.DealID),
 		"session_id":          session.SessionID,
@@ -1393,12 +1414,16 @@ func triggerDirectTransferPoolPay(ctx context.Context, store *clientDB, buyer tr
 	}
 
 	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_pay_end", map[string]any{
-		"session_id":    req.SessionId,
-		"sequence":      req.Sequence,
-		"seller_amount": req.SellerAmount,
-		"status":        payResp.Status,
-		"chunk_hash":    chunkHash,
-		"chunk_index":   p.ChunkIndex,
+		"job_id":         strings.TrimSpace(session.JobID),
+		"front_order_id": strings.TrimSpace(session.FrontOrderID),
+		"demand_id":      strings.TrimSpace(session.DemandID),
+		"seed_hash":      seedHash,
+		"session_id":     req.SessionId,
+		"sequence":       req.Sequence,
+		"seller_amount":  req.SellerAmount,
+		"status":         payResp.Status,
+		"chunk_hash":     chunkHash,
+		"chunk_index":    p.ChunkIndex,
 	})
 	return directTransferPoolPayResult{Sequence: req.Sequence}, nil
 }
@@ -1517,8 +1542,12 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 		BuyerSig:     append([]byte(nil), (*buyerSig)...),
 	}
 	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_close_begin", map[string]any{
-		"session_id": req.SessionId,
-		"sequence":   req.Sequence,
+		"job_id":         strings.TrimSpace(session.JobID),
+		"front_order_id": strings.TrimSpace(session.FrontOrderID),
+		"demand_id":      strings.TrimSpace(session.DemandID),
+		"seed_hash":      strings.ToLower(strings.TrimSpace(session.SeedHash)),
+		"session_id":     req.SessionId,
+		"sequence":       req.Sequence,
 	})
 	var closeResp directTransferPoolCloseResp
 	if err := pproto.CallProto(ctx, buyer.TransferHost(), sellerPID, ProtoTransferPoolClose, clientSec(buyer.TransferRPCTrace()), req, &closeResp); err != nil {
@@ -1545,6 +1574,8 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 	buyer.setTriplePool(session)
 	emitDirectTransferEvent(buyer, "direct_transfer_context_closed", map[string]any{
 		"event_id":              fmt.Sprintf("%s:close:%d", session.SessionID, session.Sequence),
+		"job_id":                strings.TrimSpace(session.JobID),
+		"front_order_id":        strings.TrimSpace(session.FrontOrderID),
 		"demand_id":             strings.TrimSpace(session.DemandID),
 		"deal_id":               strings.TrimSpace(session.DealID),
 		"session_id":            session.SessionID,
@@ -1581,9 +1612,11 @@ func triggerDirectTransferPoolClose(ctx context.Context, store *clientDB, buyer 
 	buyer.deleteTriplePool(session.SessionID)
 	buyer.releaseTransferPoolSessionMutex(session.SessionID)
 	obs.Business(ServiceName, "evt_trigger_direct_transfer_pool_close_end", map[string]any{
-		"session_id": session.SessionID,
-		"final_txid": finalTxID,
-		"status":     "closed",
+		"job_id":         strings.TrimSpace(session.JobID),
+		"front_order_id": strings.TrimSpace(session.FrontOrderID),
+		"session_id":     session.SessionID,
+		"final_txid":     finalTxID,
+		"status":         "closed",
 	})
 	return directTransferPoolCloseResult{FinalTxID: finalTxID}, nil
 }

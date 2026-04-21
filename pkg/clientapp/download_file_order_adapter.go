@@ -39,9 +39,9 @@ func (a *downloadFileOrderAdapter) EnsureFrontOrder(ctx context.Context, req fil
 	if seedHash == "" {
 		return "", fmt.Errorf("seed_hash is required")
 	}
-	frontOrderID := strings.TrimSpace(req.FrontOrderID)
-	if frontOrderID == "" {
-		frontOrderID = buildDownloadFrontOrderID(jobID, seedHash)
+	frontOrderID := buildDownloadFrontOrderID(jobID)
+	if reqFrontOrderID := strings.TrimSpace(req.FrontOrderID); reqFrontOrderID != "" && !strings.EqualFold(reqFrontOrderID, frontOrderID) {
+		return "", fmt.Errorf("front_order_id must be %s", frontOrderID)
 	}
 	if err := dbUpsertFrontOrder(ctx, a.store, frontOrderEntry{
 		FrontOrderID:     frontOrderID,
@@ -49,14 +49,12 @@ func (a *downloadFileOrderAdapter) EnsureFrontOrder(ctx context.Context, req fil
 		FrontSubtype:     "getfilebyhash",
 		OwnerPubkeyHex:   firstNonEmpty(strings.ToLower(strings.TrimSpace(req.OwnerPubkeyHex)), a.ownerPubHex),
 		TargetObjectType: "seed",
-		TargetObjectID:   strings.TrimSpace(req.TargetObjectID),
 		Status:           "pending",
 		Note:             strings.TrimSpace(req.Note),
 		Payload: map[string]any{
-			"job_id":           jobID,
-			"seed_hash":        seedHash,
-			"target_object_id": strings.TrimSpace(req.TargetObjectID),
-			"front_order_id":   frontOrderID,
+			"job_id":         jobID,
+			"seed_hash":      seedHash,
+			"front_order_id": frontOrderID,
 		},
 	}); err != nil {
 		return "", err
@@ -107,7 +105,7 @@ func (a *downloadFileOrderAdapter) setJobFrontOrder(ctx context.Context, jobID s
 	return newDownloadFileJobStoreAdapter(a.store).SetFrontOrderID(ctx, jobID, frontOrderID)
 }
 
-func buildDownloadFrontOrderID(jobID string, seedHash string) string {
+func buildDownloadFrontOrderID(jobID string) string {
 	return "fo_download_" + strings.TrimSpace(jobID)
 }
 
