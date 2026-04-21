@@ -76,44 +76,6 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 	}
 }
 
-func TestHandleGetFileCancel(t *testing.T) {
-	t.Parallel()
-	canceled := false
-	srv := &httpAPIServer{
-		getJobs: map[string]*fileGetJob{
-			"job_running": {
-				ID:     "job_running",
-				Status: "running",
-				cancel: func() { canceled = true },
-			},
-			"job_done": {
-				ID:     "job_done",
-				Status: "done",
-			},
-		},
-	}
-
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/get-file/cancel", strings.NewReader(`{"id":"job_running"}`))
-	srv.handleGetFileCancel(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("cancel running status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	if !canceled {
-		t.Fatalf("cancel func should be called")
-	}
-	if !srv.getJobs["job_running"].CancelRequested {
-		t.Fatalf("cancel_requested should be true")
-	}
-
-	recDone := httptest.NewRecorder()
-	reqDone := httptest.NewRequest(http.MethodPost, "/api/v1/files/get-file/cancel", strings.NewReader(`{"id":"job_done"}`))
-	srv.handleGetFileCancel(recDone, reqDone)
-	if recDone.Code != http.StatusBadRequest {
-		t.Fatalf("cancel done status mismatch: got=%d want=%d", recDone.Code, http.StatusBadRequest)
-	}
-}
-
 func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 	t.Parallel()
 

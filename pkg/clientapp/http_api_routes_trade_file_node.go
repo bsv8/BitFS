@@ -18,14 +18,6 @@ func (s *httpAPIServer) registerHTTPRouteTrade(mux *http.ServeMux, prefix string
 }
 
 func (s *httpAPIServer) registerHTTPRouteFile(mux *http.ServeMux, prefix string) {
-	mux.HandleFunc(prefix+"/v1/files/get-file", s.withAuth(s.handleGetFileStart))
-	mux.HandleFunc(prefix+"/v1/files/get-file/plan", s.withAuth(s.handleGetFilePlan))
-	mux.HandleFunc(prefix+"/v1/files/get-file/status", s.withAuth(s.handleGetFileStatus))
-	mux.HandleFunc(prefix+"/v1/files/get-file/ensure", s.withAuth(s.handleGetFileEnsure))
-	mux.HandleFunc(prefix+"/v1/files/get-file/content", s.withAuth(s.handleGetFileContent))
-	mux.HandleFunc(prefix+"/v1/files/get-file/job", s.withAuth(s.handleGetFileJob))
-	mux.HandleFunc(prefix+"/v1/files/get-file/jobs", s.withAuth(s.handleGetFileJobs))
-	mux.HandleFunc(prefix+"/v1/files/get-file/cancel", s.withAuth(s.handleGetFileCancel))
 	mux.HandleFunc(prefix+"/v1/filehash", s.withAuth(s.handleFileHash))
 }
 

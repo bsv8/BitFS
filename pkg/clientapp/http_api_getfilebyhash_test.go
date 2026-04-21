@@ -163,6 +163,34 @@ func TestHTTPHandlerHandleStartPOST(t *testing.T) {
 	}
 }
 
+func TestHTTPRouteGetFileByHashKeepsNewEntryAndRemovesOldOne(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := NewClientStore(db, nil)
+	srv := &httpAPIServer{
+		downloadFileHandler: newDownloadFileHTTPTestHandler(store),
+	}
+	mux, err := srv.buildMux()
+	if err != nil {
+		t.Fatalf("build mux: %v", err)
+	}
+
+	newReq := httptest.NewRequest(http.MethodPost, "/api/v1/files/getfilebyhash", strings.NewReader(`{}`))
+	newRec := httptest.NewRecorder()
+	mux.ServeHTTP(newRec, newReq)
+	if newRec.Code == http.StatusNotFound {
+		t.Fatalf("new getfilebyhash route should stay registered")
+	}
+
+	oldReq := httptest.NewRequest(http.MethodPost, "/api/v1/files/get-file", strings.NewReader(`{}`))
+	oldRec := httptest.NewRecorder()
+	mux.ServeHTTP(oldRec, oldReq)
+	if oldRec.Code != http.StatusNotFound {
+		t.Fatalf("old get-file route should be removed: got=%d body=%s", oldRec.Code, oldRec.Body.String())
+	}
+}
+
 func TestHTTPHandlerHandleStartDoneAfterTransfer(t *testing.T) {
 	t.Parallel()
 

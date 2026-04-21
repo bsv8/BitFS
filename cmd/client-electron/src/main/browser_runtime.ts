@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 
 import type {
   BitfsPublicClientInfo,
@@ -67,6 +68,41 @@ type PlanItem = {
   seed_price?: number;
   chunk_price_sat_per_64k?: number;
   estimated_total_sat?: number;
+};
+
+type DownloadJobStatus = {
+  job_id: string;
+  seed_hash: string;
+  demand_id?: string;
+  state: string;
+  chunk_count?: number;
+  completed_chunks?: number;
+  paid_total_sat?: number;
+  output_file_path?: string;
+  part_file_path?: string;
+  error?: string;
+  created_at_unix?: number;
+  updated_at_unix?: number;
+};
+
+type GetFileByHashEnvelope<T> = {
+  status: string;
+  data: T;
+};
+
+type DownloadQuoteItem = {
+  seller_pubkey_hex?: string;
+  seed_price_sat?: number;
+  chunk_price_sat?: number;
+  chunk_count?: number;
+  available_chunks?: number[];
+  recommended_file_name?: string;
+  mime_type?: string;
+  file_size_bytes?: number;
+  quote_timestamp?: number;
+  expires_at_unix?: number;
+  selected?: boolean;
+  reject_reason?: string;
 };
 
 export type FileStatus = PlanItem & {
@@ -139,6 +175,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
   private currentVisitBaselineFlowID = 0;
   private eventSeq = 0;
   private readonly runtimeEpoch = `shell-${Date.now().toString(36)}`;
+  private readonly downloadJobs = new Map<string, string>();
 
   constructor(clientAPIBase: string, viewerPreloadPath: string, locatorHandlers: LocatorHandlerSet = {}) {
     super();
@@ -411,43 +448,51 @@ export class BitfsBrowserRuntime extends EventEmitter {
   }
 
   async fetchContent(seedHash: string, maxTotalSat: number): Promise<Response> {
-    const url = new URL(`${this.clientAPIBase}/api/v1/files/get-file/content`);
-    url.searchParams.set("seed_hash", seedHash);
-    if (maxTotalSat > 0) {
-      url.searchParams.set("max_total_price_sat", String(maxTotalSat));
+    const normalized = normalizeSeedHash(seedHash);
+    if (normalized === "") {
+      throw new Error("invalid seed hash");
     }
+    const plan = this.decisions.get(normalized)?.plan;
     debugLogger.log("runtime.http", "fetch_content_request", {
-      url: url.toString(),
-      seed_hash: seedHash,
+      seed_hash: normalized,
       max_total_sat: maxTotalSat,
       trace_id: this.currentTraceID
     });
-    const response = await fetch(url, {
-      method: "GET",
-      headers: this.getCurrentVisitHeaders()
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      this.lastError = text || `content fetch failed: ${response.status}`;
+    const { status, quote } = await this.startDownloadByHash(normalized, plan);
+    const terminalStatus = await this.waitForDownloadTerminalStatus(status.job_id);
+    if (terminalStatus.state !== "local" && terminalStatus.state !== "done") {
+      const message = terminalStatus.error || `content fetch failed: ${terminalStatus.state}`;
+      this.lastError = message;
       debugLogger.log("runtime.http", "fetch_content_error", {
-        url: url.toString(),
-        seed_hash: seedHash,
-        status: response.status,
-        body: text,
+        seed_hash: normalized,
+        job_id: status.job_id,
+        state: terminalStatus.state,
+        error: message,
         trace_id: this.currentTraceID
       });
       this.emitState();
-    } else {
-      this.lastError = "";
-      debugLogger.log("runtime.http", "fetch_content_ok", {
-        url: url.toString(),
-        seed_hash: seedHash,
-        status: response.status,
-        content_type: String(response.headers.get("content-type") || ""),
-        trace_id: this.currentTraceID
-      });
+      throw new Error(message);
     }
-    return response;
+    const filePath = String(terminalStatus.output_file_path || "").trim();
+    if (filePath === "") {
+      throw new Error("download completed without output file path");
+    }
+    const body = await readFile(filePath);
+    const contentType = guessContentTypeForDownload(filePath, body, quote?.mime_type || plan?.mime_hint || "");
+    this.lastError = "";
+    debugLogger.log("runtime.http", "fetch_content_ok", {
+      seed_hash: normalized,
+      job_id: status.job_id,
+      output_file_path: filePath,
+      content_type: contentType,
+      trace_id: this.currentTraceID
+    });
+    return new Response(body, {
+      status: 200,
+      headers: {
+        "content-type": contentType
+      }
+    });
   }
 
   async getFileStatus(seedHash: string): Promise<FileStatus> {
@@ -455,7 +500,29 @@ export class BitfsBrowserRuntime extends EventEmitter {
     if (normalized === "") {
       throw new Error("invalid seed hash");
     }
-    const status = await this.fetchJSON<FileStatus>(`/api/v1/files/get-file/status?seed_hash=${normalized}`);
+    let status: FileStatus;
+    const jobID = this.downloadJobs.get(normalized);
+    if (jobID) {
+      const job = await this.fetchDownloadStatus(jobID);
+      const quotes = await this.fetchDownloadQuotes(jobID);
+      status = this.fileStatusFromJob(normalized, job, quotes, this.decisions.get(normalized)?.plan);
+    } else {
+      const plan = this.decisions.get(normalized)?.plan;
+      if (!plan) {
+        const plans = await this.planSeeds([normalized]);
+        status = plans[0] || {
+          seed_hash: normalized,
+          status: "quote_unavailable",
+          local_ready: false
+        };
+      } else {
+        status = {
+          ...plan,
+          output_file_path: plan.local_ready ? undefined : undefined,
+          content_uri: `bitfs://${normalized}`
+        };
+      }
+    }
     debugLogger.log("runtime", "file_status", {
       seed_hash: normalized,
       status: status.status,
@@ -552,18 +619,8 @@ export class BitfsBrowserRuntime extends EventEmitter {
       max_total_sat: maxTotalSat,
       trace_id: this.currentTraceID
     });
-    const payload: Record<string, unknown> = { seed_hash: normalized };
-    if (maxTotalSat > 0) {
-      payload.max_total_price_sat = maxTotalSat;
-    }
-    const result = await this.fetchJSON<EnsureSeedResult>("/api/v1/files/get-file/ensure", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...this.getCurrentVisitHeaders()
-      },
-      body: JSON.stringify(payload)
-    });
+    const { status, quote } = await this.startDownloadByHash(normalized, existing?.plan);
+    const result = this.fileStatusFromJob(normalized, status, quote ? [quote] : [], existing?.plan);
     this.ensureDiscoveryOrder(normalized);
     this.pending.delete(normalized);
     this.approved.add(normalized);
@@ -632,6 +689,149 @@ export class BitfsBrowserRuntime extends EventEmitter {
       statusText: response.statusText,
       headers: new Headers(response.headers)
     });
+  }
+
+  private async startDownloadByHash(seedHash: string, plan?: PlanItem): Promise<{ status: DownloadJobStatus; quote: DownloadQuoteItem | null; quotes: DownloadQuoteItem[] }> {
+    const normalized = normalizeSeedHash(seedHash);
+    if (normalized === "") {
+      throw new Error("invalid seed hash");
+    }
+    const payload: Record<string, unknown> = {
+      seed_hash: normalized
+    };
+    const chunkCount = Number(plan?.chunk_count || 0);
+    if (chunkCount > 0) {
+      payload.chunk_count = chunkCount;
+    }
+    const seedPrice = Number(plan?.seed_price || 0);
+    if (seedPrice > 0) {
+      payload.max_seed_price_sat = seedPrice;
+    }
+    const chunkPrice = Number(plan?.chunk_price_sat_per_64k || 0);
+    if (chunkPrice > 0) {
+      payload.max_chunk_price_sat = chunkPrice;
+    }
+    const start = await this.fetchJSON<GetFileByHashEnvelope<{ job_id: string; status: DownloadJobStatus; message?: string }>>("/api/v1/files/getfilebyhash", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        ...this.getCurrentVisitHeaders()
+      },
+      body: JSON.stringify(payload)
+    });
+    const status = start.data?.status;
+    const jobID = String(start.data?.job_id || status?.job_id || "").trim();
+    if (jobID === "") {
+      throw new Error("getfilebyhash job id is empty");
+    }
+    this.downloadJobs.set(normalized, jobID);
+    const quotes = await this.fetchDownloadQuotes(jobID);
+    return {
+      status: status || await this.fetchDownloadStatus(jobID),
+      quote: this.selectBestDownloadQuote(quotes) || null,
+      quotes
+    };
+  }
+
+  private async fetchDownloadStatus(jobID: string): Promise<DownloadJobStatus> {
+    const response = await this.fetchJSON<GetFileByHashEnvelope<DownloadJobStatus>>(`/api/v1/files/getfilebyhash/status?job_id=${encodeURIComponent(jobID)}`);
+    return response.data;
+  }
+
+  private async waitForDownloadTerminalStatus(jobID: string): Promise<DownloadJobStatus> {
+    let last = await this.fetchDownloadStatus(jobID);
+    for (let i = 0; i < 30; i += 1) {
+      if (last.state === "local" || last.state === "done" || last.state === "failed" || last.state === "blocked_by_budget" || last.state === "quote_unavailable" || last.state === "quote_timeout") {
+        return last;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
+      last = await this.fetchDownloadStatus(jobID);
+    }
+    return last;
+  }
+
+  private async fetchDownloadQuotes(jobID: string): Promise<DownloadQuoteItem[]> {
+    const response = await this.fetchJSON<GetFileByHashEnvelope<DownloadQuoteItem[]>>(`/api/v1/files/getfilebyhash/quotes?job_id=${encodeURIComponent(jobID)}`);
+    return Array.isArray(response.data) ? response.data : [];
+  }
+
+  private selectBestDownloadQuote(quotes: DownloadQuoteItem[]): DownloadQuoteItem | undefined {
+    const filtered = quotes.filter((quote) => Number(quote.chunk_count || 0) > 0);
+    if (filtered.length === 0) {
+      return undefined;
+    }
+    filtered.sort((a, b) => {
+      const totalA = Number(a.seed_price_sat || 0) + Number(a.chunk_price_sat || 0) * Number(a.chunk_count || 0);
+      const totalB = Number(b.seed_price_sat || 0) + Number(b.chunk_price_sat || 0) * Number(b.chunk_count || 0);
+      if (totalA !== totalB) {
+        return totalA - totalB;
+      }
+      if (Number(a.chunk_price_sat || 0) !== Number(b.chunk_price_sat || 0)) {
+        return Number(a.chunk_price_sat || 0) - Number(b.chunk_price_sat || 0);
+      }
+      return Number(a.seed_price_sat || 0) - Number(b.seed_price_sat || 0);
+    });
+    return filtered[0];
+  }
+
+  private planItemFromJob(seedHash: string, status: DownloadJobStatus, quotes: DownloadQuoteItem[], fallbackPlan?: PlanItem): PlanItem {
+    const bestQuote = this.selectBestDownloadQuote(quotes);
+    const localReady = status.state === "local" || status.state === "done" || String(status.output_file_path || "").trim() !== "";
+    const fileSize = Number(bestQuote?.file_size_bytes || fallbackPlan?.file_size || 0);
+    const chunkCount = Number(status.chunk_count || bestQuote?.chunk_count || fallbackPlan?.chunk_count || 0);
+    const seedPrice = Number(bestQuote?.seed_price_sat || fallbackPlan?.seed_price || 0);
+    const chunkPrice = Number(bestQuote?.chunk_price_sat || fallbackPlan?.chunk_price_sat_per_64k || 0);
+    const estimated = Number(fallbackPlan?.estimated_total_sat || (seedPrice + chunkPrice * chunkCount));
+    if (localReady) {
+      return {
+        seed_hash: seedHash,
+        status: "local",
+        local_ready: true,
+        recommended_file_name: String(bestQuote?.recommended_file_name || fallbackPlan?.recommended_file_name || ""),
+        mime_hint: String(bestQuote?.mime_type || fallbackPlan?.mime_hint || ""),
+        file_size: fileSize,
+        chunk_count: chunkCount,
+        seed_price: seedPrice,
+        chunk_price_sat_per_64k: chunkPrice,
+        estimated_total_sat: estimated
+      };
+    }
+    if (bestQuote) {
+      return {
+        seed_hash: seedHash,
+        status: "quoted",
+        local_ready: false,
+        recommended_file_name: String(bestQuote.recommended_file_name || ""),
+        mime_hint: String(bestQuote.mime_type || ""),
+        file_size: fileSize,
+        chunk_count: Number(bestQuote.chunk_count || 0),
+        seed_price: Number(bestQuote.seed_price_sat || 0),
+        chunk_price_sat_per_64k: Number(bestQuote.chunk_price_sat || 0),
+        estimated_total_sat: estimated
+      };
+    }
+    return {
+      seed_hash: seedHash,
+      status: status.state || "quote_unavailable",
+      reason: String(status.error || ""),
+      local_ready: false,
+      recommended_file_name: String(fallbackPlan?.recommended_file_name || ""),
+      mime_hint: String(fallbackPlan?.mime_hint || ""),
+      file_size: fileSize,
+      chunk_count: chunkCount,
+      seed_price: seedPrice,
+      chunk_price_sat_per_64k: chunkPrice,
+      estimated_total_sat: estimated
+    };
+  }
+
+  private fileStatusFromJob(seedHash: string, status: DownloadJobStatus, quotes: DownloadQuoteItem[], fallbackPlan?: PlanItem): FileStatus {
+    const plan = this.planItemFromJob(seedHash, status, quotes, fallbackPlan);
+    return {
+      ...plan,
+      output_file_path: String(status.output_file_path || "").trim() || undefined,
+      content_uri: `bitfs://${seedHash}`
+    };
   }
 
   setLastError(message: string): void {
@@ -1182,35 +1382,18 @@ export class BitfsBrowserRuntime extends EventEmitter {
       seed_hashes: seedHashes,
       trace_id: this.currentTraceID
     });
-    const response = await fetch(`${this.clientAPIBase}/api/v1/files/get-file/plan`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...this.getCurrentVisitHeaders()
-      },
-      body: JSON.stringify({ seed_hashes: seedHashes, resource_kind: "static" })
-    });
-    if (!response.ok) {
-      const text = await response.text();
-      debugLogger.log("runtime.http", "fetch_plans_error", {
-        status: response.status,
-        body: text,
-        trace_id: this.currentTraceID
-      });
-      throw new Error(text || `plan request failed: ${response.status}`);
-    }
-    const body = await response.json() as { items?: PlanItem[] };
-    if (!Array.isArray(body.items) || body.items.length === 0) {
-      debugLogger.log("runtime.http", "fetch_plans_empty", {
-        trace_id: this.currentTraceID
-      });
-      throw new Error("plan response missing items");
+    const items: PlanItem[] = [];
+    for (const seedHash of seedHashes) {
+      const plan = this.decisions.get(seedHash)?.plan;
+      const { status, quotes } = await this.startDownloadByHash(seedHash, plan);
+      const item = this.planItemFromJob(seedHash, status, quotes, plan);
+      items.push(item);
     }
     debugLogger.log("runtime.http", "fetch_plans_ok", {
-      item_count: body.items.length,
+      item_count: items.length,
       trace_id: this.currentTraceID
     });
-    return body.items;
+    return items;
   }
 
   private applyPlanDecision(seedHash: string, plan: PlanItem): void {
@@ -1403,6 +1586,7 @@ export class BitfsBrowserRuntime extends EventEmitter {
     this.decisions.clear();
     this.approved.clear();
     this.discoveryOrder.clear();
+    this.downloadJobs.clear();
     this.nextDiscoveryOrder = 1;
     this.ensureDiscoveryOrder(rootSeedHash);
     this.lastError = "";
@@ -2181,6 +2365,107 @@ function extractStaticResourceRefsFromHTML(html: string): string[] {
     }
   }
   return Array.from(refs);
+}
+
+function guessContentTypeForDownload(filePath: string, body: Uint8Array, mimeHint: string): string {
+  const hint = String(mimeHint || "").trim().toLowerCase();
+  if (hint !== "") {
+    return String(mimeHint || "").trim();
+  }
+  const ext = String(filePath || "").trim().toLowerCase().split(".").pop() || "";
+  switch (ext) {
+    case "html":
+    case "htm":
+      return "text/html; charset=utf-8";
+    case "js":
+    case "mjs":
+    case "cjs":
+      return "application/javascript; charset=utf-8";
+    case "css":
+      return "text/css; charset=utf-8";
+    case "json":
+      return "application/json; charset=utf-8";
+    case "svg":
+      return "image/svg+xml";
+  }
+  const head = new TextDecoder().decode(body.slice(0, 512)).trim();
+  if (head === "") {
+    return "application/octet-stream";
+  }
+  const lower = head.toLowerCase();
+  if (lower.startsWith("<!doctype html") || lower.startsWith("<html")) {
+    return "text/html; charset=utf-8";
+  }
+  if (lower.startsWith("<?xml") || lower.includes("<svg")) {
+    return "image/svg+xml";
+  }
+  if ((lower.startsWith("{") || lower.startsWith("[")) && looksLikeJSONText(head)) {
+    return "application/json; charset=utf-8";
+  }
+  if (looksLikeJavaScriptText(head)) {
+    return "application/javascript; charset=utf-8";
+  }
+  if (looksLikeCSSText(lower)) {
+    return "text/css; charset=utf-8";
+  }
+  return "application/octet-stream";
+}
+
+function looksLikeJSONText(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function looksLikeCSSText(lower: string): boolean {
+  if (lower === "") {
+    return false;
+  }
+  if (looksLikeJavaScriptText(lower)) {
+    return false;
+  }
+  if (lower.startsWith(":root") || lower.startsWith("@media") || lower.startsWith("@import")) {
+    return true;
+  }
+  if (!lower.includes("{") || !lower.includes("}")) {
+    return false;
+  }
+  if (lower.includes("function") || lower.includes("=>") || lower.includes("const ") || lower.includes("let ") || lower.includes("var ") || lower.includes("return ")) {
+    return false;
+  }
+  return lower.includes(":") && lower.includes(";");
+}
+
+function looksLikeJavaScriptText(text: string): boolean {
+  const lower = String(text || "").trim().toLowerCase();
+  if (lower === "") {
+    return false;
+  }
+  const prefixes = [
+    "(function",
+    "(()=>",
+    "const ",
+    "let ",
+    "var ",
+    "function ",
+    "import ",
+    "export ",
+    "\"use strict\"",
+    "'use strict'"
+  ];
+  for (const prefix of prefixes) {
+    if (lower.startsWith(prefix)) {
+      return true;
+    }
+  }
+  return lower.includes("=>") ||
+    lower.includes("document.") ||
+    lower.includes("window.") ||
+    lower.includes("createelement(") ||
+    lower.includes("queryselector(");
 }
 
 function createTraceID(): string {
