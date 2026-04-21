@@ -11,7 +11,7 @@ func TestDownloadFilePolicyAllowsSeedPriceAndChunkPriceIndependently(t *testing.
 	t.Parallel()
 
 	policy := newDownloadFilePolicyAdapter()
-	selected, ok, reason, err := policy.SelectQuote(context.Background(), filedownload.StartRequest{
+	selection, err := policy.SelectQuotes(context.Background(), filedownload.StartRequest{
 		MaxSeedPrice:  50,
 		MaxChunkPrice: 30,
 	}, []filedownload.QuoteReport{
@@ -25,11 +25,11 @@ func TestDownloadFilePolicyAllowsSeedPriceAndChunkPriceIndependently(t *testing.
 	if err != nil {
 		t.Fatalf("select quote failed: %v", err)
 	}
-	if !ok {
-		t.Fatalf("expected quote to pass, got reason=%s", reason)
+	if selection.Primary.SellerPubkey != "seller_a" {
+		t.Fatalf("expected seller_a selected, got %s", selection.Primary.SellerPubkey)
 	}
-	if selected.SellerPubkey != "seller_a" {
-		t.Fatalf("expected seller_a selected, got %s", selected.SellerPubkey)
+	if len(selection.Candidates) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(selection.Candidates))
 	}
 }
 
@@ -37,7 +37,7 @@ func TestDownloadFilePolicyBlocksBySeedPriceOnly(t *testing.T) {
 	t.Parallel()
 
 	policy := newDownloadFilePolicyAdapter()
-	_, ok, reason, err := policy.SelectQuote(context.Background(), filedownload.StartRequest{
+	selection, err := policy.SelectQuotes(context.Background(), filedownload.StartRequest{
 		MaxSeedPrice:  9,
 		MaxChunkPrice: 30,
 	}, []filedownload.QuoteReport{
@@ -51,11 +51,11 @@ func TestDownloadFilePolicyBlocksBySeedPriceOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select quote failed: %v", err)
 	}
-	if ok {
+	if len(selection.Candidates) > 0 {
 		t.Fatalf("expected quote to be blocked")
 	}
-	if reason != "blocked_by_budget" {
-		t.Fatalf("expected blocked_by_budget, got %s", reason)
+	if selection.Reason != "blocked_by_budget" {
+		t.Fatalf("expected blocked_by_budget, got %s", selection.Reason)
 	}
 }
 
@@ -63,7 +63,7 @@ func TestDownloadFilePolicyIgnoresTotalForBudgetGate(t *testing.T) {
 	t.Parallel()
 
 	policy := newDownloadFilePolicyAdapter()
-	selected, ok, reason, err := policy.SelectQuote(context.Background(), filedownload.StartRequest{
+	selection, err := policy.SelectQuotes(context.Background(), filedownload.StartRequest{
 		MaxSeedPrice:  10,
 		MaxChunkPrice: 10,
 	}, []filedownload.QuoteReport{
@@ -77,10 +77,10 @@ func TestDownloadFilePolicyIgnoresTotalForBudgetGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("select quote failed: %v", err)
 	}
-	if !ok {
-		t.Fatalf("expected quote to pass, got reason=%s", reason)
+	if selection.Primary.SellerPubkey != "seller_a" {
+		t.Fatalf("expected seller_a selected, got %s", selection.Primary.SellerPubkey)
 	}
-	if selected.SellerPubkey != "seller_a" {
-		t.Fatalf("expected seller_a selected, got %s", selected.SellerPubkey)
+	if len(selection.Rejected) != 0 {
+		t.Fatalf("expected no rejected quotes, got %d", len(selection.Rejected))
 	}
 }

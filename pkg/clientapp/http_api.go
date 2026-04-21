@@ -221,7 +221,7 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		if rt != nil {
 			demandEnv = rt
 		}
-		caps := newDownloadFileCaps(rt, store, demandEnv)
+		caps := newDownloadFileCaps(rt, store, demandEnv, s.cfgSource)
 		s.downloadFileHandler = caps.HTTPHandler()
 	}
 	return s
@@ -1398,7 +1398,7 @@ var adminClientKernelCommandTypes = []string{
 	clientKernelCommandFeePoolCycleTick,
 	clientKernelCommandFeePoolMaintain,
 	clientKernelCommandLivePlanPurchase,
-	clientKernelCommandDirectDownloadCore,
+	clientKernelCommandDownloadByHash,
 	clientKernelCommandTransferByStrategy,
 }
 

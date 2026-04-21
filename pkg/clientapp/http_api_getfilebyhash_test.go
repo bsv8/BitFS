@@ -15,8 +15,9 @@ import (
 
 func newDownloadFileHTTPTestHandler(store *clientDB) *downloadFileHTTPHandler {
 	caps := &DownloadFileCaps{
-		store:    store,
-		jobStore: newDownloadFileJobStoreAdapter(store),
+		store:       store,
+		jobStore:    newDownloadFileJobStoreAdapter(store),
+		frontBinder: newDownloadFileOrderAdapter(store, ""),
 		fileStore: &httpTestDownloadFileStore{
 			completeFound: true,
 			complete: filedownload.LocalFile{
@@ -87,31 +88,54 @@ func (r httpTestDownloadQuoteReader) ListQuotes(ctx context.Context, demandID st
 	return append([]filedownload.QuoteReport(nil), r.quotes...), nil
 }
 
+func (r httpTestDownloadQuoteReader) WaitQuotes(ctx context.Context, req filedownload.QuoteWaitRequest) ([]filedownload.QuoteReport, error) {
+	return r.ListQuotes(ctx, req.DemandID)
+}
+
 type httpTestDownloadPolicy struct {
 	selected filedownload.QuoteReport
 }
 
-func (p httpTestDownloadPolicy) SelectQuote(ctx context.Context, req filedownload.StartRequest, quotes []filedownload.QuoteReport) (filedownload.QuoteReport, bool, string, error) {
+func (p httpTestDownloadPolicy) SelectQuotes(ctx context.Context, req filedownload.StartRequest, quotes []filedownload.QuoteReport) (filedownload.QuoteSelection, error) {
 	if p.selected.SellerPubkey == "" && len(quotes) > 0 {
-		return quotes[0], true, "", nil
+		return filedownload.QuoteSelection{
+			Primary:    quotes[0],
+			Candidates: append([]filedownload.QuoteReport(nil), quotes...),
+		}, nil
 	}
-	return p.selected, true, "", nil
+	return filedownload.QuoteSelection{
+		Primary:    p.selected,
+		Candidates: append([]filedownload.QuoteReport(nil), quotes...),
+	}, nil
 }
 
 type httpTestDownloadTransferRunner struct {
-	results map[uint32]filedownload.ChunkTransferResult
-	calls   []filedownload.ChunkTransferRequest
+	results       map[uint32]filedownload.ChunkTransferResult
+	calls         []filedownload.ChunkTransferRequest
+	strategyCalls []filedownload.StrategyTransferRequest
 }
 
-func (r *httpTestDownloadTransferRunner) RunChunkTransfer(ctx context.Context, req filedownload.ChunkTransferRequest) (filedownload.ChunkTransferResult, error) {
-	r.calls = append(r.calls, req)
-	if res, ok := r.results[req.ChunkIndex]; ok {
-		return res, nil
+func (r *httpTestDownloadTransferRunner) RunTransferByStrategy(ctx context.Context, req filedownload.StrategyTransferRequest) (filedownload.StrategyTransferResult, error) {
+	r.strategyCalls = append(r.strategyCalls, req)
+	chunks := make([]filedownload.TransferChunkResult, 0, req.ChunkCount)
+	sellerPubkey := ""
+	paidSat := uint64(1)
+	if len(req.Candidates) > 0 {
+		sellerPubkey = req.Candidates[0].SellerPubkey
+		paidSat = req.Candidates[0].ChunkPriceSat
 	}
-	return filedownload.ChunkTransferResult{
-		Data:     []byte("chunk"),
-		PaidSat:  req.ChunkPriceSat,
-		SpeedBps: 1000,
+	for i := uint32(0); i < req.ChunkCount; i++ {
+		chunks = append(chunks, filedownload.TransferChunkResult{
+			ChunkIndex:   i,
+			SellerPubkey: sellerPubkey,
+			Bytes:        []byte("chunk"),
+			PaidSat:      paidSat,
+			SpeedBps:     1000,
+		})
+	}
+	return filedownload.StrategyTransferResult{
+		ChunkCount: uint32(len(chunks)),
+		Chunks:     chunks,
 	}, nil
 }
 
@@ -206,6 +230,7 @@ func TestHTTPHandlerHandleStartDoneAfterTransfer(t *testing.T) {
 		},
 	}
 	caps := &DownloadFileCaps{
+		frontBinder:     newDownloadFileOrderAdapter(store, ""),
 		jobStore:        newDownloadFileJobStoreAdapter(store),
 		seedStore:       httpTestDownloadSeedStore{meta: filedownload.SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
 		fileStore:       files,
@@ -267,11 +292,12 @@ func TestHTTPHandlerHandleStartResumeRunningJob(t *testing.T) {
 
 	ctx := context.Background()
 	if _, created, err := jobStore.CreateJob(ctx, &filedownload.Job{
-		JobID:      jobID,
-		SeedHash:   seedHash,
-		State:      filedownload.StateRunning,
-		ChunkCount: 2,
-		DemandID:   "demand_http_resume",
+		JobID:        jobID,
+		SeedHash:     seedHash,
+		FrontOrderID: "fo_http_resume",
+		State:        filedownload.StateRunning,
+		ChunkCount:   2,
+		DemandID:     "demand_http_resume",
 	}); err != nil {
 		t.Fatalf("create job failed: %v", err)
 	} else if !created {
@@ -319,6 +345,7 @@ func TestHTTPHandlerHandleStartResumeRunningJob(t *testing.T) {
 	caps := &DownloadFileCaps{
 		store:          store,
 		jobStore:       jobStore,
+		frontBinder:    newDownloadFileOrderAdapter(store, ""),
 		seedStore:      httpTestDownloadSeedStore{meta: filedownload.SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
 		fileStore:      files,
 		quoteReader:    httpTestDownloadQuoteReader{quotes: []filedownload.QuoteReport{{SellerPubkey: "seller_http", SeedPriceSat: 100, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "http.bin", MimeType: "application/octet-stream", Selected: true}}},
@@ -361,11 +388,11 @@ func TestHTTPHandlerHandleStartResumeRunningJob(t *testing.T) {
 	if files.completeCalls != 1 {
 		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalls)
 	}
-	if len(transfer.calls) != 1 {
-		t.Fatalf("expected one transfer call, got %d", len(transfer.calls))
+	if len(transfer.strategyCalls) != 1 {
+		t.Fatalf("expected one strategy transfer call, got %d", len(transfer.strategyCalls))
 	}
-	if transfer.calls[0].ChunkIndex != 1 {
-		t.Fatalf("expected transferred chunk 1, got %d", transfer.calls[0].ChunkIndex)
+	if transfer.strategyCalls[0].FrontOrderID != "fo_http_resume" {
+		t.Fatalf("expected reused front_order_id, got %s", transfer.strategyCalls[0].FrontOrderID)
 	}
 }
 

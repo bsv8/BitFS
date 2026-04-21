@@ -14,31 +14,46 @@ import (
 // - 运行入口禁止使用 NewMemoryJobStoreForTest。
 type DownloadFileCaps struct {
 	transferEnv     transferRuntimeCaps
+	cfgSource       configSnapshotter
 	store           *clientDB
 	jobStore        filedownload.JobStore
+	frontBinder     filedownload.FrontOrderBinder
 	seedStore       filedownload.SeedStore
+	seedResolver    filedownload.SeedResolver
 	fileStore       filedownload.FileStore
 	demandPublisher filedownload.DemandPublisher
 	quoteReader     filedownload.QuoteReader
+	quoteWaiter     filedownload.QuoteWaiter
 	policy          filedownload.DownloadPolicy
-	transferRunner  filedownload.TransferRunner
+	transferRunner  filedownload.StrategyTransferRunner
 }
 
-func newDownloadFileCaps(transferEnv transferRuntimeCaps, store *clientDB, demandEnv gatewayDemandPublishChainTxEnv) *DownloadFileCaps {
+func newDownloadFileCaps(rt *Runtime, store *clientDB, demandEnv gatewayDemandPublishChainTxEnv, cfgSource configSnapshotter) *DownloadFileCaps {
 	if store == nil {
 		return nil
 	}
 	return &DownloadFileCaps{
-		transferEnv:     transferEnv,
+		transferEnv:     rt,
+		cfgSource:       cfgSource,
 		store:           store,
 		jobStore:        newDownloadFileJobStoreAdapter(store),
-		seedStore:       newDownloadFileSeedAdapter(store),
+		frontBinder:     newDownloadFileOrderAdapter(store, firstNonEmpty(runtimeClientID(rt))),
+		seedStore:       newDownloadFileSeedAdapter(store, rt, cfgSource),
+		seedResolver:    newDownloadFileSeedAdapter(store, rt, cfgSource),
 		fileStore:       newDownloadFileWorkspaceAdapter(store),
 		demandPublisher: newDownloadFileDemandAdapter(store, demandEnv),
 		quoteReader:     newDownloadFileQuoteAdapter(store),
+		quoteWaiter:     newDownloadFileQuoteAdapter(store),
 		policy:          newDownloadFilePolicyAdapter(),
-		transferRunner:  newDownloadFileTransferAdapter(transferEnv, store),
+		transferRunner:  newDownloadFileTransferAdapter(rt, store),
 	}
+}
+
+func runtimeClientID(rt *Runtime) string {
+	if rt == nil {
+		return ""
+	}
+	return rt.ClientID()
 }
 
 func (c *DownloadFileCaps) JobStore() filedownload.JobStore {
@@ -60,13 +75,16 @@ func (c *DownloadFileCaps) caps() filedownload.DownloadCaps {
 		return filedownload.DownloadCaps{}
 	}
 	return filedownload.DownloadCaps{
-		Jobs:      c.jobStore,
-		Seeds:     c.seedStore,
-		Files:     c.fileStore,
-		Demands:   c.demandPublisher,
-		Quotes:    c.quoteReader,
-		Policy:    c.policy,
-		Transfers: c.transferRunner,
+		Jobs:         c.jobStore,
+		FrontOrders:  c.frontBinder,
+		Seeds:        c.seedStore,
+		SeedResolver: c.seedResolver,
+		Files:        c.fileStore,
+		Demands:      c.demandPublisher,
+		Quotes:       c.quoteReader,
+		QuoteWaiter:  c.quoteWaiter,
+		Policy:       c.policy,
+		Transfers:    c.transferRunner,
 	}
 }
 

@@ -25,6 +25,8 @@ func (a *downloadFileDemandAdapter) PublishDemand(ctx context.Context, req filed
 		return filedownload.PublishDemandResult{}, filedownload.NewError(filedownload.CodeBadRequest, "invalid demand request")
 	}
 	resp, err := TriggerGatewayDemandPublishChainTxQuotePay(ctx, a.store, a.env, PublishDemandParams{
+		JobID:         req.JobID,
+		FrontOrderID:  req.FrontOrderID,
 		SeedHash:      seedHash,
 		ChunkCount:    req.ChunkCount,
 		GatewayPeerID: req.GatewayID,

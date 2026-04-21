@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -35,9 +36,14 @@ func newDownloadFileJobStoreAdapter(store *clientDB) *downloadFileJobStoreAdapte
 }
 
 func jobToModule(entJob *gen.ProcGetFileByHashJobs) filedownload.Job {
+	frontOrderID := ""
+	if entJob.FrontOrderID != nil {
+		frontOrderID = strings.TrimSpace(*entJob.FrontOrderID)
+	}
 	return filedownload.Job{
 		JobID:           entJob.JobID,
 		SeedHash:        entJob.SeedHash,
+		FrontOrderID:    frontOrderID,
 		DemandID:        entJob.DemandID,
 		State:           entJob.State,
 		ChunkCount:      uint32(entJob.ChunkCount),
@@ -84,6 +90,13 @@ func (s *downloadFileJobStoreAdapter) CreateJob(ctx context.Context, job *filedo
 			SetCreatedAtUnix(now).
 			SetUpdatedAtUnix(now).
 			Save(ctx)
+		if err == nil && strings.TrimSpace(job.FrontOrderID) != "" {
+			_, err = tx.ProcGetFileByHashJobs.Update().
+				Where(procgetfilebyhashjobs.JobIDEQ(createdEnt.JobID)).
+				SetFrontOrderID(strings.TrimSpace(job.FrontOrderID)).
+				SetUpdatedAtUnix(now).
+				Save(ctx)
+		}
 		if err != nil {
 			if isEntConstraintError(err) {
 				// seed_hash 冲突，查回已有 job
@@ -233,6 +246,50 @@ func (s *downloadFileJobStoreAdapter) SetDemandID(ctx context.Context, jobID str
 			Save(ctx)
 		if err != nil {
 			return fmt.Errorf("set demand_id failed: %w", err)
+		}
+		if updated == 0 {
+			return filedownload.NewError(filedownload.CodeJobNotFound, "job not found: "+jobID)
+		}
+		return nil
+	})
+}
+
+func (s *downloadFileJobStoreAdapter) SetFrontOrderID(ctx context.Context, jobID string, frontOrderID string) error {
+	if jobID == "" {
+		return filedownload.NewError(filedownload.CodeBadRequest, "job_id is required")
+	}
+	frontOrderID = strings.TrimSpace(frontOrderID)
+	if frontOrderID == "" {
+		return filedownload.NewError(filedownload.CodeBadRequest, "front_order_id is required")
+	}
+
+	return clientDBEntTx(ctx, s.store, func(tx *gen.Tx) error {
+		entJob, err := tx.ProcGetFileByHashJobs.Query().
+			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
+			Only(ctx)
+		if err != nil {
+			if gen.IsNotFound(err) {
+				return filedownload.NewError(filedownload.CodeJobNotFound, "job not found: "+jobID)
+			}
+			return fmt.Errorf("find job failed: %w", err)
+		}
+		current := ""
+		if entJob.FrontOrderID != nil {
+			current = strings.TrimSpace(*entJob.FrontOrderID)
+		}
+		if current != "" && !strings.EqualFold(current, frontOrderID) {
+			return fmt.Errorf("front_order_id already bound: %s", current)
+		}
+		if current == frontOrderID {
+			return nil
+		}
+		updated, err := tx.ProcGetFileByHashJobs.Update().
+			Where(procgetfilebyhashjobs.JobIDEQ(jobID)).
+			SetFrontOrderID(frontOrderID).
+			SetUpdatedAtUnix(time.Now().Unix()).
+			Save(ctx)
+		if err != nil {
+			return fmt.Errorf("set front_order_id failed: %w", err)
 		}
 		if updated == 0 {
 			return filedownload.NewError(filedownload.CodeJobNotFound, "job not found: "+jobID)

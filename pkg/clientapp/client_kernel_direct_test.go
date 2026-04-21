@@ -6,32 +6,32 @@ import (
 	"testing"
 )
 
-func TestKernelDirectDownloadCoreWritesJournal(t *testing.T) {
+func TestKernelDownloadByHashWritesJournal(t *testing.T) {
 	t.Parallel()
 	db := newWalletAPITestDB(t)
 	rt := &Runtime{}
 	rt.kernel = newClientKernel(rt, newClientDB(db, nil), nil)
 
-	_, err := runDirectDownloadCore(context.Background(), rt, directDownloadCoreParams{
+	_, err := runDownloadByHash(context.Background(), rt, downloadByHashParams{
 		SeedHash: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
-	}, directDownloadCoreHooks{})
+	}, downloadByHashHooks{})
 	if err == nil {
-		t.Fatalf("expected direct download core to fail on incomplete runtime")
+		t.Fatalf("expected download by hash to fail on incomplete runtime")
 	}
 
 	var status, errorCode, aggregateID string
 	if qerr := db.QueryRow(
 		`SELECT status,error_code,aggregate_id FROM proc_command_journal
 		 WHERE command_type=? ORDER BY id DESC LIMIT 1`,
-		clientKernelCommandDirectDownloadCore,
+		clientKernelCommandDownloadByHash,
 	).Scan(&status, &errorCode, &aggregateID); qerr != nil {
 		t.Fatalf("query proc_command_journal failed: %v", qerr)
 	}
 	if strings.TrimSpace(status) != "failed" {
 		t.Fatalf("journal status mismatch: got=%s want=failed", status)
 	}
-	if strings.TrimSpace(errorCode) != "direct_download_core_failed" {
-		t.Fatalf("journal error_code mismatch: got=%s want=direct_download_core_failed", errorCode)
+	if strings.TrimSpace(errorCode) != "download_by_hash_failed" {
+		t.Fatalf("journal error_code mismatch: got=%s want=download_by_hash_failed", errorCode)
 	}
 	if !strings.HasPrefix(strings.TrimSpace(aggregateID), "seed:") {
 		t.Fatalf("journal aggregate_id mismatch: got=%s", aggregateID)

@@ -2,6 +2,7 @@ package filedownload
 
 import (
 	"context"
+	"time"
 )
 
 // SeedStore seed 存储能力（只管 seed bytes、seed_hash、chunk_hashes、chunk_count、file_size）
@@ -10,6 +11,14 @@ type SeedStore interface {
 	SaveSeed(ctx context.Context, input SaveSeedInput) error
 	// LoadSeedMeta 加载 seed 元数据（不含 bytes）
 	LoadSeedMeta(ctx context.Context, seedHash string) (SeedMeta, bool, error)
+}
+
+// SeedResolver seed 解析能力。
+// 设计说明：
+// - 本地没有 seed meta 时，必须能通过卖家侧补回并落盘；
+// - 解析结果不是临时值，必须写回 SeedStore 或等价事实层。
+type SeedResolver interface {
+	ResolveAndSaveSeedMeta(ctx context.Context, req SeedResolveRequest) (SeedMeta, error)
 }
 
 // FileStore 本地文件存储能力（只管本地文件、part 文件、chunk 落盘、最终文件登记）
@@ -24,6 +33,26 @@ type FileStore interface {
 	CompleteFile(ctx context.Context, input CompleteFileInput) (LocalFile, error)
 }
 
+// FrontOrderBinder 下载级 front_order 绑定能力。
+// 设计说明：
+// - 只负责确保本次下载对应的 front_order，以及 job 与 front_order 的绑定；
+// - 不承载 business / settlement 实现细节；
+// - 已绑定后不得改绑到别的 front_order。
+type FrontOrderBinder interface {
+	EnsureFrontOrder(ctx context.Context, req FrontOrderRequest) (string, error)
+	BindJobFrontOrder(ctx context.Context, jobID string, frontOrderID string) error
+}
+
+// FrontOrderRequest 绑定下载级 front_order 的请求。
+type FrontOrderRequest struct {
+	JobID          string
+	SeedHash       string
+	FrontOrderID   string
+	Note           string
+	OwnerPubkeyHex string
+	TargetObjectID string
+}
+
 // DemandPublisher 发布需求能力
 type DemandPublisher interface {
 	// PublishDemand 发布下载需求
@@ -32,9 +61,11 @@ type DemandPublisher interface {
 
 // PublishDemandRequest 发布需求请求
 type PublishDemandRequest struct {
-	SeedHash   string
-	ChunkCount uint32
-	GatewayID  string
+	JobID        string
+	FrontOrderID string
+	SeedHash     string
+	ChunkCount   uint32
+	GatewayID    string
 }
 
 // PublishDemandResult 发布需求结果
@@ -43,16 +74,29 @@ type PublishDemandResult struct {
 	Status   string
 }
 
-// QuoteReader 读取报价能力
+// QuoteReader 读取报价能力。
 type QuoteReader interface {
 	// ListQuotes 列出某 demand 的所有报价
 	ListQuotes(ctx context.Context, demandID string) ([]QuoteReport, error)
 }
 
-// TransferRunner 传输执行能力
-type TransferRunner interface {
-	// RunChunkTransfer 执行单 chunk 传输
-	RunChunkTransfer(ctx context.Context, req ChunkTransferRequest) (ChunkTransferResult, error)
+// QuoteWaiter 等待报价能力。
+type QuoteWaiter interface {
+	WaitQuotes(ctx context.Context, req QuoteWaitRequest) ([]QuoteReport, error)
+}
+
+// QuoteWaitRequest 等待报价请求。
+type QuoteWaitRequest struct {
+	DemandID         string
+	MaxRetry         int
+	Interval         time.Duration
+	MaxSeedPriceSat  uint64
+	MaxChunkPriceSat uint64
+}
+
+// StrategyTransferRunner 多卖家策略传输能力。
+type StrategyTransferRunner interface {
+	RunTransferByStrategy(ctx context.Context, req StrategyTransferRequest) (StrategyTransferResult, error)
 }
 
 // ChunkTransferRequest chunk 传输请求
@@ -74,26 +118,47 @@ type ChunkTransferResult struct {
 	RejectReason string
 }
 
+// StrategyTransferRequest 多卖家策略传输请求。
+type StrategyTransferRequest struct {
+	FrontOrderID    string
+	DemandID        string
+	SeedHash        string
+	ChunkCount      uint32
+	ArbiterPubHex   string
+	MaxSeedPrice    uint64
+	MaxChunkPrice   uint64
+	Strategy        string
+	PoolAmountSat   uint64
+	MaxChunkRetries int
+	Candidates      []QuoteReport
+}
+
+// StrategyTransferResult 多卖家策略传输结果。
+type StrategyTransferResult struct {
+	ChunkCount uint32
+	Chunks     []TransferChunkResult
+	Sellers    []TransferSellerStatItem
+}
+
 // DownloadPolicy 下载策略能力
 type DownloadPolicy interface {
-	// SelectQuote 选择本次下载使用的报价。
-	// 返回值：
-	//   - selectedQuote: 被选中的报价
-	//   - ok: true 表示找到可用报价
-	//   - reason: 失败或拒绝原因
-	SelectQuote(ctx context.Context, req StartRequest, quotes []QuoteReport) (selectedQuote QuoteReport, ok bool, reason string, err error)
+	// SelectQuotes 选择本次下载使用的报价集合。
+	SelectQuotes(ctx context.Context, req StartRequest, quotes []QuoteReport) (QuoteSelection, error)
 }
 
 // DownloadCaps 静态下载总调度能力集合。
 // 这里只允许放行为接口，不允许放具体实现对象。
 type DownloadCaps struct {
-	Jobs      JobStore
-	Seeds     SeedStore
-	Files     FileStore
-	Demands   DemandPublisher
-	Quotes    QuoteReader
-	Policy    DownloadPolicy
-	Transfers TransferRunner
+	Jobs         JobStore
+	FrontOrders  FrontOrderBinder
+	Seeds        SeedStore
+	SeedResolver SeedResolver
+	Files        FileStore
+	Demands      DemandPublisher
+	Quotes       QuoteReader
+	QuoteWaiter  QuoteWaiter
+	Policy       DownloadPolicy
+	Transfers    StrategyTransferRunner
 }
 
 // JobStore job 存储能力（持久化语义）
@@ -114,6 +179,8 @@ type JobStore interface {
 	SetChunkCount(ctx context.Context, jobID string, chunkCount uint32) error
 	// SetDemandID 设置 demand ID
 	SetDemandID(ctx context.Context, jobID string, demandID string) error
+	// SetFrontOrderID 设置下载级 front_order_id，已绑定时不允许改绑到别的值
+	SetFrontOrderID(ctx context.Context, jobID string, frontOrderID string) error
 	// SetError 设置 job 错误信息
 	SetError(ctx context.Context, jobID string, message string) error
 	// SetPartFilePath 设置 part 文件路径

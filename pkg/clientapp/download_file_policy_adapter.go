@@ -13,29 +13,40 @@ func newDownloadFilePolicyAdapter() *downloadFilePolicyAdapter {
 	return &downloadFilePolicyAdapter{}
 }
 
-func (a *downloadFilePolicyAdapter) SelectQuote(ctx context.Context, req filedownload.StartRequest, quotes []filedownload.QuoteReport) (filedownload.QuoteReport, bool, string, error) {
+func (a *downloadFilePolicyAdapter) SelectQuotes(ctx context.Context, req filedownload.StartRequest, quotes []filedownload.QuoteReport) (filedownload.QuoteSelection, error) {
 	if len(quotes) == 0 {
-		return filedownload.QuoteReport{}, false, "quote_unavailable", nil
+		return filedownload.QuoteSelection{Reason: "quote_unavailable"}, nil
 	}
-
+	out := filedownload.QuoteSelection{
+		Candidates: make([]filedownload.QuoteReport, 0, len(quotes)),
+		Rejected:   make([]filedownload.QuoteReport, 0),
+	}
 	var best filedownload.QuoteReport
 	bestCost := ^uint64(0)
 	bestFound := false
-	var rejectedReason string
 
 	for _, quote := range quotes {
+		rejected := false
+		reason := ""
 		if req.MaxSeedPrice > 0 && quote.SeedPriceSat > req.MaxSeedPrice {
-			rejectedReason = "blocked_by_budget"
+			rejected = true
+			reason = "blocked_by_budget"
+		}
+		if !rejected && req.MaxChunkPrice > 0 && quote.ChunkPriceSat > req.MaxChunkPrice {
+			rejected = true
+			reason = "blocked_by_budget"
+		}
+		if rejected {
+			quote.RejectReason = reason
+			out.Rejected = append(out.Rejected, quote)
 			continue
 		}
-		if req.MaxChunkPrice > 0 && quote.ChunkPriceSat > req.MaxChunkPrice {
-			rejectedReason = "blocked_by_budget"
-			continue
-		}
+		out.Candidates = append(out.Candidates, quote)
 		total := quote.SeedPriceSat
 		if quote.ChunkCount > 0 {
 			if quote.ChunkPriceSat > 0 && uint64(quote.ChunkCount) > (^uint64(0))/quote.ChunkPriceSat {
-				rejectedReason = "blocked_by_budget"
+				quote.RejectReason = "blocked_by_budget"
+				out.Rejected = append(out.Rejected, quote)
 				continue
 			}
 			total += quote.ChunkPriceSat * uint64(quote.ChunkCount)
@@ -44,16 +55,19 @@ func (a *downloadFilePolicyAdapter) SelectQuote(ctx context.Context, req filedow
 			best = quote
 			bestCost = total
 			bestFound = true
-			rejectedReason = ""
 		}
 	}
 	if !bestFound {
-		if rejectedReason == "" {
-			rejectedReason = "blocked_by_budget"
-		}
-		return filedownload.QuoteReport{}, false, rejectedReason, nil
+		return filedownload.QuoteSelection{
+			Rejected: out.Rejected,
+			Reason:   "blocked_by_budget",
+		}, nil
 	}
-	return best, true, "", nil
+	out.Primary = best
+	if len(out.Candidates) == 0 {
+		out.Candidates = []filedownload.QuoteReport{best}
+	}
+	return out, nil
 }
 
 var _ filedownload.DownloadPolicy = (*downloadFilePolicyAdapter)(nil)

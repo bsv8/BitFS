@@ -245,7 +245,7 @@ func TestDirectCommandTriggerKeyEmpty(t *testing.T) {
 	// 模拟直接调用 kernel（非 orchestrator 发起）
 	cmd := clientKernelCommand{
 		CommandID:     "direct_test_cmd",
-		CommandType:   clientKernelCommandDirectDownloadCore,
+		CommandType:   clientKernelCommandDownloadByHash,
 		GatewayPeerID: "direct",
 		RequestedBy:   "client_kernel",
 		RequestedAt:   time.Now().Unix(),
@@ -331,7 +331,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	// 插入一条不带 trigger_key 的直接命令
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "direct_cmd_http",
-		CommandType:   clientKernelCommandDirectDownloadCore,
+		CommandType:   clientKernelCommandDownloadByHash,
 		GatewayPeerID: "direct",
 		AggregateID:   "seed:abc",
 		RequestedBy:   "client_kernel",

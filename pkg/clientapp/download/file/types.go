@@ -18,6 +18,7 @@ const (
 type Job struct {
 	JobID           string
 	SeedHash        string
+	FrontOrderID    string
 	DemandID        string
 	State           string
 	ChunkCount      uint32
@@ -40,11 +41,18 @@ const (
 
 // StartRequest 下载入口入参
 type StartRequest struct {
-	SeedHash      string `json:"seed_hash"`
-	ChunkCount    uint32 `json:"chunk_count,omitempty"`
-	GatewayPubkey string `json:"gateway_pubkey_hex,omitempty"`
-	MaxSeedPrice  uint64 `json:"max_seed_price_sat,omitempty"`
-	MaxChunkPrice uint64 `json:"max_chunk_price_sat,omitempty"`
+	SeedHash             string `json:"seed_hash"`
+	FrontOrderID         string `json:"front_order_id,omitempty"`
+	ArbiterPubkeyHex     string `json:"arbiter_pubkey_hex,omitempty"`
+	QuoteMaxRetry        int    `json:"quote_max_retry,omitempty"`
+	QuoteIntervalSeconds int    `json:"quote_interval_seconds,omitempty"`
+	Strategy             string `json:"strategy,omitempty"`
+	PoolAmountSat        uint64 `json:"pool_amount_sat,omitempty"`
+	MaxChunkRetries      int    `json:"max_chunk_retries,omitempty"`
+	ChunkCount           uint32 `json:"chunk_count,omitempty"`
+	GatewayPubkey        string `json:"gateway_pubkey_hex,omitempty"`
+	MaxSeedPrice         uint64 `json:"max_seed_price_sat,omitempty"`
+	MaxChunkPrice        uint64 `json:"max_chunk_price_sat,omitempty"`
 }
 
 // StartResult 下载入口返回
@@ -58,6 +66,7 @@ type StartResult struct {
 type Status struct {
 	JobID           string `json:"job_id"`
 	SeedHash        string `json:"seed_hash"`
+	FrontOrderID    string `json:"front_order_id,omitempty"`
 	DemandID        string `json:"demand_id,omitempty"`
 	State           string `json:"state"`
 	ChunkCount      uint32 `json:"chunk_count"`
@@ -105,18 +114,20 @@ type NodeReport struct {
 
 // QuoteReport 单 seller 报价
 type QuoteReport struct {
-	SellerPubkey        string   `json:"seller_pubkey_hex"`
-	SeedPriceSat        uint64   `json:"seed_price_sat"`
-	ChunkPriceSat       uint64   `json:"chunk_price_sat"`
-	ChunkCount          uint32   `json:"chunk_count"`
-	AvailableChunks     []uint32 `json:"available_chunks,omitempty"`
-	RecommendedFileName string   `json:"recommended_file_name,omitempty"`
-	MimeType            string   `json:"mime_type,omitempty"`
-	FileSizeBytes       uint64   `json:"file_size_bytes,omitempty"`
-	QuoteTimestamp      int64    `json:"quote_timestamp"`
-	ExpiresAtUnix       int64    `json:"expires_at_unix,omitempty"`
-	Selected            bool     `json:"selected"`
-	RejectReason        string   `json:"reject_reason,omitempty"`
+	DemandID              string   `json:"demand_id,omitempty"`
+	SellerPubkey          string   `json:"seller_pubkey_hex"`
+	SellerArbiterPubHexes []string `json:"seller_arbiter_pubkey_hexes,omitempty"`
+	SeedPriceSat          uint64   `json:"seed_price_sat"`
+	ChunkPriceSat         uint64   `json:"chunk_price_sat"`
+	ChunkCount            uint32   `json:"chunk_count"`
+	AvailableChunks       []uint32 `json:"available_chunks,omitempty"`
+	RecommendedFileName   string   `json:"recommended_file_name,omitempty"`
+	MimeType              string   `json:"mime_type,omitempty"`
+	FileSizeBytes         uint64   `json:"file_size_bytes,omitempty"`
+	QuoteTimestamp        int64    `json:"quote_timestamp"`
+	ExpiresAtUnix         int64    `json:"expires_at_unix,omitempty"`
+	Selected              bool     `json:"selected"`
+	RejectReason          string   `json:"reject_reason,omitempty"`
 }
 
 // SeedMeta seed 元数据（不含实际 bytes）
@@ -126,6 +137,14 @@ type SeedMeta struct {
 	ChunkCount    uint32   `json:"chunk_count"`
 	FileSize      uint64   `json:"file_size"`
 	CreatedAtUnix int64    `json:"created_at_unix"`
+}
+
+// SeedResolveRequest seed 解析请求。
+type SeedResolveRequest struct {
+	SeedHash     string
+	FrontOrderID string
+	DemandID     string
+	Candidates   []QuoteReport
 }
 
 // SaveSeedInput 保存 seed 输入
@@ -171,4 +190,35 @@ type CompleteFileInput struct {
 	RecommendedFileName   string
 	MimeType              string
 	AvailableChunkIndexes []uint32
+}
+
+// QuoteSelection 报价筛选结果。
+type QuoteSelection struct {
+	Primary    QuoteReport
+	Candidates []QuoteReport
+	Rejected   []QuoteReport
+	Reason     string
+}
+
+// TransferSellerStatItem 单卖家传输统计。
+type TransferSellerStatItem struct {
+	SellerPubHex        string
+	ChunkPrice          uint64
+	SeedPrice           uint64
+	SuccessChunks       uint32
+	FailedChunks        uint32
+	AvgBytesPerSecond   float64
+	EMASpeedBytesPerSec float64
+	Pruned              bool
+	Broken              bool
+}
+
+// TransferChunkResult 单个 chunk 的传输结果。
+type TransferChunkResult struct {
+	ChunkIndex   uint32 `json:"chunk_index"`
+	ChunkHash    string `json:"chunk_hash,omitempty"`
+	SellerPubkey string `json:"seller_pubkey_hex,omitempty"`
+	Bytes        []byte `json:"bytes,omitempty"`
+	PaidSat      uint64 `json:"paid_sat"`
+	SpeedBps     uint64 `json:"speed_bps"`
 }

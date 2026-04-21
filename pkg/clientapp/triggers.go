@@ -133,6 +133,8 @@ func TriggerBizOrderPayBSV(ctx context.Context, store *clientDB, rt *Runtime, re
 }
 
 type PublishDemandParams struct {
+	JobID         string `json:"job_id,omitempty"`
+	FrontOrderID  string `json:"front_order_id,omitempty"`
 	SeedHash      string `json:"seed_hash"`
 	ChunkCount    uint32 `json:"chunk_count"`
 	GatewayPeerID string `json:"gateway_pubkey_hex,omitempty"`
@@ -231,7 +233,11 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		ChunkCount: p.ChunkCount,
 		BuyerAddrs: buyerAddrs,
 	}
-	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash})
+	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_begin", map[string]any{
+		"seed_hash":      seedHash,
+		"job_id":         strings.TrimSpace(p.JobID),
+		"front_order_id": strings.TrimSpace(p.FrontOrderID),
+	})
 	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastDemandPublish, body, decodeDemandPublishRouteResp)
 	if err != nil {
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
@@ -242,10 +248,12 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		return contractmessage.DemandPublishPaidResp{}, err
 	}
 	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_end", map[string]any{
-		"demand_id": resp.DemandID,
-		"status":    resp.Status,
-		"success":   resp.Success,
-		"error":     strings.TrimSpace(resp.Error),
+		"demand_id":      resp.DemandID,
+		"status":         resp.Status,
+		"success":        resp.Success,
+		"error":          strings.TrimSpace(resp.Error),
+		"job_id":         strings.TrimSpace(p.JobID),
+		"front_order_id": strings.TrimSpace(p.FrontOrderID),
 	})
 	if err := dbRecordDemand(ctx, store, resp.DemandID, seedHash); err != nil {
 		return contractmessage.DemandPublishPaidResp{}, err

@@ -1139,7 +1139,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	// 插入一条直接命令（trigger_key 为空）
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "direct_cmd_1",
-		CommandType:   clientKernelCommandDirectDownloadCore,
+		CommandType:   clientKernelCommandDownloadByHash,
 		GatewayPeerID: "direct",
 		AggregateID:   "seed:abc123",
 		RequestedBy:   "client_kernel",

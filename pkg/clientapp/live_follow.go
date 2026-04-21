@@ -3,13 +3,13 @@ package clientapp
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
 
 type LiveFollowStatus struct {
@@ -118,32 +118,35 @@ func liveAutoBuySegment(ctx context.Context, store *clientDB, rt *Runtime, decis
 	if rt == nil || rt.Workspace == nil {
 		return liveAutoBuyResult{}, fmt.Errorf("runtime not initialized")
 	}
-	download, err := runDirectDownloadCore(ctx, rt, directDownloadCoreParams{
-		SeedHash:           decision.SeedHash,
-		DemandChunkCount:   1,
-		TransferChunkCount: 0,
-		QuoteMaxRetry:      8,
-		QuoteInterval:      2 * time.Second,
-		MaxChunkPrice:      decision.EstimatedChunkPrice,
-		Strategy:           TransferStrategySmart,
-	}, directDownloadCoreHooks{})
+	caps := newDownloadFileCaps(rt, rt.store, rt, rt)
+	if caps == nil {
+		return liveAutoBuyResult{}, fmt.Errorf("download caps not available")
+	}
+	download, err := filedownload.StartByHash(ctx, caps.caps(), filedownload.StartRequest{
+		SeedHash:             decision.SeedHash,
+		QuoteMaxRetry:        8,
+		QuoteIntervalSeconds: 2,
+		MaxChunkPrice:        decision.EstimatedChunkPrice,
+		Strategy:             TransferStrategySmart,
+	})
 	if err != nil {
 		return liveAutoBuyResult{}, err
 	}
-	outPath, err := rt.Workspace.SelectLiveSegmentOutputPath(snapshot.StreamID, decision.TargetSegmentIndex, uint64(len(download.Transfer.Data)))
+	outPath := strings.TrimSpace(download.Status.OutputFilePath)
+	if outPath == "" {
+		return liveAutoBuyResult{}, fmt.Errorf("output file path missing")
+	}
+	seedBytes, seedHash, chunkCount, err := buildSeedV1(outPath)
 	if err != nil {
 		return liveAutoBuyResult{}, err
 	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return liveAutoBuyResult{}, err
-	}
-	if err := os.WriteFile(outPath, download.Transfer.Data, 0o644); err != nil {
-		return liveAutoBuyResult{}, err
+	if !strings.EqualFold(seedHash, decision.SeedHash) {
+		return liveAutoBuyResult{}, fmt.Errorf("seed hash mismatch: expect=%s got=%s", decision.SeedHash, seedHash)
 	}
 	if _, err := rt.Workspace.RegisterDownloadedFile(registerDownloadedFileParams{
 		FilePath:              outPath,
-		Seed:                  download.Transfer.Seed,
-		AvailableChunkIndexes: contiguousChunkIndexes(download.Transfer.ChunkCount),
+		Seed:                  seedBytes,
+		AvailableChunkIndexes: contiguousChunkIndexes(chunkCount),
 		RecommendedFileName:   filepath.Base(outPath),
 		MIMEHint:              "",
 	}); err != nil {

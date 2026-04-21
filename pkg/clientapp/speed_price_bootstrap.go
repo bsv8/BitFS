@@ -10,7 +10,7 @@ import (
 
 type speedPriceBootstrapParams struct {
 	Ctx             context.Context
-	Buyer           *Runtime
+	Buyer           transferRuntimeCaps
 	Store           *clientDB
 	FrontOrderID    string // 本次下载发起唯一，显式传递
 	Quotes          []DirectQuoteItem
@@ -33,6 +33,10 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 	if p.Buyer == nil {
 		return nil, seedV1Meta{}, nil, fmt.Errorf("buyer runtime is required")
 	}
+	buyerRuntime, ok := p.Buyer.(*Runtime)
+	if !ok || buyerRuntime == nil {
+		return nil, seedV1Meta{}, nil, fmt.Errorf("buyer runtime is required")
+	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
 	if seedHash == "" {
 		return nil, seedV1Meta{}, nil, fmt.Errorf("seed hash is required")
@@ -51,7 +55,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 
 	workers := make([]*transferSellerWorker, 0, len(quotes))
 	for _, q := range quotes {
-		arbiterPubHex, err := resolveDealArbiter(p.Buyer, q.SellerArbiterPubHexes, p.ArbiterPubHex)
+		arbiterPubHex, err := resolveDealArbiter(buyerRuntime, q.SellerArbiterPubHexes, p.ArbiterPubHex)
 		if err != nil {
 			if p.OnQuoteRejected != nil {
 				p.OnQuoteRejected(q, err)
@@ -86,7 +90,7 @@ func prepareSpeedPriceWorkersAndSeed(p speedPriceBootstrapParams) ([]*transferSe
 			}
 			continue
 		}
-		seedRes, err := TriggerClientSeedGet(p.Ctx, p.Buyer, SeedGetParams{
+		seedRes, err := TriggerClientSeedGet(p.Ctx, buyerRuntime, SeedGetParams{
 			SellerPeerID: w.quote.SellerPubHex,
 			SessionID:    w.sessionID,
 			SeedHash:     seedHash,

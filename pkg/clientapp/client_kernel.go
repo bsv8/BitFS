@@ -15,7 +15,7 @@ const (
 	clientKernelCommandFeePoolCycleTick    = "feepool.cycle_tick"
 	clientKernelCommandFeePoolMaintain     = "feepool.maintain"
 	clientKernelCommandLivePlanPurchase    = "live.plan_purchase"
-	clientKernelCommandDirectDownloadCore  = "direct.download_core"
+	clientKernelCommandDownloadByHash      = "download.by_hash"
 	clientKernelCommandTransferByStrategy  = "direct.transfer_by_strategy"
 )
 
@@ -253,24 +253,24 @@ func (k *clientKernel) dispatch(ctx context.Context, cmd clientKernelCommand) cl
 	}
 }
 
-func (k *clientKernel) runDirectDownloadCoreImpl(ctx context.Context, p directDownloadCoreParams, hooks directDownloadCoreHooks) (directDownloadCoreResult, error) {
+func (k *clientKernel) runDownloadByHashImpl(ctx context.Context, p downloadByHashParams, hooks downloadByHashHooks) (downloadByHashResult, error) {
 	if k == nil || k.rt == nil {
-		return directDownloadCoreResult{}, fmt.Errorf("runtime not initialized")
+		return downloadByHashResult{}, fmt.Errorf("runtime not initialized")
 	}
 	cmdID := newKernelCommandID()
 	startAt := time.Now()
-	out, err := runDirectDownloadCoreImpl(ctx, k.store, k.rt, p, hooks)
+	out, err := runDownloadByHashImpl(ctx, k.store, k.rt, p, hooks)
 	status := "applied"
 	errCode := ""
 	errMsg := ""
 	if err != nil {
 		status = "failed"
-		errCode = "direct_download_core_failed"
+		errCode = "download_by_hash_failed"
 		errMsg = err.Error()
 	}
 	_ = dbAppendCommandJournal(ctx, k.store, commandJournalEntry{
 		CommandID:     cmdID,
-		CommandType:   clientKernelCommandDirectDownloadCore,
+		CommandType:   clientKernelCommandDownloadByHash,
 		GatewayPeerID: strings.TrimSpace(out.GatewayPeerID),
 		AggregateID:   "seed:" + strings.ToLower(strings.TrimSpace(p.SeedHash)),
 		RequestedBy:   "client_kernel",

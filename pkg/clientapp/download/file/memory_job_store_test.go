@@ -11,6 +11,7 @@ import (
 type memoryJob struct {
 	JobID           string
 	SeedHash        string
+	FrontOrderID    string
 	DemandID        string
 	State           string
 	ChunkCount      uint32
@@ -52,6 +53,7 @@ func jobToStatus(job *memoryJob) Status {
 	return Status{
 		JobID:           job.JobID,
 		SeedHash:        job.SeedHash,
+		FrontOrderID:    job.FrontOrderID,
 		DemandID:        job.DemandID,
 		State:           job.State,
 		ChunkCount:      job.ChunkCount,
@@ -73,6 +75,7 @@ func jobToSnapshot(job *memoryJob) Job {
 	return Job{
 		JobID:           job.JobID,
 		SeedHash:        job.SeedHash,
+		FrontOrderID:    job.FrontOrderID,
 		DemandID:        job.DemandID,
 		State:           job.State,
 		ChunkCount:      job.ChunkCount,
@@ -110,11 +113,12 @@ func (s *MemoryJobStore) CreateJob(ctx context.Context, job *Job) (Job, bool, er
 	}
 
 	mj := &memoryJob{
-		JobID:      job.JobID,
-		SeedHash:   job.SeedHash,
-		DemandID:   job.DemandID,
-		State:      job.State,
-		ChunkCount: job.ChunkCount,
+		JobID:        job.JobID,
+		SeedHash:     job.SeedHash,
+		FrontOrderID: job.FrontOrderID,
+		DemandID:     job.DemandID,
+		State:        job.State,
+		ChunkCount:   job.ChunkCount,
 	}
 	mj.chunkReports = make(map[uint32]ChunkReport)
 	mj.quotes = make(map[string]QuoteReport)
@@ -192,6 +196,23 @@ func (s *MemoryJobStore) SetDemandID(ctx context.Context, jobID string, demandID
 		return NewError(CodeJobNotFound, "job not found: "+jobID)
 	}
 	job.DemandID = demandID
+	job.UpdatedAt = time.Now()
+	return nil
+}
+
+// SetFrontOrderID 设置下载级 front_order_id，已绑定时不允许改绑。
+func (s *MemoryJobStore) SetFrontOrderID(ctx context.Context, jobID string, frontOrderID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	job, ok := s.jobs[jobID]
+	if !ok {
+		return NewError(CodeJobNotFound, "job not found: "+jobID)
+	}
+	if job.FrontOrderID != "" && job.FrontOrderID != frontOrderID {
+		return NewError(CodeBadRequest, "front_order_id already bound")
+	}
+	job.FrontOrderID = frontOrderID
 	job.UpdatedAt = time.Now()
 	return nil
 }

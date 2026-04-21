@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
+	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
 
 const (
@@ -22,23 +23,24 @@ const (
 // TransferChunksByStrategyParams 描述多卖家分块下载输入。
 // 说明：只放业务参数，不依赖 HTTP 管理接口。
 type TransferChunksByStrategyParams struct {
-	DemandID        string `json:"demand_id"`
-	SeedHash        string `json:"seed_hash"`
-	ChunkCount      uint32 `json:"chunk_count"` // 0 表示按 seed 元信息全量下载
-	ArbiterPubHex   string `json:"arbiter_pubkey_hex,omitempty"`
-	MaxSeedPrice    uint64 `json:"max_seed_price,omitempty"`
-	MaxChunkPrice   uint64 `json:"max_chunk_price,omitempty"`
-	Strategy        string `json:"strategy,omitempty"`
-	PoolAmount      uint64 `json:"pool_amount,omitempty"`
-	MaxChunkRetries int    `json:"max_chunk_retries,omitempty"`
+	FrontOrderID    string                     `json:"front_order_id"`
+	DemandID        string                     `json:"demand_id"`
+	SeedHash        string                     `json:"seed_hash"`
+	ChunkCount      uint32                     `json:"chunk_count"` // 0 表示按 seed 元信息全量下载
+	ArbiterPubHex   string                     `json:"arbiter_pubkey_hex,omitempty"`
+	MaxSeedPrice    uint64                     `json:"max_seed_price,omitempty"`
+	MaxChunkPrice   uint64                     `json:"max_chunk_price,omitempty"`
+	Strategy        string                     `json:"strategy,omitempty"`
+	PoolAmount      uint64                     `json:"pool_amount,omitempty"`
+	MaxChunkRetries int                        `json:"max_chunk_retries,omitempty"`
+	Candidates      []filedownload.QuoteReport `json:"candidates,omitempty"`
 }
 
 type TransferChunksByStrategyResult struct {
-	Data       []byte                   `json:"data"`
-	SHA256     string                   `json:"sha256"`
-	ChunkCount uint32                   `json:"chunk_count"`
-	Seed       []byte                   `json:"seed,omitempty"`
-	Sellers    []TransferSellerStatItem `json:"sellers"`
+	ChunkCount uint32                             `json:"chunk_count"`
+	Chunks     []filedownload.TransferChunkResult `json:"chunks"`
+	SHA256     string                             `json:"sha256,omitempty"`
+	Sellers    []TransferSellerStatItem           `json:"sellers"`
 }
 
 type TransferSellerStatItem struct {
@@ -477,59 +479,33 @@ func strategyNameOrDefault(name string) string {
 	return TransferStrategySmart
 }
 
-func TriggerTransferChunksByStrategy(ctx context.Context, store *clientDB, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
+func TriggerTransferChunksByStrategy(ctx context.Context, store *clientDB, buyer transferRuntimeCaps, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
 	if buyer == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := buyer.kernel
-	if kernel == nil {
-		return TransferChunksByStrategyResult{}, fmt.Errorf("client kernel not initialized")
+	if rt, ok := buyer.(*Runtime); ok && rt.kernel != nil {
+		return rt.kernel.runTransferChunksByStrategy(ctx, p)
 	}
-	return kernel.runTransferChunksByStrategy(ctx, p)
+	return triggerTransferChunksByStrategyImpl(ctx, store, buyer, p)
 }
 
-func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, buyer *Runtime, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
+func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, buyer transferRuntimeCaps, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {
 	// 设计说明：
 	// 1) 先做报价硬过滤（价格上限 + 可用仲裁）；
 	// 2) 再构造卖家 worker（每个 worker 维护独立 transfer-pool 会话）；
 	// 3) 用"中心调度 + worker 执行"模型按块并发下载；
 	// 4) 失败块重排回队列，超过重试阈值则整体失败；
 	// 5) 全部完成后关闭各自会话并汇总卖家统计，保证链上状态闭环。
-	// 第三步改动：
-	//   - 生成 front_order_id（本次下载发起唯一），创建 front_order 记录
-	//   - front_order_id 作为显式参数向后传递
-	if buyer == nil || buyer.Host == nil {
+	if buyer == nil || buyer.TransferHost() == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
 	}
 	seedHash := strings.ToLower(strings.TrimSpace(p.SeedHash))
-	if strings.TrimSpace(p.DemandID) == "" || seedHash == "" {
-		return TransferChunksByStrategyResult{}, fmt.Errorf("demand_id and seed_hash are required")
+	frontOrderID := strings.TrimSpace(p.FrontOrderID)
+	if frontOrderID == "" || strings.TrimSpace(p.DemandID) == "" || seedHash == "" {
+		return TransferChunksByStrategyResult{}, fmt.Errorf("front_order_id, demand_id and seed_hash are required")
 	}
 	if p.MaxChunkRetries <= 0 {
 		p.MaxChunkRetries = defaultChunkRetryMax
-	}
-
-	// 生成 front_order_id（本次下载发起唯一，不按 demand_id 固定）
-	uniqueSuffix := fmt.Sprintf("%d_%04x", time.Now().UnixNano(), time.Now().UnixNano()&0xFFFF)
-	frontOrderID := "fo_download_" + uniqueSuffix
-	frontOrderPayload := map[string]any{
-		"demand_id":          strings.TrimSpace(p.DemandID),
-		"seed_hash":          seedHash,
-		"chunk_count":        p.ChunkCount,
-		"arbiter_pubkey_hex": strings.TrimSpace(p.ArbiterPubHex),
-	}
-	if err := dbUpsertFrontOrder(ctx, store, frontOrderEntry{
-		FrontOrderID:     frontOrderID,
-		FrontType:        "download",
-		FrontSubtype:     "direct_transfer",
-		OwnerPubkeyHex:   strings.ToLower(strings.TrimSpace(buyer.ClientID())),
-		TargetObjectType: "demand",
-		TargetObjectID:   strings.TrimSpace(p.DemandID),
-		Status:           "pending",
-		Note:             "下载: " + strings.TrimSpace(p.DemandID),
-		Payload:          frontOrderPayload,
-	}); err != nil {
-		return TransferChunksByStrategyResult{}, fmt.Errorf("create front_order: %w", err)
 	}
 
 	logTransferStrategy("evt_transfer_strategy_begin", map[string]any{
@@ -576,11 +552,32 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 	if len(filtered) == 0 {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("no quotes under configured price limits")
 	}
+	if len(p.Candidates) > 0 {
+		candidateSet := make(map[string]struct{}, len(p.Candidates))
+		for _, candidate := range p.Candidates {
+			seller := strings.ToLower(strings.TrimSpace(candidate.SellerPubkey))
+			if seller == "" {
+				continue
+			}
+			candidateSet[seller] = struct{}{}
+		}
+		if len(candidateSet) > 0 {
+			nextFiltered := make([]DirectQuoteItem, 0, len(filtered))
+			for _, q := range filtered {
+				if _, ok := candidateSet[strings.ToLower(strings.TrimSpace(q.SellerPubHex))]; ok {
+					nextFiltered = append(nextFiltered, q)
+				}
+			}
+			filtered = nextFiltered
+		}
+		if len(filtered) == 0 {
+			return TransferChunksByStrategyResult{}, fmt.Errorf("no candidate quotes available")
+		}
+	}
 
 	rejectedByArbiter := 0
 	var seedMeta seedV1Meta
-	var seedBytes []byte
-	workers, seedMeta, seedBytes, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
+	workers, seedMeta, _, err := prepareSpeedPriceWorkersAndSeed(speedPriceBootstrapParams{
 		Ctx:           ctx,
 		Buyer:         buyer,
 		Store:         store,
@@ -723,17 +720,22 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		return TransferChunksByStrategyResult{}, closeErr
 	}
 
-	data := make([]byte, 0, int(want)*int(seedBlockSize))
+	outChunks := make([]filedownload.TransferChunkResult, 0, want)
+	sum := sha256.New()
 	for i := 0; i < int(want); i++ {
 		if chunks[i] == nil {
 			return TransferChunksByStrategyResult{}, fmt.Errorf("missing chunk index=%d", i)
 		}
-		data = append(data, chunks[i]...)
+		if _, err := sum.Write(chunks[i]); err != nil {
+			return TransferChunksByStrategyResult{}, err
+		}
+		outChunks = append(outChunks, filedownload.TransferChunkResult{
+			ChunkIndex: uint32(i),
+			ChunkHash:  seedMeta.ChunkHashes[i],
+			Bytes:      append([]byte(nil), chunks[i]...),
+		})
 	}
-	if uint64(len(data)) > seedMeta.FileSize {
-		data = data[:seedMeta.FileSize]
-	}
-	sum := sha256.Sum256(data)
+	sumHex := hex.EncodeToString(sum.Sum(nil))
 
 	stats := make([]TransferSellerStatItem, 0, len(workers))
 	sellerSessions := make([]map[string]any, 0, len(workers))
@@ -775,8 +777,8 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 		"demand_id":    strings.TrimSpace(p.DemandID),
 		"seed_hash":    shortID(seedHash),
 		"chunk_count":  want,
-		"bytes":        len(data),
-		"sha256":       shortID(hex.EncodeToString(sum[:])),
+		"bytes":        len(outChunks),
+		"sha256":       shortID(sumHex),
 		"seller_count": len(stats),
 	})
 	if buyer != nil {
@@ -796,8 +798,8 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 			"seed_hash":                seedHash,
 			"chunk_count":              want,
 			"seller_count":             len(stats),
-			"bytes":                    len(data),
-			"sha256":                   hex.EncodeToString(sum[:]),
+			"chunk_count_done":         len(outChunks),
+			"sha256":                   sumHex,
 			"primary_deal_id":          primary["deal_id"],
 			"primary_session_id":       primary["session_id"],
 			"primary_open_sequence":    primary["open_sequence"],
@@ -811,10 +813,9 @@ func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, b
 	}
 
 	return TransferChunksByStrategyResult{
-		Data:       data,
-		SHA256:     hex.EncodeToString(sum[:]),
 		ChunkCount: want,
-		Seed:       seedBytes,
+		Chunks:     outChunks,
+		SHA256:     sumHex,
 		Sellers:    stats,
 	}, nil
 }

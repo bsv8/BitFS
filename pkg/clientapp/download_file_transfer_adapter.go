@@ -2,9 +2,7 @@ package clientapp
 
 import (
 	"context"
-	"fmt"
 	"strings"
-	"time"
 
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
@@ -24,111 +22,58 @@ func newDownloadFileTransferAdapter(env transferRuntimeCaps, store *clientDB) *d
 	}
 }
 
-func (a *downloadFileTransferAdapter) RunChunkTransfer(ctx context.Context, req filedownload.ChunkTransferRequest) (filedownload.ChunkTransferResult, error) {
-	var result filedownload.ChunkTransferResult
+func (a *downloadFileTransferAdapter) RunTransferByStrategy(ctx context.Context, req filedownload.StrategyTransferRequest) (filedownload.StrategyTransferResult, error) {
 	if a == nil || a.env == nil || a.store == nil {
-		return result, filedownload.NewError(filedownload.CodeModuleDisabled, "transfer runner is not available")
+		return filedownload.StrategyTransferResult{}, filedownload.NewError(filedownload.CodeModuleDisabled, "transfer runner is not available")
 	}
-	if ctx == nil {
-		return result, filedownload.NewError(filedownload.CodeBadRequest, "ctx is required")
-	}
-	if err := ctx.Err(); err != nil {
-		return result, filedownload.NewError(filedownload.CodeRequestCanceled, err.Error())
-	}
+	frontOrderID := strings.TrimSpace(req.FrontOrderID)
 	demandID := strings.TrimSpace(req.DemandID)
 	seedHash := normalizeSeedHashHex(req.SeedHash)
-	chunkHash := strings.ToLower(strings.TrimSpace(req.ChunkHash))
-	sellerPubHex := strings.ToLower(strings.TrimSpace(req.SellerPubkey))
-	if demandID == "" || seedHash == "" || chunkHash == "" || sellerPubHex == "" {
-		return result, filedownload.NewError(filedownload.CodeBadRequest, "demand_id/seed_hash/chunk_hash/seller_pubkey are required")
+	if frontOrderID == "" || demandID == "" || seedHash == "" {
+		return filedownload.StrategyTransferResult{}, filedownload.NewError(filedownload.CodeBadRequest, "front_order_id/demand_id/seed_hash are required")
 	}
-
-	quotes, err := TriggerClientListDirectQuotes(ctx, a.store, demandID)
+	res, err := TriggerTransferChunksByStrategy(ctx, a.store, a.env, TransferChunksByStrategyParams{
+		FrontOrderID:    frontOrderID,
+		DemandID:        demandID,
+		SeedHash:        seedHash,
+		ChunkCount:      req.ChunkCount,
+		ArbiterPubHex:   strings.TrimSpace(req.ArbiterPubHex),
+		MaxSeedPrice:    req.MaxSeedPrice,
+		MaxChunkPrice:   req.MaxChunkPrice,
+		Strategy:        strings.TrimSpace(req.Strategy),
+		PoolAmount:      req.PoolAmountSat,
+		MaxChunkRetries: req.MaxChunkRetries,
+		Candidates:      append([]filedownload.QuoteReport(nil), req.Candidates...),
+	})
 	if err != nil {
-		return result, err
+		return filedownload.StrategyTransferResult{}, err
 	}
-	var selectedQuote DirectQuoteItem
-	foundQuote := false
-	for _, quote := range quotes {
-		if !strings.EqualFold(strings.TrimSpace(quote.SellerPubHex), sellerPubHex) {
-			continue
-		}
-		if len(quote.AvailableChunkIndexes) > 0 {
-			allowed := false
-			for _, idx := range quote.AvailableChunkIndexes {
-				if idx == req.ChunkIndex {
-					allowed = true
-					break
-				}
-			}
-			if !allowed {
-				continue
-			}
-		}
-		selectedQuote = quote
-		foundQuote = true
-		break
-	}
-	if !foundQuote {
-		return result, filedownload.NewError(filedownload.CodeTransferFailed, "quote not found for seller")
-	}
-	if selectedQuote.ChunkPrice == 0 {
-		return result, filedownload.NewError(filedownload.CodeTransferFailed, "chunk price is required")
-	}
+	return filedownload.StrategyTransferResult{
+		ChunkCount: res.ChunkCount,
+		Chunks:     append([]filedownload.TransferChunkResult(nil), res.Chunks...),
+		Sellers:    convertTransferSellerStats(res.Sellers),
+	}, nil
+}
 
-	shortChunkHash := chunkHash
-	if len(shortChunkHash) > 8 {
-		shortChunkHash = shortChunkHash[:8]
+func convertTransferSellerStats(items []TransferSellerStatItem) []filedownload.TransferSellerStatItem {
+	if len(items) == 0 {
+		return nil
 	}
-	worker := &transferSellerWorker{
-		buyer:           a.env,
-		store:           a.store,
-		frontOrderID:    fmt.Sprintf("fo_download_chunk_%d_%s", time.Now().UnixNano(), shortChunkHash),
-		quote:           selectedQuote,
-		arbiterPubHex:   strings.TrimSpace(firstNonEmpty(selectedQuote.SellerArbiterPubHexes...)),
-		seedHash:        seedHash,
-		poolAmount:      chunkTransferPoolAmount(selectedQuote.ChunkPrice),
-		availableChunks: map[uint32]struct{}{req.ChunkIndex: {}},
+	out := make([]filedownload.TransferSellerStatItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, filedownload.TransferSellerStatItem{
+			SellerPubHex:        item.SellerPubHex,
+			ChunkPrice:          item.ChunkPrice,
+			SeedPrice:           item.SeedPrice,
+			SuccessChunks:       item.SuccessChunks,
+			FailedChunks:        item.FailedChunks,
+			AvgBytesPerSecond:   item.AvgBytesPerSecond,
+			EMASpeedBytesPerSec: item.EMASpeedBytesPerSec,
+			Pruned:              item.Pruned,
+			Broken:              item.Broken,
+		})
 	}
-	if strings.TrimSpace(worker.arbiterPubHex) == "" {
-		return result, filedownload.NewError(filedownload.CodeModuleDisabled, "arbiter pubkey is not available")
-	}
-
-	maxAttempts := req.MaxRetries + 1
-	if maxAttempts <= 0 {
-		maxAttempts = 1
-	}
-	var lastErr error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		chunk, elapsed, fetchErr := worker.fetchChunk(ctx, req.ChunkIndex, chunkHash)
-		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Minute)
-		_ = worker.closeSession(closeCtx)
-		cancel()
-		if fetchErr != nil {
-			lastErr = fetchErr
-			if attempt < maxAttempts {
-				continue
-			}
-			return result, filedownload.NewError(filedownload.CodeTransferFailed, fetchErr.Error())
-		}
-		if len(chunk) == 0 {
-			return result, filedownload.NewError(filedownload.CodeTransferFailed, "chunk bytes are empty")
-		}
-		speedBps := uint64(0)
-		if elapsed > 0 {
-			speedBps = uint64(float64(len(chunk)) / elapsed.Seconds())
-		}
-		return filedownload.ChunkTransferResult{
-			Data:     append([]byte(nil), chunk...),
-			PaidSat:  selectedQuote.ChunkPrice,
-			SpeedBps: speedBps,
-		}, nil
-	}
-
-	if lastErr == nil {
-		lastErr = fmt.Errorf("transfer failed")
-	}
-	return result, filedownload.NewError(filedownload.CodeTransferFailed, lastErr.Error())
+	return out
 }
 
 func chunkTransferPoolAmount(chunkPrice uint64) uint64 {
@@ -148,4 +93,4 @@ func firstNonEmpty(items ...string) string {
 	return ""
 }
 
-var _ filedownload.TransferRunner = (*downloadFileTransferAdapter)(nil)
+var _ filedownload.StrategyTransferRunner = (*downloadFileTransferAdapter)(nil)

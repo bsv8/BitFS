@@ -58,8 +58,9 @@ func TestDuplicateSeedReturnsExistingJob(t *testing.T) {
 	seedHash := "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 
 	caps := DownloadCaps{
-		Jobs:  store,
-		Files: &mockStartFileStore{complete: LocalFile{FilePath: "/tmp/local.bin", FileSize: 10, SeedHash: seedHash}, found: true},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Files:       &mockStartFileStore{complete: LocalFile{FilePath: "/tmp/local.bin", FileSize: 10, SeedHash: seedHash}, found: true},
 	}
 
 	result1, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 10})
@@ -87,8 +88,9 @@ func TestDoneJobAllowsNewDownload(t *testing.T) {
 	ctx := context.Background()
 	seedHash := "b1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
 	caps := DownloadCaps{
-		Jobs:  store,
-		Files: &mockStartFileStore{complete: LocalFile{FilePath: "/tmp/local-done.bin", FileSize: 10, SeedHash: seedHash}, found: true},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Files:       &mockStartFileStore{complete: LocalFile{FilePath: "/tmp/local-done.bin", FileSize: 10, SeedHash: seedHash}, found: true},
 	}
 
 	result1, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 10})
@@ -122,11 +124,12 @@ func TestRunningJobResumeSkipsStoredChunkAndCompletes(t *testing.T) {
 	jobID := "test_job_resume_partial"
 
 	if _, _, err := store.CreateJob(ctx, &Job{
-		JobID:      jobID,
-		SeedHash:   seedHash,
-		State:      StateRunning,
-		ChunkCount: 2,
-		DemandID:   "demand_resume_partial",
+		JobID:        jobID,
+		SeedHash:     seedHash,
+		FrontOrderID: "fo_resume_partial",
+		State:        StateRunning,
+		ChunkCount:   2,
+		DemandID:     "demand_resume_partial",
 	}); err != nil {
 		t.Fatalf("create job failed: %v", err)
 	}
@@ -175,11 +178,12 @@ func TestRunningJobResumeSkipsStoredChunkAndCompletes(t *testing.T) {
 		},
 	}
 	caps := DownloadCaps{
-		Jobs:      store,
-		Seeds:     &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
-		Files:     files,
-		Quotes:    mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
-		Transfers: transfer,
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:       files,
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		Transfers:   transfer,
 	}
 
 	result, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
@@ -192,11 +196,11 @@ func TestRunningJobResumeSkipsStoredChunkAndCompletes(t *testing.T) {
 	if result.Status.OutputFilePath != "/tmp/resume-partial-final.bin" {
 		t.Fatalf("expected output_file_path=/tmp/resume-partial-final.bin, got %s", result.Status.OutputFilePath)
 	}
-	if len(transfer.calls) != 1 {
-		t.Fatalf("expected one transfer call, got %d", len(transfer.calls))
+	if len(transfer.strategyCalls) != 1 {
+		t.Fatalf("expected one strategy transfer call, got %d", len(transfer.strategyCalls))
 	}
-	if transfer.calls[0].ChunkIndex != 1 {
-		t.Fatalf("expected resume to transfer chunk 1, got %d", transfer.calls[0].ChunkIndex)
+	if transfer.strategyCalls[0].FrontOrderID != "fo_resume_partial" {
+		t.Fatalf("expected reused front_order_id, got %s", transfer.strategyCalls[0].FrontOrderID)
 	}
 	if len(files.markCalls) != 1 {
 		t.Fatalf("expected one stored chunk write, got %d", len(files.markCalls))
@@ -235,11 +239,12 @@ func TestRunningJobAllStoredCompletesWithoutTransfer(t *testing.T) {
 	jobID := "test_job_resume_complete"
 
 	if _, _, err := store.CreateJob(ctx, &Job{
-		JobID:      jobID,
-		SeedHash:   seedHash,
-		State:      StateRunning,
-		ChunkCount: 2,
-		DemandID:   "demand_resume_complete",
+		JobID:        jobID,
+		SeedHash:     seedHash,
+		FrontOrderID: "fo_resume_complete",
+		State:        StateRunning,
+		ChunkCount:   2,
+		DemandID:     "demand_resume_complete",
 	}); err != nil {
 		t.Fatalf("create job failed: %v", err)
 	}
@@ -285,10 +290,11 @@ func TestRunningJobAllStoredCompletesWithoutTransfer(t *testing.T) {
 		expectedChunkLen: 4,
 	}
 	caps := DownloadCaps{
-		Jobs:   store,
-		Seeds:  &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
-		Files:  files,
-		Quotes: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		Jobs:        store,
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:       files,
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		QuoteWaiter: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
 	}
 
 	result, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
@@ -315,11 +321,12 @@ func TestRunningJobCompleteFailureFails(t *testing.T) {
 	jobID := "test_job_resume_complete_fail"
 
 	if _, _, err := store.CreateJob(ctx, &Job{
-		JobID:      jobID,
-		SeedHash:   seedHash,
-		State:      StateRunning,
-		ChunkCount: 2,
-		DemandID:   "demand_resume_complete_fail",
+		JobID:        jobID,
+		SeedHash:     seedHash,
+		FrontOrderID: "fo_resume_complete_fail",
+		State:        StateRunning,
+		ChunkCount:   2,
+		DemandID:     "demand_resume_complete_fail",
 	}); err != nil {
 		t.Fatalf("create job failed: %v", err)
 	}
@@ -366,10 +373,11 @@ func TestRunningJobCompleteFailureFails(t *testing.T) {
 		expectedChunkLen: 4,
 	}
 	caps := DownloadCaps{
-		Jobs:   store,
-		Seeds:  &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
-		Files:  files,
-		Quotes: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		Jobs:        store,
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:       files,
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		QuoteWaiter: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
 	}
 
 	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
@@ -397,11 +405,12 @@ func TestRunningJobMissingSeedMetaFails(t *testing.T) {
 	jobID := "test_job_resume_missing_meta"
 
 	if _, _, err := store.CreateJob(ctx, &Job{
-		JobID:      jobID,
-		SeedHash:   seedHash,
-		State:      StateRunning,
-		ChunkCount: 2,
-		DemandID:   "demand_resume_missing_meta",
+		JobID:        jobID,
+		SeedHash:     seedHash,
+		FrontOrderID: "fo_resume_missing_meta",
+		State:        StateRunning,
+		ChunkCount:   2,
+		DemandID:     "demand_resume_missing_meta",
 	}); err != nil {
 		t.Fatalf("create job failed: %v", err)
 	}
@@ -422,10 +431,11 @@ func TestRunningJobMissingSeedMetaFails(t *testing.T) {
 	}
 
 	caps := DownloadCaps{
-		Jobs:   store,
-		Seeds:  &mockSeedStore{found: false},
-		Files:  &mockStartFileStore{found: false},
-		Quotes: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		Jobs:        store,
+		Seeds:       &mockSeedStore{found: false},
+		Files:       &mockStartFileStore{found: false},
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		QuoteWaiter: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
 	}
 
 	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
@@ -450,11 +460,12 @@ func TestRunningJobWithoutSelectedQuoteFails(t *testing.T) {
 	jobID := "test_job_resume_no_selected_quote"
 
 	if _, _, err := store.CreateJob(ctx, &Job{
-		JobID:      jobID,
-		SeedHash:   seedHash,
-		State:      StateRunning,
-		ChunkCount: 2,
-		DemandID:   "demand_resume_no_selected_quote",
+		JobID:        jobID,
+		SeedHash:     seedHash,
+		FrontOrderID: "fo_resume_no_selected_quote",
+		State:        StateRunning,
+		ChunkCount:   2,
+		DemandID:     "demand_resume_no_selected_quote",
 	}); err != nil {
 		t.Fatalf("create job failed: %v", err)
 	}
@@ -491,6 +502,10 @@ func TestRunningJobWithoutSelectedQuoteFails(t *testing.T) {
 		Seeds: &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
 		Files: files,
 		Quotes: mockQuoteReader{quotes: []QuoteReport{
+			{SellerPubkey: "seller_a", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream"},
+			{SellerPubkey: "seller_b", SeedPriceSat: 90, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream"},
+		}},
+		QuoteWaiter: mockQuoteReader{quotes: []QuoteReport{
 			{SellerPubkey: "seller_a", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream"},
 			{SellerPubkey: "seller_b", SeedPriceSat: 90, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream"},
 		}},
@@ -1026,19 +1041,20 @@ func TestStartByHashNoQuoteReturnsUnavailable(t *testing.T) {
 	ctx := context.Background()
 	seedHash := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	caps := DownloadCaps{
-		Jobs:    store,
-		Files:   &mockStartFileStore{found: false},
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_1", Status: "submitted"}},
-		Quotes:  mockQuoteReader{quotes: nil},
-		Policy:  mockPolicy{},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Files:       &mockStartFileStore{found: false},
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_1", Status: "submitted"}},
+		Quotes:      mockQuoteReader{quotes: nil},
+		Policy:      mockPolicy{},
 	}
 
 	result, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 3})
 	if err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	if result.Status.State != StateQuoteUnavailable {
-		t.Fatalf("expected quote_unavailable, got %s", result.Status.State)
+	if result.Status.State != StateQuoteTimeout {
+		t.Fatalf("expected quote_timeout, got %s", result.Status.State)
 	}
 	if result.Status.DemandID != "demand_1" {
 		t.Fatalf("expected demand id to be recorded, got %s", result.Status.DemandID)
@@ -1059,9 +1075,10 @@ func TestStartByHashBlockedByBudget(t *testing.T) {
 	ctx := context.Background()
 	seedHash := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	caps := DownloadCaps{
-		Jobs:    store,
-		Files:   &mockStartFileStore{found: false},
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_2", Status: "submitted"}},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Files:       &mockStartFileStore{found: false},
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_2", Status: "submitted"}},
 		Quotes: mockQuoteReader{quotes: []QuoteReport{
 			{SellerPubkey: "seller1", SeedPriceSat: 100, ChunkPriceSat: 100, ChunkCount: 3, FileSizeBytes: 10},
 		}},
@@ -1087,10 +1104,11 @@ func TestStartByHashDoneAfterCompleteFile(t *testing.T) {
 	ctx := context.Background()
 	seedHash := "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 	caps := DownloadCaps{
-		Jobs:    store,
-		Seeds:   &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
-		Files:   &mockStartFileStore{found: false, part: PartFile{PartFilePath: "/tmp/part.bin", SeedHash: seedHash}, expectedChunkLen: 4},
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_3", Status: "submitted"}},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:       &mockStartFileStore{found: false, part: PartFile{PartFilePath: "/tmp/part.bin", SeedHash: seedHash}, expectedChunkLen: 4},
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_3", Status: "submitted"}},
 		Quotes: mockQuoteReader{quotes: []QuoteReport{
 			{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"},
 		}},
@@ -1165,12 +1183,13 @@ func TestStartByHashCompleteFileFailureFails(t *testing.T) {
 		completeErr:      NewError(CodeChunkStoreFailed, "complete file failed"),
 	}
 	caps := DownloadCaps{
-		Jobs:    store,
-		Seeds:   &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
-		Files:   files,
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_complete_fail", Status: "submitted"}},
-		Quotes:  mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}}},
-		Policy:  mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}, ok: true},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:       files,
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_complete_fail", Status: "submitted"}},
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}}},
+		Policy:      mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}, ok: true},
 		Transfers: &mockTransferRunner{
 			results: map[uint32]ChunkTransferResult{
 				0: {Data: []byte("aaaa"), PaidSat: 10, SpeedBps: 1000},
@@ -1210,12 +1229,13 @@ func TestStartByHashMissingTransfersReturnsModuleDisabled(t *testing.T) {
 	ctx := context.Background()
 	seedHash := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 	caps := DownloadCaps{
-		Jobs:    store,
-		Seeds:   &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111"}, ChunkCount: 1, FileSize: 4}, found: true},
-		Files:   &mockStartFileStore{found: false, part: PartFile{PartFilePath: "/tmp/part-disabled.bin", SeedHash: seedHash}, expectedChunkLen: 4},
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_disabled", Status: "submitted"}},
-		Quotes:  mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}}},
-		Policy:  mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}, ok: true},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111"}, ChunkCount: 1, FileSize: 4}, found: true},
+		Files:       &mockStartFileStore{found: false, part: PartFile{PartFilePath: "/tmp/part-disabled.bin", SeedHash: seedHash}, expectedChunkLen: 4},
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_disabled", Status: "submitted"}},
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}}},
+		Policy:      mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}, ok: true},
 	}
 
 	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 1})
@@ -1232,12 +1252,13 @@ func TestStartByHashChunkLengthMismatchFails(t *testing.T) {
 	seedHash := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
 	files := &mockStartFileStore{found: false, part: PartFile{PartFilePath: "/tmp/part-mismatch.bin", SeedHash: seedHash}, expectedChunkLen: 4}
 	caps := DownloadCaps{
-		Jobs:    store,
-		Seeds:   &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111"}, ChunkCount: 1, FileSize: 4}, found: true},
-		Files:   files,
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_mismatch", Status: "submitted"}},
-		Quotes:  mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}}},
-		Policy:  mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}, ok: true},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111"}, ChunkCount: 1, FileSize: 4}, found: true},
+		Files:       files,
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_mismatch", Status: "submitted"}},
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}}},
+		Policy:      mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 1, FileSizeBytes: 4, RecommendedFileName: "demo.bin"}, ok: true},
 		Transfers: &mockTransferRunner{results: map[uint32]ChunkTransferResult{
 			0: {Data: []byte("aaa"), PaidSat: 10, SpeedBps: 1000},
 		}},
@@ -1246,9 +1267,6 @@ func TestStartByHashChunkLengthMismatchFails(t *testing.T) {
 	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 1})
 	if err == nil || CodeOf(err) != CodeChunkStoreFailed {
 		t.Fatalf("expected chunk store failed, got %v", err)
-	}
-	if len(files.markCalls) != 1 {
-		t.Fatalf("expected one mark attempt, got %d", len(files.markCalls))
 	}
 	job, foundJob, jobErr := store.FindJobBySeedHash(ctx, seedHash)
 	if jobErr != nil || !foundJob {
@@ -1262,8 +1280,8 @@ func TestStartByHashChunkLengthMismatchFails(t *testing.T) {
 		t.Fatalf("expected failed state, got %s", status.State)
 	}
 	chunks, found := store.ListChunks(ctx, job.JobID)
-	if found && len(chunks) != 1 {
-		t.Fatalf("expected one chunk report on failure, got %d", len(chunks))
+	if found && len(chunks) != 0 {
+		t.Fatalf("expected no chunk report on strategy failure, got %d", len(chunks))
 	}
 }
 
@@ -1275,12 +1293,13 @@ func TestStartByHashTransferFailureFails(t *testing.T) {
 	seedHash := "abababababababababababababababababababababababababababababababab"
 	files := &mockStartFileStore{found: false, part: PartFile{PartFilePath: "/tmp/part-transfer-fail.bin", SeedHash: seedHash}, expectedChunkLen: 4}
 	caps := DownloadCaps{
-		Jobs:    store,
-		Seeds:   &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
-		Files:   files,
-		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_transfer_fail", Status: "submitted"}},
-		Quotes:  mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}}},
-		Policy:  mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}, ok: true},
+		Jobs:        store,
+		FrontOrders: mockFrontOrderBinder{},
+		Seeds:       &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:       files,
+		Demands:     mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_transfer_fail", Status: "submitted"}},
+		Quotes:      mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}}},
+		Policy:      mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}, ok: true},
 		Transfers: &mockTransferRunner{
 			results: map[uint32]ChunkTransferResult{
 				0: {Data: []byte("aaaa"), PaidSat: 10, SpeedBps: 1000},
@@ -1310,11 +1329,8 @@ func TestStartByHashTransferFailureFails(t *testing.T) {
 	if !found {
 		t.Fatalf("chunks not found")
 	}
-	if len(chunks) != 2 {
-		t.Fatalf("expected 2 chunk reports, got %d", len(chunks))
-	}
-	if chunks[1].State != ChunkStateFailed {
-		t.Fatalf("expected second chunk failed, got %s", chunks[1].State)
+	if len(chunks) != 0 {
+		t.Fatalf("expected no chunk report before strategy failure, got %d", len(chunks))
 	}
 }
 
@@ -1634,31 +1650,65 @@ func (m *mockStartFileStore) CompleteFile(ctx context.Context, input CompleteFil
 }
 
 type mockTransferRunner struct {
-	results map[uint32]ChunkTransferResult
-	errs    map[uint32]error
-	calls   []ChunkTransferRequest
+	results       map[uint32]ChunkTransferResult
+	errs          map[uint32]error
+	calls         []ChunkTransferRequest
+	strategyCalls []StrategyTransferRequest
 }
 
-func (m *mockTransferRunner) RunChunkTransfer(ctx context.Context, req ChunkTransferRequest) (ChunkTransferResult, error) {
-	m.calls = append(m.calls, req)
-	if m.errs != nil {
-		if err, ok := m.errs[req.ChunkIndex]; ok {
-			return ChunkTransferResult{}, err
+type mockFrontOrderBinder struct{}
+
+func (mockFrontOrderBinder) EnsureFrontOrder(ctx context.Context, req FrontOrderRequest) (string, error) {
+	if strings.TrimSpace(req.FrontOrderID) != "" {
+		return strings.TrimSpace(req.FrontOrderID), nil
+	}
+	return "fo_test_" + strings.TrimSpace(req.JobID), nil
+}
+
+func (mockFrontOrderBinder) BindJobFrontOrder(ctx context.Context, jobID string, frontOrderID string) error {
+	return nil
+}
+
+func (m *mockTransferRunner) RunTransferByStrategy(ctx context.Context, req StrategyTransferRequest) (StrategyTransferResult, error) {
+	m.strategyCalls = append(m.strategyCalls, req)
+	chunks := make([]TransferChunkResult, 0, req.ChunkCount)
+	sellerPubkey := ""
+	if len(req.Candidates) > 0 {
+		sellerPubkey = req.Candidates[0].SellerPubkey
+	}
+	for i := uint32(0); i < req.ChunkCount; i++ {
+		if m.errs != nil {
+			if err, ok := m.errs[i]; ok {
+				return StrategyTransferResult{}, err
+			}
 		}
-	}
-	if m.results != nil {
-		if res, ok := m.results[req.ChunkIndex]; ok {
-			return res, nil
+		if m.results != nil {
+			if res, ok := m.results[i]; ok {
+				chunks = append(chunks, TransferChunkResult{
+					ChunkIndex:   i,
+					SellerPubkey: sellerPubkey,
+					Bytes:        append([]byte(nil), res.Data...),
+					PaidSat:      res.PaidSat,
+					SpeedBps:     res.SpeedBps,
+				})
+				continue
+			}
 		}
+		shortHash := req.SeedHash
+		if len(shortHash) > 4 {
+			shortHash = shortHash[:4]
+		}
+		chunks = append(chunks, TransferChunkResult{
+			ChunkIndex:   i,
+			SellerPubkey: sellerPubkey,
+			Bytes:        []byte(shortHash),
+			PaidSat:      1,
+			SpeedBps:     1000,
+		})
 	}
-	shortHash := req.ChunkHash
-	if len(shortHash) > 4 {
-		shortHash = shortHash[:4]
-	}
-	return ChunkTransferResult{
-		Data:     []byte(shortHash),
-		PaidSat:  req.ChunkPriceSat,
-		SpeedBps: 1000,
+	return StrategyTransferResult{
+		ChunkCount: uint32(len(chunks)),
+		Chunks:     chunks,
 	}, nil
 }
 
@@ -1680,6 +1730,10 @@ func (m mockQuoteReader) ListQuotes(ctx context.Context, demandID string) ([]Quo
 	return append([]QuoteReport(nil), m.quotes...), m.err
 }
 
+func (m mockQuoteReader) WaitQuotes(ctx context.Context, req QuoteWaitRequest) ([]QuoteReport, error) {
+	return m.ListQuotes(ctx, req.DemandID)
+}
+
 type mockPolicy struct {
 	selected QuoteReport
 	ok       bool
@@ -1687,18 +1741,28 @@ type mockPolicy struct {
 	err      error
 }
 
-func (m mockPolicy) SelectQuote(ctx context.Context, req StartRequest, quotes []QuoteReport) (QuoteReport, bool, string, error) {
+func (m mockPolicy) SelectQuotes(ctx context.Context, req StartRequest, quotes []QuoteReport) (QuoteSelection, error) {
 	if m.err != nil {
-		return QuoteReport{}, false, "", m.err
+		return QuoteSelection{}, m.err
 	}
 	if !m.ok {
-		if m.reason == "" {
-			m.reason = "blocked_by_budget"
+		reason := m.reason
+		if reason == "" {
+			reason = "blocked_by_budget"
 		}
-		return QuoteReport{}, false, m.reason, nil
+		return QuoteSelection{
+			Rejected: append([]QuoteReport(nil), quotes...),
+			Reason:   reason,
+		}, nil
 	}
 	if m.selected.SellerPubkey == "" && len(quotes) > 0 {
-		return quotes[0], true, "", nil
+		return QuoteSelection{
+			Primary:    quotes[0],
+			Candidates: append([]QuoteReport(nil), quotes...),
+		}, nil
 	}
-	return m.selected, true, "", nil
+	return QuoteSelection{
+		Primary:    m.selected,
+		Candidates: append([]QuoteReport(nil), quotes...),
+	}, nil
 }

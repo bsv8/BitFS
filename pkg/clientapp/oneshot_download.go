@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
 
 // OneShotDownloadParams 描述“输入 seed hash 后一键直连下载”的触发参数。
@@ -20,18 +22,19 @@ type OneShotDownloadParams struct {
 	ArbiterPubHex string `json:"arbiter_pubkey_hex,omitempty"`
 }
 
-// OneShotDownloadResult 输出一次性下载的关键链路信息与下载结果。
+// OneShotDownloadResult 输出一次性下载的关键链路信息。
 type OneShotDownloadResult struct {
-	DemandID   string                         `json:"demand_id"`
-	Quote      DirectQuoteItem                `json:"quote"`
-	Transfer   TransferChunksByStrategyResult `json:"transfer"`
-	Seed       []byte                         `json:"seed"`
-	SeedHash   string                         `json:"seed_hash"`
-	ChunkCount uint32                         `json:"chunk_count"`
-	FileName   string                         `json:"file_name"`
+	JobID          string `json:"job_id"`
+	FrontOrderID   string `json:"front_order_id,omitempty"`
+	DemandID       string `json:"demand_id,omitempty"`
+	OutputFilePath string `json:"output_file_path,omitempty"`
+	SeedHash       string `json:"seed_hash"`
+	ChunkCount     uint32 `json:"chunk_count"`
+	State          string `json:"state,omitempty"`
+	Message        string `json:"message,omitempty"`
 }
 
-// TriggerOneShotDirectDownload 触发“发布需求 -> 等待直连报价 -> 全量传输 -> 拉取 seed”的一次性下载流程。
+// TriggerOneShotDirectDownload 触发“发布需求 -> 等待报价 -> 主流程下载”的一次性下载流程。
 func TriggerOneShotDirectDownload(ctx context.Context, rt *Runtime, p OneShotDownloadParams) (OneShotDownloadResult, error) {
 	if rt == nil {
 		return OneShotDownloadResult{}, fmt.Errorf("runtime not initialized")
@@ -40,41 +43,30 @@ func TriggerOneShotDirectDownload(ctx context.Context, rt *Runtime, p OneShotDow
 	if seedHash == "" {
 		return OneShotDownloadResult{}, fmt.Errorf("seed_hash required")
 	}
-	download, err := runDirectDownloadCore(ctx, rt, directDownloadCoreParams{
-		SeedHash:           seedHash,
-		DemandChunkCount:   1, // CLI 直连模式只需要触发需求，实际下载块数由策略层和 seed 元信息决定。
-		TransferChunkCount: 0,
-		GatewayPeerID:      strings.TrimSpace(p.GatewayPeerID),
-		QuoteMaxRetry:      p.QuoteMaxRetry,
-		QuoteInterval:      p.QuoteInterval,
-		ArbiterPubHex:      p.ArbiterPubHex,
-		Strategy:           TransferStrategySmart,
-	}, directDownloadCoreHooks{})
+	caps := newDownloadFileCaps(rt, rt.store, rt, rt)
+	if caps == nil {
+		return OneShotDownloadResult{}, fmt.Errorf("download caps not available")
+	}
+	req := filedownload.StartRequest{
+		SeedHash:             seedHash,
+		GatewayPubkey:        strings.TrimSpace(p.GatewayPeerID),
+		QuoteMaxRetry:        p.QuoteMaxRetry,
+		QuoteIntervalSeconds: int(p.QuoteInterval / time.Second),
+		ArbiterPubkeyHex:     strings.TrimSpace(p.ArbiterPubHex),
+		Strategy:             TransferStrategySmart,
+	}
+	download, err := filedownload.StartByHash(ctx, caps.caps(), req)
 	if err != nil {
 		return OneShotDownloadResult{}, err
 	}
-	if len(download.Transfer.Seed) == 0 {
-		return OneShotDownloadResult{}, fmt.Errorf("seed bytes missing in strategy transfer result")
-	}
-	meta, err := parseSeedV1(download.Transfer.Seed)
-	if err != nil {
-		return OneShotDownloadResult{}, err
-	}
-	if !strings.EqualFold(meta.SeedHashHex, seedHash) {
-		return OneShotDownloadResult{}, fmt.Errorf("seed hash mismatch: expect=%s got=%s", seedHash, meta.SeedHashHex)
-	}
-	var q DirectQuoteItem
-	if len(download.Quotes) > 0 {
-		q = download.Quotes[0]
-	}
-
 	return OneShotDownloadResult{
-		DemandID:   download.DemandID,
-		Quote:      q,
-		Transfer:   download.Transfer,
-		Seed:       download.Transfer.Seed,
-		SeedHash:   seedHash,
-		ChunkCount: meta.ChunkCount,
-		FileName:   download.FileName,
+		JobID:          download.JobID,
+		FrontOrderID:   download.Status.FrontOrderID,
+		DemandID:       download.Status.DemandID,
+		OutputFilePath: download.Status.OutputFilePath,
+		SeedHash:       seedHash,
+		ChunkCount:     download.Status.ChunkCount,
+		State:          download.Status.State,
+		Message:        download.Message,
 	}, nil
 }
