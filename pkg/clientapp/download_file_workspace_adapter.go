@@ -3,6 +3,7 @@ package clientapp
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 
 	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
@@ -54,15 +55,56 @@ func (a *downloadFileWorkspaceAdapter) FindCompleteFile(ctx context.Context, see
 }
 
 func (a *downloadFileWorkspaceAdapter) PreparePartFile(ctx context.Context, input filedownload.PreparePartFileInput) (filedownload.PartFile, error) {
-	return filedownload.PartFile{}, filedownload.NewError(filedownload.CodeModuleDisabled, "part file store is not available")
+	if a == nil || a.store == nil {
+		return filedownload.PartFile{}, filedownload.NewError(filedownload.CodeModuleDisabled, "file store is not available")
+	}
+	seedHash := normalizeSeedHashHex(input.SeedHash)
+	if seedHash == "" {
+		return filedownload.PartFile{}, filedownload.NewError(filedownload.CodeBadRequest, "seed_hash is required")
+	}
+	partPath, err := downloadFileWorkspacePartPath(ctx, a.store, seedHash)
+	if err != nil {
+		return filedownload.PartFile{}, err
+	}
+	if err := os.MkdirAll(filepath.Dir(partPath), 0o755); err != nil {
+		return filedownload.PartFile{}, err
+	}
+	return filedownload.PartFile{
+		PartFilePath: partPath,
+		SeedHash:     seedHash,
+	}, nil
 }
 
 func (a *downloadFileWorkspaceAdapter) MarkChunkStored(ctx context.Context, input filedownload.StoredChunkInput) error {
-	return filedownload.NewError(filedownload.CodeModuleDisabled, "chunk storage is not available")
+	if a == nil || a.store == nil {
+		return filedownload.NewError(filedownload.CodeModuleDisabled, "file store is not available")
+	}
+	seedHash := normalizeSeedHashHex(input.SeedHash)
+	if seedHash == "" {
+		return filedownload.NewError(filedownload.CodeBadRequest, "seed_hash is required")
+	}
+	return downloadFileWorkspaceMarkChunkStored(ctx, a.store, seedHash, input.ChunkIndex, input.ChunkBytes)
 }
 
 func (a *downloadFileWorkspaceAdapter) CompleteFile(ctx context.Context, input filedownload.CompleteFileInput) (filedownload.LocalFile, error) {
-	return filedownload.LocalFile{}, filedownload.NewError(filedownload.CodeModuleDisabled, "complete file store is not available")
+	if a == nil || a.store == nil {
+		return filedownload.LocalFile{}, filedownload.NewError(filedownload.CodeModuleDisabled, "file store is not available")
+	}
+	seedHash := normalizeSeedHashHex(input.SeedHash)
+	if seedHash == "" {
+		return filedownload.LocalFile{}, filedownload.NewError(filedownload.CodeBadRequest, "seed_hash is required")
+	}
+	partPath := strings.TrimSpace(input.PartFilePath)
+	if partPath == "" {
+		return filedownload.LocalFile{}, filedownload.NewError(filedownload.CodeBadRequest, "part_file_path is required")
+	}
+	return downloadFileWorkspaceComplete(ctx, a.store, filedownload.CompleteFileInput{
+		SeedHash:              seedHash,
+		PartFilePath:          partPath,
+		RecommendedFileName:   input.RecommendedFileName,
+		MimeType:              input.MimeType,
+		AvailableChunkIndexes: input.AvailableChunkIndexes,
+	})
 }
 
 var _ filedownload.FileStore = (*downloadFileWorkspaceAdapter)(nil)
