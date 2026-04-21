@@ -21,6 +21,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	bftpv1 "github.com/bsv8/BFTP-contract/gen/go/v1"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BFTP/pkg/dealprod"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
@@ -39,9 +41,8 @@ import (
 const (
 	BBroadcastSuiteVersion             = "BBroadcast/1.0"
 	BBroadcastProtocolName             = "Bitcast Broadcast Protocol"
-	ProtoHealth            protocol.ID = bitfsprotoid.ProtoHealth
-
-	ProtoArbHealth         protocol.ID = bitfsprotoid.ProtoArbHealth
+	ProtoGatewayHealth     protocol.ID = contractprotoid.ProtoGatewayHealth
+	ProtoArbiterHealth     protocol.ID = contractprotoid.ProtoArbiterHealth
 	ProtoSeedGet           protocol.ID = bitfsprotoid.ProtoSeedGet
 	ProtoQuoteDirectSubmit protocol.ID = bitfsprotoid.ProtoQuoteDirectSubmit
 	ProtoLiveQuoteSubmit   protocol.ID = bitfsprotoid.ProtoLiveQuoteSubmit
@@ -72,12 +73,6 @@ const (
 	StartupModeTest    StartupMode = "test"
 )
 
-type healthReq struct{}
-type healthResp struct {
-	Status string `protobuf:"bytes,1,opt,name=status,proto3" json:"status"`
-}
-
-// bitfs-contract v0：协议结构体由 contract 生成类型接管。
 type seedGetReq = bitfsv1.SeedGetReq
 type seedGetResp = bitfsv1.SeedGetResp
 type directQuoteSubmitReq = bitfsv1.DirectQuoteSubmitReq
@@ -1529,12 +1524,12 @@ func checkPeerHealth(ctx context.Context, h host.Host, peers []peer.AddrInfo, pr
 		var lastErr error
 		ok := false
 		for attempt := 1; attempt <= maxAttempts; attempt++ {
-			var health healthResp
-			err := pproto.CallProto(ctx, h, p.ID, protoID, sec, healthReq{}, &health)
+			var health bftpv1.HealthResp
+			err := pproto.CallProto(ctx, h, p.ID, protoID, sec, bftpv1.HealthReq{}, &health)
 			if err == nil {
 				obs.Business(ServiceName, kind+"_health_ok", map[string]any{
 					"transport_peer_id": p.ID.String(),
-					"status":            health.Status,
+					"status":            health.GetStatus(),
 					"attempt":           attempt,
 				})
 				ok = true

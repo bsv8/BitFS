@@ -6,10 +6,10 @@ require (
 	entgo.io/ent v0.14.6
 	github.com/bsv-blockchain/go-sdk v1.2.18
 	github.com/bsv8/BFTP v0.0.0
-	github.com/bsv8/gateway v0.0.0
 	github.com/bsv8/MultisigPool v0.0.0
 	github.com/bsv8/WOCProxy v0.0.0
 	github.com/bsv8/bitfs-contract v0.0.0
+	github.com/bsv8/gateway v0.0.0
 	github.com/golang/protobuf v1.5.0
 	github.com/libp2p/go-libp2p v0.45.0
 	github.com/multiformats/go-multiaddr v0.16.0

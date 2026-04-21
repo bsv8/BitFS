@@ -259,7 +259,7 @@ func (p *runStartupPhases) ConnectExternal() error {
 		st.trace = localTrace
 		st.closeTrace = localTrace.Close
 	}
-	st.healthyGateways = checkPeerHealth(p.ctx, st.host, activeGWs, ProtoHealth, gwSec(st.trace), "gateway")
+	st.healthyGateways = checkPeerHealth(p.ctx, st.host, activeGWs, ProtoGatewayHealth, gwSec(st.trace), "gateway")
 	if len(activeGWs) > 0 && len(st.healthyGateways) == 0 {
 		obs.Error(ServiceName, "gateway_health_all_failed", map[string]any{
 			"configured_gateway_count": len(activeGWs),
@@ -267,7 +267,7 @@ func (p *runStartupPhases) ConnectExternal() error {
 		})
 		st.healthyGateways = activeGWs
 	}
-	st.healthyArbiters = checkPeerHealth(p.ctx, st.host, arbInfo, ProtoArbHealth, arbSec(st.trace), "arbiter")
+	st.healthyArbiters = checkPeerHealth(p.ctx, st.host, arbInfo, ProtoArbiterHealth, arbSec(st.trace), "arbiter")
 	if len(st.healthyArbiters) == 0 && len(arbInfo) > 0 {
 		obs.Error(ServiceName, "arbiter_health_all_failed", map[string]any{
 			"configured_arbiter_count": len(arbInfo),

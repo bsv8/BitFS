@@ -3801,7 +3801,7 @@ func (s *httpAPIServer) refreshHealthyArbiters(ctx context.Context) {
 		}
 		infos = append(infos, *ai)
 	}
-	s.rt.HealthyArbiters = checkPeerHealth(ctx, s.h, infos, ProtoArbHealth, arbSec(s.rpcTrace), "arbiter")
+	s.rt.HealthyArbiters = checkPeerHealth(ctx, s.h, infos, ProtoArbiterHealth, arbSec(s.rpcTrace), "arbiter")
 }
 
 func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Request) {
