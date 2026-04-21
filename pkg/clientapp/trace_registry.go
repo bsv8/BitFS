@@ -2,7 +2,7 @@ package clientapp
 
 import (
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
+	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 
 	oldproto "github.com/golang/protobuf/proto"
 )
@@ -90,19 +90,12 @@ func NewTraceProtoMessage(protoID string, kind string) (oldproto.Message, bool) 
 		if kind == "resp" {
 			return &liveHeadPushResp{}, true
 		}
-	case string(contractprotoid.ProtoNodeCall):
+	case string(ncall.ProtoBroadcastV1NodeReachabilityQuery):
 		if kind == "req" {
-			return &contractmessage.CallReq{}, true
+			return &contractmessage.NodeReachabilityQueryReq{}, true
 		}
 		if kind == "resp" {
-			return &contractmessage.CallResp{}, true
-		}
-	case string(contractprotoid.ProtoNodeResolve):
-		if kind == "req" {
-			return &contractmessage.ResolveReq{}, true
-		}
-		if kind == "resp" {
-			return &contractmessage.ResolveResp{}, true
+			return &contractmessage.NodeReachabilityQueryPaidResp{}, true
 		}
 	}
 	return nil, false

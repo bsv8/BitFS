@@ -7,20 +7,32 @@ import (
 	"time"
 )
 
+// ResolveStore 提供 index route 解析能力。
+type ResolveStore interface {
+	ResolveIndexRoute(ctx context.Context, route string) (Manifest, error)
+}
+
+// SettingsStore 提供 index route 的 CRUD 能力。
+type SettingsStore interface {
+	ListIndexResolveRoutes(ctx context.Context) ([]RouteItem, error)
+	UpsertIndexResolveRoute(ctx context.Context, route string, seedHash string, updatedAtUnix int64) (RouteItem, error)
+	DeleteIndexResolveRoute(ctx context.Context, route string) error
+}
+
 // BizResolve 是 indexresolve 的业务入口之一。
 //
 // 设计说明：
 // - 这里只做参数校验、归一化和错误码映射；
 // - 上层接线只负责把能力和参数送进来，不再写业务分支；
 // - route 归一化留在业务入口层，避免 adapter 和 store 重复判断。
-func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (Manifest, error) {
+func BizResolve(ctx context.Context, store ResolveStore, rawRoute string) (Manifest, error) {
 	if ctx == nil {
 		return Manifest{}, NewError("BAD_REQUEST", "ctx is required")
 	}
 	if ctx.Err() != nil {
 		return Manifest{}, NewError("REQUEST_CANCELED", ctx.Err().Error())
 	}
-	if resolver == nil {
+	if store == nil {
 		return Manifest{}, moduleDisabledErr()
 	}
 
@@ -29,7 +41,7 @@ func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (M
 		return Manifest{}, err
 	}
 
-	manifest, err := resolver.ResolveIndexRoute(ctx, route)
+	manifest, err := store.ResolveIndexRoute(ctx, route)
 	if err != nil {
 		err = mapBizStoreError(err, "resolve")
 		return Manifest{}, err
@@ -39,18 +51,18 @@ func BizResolve(ctx context.Context, resolver ResolveReader, rawRoute string) (M
 }
 
 // BizSettingsList 是 settings 列表的业务入口。
-func BizSettingsList(ctx context.Context, lister SettingsLister) ([]RouteItem, error) {
+func BizSettingsList(ctx context.Context, store SettingsStore) ([]RouteItem, error) {
 	if ctx == nil {
 		return nil, NewError("BAD_REQUEST", "ctx is required")
 	}
 	if ctx.Err() != nil {
 		return nil, NewError("REQUEST_CANCELED", ctx.Err().Error())
 	}
-	if lister == nil {
+	if store == nil {
 		return nil, moduleDisabledErr()
 	}
 
-	items, err := lister.ListIndexResolveRoutes(ctx)
+	items, err := store.ListIndexResolveRoutes(ctx)
 	if err != nil {
 		err = mapBizStoreError(err, "list")
 		return nil, err
@@ -59,14 +71,14 @@ func BizSettingsList(ctx context.Context, lister SettingsLister) ([]RouteItem, e
 }
 
 // BizSettingsUpsert 是 settings 写入的业务入口。
-func BizSettingsUpsert(ctx context.Context, upserter SettingsUpserter, rawRoute string, rawSeedHash string) (RouteItem, error) {
+func BizSettingsUpsert(ctx context.Context, store SettingsStore, rawRoute string, rawSeedHash string) (RouteItem, error) {
 	if ctx == nil {
 		return RouteItem{}, NewError("BAD_REQUEST", "ctx is required")
 	}
 	if ctx.Err() != nil {
 		return RouteItem{}, NewError("REQUEST_CANCELED", ctx.Err().Error())
 	}
-	if upserter == nil {
+	if store == nil {
 		return RouteItem{}, moduleDisabledErr()
 	}
 
@@ -79,7 +91,7 @@ func BizSettingsUpsert(ctx context.Context, upserter SettingsUpserter, rawRoute 
 		return RouteItem{}, err
 	}
 
-	item, err := upserter.UpsertIndexResolveRoute(ctx, route, seedHash, time.Now().Unix())
+	item, err := store.UpsertIndexResolveRoute(ctx, route, seedHash, time.Now().Unix())
 	if err != nil {
 		err = mapBizStoreError(err, "upsert")
 		return RouteItem{}, err
@@ -89,14 +101,14 @@ func BizSettingsUpsert(ctx context.Context, upserter SettingsUpserter, rawRoute 
 }
 
 // BizSettingsDelete 是 settings 删除的业务入口。
-func BizSettingsDelete(ctx context.Context, deleter SettingsDeleter, rawRoute string) error {
+func BizSettingsDelete(ctx context.Context, store SettingsStore, rawRoute string) error {
 	if ctx == nil {
 		return NewError("BAD_REQUEST", "ctx is required")
 	}
 	if ctx.Err() != nil {
 		return NewError("REQUEST_CANCELED", ctx.Err().Error())
 	}
-	if deleter == nil {
+	if store == nil {
 		return moduleDisabledErr()
 	}
 
@@ -104,7 +116,7 @@ func BizSettingsDelete(ctx context.Context, deleter SettingsDeleter, rawRoute st
 	if err != nil {
 		return err
 	}
-	if err := deleter.DeleteIndexResolveRoute(ctx, route); err != nil {
+	if err := store.DeleteIndexResolveRoute(ctx, route); err != nil {
 		err = mapBizStoreError(err, "delete")
 		return err
 	}

@@ -6,18 +6,17 @@ import (
 	"strings"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
-	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type TriggerPeerCallParams struct {
 	To                   string
-	Route                string
+	ProtocolID           protocol.ID
 	ContentType          string
 	Body                 []byte
 	Store                *clientDB
@@ -32,90 +31,18 @@ type peerCallPaymentDecision struct {
 	Option *ncall.PaymentOption
 }
 
-type routeIndexManifest struct {
-	Route               string `protobuf:"bytes,1,opt,name=route,proto3" json:"route"`
-	SeedHash            string `protobuf:"bytes,2,opt,name=seed_hash,json=seedHash,proto3" json:"seed_hash"`
-	RecommendedFileName string `protobuf:"bytes,3,opt,name=recommended_file_name,json=recommendedFileName,proto3" json:"recommended_file_name,omitempty"`
-	MIMEHint            string `protobuf:"bytes,4,opt,name=mime_hint,json=mimeHint,proto3" json:"mime_hint,omitempty"`
-	FileSize            int64  `protobuf:"varint,5,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"`
-	UpdatedAtUnix       int64  `protobuf:"varint,6,opt,name=updated_at_unix,json=updatedAtUnix,proto3" json:"updated_at_unix"`
-}
-
-// registerNodeRouteHandlers 把节点级 route-call / route-resolve 能力挂到统一 libp2p 协议上。
+// TriggerPeerCall 按 protocol.ID 发起远端调用。
 // 设计说明：
-// - bitfs.peer.call 未来会承接多支付协议，因此这里先统一“所有节点共用一个外壳”；
-// - 壳只认协议路由，不认具体模块；模块细节只通过注册表分发；
-// - 业务层 route 继续由各自服务挂载，壳不需要知道 domain/gateway 的细节。
-func registerNodeRouteHandlers(rt *Runtime, store *clientDB) {
-	if rt == nil || rt.Host == nil || store == nil {
-		return
-	}
-	ncall.Register(rt.Host, nodeSecForRuntime(rt), func(ctx context.Context, meta ncall.CallContext, req ncall.CallReq) (ncall.CallResp, error) {
-		route, bad := normalizeCallRoute(req.Route)
-		if bad != "" {
-			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
-		}
-		contentType, bad := normalizeContentType(req.ContentType)
-		if bad != "" {
-			return ncall.CallResp{Ok: false, Code: "BAD_REQUEST", Message: bad}, nil
-		}
-		switch route {
-		case string(contractroute.RouteNodeV1CapabilitiesShow):
-			body := clientCapabilitiesShowBody(rt)
-			return marshalNodeCallProto(&body)
-		default:
-			if rt.modules == nil {
-				return ncall.CallResp{Ok: false, Code: "ROUTE_NOT_FOUND", Message: "route not found"}, nil
-			}
-			out, err := rt.modules.DispatchLibP2P(ctx, LibP2PEvent{
-				Protocol:    LibP2PProtocolNodeCall,
-				Route:       route,
-				Meta:        meta,
-				Req:         req,
-				ContentType: contentType,
-			})
-			if err != nil {
-				if code := moduleHookCode(err); code != "" {
-					return ncall.CallResp{Ok: false, Code: code, Message: moduleHookMessage(err)}, nil
-				}
-				return ncall.CallResp{}, err
-			}
-			return out.CallResp, nil
-		}
-	}, func(ctx context.Context, req ncall.ResolveReq) (ncall.ResolveResp, error) {
-		if rt == nil || rt.modules == nil {
-			return ncall.ResolveResp{Ok: false, Code: "MODULE_DISABLED", Message: "module is disabled"}, nil
-		}
-		// resolve 的注册键固定留空，真正要查的路由还在 Req.Route 里。
-		out, err := rt.modules.DispatchLibP2P(ctx, LibP2PEvent{
-			Protocol:    LibP2PProtocolNodeResolve,
-			Route:       "",
-			Req:         ncall.CallReq{Route: req.Route},
-			ContentType: contractmessage.ContentTypeProto,
-		})
-		if err != nil {
-			if code := moduleHookCode(err); code != "" {
-				return ncall.ResolveResp{Ok: false, Code: code, Message: moduleHookMessage(err)}, nil
-			}
-			return ncall.ResolveResp{}, err
-		}
-		body, err := oldproto.Marshal(&out.ResolveManifest)
-		if err != nil {
-			return ncall.ResolveResp{}, err
-		}
-		return ncall.ResolveResp{
-			Ok:          true,
-			Code:        "OK",
-			ContentType: contractmessage.ContentTypeProto,
-			Body:        body,
-		}, nil
-	})
-}
-
+// - 硬切后不再使用 node.call + route 分发模型；
+// - 调用方直接指定完整 protocol.ID，如 /bsv-transfer/index/resolve/1.0.0；
+// - 每个能力模块独立注册自己的 protocol.ID handler。
 func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) (ncall.CallResp, error) {
 	var out ncall.CallResp
 	if rt == nil || rt.Host == nil {
 		return out, fmt.Errorf("runtime not initialized")
+	}
+	if p.ProtocolID == "" {
+		return out, fmt.Errorf("protocol ID is required")
 	}
 	to, peerID, err := resolvePeerCallTarget(ctx, rt, strings.TrimSpace(p.To))
 	if err != nil {
@@ -126,15 +53,15 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 	}
 	req := ncall.CallReq{
 		To:          to,
-		Route:       strings.TrimSpace(p.Route),
+		Route:       string(p.ProtocolID),
 		ContentType: strings.TrimSpace(p.ContentType),
 		Body:        append([]byte(nil), p.Body...),
 	}
 	paymentMode := normalizePeerCallPaymentMode(p.PaymentMode)
 	if paymentMode == "pay" && len(p.ServiceQuote) > 0 {
-		return payPeerCallWithAcceptedQuote(ctx, rt, p.Store, peerID, req, p.ServiceQuote, p.PaymentScheme, p.RequireActiveFeePool)
+		return payPeerCallWithAcceptedQuote(ctx, rt, p.Store, peerID, req, p.ServiceQuote, p.PaymentScheme, p.RequireActiveFeePool, p.ProtocolID)
 	}
-	out, err = callNodeRoute(ctx, rt, peerID, req)
+	out, err = callProto(ctx, rt, peerID, p.ProtocolID, req)
 	if err != nil {
 		return out, err
 	}
@@ -146,18 +73,26 @@ func TriggerPeerCall(ctx context.Context, rt *Runtime, p TriggerPeerCallParams) 
 		return ncall.CallResp{}, err
 	}
 	if paymentMode == "quote" {
-		return quotePeerCallFromPaymentQuoted(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool)
+		return quotePeerCallFromPaymentQuoted(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool, p.ProtocolID)
 	}
-	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool)
+	paidOut, payErr := retryPeerCallWithAutoPayment(ctx, rt, p.Store, peerID, req, decision.Option, p.RequireActiveFeePool, p.ProtocolID)
 	if payErr != nil {
 		return ncall.CallResp{}, payErr
 	}
 	return paidOut, nil
 }
 
-func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error) {
+func callProto(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, req ncall.CallReq) (ncall.CallResp, error) {
 	var out ncall.CallResp
-	if err := pproto.CallProto(ctx, rt.Host, peerID, contractprotoid.ProtoNodeCall, nodeSecForRuntime(rt), req, &out); err != nil {
+	if err := pproto.CallProto(ctx, rt.Host, peerID, protoID, nodeSecForRuntime(rt), req, &out); err != nil {
+		return ncall.CallResp{}, err
+	}
+	return out, nil
+}
+
+func callNodeRoute(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, req ncall.CallReq) (ncall.CallResp, error) {
+	var out ncall.CallResp
+	if err := pproto.CallProto(ctx, rt.Host, peerID, protoID, nodeSecForRuntime(rt), req, &out); err != nil {
 		return ncall.CallResp{}, err
 	}
 	return out, nil

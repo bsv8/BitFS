@@ -12,6 +12,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 	multiaddr "github.com/multiformats/go-multiaddr"
 )
 
@@ -320,10 +321,10 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 
 	case controlActionPeerCall:
 		to := strings.TrimSpace(controlCommandPayloadString(req.Payload, "to"))
-		route := strings.TrimSpace(controlCommandPayloadString(req.Payload, "route"))
+		protocolID := strings.TrimSpace(controlCommandPayloadString(req.Payload, "protocol_id"))
 		contentType := strings.TrimSpace(controlCommandPayloadString(req.Payload, "content_type"))
-		if to == "" || route == "" {
-			return businessActionFailure(req, d, "to and route are required", nil), nil
+		if to == "" || protocolID == "" {
+			return businessActionFailure(req, d, "to and protocol_id are required", nil), nil
 		}
 		if contentType == "" {
 			contentType = "application/json"
@@ -339,7 +340,7 @@ func (d *managedDaemon) executeManagedBusinessControlCommand(req controlCommandR
 		requireActiveFeePool, _ := businessPayloadBool(req.Payload, "require_active_fee_pool")
 		result, err := clientapp.TriggerPeerCall(ctx, rt, clientapp.TriggerPeerCallParams{
 			To:                   to,
-			Route:                route,
+			ProtocolID:           protocol.ID(protocolID),
 			ContentType:          contentType,
 			Body:                 body,
 			Store:                store,

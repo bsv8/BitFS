@@ -13,6 +13,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	contractmessage "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type moduleHost struct {
@@ -28,7 +29,7 @@ func validateModuleSpec(spec moduleapi.ModuleSpec) error {
 	}
 	for _, lp := range spec.LibP2P {
 		if lp.Handler == nil {
-			return fmt.Errorf("libp2p %s/%s: handler is required", lp.Protocol, lp.Route)
+			return fmt.Errorf("libp2p %s: handler is required", lp.ProtocolID)
 		}
 	}
 	for _, sa := range spec.Settings {
@@ -63,9 +64,12 @@ func (h *moduleHost) Store() moduleapi.Store {
 	return moduleStoreAdapter{store: h.store}
 }
 
-func (h *moduleHost) RegisterCapability(moduleID string, version uint32) (func(), error) {
+func (h *moduleHost) RegisterCapabilityItem(item *contractmessage.CapabilityItem) (func(), error) {
 	if h == nil || h.rt == nil {
 		return nil, fmt.Errorf("runtime is required")
+	}
+	if item == nil {
+		return nil, fmt.Errorf("capability item is required")
 	}
 	reg := ensureModuleRegistry(h.rt)
 	if reg == nil {
@@ -73,13 +77,14 @@ func (h *moduleHost) RegisterCapability(moduleID string, version uint32) (func()
 	}
 	return reg.registerCapabilityHook(func() *contractmessage.CapabilityItem {
 		return &contractmessage.CapabilityItem{
-			ID:      strings.TrimSpace(moduleID),
-			Version: version,
+			ID:         strings.TrimSpace(item.ID),
+			Version:    item.Version,
+			ProtocolID: strings.TrimSpace(item.ProtocolID),
 		}
 	})
 }
 
-func (h *moduleHost) RegisterLibP2P(protocol moduleapi.LibP2PProtocol, route string, hook moduleapi.LibP2PHook) (func(), error) {
+func (h *moduleHost) RegisterLibP2P(protocolID protocol.ID, hook moduleapi.LibP2PHook) (func(), error) {
 	if h == nil || h.rt == nil {
 		return nil, fmt.Errorf("runtime is required")
 	}
@@ -90,10 +95,9 @@ func (h *moduleHost) RegisterLibP2P(protocol moduleapi.LibP2PProtocol, route str
 	if reg == nil {
 		return nil, fmt.Errorf("module registry is required")
 	}
-	return reg.RegisterLibP2PHook(LibP2PProtocol(protocol), route, func(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
+	return reg.RegisterLibP2PHook(protocolID, func(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
 		out, err := hook(ctx, moduleapi.LibP2PEvent{
-			Protocol:        moduleapi.LibP2PProtocol(ev.Protocol),
-			Route:           ev.Route,
+			Protocol:        ev.Protocol,
 			MessageID:       ev.Meta.MessageID,
 			SenderPubkeyHex: ev.Meta.SenderPubkeyHex,
 			Request: moduleapi.LibP2PRequest{
@@ -112,8 +116,7 @@ func (h *moduleHost) RegisterLibP2P(protocol moduleapi.LibP2PProtocol, route str
 			return LibP2PResult{}, err
 		}
 		return LibP2PResult{
-			CallResp:        toInternalCallResponse(out.CallResp),
-			ResolveManifest: toInternalResolveManifest(out.ResolveManifest),
+			CallResp: toInternalCallResponse(out.CallResp),
 		}, nil
 	})
 }
@@ -255,7 +258,7 @@ func (h *moduleHost) PeerCall(ctx context.Context, req moduleapi.PeerCallRequest
 	}
 	resp, err := TriggerPeerCall(ctx, h.rt, TriggerPeerCallParams{
 		To:                   strings.TrimSpace(req.To),
-		Route:                strings.TrimSpace(req.Route),
+		ProtocolID:           req.ProtocolID,
 		ContentType:          strings.TrimSpace(req.ContentType),
 		Body:                 append([]byte(nil), req.Body...),
 		Store:                clientStore,
@@ -430,17 +433,6 @@ func toInternalOBSActionResponse(resp moduleapi.OBSActionResponse) OBSActionResp
 	}
 }
 
-func toInternalResolveManifest(resp moduleapi.ResolveManifest) routeIndexManifest {
-	return routeIndexManifest{
-		Route:               strings.TrimSpace(resp.Route),
-		SeedHash:            strings.TrimSpace(resp.SeedHash),
-		RecommendedFileName: strings.TrimSpace(resp.RecommendedFileName),
-		MIMEHint:            strings.TrimSpace(resp.MIMEHint),
-		FileSize:            resp.FileSize,
-		UpdatedAtUnix:       resp.UpdatedAtUnix,
-	}
-}
-
 func cloneMapAny(in map[string]any) map[string]any {
 	if len(in) == 0 {
 		return nil
@@ -539,10 +531,15 @@ func (h *moduleHost) InstallModule(spec moduleapi.ModuleSpec) (func(), error) {
 		return cleanup, nil
 	}
 
-	// 注册 capability
-	if spec.ID != "" && spec.Version != 0 {
-		if _, err := tryRegister("capability", func() (func(), error) {
-			return h.RegisterCapability(spec.ID, spec.Version)
+	// 注册 capabilities（显式能力宣誓，不再用 ModuleID/Version 自动顶替）
+	for _, cap := range spec.Capabilities {
+		cap := cap
+		if _, err := tryRegister("capability "+cap.ID, func() (func(), error) {
+			return h.RegisterCapabilityItem(&contractmessage.CapabilityItem{
+				ID:         cap.ID,
+				Version:    cap.Version,
+				ProtocolID: string(cap.ProtocolID),
+			})
 		}); err != nil {
 			return nil, err
 		}
@@ -561,8 +558,8 @@ func (h *moduleHost) InstallModule(spec moduleapi.ModuleSpec) (func(), error) {
 	// 注册 libp2p hooks
 	for _, lp := range spec.LibP2P {
 		lp := lp
-		if _, err := tryRegister("libp2p "+string(lp.Protocol)+"/"+lp.Route, func() (func(), error) {
-			return h.RegisterLibP2P(lp.Protocol, lp.Route, lp.Handler)
+		if _, err := tryRegister("libp2p "+string(lp.ProtocolID), func() (func(), error) {
+			return h.RegisterLibP2P(lp.ProtocolID, lp.Handler)
 		}); err != nil {
 			return nil, err
 		}

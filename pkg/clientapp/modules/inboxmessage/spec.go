@@ -1,6 +1,9 @@
 package inboxmessage
 
-import contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+import (
+	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
+)
 
 const (
 	ModuleID          = "inbox_message"
@@ -26,7 +29,8 @@ var ModuleSpec = Spec{
 
 func CapabilityItem() *contractmessage.CapabilityItem {
 	return &contractmessage.CapabilityItem{
-		ID:      ModuleSpec.CapabilityID,
-		Version: uint32(ModuleSpec.CapabilityVersion),
+		ID:         ModuleSpec.CapabilityID,
+		Version:    uint32(ModuleSpec.CapabilityVersion),
+		ProtocolID: string(contractprotoid.ProtoInboxMessage),
 	}
 }

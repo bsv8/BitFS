@@ -8,9 +8,13 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
-func indexResolveSettingsActions(store indexResolveModuleStore) []moduleapi.SettingsAction {
+type ResolveSettingsStore interface {
+	ResolveStore
+	SettingsStore
+}
+
+func indexResolveSettingsActions(store ResolveSettingsStore) []moduleapi.SettingsAction {
 	actions := []string{
-		"settings.index_resolve.resolve",
 		"settings.index_resolve.list",
 		"settings.index_resolve.upsert",
 		"settings.index_resolve.delete",
@@ -31,9 +35,8 @@ func indexResolveSettingsActions(store indexResolveModuleStore) []moduleapi.Sett
 	return out
 }
 
-func indexResolveOBSActions(store indexResolveModuleStore) []moduleapi.OBSAction {
+func indexResolveOBSActions(store ResolveSettingsStore) []moduleapi.OBSAction {
 	actions := []string{
-		"settings.index_resolve.resolve",
 		"settings.index_resolve.list",
 		"settings.index_resolve.upsert",
 		"settings.index_resolve.delete",
@@ -54,22 +57,8 @@ func indexResolveOBSActions(store indexResolveModuleStore) []moduleapi.OBSAction
 	return out
 }
 
-func indexResolveSettingsActionResult(ctx context.Context, store indexResolveModuleStore, action string, payload map[string]any) (map[string]any, error) {
+func indexResolveSettingsActionResult(ctx context.Context, store ResolveSettingsStore, action string, payload map[string]any) (map[string]any, error) {
 	switch strings.TrimSpace(action) {
-	case "settings.index_resolve.resolve":
-		route := strings.TrimSpace(fmt.Sprint(payload["route"]))
-		manifest, err := BizResolve(ctx, store, route)
-		if err != nil {
-			return nil, toModuleAPIError(err)
-		}
-		return map[string]any{
-			"route":                 manifest.Route,
-			"seed_hash":             manifest.SeedHash,
-			"recommended_file_name": manifest.RecommendedFileName,
-			"mime_hint":             manifest.MIMEHint,
-			"file_size":             manifest.FileSize,
-			"updated_at_unix":       manifest.UpdatedAtUnix,
-		}, nil
 	case "settings.index_resolve.list":
 		items, err := BizSettingsList(ctx, store)
 		if err != nil {
@@ -105,16 +94,15 @@ func indexResolveSettingsActionResult(ctx context.Context, store indexResolveMod
 	}
 }
 
-func indexResolveOBSActionResult(ctx context.Context, store indexResolveModuleStore, action string, payload map[string]any) (moduleapi.OBSActionResponse, error) {
+func indexResolveOBSActionResult(ctx context.Context, store ResolveSettingsStore, action string, payload map[string]any) (moduleapi.OBSActionResponse, error) {
 	out, err := indexResolveSettingsActionResult(ctx, store, action, payload)
 	if err != nil {
 		return moduleapi.OBSActionResponse{}, err
 	}
 	result := map[string]string{
-		"settings.index_resolve.resolve": "resolved",
-		"settings.index_resolve.list":    "listed",
-		"settings.index_resolve.upsert":  "upserted",
-		"settings.index_resolve.delete":  "deleted",
+		"settings.index_resolve.list":   "listed",
+		"settings.index_resolve.upsert": "upserted",
+		"settings.index_resolve.delete": "deleted",
 	}[strings.TrimSpace(action)]
 	if result == "" {
 		return moduleapi.OBSActionResponse{}, moduleapi.NewError("UNSUPPORTED_CONTROL_ACTION", "unsupported control action")

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // Error 是模块对外统一错误壳。
@@ -96,18 +98,10 @@ type OBSActionResponse struct {
 // DomainResolveHook 是域名解析 provider 钩子。
 type DomainResolveHook func(context.Context, string) (string, error)
 
-// LibP2PProtocol 是模块使用的 libp2p 协议分支名。
-type LibP2PProtocol string
-
-const (
-	LibP2PProtocolNodeCall    LibP2PProtocol = "node.call"
-	LibP2PProtocolNodeResolve LibP2PProtocol = "node.resolve"
-)
-
 // PeerCallRequest 是模块发起远端节点调用时使用的出站请求。
 type PeerCallRequest struct {
 	To                   string
-	Route                string
+	ProtocolID           protocol.ID
 	ContentType          string
 	Body                 []byte
 	PaymentMode          string
@@ -158,20 +152,9 @@ type PaymentOption struct {
 	QuoteStatus              string
 }
 
-// ResolveManifest 是 libp2p resolve 返回的公共结果。
-type ResolveManifest struct {
-	Route               string
-	SeedHash            string
-	RecommendedFileName string
-	MIMEHint            string
-	FileSize            int64
-	UpdatedAtUnix       int64
-}
-
 // LibP2PEvent 是模块注册的 libp2p 钩子输入。
 type LibP2PEvent struct {
-	Protocol        LibP2PProtocol
-	Route           string
+	Protocol        protocol.ID
 	MessageID       string
 	SenderPubkeyHex string
 	Request         LibP2PRequest
@@ -179,8 +162,7 @@ type LibP2PEvent struct {
 
 // LibP2PResult 是模块注册的 libp2p 钩子输出。
 type LibP2PResult struct {
-	CallResp        CallResponse
-	ResolveManifest ResolveManifest
+	CallResp CallResponse
 }
 
 // LibP2PHook 是模块的 libp2p 处理钩子。
@@ -231,8 +213,7 @@ type Host interface {
 	Store() Store
 
 	InstallModule(ModuleSpec) (func(), error)
-	RegisterCapability(moduleID string, version uint32) (func(), error)
-	RegisterLibP2P(protocol LibP2PProtocol, route string, hook LibP2PHook) (func(), error)
+	RegisterLibP2P(protocolID protocol.ID, hook LibP2PHook) (func(), error)
 	RegisterHTTPRoute(path string, handler HTTPHandler) (func(), error)
 	RegisterSettingsAction(action string, hook SettingsHook) (func(), error)
 	RegisterOBSAction(action string, hook OBSControlHook) (func(), error)
@@ -250,9 +231,8 @@ type HTTPRoute struct {
 }
 
 type LibP2PRoute struct {
-	Protocol LibP2PProtocol
-	Route    string
-	Handler  LibP2PHook
+	ProtocolID protocol.ID
+	Handler    LibP2PHook
 }
 
 type SettingsAction struct {
@@ -270,9 +250,22 @@ type DomainResolver struct {
 	Handler DomainResolveHook
 }
 
+// Capability 是模块对外宣誓的公开能力。
+// 设计说明：
+// - 模块身份（ID/Version）和能力宣誓（Capability）分开；
+// - 不传 Capabilities 就不宣誓，不会自动用 ModuleID/Version 顶替；
+// - 能力项包含 ID/Version 表示能力名和版本，加上完整 ProtocolID。
+type Capability struct {
+	ID         string
+	Version    uint32
+	ProtocolID protocol.ID
+}
+
 type ModuleSpec struct {
 	ID      string
 	Version uint32
+
+	Capabilities []Capability
 
 	HTTP            []HTTPRoute
 	LibP2P          []LibP2PRoute

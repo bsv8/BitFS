@@ -3,28 +3,26 @@ package clientapp
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
-	"github.com/bsv8/BitFS/pkg/clientapp/modules/inboxmessage"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-func TestModuleRegistryLibP2PSameRouteDifferentProtocols(t *testing.T) {
+func TestModuleRegistryLibP2PHook(t *testing.T) {
 	t.Parallel()
 
 	reg := newModuleRegistry()
+	protoID := protocol.ID(contractprotoid.ProtoInboxMessage)
 
-	callCleanup, err := reg.RegisterLibP2PHook(LibP2PProtocolNodeCall, "shared.route", func(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
+	callCleanup, err := reg.RegisterLibP2PHook(protoID, func(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
 		if ctx == nil {
 			return LibP2PResult{}, errors.New("unexpected nil ctx")
 		}
-		if ev.Protocol != LibP2PProtocolNodeCall {
+		if ev.Protocol != protoID {
 			return LibP2PResult{}, errors.New("unexpected protocol")
-		}
-		if ev.Route != "shared.route" {
-			return LibP2PResult{}, errors.New("unexpected call route")
 		}
 		if ev.Meta.MessageID != "msg-1" || ev.Meta.SenderPubkeyHex != "sender-1" {
 			return LibP2PResult{}, errors.New("unexpected call meta")
@@ -39,38 +37,10 @@ func TestModuleRegistryLibP2PSameRouteDifferentProtocols(t *testing.T) {
 	}
 	t.Cleanup(callCleanup)
 
-	resolveCleanup, err := reg.RegisterLibP2PHook(LibP2PProtocolNodeResolve, "shared.route", func(ctx context.Context, ev LibP2PEvent) (LibP2PResult, error) {
-		if ctx == nil {
-			return LibP2PResult{}, errors.New("unexpected nil ctx")
-		}
-		if ev.Protocol != LibP2PProtocolNodeResolve {
-			return LibP2PResult{}, errors.New("unexpected protocol")
-		}
-		if ev.Route != "shared.route" {
-			return LibP2PResult{}, errors.New("unexpected resolve route")
-		}
-		if ev.Req.Route != "lookup.route" {
-			return LibP2PResult{}, errors.New("unexpected request route")
-		}
-		return LibP2PResult{ResolveManifest: routeIndexManifest{
-			Route:               ev.Req.Route,
-			SeedHash:            strings.Repeat("ab", 32),
-			RecommendedFileName: "movie.mp4",
-			MIMEHint:            "video/mp4",
-			FileSize:            4096,
-			UpdatedAtUnix:       123,
-		}}, nil
-	})
-	if err != nil {
-		t.Fatalf("register resolve hook failed: %v", err)
-	}
-	t.Cleanup(resolveCleanup)
-
 	callOut, err := reg.DispatchLibP2P(context.Background(), LibP2PEvent{
-		Protocol:    LibP2PProtocolNodeCall,
-		Route:       "shared.route",
+		Protocol:    protoID,
 		Meta:        ncall.CallContext{MessageID: "msg-1", SenderPubkeyHex: "sender-1"},
-		Req:         ncall.CallReq{To: "target-1", Route: "shared.route", ContentType: "application/json", Body: []byte(`{"hello":"world"}`)},
+		Req:         ncall.CallReq{To: "target-1", ContentType: "application/json", Body: []byte(`{"hello":"world"}`)},
 		ContentType: "application/json",
 	})
 	if err != nil {
@@ -79,26 +49,15 @@ func TestModuleRegistryLibP2PSameRouteDifferentProtocols(t *testing.T) {
 	if !callOut.CallResp.Ok || callOut.CallResp.Code != "OK" {
 		t.Fatalf("unexpected call response: %+v", callOut.CallResp)
 	}
-
-	resolveOut, err := reg.DispatchLibP2P(context.Background(), LibP2PEvent{
-		Protocol: LibP2PProtocolNodeResolve,
-		Route:    "shared.route",
-		Req:      ncall.CallReq{Route: "lookup.route"},
-	})
-	if err != nil {
-		t.Fatalf("dispatch resolve failed: %v", err)
-	}
-	if resolveOut.ResolveManifest.Route != "lookup.route" {
-		t.Fatalf("unexpected resolve manifest: %+v", resolveOut.ResolveManifest)
-	}
 }
 
 func TestModuleRegistryLibP2PRequestCanceled(t *testing.T) {
 	t.Parallel()
 
 	reg := newModuleRegistry()
+	protoID := protocol.ID(contractprotoid.ProtoInboxMessage)
 	called := false
-	cleanup, err := reg.RegisterLibP2PHook(LibP2PProtocolNodeCall, inboxmessage.InboxMessageRoute, func(context.Context, LibP2PEvent) (LibP2PResult, error) {
+	cleanup, err := reg.RegisterLibP2PHook(protoID, func(context.Context, LibP2PEvent) (LibP2PResult, error) {
 		called = true
 		return LibP2PResult{CallResp: ncall.CallResp{Ok: true, Code: "OK"}}, nil
 	})
@@ -111,9 +70,8 @@ func TestModuleRegistryLibP2PRequestCanceled(t *testing.T) {
 	cancel()
 
 	_, err = reg.DispatchLibP2P(ctx, LibP2PEvent{
-		Protocol: LibP2PProtocolNodeCall,
-		Route:    inboxmessage.InboxMessageRoute,
-		Req:      ncall.CallReq{Route: inboxmessage.InboxMessageRoute},
+		Protocol: protoID,
+		Req:      ncall.CallReq{},
 	})
 	if err == nil || moduleHookCode(err) != "REQUEST_CANCELED" {
 		t.Fatalf("expected REQUEST_CANCELED, got: %v", err)
@@ -129,21 +87,11 @@ func TestModuleRegistryLibP2PRouteNotFound(t *testing.T) {
 	reg := newModuleRegistry()
 
 	_, err := reg.DispatchLibP2P(context.Background(), LibP2PEvent{
-		Protocol: LibP2PProtocolNodeCall,
-		Route:    "missing.route",
-		Req:      ncall.CallReq{Route: "missing.route"},
+		Protocol: "/bsv-transfer/missing/1.0.0",
+		Req:      ncall.CallReq{},
 	})
 	if err == nil || moduleHookCode(err) != "ROUTE_NOT_FOUND" {
 		t.Fatalf("expected ROUTE_NOT_FOUND for call, got: %v", err)
-	}
-
-	_, err = reg.DispatchLibP2P(context.Background(), LibP2PEvent{
-		Protocol: LibP2PProtocolNodeResolve,
-		Route:    "",
-		Req:      ncall.CallReq{Route: "lookup.route"},
-	})
-	if err == nil || moduleHookCode(err) != "ROUTE_NOT_FOUND" {
-		t.Fatalf("expected ROUTE_NOT_FOUND for resolve, got: %v", err)
 	}
 }
 
@@ -151,8 +99,9 @@ func TestModuleRegistryLibP2PDuplicateRegistration(t *testing.T) {
 	t.Parallel()
 
 	reg := newModuleRegistry()
+	protoID := protocol.ID(contractprotoid.ProtoInboxMessage)
 
-	cleanup, err := reg.RegisterLibP2PHook(LibP2PProtocolNodeCall, inboxmessage.InboxMessageRoute, func(context.Context, LibP2PEvent) (LibP2PResult, error) {
+	cleanup, err := reg.RegisterLibP2PHook(protoID, func(context.Context, LibP2PEvent) (LibP2PResult, error) {
 		return LibP2PResult{CallResp: ncall.CallResp{Ok: true, Code: "OK"}}, nil
 	})
 	if err != nil {
@@ -160,7 +109,7 @@ func TestModuleRegistryLibP2PDuplicateRegistration(t *testing.T) {
 	}
 	t.Cleanup(cleanup)
 
-	if _, err := reg.RegisterLibP2PHook(LibP2PProtocolNodeCall, inboxmessage.InboxMessageRoute, func(context.Context, LibP2PEvent) (LibP2PResult, error) {
+	if _, err := reg.RegisterLibP2PHook(protoID, func(context.Context, LibP2PEvent) (LibP2PResult, error) {
 		return LibP2PResult{CallResp: ncall.CallResp{Ok: true, Code: "OK"}}, nil
 	}); err == nil {
 		t.Fatalf("expected duplicate registration error")

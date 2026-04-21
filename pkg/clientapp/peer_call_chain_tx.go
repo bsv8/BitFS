@@ -16,8 +16,9 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/obs"
-	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 type peerCallChainTxQuoteBuilt struct {
@@ -36,14 +37,14 @@ type builtPeerCallChainTx struct {
 	ChangeSatoshi   uint64
 }
 
-func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (ncall.CallResp, peerCallChainTxQuoteBuilt, error) {
+func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, store *clientDB, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, protoID protocol.ID) (ncall.CallResp, peerCallChainTxQuoteBuilt, error) {
 	if rt == nil || rt.Host == nil {
 		return ncall.CallResp{}, peerCallChainTxQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
 	if option == nil {
 		return ncall.CallResp{}, peerCallChainTxQuoteBuilt{}, fmt.Errorf("payment option missing")
 	}
-	quoted, err := requestPeerCallChainTxQuote(ctx, rt, store, peerID, req, option)
+	quoted, err := requestPeerCallChainTxQuote(ctx, rt, store, peerID, req, option, protoID)
 	if err != nil {
 		return ncall.CallResp{}, peerCallChainTxQuoteBuilt{}, err
 	}
@@ -57,7 +58,7 @@ func quotePeerCallWithChainTx(ctx context.Context, rt *Runtime, store *clientDB,
 	}, quoted, nil
 }
 
-func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error) {
+func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, protoID protocol.ID) (peerCallChainTxQuoteBuilt, error) {
 	if rt == nil || rt.Host == nil {
 		return peerCallChainTxQuoteBuilt{}, fmt.Errorf("runtime not initialized")
 	}
@@ -65,9 +66,8 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	if err != nil {
 		return peerCallChainTxQuoteBuilt{}, err
 	}
-	quotedResp, err := callNodeRoute(ctx, rt, peerID, ncall.CallReq{
+	quotedResp, err := callNodeRoute(ctx, rt, peerID, protoID, ncall.CallReq{
 		To:          buildPeerCallQuoteTarget(req),
-		Route:       strings.TrimSpace(req.Route),
 		ContentType: strings.TrimSpace(req.ContentType),
 		Body:        append([]byte(nil), req.Body...),
 	})
@@ -119,7 +119,7 @@ func requestPeerCallChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	}, nil
 }
 
-func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error) {
+func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt, protoID protocol.ID) (ncall.CallResp, error) {
 	built, err := buildPeerCallChainTx(ctx, store, rt, quoted.GatewayPub, quoted.ServiceQuoteRaw, quoted.ServiceQuote)
 	if err != nil {
 		return ncall.CallResp{}, err
@@ -133,7 +133,7 @@ func payPeerCallWithChainTxQuote(ctx context.Context, rt *Runtime, store ClientS
 	paidReq := req
 	paidReq.PaymentScheme = ncall.PaymentSchemeChainTxV1
 	paidReq.PaymentPayload = paymentPayload
-	out, err := callNodeRoute(ctx, rt, peerID, paidReq)
+	out, err := callNodeRoute(ctx, rt, peerID, protoID, paidReq)
 	if err != nil {
 		return ncall.CallResp{}, err
 	}

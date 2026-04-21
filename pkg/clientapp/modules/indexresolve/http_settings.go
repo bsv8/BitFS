@@ -9,7 +9,7 @@ import (
 	"github.com/bsv8/BitFS/pkg/clientapp/modules/modulekit"
 )
 
-func handleIndexResolveSettings(store indexResolveModuleStore) moduleapi.HTTPHandler {
+func handleIndexResolveSettings(store ResolveSettingsStore) moduleapi.HTTPHandler {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r == nil {
 			modulekit.WriteError(w, http.StatusBadRequest, "BAD_REQUEST", "request is required")

@@ -13,6 +13,7 @@ import (
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
+	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -658,7 +659,7 @@ func payOneListenCycle(ctx context.Context, rt *Runtime, store *clientDB, gw pee
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:                   gw.String(),
-		Route:                string(contractroute.RouteBroadcastV1ListenCycle),
+		ProtocolID:           ncall.ProtoBroadcastListenCycle,
 		ContentType:          contractmessage.ContentTypeProto,
 		Body:                 rawBody,
 		Store:                store,

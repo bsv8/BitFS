@@ -5,6 +5,7 @@ import (
 
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // 这组方法只给 gateway demand publish 这条触发链用。
@@ -32,14 +33,14 @@ func (r *Runtime) LocalAdvertiseAddrs() []string {
 	return localAdvertiseAddrs(r)
 }
 
-func (r *Runtime) CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error) {
-	return callNodeRoute(ctx, r, peerID, req)
+func (r *Runtime) CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq, protoID protocol.ID) (ncall.CallResp, error) {
+	return callNodeRoute(ctx, r, peerID, protoID, req)
 }
 
-func (r *Runtime) RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error) {
-	return requestPeerCallChainTxQuote(ctx, r, store, peerID, req, option)
+func (r *Runtime) RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, protoID protocol.ID) (peerCallChainTxQuoteBuilt, error) {
+	return requestPeerCallChainTxQuote(ctx, r, store, peerID, req, option, protoID)
 }
 
-func (r *Runtime) PayPeerCallWithChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error) {
-	return payPeerCallWithChainTxQuote(ctx, r, store, peerID, req, option, quoted)
+func (r *Runtime) PayPeerCallWithChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt, protoID protocol.ID) (ncall.CallResp, error) {
+	return payPeerCallWithChainTxQuote(ctx, r, store, peerID, req, option, quoted, protoID)
 }

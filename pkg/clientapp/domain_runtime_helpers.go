@@ -13,7 +13,7 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
+	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	oldproto "github.com/golang/protobuf/proto"
@@ -101,7 +101,7 @@ func triggerDomainQueryName(ctx context.Context, store *clientDB, rt *Runtime, r
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          resolverPubkeyHex,
-		Route:       string(contractroute.RouteDomainV1Query),
+		ProtocolID:  ncall.ProtoDomainQueryNamePaid,
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -129,7 +129,7 @@ func triggerDomainRegisterLock(ctx context.Context, store *clientDB, rt *Runtime
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		Route:       string(contractroute.RouteDomainV1Lock),
+		ProtocolID:  ncall.ProtoDomainRegisterLock,
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -154,7 +154,7 @@ func triggerDomainRegisterSubmit(ctx context.Context, rt *Runtime, store *client
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		Route:       string(contractroute.RouteDomainV1RegisterSubmit),
+		ProtocolID:  ncall.ProtoDomainRegisterSubmit,
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,
@@ -182,7 +182,7 @@ func triggerDomainSetTarget(ctx context.Context, store *clientDB, rt *Runtime, r
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(resolverPubkeyHex),
-		Route:       string(contractroute.RouteDomainV1SetTarget),
+		ProtocolID:  ncall.ProtoDomainSetTargetPaid,
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        payload,
 		Store:       store,

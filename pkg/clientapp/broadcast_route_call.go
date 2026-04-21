@@ -8,9 +8,10 @@ import (
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
 	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	oldproto "github.com/golang/protobuf/proto"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
-func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runtime, to string, route string, body oldproto.Message, decode func(ncall.CallResp) (T, error)) (T, ncall.CallResp, error) {
+func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runtime, to string, protoID protocol.ID, body oldproto.Message, decode func(ncall.CallResp) (T, error)) (T, ncall.CallResp, error) {
 	var zero T
 	if decode == nil {
 		return zero, ncall.CallResp{}, fmt.Errorf("route response decoder missing")
@@ -21,7 +22,7 @@ func triggerTypedPeerCall[T any](ctx context.Context, store *clientDB, rt *Runti
 	}
 	callResp, err := TriggerPeerCall(ctx, rt, TriggerPeerCallParams{
 		To:          strings.TrimSpace(to),
-		Route:       strings.TrimSpace(route),
+		ProtocolID:  protoID,
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        rawBody,
 		Store:       store,

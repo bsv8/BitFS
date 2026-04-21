@@ -5,15 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
-
-type indexResolveModuleStore interface {
-	ListIndexResolveRoutes(context.Context) ([]RouteItem, error)
-	ResolveIndexRoute(context.Context, string) (Manifest, error)
-	UpsertIndexResolveRoute(context.Context, string, string, int64) (RouteItem, error)
-	DeleteIndexResolveRoute(context.Context, string) error
-}
 
 type indexResolveStoreAdapter struct {
 	store moduleapi.Store
@@ -43,7 +37,7 @@ func (a indexResolveSerialAdapter) Do(ctx context.Context, fn func(Conn) error) 
 	})
 }
 
-func openIndexResolveStore(ctx context.Context, host moduleapi.Host) (indexResolveModuleStore, error) {
+func openIndexResolveStore(ctx context.Context, host moduleapi.Host) (*dbStore, error) {
 	if ctx == nil {
 		return nil, fmt.Errorf("ctx is required")
 	}
@@ -65,7 +59,7 @@ func openIndexResolveStore(ctx context.Context, host moduleapi.Host) (indexResol
 }
 
 func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
-	moduleStore, err := openIndexResolveStore(ctx, host)
+	store, err := openIndexResolveStore(ctx, host)
 	if err != nil {
 		return nil, err
 	}
@@ -73,13 +67,16 @@ func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 	return host.InstallModule(moduleapi.ModuleSpec{
 		ID:      ModuleID,
 		Version: CapabilityVersion,
-		LibP2P: []moduleapi.LibP2PRoute{
-			{Protocol: moduleapi.LibP2PProtocolNodeResolve, Handler: resolveIndexRoute(moduleStore)},
+		Capabilities: []moduleapi.Capability{
+			{ID: ModuleID, Version: uint32(CapabilityVersion), ProtocolID: contractprotoid.ProtoIndexResolve},
 		},
-		Settings: indexResolveSettingsActions(moduleStore),
-		OBS:      indexResolveOBSActions(moduleStore),
+		LibP2P: []moduleapi.LibP2PRoute{
+			{ProtocolID: contractprotoid.ProtoIndexResolve, Handler: handleIndexResolve(store)},
+		},
+		Settings: indexResolveSettingsActions(store),
+		OBS:      indexResolveOBSActions(store),
 		HTTP: []moduleapi.HTTPRoute{
-			{Path: "/v1/settings/index-resolve", Handler: handleIndexResolveSettings(moduleStore)},
+			{Path: "/v1/settings/index-resolve", Handler: handleIndexResolveSettings(store)},
 		},
 	})
 }

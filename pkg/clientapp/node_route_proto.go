@@ -9,6 +9,7 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 // marshalNodeRouteProtoBody 统一 node route 的 proto body 编码。
@@ -38,7 +39,7 @@ func unmarshalNodeRouteProtoBody(route string, raw []byte, out oldproto.Message,
 	return nil
 }
 
-func callNodeRouteProto(ctx context.Context, rt *Runtime, peerID peer.ID, route string, body oldproto.Message, out oldproto.Message) error {
+func callNodeRouteProto(ctx context.Context, rt *Runtime, peerID peer.ID, protoID protocol.ID, route string, body oldproto.Message, out oldproto.Message) error {
 	if rt == nil || rt.Host == nil {
 		return fmt.Errorf("runtime not initialized")
 	}
@@ -46,7 +47,7 @@ func callNodeRouteProto(ctx context.Context, rt *Runtime, peerID peer.ID, route 
 	if err != nil {
 		return err
 	}
-	resp, err := callNodeRoute(ctx, rt, peerID, ncall.CallReq{
+	resp, err := callNodeRoute(ctx, rt, peerID, protoID, ncall.CallReq{
 		To:          peerID.String(),
 		Route:       strings.TrimSpace(route),
 		ContentType: contractmessage.ContentTypeProto,

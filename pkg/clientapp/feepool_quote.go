@@ -13,12 +13,14 @@ import (
 	"github.com/bsv8/BFTP/pkg/infra/payflow"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
 )
 
 type feePoolServiceQuoteArgs struct {
 	Session       *feePoolSession
 	GatewayPeerID peer.ID
 	Route         string
+	ProtocolID    protocol.ID
 	ContentType   string
 	Body          []byte
 }
@@ -44,7 +46,7 @@ func requestGatewayServiceQuote(ctx context.Context, rt *Runtime, args feePoolSe
 	if err != nil {
 		return feePoolServiceQuoteBuilt{}, err
 	}
-	quotedResp, err := callNodeRoute(ctx, rt, args.GatewayPeerID, ncall.CallReq{
+	quotedResp, err := callNodeRoute(ctx, rt, args.GatewayPeerID, args.ProtocolID, ncall.CallReq{
 		To:          gatewayBusinessID(rt, args.GatewayPeerID),
 		Route:       strings.TrimSpace(args.Route),
 		ContentType: strings.TrimSpace(args.ContentType),

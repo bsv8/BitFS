@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 )
 
@@ -77,12 +78,15 @@ func Install(ctx context.Context, host moduleapi.Host) (func(), error) {
 	return host.InstallModule(moduleapi.ModuleSpec{
 		ID:      ModuleID,
 		Version: CapabilityVersion,
+		Capabilities: []moduleapi.Capability{
+			{ID: ModuleID, Version: uint32(CapabilityVersion), ProtocolID: contractprotoid.ProtoInboxMessage},
+		},
 		HTTP: []moduleapi.HTTPRoute{
 			{Path: "/v1/settings/inbox/messages", Handler: handleInboxMessagesSettings(moduleStore)},
 			{Path: "/v1/settings/inbox/messages/detail", Handler: handleInboxMessageDetailSettings(moduleStore)},
 		},
 		LibP2P: []moduleapi.LibP2PRoute{
-			{Protocol: moduleapi.LibP2PProtocolNodeCall, Route: InboxMessageRoute, Handler: receiveInboxMessage(moduleStore)},
+			{ProtocolID: contractprotoid.ProtoInboxMessage, Handler: receiveInboxMessage(moduleStore)},
 		},
 	})
 }

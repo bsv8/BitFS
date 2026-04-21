@@ -345,7 +345,6 @@ func (p *runStartupPhases) StartServices() error {
 		}
 	}
 	registerLiveHandlers(st.store, rt)
-	registerNodeRouteHandlers(rt, st.store)
 	registerDirectQuoteSubmitHandler(st.host, st.store, st.trace)
 	if runtimeCfg.Seller.Enabled {
 		registerSellerHandlers(rt, st.host, st.store, rt.live, st.trace, runtimeCfg)

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	domainmodule "github.com/bsv8/BFTP/pkg/modules/domain"
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	oldproto "github.com/golang/protobuf/proto"
@@ -69,7 +69,7 @@ func resolveDomainRemote(ctx context.Context, host moduleapi.Host, rawDomain str
 		}
 		resp, err := host.PeerCall(ctx, moduleapi.PeerCallRequest{
 			To:          gateway.Pubkey,
-			Route:       string(contractroute.RouteDomainV1Resolve),
+			ProtocolID:  contractprotoid.ProtoDomainResolveNamePaid,
 			ContentType: contractmessage.ContentTypeProto,
 			Body:        payload,
 		})

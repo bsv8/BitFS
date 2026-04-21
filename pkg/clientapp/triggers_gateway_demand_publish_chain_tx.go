@@ -6,11 +6,13 @@ import (
 	"strings"
 
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
+	contractprotoid "github.com/bsv8/BFTP-contract/pkg/v1/protoid"
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/obs"
-	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/core/protocol"
+	oldproto "github.com/golang/protobuf/proto"
 )
 
 // gatewayDemandPublishChainTxEnv 是这个触发链真正需要的能力。
@@ -24,9 +26,9 @@ type gatewayDemandPublishChainTxEnv interface {
 	PickGatewayForBusiness(gatewayPeerID string) (peer.AddrInfo, error)
 	GatewayBusinessID(pid peer.ID) string
 	LocalAdvertiseAddrs() []string
-	CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq) (ncall.CallResp, error)
-	RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption) (peerCallChainTxQuoteBuilt, error)
-	PayPeerCallWithChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt) (ncall.CallResp, error)
+	CallNodeRoute(ctx context.Context, peerID peer.ID, req ncall.CallReq, protoID protocol.ID) (ncall.CallResp, error)
+	RequestPeerCallChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, protoID protocol.ID) (peerCallChainTxQuoteBuilt, error)
+	PayPeerCallWithChainTxQuote(ctx context.Context, store ClientStore, peerID peer.ID, req ncall.CallReq, option *ncall.PaymentOption, quoted peerCallChainTxQuoteBuilt, protoID protocol.ID) (ncall.CallResp, error)
 }
 
 // TriggerGatewayDemandPublishChainTxQuotePayResult 是 gateway demand publish chain_tx_v1 业务触发结果。
@@ -118,7 +120,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		Route:       string(contractroute.RouteBroadcastV1DemandPublish),
 		ContentType: contractmessage.ContentTypeProto,
 		Body:        bodyRaw,
-	})
+	}, contractprotoid.ProtoBroadcastV1DemandPublish)
 	if err != nil {
 		out.Error = err.Error()
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
@@ -143,7 +145,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		Description:     string(contractroute.RouteBroadcastV1DemandPublish),
 		PricingMode:     "",
 		ServiceQuantity: 1,
-	})
+	}, contractprotoid.ProtoBroadcastV1DemandPublish)
 	if err != nil {
 		out.Error = err.Error()
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_chain_tx_failed", map[string]any{"error": err.Error()})
@@ -172,7 +174,7 @@ func TriggerGatewayDemandPublishChainTxQuotePay(ctx context.Context, store Clien
 		Description:     string(contractroute.RouteBroadcastV1DemandPublish),
 		PricingMode:     "",
 		ServiceQuantity: 1,
-	}, quoted)
+	}, quoted, contractprotoid.ProtoBroadcastV1DemandPublish)
 	if payErr != nil {
 		if strings.Contains(strings.ToLower(payErr.Error()), "submitted_unknown_projection") {
 			out.Status = "submitted_unknown_projection"

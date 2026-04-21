@@ -16,7 +16,7 @@ import (
 	sighash "github.com/bsv-blockchain/go-sdk/transaction/sighash"
 	"github.com/bsv-blockchain/go-sdk/transaction/template/p2pkh"
 	contractmessage "github.com/bsv8/BFTP-contract/pkg/v1/message"
-	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
+	ncall "github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/infra/poolcore"
 	"github.com/bsv8/BFTP/pkg/infra/pproto"
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -231,7 +231,7 @@ func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runti
 		BuyerAddrs: buyerAddrs,
 	}
 	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_begin", map[string]any{"seed_hash": seedHash})
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublish), body, decodeDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastDemandPublish, body, decodeDemandPublishRouteResp)
 	if err != nil {
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishPaidResp{}, err
@@ -280,7 +280,7 @@ func TriggerGatewayPublishDemandBatch(ctx context.Context, store *clientDB, rt *
 		BuyerAddrs: localAdvertiseAddrs(rt),
 	}
 	obs.Business(ServiceName, "evt_trigger_gateway_demand_publish_batch_begin", map[string]any{"item_count": len(items)})
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1DemandPublishBatch), body, decodeDemandPublishBatchRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastDemandPublishBatch, body, decodeDemandPublishBatchRouteResp)
 	if err != nil {
 		obs.Error(ServiceName, "evt_trigger_gateway_demand_publish_batch_failed", map[string]any{"error": err.Error()})
 		return contractmessage.DemandPublishBatchPaidResp{}, err
@@ -327,7 +327,7 @@ func TriggerGatewayPublishLiveDemand(ctx context.Context, store *clientDB, rt *R
 		Window:           p.Window,
 		BuyerAddrs:       localAdvertiseAddrs(rt),
 	}
-	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), string(contractroute.RouteBroadcastV1LiveDemandPublish), body, decodeLiveDemandPublishRouteResp)
+	resp, _, err := triggerTypedPeerCall(ctx, store, rt, gatewayBusinessID(rt, gw.ID), ncall.ProtoBroadcastLiveDemandPublish, body, decodeLiveDemandPublishRouteResp)
 	if err != nil {
 		return contractmessage.LiveDemandPublishPaidResp{}, err
 	}
