@@ -10,9 +10,9 @@ import (
 	contractroute "github.com/bsv8/BFTP-contract/pkg/v1/route"
 	"github.com/bsv8/BFTP/pkg/infra/ncall"
 	"github.com/bsv8/BFTP/pkg/obs"
+	oldproto "github.com/golang/protobuf/proto"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/core/protocol"
-	oldproto "github.com/golang/protobuf/proto"
 )
 
 // gatewayDemandPublishChainTxEnv 是这个触发链真正需要的能力。

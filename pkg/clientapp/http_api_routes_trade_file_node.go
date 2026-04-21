@@ -30,14 +30,14 @@ func (s *httpAPIServer) registerHTTPRouteFile(mux *http.ServeMux, prefix string)
 }
 
 func (s *httpAPIServer) registerHTTPRouteGetFileByHash(mux *http.ServeMux, prefix string) {
-	if s.getFileByHashHandler == nil {
+	if s.downloadFileHandler == nil {
 		return
 	}
-	mux.HandleFunc(prefix+"/v1/files/getfilebyhash", s.withAuth(s.getFileByHashHandler.handleStart))
-	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/status", s.withAuth(s.getFileByHashHandler.handleStatus))
-	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/chunks", s.withAuth(s.getFileByHashHandler.handleChunks))
-	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/nodes", s.withAuth(s.getFileByHashHandler.handleNodes))
-	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/quotes", s.withAuth(s.getFileByHashHandler.handleQuotes))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash", s.withAuth(s.downloadFileHandler.handleStart))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/status", s.withAuth(s.downloadFileHandler.handleStatus))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/chunks", s.withAuth(s.downloadFileHandler.handleChunks))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/nodes", s.withAuth(s.downloadFileHandler.handleNodes))
+	mux.HandleFunc(prefix+"/v1/files/getfilebyhash/quotes", s.withAuth(s.downloadFileHandler.handleQuotes))
 }
 
 func (s *httpAPIServer) registerHTTPRouteNode(mux *http.ServeMux, prefix string) {

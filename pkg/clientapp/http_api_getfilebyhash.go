@@ -6,43 +6,43 @@ import (
 	"strings"
 
 	"github.com/bsv8/BFTP/pkg/obs"
-	"github.com/bsv8/BitFS/pkg/clientapp/modules/getfilebyhash"
+	filedownload "github.com/bsv8/BitFS/pkg/clientapp/download/file"
 )
 
-// getfilebyhashHTTPHandler HTTP API handler（getfilebyhash 模块）。
+// downloadFileHTTPHandler HTTP API handler（下载文件编排入口）。
 // 约束：
 // - handler 只做 method 校验、JSON/query 解析、调模块函数、统一 JSON 返回；
 // - 不写下载业务，不发布 demand，不读取 quote，不写 workspace。
-type getfilebyhashHTTPHandler struct {
-	caps *GetFileByHashModuleCaps
+type downloadFileHTTPHandler struct {
+	caps *DownloadFileCaps
 }
 
-func newGetFileByHashHTTPHandler(caps *GetFileByHashModuleCaps) *getfilebyhashHTTPHandler {
-	return &getfilebyhashHTTPHandler{caps: caps}
+func newDownloadFileHTTPHandler(caps *DownloadFileCaps) *downloadFileHTTPHandler {
+	return &downloadFileHTTPHandler{caps: caps}
 }
 
-func (h *getfilebyhashHTTPHandler) handleStart(w http.ResponseWriter, r *http.Request) {
+func (h *downloadFileHTTPHandler) handleStart(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
 	}
 
-	var req getfilebyhash.StartRequest
+	var req filedownload.StartRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		h.writeError(w, http.StatusBadRequest, "BAD_REQUEST", "invalid JSON body")
 		return
 	}
 
-	result, err := h.caps.StartDownload(r.Context(), req)
+	result, err := h.caps.StartByHash(r.Context(), req)
 	if err != nil {
-		h.writeError(w, http.StatusInternalServerError, getfilebyhash.CodeOf(err), getfilebyhash.MessageOf(err))
+		h.writeError(w, http.StatusInternalServerError, filedownload.CodeOf(err), filedownload.MessageOf(err))
 		return
 	}
 
 	h.writeSuccess(w, result)
 }
 
-func (h *getfilebyhashHTTPHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
+func (h *downloadFileHTTPHandler) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
@@ -56,19 +56,19 @@ func (h *getfilebyhashHTTPHandler) handleStatus(w http.ResponseWriter, r *http.R
 
 	status, err := h.caps.GetStatus(r.Context(), jobID)
 	if err != nil {
-		code := getfilebyhash.CodeOf(err)
-		if code == getfilebyhash.CodeJobNotFound {
-			h.writeError(w, http.StatusNotFound, code, getfilebyhash.MessageOf(err))
+		code := filedownload.CodeOf(err)
+		if code == filedownload.CodeJobNotFound {
+			h.writeError(w, http.StatusNotFound, code, filedownload.MessageOf(err))
 			return
 		}
-		h.writeError(w, http.StatusInternalServerError, code, getfilebyhash.MessageOf(err))
+		h.writeError(w, http.StatusInternalServerError, code, filedownload.MessageOf(err))
 		return
 	}
 
 	h.writeSuccess(w, status)
 }
 
-func (h *getfilebyhashHTTPHandler) handleChunks(w http.ResponseWriter, r *http.Request) {
+func (h *downloadFileHTTPHandler) handleChunks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
@@ -82,19 +82,19 @@ func (h *getfilebyhashHTTPHandler) handleChunks(w http.ResponseWriter, r *http.R
 
 	chunks, err := h.caps.ListChunks(r.Context(), jobID)
 	if err != nil {
-		code := getfilebyhash.CodeOf(err)
-		if code == getfilebyhash.CodeJobNotFound {
-			h.writeError(w, http.StatusNotFound, code, getfilebyhash.MessageOf(err))
+		code := filedownload.CodeOf(err)
+		if code == filedownload.CodeJobNotFound {
+			h.writeError(w, http.StatusNotFound, code, filedownload.MessageOf(err))
 			return
 		}
-		h.writeError(w, http.StatusInternalServerError, code, getfilebyhash.MessageOf(err))
+		h.writeError(w, http.StatusInternalServerError, code, filedownload.MessageOf(err))
 		return
 	}
 
 	h.writeSuccess(w, chunks)
 }
 
-func (h *getfilebyhashHTTPHandler) handleNodes(w http.ResponseWriter, r *http.Request) {
+func (h *downloadFileHTTPHandler) handleNodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
@@ -108,19 +108,19 @@ func (h *getfilebyhashHTTPHandler) handleNodes(w http.ResponseWriter, r *http.Re
 
 	nodes, err := h.caps.ListNodes(r.Context(), jobID)
 	if err != nil {
-		code := getfilebyhash.CodeOf(err)
-		if code == getfilebyhash.CodeJobNotFound {
-			h.writeError(w, http.StatusNotFound, code, getfilebyhash.MessageOf(err))
+		code := filedownload.CodeOf(err)
+		if code == filedownload.CodeJobNotFound {
+			h.writeError(w, http.StatusNotFound, code, filedownload.MessageOf(err))
 			return
 		}
-		h.writeError(w, http.StatusInternalServerError, code, getfilebyhash.MessageOf(err))
+		h.writeError(w, http.StatusInternalServerError, code, filedownload.MessageOf(err))
 		return
 	}
 
 	h.writeSuccess(w, nodes)
 }
 
-func (h *getfilebyhashHTTPHandler) handleQuotes(w http.ResponseWriter, r *http.Request) {
+func (h *downloadFileHTTPHandler) handleQuotes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		h.writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed")
 		return
@@ -134,26 +134,26 @@ func (h *getfilebyhashHTTPHandler) handleQuotes(w http.ResponseWriter, r *http.R
 
 	quotes, err := h.caps.ListQuotes(r.Context(), jobID)
 	if err != nil {
-		code := getfilebyhash.CodeOf(err)
-		if code == getfilebyhash.CodeJobNotFound {
-			h.writeError(w, http.StatusNotFound, code, getfilebyhash.MessageOf(err))
+		code := filedownload.CodeOf(err)
+		if code == filedownload.CodeJobNotFound {
+			h.writeError(w, http.StatusNotFound, code, filedownload.MessageOf(err))
 			return
 		}
-		h.writeError(w, http.StatusInternalServerError, code, getfilebyhash.MessageOf(err))
+		h.writeError(w, http.StatusInternalServerError, code, filedownload.MessageOf(err))
 		return
 	}
 
 	h.writeSuccess(w, quotes)
 }
 
-func (h *getfilebyhashHTTPHandler) writeSuccess(w http.ResponseWriter, data any) {
+func (h *downloadFileHTTPHandler) writeSuccess(w http.ResponseWriter, data any) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"data":   data,
 	})
 }
 
-func (h *getfilebyhashHTTPHandler) writeError(w http.ResponseWriter, status int, code string, message string) {
+func (h *downloadFileHTTPHandler) writeError(w http.ResponseWriter, status int, code string, message string) {
 	obs.Info("getfilebyhash", "http_api_error", map[string]any{
 		"code":    code,
 		"message": message,
