@@ -274,6 +274,40 @@ func TestDBStoreSetDemandID(t *testing.T) {
 	}
 }
 
+func TestDBStoreSetError(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := newDownloadFileJobStoreAdapter(NewClientStore(db, nil))
+	ctx := context.Background()
+
+	job := &filedownload.Job{
+		JobID:      "test_job_error",
+		SeedHash:   "d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4",
+		State:      filedownload.StateRunning,
+		ChunkCount: 1,
+	}
+	_, created, err := store.CreateJob(ctx, job)
+	if err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected job to be created")
+	}
+
+	if err := store.SetError(ctx, "test_job_error", "pool close failed"); err != nil {
+		t.Fatalf("set error failed: %v", err)
+	}
+
+	retrieved, found := store.GetJob(ctx, "test_job_error")
+	if !found {
+		t.Fatalf("job not found")
+	}
+	if retrieved.Error != "pool close failed" {
+		t.Fatalf("expected error=pool close failed, got %s", retrieved.Error)
+	}
+}
+
 func TestDBStoreAppendChunkReport(t *testing.T) {
 	t.Parallel()
 

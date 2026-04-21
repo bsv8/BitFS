@@ -259,8 +259,14 @@ func TestHTTPHandlerHandleStartDoneAfterTransfer(t *testing.T) {
 		Status string `json:"status"`
 		Data   struct {
 			Status struct {
-				State          string `json:"state"`
-				OutputFilePath string `json:"output_file_path,omitempty"`
+				JobID           string `json:"job_id"`
+				FrontOrderID    string `json:"front_order_id,omitempty"`
+				DemandID        string `json:"demand_id,omitempty"`
+				State           string `json:"state"`
+				ChunkCount      uint32 `json:"chunk_count"`
+				CompletedChunks uint32 `json:"completed_chunks"`
+				OutputFilePath  string `json:"output_file_path,omitempty"`
+				Error           string `json:"error,omitempty"`
 			} `json:"status"`
 		} `json:"data"`
 	}
@@ -272,6 +278,18 @@ func TestHTTPHandlerHandleStartDoneAfterTransfer(t *testing.T) {
 	}
 	if resp.Data.Status.State != filedownload.StateDone {
 		t.Fatalf("expected state=%s, got %s", filedownload.StateDone, resp.Data.Status.State)
+	}
+	if resp.Data.Status.FrontOrderID == "" {
+		t.Fatalf("expected front_order_id to be set")
+	}
+	if resp.Data.Status.DemandID != "demand_http_done" {
+		t.Fatalf("expected demand_id=demand_http_done, got %s", resp.Data.Status.DemandID)
+	}
+	if resp.Data.Status.CompletedChunks != 2 {
+		t.Fatalf("expected completed_chunks=2, got %d", resp.Data.Status.CompletedChunks)
+	}
+	if resp.Data.Status.Error != "" {
+		t.Fatalf("expected empty error, got %s", resp.Data.Status.Error)
 	}
 	if resp.Data.Status.OutputFilePath != "/tmp/http-final.bin" {
 		t.Fatalf("expected output_file_path=/tmp/http-final.bin, got %s", resp.Data.Status.OutputFilePath)
@@ -368,8 +386,14 @@ func TestHTTPHandlerHandleStartResumeRunningJob(t *testing.T) {
 		Status string `json:"status"`
 		Data   struct {
 			Status struct {
-				State          string `json:"state"`
-				OutputFilePath string `json:"output_file_path,omitempty"`
+				JobID           string `json:"job_id"`
+				FrontOrderID    string `json:"front_order_id,omitempty"`
+				DemandID        string `json:"demand_id,omitempty"`
+				State           string `json:"state"`
+				ChunkCount      uint32 `json:"chunk_count"`
+				CompletedChunks uint32 `json:"completed_chunks"`
+				OutputFilePath  string `json:"output_file_path,omitempty"`
+				Error           string `json:"error,omitempty"`
 			} `json:"status"`
 		} `json:"data"`
 	}
@@ -381,6 +405,18 @@ func TestHTTPHandlerHandleStartResumeRunningJob(t *testing.T) {
 	}
 	if resp.Data.Status.State != filedownload.StateDone {
 		t.Fatalf("expected state=%s, got %s", filedownload.StateDone, resp.Data.Status.State)
+	}
+	if resp.Data.Status.FrontOrderID != "fo_http_resume" {
+		t.Fatalf("expected front_order_id=fo_http_resume, got %s", resp.Data.Status.FrontOrderID)
+	}
+	if resp.Data.Status.DemandID != "demand_http_resume" {
+		t.Fatalf("expected demand_id=demand_http_resume, got %s", resp.Data.Status.DemandID)
+	}
+	if resp.Data.Status.CompletedChunks != 2 {
+		t.Fatalf("expected completed_chunks=2, got %d", resp.Data.Status.CompletedChunks)
+	}
+	if resp.Data.Status.Error != "" {
+		t.Fatalf("expected empty error, got %s", resp.Data.Status.Error)
 	}
 	if resp.Data.Status.OutputFilePath != "/tmp/http-resume-final.bin" {
 		t.Fatalf("expected output_file_path=/tmp/http-resume-final.bin, got %s", resp.Data.Status.OutputFilePath)
@@ -498,6 +534,62 @@ func TestHTTPHandlerHandleStartModuleDisabled(t *testing.T) {
 	}
 }
 
+func TestHTTPHandlerHandleStartQuoteTimeout(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := NewClientStore(db, nil)
+	caps := &DownloadFileCaps{
+		store:       store,
+		jobStore:    newDownloadFileJobStoreAdapter(store),
+		frontBinder: newDownloadFileOrderAdapter(store, ""),
+		fileStore:   &httpTestDownloadFileStore{completeFound: false},
+		seedStore:   httpTestDownloadSeedStore{found: true, meta: filedownload.SeedMeta{SeedHash: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", ChunkCount: 1, FileSize: 4}},
+		demandPublisher: httpTestDownloadDemandPublisher{result: filedownload.PublishDemandResult{
+			DemandID: "demand_quote_timeout",
+			Status:   "submitted",
+		}},
+		quoteReader: httpTestDownloadQuoteReader{quotes: nil},
+		policy:      httpTestDownloadPolicy{},
+	}
+	handler := newDownloadFileHTTPHandler(caps)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/getfilebyhash", strings.NewReader(`{"seed_hash":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","chunk_count":1}`))
+	req = req.WithContext(context.Background())
+	rec := httptest.NewRecorder()
+
+	handler.handleStart(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Status struct {
+				State    string `json:"state"`
+				Error    string `json:"error,omitempty"`
+				DemandID string `json:"demand_id,omitempty"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v, body: %s", err, rec.Body.String())
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status=ok, got %s", resp.Status)
+	}
+	if resp.Data.Status.State != filedownload.StateQuoteTimeout {
+		t.Fatalf("expected state=%s, got %s", filedownload.StateQuoteTimeout, resp.Data.Status.State)
+	}
+	if resp.Data.Status.Error != "quote timeout" {
+		t.Fatalf("expected error quote timeout, got %s", resp.Data.Status.Error)
+	}
+	if resp.Data.Status.DemandID != "demand_quote_timeout" {
+		t.Fatalf("expected demand_id=demand_quote_timeout, got %s", resp.Data.Status.DemandID)
+	}
+}
+
 func TestHTTPHandlerHandleStatusGET(t *testing.T) {
 	t.Parallel()
 
@@ -544,9 +636,15 @@ func TestHTTPHandlerHandleStatusGET(t *testing.T) {
 	var resp struct {
 		Status string `json:"status"`
 		Data   struct {
-			JobID    string `json:"job_id"`
-			SeedHash string `json:"seed_hash"`
-			State    string `json:"state"`
+			JobID           string `json:"job_id"`
+			SeedHash        string `json:"seed_hash"`
+			FrontOrderID    string `json:"front_order_id,omitempty"`
+			DemandID        string `json:"demand_id,omitempty"`
+			State           string `json:"state"`
+			ChunkCount      uint32 `json:"chunk_count"`
+			CompletedChunks uint32 `json:"completed_chunks"`
+			OutputFilePath  string `json:"output_file_path,omitempty"`
+			Error           string `json:"error,omitempty"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(statusRec.Body.Bytes(), &resp); err != nil {
@@ -557,6 +655,15 @@ func TestHTTPHandlerHandleStatusGET(t *testing.T) {
 	}
 	if resp.Data.JobID != jobID {
 		t.Fatalf("expected job_id=%s, got %s", jobID, resp.Data.JobID)
+	}
+	if resp.Data.State != filedownload.StateLocal {
+		t.Fatalf("expected state=%s, got %s", filedownload.StateLocal, resp.Data.State)
+	}
+	if resp.Data.CompletedChunks != 0 {
+		t.Fatalf("expected completed_chunks=0, got %d", resp.Data.CompletedChunks)
+	}
+	if resp.Data.Error != "" {
+		t.Fatalf("expected empty error, got %s", resp.Data.Error)
 	}
 }
 
@@ -645,6 +752,61 @@ func TestHTTPHandlerHandleStatusJobNotFound(t *testing.T) {
 	}
 	if resp.Error.Code != filedownload.CodeJobNotFound {
 		t.Fatalf("expected code=%s, got %s", filedownload.CodeJobNotFound, resp.Error.Code)
+	}
+}
+
+func TestHTTPHandlerHandleStatusFailedJobReturnsError(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := NewClientStore(db, nil)
+	jobStore := newDownloadFileJobStoreAdapter(store)
+	ctx := context.Background()
+	jobID := "http_job_failed"
+	if _, created, err := jobStore.CreateJob(ctx, &filedownload.Job{
+		JobID:      jobID,
+		SeedHash:   "e1e2e3e4e5e6e7e8e9eaececececececececececececececececececececece",
+		State:      filedownload.StateFailed,
+		ChunkCount: 1,
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	} else if !created {
+		t.Fatalf("expected job to be created")
+	}
+	if err := jobStore.SetError(ctx, jobID, "pool close failed"); err != nil {
+		t.Fatalf("set error failed: %v", err)
+	}
+
+	handler := newDownloadFileHTTPTestHandler(store)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/files/getfilebyhash/status?job_id="+jobID, nil)
+	req = req.WithContext(context.Background())
+	rec := httptest.NewRecorder()
+
+	handler.handleStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			JobID string `json:"job_id"`
+			State string `json:"state"`
+			Error string `json:"error,omitempty"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status=ok, got %s", resp.Status)
+	}
+	if resp.Data.State != filedownload.StateFailed {
+		t.Fatalf("expected state=%s, got %s", filedownload.StateFailed, resp.Data.State)
+	}
+	if resp.Data.Error != "pool close failed" {
+		t.Fatalf("expected error=pool close failed, got %s", resp.Data.Error)
 	}
 }
 
