@@ -2,6 +2,7 @@ package filedownload
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 )
@@ -297,6 +298,9 @@ func (s *MemoryJobStore) ListChunks(ctx context.Context, jobID string) ([]ChunkR
 	for _, report := range job.chunkReports {
 		reports = append(reports, report)
 	}
+	sort.Slice(reports, func(i, j int) bool {
+		return reports[i].ChunkIndex < reports[j].ChunkIndex
+	})
 	return reports, true
 }
 

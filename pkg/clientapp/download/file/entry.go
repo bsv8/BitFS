@@ -35,8 +35,11 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 		return result, err
 	}
 	if found {
-		if shouldReuseExistingJob(job) {
+		if shouldReturnExistingJob(job) {
 			return resultFromJob(job), nil
+		}
+		if job.State == StateRunning {
+			return resumeRunningJob(ctx, caps, job, req)
 		}
 	} else {
 		job = Job{
@@ -305,6 +308,7 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 
 	var completed uint32
 	var paidTotal uint64
+	completedChunkIndexes := make([]uint32, 0, len(seedMeta.ChunkHashes))
 	for chunkIndex, chunkHash := range seedMeta.ChunkHashes {
 		transferRes, transferErr := caps.Transfers.RunChunkTransfer(ctx, ChunkTransferRequest{
 			DemandID:      demandRes.DemandID,
@@ -360,8 +364,30 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 		}
 		completed++
 		paidTotal += transferRes.PaidSat
+		completedChunkIndexes = append(completedChunkIndexes, uint32(chunkIndex))
 	}
 
+	localFile, err = caps.Files.CompleteFile(ctx, CompleteFileInput{
+		SeedHash:              seedHash,
+		PartFilePath:          partFile.PartFilePath,
+		RecommendedFileName:   strings.TrimSpace(selectedQuote.RecommendedFileName),
+		MimeType:              strings.TrimSpace(selectedQuote.MimeType),
+		AvailableChunkIndexes: append([]uint32(nil), completedChunkIndexes...),
+	})
+	if err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, err
+	}
+	if err := caps.Jobs.SetOutputPath(ctx, job.JobID, localFile.FilePath); err != nil {
+		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		if failErr != nil {
+			return result, failErr
+		}
+		return result, err
+	}
 	if err := caps.Jobs.SetError(ctx, job.JobID, ""); err != nil {
 		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
 		if failErr != nil {
@@ -369,7 +395,7 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 		}
 		return result, err
 	}
-	if err := caps.Jobs.UpdateJobState(ctx, job.JobID, StateRunning); err != nil {
+	if err := caps.Jobs.UpdateJobState(ctx, job.JobID, StateDone); err != nil {
 		failErr := markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
 		if failErr != nil {
 			return result, failErr
@@ -377,18 +403,283 @@ func StartByHash(ctx context.Context, caps DownloadCaps, req StartRequest) (Star
 		return result, err
 	}
 	if refreshed, ok := caps.Jobs.GetJob(ctx, job.JobID); ok {
-		refreshed.State = StateRunning
-		refreshed.PartFilePath = partFile.PartFilePath
+		refreshed.State = StateDone
 		refreshed.CompletedChunks = completed
 		refreshed.PaidTotalSat = paidTotal
+		refreshed.OutputFilePath = localFile.FilePath
+		refreshed.PartFilePath = partFile.PartFilePath
 		return resultFromJob(refreshed), nil
 	}
-	job.State = StateRunning
+	job.State = StateDone
 	job.PartFilePath = partFile.PartFilePath
-	job.Error = ""
 	job.CompletedChunks = completed
 	job.PaidTotalSat = paidTotal
+	job.OutputFilePath = localFile.FilePath
+	job.Error = ""
 	return resultFromJob(job), nil
+}
+
+func resumeRunningJob(ctx context.Context, caps DownloadCaps, job Job, req StartRequest) (StartResult, error) {
+	var result StartResult
+	if caps.Jobs == nil {
+		return result, NewError(CodeModuleDisabled, "job store is not available")
+	}
+	if caps.Seeds == nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "seed store is not available"))
+	}
+	if caps.Files == nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "file store is not available"))
+	}
+
+	seedHash := normalizeSeedHash(req.SeedHash)
+	if seedHash == "" {
+		seedHash = normalizeSeedHash(job.SeedHash)
+	}
+	if seedHash == "" {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeBadRequest, "seed_hash is required"))
+	}
+
+	storedChunks, found := caps.Jobs.ListChunks(ctx, job.JobID)
+	if !found {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeJobNotFound, "job not found: "+job.JobID))
+	}
+	storedChunkMap := make(map[uint32]ChunkReport, len(storedChunks))
+	for _, chunk := range storedChunks {
+		if chunk.State == ChunkStateStored {
+			storedChunkMap[chunk.ChunkIndex] = chunk
+		}
+	}
+
+	seedMeta, foundMeta, err := caps.Seeds.LoadSeedMeta(ctx, seedHash)
+	if err != nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+	}
+	if !foundMeta {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "seed meta is not available"))
+	}
+	if seedMeta.ChunkCount == 0 {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeBadRequest, "seed chunk count is required"))
+	}
+	if req.ChunkCount > 0 && req.ChunkCount != seedMeta.ChunkCount {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeBadRequest, "chunk count does not match seed metadata"))
+	}
+	if len(seedMeta.ChunkHashes) != int(seedMeta.ChunkCount) {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeBadRequest, "chunk hashes do not match chunk count"))
+	}
+	for _, chunkHash := range seedMeta.ChunkHashes {
+		if strings.TrimSpace(chunkHash) == "" {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeBadRequest, "chunk hash is required"))
+		}
+	}
+
+	if job.ChunkCount == 0 {
+		if err := caps.Jobs.SetChunkCount(ctx, job.JobID, seedMeta.ChunkCount); err != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		}
+	} else if job.ChunkCount != seedMeta.ChunkCount {
+		if err := caps.Jobs.SetChunkCount(ctx, job.JobID, seedMeta.ChunkCount); err != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		}
+	}
+
+	quote, err := loadSelectedQuoteForJob(ctx, caps.Jobs, job.JobID)
+	if err != nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+	}
+	if quote.SellerPubkey == "" {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeQuoteUnavailable, "selected quote is not available"))
+	}
+	if strings.TrimSpace(job.DemandID) == "" {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "demand id is not available"))
+	}
+	if quote.FileSizeBytes > 0 && quote.FileSizeBytes != seedMeta.FileSize {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeBadRequest, "quote file size does not match seed metadata"))
+	}
+
+	partFilePath := strings.TrimSpace(job.PartFilePath)
+	if partFilePath == "" {
+		partFile, prepErr := caps.Files.PreparePartFile(ctx, PreparePartFileInput{
+			SeedHash: seedHash,
+			FileSize: seedMeta.FileSize,
+		})
+		if prepErr != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, prepErr)
+		}
+		partFilePath = partFile.PartFilePath
+		if err := caps.Jobs.SetPartFilePath(ctx, job.JobID, partFilePath); err != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		}
+	}
+
+	var completed uint32
+	var paidTotal uint64
+	for _, chunkReport := range storedChunks {
+		if chunkReport.State == ChunkStateStored {
+			completed++
+			paidTotal += chunkReport.ChunkPriceSat
+		}
+	}
+
+	completedIndexes := make([]uint32, 0, len(storedChunkMap))
+	for chunkIndex := uint32(0); chunkIndex < seedMeta.ChunkCount; chunkIndex++ {
+		if _, ok := storedChunkMap[chunkIndex]; ok {
+			completedIndexes = append(completedIndexes, chunkIndex)
+		}
+	}
+
+	if uint32(len(completedIndexes)) == seedMeta.ChunkCount {
+		localFile, completeErr := caps.Files.CompleteFile(ctx, CompleteFileInput{
+			SeedHash:              seedHash,
+			PartFilePath:          partFilePath,
+			RecommendedFileName:   strings.TrimSpace(quote.RecommendedFileName),
+			MimeType:              strings.TrimSpace(quote.MimeType),
+			AvailableChunkIndexes: append([]uint32(nil), completedIndexes...),
+		})
+		if completeErr != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, completeErr)
+		}
+		if err := caps.Jobs.SetOutputPath(ctx, job.JobID, localFile.FilePath); err != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		}
+		if err := caps.Jobs.SetError(ctx, job.JobID, ""); err != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		}
+		if err := caps.Jobs.UpdateJobState(ctx, job.JobID, StateDone); err != nil {
+			return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+		}
+		if refreshed, ok := caps.Jobs.GetJob(ctx, job.JobID); ok {
+			refreshed.State = StateDone
+			refreshed.CompletedChunks = uint32(len(storedChunkMap))
+			refreshed.PaidTotalSat = paidTotal
+			refreshed.OutputFilePath = localFile.FilePath
+			refreshed.PartFilePath = partFilePath
+			return resultFromJob(refreshed), nil
+		}
+		job.State = StateDone
+		job.CompletedChunks = uint32(len(storedChunkMap))
+		job.PaidTotalSat = paidTotal
+		job.OutputFilePath = localFile.FilePath
+		job.PartFilePath = partFilePath
+		return resultFromJob(job), nil
+	}
+
+	if caps.Transfers == nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, NewError(CodeModuleDisabled, "transfer runner is not available"))
+	}
+
+	completedChunkIndexes := append([]uint32(nil), completedIndexes...)
+	for chunkIndex, chunkHash := range seedMeta.ChunkHashes {
+		idx := uint32(chunkIndex)
+		if _, ok := storedChunkMap[idx]; ok {
+			continue
+		}
+		transferRes, transferErr := caps.Transfers.RunChunkTransfer(ctx, ChunkTransferRequest{
+			DemandID:      job.DemandID,
+			SeedHash:      seedHash,
+			ChunkHash:     chunkHash,
+			SellerPubkey:  quote.SellerPubkey,
+			ChunkIndex:    idx,
+			ChunkPriceSat: quote.ChunkPriceSat,
+			MaxRetries:    0,
+		})
+		if transferErr != nil {
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, idx, quote.SellerPubkey, 0, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		if len(transferRes.Data) == 0 {
+			transferErr = NewError(CodeTransferFailed, "chunk bytes are empty")
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, idx, quote.SellerPubkey, transferRes.PaidSat, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		if err := caps.Files.MarkChunkStored(ctx, StoredChunkInput{
+			SeedHash:   seedHash,
+			ChunkIndex: idx,
+			ChunkBytes: transferRes.Data,
+		}); err != nil {
+			transferErr = NewError(CodeChunkStoreFailed, err.Error())
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, idx, quote.SellerPubkey, transferRes.PaidSat, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		report := ChunkReport{
+			ChunkIndex:    idx,
+			State:         ChunkStateStored,
+			SellerPubkey:  quote.SellerPubkey,
+			ChunkPriceSat: transferRes.PaidSat,
+			SpeedBps:      transferRes.SpeedBps,
+			Selected:      true,
+		}
+		if err := caps.Jobs.AppendChunkReport(ctx, job.JobID, report); err != nil {
+			transferErr = NewError(CodeChunkStoreFailed, err.Error())
+			failErr := markDownloadChunkFailed(ctx, caps.Jobs, job.JobID, idx, quote.SellerPubkey, transferRes.PaidSat, transferErr)
+			if failErr != nil {
+				return result, failErr
+			}
+			return result, transferErr
+		}
+		completed++
+		paidTotal += transferRes.PaidSat
+		completedChunkIndexes = append(completedChunkIndexes, idx)
+	}
+
+	localFile, completeErr := caps.Files.CompleteFile(ctx, CompleteFileInput{
+		SeedHash:              seedHash,
+		PartFilePath:          partFilePath,
+		RecommendedFileName:   strings.TrimSpace(quote.RecommendedFileName),
+		MimeType:              strings.TrimSpace(quote.MimeType),
+		AvailableChunkIndexes: append([]uint32(nil), completedChunkIndexes...),
+	})
+	if completeErr != nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, completeErr)
+	}
+	if err := caps.Jobs.SetOutputPath(ctx, job.JobID, localFile.FilePath); err != nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+	}
+	if err := caps.Jobs.SetError(ctx, job.JobID, ""); err != nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+	}
+	if err := caps.Jobs.UpdateJobState(ctx, job.JobID, StateDone); err != nil {
+		return result, markDownloadJobFailed(ctx, caps.Jobs, job.JobID, err)
+	}
+	if refreshed, ok := caps.Jobs.GetJob(ctx, job.JobID); ok {
+		refreshed.State = StateDone
+		refreshed.CompletedChunks = completed
+		refreshed.PaidTotalSat = paidTotal
+		refreshed.OutputFilePath = localFile.FilePath
+		refreshed.PartFilePath = partFilePath
+		return resultFromJob(refreshed), nil
+	}
+	job.State = StateDone
+	job.PartFilePath = partFilePath
+	job.CompletedChunks = completed
+	job.PaidTotalSat = paidTotal
+	job.OutputFilePath = localFile.FilePath
+	job.Error = ""
+	return resultFromJob(job), nil
+}
+
+func loadSelectedQuoteForJob(ctx context.Context, jobs JobStore, jobID string) (QuoteReport, error) {
+	if jobs == nil {
+		return QuoteReport{}, NewError(CodeModuleDisabled, "job store is not available")
+	}
+	quotes, found := jobs.ListQuotes(ctx, jobID)
+	if !found {
+		return QuoteReport{}, NewError(CodeJobNotFound, "job not found: "+jobID)
+	}
+	for _, quote := range quotes {
+		if quote.Selected {
+			return quote, nil
+		}
+	}
+	return QuoteReport{}, nil
 }
 
 func markDownloadJobFailed(ctx context.Context, jobs JobStore, jobID string, cause error) error {
@@ -545,9 +836,9 @@ func normalizeSeedHash(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-func shouldReuseExistingJob(job Job) bool {
+func shouldReturnExistingJob(job Job) bool {
 	switch job.State {
-	case StateLocal, StateRunning, StateBlockedByBudget, StateQuoteUnavailable, StateQuoteTimeout, StateFailed, StateDone:
+	case StateLocal, StateBlockedByBudget, StateQuoteUnavailable, StateQuoteTimeout, StateFailed, StateDone:
 		return true
 	default:
 		return false

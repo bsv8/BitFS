@@ -32,6 +32,9 @@ func newDownloadFileHTTPTestHandler(store *clientDB) *downloadFileHTTPHandler {
 type httpTestDownloadFileStore struct {
 	completeFound bool
 	complete      filedownload.LocalFile
+	completeErr   error
+	completeCalls int
+	lastComplete  filedownload.CompleteFileInput
 }
 
 func (s *httpTestDownloadFileStore) FindCompleteFile(ctx context.Context, seedHash string) (filedownload.LocalFile, bool, error) {
@@ -47,7 +50,69 @@ func (s *httpTestDownloadFileStore) MarkChunkStored(ctx context.Context, input f
 }
 
 func (s *httpTestDownloadFileStore) CompleteFile(ctx context.Context, input filedownload.CompleteFileInput) (filedownload.LocalFile, error) {
+	s.completeCalls++
+	s.lastComplete = input
+	if s.completeErr != nil {
+		return filedownload.LocalFile{}, s.completeErr
+	}
 	return s.complete, nil
+}
+
+type httpTestDownloadSeedStore struct {
+	meta  filedownload.SeedMeta
+	found bool
+}
+
+func (s httpTestDownloadSeedStore) SaveSeed(ctx context.Context, input filedownload.SaveSeedInput) error {
+	return filedownload.NewError(filedownload.CodeModuleDisabled, "seed store is not available")
+}
+
+func (s httpTestDownloadSeedStore) LoadSeedMeta(ctx context.Context, seedHash string) (filedownload.SeedMeta, bool, error) {
+	return s.meta, s.found, nil
+}
+
+type httpTestDownloadDemandPublisher struct {
+	result filedownload.PublishDemandResult
+}
+
+func (p httpTestDownloadDemandPublisher) PublishDemand(ctx context.Context, req filedownload.PublishDemandRequest) (filedownload.PublishDemandResult, error) {
+	return p.result, nil
+}
+
+type httpTestDownloadQuoteReader struct {
+	quotes []filedownload.QuoteReport
+}
+
+func (r httpTestDownloadQuoteReader) ListQuotes(ctx context.Context, demandID string) ([]filedownload.QuoteReport, error) {
+	return append([]filedownload.QuoteReport(nil), r.quotes...), nil
+}
+
+type httpTestDownloadPolicy struct {
+	selected filedownload.QuoteReport
+}
+
+func (p httpTestDownloadPolicy) SelectQuote(ctx context.Context, req filedownload.StartRequest, quotes []filedownload.QuoteReport) (filedownload.QuoteReport, bool, string, error) {
+	if p.selected.SellerPubkey == "" && len(quotes) > 0 {
+		return quotes[0], true, "", nil
+	}
+	return p.selected, true, "", nil
+}
+
+type httpTestDownloadTransferRunner struct {
+	results map[uint32]filedownload.ChunkTransferResult
+	calls   []filedownload.ChunkTransferRequest
+}
+
+func (r *httpTestDownloadTransferRunner) RunChunkTransfer(ctx context.Context, req filedownload.ChunkTransferRequest) (filedownload.ChunkTransferResult, error) {
+	r.calls = append(r.calls, req)
+	if res, ok := r.results[req.ChunkIndex]; ok {
+		return res, nil
+	}
+	return filedownload.ChunkTransferResult{
+		Data:     []byte("chunk"),
+		PaidSat:  req.ChunkPriceSat,
+		SpeedBps: 1000,
+	}, nil
 }
 
 func TestHTTPHandlerHandleStartPOST(t *testing.T) {
@@ -95,6 +160,184 @@ func TestHTTPHandlerHandleStartPOST(t *testing.T) {
 	}
 	if resp.Data.Status.OutputFilePath == "" {
 		t.Fatalf("expected output_file_path to be set")
+	}
+}
+
+func TestHTTPHandlerHandleStartDoneAfterTransfer(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := NewClientStore(db, nil)
+	seedHash := "9999999999999999999999999999999999999999999999999999999999999999"
+	files := &httpTestDownloadFileStore{
+		completeFound: false,
+		complete: filedownload.LocalFile{
+			FilePath: "/tmp/http-final.bin",
+			FileSize: 8,
+			SeedHash: seedHash,
+		},
+	}
+	caps := &DownloadFileCaps{
+		jobStore:        newDownloadFileJobStoreAdapter(store),
+		seedStore:       httpTestDownloadSeedStore{meta: filedownload.SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		fileStore:       files,
+		demandPublisher: httpTestDownloadDemandPublisher{result: filedownload.PublishDemandResult{DemandID: "demand_http_done", Status: "submitted"}},
+		quoteReader:     httpTestDownloadQuoteReader{quotes: []filedownload.QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}}},
+		policy:          httpTestDownloadPolicy{selected: filedownload.QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}},
+		transferRunner: &httpTestDownloadTransferRunner{results: map[uint32]filedownload.ChunkTransferResult{
+			0: {Data: []byte("aaaa"), PaidSat: 10, SpeedBps: 1000},
+			1: {Data: []byte("bbbb"), PaidSat: 10, SpeedBps: 1200},
+		}},
+	}
+	handler := newDownloadFileHTTPHandler(caps)
+
+	reqBody := `{"seed_hash":"` + seedHash + `","chunk_count":2}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/getfilebyhash", strings.NewReader(reqBody))
+	req = req.WithContext(context.Background())
+	rec := httptest.NewRecorder()
+
+	handler.handleStart(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Status struct {
+				State          string `json:"state"`
+				OutputFilePath string `json:"output_file_path,omitempty"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v, body: %s", err, rec.Body.String())
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status=ok, got %s", resp.Status)
+	}
+	if resp.Data.Status.State != filedownload.StateDone {
+		t.Fatalf("expected state=%s, got %s", filedownload.StateDone, resp.Data.Status.State)
+	}
+	if resp.Data.Status.OutputFilePath != "/tmp/http-final.bin" {
+		t.Fatalf("expected output_file_path=/tmp/http-final.bin, got %s", resp.Data.Status.OutputFilePath)
+	}
+	if files.completeCalls != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalls)
+	}
+}
+
+func TestHTTPHandlerHandleStartResumeRunningJob(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := NewClientStore(db, nil)
+	jobStore := newDownloadFileJobStoreAdapter(store)
+	seedHash := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	jobID := "http_job_resume"
+
+	ctx := context.Background()
+	if _, created, err := jobStore.CreateJob(ctx, &filedownload.Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      filedownload.StateRunning,
+		ChunkCount: 2,
+		DemandID:   "demand_http_resume",
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	} else if !created {
+		t.Fatalf("expected job to be created")
+	}
+	if err := jobStore.SetPartFilePath(ctx, jobID, "/tmp/http-resume.part"); err != nil {
+		t.Fatalf("set part file path failed: %v", err)
+	}
+	if err := jobStore.AppendQuote(ctx, jobID, filedownload.QuoteReport{
+		SellerPubkey:        "seller_http",
+		SeedPriceSat:        100,
+		ChunkPriceSat:       10,
+		ChunkCount:          2,
+		FileSizeBytes:       8,
+		RecommendedFileName: "http.bin",
+		MimeType:            "application/octet-stream",
+		Selected:            true,
+	}); err != nil {
+		t.Fatalf("append quote failed: %v", err)
+	}
+	if err := jobStore.AppendChunkReport(ctx, jobID, filedownload.ChunkReport{
+		ChunkIndex:    0,
+		State:         filedownload.ChunkStateStored,
+		SellerPubkey:  "seller_http",
+		ChunkPriceSat: 10,
+		SpeedBps:      1000,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append stored chunk failed: %v", err)
+	}
+
+	files := &httpTestDownloadFileStore{
+		completeFound: false,
+		complete: filedownload.LocalFile{
+			FilePath: "/tmp/http-resume-final.bin",
+			FileSize: 8,
+			SeedHash: seedHash,
+		},
+	}
+	transfer := &httpTestDownloadTransferRunner{
+		results: map[uint32]filedownload.ChunkTransferResult{
+			1: {Data: []byte("bbbb"), PaidSat: 10, SpeedBps: 1200},
+		},
+	}
+	caps := &DownloadFileCaps{
+		store:          store,
+		jobStore:       jobStore,
+		seedStore:      httpTestDownloadSeedStore{meta: filedownload.SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		fileStore:      files,
+		quoteReader:    httpTestDownloadQuoteReader{quotes: []filedownload.QuoteReport{{SellerPubkey: "seller_http", SeedPriceSat: 100, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "http.bin", MimeType: "application/octet-stream", Selected: true}}},
+		transferRunner: transfer,
+	}
+	handler := newDownloadFileHTTPHandler(caps)
+
+	reqBody := `{"seed_hash":"` + seedHash + `","chunk_count":2}`
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/getfilebyhash", strings.NewReader(reqBody))
+	req = req.WithContext(context.Background())
+	rec := httptest.NewRecorder()
+
+	handler.handleStart(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			Status struct {
+				State          string `json:"state"`
+				OutputFilePath string `json:"output_file_path,omitempty"`
+			} `json:"status"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v, body: %s", err, rec.Body.String())
+	}
+	if resp.Status != "ok" {
+		t.Fatalf("expected status=ok, got %s", resp.Status)
+	}
+	if resp.Data.Status.State != filedownload.StateDone {
+		t.Fatalf("expected state=%s, got %s", filedownload.StateDone, resp.Data.Status.State)
+	}
+	if resp.Data.Status.OutputFilePath != "/tmp/http-resume-final.bin" {
+		t.Fatalf("expected output_file_path=/tmp/http-resume-final.bin, got %s", resp.Data.Status.OutputFilePath)
+	}
+	if files.completeCalls != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalls)
+	}
+	if len(transfer.calls) != 1 {
+		t.Fatalf("expected one transfer call, got %d", len(transfer.calls))
+	}
+	if transfer.calls[0].ChunkIndex != 1 {
+		t.Fatalf("expected transferred chunk 1, got %d", transfer.calls[0].ChunkIndex)
 	}
 }
 

@@ -184,6 +184,65 @@ func TestDBStoreUpdateJobState(t *testing.T) {
 	}
 }
 
+func TestDBStoreSetOutputPathAndDoneKeepsCounters(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := newDownloadFileJobStoreAdapter(NewClientStore(db, nil))
+	ctx := context.Background()
+
+	job := &filedownload.Job{
+		JobID:      "test_job_done",
+		SeedHash:   "d3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+		State:      filedownload.StateRunning,
+		ChunkCount: 2,
+	}
+	_, created, err := store.CreateJob(ctx, job)
+	if err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected job to be created")
+	}
+
+	if err := store.AppendChunkReport(ctx, "test_job_done", filedownload.ChunkReport{
+		ChunkIndex:    0,
+		State:         filedownload.ChunkStateStored,
+		SellerPubkey:  "seller1",
+		ChunkPriceSat: 100,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append chunk report failed: %v", err)
+	}
+
+	before, _ := store.GetJob(ctx, "test_job_done")
+	time.Sleep(time.Second)
+
+	if err := store.SetOutputPath(ctx, "test_job_done", "/tmp/final-done.bin"); err != nil {
+		t.Fatalf("set output path failed: %v", err)
+	}
+	if err := store.UpdateJobState(ctx, "test_job_done", filedownload.StateDone); err != nil {
+		t.Fatalf("update job state to done failed: %v", err)
+	}
+
+	retrieved, _ := store.GetJob(ctx, "test_job_done")
+	if retrieved.State != filedownload.StateDone {
+		t.Fatalf("expected state=done, got %s", retrieved.State)
+	}
+	if retrieved.OutputFilePath != "/tmp/final-done.bin" {
+		t.Fatalf("expected output_file_path=/tmp/final-done.bin, got %s", retrieved.OutputFilePath)
+	}
+	if retrieved.CompletedChunks != before.CompletedChunks {
+		t.Fatalf("expected completed_chunks to stay %d, got %d", before.CompletedChunks, retrieved.CompletedChunks)
+	}
+	if retrieved.PaidTotalSat != before.PaidTotalSat {
+		t.Fatalf("expected paid_total_sat to stay %d, got %d", before.PaidTotalSat, retrieved.PaidTotalSat)
+	}
+	if retrieved.UpdatedAt.Unix() <= before.UpdatedAt.Unix() {
+		t.Fatalf("expected updated_at to move forward, before=%d after=%d", before.UpdatedAt.Unix(), retrieved.UpdatedAt.Unix())
+	}
+}
+
 func TestDBStoreSetDemandID(t *testing.T) {
 	t.Parallel()
 
@@ -254,6 +313,78 @@ func TestDBStoreAppendChunkReport(t *testing.T) {
 	}
 	if len(storedChunks) != 3 {
 		t.Fatalf("expected 3 chunks, got %d", len(storedChunks))
+	}
+}
+
+func TestDBStoreAppendChunkReportSortedAndNoDoubleCount(t *testing.T) {
+	t.Parallel()
+
+	db := newGetFileByHashTestDB(t)
+	store := newDownloadFileJobStoreAdapter(NewClientStore(db, nil))
+	ctx := context.Background()
+
+	job := &filedownload.Job{
+		JobID:      "test_job_chunk_sorted",
+		SeedHash:   "e6f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4",
+		State:      filedownload.StateRunning,
+		ChunkCount: 2,
+	}
+	_, created, err := store.CreateJob(ctx, job)
+	if err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if !created {
+		t.Fatalf("expected job to be created")
+	}
+
+	if err := store.AppendChunkReport(ctx, "test_job_chunk_sorted", filedownload.ChunkReport{
+		ChunkIndex:    1,
+		State:         filedownload.ChunkStateStored,
+		SellerPubkey:  "seller_y",
+		ChunkPriceSat: 150,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append chunk 1 failed: %v", err)
+	}
+	if err := store.AppendChunkReport(ctx, "test_job_chunk_sorted", filedownload.ChunkReport{
+		ChunkIndex:    0,
+		State:         filedownload.ChunkStateStored,
+		SellerPubkey:  "seller_x",
+		ChunkPriceSat: 100,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append chunk 0 failed: %v", err)
+	}
+	if err := store.AppendChunkReport(ctx, "test_job_chunk_sorted", filedownload.ChunkReport{
+		ChunkIndex:    1,
+		State:         filedownload.ChunkStateStored,
+		SellerPubkey:  "seller_y",
+		ChunkPriceSat: 150,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append duplicate chunk 1 failed: %v", err)
+	}
+
+	chunks, found := store.ListChunks(ctx, "test_job_chunk_sorted")
+	if !found {
+		t.Fatalf("chunks not found")
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunks, got %d", len(chunks))
+	}
+	if chunks[0].ChunkIndex != 0 || chunks[1].ChunkIndex != 1 {
+		t.Fatalf("expected chunk indexes [0 1], got [%d %d]", chunks[0].ChunkIndex, chunks[1].ChunkIndex)
+	}
+
+	retrieved, foundJob := store.GetJob(ctx, "test_job_chunk_sorted")
+	if !foundJob {
+		t.Fatalf("job not found")
+	}
+	if retrieved.CompletedChunks != 2 {
+		t.Fatalf("expected completed_chunks=2, got %d", retrieved.CompletedChunks)
+	}
+	if retrieved.PaidTotalSat != 250 {
+		t.Fatalf("expected paid_total_sat=250, got %d", retrieved.PaidTotalSat)
 	}
 }
 

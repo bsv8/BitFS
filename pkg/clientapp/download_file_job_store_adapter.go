@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/bsv8/BFTP/pkg/obs"
@@ -527,6 +528,9 @@ func (s *downloadFileJobStoreAdapter) ListChunks(ctx context.Context, jobID stri
 				RejectReason:  c.RejectReason,
 			})
 		}
+		sort.Slice(chunks, func(i, j int) bool {
+			return chunks[i].ChunkIndex < chunks[j].ChunkIndex
+		})
 		return chunks, nil
 	})
 	if err != nil {

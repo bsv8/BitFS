@@ -2,6 +2,7 @@ package filedownload
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -109,6 +110,438 @@ func TestDoneJobAllowsNewDownload(t *testing.T) {
 	}
 	if result2.Status.State != StateDone {
 		t.Fatalf("expected state=done, got: %s", result2.Status.State)
+	}
+}
+
+func TestRunningJobResumeSkipsStoredChunkAndCompletes(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9"
+	jobID := "test_job_resume_partial"
+
+	if _, _, err := store.CreateJob(ctx, &Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      StateRunning,
+		ChunkCount: 2,
+		DemandID:   "demand_resume_partial",
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if err := store.SetPartFilePath(ctx, jobID, "/tmp/part-resume-partial.bin"); err != nil {
+		t.Fatalf("set part file path failed: %v", err)
+	}
+	if err := store.AppendQuote(ctx, jobID, QuoteReport{
+		SellerPubkey:        "seller_resume",
+		SeedPriceSat:        100,
+		ChunkPriceSat:       11,
+		ChunkCount:          2,
+		FileSizeBytes:       8,
+		RecommendedFileName: "resume.bin",
+		MimeType:            "application/octet-stream",
+		Selected:            true,
+	}); err != nil {
+		t.Fatalf("append quote failed: %v", err)
+	}
+	if err := store.AppendChunkReport(ctx, jobID, ChunkReport{
+		ChunkIndex:    0,
+		State:         ChunkStateStored,
+		SellerPubkey:  "seller_resume",
+		ChunkPriceSat: 11,
+		SpeedBps:      1000,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append stored chunk failed: %v", err)
+	}
+
+	files := &mockStartFileStore{
+		found: false,
+		complete: LocalFile{
+			FilePath: "/tmp/resume-partial-final.bin",
+			FileSize: 8,
+			SeedHash: seedHash,
+		},
+		part: PartFile{
+			PartFilePath: "/tmp/part-resume-partial.bin",
+			SeedHash:     seedHash,
+		},
+		expectedChunkLen: 4,
+	}
+	transfer := &mockTransferRunner{
+		results: map[uint32]ChunkTransferResult{
+			1: {Data: []byte("bbbb"), PaidSat: 11, SpeedBps: 1200},
+		},
+	}
+	caps := DownloadCaps{
+		Jobs:      store,
+		Seeds:     &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:     files,
+		Quotes:    mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+		Transfers: transfer,
+	}
+
+	result, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err != nil {
+		t.Fatalf("resume start failed: %v", err)
+	}
+	if result.Status.State != StateDone {
+		t.Fatalf("expected state=%s, got %s", StateDone, result.Status.State)
+	}
+	if result.Status.OutputFilePath != "/tmp/resume-partial-final.bin" {
+		t.Fatalf("expected output_file_path=/tmp/resume-partial-final.bin, got %s", result.Status.OutputFilePath)
+	}
+	if len(transfer.calls) != 1 {
+		t.Fatalf("expected one transfer call, got %d", len(transfer.calls))
+	}
+	if transfer.calls[0].ChunkIndex != 1 {
+		t.Fatalf("expected resume to transfer chunk 1, got %d", transfer.calls[0].ChunkIndex)
+	}
+	if len(files.markCalls) != 1 {
+		t.Fatalf("expected one stored chunk write, got %d", len(files.markCalls))
+	}
+	if files.completeCalled != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalled)
+	}
+	chunks, found := store.ListChunks(ctx, jobID)
+	if !found {
+		t.Fatalf("chunks not found")
+	}
+	if len(chunks) != 2 {
+		t.Fatalf("expected 2 chunk facts, got %d", len(chunks))
+	}
+	if chunks[0].ChunkIndex != 0 || chunks[1].ChunkIndex != 1 {
+		t.Fatalf("expected chunk indexes [0 1], got [%d %d]", chunks[0].ChunkIndex, chunks[1].ChunkIndex)
+	}
+	status, err := GetStatus(ctx, store, jobID)
+	if err != nil {
+		t.Fatalf("get status failed: %v", err)
+	}
+	if status.CompletedChunks != 2 {
+		t.Fatalf("expected completed_chunks=2, got %d", status.CompletedChunks)
+	}
+	if status.PaidTotalSat != 22 {
+		t.Fatalf("expected paid_total_sat=22, got %d", status.PaidTotalSat)
+	}
+}
+
+func TestRunningJobAllStoredCompletesWithoutTransfer(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9"
+	jobID := "test_job_resume_complete"
+
+	if _, _, err := store.CreateJob(ctx, &Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      StateRunning,
+		ChunkCount: 2,
+		DemandID:   "demand_resume_complete",
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if err := store.SetPartFilePath(ctx, jobID, "/tmp/part-resume-complete.bin"); err != nil {
+		t.Fatalf("set part file path failed: %v", err)
+	}
+	if err := store.AppendQuote(ctx, jobID, QuoteReport{
+		SellerPubkey:        "seller_resume",
+		SeedPriceSat:        100,
+		ChunkPriceSat:       11,
+		ChunkCount:          2,
+		FileSizeBytes:       8,
+		RecommendedFileName: "resume.bin",
+		MimeType:            "application/octet-stream",
+		Selected:            true,
+	}); err != nil {
+		t.Fatalf("append quote failed: %v", err)
+	}
+	for i := uint32(0); i < 2; i++ {
+		if err := store.AppendChunkReport(ctx, jobID, ChunkReport{
+			ChunkIndex:    i,
+			State:         ChunkStateStored,
+			SellerPubkey:  "seller_resume",
+			ChunkPriceSat: 11,
+			SpeedBps:      1000,
+			Selected:      true,
+		}); err != nil {
+			t.Fatalf("append stored chunk failed: %v", err)
+		}
+	}
+
+	files := &mockStartFileStore{
+		found: false,
+		complete: LocalFile{
+			FilePath: "/tmp/resume-complete-final.bin",
+			FileSize: 8,
+			SeedHash: seedHash,
+		},
+		part: PartFile{
+			PartFilePath: "/tmp/part-resume-complete.bin",
+			SeedHash:     seedHash,
+		},
+		expectedChunkLen: 4,
+	}
+	caps := DownloadCaps{
+		Jobs:   store,
+		Seeds:  &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:  files,
+		Quotes: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+	}
+
+	result, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err != nil {
+		t.Fatalf("resume start failed: %v", err)
+	}
+	if result.Status.State != StateDone {
+		t.Fatalf("expected state=%s, got %s", StateDone, result.Status.State)
+	}
+	if len(files.markCalls) != 0 {
+		t.Fatalf("expected no transfer writes, got %d", len(files.markCalls))
+	}
+	if files.completeCalled != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalled)
+	}
+}
+
+func TestRunningJobCompleteFailureFails(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9"
+	jobID := "test_job_resume_complete_fail"
+
+	if _, _, err := store.CreateJob(ctx, &Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      StateRunning,
+		ChunkCount: 2,
+		DemandID:   "demand_resume_complete_fail",
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if err := store.SetPartFilePath(ctx, jobID, "/tmp/part-resume-complete-fail.bin"); err != nil {
+		t.Fatalf("set part file path failed: %v", err)
+	}
+	if err := store.AppendQuote(ctx, jobID, QuoteReport{
+		SellerPubkey:        "seller_resume",
+		SeedPriceSat:        100,
+		ChunkPriceSat:       11,
+		ChunkCount:          2,
+		FileSizeBytes:       8,
+		RecommendedFileName: "resume.bin",
+		MimeType:            "application/octet-stream",
+		Selected:            true,
+	}); err != nil {
+		t.Fatalf("append quote failed: %v", err)
+	}
+	for i := uint32(0); i < 2; i++ {
+		if err := store.AppendChunkReport(ctx, jobID, ChunkReport{
+			ChunkIndex:    i,
+			State:         ChunkStateStored,
+			SellerPubkey:  "seller_resume",
+			ChunkPriceSat: 11,
+			SpeedBps:      1000,
+			Selected:      true,
+		}); err != nil {
+			t.Fatalf("append stored chunk failed: %v", err)
+		}
+	}
+
+	files := &mockStartFileStore{
+		found: false,
+		complete: LocalFile{
+			FilePath: "/tmp/resume-complete-fail.bin",
+			FileSize: 8,
+			SeedHash: seedHash,
+		},
+		part: PartFile{
+			PartFilePath: "/tmp/part-resume-complete-fail.bin",
+			SeedHash:     seedHash,
+		},
+		completeErr:      errors.New("complete failed"),
+		expectedChunkLen: 4,
+	}
+	caps := DownloadCaps{
+		Jobs:   store,
+		Seeds:  &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:  files,
+		Quotes: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+	}
+
+	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err == nil {
+		t.Fatalf("expected resume complete to fail")
+	}
+	if files.completeCalled != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalled)
+	}
+	status, statusErr := GetStatus(ctx, store, jobID)
+	if statusErr != nil {
+		t.Fatalf("get status failed: %v", statusErr)
+	}
+	if status.State != StateFailed {
+		t.Fatalf("expected failed state, got %s", status.State)
+	}
+}
+
+func TestRunningJobMissingSeedMetaFails(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9"
+	jobID := "test_job_resume_missing_meta"
+
+	if _, _, err := store.CreateJob(ctx, &Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      StateRunning,
+		ChunkCount: 2,
+		DemandID:   "demand_resume_missing_meta",
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if err := store.SetPartFilePath(ctx, jobID, "/tmp/part-resume-missing-meta.bin"); err != nil {
+		t.Fatalf("set part file path failed: %v", err)
+	}
+	if err := store.AppendQuote(ctx, jobID, QuoteReport{
+		SellerPubkey:        "seller_resume",
+		SeedPriceSat:        100,
+		ChunkPriceSat:       11,
+		ChunkCount:          2,
+		FileSizeBytes:       8,
+		RecommendedFileName: "resume.bin",
+		MimeType:            "application/octet-stream",
+		Selected:            true,
+	}); err != nil {
+		t.Fatalf("append quote failed: %v", err)
+	}
+
+	caps := DownloadCaps{
+		Jobs:   store,
+		Seeds:  &mockSeedStore{found: false},
+		Files:  &mockStartFileStore{found: false},
+		Quotes: mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller_resume", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream", Selected: true}}},
+	}
+
+	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err == nil {
+		t.Fatalf("expected missing seed meta to fail")
+	}
+	status, statusErr := GetStatus(ctx, store, jobID)
+	if statusErr != nil {
+		t.Fatalf("get status failed: %v", statusErr)
+	}
+	if status.State != StateFailed {
+		t.Fatalf("expected failed state, got %s", status.State)
+	}
+}
+
+func TestRunningJobWithoutSelectedQuoteFails(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+	jobID := "test_job_resume_no_selected_quote"
+
+	if _, _, err := store.CreateJob(ctx, &Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      StateRunning,
+		ChunkCount: 2,
+		DemandID:   "demand_resume_no_selected_quote",
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+	if err := store.SetPartFilePath(ctx, jobID, "/tmp/part-resume-no-selected.bin"); err != nil {
+		t.Fatalf("set part file path failed: %v", err)
+	}
+	if err := store.AppendChunkReport(ctx, jobID, ChunkReport{
+		ChunkIndex:    0,
+		State:         ChunkStateStored,
+		SellerPubkey:  "seller_a",
+		ChunkPriceSat: 11,
+		SpeedBps:      1000,
+		Selected:      true,
+	}); err != nil {
+		t.Fatalf("append stored chunk failed: %v", err)
+	}
+
+	files := &mockStartFileStore{
+		found: false,
+		complete: LocalFile{
+			FilePath: "/tmp/resume-no-selected-final.bin",
+			FileSize: 8,
+			SeedHash: seedHash,
+		},
+		part: PartFile{
+			PartFilePath: "/tmp/part-resume-no-selected.bin",
+			SeedHash:     seedHash,
+		},
+		expectedChunkLen: 4,
+	}
+	transfer := &mockTransferRunner{}
+	caps := DownloadCaps{
+		Jobs:  store,
+		Seeds: &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files: files,
+		Quotes: mockQuoteReader{quotes: []QuoteReport{
+			{SellerPubkey: "seller_a", SeedPriceSat: 100, ChunkPriceSat: 11, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream"},
+			{SellerPubkey: "seller_b", SeedPriceSat: 90, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "resume.bin", MimeType: "application/octet-stream"},
+		}},
+		Transfers: transfer,
+	}
+
+	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err == nil {
+		t.Fatalf("expected resume to fail without selected quote")
+	}
+	status, statusErr := GetStatus(ctx, store, jobID)
+	if statusErr != nil {
+		t.Fatalf("get status failed: %v", statusErr)
+	}
+	if status.State != StateFailed {
+		t.Fatalf("expected failed state, got %s", status.State)
+	}
+	if len(transfer.calls) != 0 {
+		t.Fatalf("expected no transfer calls, got %d", len(transfer.calls))
+	}
+	if files.completeCalled != 0 {
+		t.Fatalf("expected CompleteFile not to be called, got %d", files.completeCalled)
+	}
+}
+
+func TestFailedJobDoesNotAutoRetry(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "abababababababababababababababababababababababababababababababab"
+	jobID := "test_job_failed_no_retry"
+
+	if _, _, err := store.CreateJob(ctx, &Job{
+		JobID:      jobID,
+		SeedHash:   seedHash,
+		State:      StateFailed,
+		ChunkCount: 2,
+	}); err != nil {
+		t.Fatalf("create job failed: %v", err)
+	}
+
+	result, err := StartByHash(ctx, DownloadCaps{Jobs: store}, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err != nil {
+		t.Fatalf("start should return existing failed job without retry error: %v", err)
+	}
+	if result.Status.State != StateFailed {
+		t.Fatalf("expected state=%s, got %s", StateFailed, result.Status.State)
+	}
+	if result.JobID != jobID {
+		t.Fatalf("expected job_id=%s, got %s", jobID, result.JobID)
 	}
 }
 
@@ -581,6 +1014,9 @@ func TestStartByHashLocalFileReturnsLocal(t *testing.T) {
 	if result.Status.OutputFilePath != "/tmp/local.bin" {
 		t.Fatalf("expected output path to be written, got %s", result.Status.OutputFilePath)
 	}
+	if files, ok := caps.Files.(*mockStartFileStore); ok && files.completeCalled != 0 {
+		t.Fatalf("CompleteFile should not be called on local hit, got %d", files.completeCalled)
+	}
 }
 
 func TestStartByHashNoQuoteReturnsUnavailable(t *testing.T) {
@@ -644,7 +1080,7 @@ func TestStartByHashBlockedByBudget(t *testing.T) {
 	}
 }
 
-func TestStartByHashRunningAfterPartFilePrepared(t *testing.T) {
+func TestStartByHashDoneAfterCompleteFile(t *testing.T) {
 	t.Parallel()
 
 	store := NewMemoryJobStoreForTest()
@@ -664,16 +1100,21 @@ func TestStartByHashRunningAfterPartFilePrepared(t *testing.T) {
 			1: {Data: []byte("bbbb"), PaidSat: 10, SpeedBps: 1200},
 		}},
 	}
+	files := caps.Files.(*mockStartFileStore)
+	files.complete = LocalFile{FilePath: "/tmp/final-demo.bin", FileSize: 8, SeedHash: seedHash, MimeType: "application/octet-stream"}
 
 	result, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
 	if err != nil {
 		t.Fatalf("start failed: %v", err)
 	}
-	if result.Status.State != StateRunning {
-		t.Fatalf("expected running, got %s", result.Status.State)
+	if result.Status.State != StateDone {
+		t.Fatalf("expected done, got %s", result.Status.State)
 	}
 	if result.Status.PartFilePath != "/tmp/part.bin" {
 		t.Fatalf("expected part file path to be written, got %s", result.Status.PartFilePath)
+	}
+	if result.Status.OutputFilePath != "/tmp/final-demo.bin" {
+		t.Fatalf("expected output file path to be written, got %s", result.Status.OutputFilePath)
 	}
 	if result.Status.CompletedChunks != 2 {
 		t.Fatalf("expected completed chunks to be recorded, got %d", result.Status.CompletedChunks)
@@ -681,13 +1122,20 @@ func TestStartByHashRunningAfterPartFilePrepared(t *testing.T) {
 	if result.Status.PaidTotalSat != 20 {
 		t.Fatalf("expected paid total sat to be 20, got %d", result.Status.PaidTotalSat)
 	}
-	if sf, ok := caps.Files.(*mockStartFileStore); ok {
-		if sf.completeCalled != 0 {
-			t.Fatalf("CompleteFile should not be called, got %d", sf.completeCalled)
-		}
-		if len(sf.markCalls) != 2 {
-			t.Fatalf("expected 2 chunk writes, got %d", len(sf.markCalls))
-		}
+	if files.completeCalled != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalled)
+	}
+	if len(files.markCalls) != 2 {
+		t.Fatalf("expected 2 chunk writes, got %d", len(files.markCalls))
+	}
+	if files.lastCompleteInput.RecommendedFileName != "demo.bin" {
+		t.Fatalf("expected recommended file name from selected quote, got %q", files.lastCompleteInput.RecommendedFileName)
+	}
+	if files.lastCompleteInput.MimeType != "" {
+		t.Fatalf("expected empty mime type when selected quote has none, got %q", files.lastCompleteInput.MimeType)
+	}
+	if len(files.lastCompleteInput.AvailableChunkIndexes) != 2 || files.lastCompleteInput.AvailableChunkIndexes[0] != 0 || files.lastCompleteInput.AvailableChunkIndexes[1] != 1 {
+		t.Fatalf("unexpected available chunk indexes: %#v", files.lastCompleteInput.AvailableChunkIndexes)
 	}
 	chunks, found := store.ListChunks(ctx, result.JobID)
 	if !found {
@@ -700,6 +1148,58 @@ func TestStartByHashRunningAfterPartFilePrepared(t *testing.T) {
 		if chunk.State != ChunkStateStored {
 			t.Fatalf("expected stored chunk state, got %s", chunk.State)
 		}
+	}
+}
+
+func TestStartByHashCompleteFileFailureFails(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryJobStoreForTest()
+	ctx := context.Background()
+	seedHash := "abababababababababababababababababababababababababababababababab"
+	files := &mockStartFileStore{
+		found:            false,
+		part:             PartFile{PartFilePath: "/tmp/part-complete-fail.bin", SeedHash: seedHash},
+		expectedChunkLen: 4,
+		complete:         LocalFile{},
+		completeErr:      NewError(CodeChunkStoreFailed, "complete file failed"),
+	}
+	caps := DownloadCaps{
+		Jobs:    store,
+		Seeds:   &mockSeedStore{meta: SeedMeta{SeedHash: seedHash, ChunkHashes: []string{"1111111111111111111111111111111111111111111111111111111111111111", "2222222222222222222222222222222222222222222222222222222222222222"}, ChunkCount: 2, FileSize: 8}, found: true},
+		Files:   files,
+		Demands: mockDemandPublisher{result: PublishDemandResult{DemandID: "demand_complete_fail", Status: "submitted"}},
+		Quotes:  mockQuoteReader{quotes: []QuoteReport{{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}}},
+		Policy:  mockPolicy{selected: QuoteReport{SellerPubkey: "seller1", SeedPriceSat: 10, ChunkPriceSat: 10, ChunkCount: 2, FileSizeBytes: 8, RecommendedFileName: "demo.bin"}, ok: true},
+		Transfers: &mockTransferRunner{
+			results: map[uint32]ChunkTransferResult{
+				0: {Data: []byte("aaaa"), PaidSat: 10, SpeedBps: 1000},
+				1: {Data: []byte("bbbb"), PaidSat: 10, SpeedBps: 1200},
+			},
+		},
+	}
+
+	_, err := StartByHash(ctx, caps, StartRequest{SeedHash: seedHash, ChunkCount: 2})
+	if err == nil || CodeOf(err) != CodeChunkStoreFailed {
+		t.Fatalf("expected complete file failed, got %v", err)
+	}
+
+	job, foundJob, jobErr := store.FindJobBySeedHash(ctx, seedHash)
+	if jobErr != nil || !foundJob {
+		t.Fatalf("job not found after complete failure: %v", jobErr)
+	}
+	status, statusErr := GetStatus(ctx, store, job.JobID)
+	if statusErr != nil {
+		t.Fatalf("get status failed: %v", statusErr)
+	}
+	if status.State != StateFailed {
+		t.Fatalf("expected failed state, got %s", status.State)
+	}
+	if status.OutputFilePath != "" {
+		t.Fatalf("expected output file path to stay empty, got %s", status.OutputFilePath)
+	}
+	if files.completeCalled != 1 {
+		t.Fatalf("expected CompleteFile to be called once, got %d", files.completeCalled)
 	}
 }
 
@@ -1095,12 +1595,14 @@ func (m *mockFileStore) CompleteFile(ctx context.Context, input CompleteFileInpu
 }
 
 type mockStartFileStore struct {
-	complete         LocalFile
-	part             PartFile
-	found            bool
-	expectedChunkLen int
-	markCalls        []StoredChunkInput
-	completeCalled   int
+	complete          LocalFile
+	part              PartFile
+	found             bool
+	expectedChunkLen  int
+	markCalls         []StoredChunkInput
+	completeCalled    int
+	completeErr       error
+	lastCompleteInput CompleteFileInput
 }
 
 func (m *mockStartFileStore) FindCompleteFile(ctx context.Context, seedHash string) (LocalFile, bool, error) {
@@ -1124,6 +1626,10 @@ func (m *mockStartFileStore) MarkChunkStored(ctx context.Context, input StoredCh
 
 func (m *mockStartFileStore) CompleteFile(ctx context.Context, input CompleteFileInput) (LocalFile, error) {
 	m.completeCalled++
+	m.lastCompleteInput = input
+	if m.completeErr != nil {
+		return LocalFile{}, m.completeErr
+	}
 	return m.complete, nil
 }
 
