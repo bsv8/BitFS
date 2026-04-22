@@ -15,7 +15,7 @@ func TestWorkspaceKernelListAddUpdateDeleteSync(t *testing.T) {
 	cfg := workspaceKernelTestConfig(root)
 	mgr := newTestWorkspaceManager(t.Context(), &cfg, db)
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeWorkspace(mgr))
-	ws := rt.ClientKernel().Workspace()
+	ws := rt.Workspace
 	if ws == nil {
 		t.Fatal("workspace manager should not be nil")
 	}
@@ -94,7 +94,7 @@ func TestWorkspaceKernelWalletModeAndValidation(t *testing.T) {
 	mustUpdateRuntimeConfigMemoryOnly(t, rt, func(next *Config) {
 		next.Storage.WorkspaceDir = ""
 	})
-	ws := rt.ClientKernel().Workspace()
+	ws := rt.Workspace
 
 	list, err := ws.ListWithContext(t.Context())
 	if err != nil {
@@ -133,7 +133,7 @@ func TestWorkspaceKernelAddThenSyncFailure(t *testing.T) {
 	cfg := workspaceKernelTestConfig(root)
 	mgr := newTestWorkspaceManager(t.Context(), &cfg, db)
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeWorkspace(mgr))
-	ws := rt.ClientKernel().Workspace()
+	ws := rt.Workspace
 
 	wsDir := filepath.Join(root, "workspace-fail")
 	if err := writeWorkspaceTestFile(wsDir, "seed-fail.bin", []byte("workspace-seed-fail")); err != nil {

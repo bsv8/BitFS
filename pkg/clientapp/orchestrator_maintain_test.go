@@ -22,8 +22,8 @@ func TestOrchestratorReconcileSignal_FeePoolTickUsesMaintain(t *testing.T) {
 	if len(out) != 1 {
 		t.Fatalf("task count mismatch: got=%d want=1", len(out))
 	}
-	if got := out[0].Command.CommandType; got != clientKernelCommandFeePoolMaintain {
-		t.Fatalf("command type mismatch: got=%s want=%s", got, clientKernelCommandFeePoolMaintain)
+	if got := out[0].TaskType; got != commandTypeFeePoolMaintain {
+		t.Fatalf("task type mismatch: got=%s want=%s", got, commandTypeFeePoolMaintain)
 	}
 }
 
@@ -53,8 +53,8 @@ func TestOrchestratorReconcileSignal_ChainTipUsesMaintain(t *testing.T) {
 		t.Fatalf("task count mismatch: got=%d want=2", len(out))
 	}
 	for i, task := range out {
-		if got := task.Command.CommandType; got != clientKernelCommandFeePoolMaintain {
-			t.Fatalf("task[%d] command type mismatch: got=%s want=%s", i, got, clientKernelCommandFeePoolMaintain)
+if got := task.TaskType; got != commandTypeFeePoolMaintain {
+		t.Fatalf("task[%d] task type mismatch: got=%s want=%s", i, got, commandTypeFeePoolMaintain)
 		}
 	}
 }

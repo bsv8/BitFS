@@ -242,6 +242,7 @@ type sellerCatalog struct {
 type ClientStore interface {
 	ReadEnt(ctx context.Context, fn func(EntReadRoot) error) error
 	WriteEntTx(ctx context.Context, fn func(EntWriteRoot) error) error
+	Do(ctx context.Context, fn func(SQLConn) error) error
 }
 
 // RunDeps 由最外层装配好后显式传给 Run。
@@ -324,11 +325,11 @@ type Runtime struct {
 	gwManager   *gatewayManager
 	masterGW    peer.ID
 	masterGWMu  sync.RWMutex
-	kernel      *clientKernel
 	orch        *orchestrator
 	chainMaint  *chainMaintainer
 	taskSched   *taskScheduler
 	taskSchedMu sync.Mutex
+	feePool     *feePoolKernel
 
 	bgCancel context.CancelFunc
 
@@ -362,7 +363,6 @@ func NewPricingTestRuntime(ctx context.Context, db *sql.DB, cfg Config) (*Runtim
 		config:  cfgSvc,
 	}
 	rt.Catalog = newSellerCatalog()
-	rt.kernel = newClientKernel(rt, store, nil)
 	if store != nil {
 		if seeds, err := dbLoadSeedCatalogSnapshot(ctx, store); err == nil {
 			rt.Catalog.Replace(seeds)
@@ -380,15 +380,6 @@ func (r *Runtime) Store() ClientStore {
 		return nil
 	}
 	return r.store
-}
-
-// ClientKernel 返回运行时内核能力。
-// 说明：跨包调用只拿 kernel，不再复制一层 workspace 控制壳。
-func (r *Runtime) ClientKernel() *Kernel {
-	if r == nil {
-		return nil
-	}
-	return r.kernel
 }
 
 func (r *Runtime) Close() error {

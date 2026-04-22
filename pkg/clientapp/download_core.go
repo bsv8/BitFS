@@ -38,13 +38,50 @@ type downloadByHashResult struct {
 }
 
 func runDownloadByHash(ctx context.Context, store *clientDB, rt *Runtime, p downloadByHashParams) (downloadByHashResult, error) {
-	if rt == nil {
-		return downloadByHashResult{}, fmt.Errorf("runtime not initialized")
+	cmdID := newActionID()
+	startAt := time.Now()
+	out, err := runDownloadByHashCore(ctx, store, rt, p)
+	status := "applied"
+	errCode := ""
+	errMsg := ""
+	if err != nil {
+		status = "failed"
+		errCode = "download_by_hash_failed"
+		errMsg = err.Error()
 	}
-	if rt.kernel != nil {
-		return rt.kernel.runDownloadByHashImpl(ctx, p)
-	}
-	return runDownloadByHashCore(ctx, store, rt, p)
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
+		CommandID:     cmdID,
+		CommandType:   commandTypeDownloadByHash,
+		GatewayPeerID: strings.TrimSpace(p.GatewayPeerID),
+		AggregateID:   "seed:" + strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		RequestedBy:   "client_kernel",
+		RequestedAt:   time.Now().Unix(),
+		Accepted:      true,
+		Status:        status,
+		ErrorCode:     errCode,
+		ErrorMessage:  errMsg,
+		StateBefore:   "direct_download",
+		StateAfter:    "direct_download",
+		DurationMS:    time.Since(startAt).Milliseconds(),
+		TriggerKey:    "",
+		Payload: map[string]any{
+			"seed_hash":            strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"transfer_chunk_count": p.TransferChunkCount,
+			"gateway_pubkey_hex":   strings.TrimSpace(p.GatewayPeerID),
+			"strategy":             strings.TrimSpace(p.Strategy),
+			"max_chunk_price":      p.MaxChunkPrice,
+			"max_seed_price":       p.MaxSeedPrice,
+		},
+		Result: map[string]any{
+			"status":         status,
+			"job_id":         strings.TrimSpace(out.JobID),
+			"front_order_id": strings.TrimSpace(out.FrontOrderID),
+			"demand_id":      strings.TrimSpace(out.DemandID),
+			"output_path":    strings.TrimSpace(out.OutputFilePath),
+			"state":          strings.TrimSpace(out.State),
+		},
+	})
+	return out, err
 }
 
 func runDownloadByHashCore(ctx context.Context, store *clientDB, rt *Runtime, p downloadByHashParams) (downloadByHashResult, error) {

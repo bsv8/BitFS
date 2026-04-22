@@ -342,112 +342,6 @@ func TestHandleAdminSchedulerRuns(t *testing.T) {
 	}
 }
 
-func TestHandleAdminClientKernelCommands(t *testing.T) {
-	t.Parallel()
-
-	dbPath := filepath.Join(t.TempDir(), "client-index.sqlite")
-	db, err := sql.Open("sqlite", dbPath)
-	if err != nil {
-		t.Fatalf("open db: %v", err)
-	}
-	defer db.Close()
-	if err := applySQLitePragmas(db); err != nil {
-		t.Fatalf("apply pragmas: %v", err)
-	}
-	if err := ensureClientDBSchemaOnDB(t.Context(), db); err != nil {
-		t.Fatalf("schema init failed: %v", err)
-	}
-
-	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
-		CommandID:     "ck_1",
-		CommandType:   clientKernelCommandFeePoolMaintain,
-		GatewayPeerID: "gw_1",
-		AggregateID:   "gateway:gw_1",
-		RequestedBy:   "test",
-		RequestedAt:   time.Now().Unix(),
-		Accepted:      true,
-		Status:        "applied",
-		StateBefore:   "feepool",
-		StateAfter:    "feepool",
-		Payload:       map[string]any{"trigger": "manual"},
-		Result:        map[string]any{"seed_count": 1},
-	})
-	_ = dbAppendCommandJournal(context.Background(), newClientDB(db, nil), commandJournalEntry{
-		CommandID:     "fp_1",
-		CommandType:   "fee_pool_internal_only",
-		GatewayPeerID: "gw",
-		AggregateID:   "gateway:gw",
-		RequestedBy:   "test",
-		RequestedAt:   time.Now().Unix(),
-		Accepted:      true,
-		Status:        "applied",
-		StateBefore:   "active",
-		StateAfter:    "active",
-		Payload:       map[string]any{},
-		Result:        map[string]any{},
-	})
-
-	cfg := Config{}
-	cfg.Storage.WorkspaceDir = t.TempDir()
-	cfg.Storage.DataDir = t.TempDir()
-	cfg.Index.Backend = "sqlite"
-	cfg.Index.SQLitePath = ":memory:"
-	if err := ApplyConfigDefaults(&cfg); err != nil {
-		t.Fatalf("apply defaults: %v", err)
-	}
-	rt := newRuntimeForTest(t, cfg, "")
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil)}
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10&offset=0", nil)
-	rec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommands(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("list status mismatch: got=%d want=%d body=%s", rec.Code, http.StatusOK, rec.Body.String())
-	}
-	var out struct {
-		Total int `json:"total"`
-		Items []struct {
-			ID          int64  `json:"id"`
-			CommandID   string `json:"command_id"`
-			CommandType string `json:"command_type"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
-		t.Fatalf("decode list response: %v", err)
-	}
-	if out.Total != 1 || len(out.Items) != 1 {
-		t.Fatalf("client-kernel list mismatch: total=%d items=%d", out.Total, len(out.Items))
-	}
-	if out.Items[0].CommandID != "ck_1" || out.Items[0].CommandType != clientKernelCommandFeePoolMaintain {
-		t.Fatalf("list content mismatch: id=%s type=%s", out.Items[0].CommandID, out.Items[0].CommandType)
-	}
-
-	badReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?command_type=fee_pool_internal_only", nil)
-	badRec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommands(badRec, badReq)
-	if badRec.Code != http.StatusBadRequest {
-		t.Fatalf("bad command_type status mismatch: got=%d want=%d body=%s", badRec.Code, http.StatusBadRequest, badRec.Body.String())
-	}
-
-	detailReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands/detail?id="+itoa64(out.Items[0].ID), nil)
-	detailRec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommandDetail(detailRec, detailReq)
-	if detailRec.Code != http.StatusOK {
-		t.Fatalf("detail status mismatch: got=%d want=%d body=%s", detailRec.Code, http.StatusOK, detailRec.Body.String())
-	}
-
-	var feePoolID int64
-	if err := db.QueryRow(`SELECT id FROM proc_command_journal WHERE command_id='fp_1'`).Scan(&feePoolID); err != nil {
-		t.Fatalf("query feepool row id failed: %v", err)
-	}
-	notFoundReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands/detail?id="+itoa64(feePoolID), nil)
-	notFoundRec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommandDetail(notFoundRec, notFoundReq)
-	if notFoundRec.Code != http.StatusNotFound {
-		t.Fatalf("non-client-kernel detail status mismatch: got=%d want=%d body=%s", notFoundRec.Code, http.StatusNotFound, notFoundRec.Body.String())
-	}
-}
-
 func TestHandleAdminOrchestratorLogs(t *testing.T) {
 	t.Parallel()
 
@@ -768,12 +662,8 @@ func TestHandleLiveAPIFlow(t *testing.T) {
 
 	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
 	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeLiveRuntime(newLiveRuntime()))
-	pubStore := newClientDB(db, nil)
-	subStore := newClientDB(db, nil)
-	pubRT.kernel = newClientKernel(pubRT, pubStore, nil)
-	subRT.kernel = newClientKernel(subRT, subStore, nil)
 	registerLiveHandlers(nil, pubRT)
-	registerLiveHandlers(subStore, subRT)
+	registerLiveHandlers(nil, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
 
 	pubSrv := &httpAPIServer{rt: pubRT, cfgSource: staticConfigSnapshot(pubCfg)}
@@ -890,7 +780,7 @@ func TestHandleLivePublishSegmentFlow(t *testing.T) {
 	}
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeHost(h), withRuntimeWorkspace(workspace), withRuntimeLiveRuntime(newLiveRuntime()))
 	registerLiveHandlers(newClientDB(db, nil), rt)
-	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil), workspace: workspace, kernel: rt.ClientKernel()}
+	srv := &httpAPIServer{rt: rt, cfgSource: staticConfigSnapshot(cfg), db: db, store: newClientDB(db, nil), workspace: workspace}
 
 	req0 := httptest.NewRequest(http.MethodPost, "/api/v1/live/publish/segment", strings.NewReader(`{
 		"duration_ms": 2000,
@@ -1000,7 +890,6 @@ func TestHandleLiveFollowFlow(t *testing.T) {
 	subStore := newClientDB(db, nil)
 	pubRT := newRuntimeForTest(t, pubCfg, "", withRuntimeHost(pubHost), withRuntimeLiveRuntime(newLiveRuntime()))
 	subRT := newRuntimeForTest(t, subCfg, "", withRuntimeHost(subHost), withRuntimeWorkspace(subWorkspace), withRuntimeLiveRuntime(newLiveRuntime()))
-	subRT.kernel = newClientKernel(subRT, subStore, nil)
 	registerLiveHandlers(nil, pubRT)
 	registerLiveHandlers(subStore, subRT)
 	subHost.Peerstore().AddAddrs(pubHost.ID(), pubHost.Addrs(), time.Minute)
@@ -1122,7 +1011,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	// 插入一条 orchestrator 发起的命令（带 trigger_key）
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "orch_cmd_1",
-		CommandType:   clientKernelCommandFeePoolMaintain,
+		CommandType:   commandTypeFeePoolMaintain,
 		GatewayPeerID: "gw1",
 		AggregateID:   "gateway:gw1",
 		RequestedBy:   "orchestrator",
@@ -1139,7 +1028,7 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	// 插入一条直接命令（trigger_key 为空）
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "direct_cmd_1",
-		CommandType:   clientKernelCommandDownloadByHash,
+		CommandType:   commandTypeDownloadByHash,
 		GatewayPeerID: "direct",
 		AggregateID:   "seed:abc123",
 		RequestedBy:   "client_kernel",
@@ -1227,80 +1116,5 @@ func TestHandleAdminCommandJournalTriggerKeyFilter(t *testing.T) {
 	}
 	if detailOut.TriggerKey != "workspace_sync:12345" {
 		t.Fatalf("detail expected trigger_key=workspace_sync:12345, got=%s", detailOut.TriggerKey)
-	}
-
-	// 测试 4：client-kernel 命令列表中，直接命令的 trigger_key 必须是空字符串
-	// 先插入一条带 trigger_key 的 client-kernel 命令
-	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
-		CommandID:     "ck_with_trigger",
-		CommandType:   clientKernelCommandFeePoolMaintain,
-		GatewayPeerID: "gw1",
-		AggregateID:   "gateway:gw1",
-		RequestedBy:   "orchestrator",
-		RequestedAt:   now,
-		Accepted:      true,
-		Status:        "applied",
-		TriggerKey:    "orch:workspace:123",
-		StateBefore:   "feepool",
-		StateAfter:    "feepool",
-		Payload:       map[string]any{},
-		Result:        map[string]any{},
-	})
-
-	ckReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?limit=10", nil)
-	ckRec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommands(ckRec, ckReq)
-	if ckRec.Code != http.StatusOK {
-		t.Fatalf("client-kernel list status mismatch: got=%d want=%d body=%s", ckRec.Code, http.StatusOK, ckRec.Body.String())
-	}
-	var ckOut struct {
-		Total int `json:"total"`
-		Items []struct {
-			ID         int64  `json:"id"`
-			CommandID  string `json:"command_id"`
-			TriggerKey string `json:"trigger_key"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(ckRec.Body.Bytes(), &ckOut); err != nil {
-		t.Fatalf("decode client-kernel list: %v", err)
-	}
-
-	// 验证 direct_cmd_1 的 trigger_key 是空字符串
-	foundDirect := false
-	for _, item := range ckOut.Items {
-		if item.CommandID == "direct_cmd_1" {
-			foundDirect = true
-			if item.TriggerKey != "" {
-				t.Fatalf("direct command trigger_key should be empty, got=%s", item.TriggerKey)
-			}
-		}
-	}
-	if !foundDirect {
-		t.Fatalf("direct_cmd_1 not found in client-kernel list")
-	}
-
-	// 测试 5：client-kernel 按 trigger_key 过滤
-	ckFilterReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?trigger_key=orch:workspace:123", nil)
-	ckFilterRec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommands(ckFilterRec, ckFilterReq)
-	if ckFilterRec.Code != http.StatusOK {
-		t.Fatalf("client-kernel filter by trigger_key status mismatch: got=%d want=%d body=%s", ckFilterRec.Code, http.StatusOK, ckFilterRec.Body.String())
-	}
-	var ckFilterOut struct {
-		Total int `json:"total"`
-		Items []struct {
-			ID         int64  `json:"id"`
-			CommandID  string `json:"command_id"`
-			TriggerKey string `json:"trigger_key"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(ckFilterRec.Body.Bytes(), &ckFilterOut); err != nil {
-		t.Fatalf("decode client-kernel filter response: %v", err)
-	}
-	if ckFilterOut.Total != 1 || len(ckFilterOut.Items) != 1 {
-		t.Fatalf("expected 1 item with trigger_key filter, got total=%d items=%d", ckFilterOut.Total, len(ckFilterOut.Items))
-	}
-	if ckFilterOut.Items[0].CommandID != "ck_with_trigger" {
-		t.Fatalf("expected command_id=ck_with_trigger, got=%s", ckFilterOut.Items[0].CommandID)
 	}
 }

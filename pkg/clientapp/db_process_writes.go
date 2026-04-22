@@ -160,17 +160,24 @@ func dbAppendPurchaseDone(ctx context.Context, store *clientDB, e purchaseDoneEn
 // dbAppendWalletFundFlow 已下线，改为 fact_* 事实表组装查询
 // dbAppendWalletFundFlowFromContext 已下线
 
+func auditCommandID(commandID string) (string, error) {
+	commandID = strings.TrimSpace(commandID)
+	if commandID == "" {
+		return "", fmt.Errorf("command_id is required")
+	}
+	return commandID, nil
+}
+
 func dbAppendGatewayEvent(ctx context.Context, store *clientDB, e gatewayEventEntry) error {
 	if store == nil {
 		return fmt.Errorf("client db is nil")
 	}
-	commandID := strings.TrimSpace(e.CommandID)
-	if commandID == "" {
-		err := fmt.Errorf("command_id is required")
+	commandID, err := auditCommandID(e.CommandID)
+	if err != nil {
 		obs.Error(ServiceName, "gateway_event_append_rejected", map[string]any{"error": err.Error(), "action": strings.TrimSpace(e.Action)})
 		return err
 	}
-	err := store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
+	err = store.WriteEntTx(ctx, func(tx EntWriteRoot) error {
 		if strings.TrimSpace(e.GatewayPeerID) == "" {
 			e.GatewayPeerID = "unknown"
 		}
@@ -229,9 +236,8 @@ func dbAppendCommandJournal(ctx context.Context, store *clientDB, e commandJourn
 	if store == nil {
 		return nil
 	}
-	commandID := strings.TrimSpace(e.CommandID)
-	if commandID == "" {
-		err := fmt.Errorf("command_id is required")
+	commandID, err := auditCommandID(e.CommandID)
+	if err != nil {
 		obs.Error(ServiceName, "proc_command_journal_append_rejected", map[string]any{"error": err.Error(), "command_type": strings.TrimSpace(e.CommandType)})
 		return err
 	}
@@ -273,9 +279,8 @@ func dbAppendDomainEvent(ctx context.Context, store *clientDB, e domainEventEntr
 	if store == nil {
 		return nil
 	}
-	commandID := strings.TrimSpace(e.CommandID)
-	if commandID == "" {
-		err := fmt.Errorf("command_id is required")
+	commandID, err := auditCommandID(e.CommandID)
+	if err != nil {
 		obs.Error(ServiceName, "domain_event_append_rejected", map[string]any{"error": err.Error(), "event_name": strings.TrimSpace(e.EventName)})
 		return err
 	}
@@ -300,9 +305,8 @@ func dbAppendStateSnapshot(ctx context.Context, store *clientDB, e stateSnapshot
 	if store == nil {
 		return nil
 	}
-	commandID := strings.TrimSpace(e.CommandID)
-	if commandID == "" {
-		err := fmt.Errorf("command_id is required")
+	commandID, err := auditCommandID(e.CommandID)
+	if err != nil {
 		obs.Error(ServiceName, "state_snapshot_append_rejected", map[string]any{"error": err.Error(), "state": strings.TrimSpace(e.State)})
 		return err
 	}
@@ -373,9 +377,8 @@ func dbAppendEffectLog(ctx context.Context, store *clientDB, e effectLogEntry) e
 	if store == nil {
 		return nil
 	}
-	commandID := strings.TrimSpace(e.CommandID)
-	if commandID == "" {
-		err := fmt.Errorf("command_id is required")
+	commandID, err := auditCommandID(e.CommandID)
+	if err != nil {
 		obs.Error(ServiceName, "effect_log_append_rejected", map[string]any{"error": err.Error(), "effect_type": strings.TrimSpace(e.EffectType), "stage": strings.TrimSpace(e.Stage)})
 		return err
 	}

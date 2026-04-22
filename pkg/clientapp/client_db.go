@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"hash/fnv"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"entgo.io/ent/dialect"
 	entsql "entgo.io/ent/dialect/sql"
@@ -137,6 +140,22 @@ func (d *clientDB) ReadEnt(ctx context.Context, fn func(EntReadRoot) error) erro
 	}
 	return d.readSQLDB(ctx, func(db *sql.DB) error {
 		return fn(newEntReadRoot(newEntClient(db)))
+	})
+}
+
+// Do 直接透传 *sql.DB 回调，仅用于 managedDaemon 这类外部消费者的基础设施桥接。
+func (d *clientDB) Do(ctx context.Context, fn func(SQLConn) error) error {
+	if d == nil {
+		return fmt.Errorf("client db is nil")
+	}
+	if fn == nil {
+		return fmt.Errorf("do func is nil")
+	}
+	if ctx == nil {
+		return fmt.Errorf("ctx is required")
+	}
+	return d.readSQLDB(ctx, func(db *sql.DB) error {
+		return fn(db)
 	})
 }
 
@@ -282,6 +301,55 @@ func (d *clientDB) dbWriteModuleTx(ctx context.Context, fn func(moduleapi.WriteT
 	}
 }
 
+func traceDirectSQL(ctx context.Context, op string, query string, args []any, startedAt time.Time, rows int64, err error) {
+	mgr := currentSQLTraceManager()
+	if mgr == nil {
+		return
+	}
+	roundID := ""
+	trigger := ""
+	intent := ""
+	stage := ""
+	if ctx != nil {
+		roundID = strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextRoundIDKey)))
+		trigger = strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextTriggerKey)))
+		intent = strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextIntentKey)))
+		stage = strings.TrimSpace(anyToString(ctx.Value(sqlTraceContextStageKey)))
+	}
+	ev := sqliteactor.TraceEvent{
+		TS:             time.Now().UTC().Format(time.RFC3339Nano),
+		Operation:      op,
+		SQL:            query,
+		SQLFingerprint: fingerprintSQL(query),
+		Args:           append([]any(nil), args...),
+		ElapsedMS:      time.Since(startedAt).Milliseconds(),
+		RowsAffected:   rows,
+		Err:            traceErrString(err),
+	}
+	if roundID != "" || trigger != "" || intent != "" || stage != "" {
+		ev.RoundID = roundID
+		ev.Trigger = trigger
+		ev.Intent = intent
+		ev.Stage = stage
+		ev.CallerChain = sqlTraceCaptureCallerChain()
+	}
+	mgr.Handle(ev)
+}
+
+func fingerprintSQL(sqlText string) string {
+	norm := strings.TrimSpace(strings.ToLower(strings.Join(strings.Fields(sqlText), " ")))
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(norm))
+	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+func traceErrString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
+}
+
 // readOnlyConn 是 Read 闭包内使用的只读连接能力。
 type readOnlyConn struct {
 	db *sql.DB
@@ -291,13 +359,17 @@ func (c *readOnlyConn) QueryContext(ctx context.Context, query string, args ...a
 	if c.db == nil {
 		return nil, fmt.Errorf("read only conn has no db")
 	}
-	return c.db.QueryContext(ctx, query, args...)
+	startedAt := time.Now()
+	rows, err := c.db.QueryContext(ctx, query, args...)
+	traceDirectSQL(ctx, "query", query, args, startedAt, -1, err)
+	return rows, err
 }
 
 func (c *readOnlyConn) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	if c.db == nil {
 		return nil
 	}
+	traceDirectSQL(ctx, "query", query, args, time.Now(), -1, nil)
 	return c.db.QueryRowContext(ctx, query, args...)
 }
 
@@ -310,13 +382,17 @@ func (c *writeTxConn) QueryContext(ctx context.Context, query string, args ...an
 	if c.tx == nil {
 		return nil, fmt.Errorf("write tx conn has no tx")
 	}
-	return c.tx.QueryContext(ctx, query, args...)
+	startedAt := time.Now()
+	rows, err := c.tx.QueryContext(ctx, query, args...)
+	traceDirectSQL(ctx, "query", query, args, startedAt, -1, err)
+	return rows, err
 }
 
 func (c *writeTxConn) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
 	if c.tx == nil {
 		return nil
 	}
+	traceDirectSQL(ctx, "query", query, args, time.Now(), -1, nil)
 	return c.tx.QueryRowContext(ctx, query, args...)
 }
 
@@ -324,7 +400,16 @@ func (c *writeTxConn) ExecContext(ctx context.Context, query string, args ...any
 	if c.tx == nil {
 		return nil, fmt.Errorf("write tx conn has no tx")
 	}
-	return c.tx.ExecContext(ctx, query, args...)
+	startedAt := time.Now()
+	result, err := c.tx.ExecContext(ctx, query, args...)
+	rows := int64(-1)
+	if result != nil {
+		if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
+			rows = affected
+		}
+	}
+	traceDirectSQL(ctx, "exec", query, args, startedAt, rows, err)
+	return result, err
 }
 
 func (d *clientDB) writeSQLTx(ctx context.Context, fn func(*sql.Tx) error) error {

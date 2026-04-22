@@ -11,14 +11,14 @@ func TestOrchestratorIsRetryableFailure(t *testing.T) {
 
 	cases := []struct {
 		name string
-		in   clientKernelResult
+		in   orchestratorTaskResult
 		want bool
 	}{
-		{name: "session_missing", in: clientKernelResult{ErrorCode: "session_missing"}, want: false},
-		{name: "wallet_insufficient", in: clientKernelResult{ErrorCode: "wallet_insufficient"}, want: false},
-		{name: "wallet_insufficient_paused", in: clientKernelResult{ErrorCode: "wallet_insufficient_paused"}, want: false},
-		{name: "rpc_failed", in: clientKernelResult{ErrorCode: "fee_pool_info_failed"}, want: true},
-		{name: "empty_code", in: clientKernelResult{}, want: true},
+		{name: "session_missing", in: orchestratorTaskResult{ErrorCode: "session_missing"}, want: false},
+		{name: "wallet_insufficient", in: orchestratorTaskResult{ErrorCode: "wallet_insufficient"}, want: false},
+		{name: "wallet_insufficient_paused", in: orchestratorTaskResult{ErrorCode: "wallet_insufficient_paused"}, want: false},
+		{name: "rpc_failed", in: orchestratorTaskResult{ErrorCode: "fee_pool_info_failed"}, want: true},
+		{name: "empty_code", in: orchestratorTaskResult{}, want: true},
 	}
 	for _, tc := range cases {
 		tc := tc

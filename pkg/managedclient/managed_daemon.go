@@ -1184,10 +1184,10 @@ func (d *managedDaemon) executeManagedWorkspaceControlCommand(req controlCommand
 		}, nil
 	}
 	rt := d.currentRuntime()
-	if rt == nil || rt.ClientKernel() == nil {
-		return workspaceActionFailure(req, d, "workspace kernel not initialized", nil), nil
+	if rt == nil {
+		return workspaceActionFailure(req, d, "runtime not initialized", nil), nil
 	}
-	workspace := rt.ClientKernel().Workspace()
+	workspace := rt.Workspace
 	walletMode := strings.TrimSpace(rt.ConfigSnapshot().Storage.WorkspaceDir) == ""
 	if workspace == nil {
 		switch strings.TrimSpace(req.Action) {

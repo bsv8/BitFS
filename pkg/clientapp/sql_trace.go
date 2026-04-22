@@ -193,6 +193,13 @@ func (m *sqlTraceManager) Handle(ev sqliteactor.TraceEvent) {
 		return
 	}
 	ev = normalizeSQLTraceEvent(ev)
+	if strings.TrimSpace(ev.RoundID) == "" &&
+		strings.TrimSpace(ev.Trigger) == "" &&
+		strings.TrimSpace(ev.Intent) == "" &&
+		strings.TrimSpace(ev.Stage) == "" &&
+		len(ev.CallerChain) == 0 {
+		return
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.file != nil {

@@ -67,8 +67,8 @@ func newRuntimeForTest(t *testing.T, cfg Config, privHex string, opts ...func(*R
 	if rt.store == nil && rt.Workspace != nil && rt.Workspace.store != nil {
 		rt.store = rt.Workspace.store
 	}
-	if rt.config != nil {
-		rt.kernel = newClientKernel(rt, rt.store, rt.Workspace)
+	if rt.feePool == nil && rt.store != nil {
+		rt.feePool = newFeePoolKernel(rt, rt.store)
 	}
 	return rt
 }

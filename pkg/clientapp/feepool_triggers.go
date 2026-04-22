@@ -126,9 +126,8 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 	if rt == nil || rt.Host == nil {
 		return FeePoolEnsureActiveResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := rt.kernel
-	if kernel == nil {
-		return FeePoolEnsureActiveResult{}, fmt.Errorf("client kernel not initialized")
+	if rt.feePool == nil {
+		return FeePoolEnsureActiveResult{}, fmt.Errorf("fee pool not initialized")
 	}
 	gw, err := pickGatewayForBusiness(rt, p.GatewayPeerID)
 	if err != nil {
@@ -139,12 +138,10 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 	if requestedBy == "" {
 		requestedBy = "trigger_fee_pool_ensure_active"
 	}
-	cmd := prepareClientKernelCommand(clientKernelCommand{
-		CommandType: clientKernelCommandFeePoolEnsureActive,
-		// 这里必须传业务网关 ID（公钥 hex），不能传 libp2p peer id。
-		// 内核入口会再次按业务 ID 选网关；如果这里混入传输层 peer id，
-		// 触发层看似已连上网关，但内核重解一次时会判定“网关未连接”。
-		GatewayPeerID:   gatewayID,
+	cmd := feePoolKernelCommand{
+		CommandID:       ensureFeePoolCommandID(""),
+		CommandType:     feePoolCommandEnsureActive,
+		GatewayPeer:     gatewayID,
 		RequestedBy:     requestedBy,
 		AllowWhenPaused: p.AllowWhenPaused,
 		Payload: map[string]any{
@@ -152,8 +149,8 @@ func TriggerGatewayFeePoolEnsureActive(ctx context.Context, store *clientDB, rt 
 			"allow_when_paused":  p.AllowWhenPaused,
 			"gateway_pubkey_hex": gatewayID,
 		},
-	})
-	res := kernel.dispatch(ctx, cmd)
+	}
+	res := rt.feePool.dispatch(ctx, gw, cmd)
 	return FeePoolEnsureActiveResult{
 		GatewayPeerID: gatewayID,
 		CommandID:     cmd.CommandID,

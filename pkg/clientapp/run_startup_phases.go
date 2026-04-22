@@ -326,8 +326,8 @@ func (p *runStartupPhases) StartServices() error {
 	rt.bgCancel = st.rtCancel
 	rt.taskSched = newTaskScheduler(st.store, ServiceName)
 	rt.taskSched.ctx = st.rtCtx
-	rt.kernel = newClientKernel(rt, st.store, st.workspaceMgr)
 	rt.orch = newOrchestrator(rt, st.store)
+	rt.feePool = newFeePoolKernel(rt, st.store)
 	if closeModule, err := installBuiltinModules(st.rtCtx, rt, st.store); err != nil {
 		return err
 	} else if closeModule != nil {

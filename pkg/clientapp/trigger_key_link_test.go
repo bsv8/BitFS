@@ -42,7 +42,6 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	}
 
 	rt := newRuntimeForTest(t, cfg, "")
-	rt.kernel = newClientKernel(rt, store, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -78,14 +77,14 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 		t.Fatalf("IdempotencyKey format wrong: got=%s", task.IdempotencyKey)
 	}
 
-	// 验证 task.Command.TriggerKey 初始为空（在 runOneTask 中才赋值）
-	if task.Command.TriggerKey != "" {
-		t.Fatalf("task Command.TriggerKey should be empty before runOneTask, got=%s", task.Command.TriggerKey)
+	// 验证 task.TriggerKey 初始为空（在 runOneTask 中才赋值）
+	if task.TriggerKey != "" {
+		t.Fatalf("task TriggerKey should be empty before runOneTask, got=%s", task.TriggerKey)
 	}
 
 	// 测试 2：模拟 runOneTask 执行，验证 TriggerKey 被正确设置
 	// 注意：我们不能直接调用 runOneTask 因为它需要完整的 runtime，
-	// 但我们可以验证 orchestrator.go 中的逻辑：task.Command.TriggerKey = task.IdempotencyKey
+	// 但我们可以验证 orchestrator.go 中的逻辑：task.TriggerKey = task.IdempotencyKey
 	// 这个验证在代码层面通过阅读确认，这里验证 DB 写入链路
 
 	// 写入 orchestrator log（模拟真实链路）
@@ -94,15 +93,15 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 		Source:         "orchestrator",
 		AggregateKey:   task.IdempotencyKey,
 		IdempotencyKey: task.IdempotencyKey,
-		CommandType:    task.Command.CommandType,
+		CommandType:    task.TaskType,
 		TaskStatus:     "dispatching",
 	})
 
 	// 写入 proc_command_journal（模拟 kernel 执行后的写入）
-	// 真实链路中，kernel 会从 cmd.TriggerKey 取值写入
+	// 真实链路中，kernel 会从 task.TriggerKey 取值写入
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "real_orch_cmd_1",
-		CommandType:   task.Command.CommandType,
+		CommandType:   task.TaskType,
 		GatewayPeerID: "workspace",
 		AggregateID:   task.AggregateID,
 		RequestedBy:   "orchestrator",
@@ -138,7 +137,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	// 模拟第一次执行失败
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "retry_cmd_fail",
-		CommandType:   clientKernelCommandFeePoolMaintain,
+		CommandType:   commandTypeFeePoolMaintain,
 		GatewayPeerID: "gw1",
 		AggregateID:   "gateway:gw1",
 		RequestedBy:   "orchestrator",
@@ -157,7 +156,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	// 模拟重试成功（同一个 trigger_key）
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "retry_cmd_success",
-		CommandType:   clientKernelCommandFeePoolMaintain,
+		CommandType:   commandTypeFeePoolMaintain,
 		GatewayPeerID: "gw1",
 		AggregateID:   "gateway:gw1",
 		RequestedBy:   "orchestrator",
@@ -197,7 +196,7 @@ func TestOrchestratorTriggerKeyRealLink(t *testing.T) {
 	// 测试 4：验证 reject 路径也带 trigger_key
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
 		CommandID:     "rejected_cmd_real",
-		CommandType:   clientKernelCommandFeePoolMaintain,
+		CommandType:   commandTypeFeePoolMaintain,
 		GatewayPeerID: "gw2",
 		AggregateID:   "gateway:gw2",
 		RequestedBy:   "orchestrator",
@@ -242,39 +241,22 @@ func TestDirectCommandTriggerKeyEmpty(t *testing.T) {
 
 	store := newClientDB(db, nil)
 
-	// 模拟直接调用 kernel（非 orchestrator 发起）
-	cmd := clientKernelCommand{
-		CommandID:     "direct_test_cmd",
-		CommandType:   clientKernelCommandDownloadByHash,
-		GatewayPeerID: "direct",
-		RequestedBy:   "client_kernel",
-		RequestedAt:   time.Now().Unix(),
-		TriggerKey:    "", // 直接命令，无 trigger_key
-		Payload:       map[string]any{},
-	}
-	cmd = normalizeClientKernelCommand(cmd)
-
-	// 验证 normalize 后 TriggerKey 仍然是空
-	if cmd.TriggerKey != "" {
-		t.Fatalf("direct command TriggerKey should be empty after normalize, got=%s", cmd.TriggerKey)
-	}
-
-	// 写入 proc_command_journal（模拟 kernel 直接调用的写入）
+	// 写入 proc_command_journal（模拟直接命令的写入，trigger_key 为空）
 	ctx := context.Background()
 	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
-		CommandID:     cmd.CommandID,
-		CommandType:   cmd.CommandType,
-		GatewayPeerID: cmd.GatewayPeerID,
+		CommandID:     "direct_test_cmd",
+		CommandType:   commandTypeDownloadByHash,
+		GatewayPeerID: "direct",
 		AggregateID:   "seed:test123",
-		RequestedBy:   cmd.RequestedBy,
-		RequestedAt:   cmd.RequestedAt,
+		RequestedBy:   "direct_command",
+		RequestedAt:   time.Now().Unix(),
 		Accepted:      true,
 		Status:        "applied",
-		TriggerKey:    cmd.TriggerKey, // 透传（空）
+		TriggerKey:    "", // 直接命令，无 trigger_key
 		StateBefore:   "direct_download",
 		StateAfter:    "direct_download",
 		DurationMS:    100,
-		Payload:       cmd.Payload,
+		Payload:       map[string]any{},
 		Result:        map[string]any{},
 	})
 
@@ -314,7 +296,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	// 插入一条带 trigger_key 的 orchestrator 命令
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "orch_cmd_http",
-		CommandType:   clientKernelCommandFeePoolMaintain,
+		CommandType:   commandTypeFeePoolMaintain,
 		GatewayPeerID: "gw1",
 		AggregateID:   "gateway:gw1",
 		RequestedBy:   "orchestrator",
@@ -331,7 +313,7 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	// 插入一条不带 trigger_key 的直接命令
 	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
 		CommandID:     "direct_cmd_http",
-		CommandType:   clientKernelCommandDownloadByHash,
+		CommandType:   commandTypeDownloadByHash,
 		GatewayPeerID: "direct",
 		AggregateID:   "seed:abc",
 		RequestedBy:   "client_kernel",
@@ -422,48 +404,5 @@ func TestHTTPTriggerKeyFilter(t *testing.T) {
 	}
 	if detailOut.TriggerKey != "http_test_trigger_key" {
 		t.Fatalf("detail expected trigger_key=http_test_trigger_key, got=%s", detailOut.TriggerKey)
-	}
-
-	// 测试 4：client-kernel 接口同样支持 trigger_key 过滤
-	// 先插入一条 client-kernel 类型的命令（带 trigger_key）
-	_ = dbAppendCommandJournal(context.Background(), store, commandJournalEntry{
-		CommandID:     "ck_with_trigger",
-		CommandType:   clientKernelCommandFeePoolMaintain,
-		GatewayPeerID: "gw1",
-		AggregateID:   "gateway:gw1",
-		RequestedBy:   "orchestrator",
-		RequestedAt:   now,
-		Accepted:      true,
-		Status:        "applied",
-		TriggerKey:    "ck_test_key",
-		StateBefore:   "feepool",
-		StateAfter:    "feepool",
-		Payload:       map[string]any{},
-		Result:        map[string]any{},
-	})
-
-	ckReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/client-kernel/commands?trigger_key=ck_test_key", nil)
-	ckRec := httptest.NewRecorder()
-	srv.handleAdminClientKernelCommands(ckRec, ckReq)
-	if ckRec.Code != http.StatusOK {
-		t.Fatalf("client-kernel filter by trigger_key status mismatch: got=%d want=%d body=%s", ckRec.Code, http.StatusOK, ckRec.Body.String())
-	}
-
-	var ckOut struct {
-		Total int `json:"total"`
-		Items []struct {
-			ID         int64  `json:"id"`
-			CommandID  string `json:"command_id"`
-			TriggerKey string `json:"trigger_key"`
-		} `json:"items"`
-	}
-	if err := json.Unmarshal(ckRec.Body.Bytes(), &ckOut); err != nil {
-		t.Fatalf("decode client-kernel filter response: %v", err)
-	}
-	if ckOut.Total != 1 || len(ckOut.Items) != 1 {
-		t.Fatalf("expected 1 item with trigger_key filter, got total=%d items=%d", ckOut.Total, len(ckOut.Items))
-	}
-	if ckOut.Items[0].CommandID != "ck_with_trigger" {
-		t.Fatalf("expected command_id=ck_with_trigger, got=%s", ckOut.Items[0].CommandID)
 	}
 }

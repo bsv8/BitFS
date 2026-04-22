@@ -338,7 +338,8 @@ func dbCheckVerificationReconciliation(ctx context.Context, store *clientDB) (*V
 					continue
 				}
 				if _, ok := pendingFactType[utxoID]; !ok {
-					pendingFactType[utxoID] = row.CarrierUtxoID
+					// 这里没有额外的 asset kind 字段，先标记成 token_carrier，避免空值把 pending 对账项吞掉。
+					pendingFactType[utxoID] = "token_carrier"
 				}
 			}
 		}

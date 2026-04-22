@@ -6,12 +6,12 @@ func TestShouldRunListenBillingLoop(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		name string
-		in   clientKernelResult
+		in   feePoolKernelResult
 		want bool
 	}{
 		{
 			name: "applied accepted",
-			in: clientKernelResult{
+			in: feePoolKernelResult{
 				Accepted: true,
 				Status:   "applied",
 			},
@@ -19,7 +19,7 @@ func TestShouldRunListenBillingLoop(t *testing.T) {
 		},
 		{
 			name: "failed accepted",
-			in: clientKernelResult{
+			in: feePoolKernelResult{
 				Accepted: true,
 				Status:   "failed",
 			},
@@ -27,7 +27,7 @@ func TestShouldRunListenBillingLoop(t *testing.T) {
 		},
 		{
 			name: "paused accepted",
-			in: clientKernelResult{
+			in: feePoolKernelResult{
 				Accepted: true,
 				Status:   "paused",
 			},
@@ -35,7 +35,7 @@ func TestShouldRunListenBillingLoop(t *testing.T) {
 		},
 		{
 			name: "applied rejected",
-			in: clientKernelResult{
+			in: feePoolKernelResult{
 				Accepted: false,
 				Status:   "applied",
 			},
@@ -51,5 +51,16 @@ func TestShouldRunListenBillingLoop(t *testing.T) {
 				t.Fatalf("shouldRunListenBillingLoop()=%v, want=%v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestEnsureFeePoolCommandID(t *testing.T) {
+	t.Parallel()
+
+	if got := ensureFeePoolCommandID("  cmd-1  "); got != "cmd-1" {
+		t.Fatalf("ensureFeePoolCommandID()=%q, want=%q", got, "cmd-1")
+	}
+	if got := ensureFeePoolCommandID(""); got == "" {
+		t.Fatalf("ensureFeePoolCommandID() should never return empty")
 	}
 }

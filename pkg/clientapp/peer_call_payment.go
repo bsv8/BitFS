@@ -483,7 +483,9 @@ func ensurePeerFeePoolSessionForChargeLocked(ctx context.Context, rt *Runtime, s
 			info.FeeRateSatPerByte = float64(option.FeeRateSatPerByteMilli) / 1000
 		}
 	}
-	_, err = createFeePoolSessionWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, gwSec(rt.rpcTrace), "")
+	// 自动开池没有上游命令号可复用，这里直接生成新的动作 ID，避免把空值写进审计链。
+	commandID := ensureFeePoolCommandID("")
+	_, err = createFeePoolSessionWithSecurity(ctx, rt, store, gw, autoRenewRounds, info, gwSec(rt.rpcTrace), commandID)
 	if err != nil {
 		return info, gw, err
 	}

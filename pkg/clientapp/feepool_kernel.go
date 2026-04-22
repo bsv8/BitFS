@@ -2,8 +2,6 @@ package clientapp
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +31,16 @@ const (
 
 var reNeedHave = regexp.MustCompile(`need\s+(\d+)\D+have\s+(\d+)`)
 
+// 费用池审计链不接受空 command_id。
+// 外层若没带，就在进入内核前补一个，避免把空值推进事实写入层。
+func ensureFeePoolCommandID(commandID string) string {
+	commandID = strings.TrimSpace(commandID)
+	if commandID != "" {
+		return commandID
+	}
+	return newActionID()
+}
+
 type feePoolKernelCommand struct {
 	CommandID       string
 	CommandType     string
@@ -42,7 +50,7 @@ type feePoolKernelCommand struct {
 	RequestedAt     int64
 	Payload         map[string]any
 	AllowWhenPaused bool
-	// TriggerKey 是来源链路键，从 clientKernelCommand.TriggerKey 透传
+	// TriggerKey 是来源链路键，从 orchestratorTask.TriggerKey 透传
 	TriggerKey string
 }
 
@@ -55,6 +63,7 @@ type feePoolKernelResult struct {
 	StateAfter    string         `json:"state_after"`
 	EmittedEvents []string       `json:"emitted_events"`
 	Meta          map[string]any `json:"meta,omitempty"`
+	Data          map[string]any `json:"data,omitempty"`
 }
 
 type feePoolKernelGatewayState struct {
@@ -179,6 +188,7 @@ func (k *feePoolKernel) dispatch(ctx context.Context, gw peer.AddrInfo, cmd feeP
 	if strings.TrimSpace(cmd.CommandType) == "" {
 		return feePoolKernelResult{Accepted: false, Status: "rejected", ErrorCode: "command_type_required", ErrorMessage: "command type required"}
 	}
+	cmd.CommandID = ensureFeePoolCommandID(cmd.CommandID)
 	cmd.GatewayPeer = gwBusinessID
 	if strings.TrimSpace(cmd.AggregateID) == "" {
 		cmd.AggregateID = "gateway:" + gwBusinessID
@@ -562,21 +572,7 @@ func parseNeedHave(errMsg string) (uint64, uint64) {
 	return need, have
 }
 
-func newKernelCommandID() string {
-	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return fmt.Sprintf("cmd-%d", time.Now().UnixNano())
-	}
-	return fmt.Sprintf("cmd-%d-%s", time.Now().UnixNano(), strings.ToLower(hex.EncodeToString(b[:])))
-}
-
-func shortToken(s string) string {
-	v := strings.TrimSpace(s)
-	if len(v) <= 12 {
-		return v
-	}
-	return v[:4] + "..." + v[len(v)-4:]
-}
+// newKernelCommandID 已迁移到 command_id.go
 
 func probeListenOpenNeedAndWallet(rt *Runtime, store *clientDB, info poolcore.InfoResp) (uint64, uint64, error) {
 	if rt == nil {

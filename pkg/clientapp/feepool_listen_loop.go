@@ -137,10 +137,10 @@ func startListenLoops(ctx context.Context, rt *Runtime, store *clientDB) {
 				continue
 			}
 			seen[gwID] = struct{}{}
-			if kernel := rt.kernel; kernel != nil {
-				kernel.tryResumeFeePoolPausedGateway(ctx, gwID)
-				if kernel.isFeePoolPaused(gwID) {
-					st := kernel.feePool.getState(gwID)
+			if k := rt.feePool; k != nil {
+				k.tryResumePausedGateway(ctx, gw)
+				if k.isPaused(gwID) {
+					st := k.getState(gwID)
 					if !waitRechargeState[gwID] {
 						gatewayID := gatewayBusinessID(rt, gw.ID)
 						appendObservedFeePoolState(ctx, store, gatewayID, st, st, gatewayID, time.Now().Unix(), "pause_watch", "fee_pool_pause_observed", nil)
@@ -228,7 +228,7 @@ func clearGatewayRuntimeError(rt *Runtime, gw peer.ID) {
 	}
 }
 
-func shouldRunListenBillingLoop(openRes clientKernelResult) bool {
+func shouldRunListenBillingLoop(openRes feePoolKernelResult) bool {
 	return openRes.Accepted && strings.TrimSpace(openRes.Status) == "applied"
 }
 
@@ -236,19 +236,20 @@ func runListenLoop(ctx context.Context, rt *Runtime, store *clientDB, gw peer.Ad
 	if rt == nil {
 		return nil, fmt.Errorf("runtime not initialized")
 	}
-	kernel := rt.kernel
-	if kernel == nil {
-		return nil, fmt.Errorf("runtime not initialized")
+	k := rt.feePool
+	if k == nil {
+		return nil, fmt.Errorf("fee pool kernel not initialized")
 	}
-	openRes := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
-		CommandType:   clientKernelCommandFeePoolEnsureActive,
-		GatewayPeerID: gw.ID.String(),
-		RequestedBy:   "listen_loop",
-		Payload:       map[string]any{"trigger": trigger},
-	}))
+	openRes := k.dispatch(ctx, gw, feePoolKernelCommand{
+		CommandID:       ensureFeePoolCommandID(""),
+		CommandType:     feePoolCommandEnsureActive,
+		RequestedBy:     "listen_loop",
+		AllowWhenPaused: false,
+		Payload:         map[string]any{"trigger": trigger},
+	})
 	// 任务触发语义：
 	// - ensure_active 失败/暂停交给外层 reconcile 再调度；
-	// - 这里只做“一次计费 tick”，周期由统一任务框架负责。
+	// - 这里只做"一次计费 tick"，周期由统一任务框架负责。
 	if !shouldRunListenBillingLoop(openRes) {
 		return map[string]any{
 			"gateway_pubkey_hex": gw.ID.String(),
@@ -271,14 +272,36 @@ func runListenLoop(ctx context.Context, rt *Runtime, store *clientDB, gw peer.Ad
 			"trigger":            "billing_tick",
 		}, nil
 	}
-	tickRes := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
-		CommandType:   clientKernelCommandFeePoolMaintain,
-		GatewayPeerID: gw.ID.String(),
-		RequestedBy:   "listen_loop",
+	tickRes := k.dispatch(ctx, gw, feePoolKernelCommand{
+		CommandID:   ensureFeePoolCommandID(""),
+		CommandType: feePoolCommandCycleTick,
+		RequestedBy: "listen_loop",
 		Payload: map[string]any{
 			"trigger": "billing_tick",
 		},
-	}))
+	})
+	if tickRes.Status == "paused" {
+		return map[string]any{
+			"gateway_pubkey_hex": gw.ID.String(),
+			"result":             "paused",
+			"trigger":            "billing_tick",
+		}, nil
+	}
+	if rt != nil && rt.orch != nil {
+		rt.orch.EmitSignal(orchestratorSignal{
+			Source:       "listen_loop",
+			Type:         orchestratorSignalFeePoolTick,
+			AggregateKey: gw.ID.String(),
+			Payload: map[string]any{
+				"trigger": "billing_tick",
+			},
+		})
+		return map[string]any{
+			"gateway_pubkey_hex": gw.ID.String(),
+			"result":             "signal_emitted",
+			"trigger":            "billing_tick",
+		}, nil
+	}
 	if tickRes.Status == "paused" {
 		return map[string]any{
 			"gateway_pubkey_hex": gw.ID.String(),
@@ -336,6 +359,8 @@ func createFeePoolSessionWithSecurity(ctx context.Context, rt *Runtime, store *c
 		return nil, fmt.Errorf("runtime not initialized")
 	}
 	gwID := gw.ID.String()
+	commandID = strings.TrimSpace(commandID)
+	commandID = ensureFeePoolCommandID(commandID)
 	// server BSV 公钥：从 peerstore 提取 raw（必须是 33字节压缩公钥）。
 	pub := rt.Host.Peerstore().PubKey(gw.ID)
 	if pub == nil {

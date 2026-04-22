@@ -168,24 +168,13 @@ type LivePlanResult struct {
 	Decision         LivePurchaseDecision `json:"decision"`
 }
 
-// TriggerLivePlan 触发直播价速策略命令，统一走客户端业务内核。
-func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePlanResult, error) {
+// TriggerLivePlan 触发直播价速策略命令。
+func TriggerLivePlan(ctx context.Context, store *clientDB, rt *Runtime, p LivePlanParams) (LivePlanResult, error) {
 	if rt == nil || rt.Host == nil {
 		return LivePlanResult{}, fmt.Errorf("runtime not initialized")
 	}
-	kernel := rt.kernel
-	if kernel == nil {
-		return LivePlanResult{}, fmt.Errorf("client kernel not initialized")
-	}
 	streamID := strings.ToLower(strings.TrimSpace(p.StreamID))
-	res := kernel.dispatch(ctx, prepareClientKernelCommand(clientKernelCommand{
-		CommandType: clientKernelCommandLivePlanPurchase,
-		RequestedBy: "trigger_live_plan",
-		Payload: map[string]any{
-			"stream_id":          streamID,
-			"have_segment_index": p.HaveSegmentIndex,
-		},
-	}))
+	res := dispatchLivePlanPurchase(ctx, store, rt, streamID, p.HaveSegmentIndex)
 	if !res.Accepted || strings.TrimSpace(res.Status) != "applied" {
 		msg := strings.TrimSpace(res.ErrorMessage)
 		if msg == "" {
@@ -209,6 +198,99 @@ func TriggerLivePlan(ctx context.Context, rt *Runtime, p LivePlanParams) (LivePl
 		HaveSegmentIndex: p.HaveSegmentIndex,
 		Decision:         dec,
 	}, nil
+}
+
+// dispatchLivePlanPurchase 执行直播购决策逻辑并写 command journal。
+func dispatchLivePlanPurchase(ctx context.Context, store *clientDB, rt *Runtime, streamID string, haveSegmentIndex int64) feePoolKernelResult {
+	if rt == nil {
+		return feePoolKernelResult{Accepted: false, Status: "failed", ErrorCode: "runtime_not_initialized"}
+	}
+	if store == nil {
+		return feePoolKernelResult{Accepted: false, Status: "failed", ErrorCode: "client_db_not_initialized"}
+	}
+	cmdID := newActionID()
+	now := time.Now()
+	snap, err := TriggerLiveGetLatest(rt, streamID)
+	if err != nil {
+		_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
+			CommandID:     cmdID,
+			CommandType:   commandTypeLivePlanPurchase,
+			GatewayPeerID: "live",
+			AggregateID:   "stream:" + streamID,
+			RequestedBy:   "live_plan",
+			RequestedAt:   now.Unix(),
+			Accepted:      true,
+			Status:        "failed",
+			ErrorCode:     "live_snapshot_failed",
+			ErrorMessage:  err.Error(),
+			StateBefore:   "live_plan",
+			StateAfter:    "live_plan",
+			DurationMS:    0,
+			TriggerKey:    "",
+			Payload:       map[string]any{"stream_id": streamID},
+			Result:        map[string]any{"accepted": true, "status": "failed"},
+		})
+		return feePoolKernelResult{Accepted: true, Status: "failed", ErrorCode: "live_snapshot_failed", ErrorMessage: err.Error()}
+	}
+	cfg := rt.ConfigSnapshot()
+	decision, err := PlanLivePurchaseBySeed(snap, haveSegmentIndex, LiveBuyerStrategy{
+		TargetLagSegments:   cfg.Live.Buyer.TargetLagSegments,
+		MaxBudgetPerMinute:  cfg.Live.Buyer.MaxBudgetPerMinute,
+		PreferOlderSegments: cfg.Live.Buyer.PreferOlderSegments,
+	}, func(seedHash string) (LiveSellerPricing, error) {
+		return currentSeedLiveSellerPricing(ctx, store, cfg, seedHash)
+	}, now)
+	if err != nil {
+		_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
+			CommandID:     cmdID,
+			CommandType:   commandTypeLivePlanPurchase,
+			GatewayPeerID: "live",
+			AggregateID:   "stream:" + streamID,
+			RequestedBy:   "live_plan",
+			RequestedAt:   now.Unix(),
+			Accepted:      true,
+			Status:        "failed",
+			ErrorCode:     "live_plan_failed",
+			ErrorMessage:  err.Error(),
+			StateBefore:   "live_plan",
+			StateAfter:    "live_plan",
+			DurationMS:    0,
+			TriggerKey:    "",
+			Payload:       map[string]any{"stream_id": streamID, "have_segment_index": haveSegmentIndex},
+			Result:        map[string]any{"accepted": true, "status": "failed"},
+		})
+		return feePoolKernelResult{Accepted: true, Status: "failed", ErrorCode: "live_plan_failed", ErrorMessage: err.Error()}
+	}
+	out := feePoolKernelResult{
+		Accepted:    true,
+		Status:      "applied",
+		StateBefore: "live_plan",
+		StateAfter:  "live_plan",
+		Data: map[string]any{
+			"stream_id":          streamID,
+			"have_segment_index": haveSegmentIndex,
+			"decision":           decision,
+		},
+	}
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
+		CommandID:     cmdID,
+		CommandType:   commandTypeLivePlanPurchase,
+		GatewayPeerID: "live",
+		AggregateID:   "stream:" + streamID,
+		RequestedBy:   "live_plan",
+		RequestedAt:   now.Unix(),
+		Accepted:      true,
+		Status:        "applied",
+		ErrorCode:     "",
+		ErrorMessage:  "",
+		StateBefore:   "live_plan",
+		StateAfter:    "live_plan",
+		DurationMS:    0,
+		TriggerKey:    "",
+		Payload:       map[string]any{"stream_id": streamID, "have_segment_index": haveSegmentIndex},
+		Result:        out,
+	})
+	return out
 }
 
 func TriggerGatewayPublishDemand(ctx context.Context, store *clientDB, rt *Runtime, p PublishDemandParams) (contractmessage.DemandPublishPaidResp, error) {

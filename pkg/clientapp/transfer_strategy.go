@@ -490,10 +490,48 @@ func TriggerTransferChunksByStrategy(ctx context.Context, store *clientDB, buyer
 	if buyer == nil {
 		return TransferChunksByStrategyResult{}, fmt.Errorf("runtime not initialized")
 	}
-	if rt, ok := buyer.(*Runtime); ok && rt.kernel != nil {
-		return rt.kernel.runTransferChunksByStrategy(ctx, p)
+	cmdID := newActionID()
+	startAt := time.Now()
+	out, err := triggerTransferChunksByStrategyImpl(ctx, store, buyer, p)
+	status := "applied"
+	errCode := ""
+	errMsg := ""
+	if err != nil {
+		status = "failed"
+		errCode = "direct_transfer_by_strategy_failed"
+		errMsg = err.Error()
 	}
-	return triggerTransferChunksByStrategyImpl(ctx, store, buyer, p)
+	_ = dbAppendCommandJournal(ctx, store, commandJournalEntry{
+		CommandID:     cmdID,
+		CommandType:   commandTypeTransferByStrategy,
+		GatewayPeerID: "direct",
+		AggregateID:   "seed:" + strings.ToLower(strings.TrimSpace(p.SeedHash)),
+		RequestedBy:   "client_kernel",
+		RequestedAt:   time.Now().Unix(),
+		Accepted:      true,
+		Status:        status,
+		ErrorCode:     errCode,
+		ErrorMessage:  errMsg,
+		StateBefore:   "direct_transfer",
+		StateAfter:    "direct_transfer",
+		DurationMS:    time.Since(startAt).Milliseconds(),
+		TriggerKey:    "",
+		Payload: map[string]any{
+			"demand_id":          strings.TrimSpace(p.DemandID),
+			"seed_hash":          strings.ToLower(strings.TrimSpace(p.SeedHash)),
+			"chunk_count":        p.ChunkCount,
+			"arbiter_pubkey_hex": strings.TrimSpace(p.ArbiterPubHex),
+			"strategy":           strings.TrimSpace(p.Strategy),
+			"pool_amount":        p.PoolAmount,
+		},
+		Result: map[string]any{
+			"status":       status,
+			"chunk_count":  out.ChunkCount,
+			"seller_count": len(out.Sellers),
+			"sha256":       shortToken(strings.TrimSpace(out.SHA256)),
+		},
+	})
+	return out, err
 }
 
 func triggerTransferChunksByStrategyImpl(ctx context.Context, store *clientDB, buyer transferRuntimeCaps, p TransferChunksByStrategyParams) (TransferChunksByStrategyResult, error) {

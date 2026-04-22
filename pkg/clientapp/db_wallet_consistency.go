@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/bsv8/BitFS/pkg/clientapp/moduleapi"
 	"github.com/bsv8/bitfs-contract/ent/v1/gen"
@@ -205,6 +206,7 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		if !found {
 			return fmt.Errorf("confirmed settlement payment attempt not found for txid=%s", txid)
 		}
+		now := time.Now().Unix()
 		rows, err := wtx.QueryContext(ctx, `SELECT source_utxo_id, used_satoshi
 			FROM fact_settlement_records
 			WHERE settlement_payment_attempt_id=? AND asset_type='BSV' AND state='confirmed' AND source_utxo_id<>''`,
@@ -233,6 +235,24 @@ func RepairConfirmedBSVSpendConsistency(ctx context.Context, store *clientDB, tx
 		}
 		if len(facts) == 0 {
 			return fmt.Errorf("no bsv settlement records found for txid=%s", txid)
+		}
+		for _, fact := range facts {
+			var currentState string
+			var currentSpentByTxid string
+			if err := wtx.QueryRowContext(ctx, `SELECT utxo_state, COALESCE(spent_by_txid,'') FROM fact_bsv_utxos WHERE utxo_id=?`, fact.UTXOID).Scan(&currentState, &currentSpentByTxid); err != nil {
+				return fmt.Errorf("lookup bsv utxo %s failed: %w", fact.UTXOID, err)
+			}
+			currentState = strings.ToLower(strings.TrimSpace(currentState))
+			currentSpentByTxid = strings.ToLower(strings.TrimSpace(currentSpentByTxid))
+			if currentSpentByTxid != "" && currentSpentByTxid != txid {
+				return fmt.Errorf("bsv utxo %s already spent by %s", fact.UTXOID, currentSpentByTxid)
+			}
+			if currentState == "spent" && currentSpentByTxid == txid {
+				continue
+			}
+			if err := markBSVUTXOSpentConn(ctx, wtx, fact.UTXOID, txid, now); err != nil {
+				return err
+			}
 		}
 		return nil
 	})

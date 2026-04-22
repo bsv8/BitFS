@@ -182,7 +182,6 @@ type httpAPIServer struct {
 	h                   host.Host
 	gateways            []peer.AddrInfo
 	workspace           *workspaceManager
-	kernel              *Kernel
 	srvMu               sync.RWMutex
 	srv                 *http.Server
 	startedAt           time.Time
@@ -208,12 +207,6 @@ func newHTTPAPIServer(rt *Runtime, cfgSource configSnapshotter, db *sql.DB, stor
 		h:         h,
 		gateways:  gateways,
 		workspace: workspace,
-		kernel: func() *Kernel {
-			if rt != nil {
-				return rt.ClientKernel()
-			}
-			return nil
-		}(),
 		startedAt: time.Now(),
 		rpcTrace:  trace,
 	}
@@ -1401,89 +1394,6 @@ func (s *httpAPIServer) handleAdminFeePoolCommandAuditTimeline(w http.ResponseWr
 	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
 }
 
-var adminClientKernelCommandTypes = []string{
-	clientKernelCommandFeePoolEnsureActive,
-	clientKernelCommandFeePoolCycleTick,
-	clientKernelCommandFeePoolMaintain,
-	clientKernelCommandLivePlanPurchase,
-	clientKernelCommandDownloadByHash,
-	clientKernelCommandTransferByStrategy,
-}
-
-func isAdminClientKernelCommandType(v string) bool {
-	needle := strings.TrimSpace(v)
-	if needle == "" {
-		return false
-	}
-	for _, t := range adminClientKernelCommandTypes {
-		if strings.EqualFold(strings.TrimSpace(t), needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func (s *httpAPIServer) handleAdminClientKernelCommands(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	limit := parseBoundInt(r.URL.Query().Get("limit"), 50, 1, 500)
-	offset := parseBoundInt(r.URL.Query().Get("offset"), 0, 0, 1_000_000)
-	commandType := strings.TrimSpace(r.URL.Query().Get("command_type"))
-	gatewayPeerID := strings.TrimSpace(r.URL.Query().Get("gateway_pubkey_hex"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	commandID := strings.TrimSpace(r.URL.Query().Get("command_id"))
-	triggerKey := strings.TrimSpace(r.URL.Query().Get("trigger_key"))
-	q := strings.TrimSpace(r.URL.Query().Get("q"))
-	if commandType != "" && !isAdminClientKernelCommandType(commandType) {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported client kernel command_type"})
-		return
-	}
-	page, err := dbListCommandJournal(r.Context(), httpStore(s), commandJournalFilter{
-		Limit:         limit,
-		Offset:        offset,
-		CommandTypes:  adminClientKernelCommandTypes,
-		CommandType:   commandType,
-		GatewayPeerID: gatewayPeerID,
-		Status:        status,
-		CommandID:     commandID,
-		TriggerKey:    triggerKey,
-		Query:         q,
-	})
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"total": page.Total, "limit": limit, "offset": offset, "items": page.Items})
-}
-
-func (s *httpAPIServer) handleAdminClientKernelCommandDetail(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
-		return
-	}
-	id := parseBoundInt(r.URL.Query().Get("id"), 0, 0, 1_000_000_000)
-	if id <= 0 {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "id is required"})
-		return
-	}
-	it, err := dbGetCommandJournalItem(r.Context(), httpStore(s), int64(id))
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-			return
-		}
-		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
-		return
-	}
-	if !isAdminClientKernelCommandType(it.CommandType) {
-		writeJSON(w, http.StatusNotFound, map[string]any{"error": "record not found"})
-		return
-	}
-	writeJSON(w, http.StatusOK, it)
-}
-
 func (s *httpAPIServer) handleAdminOrchestratorLogs(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
@@ -2147,15 +2057,11 @@ func (s *httpAPIServer) handleWorkspaceSyncOnce(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{"error": "method not allowed"})
 		return
 	}
-	var kernel *Kernel
-	if s != nil {
-		kernel = s.kernel
-	}
-	if s == nil || kernel == nil || kernel.Workspace() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+	if s == nil || s.rt == nil || s.rt.Workspace == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 		return
 	}
-	seeds, err := kernel.Workspace().SyncOnce(r.Context())
+	seeds, err := s.rt.Workspace.SyncOnce(r.Context())
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
@@ -2741,7 +2647,7 @@ func (s *httpAPIServer) handleLivePlan(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]any{"error": err.Error()})
 		return
 	}
-	plan, err := TriggerLivePlan(r.Context(), s.rt, LivePlanParams{
+	plan, err := TriggerLivePlan(r.Context(), s.store, s.rt, LivePlanParams{
 		StreamID:         req.StreamID,
 		HaveSegmentIndex: req.HaveSegmentIndex,
 	})
@@ -3574,18 +3480,14 @@ func (s *httpAPIServer) handleArbiterHealth(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Request) {
-	kernel := (*Kernel)(nil)
-	if s != nil {
-		kernel = s.kernel
-	}
 	workspace := (*workspaceManager)(nil)
-	if kernel != nil {
-		workspace = kernel.Workspace()
+	if s != nil && s.rt != nil {
+		workspace = s.rt.Workspace
 	}
 	switch r.Method {
 	case http.MethodGet:
 		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 			return
 		}
 		items, err := workspace.ListWithContext(r.Context())
@@ -3604,7 +3506,7 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			return
 		}
 		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 			return
 		}
 		item, err := workspace.AddWithContext(r.Context(), req.Path, req.MaxBytes)
@@ -3647,7 +3549,7 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			return
 		}
 		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 			return
 		}
 		item, err := workspace.UpdateByPathWithContext(r.Context(), workspacePath, req.MaxBytes, req.Enabled)
@@ -3685,7 +3587,7 @@ func (s *httpAPIServer) handleAdminWorkspaces(w http.ResponseWriter, r *http.Req
 			return
 		}
 		if s == nil || workspace == nil {
-			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+			writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 			return
 		}
 		err := workspace.DeleteByPathWithContext(r.Context(), workspacePath)
@@ -4195,11 +4097,11 @@ func (s *httpAPIServer) handleAdminStaticUpload(w http.ResponseWriter, r *http.R
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+	if s == nil || s.workspace == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 		return
 	}
-	if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+	if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -4350,11 +4252,11 @@ func (s *httpAPIServer) handleAdminStaticMove(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
-	if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+	if s == nil || s.workspace == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 		return
 	}
-	if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+	if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
@@ -4406,11 +4308,11 @@ func (s *httpAPIServer) handleAdminStaticEntry(w http.ResponseWriter, r *http.Re
 			return
 		}
 	}
-	if s == nil || s.kernel == nil || s.kernel.Workspace() == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace kernel not initialized"})
+	if s == nil || s.workspace == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{"error": "workspace not initialized"})
 		return
 	}
-	if _, err := s.kernel.Workspace().SyncOnce(r.Context()); err != nil {
+	if _, err := s.workspace.SyncOnce(r.Context()); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}

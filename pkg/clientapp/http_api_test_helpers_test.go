@@ -41,15 +41,6 @@ func newTestWorkspaceManager(ctx context.Context, cfg *Config, db *sql.DB) *work
 	}
 }
 
-func newTestWorkspaceKernel(t *testing.T, cfg Config, workspace *workspaceManager) *Kernel {
-	t.Helper()
-	rt := newRuntimeForTest(t, cfg, "", withRuntimeWorkspace(workspace))
-	if rt == nil || rt.ClientKernel() == nil {
-		t.Fatal("build workspace kernel failed")
-	}
-	return rt.ClientKernel()
-}
-
 func newTestTaskScheduler(ctx context.Context, store *clientDB) *taskScheduler {
 	s := newTaskScheduler(store, ServiceName)
 	s.ctx = ctx

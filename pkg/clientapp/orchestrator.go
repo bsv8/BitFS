@@ -40,11 +40,26 @@ type orchestratorSignal struct {
 }
 
 type orchestratorTask struct {
-	Command        clientKernelCommand
-	IdempotencyKey string
+	TaskID         string
+	TaskType       string
+	GatewayPeerID  string
 	AggregateID    string
-	RetryCount     int
+	IdempotencyKey string
+	RequestedBy    string
+	RequestedAt    int64
+	TriggerKey     string
+	Payload        map[string]any
 	NextRunAt      time.Time
+	RetryCount     int
+}
+
+type orchestratorTaskResult struct {
+	Status       string         `json:"status"`
+	ErrorCode    string         `json:"error_code,omitempty"`
+	ErrorMessage string         `json:"error_message,omitempty"`
+	StateBefore  string         `json:"state_before,omitempty"`
+	StateAfter   string         `json:"state_after,omitempty"`
+	Data         map[string]any `json:"data,omitempty"`
 }
 
 type OrchestratorStatus struct {
@@ -300,16 +315,16 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 	switch strings.TrimSpace(sig.Type) {
 	case orchestratorSignalWorkspaceTick:
 		out = append(out, &orchestratorTask{
-			Command: prepareClientKernelCommand(clientKernelCommand{
-				CommandType: workspaceCommandTypeSync,
-				RequestedBy: "orchestrator",
-				Payload: map[string]any{
-					"trigger": strings.TrimSpace(anyToString(sig.Payload["trigger"])),
-				},
-			}),
+			TaskID:         newActionID(),
+			TaskType:       "workspace.sync",
+			RequestedBy:    "orchestrator",
 			AggregateID:    "workspace:default",
 			IdempotencyKey: fmt.Sprintf("workspace_sync:%d", now.Unix()/10),
-			NextRunAt:      now,
+			RequestedAt:    now.Unix(),
+			Payload: map[string]any{
+				"trigger": strings.TrimSpace(anyToString(sig.Payload["trigger"])),
+			},
+			NextRunAt: now,
 		})
 	case orchestratorSignalFeePoolTick:
 		gwID := strings.TrimSpace(sig.AggregateKey)
@@ -317,21 +332,21 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 			break
 		}
 		out = append(out, &orchestratorTask{
-			Command: prepareClientKernelCommand(clientKernelCommand{
-				CommandType:   clientKernelCommandFeePoolMaintain,
-				GatewayPeerID: gwID,
-				RequestedBy:   "orchestrator",
-				Payload: map[string]any{
-					"trigger": "billing_tick",
-				},
-			}),
+			TaskID:         newActionID(),
+			TaskType:       "feepool.maintain",
+			GatewayPeerID:  gwID,
+			RequestedBy:    "orchestrator",
 			AggregateID:    "gateway:" + gwID,
 			IdempotencyKey: fmt.Sprintf("feepool_tick:%s:%d", gwID, now.Unix()/10),
-			NextRunAt:      now,
+			RequestedAt:    now.Unix(),
+			Payload: map[string]any{
+				"trigger": "billing_tick",
+			},
+			NextRunAt: now,
 		})
 	case orchestratorSignalChainTip:
 		// 设计约束：链高度推进只服务 listen 资金池维护。
-		// 非 listen 场景（例如 gateway 直付、普通 peer.call）不应该因为“配置了网关”就被动开池。
+		// 非 listen 场景（例如 gateway 直付、普通 peer.call）不应该因为"配置了网关"就被动开池。
 		if o == nil || o.rt == nil || !cfgBool(o.rt.ConfigSnapshot().Listen.Enabled, true) {
 			break
 		}
@@ -341,18 +356,18 @@ func (o *orchestrator) reconcileSignal(sig orchestratorSignal, now time.Time) []
 				continue
 			}
 			out = append(out, &orchestratorTask{
-				Command: prepareClientKernelCommand(clientKernelCommand{
-					CommandType:   clientKernelCommandFeePoolMaintain,
-					GatewayPeerID: gwID,
-					RequestedBy:   "orchestrator",
-					Payload: map[string]any{
-						"trigger":      "chain_tip_advanced",
-						"observed_tip": anyToInt64(sig.Payload["tip_to"]),
-					},
-				}),
+				TaskID:         newActionID(),
+				TaskType:       "feepool.maintain",
+				GatewayPeerID:  gwID,
+				RequestedBy:    "orchestrator",
 				AggregateID:    "gateway:" + gwID,
 				IdempotencyKey: fmt.Sprintf("chain_tip_tick:%s:%v", gwID, sig.Payload["tip_to"]),
-				NextRunAt:      now,
+				RequestedAt:    now.Unix(),
+				Payload: map[string]any{
+					"trigger":      "chain_tip_advanced",
+					"observed_tip": anyToInt64(sig.Payload["tip_to"]),
+				},
+				NextRunAt: now,
 			})
 		}
 	}
@@ -378,8 +393,8 @@ func (o *orchestrator) enqueueTask(task *orchestratorTask) {
 		Source:         "orchestrator",
 		AggregateKey:   strings.TrimSpace(task.AggregateID),
 		IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-		CommandType:    strings.TrimSpace(task.Command.CommandType),
-		GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+		CommandType:    strings.TrimSpace(task.TaskType),
+		GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 		RetryCount:     task.RetryCount,
 		QueueLength:    queueLen,
 	})
@@ -437,33 +452,20 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 		Source:         "orchestrator",
 		AggregateKey:   strings.TrimSpace(task.AggregateID),
 		IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-		CommandType:    strings.TrimSpace(task.Command.CommandType),
-		GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+		CommandType:    strings.TrimSpace(task.TaskType),
+		GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 		RetryCount:     task.RetryCount,
 		QueueLength:    queueLen,
 	})
-	kernel := o.rt.kernel
-	if kernel == nil {
-		o.failTask(task, fmt.Errorf("client kernel not initialized"), true)
-		return
-	}
-	o.logEvent(orchestratorLogEntry{
-		EventType:      orchestratorEventTaskDispatchBeg,
-		Source:         "orchestrator",
-		AggregateKey:   strings.TrimSpace(task.AggregateID),
-		IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-		CommandType:    strings.TrimSpace(task.Command.CommandType),
-		GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
-		RetryCount:     task.RetryCount,
-	})
-	// 显式传递链路键：orchestrator 的 task.IdempotencyKey 就是这条触发链路的标识
-	// 重试时沿用同一个 TriggerKey，不会新造
-	task.Command.TriggerKey = strings.TrimSpace(task.IdempotencyKey)
-	res := clientKernelResult{}
-	if strings.TrimSpace(task.Command.CommandType) == workspaceCommandTypeSync {
-		res = o.dispatchWorkspaceSync(ctx, kernel, task.Command)
-	} else {
-		res = kernel.dispatch(ctx, task.Command)
+	task.TriggerKey = strings.TrimSpace(task.IdempotencyKey)
+	var res orchestratorTaskResult
+	switch strings.TrimSpace(task.TaskType) {
+	case "workspace.sync":
+		res = o.runWorkspaceSync(ctx, task)
+	case "feepool.maintain":
+		res = o.runFeePoolMaintain(ctx, task)
+	default:
+		res = orchestratorTaskResult{Status: "failed", ErrorCode: "unsupported_task", ErrorMessage: fmt.Sprintf("unsupported task type: %s", task.TaskType)}
 	}
 	switch strings.TrimSpace(res.Status) {
 	case "applied":
@@ -477,8 +479,8 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 			Source:         "orchestrator",
 			AggregateKey:   strings.TrimSpace(task.AggregateID),
 			IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-			CommandType:    strings.TrimSpace(task.Command.CommandType),
-			GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+			CommandType:    strings.TrimSpace(task.TaskType),
+			GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 			TaskStatus:     "applied",
 			RetryCount:     task.RetryCount,
 		})
@@ -492,8 +494,8 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 			Source:         "orchestrator",
 			AggregateKey:   strings.TrimSpace(task.AggregateID),
 			IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-			CommandType:    strings.TrimSpace(task.Command.CommandType),
-			GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+			CommandType:    strings.TrimSpace(task.TaskType),
+			GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 			TaskStatus:     strings.TrimSpace(res.Status),
 			RetryCount:     task.RetryCount,
 			ErrorMessage:   strings.TrimSpace(res.ErrorMessage),
@@ -507,15 +509,15 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 			err = strings.TrimSpace(res.ErrorCode)
 		}
 		if err == "" {
-			err = "kernel command failed"
+			err = "task failed"
 		}
 		o.logEvent(orchestratorLogEntry{
 			EventType:      orchestratorEventTaskDispatchRes,
 			Source:         "orchestrator",
 			AggregateKey:   strings.TrimSpace(task.AggregateID),
 			IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-			CommandType:    strings.TrimSpace(task.Command.CommandType),
-			GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+			CommandType:    strings.TrimSpace(task.TaskType),
+			GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 			TaskStatus:     "failed",
 			RetryCount:     task.RetryCount,
 			ErrorMessage:   err,
@@ -524,26 +526,37 @@ func (o *orchestrator) runOneTask(ctx context.Context) {
 	}
 }
 
-func (o *orchestrator) dispatchWorkspaceSync(ctx context.Context, kernel *clientKernel, cmd clientKernelCommand) clientKernelResult {
-	if kernel == nil || kernel.Workspace() == nil {
-		return clientKernelResult{
-			Accepted:     false,
+// resolveFeePoolMaintainCommandType 决定 maintain 任务走 ensure_active 还是 cycle_tick。
+// 有 active session 走 tick，没有走 ensure_active。
+func resolveFeePoolMaintainCommandType(rt *Runtime, gatewayPeerID string) string {
+	if rt == nil {
+		return feePoolCommandEnsureActive
+	}
+	sess, ok := rt.getFeePool(strings.TrimSpace(gatewayPeerID))
+	if ok && sess != nil && strings.TrimSpace(sess.SpendTxID) != "" && strings.TrimSpace(sess.Status) == "active" {
+		return feePoolCommandCycleTick
+	}
+	return feePoolCommandEnsureActive
+}
+
+func (o *orchestrator) runWorkspaceSync(ctx context.Context, task *orchestratorTask) orchestratorTaskResult {
+	if o.rt == nil || o.rt.Workspace == nil {
+		return orchestratorTaskResult{
 			Status:       "rejected",
 			ErrorCode:    "workspace_not_initialized",
-			ErrorMessage: "workspace manager not initialized",
+			ErrorMessage: "workspace not initialized",
 		}
 	}
 	meta := workspaceCommandMeta{
-		CommandID:   strings.TrimSpace(cmd.CommandID),
+		CommandID:   strings.TrimSpace(task.TaskID),
 		CommandType: workspaceCommandTypeSync,
-		RequestedBy: strings.TrimSpace(cmd.RequestedBy),
-		RequestedAt: cmd.RequestedAt,
-		TriggerKey:  strings.TrimSpace(cmd.TriggerKey),
+		RequestedBy: strings.TrimSpace(task.RequestedBy),
+		RequestedAt: task.RequestedAt,
+		TriggerKey:  strings.TrimSpace(task.TriggerKey),
 	}
-	seeds, err := kernel.Workspace().SyncOnce(withWorkspaceCommandMeta(ctx, meta))
-	accepted, status := workspaceManagerResultStatus(err)
-	return clientKernelResult{
-		Accepted:     accepted,
+	seeds, err := o.rt.Workspace.SyncOnce(withWorkspaceCommandMeta(ctx, meta))
+	_, status := workspaceManagerResultStatus(err)
+	return orchestratorTaskResult{
 		Status:       status,
 		ErrorCode:    workspaceManagerErrorCode("workspace_sync", err),
 		ErrorMessage: workspaceManagerErrorMessage(err),
@@ -555,8 +568,53 @@ func (o *orchestrator) dispatchWorkspaceSync(ctx context.Context, kernel *client
 	}
 }
 
+func (o *orchestrator) runFeePoolMaintain(ctx context.Context, task *orchestratorTask) orchestratorTaskResult {
+	if o.rt == nil || o.rt.feePool == nil {
+		return orchestratorTaskResult{
+			Status:       "rejected",
+			ErrorCode:    "fee_pool_not_initialized",
+			ErrorMessage: "fee pool not initialized",
+		}
+	}
+	gwID := strings.TrimSpace(task.GatewayPeerID)
+	if gwID == "" {
+		return orchestratorTaskResult{
+			Status:       "rejected",
+			ErrorCode:    "gateway_required",
+			ErrorMessage: "gateway peer id required",
+		}
+	}
+	gw, err := o.rt.PickGatewayForBusiness(gwID)
+	if err != nil || gw.ID == "" {
+		return orchestratorTaskResult{
+			Status:       "rejected",
+			ErrorCode:    "gateway_not_found",
+			ErrorMessage: fmt.Sprintf("gateway not found: %s", gwID),
+		}
+	}
+	cmdType := resolveFeePoolMaintainCommandType(o.rt, gwID)
+	cmd := feePoolKernelCommand{
+		CommandID:       strings.TrimSpace(task.TaskID),
+		CommandType:     cmdType,
+		RequestedBy:     strings.TrimSpace(task.RequestedBy),
+		AllowWhenPaused: false,
+		TriggerKey:      strings.TrimSpace(task.TriggerKey),
+		Payload:         task.Payload,
+	}
+	res := o.rt.feePool.dispatch(ctx, gw, cmd)
+	return orchestratorTaskResult{
+		Status:       res.Status,
+		ErrorCode:    res.ErrorCode,
+		ErrorMessage: res.ErrorMessage,
+		Data: map[string]any{
+			"state_before": res.StateBefore,
+			"state_after":  res.StateAfter,
+		},
+	}
+}
+
 // isRetryableFailure 定义调度层重试语义：余额暂停/前置条件缺失这类状态型失败不做指数重试。
-func (o *orchestrator) isRetryableFailure(res clientKernelResult) bool {
+func (o *orchestrator) isRetryableFailure(res orchestratorTaskResult) bool {
 	code := strings.TrimSpace(strings.ToLower(res.ErrorCode))
 	switch code {
 	case "session_missing", "wallet_insufficient", "wallet_insufficient_paused":
@@ -588,8 +646,8 @@ func (o *orchestrator) failTask(task *orchestratorTask, err error, retryable boo
 			Source:         "orchestrator",
 			AggregateKey:   strings.TrimSpace(task.AggregateID),
 			IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-			CommandType:    strings.TrimSpace(task.Command.CommandType),
-			GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+			CommandType:    strings.TrimSpace(task.TaskType),
+			GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 			TaskStatus:     "dropped",
 			RetryCount:     task.RetryCount,
 			QueueLength:    queueLen,
@@ -614,8 +672,8 @@ func (o *orchestrator) failTask(task *orchestratorTask, err error, retryable boo
 		Source:         "orchestrator",
 		AggregateKey:   strings.TrimSpace(task.AggregateID),
 		IdempotencyKey: strings.TrimSpace(task.IdempotencyKey),
-		CommandType:    strings.TrimSpace(task.Command.CommandType),
-		GatewayPeerID:  strings.TrimSpace(task.Command.GatewayPeerID),
+		CommandType:    strings.TrimSpace(task.TaskType),
+		GatewayPeerID:  strings.TrimSpace(task.GatewayPeerID),
 		TaskStatus:     "retry_scheduled",
 		RetryCount:     task.RetryCount,
 		QueueLength:    queueLen,

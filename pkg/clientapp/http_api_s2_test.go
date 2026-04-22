@@ -55,7 +55,7 @@ func TestHandleAdminWorkspacesPut(t *testing.T) {
 	workspacePath := items[0].WorkspacePath
 
 	rt := newRuntimeForTest(t, cfg, "", withRuntimeWorkspace(mgr))
-	srv := &httpAPIServer{rt: rt, workspace: mgr, kernel: rt.ClientKernel()}
+	srv := &httpAPIServer{rt: rt, workspace: mgr}
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/admin/biz_workspaces?workspace_path="+url.QueryEscape(workspacePath), strings.NewReader(`{"max_bytes":2048,"enabled":false}`))
 	rec := httptest.NewRecorder()
 	srv.handleAdminWorkspaces(rec, req)
@@ -156,7 +156,6 @@ func TestHandleAdminLiveStreamsListAndDelete(t *testing.T) {
 		store:     newClientDB(db, nil),
 		cfgSource: staticConfigSnapshot(cfg),
 		workspace: mgr,
-		kernel:    rt.ClientKernel(),
 	}
 
 	listReq := httptest.NewRequest(http.MethodGet, "/api/v1/admin/live/streams", nil)
@@ -330,7 +329,7 @@ func TestHandleAdminStaticUploadAndMoveByTargetDir(t *testing.T) {
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg), workspace: mgr, kernel: newTestWorkspaceKernel(t, cfg, mgr)}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg), workspace: mgr}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -396,7 +395,7 @@ func TestHandleAdminRegisterDownloadedFileAcceptsAbsolutePath(t *testing.T) {
 	if err := mgr.EnsureDefaultWorkspace(); err != nil {
 		t.Fatalf("ensure default workspace: %v", err)
 	}
-	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg), workspace: mgr, kernel: newTestWorkspaceKernel(t, cfg, mgr)}
+	srv := &httpAPIServer{db: db, store: newClientDB(db, nil), cfgSource: staticConfigSnapshot(cfg), workspace: mgr}
 
 	downloadedPath := filepath.Join(ws, "downloads", "abs-register.bin")
 	if err := os.MkdirAll(filepath.Dir(downloadedPath), 0o755); err != nil {

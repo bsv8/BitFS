@@ -44,7 +44,7 @@ func workspaceCommandMetaFromContext(ctx context.Context, defaultCommandType str
 		meta.CommandType = strings.TrimSpace(defaultCommandType)
 	}
 	if strings.TrimSpace(meta.CommandID) == "" {
-		meta.CommandID = newKernelCommandID()
+		meta.CommandID = newActionID()
 	}
 	meta.RequestedBy = strings.TrimSpace(meta.RequestedBy)
 	if meta.RequestedBy == "" {

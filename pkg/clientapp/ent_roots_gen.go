@@ -9,16 +9,21 @@ import (
 )
 
 // queryBox 只给读壳用，避免把根 client 或写入口暴露出去。
+// 设计说明：
+// - 每次 Query 都生成一个新的 builder，避免上一次 Where/Order 的条件污染下一次查询。
 type queryBox[T any] struct {
-	q *T
+	new func() *T
 }
 
-func newQueryBox[T any](q *T) queryBox[T] {
-	return queryBox[T]{q: q}
+func newQueryBox[T any](new func() *T) queryBox[T] {
+	return queryBox[T]{new: new}
 }
 
 func (b queryBox[T]) Query() *T {
-	return b.q
+	if b.new == nil {
+		return nil
+	}
+	return b.new()
 }
 
 // entReadRoot 只开放 query builder，不开放 Tx / Create / Update / Delete。
@@ -139,57 +144,57 @@ type EntWriteRoot = *entWriteRoot
 
 func newEntReadRoot(client *gen.Client) EntReadRoot {
 	return &entReadRoot{
-		BizSeeds:               newQueryBox(client.BizSeeds.Query()),
-		BizSeedPricingPolicy:   newQueryBox(client.BizSeedPricingPolicy.Query()),
-		BizSeedChunkSupply:     newQueryBox(client.BizSeedChunkSupply.Query()),
-		BizLiveQuotes:          newQueryBox(client.BizLiveQuotes.Query()),
-		BizDemands:             newQueryBox(client.BizDemands.Query()),
-		BizPurchases:           newQueryBox(client.BizPurchases.Query()),
-		BizDemandQuotes:        newQueryBox(client.BizDemandQuotes.Query()),
-		BizDemandQuoteArbiters: newQueryBox(client.BizDemandQuoteArbiters.Query()),
-		BizWorkspaces:          newQueryBox(client.BizWorkspaces.Query()),
-		BizWorkspaceFiles:      newQueryBox(client.BizWorkspaceFiles.Query()),
-		BizPool:                newQueryBox(client.BizPool.Query()),
-		BizPoolAllocations:     newQueryBox(client.BizPoolAllocations.Query()),
-		Orders:                 newQueryBox(client.Orders.Query()),
-		OrderSettlements:       newQueryBox(client.OrderSettlements.Query()),
-		OrderSettlementEvents:  newQueryBox(client.OrderSettlementEvents.Query()),
-		ProcCommandJournal:     newQueryBox(client.ProcCommandJournal.Query()),
-		ProcGatewayEvents:      newQueryBox(client.ProcGatewayEvents.Query()),
-		ProcDomainEvents:       newQueryBox(client.ProcDomainEvents.Query()),
-		ProcStateSnapshots:     newQueryBox(client.ProcStateSnapshots.Query()),
-		ProcObservedGatewayStates: newQueryBox(client.ProcObservedGatewayStates.Query()),
-		ProcEffectLogs:         newQueryBox(client.ProcEffectLogs.Query()),
-		ProcOrchestratorLogs:   newQueryBox(client.ProcOrchestratorLogs.Query()),
-		ProcSchedulerTasks:     newQueryBox(client.ProcSchedulerTasks.Query()),
-		ProcSchedulerTaskRuns:  newQueryBox(client.ProcSchedulerTaskRuns.Query()),
-		ProcChainTipWorkerLogs: newQueryBox(client.ProcChainTipWorkerLogs.Query()),
-		ProcChainUtxoWorkerLogs: newQueryBox(client.ProcChainUtxoWorkerLogs.Query()),
-		ProcChainTipState:      newQueryBox(client.ProcChainTipState.Query()),
-		ProcDirectDeals:        newQueryBox(client.ProcDirectDeals.Query()),
-		ProcDirectTransferPools: newQueryBox(client.ProcDirectTransferPools.Query()),
-		ProcFileDownloads:      newQueryBox(client.ProcFileDownloads.Query()),
-		ProcFileDownloadChunks: newQueryBox(client.ProcFileDownloadChunks.Query()),
-		ProcGetFileByHashChunks: newQueryBox(client.ProcGetFileByHashChunks.Query()),
-		ProcGetFileByHashJobs:  newQueryBox(client.ProcGetFileByHashJobs.Query()),
-		ProcGetFileByHashQuotes: newQueryBox(client.ProcGetFileByHashQuotes.Query()),
-		ProcLiveFollows:        newQueryBox(client.ProcLiveFollows.Query()),
-		ProcNodeReachabilityCache: newQueryBox(client.ProcNodeReachabilityCache.Query()),
-		ProcSelfNodeReachabilityState: newQueryBox(client.ProcSelfNodeReachabilityState.Query()),
-		WalletUtxo:             newQueryBox(client.WalletUtxo.Query()),
-		WalletUtxoSyncState:    newQueryBox(client.WalletUtxoSyncState.Query()),
-		WalletUtxoSyncCursor:   newQueryBox(client.WalletUtxoSyncCursor.Query()),
-		WalletUtxoTokenVerification: newQueryBox(client.WalletUtxoTokenVerification.Query()),
-		FactPoolSessionEvents:  newQueryBox(client.FactPoolSessionEvents.Query()),
-		FactBsvUtxos:           newQueryBox(client.FactBsvUtxos.Query()),
-		FactTokenLots:          newQueryBox(client.FactTokenLots.Query()),
-		FactTokenCarrierLinks:  newQueryBox(client.FactTokenCarrierLinks.Query()),
-		FactSettlementRecords:  newQueryBox(client.FactSettlementRecords.Query()),
-		FactSettlementPaymentAttempts: newQueryBox(client.FactSettlementPaymentAttempts.Query()),
-		FactSettlementChannelChainAssetCreate: newQueryBox(client.FactSettlementChannelChainAssetCreate.Query()),
-		FactSettlementChannelChainDirectPay: newQueryBox(client.FactSettlementChannelChainDirectPay.Query()),
-		FactSettlementChannelChainQuotePay: newQueryBox(client.FactSettlementChannelChainQuotePay.Query()),
-		FactSettlementChannelPoolSessionQuotePay: newQueryBox(client.FactSettlementChannelPoolSessionQuotePay.Query()),
+		BizSeeds:                      newQueryBox(client.BizSeeds.Query),
+		BizSeedPricingPolicy:          newQueryBox(client.BizSeedPricingPolicy.Query),
+		BizSeedChunkSupply:            newQueryBox(client.BizSeedChunkSupply.Query),
+		BizLiveQuotes:                 newQueryBox(client.BizLiveQuotes.Query),
+		BizDemands:                    newQueryBox(client.BizDemands.Query),
+		BizPurchases:                  newQueryBox(client.BizPurchases.Query),
+		BizDemandQuotes:               newQueryBox(client.BizDemandQuotes.Query),
+		BizDemandQuoteArbiters:        newQueryBox(client.BizDemandQuoteArbiters.Query),
+		BizWorkspaces:                 newQueryBox(client.BizWorkspaces.Query),
+		BizWorkspaceFiles:             newQueryBox(client.BizWorkspaceFiles.Query),
+		BizPool:                       newQueryBox(client.BizPool.Query),
+		BizPoolAllocations:            newQueryBox(client.BizPoolAllocations.Query),
+		Orders:                        newQueryBox(client.Orders.Query),
+		OrderSettlements:              newQueryBox(client.OrderSettlements.Query),
+		OrderSettlementEvents:         newQueryBox(client.OrderSettlementEvents.Query),
+		ProcCommandJournal:            newQueryBox(client.ProcCommandJournal.Query),
+		ProcGatewayEvents:             newQueryBox(client.ProcGatewayEvents.Query),
+		ProcDomainEvents:              newQueryBox(client.ProcDomainEvents.Query),
+		ProcStateSnapshots:            newQueryBox(client.ProcStateSnapshots.Query),
+		ProcObservedGatewayStates:     newQueryBox(client.ProcObservedGatewayStates.Query),
+		ProcEffectLogs:                newQueryBox(client.ProcEffectLogs.Query),
+		ProcOrchestratorLogs:          newQueryBox(client.ProcOrchestratorLogs.Query),
+		ProcSchedulerTasks:            newQueryBox(client.ProcSchedulerTasks.Query),
+		ProcSchedulerTaskRuns:         newQueryBox(client.ProcSchedulerTaskRuns.Query),
+		ProcChainTipWorkerLogs:        newQueryBox(client.ProcChainTipWorkerLogs.Query),
+		ProcChainUtxoWorkerLogs:       newQueryBox(client.ProcChainUtxoWorkerLogs.Query),
+		ProcChainTipState:             newQueryBox(client.ProcChainTipState.Query),
+		ProcDirectDeals:               newQueryBox(client.ProcDirectDeals.Query),
+		ProcDirectTransferPools:       newQueryBox(client.ProcDirectTransferPools.Query),
+		ProcFileDownloads:             newQueryBox(client.ProcFileDownloads.Query),
+		ProcFileDownloadChunks:        newQueryBox(client.ProcFileDownloadChunks.Query),
+		ProcGetFileByHashChunks:       newQueryBox(client.ProcGetFileByHashChunks.Query),
+		ProcGetFileByHashJobs:         newQueryBox(client.ProcGetFileByHashJobs.Query),
+		ProcGetFileByHashQuotes:       newQueryBox(client.ProcGetFileByHashQuotes.Query),
+		ProcLiveFollows:               newQueryBox(client.ProcLiveFollows.Query),
+		ProcNodeReachabilityCache:     newQueryBox(client.ProcNodeReachabilityCache.Query),
+		ProcSelfNodeReachabilityState: newQueryBox(client.ProcSelfNodeReachabilityState.Query),
+		WalletUtxo:                    newQueryBox(client.WalletUtxo.Query),
+		WalletUtxoSyncState:           newQueryBox(client.WalletUtxoSyncState.Query),
+		WalletUtxoSyncCursor:          newQueryBox(client.WalletUtxoSyncCursor.Query),
+		WalletUtxoTokenVerification:   newQueryBox(client.WalletUtxoTokenVerification.Query),
+		FactPoolSessionEvents:         newQueryBox(client.FactPoolSessionEvents.Query),
+		FactBsvUtxos:                  newQueryBox(client.FactBsvUtxos.Query),
+		FactTokenLots:                 newQueryBox(client.FactTokenLots.Query),
+		FactTokenCarrierLinks:         newQueryBox(client.FactTokenCarrierLinks.Query),
+		FactSettlementRecords:         newQueryBox(client.FactSettlementRecords.Query),
+		FactSettlementPaymentAttempts: newQueryBox(client.FactSettlementPaymentAttempts.Query),
+		FactSettlementChannelChainAssetCreate:  newQueryBox(client.FactSettlementChannelChainAssetCreate.Query),
+		FactSettlementChannelChainDirectPay:    newQueryBox(client.FactSettlementChannelChainDirectPay.Query),
+		FactSettlementChannelChainQuotePay:      newQueryBox(client.FactSettlementChannelChainQuotePay.Query),
+		FactSettlementChannelPoolSessionQuotePay: newQueryBox(client.FactSettlementChannelPoolSessionQuotePay.Query),
 	}
 }
 

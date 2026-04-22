@@ -32,8 +32,6 @@ func (s *httpAPIServer) registerHTTPRouteAdmin(mux *http.ServeMux, prefix string
 	// 费用池审计主入口（时间线统一视角）
 	mux.HandleFunc(prefix+"/v1/admin/feepool/audit/gateway-timeline", s.withAuth(s.handleAdminFeePoolGatewayAuditTimeline))
 	mux.HandleFunc(prefix+"/v1/admin/feepool/audit/command-timeline", s.withAuth(s.handleAdminFeePoolCommandAuditTimeline))
-	mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands", s.withAuth(s.handleAdminClientKernelCommands))
-	mux.HandleFunc(prefix+"/v1/admin/client-kernel/commands/detail", s.withAuth(s.handleAdminClientKernelCommandDetail))
 	mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs", s.withAuth(s.handleAdminOrchestratorLogs))
 	mux.HandleFunc(prefix+"/v1/admin/orchestrator/logs/detail", s.withAuth(s.handleAdminOrchestratorLogDetail))
 	mux.HandleFunc(prefix+"/v1/admin/scheduler/tasks", s.withAuth(s.handleAdminSchedulerTasks))

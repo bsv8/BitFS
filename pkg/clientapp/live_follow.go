@@ -268,7 +268,7 @@ func liveFollowOnce(ctx context.Context, store *clientDB, rt *Runtime, streamID 
 	if err != nil {
 		return err
 	}
-	plan, err := TriggerLivePlan(ctx, rt, LivePlanParams{
+	plan, err := TriggerLivePlan(ctx, store, rt, LivePlanParams{
 		StreamID:         streamID,
 		HaveSegmentIndex: status.HaveSegmentIndex,
 	})

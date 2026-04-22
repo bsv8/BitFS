@@ -138,7 +138,7 @@ func loadDirectTransferPoolRowEntTx(ctx context.Context, tx EntWriteRoot, sessio
 		return directTransferPoolRow{}, fmt.Errorf("tx is nil")
 	}
 	return loadDirectTransferPoolRowEntRoot(ctx, &entReadRoot{
-		ProcDirectTransferPools: newQueryBox(tx.ProcDirectTransferPools.Query()),
+		ProcDirectTransferPools: newQueryBox(tx.ProcDirectTransferPools.Query),
 	}, sessionID)
 }
 
